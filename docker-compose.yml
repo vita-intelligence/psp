@@ -1,0 +1,45 @@
+# Local-dev infrastructure for PSP.
+#
+# Phoenix backend and Next.js client run on the host (not in containers)
+# so hot-reload stays snappy. Postgres + Redis run here.
+#
+#   docker compose up -d           # start services
+#   docker compose down            # stop services (data persists in volumes)
+#   docker compose down -v         # nuke data volumes too
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: psp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: psp
+      POSTGRES_PASSWORD: psp_dev
+      POSTGRES_DB: psp_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - psp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U psp -d psp_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: psp-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - psp_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  psp_postgres_data:
+  psp_redis_data:

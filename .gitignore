@@ -1,0 +1,25 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Node
+node_modules/
+.next/
+out/
+.env*.local
+
+# Elixir / Phoenix
+backend/_build/
+backend/deps/
+backend/.elixir_ls/
+backend/erl_crash.dump
+backend/cover/
+backend/.fetch
+backend/priv/static/uploads/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db

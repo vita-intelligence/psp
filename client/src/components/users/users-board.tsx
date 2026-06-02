@@ -1,0 +1,214 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { usePresence } from "@/lib/realtime/presence-store";
+import { initialsOf } from "@/lib/initials";
+import { avatarColour } from "@/lib/avatar-color";
+import { cn } from "@/lib/utils";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Card, CardContent } from "@/components/ui/card";
+import { Loader2, Users, UserCheck, UserX } from "lucide-react";
+import type { UserListEntry } from "@/lib/types";
+
+async function fetchUsers(): Promise<UserListEntry[]> {
+  const res = await fetch("/api/users", { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load users");
+  const data = (await res.json()) as { users: UserListEntry[] };
+  return data.users;
+}
+
+export function UsersBoard({ currentUserId }: { currentUserId: number }) {
+  const presenceMap = usePresence((s) => s.byUserId);
+  const onlineSet = useMemo(
+    () => new Set(Object.keys(presenceMap)),
+    [presenceMap],
+  );
+
+  const usersQuery = useQuery({
+    queryKey: ["users"],
+    queryFn: fetchUsers,
+  });
+
+  if (usersQuery.isLoading) {
+    return (
+      <Card className="border-border/60">
+        <CardContent className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+          Loading team…
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (usersQuery.error || !usersQuery.data) {
+    return (
+      <Card className="border-destructive/30 bg-destructive/[0.02]">
+        <CardContent className="py-12 text-center text-sm text-destructive">
+          Couldn't load the team roster.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const users = usersQuery.data.map((u) => ({
+    ...u,
+    is_online: onlineSet.has(String(u.id)) || u.is_online,
+  }));
+  const online = users.filter((u) => u.is_online);
+  const offline = users.filter((u) => !u.is_online);
+
+  if (users.length === 0) {
+    return (
+      <Card className="border-border/60 border-dashed">
+        <CardContent className="py-16 text-center space-y-2">
+          <Users className="mx-auto size-8 text-muted-foreground" />
+          <p className="text-sm font-medium">You're the only one here</p>
+          <p className="text-xs text-muted-foreground">
+            Invite your teammates to join PSP.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 sm:gap-5 md:grid-cols-2">
+      <Section
+        title="Online"
+        count={online.length}
+        users={online}
+        currentUserId={currentUserId}
+        icon={UserCheck}
+        accent="brand"
+        empty="No one else is online right now."
+      />
+      <Section
+        title="Offline"
+        count={offline.length}
+        users={offline}
+        currentUserId={currentUserId}
+        icon={UserX}
+        accent="muted"
+        empty="Everyone is online — nice."
+      />
+    </div>
+  );
+}
+
+interface SectionProps {
+  title: string;
+  count: number;
+  users: UserListEntry[];
+  currentUserId: number;
+  icon: typeof UserCheck;
+  accent: "brand" | "muted";
+  empty: string;
+}
+
+function Section({
+  title,
+  count,
+  users,
+  currentUserId,
+  icon: Icon,
+  accent,
+  empty,
+}: SectionProps) {
+  return (
+    <Card className="border-border/60 overflow-hidden">
+      <CardContent className="p-0">
+        <header className="flex items-center justify-between border-b border-border/60 px-5 py-3.5">
+          <div className="flex items-center gap-2">
+            <Icon
+              className={cn(
+                "size-4",
+                accent === "brand" ? "text-brand" : "text-muted-foreground",
+              )}
+            />
+            <h2 className="text-sm font-semibold">{title}</h2>
+          </div>
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-xs font-medium tabular-nums",
+              accent === "brand"
+                ? "bg-brand/10 text-brand"
+                : "bg-muted text-muted-foreground",
+            )}
+          >
+            {count}
+          </span>
+        </header>
+
+        {users.length === 0 ? (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {empty}
+          </p>
+        ) : (
+          <ul>
+            {users.map((u) => (
+              <UserRow
+                key={u.id}
+                user={u}
+                isYou={u.id === currentUserId}
+                online={accent === "brand"}
+              />
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function UserRow({
+  user,
+  isYou,
+  online,
+}: {
+  user: UserListEntry;
+  isYou: boolean;
+  online: boolean;
+}) {
+  const tint = avatarColour(user.email);
+
+  return (
+    <li className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/40">
+      <div className="relative shrink-0">
+        <Avatar className="size-10">
+          <AvatarFallback
+            className={cn("text-sm font-semibold", tint.bg, tint.text)}
+          >
+            {initialsOf(user.name)}
+          </AvatarFallback>
+        </Avatar>
+        {online ? (
+          <span
+            aria-label="online"
+            className="absolute -bottom-0.5 -right-0.5 flex size-3 items-center justify-center"
+          >
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+            <span className="relative inline-flex size-3 rounded-full border-2 border-background bg-emerald-500" />
+          </span>
+        ) : (
+          <span
+            aria-label="offline"
+            className="absolute -bottom-0.5 -right-0.5 inline-flex size-3 rounded-full border-2 border-background bg-zinc-300"
+          />
+        )}
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+          {user.name}
+          {isYou && (
+            <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              You
+            </span>
+          )}
+        </p>
+        <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+      </div>
+    </li>
+  );
+}
