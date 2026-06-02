@@ -16,12 +16,16 @@ defmodule BackendWeb.Router do
     post "/auth/register", AuthController, :register
     post "/auth/login", AuthController, :login
     post "/auth/confirm", AuthController, :confirm
+    post "/auth/forgot-password", PasswordResetController, :request
+    post "/auth/reset-password", PasswordResetController, :confirm
   end
 
   scope "/api", BackendWeb do
     pipe_through :api_authed
 
     get "/auth/me", AuthController, :me
+    put "/auth/me", ProfileController, :update
+    put "/auth/password", ProfileController, :change_password
     get "/users", UserController, :index
   end
 

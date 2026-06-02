@@ -10,7 +10,14 @@ import { NextRequest, NextResponse } from "next/server";
 
 const COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "psp_session";
 
-const PUBLIC_PATHS = ["/login", "/register", "/confirm", "/confirm/failed"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/register",
+  "/confirm",
+  "/confirm/failed",
+  "/forgot-password",
+  "/reset-password",
+];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

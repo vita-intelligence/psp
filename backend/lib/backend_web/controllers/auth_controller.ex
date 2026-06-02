@@ -131,6 +131,7 @@ defmodule BackendWeb.AuthController do
       id: user.id,
       email: user.email,
       name: user.name,
+      avatar: user.avatar,
       is_active: user.is_active,
       confirmed_at: user.confirmed_at,
       inserted_at: user.inserted_at

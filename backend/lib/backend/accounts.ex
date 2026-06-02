@@ -1,10 +1,15 @@
 defmodule Backend.Accounts do
   @moduledoc """
-  Boundary for user accounts: registration, login, lookup, listing.
+  Boundary for user accounts: registration, login, lookup, listing,
+  profile/password updates, password reset.
 
-  Tokens are stateless `Phoenix.Token` strings signed with the endpoint
-  secret. Verify via `verify_token/1`. Renewal is just "sign a new one"
-  — no refresh-token dance for v1.
+  Session tokens are stateless `Phoenix.Token` strings signed with the
+  endpoint secret. Verify via `verify_token/1`. Renewal is just "sign
+  a new one" — no refresh-token dance for v1.
+
+  Password-reset tokens (separate from session tokens) live on the
+  user row, are single-use, and expire after
+  `User.password_reset_validity_seconds/0`.
   """
 
   import Ecto.Query, warn: false
@@ -32,12 +37,6 @@ defmodule Backend.Accounts do
 
   ## Registration / auth ----------------------------------------------
 
-  @doc """
-  Inserts the user (rejected if the email isn't `@vitamanufacture.co.uk`
-  per `User.registration_changeset/2`), and dispatches the confirmation
-  email. The caller supplies a URL builder so we don't couple the
-  context to the web layer.
-  """
   def register_user(attrs, confirm_url_builder) when is_function(confirm_url_builder, 1) do
     with {:ok, user} <- %User{} |> User.registration_changeset(attrs) |> Repo.insert() do
       _ = Notifier.deliver_confirmation(user, confirm_url_builder.(user.confirmation_token))
@@ -59,18 +58,11 @@ defmodule Backend.Accounts do
 
   def confirm_user_by_token(_), do: {:error, :invalid_token}
 
-  @doc """
-  Returns `{:ok, user}` on success, `{:error, :unconfirmed}` if the user
-  exists with valid credentials but hasn't clicked the email link yet,
-  or `{:error, :invalid_credentials}` for everything else. Generic
-  failure mode never leaks email-vs-password.
-  """
   def authenticate(email, password) when is_binary(email) and is_binary(password) do
     user = get_user_by_email(email)
 
     cond do
       is_nil(user) ->
-        # Constant-time dummy hash check.
         User.valid_password?(nil, password)
         {:error, :invalid_credentials}
 
@@ -90,7 +82,79 @@ defmodule Backend.Accounts do
 
   def authenticate(_, _), do: {:error, :invalid_credentials}
 
-  ## Tokens -----------------------------------------------------------
+  ## Profile / password ------------------------------------------------
+
+  def update_profile(%User{} = user, attrs) do
+    user
+    |> User.profile_changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
+  Change the password for an authenticated user. Requires the user's
+  current password as proof; on success, sends a notification email so
+  account takeover attempts show up in the user's inbox.
+  """
+  def change_password(%User{} = user, attrs) do
+    with {:ok, updated} <- user |> User.password_changeset(attrs) |> Repo.update() do
+      _ = Notifier.deliver_password_changed(updated)
+      {:ok, updated}
+    end
+  end
+
+  ## Password reset ---------------------------------------------------
+
+  @doc """
+  Mint a reset token for the user with this email and email them the
+  link. **Always returns `:ok`** — callers must not branch on
+  presence/absence of the account, otherwise the endpoint becomes an
+  account-enumeration oracle.
+  """
+  def request_password_reset(email, url_builder) when is_function(url_builder, 1) do
+    case get_user_by_email(email) do
+      %User{} = user ->
+        with {:ok, updated} <-
+               user |> User.password_reset_request_changeset() |> Repo.update() do
+          _ = Notifier.deliver_password_reset(updated, url_builder.(updated.password_reset_token))
+          :ok
+        else
+          _ -> :ok
+        end
+
+      nil ->
+        # Dummy delay roughly matching a successful path keeps timing
+        # consistent — bcrypt isn't involved here but the email I/O
+        # would be, so simulate it.
+        Process.sleep(50)
+        :ok
+    end
+  end
+
+  @doc """
+  Consume the reset token, set the new password, and (on success)
+  return the user so the caller can sign a fresh session token.
+  """
+  def reset_password_by_token(token, attrs) when is_binary(token) and byte_size(token) > 0 do
+    case Repo.get_by(User, password_reset_token: token) do
+      nil ->
+        {:error, :invalid_token}
+
+      %User{} = user ->
+        if User.password_reset_expired?(user) do
+          {:error, :expired_token}
+        else
+          with {:ok, updated} <-
+                 user |> User.password_reset_changeset(attrs) |> Repo.update() do
+            _ = Notifier.deliver_password_changed(updated)
+            {:ok, updated}
+          end
+        end
+    end
+  end
+
+  def reset_password_by_token(_, _), do: {:error, :invalid_token}
+
+  ## Session tokens ---------------------------------------------------
 
   def sign_token(%User{id: id}) do
     Phoenix.Token.sign(BackendWeb.Endpoint, @token_salt, id)

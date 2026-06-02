@@ -3,14 +3,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { usePresence } from "@/lib/realtime/presence-store";
-import { initialsOf } from "@/lib/initials";
-import { avatarColour } from "@/lib/avatar-color";
 import { cn } from "@/lib/utils";
 import { messageFor } from "@/lib/errors/codes";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { UsersBoardSkeleton } from "./users-board-skeleton";
+import { UserAvatar } from "./user-avatar";
 import { AlertCircle, RefreshCw, Users, UserCheck, UserX } from "lucide-react";
 import type { UserListEntry } from "@/lib/types";
 
@@ -208,18 +206,15 @@ function UserRow({
   isYou: boolean;
   online: boolean;
 }) {
-  const tint = avatarColour(user.email);
-
   return (
     <li className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-muted/40">
       <div className="relative shrink-0">
-        <Avatar className="size-10">
-          <AvatarFallback
-            className={cn("text-sm font-semibold", tint.bg, tint.text)}
-          >
-            {initialsOf(user.name)}
-          </AvatarFallback>
-        </Avatar>
+        <UserAvatar
+          name={user.name}
+          email={user.email}
+          avatar={user.avatar}
+          sizeClassName="size-10"
+        />
         {online ? (
           <span
             aria-label="online"

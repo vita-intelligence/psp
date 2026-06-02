@@ -14,6 +14,7 @@ defmodule BackendWeb.UserController do
           id: u.id,
           email: u.email,
           name: u.name,
+          avatar: u.avatar,
           is_active: u.is_active,
           is_online: MapSet.member?(online_ids, u.id),
           inserted_at: u.inserted_at
