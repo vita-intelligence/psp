@@ -37,6 +37,9 @@ defmodule Backend.Accounts.User do
     field :password_reset_token, :string, redact: true
     field :password_reset_sent_at, :utc_datetime
 
+    belongs_to :company, Backend.Companies.Company
+    many_to_many :roles, Backend.RBAC.Role, join_through: "user_roles"
+
     timestamps(type: :utc_datetime)
   end
 
@@ -47,7 +50,7 @@ defmodule Backend.Accounts.User do
 
   def registration_changeset(user, attrs) do
     user
-    |> cast(attrs, [:email, :name, :password, :is_active])
+    |> cast(attrs, [:email, :name, :password, :is_active, :company_id])
     |> validate_required([:email, :name, :password])
     |> validate_format(:email, ~r/^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: "invalid email")
     |> validate_length(:email, max: 160)

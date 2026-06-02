@@ -27,6 +27,11 @@ defmodule BackendWeb.Router do
     put "/auth/me", ProfileController, :update
     put "/auth/password", ProfileController, :change_password
     get "/users", UserController, :index
+
+    get "/company", CompanyController, :show
+    put "/company", CompanyController, :update
+    put "/company/locale", CompanyController, :update_locale
+    put "/company/bag", CompanyController, :update_bag
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

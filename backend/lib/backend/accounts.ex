@@ -15,6 +15,8 @@ defmodule Backend.Accounts do
   import Ecto.Query, warn: false
   alias Backend.Repo
   alias Backend.Accounts.{User, Notifier}
+  alias Backend.Companies
+  alias Backend.RBAC
 
   @token_salt "psp user auth"
   # 30 days; enough for daily-driver workers.
@@ -38,10 +40,44 @@ defmodule Backend.Accounts do
   ## Registration / auth ----------------------------------------------
 
   def register_user(attrs, confirm_url_builder) when is_function(confirm_url_builder, 1) do
-    with {:ok, user} <- %User{} |> User.registration_changeset(attrs) |> Repo.insert() do
+    # Bootstrap the company singleton + system roles if they don't
+    # exist yet. Idempotent.
+    company = Companies.current()
+    attrs_with_company = Map.put(stringify_keys(attrs), "company_id", company.id)
+
+    with {:ok, user} <-
+           %User{}
+           |> User.registration_changeset(attrs_with_company)
+           |> Repo.insert() do
+      # Bootstrap policy: the very first user to land becomes Owner.
+      # Subsequent users get the Member role and can be promoted via
+      # the future admin UI.
+      role =
+        if first_user?(company.id, user.id) do
+          RBAC.get_role_by_slug(company.id, "owner")
+        else
+          RBAC.get_role_by_slug(company.id, "member")
+        end
+
+      {:ok, user} = RBAC.assign_role(user, role)
+
       _ = Notifier.deliver_confirmation(user, confirm_url_builder.(user.confirmation_token))
       {:ok, user}
     end
+  end
+
+  defp first_user?(company_id, user_id) do
+    Repo.aggregate(
+      from(u in User, where: u.company_id == ^company_id and u.id != ^user_id),
+      :count
+    ) == 0
+  end
+
+  defp stringify_keys(attrs) do
+    Enum.into(attrs, %{}, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      pair -> pair
+    end)
   end
 
   def confirm_user_by_token(token) when is_binary(token) and byte_size(token) > 0 do
@@ -164,8 +200,16 @@ defmodule Backend.Accounts do
     case Phoenix.Token.verify(BackendWeb.Endpoint, @token_salt, token,
            max_age: @token_max_age_seconds
          ) do
-      {:ok, user_id} -> {:ok, get_user(user_id)}
-      {:error, reason} -> {:error, reason}
+      {:ok, user_id} ->
+        # Preload roles eagerly so every downstream permission check
+        # is a no-op lookup. Avoids N+1 across the request lifecycle.
+        case get_user(user_id) do
+          nil -> {:error, :invalid}
+          user -> {:ok, Repo.preload(user, :roles)}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

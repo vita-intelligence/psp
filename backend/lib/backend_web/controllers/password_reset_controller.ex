@@ -12,7 +12,8 @@ defmodule BackendWeb.PasswordResetController do
   use BackendWeb, :controller
 
   alias Backend.Accounts
-  alias BackendWeb.Errors
+  alias Backend.Repo
+  alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
 
@@ -93,14 +94,6 @@ defmodule BackendWeb.PasswordResetController do
   end
 
   defp user_payload(user) do
-    %{
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      avatar: user.avatar,
-      is_active: user.is_active,
-      confirmed_at: user.confirmed_at,
-      inserted_at: user.inserted_at
-    }
+    Payloads.user(Repo.preload(user, :roles))
   end
 end
