@@ -333,22 +333,38 @@ function EventRow({
   const { icon: Icon, tone } = eventStyle(event.event);
   const hasChanges = Object.keys(event.changes).length > 0;
 
-  // Delete events don't have a meaningful state to restore — the row
-  // is gone. Show no restore button for them.
-  const canRestoreThis =
-    canRestore &&
-    event.event !== "deleted" &&
+  // Delete events have nothing to restore (the row is gone), and
+  // events recorded before the snapshot column shipped come back with
+  // an empty `state_after`. Hide the button in both cases so the user
+  // only sees Restore when it'll actually do something useful.
+  const hasSnapshot =
     event.state_after &&
+    typeof event.state_after === "object" &&
     Object.keys(event.state_after).length > 0;
+  const canRestoreThis = canRestore && event.event !== "deleted" && hasSnapshot;
 
   const summary = summarizeChanges(entityType, event.event, event.changes);
   const when = new Date(event.at);
 
   function onRestoreClick(e: React.MouseEvent) {
     e.stopPropagation();
+
+    // Pre-state_after rows (audit events created before the snapshot
+    // column shipped) have an empty `state_after`. Restoring them
+    // would silently blank the form — refuse with a clear warning
+    // instead.
+    if (!event.state_after || Object.keys(event.state_after).length === 0) {
+      toast.warning("Can't restore this version", {
+        description:
+          "This event was recorded before full snapshots were enabled. Make a fresh edit and Restore that one instead.",
+      });
+      return;
+    }
+
     dispatchRestore(entityType, entityId, event.state_after);
     toast.info("Version loaded into the form", {
-      description: "Review the changes, then hit Save to record a new version.",
+      description:
+        "Review the values above, then hit Save to record it as a new version.",
     });
   }
 
