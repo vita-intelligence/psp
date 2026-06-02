@@ -20,12 +20,12 @@ export default async function SettingsLayout({
       <div className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-6xl space-y-6">
           <header className="space-y-1.5">
-            <p className="text-sm font-medium text-brand">Account</p>
             <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
               Settings
             </h1>
             <p className="text-sm text-muted-foreground sm:text-base">
-              Manage your profile, security, and company-wide settings.
+              Manage your profile, security, warehouses, and company-wide
+              configuration.
             </p>
           </header>
 

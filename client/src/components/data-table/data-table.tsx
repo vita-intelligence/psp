@@ -1,0 +1,469 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { AlertCircle, Loader2, RefreshCw } from "lucide-react";
+import { Toolbar } from "./toolbar";
+import { DraggableHeader } from "./draggable-header";
+import { useTableState } from "./use-table-state";
+import type {
+  DataTableColumn,
+  DataTableProps,
+  FilterValue,
+  PageResult,
+  SortSpec,
+} from "./types";
+
+/**
+ * Generic server-driven table. The same component drives every list
+ * page (warehouses, orders, products, audit log, …): pass the columns,
+ * the row key, and a `fetchPage` function. Server-side pagination,
+ * search, filter, sort. Client-side column reorder / hide. Mobile
+ * cards on `< md:`.
+ *
+ * Key UX rules:
+ *
+ *   * Search + filters **never** fire on every keystroke. They commit
+ *     on Enter / explicit Apply only — fewer DB hits, no jittery
+ *     loading state while you're still typing.
+ *   * Column order + visibility persist in `localStorage` per `tableId`
+ *     so a user's preference survives reloads.
+ *   * Pagination uses opaque cursors → constant-time per page no matter
+ *     how deep you scroll. Infinite-query under the hood; the explicit
+ *     "Load more" button keeps the user in control (no surprise data
+ *     load while reading).
+ */
+export function DataTable<T>({
+  tableId,
+  columns,
+  rowKey,
+  fetchPage,
+  initialPage,
+  searchPlaceholder,
+  filters,
+  defaultSort,
+  onRowClick,
+  pageSize = 25,
+  emptyState,
+  toolbarActions,
+  beforeTable,
+  renderMobileCard,
+}: DataTableProps<T>) {
+  const {
+    columnOrder: persistedOrder,
+    hiddenColumns,
+    setColumnOrder,
+    toggleColumn,
+  } = useTableState(tableId);
+
+  const [sort, setSort] = useState<SortSpec | null>(defaultSort ?? null);
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [appliedFilters, setAppliedFilters] = useState<FilterValue>({});
+
+  // Compose the ordered, visible column list each render. Persisted
+  // order wins when present; new columns (introduced by a code change)
+  // land at the end of the visible list.
+  const orderedColumns = useMemo(() => {
+    return resolveColumnOrder(columns, persistedOrder).filter(
+      (c) => !hiddenColumns.has(c.id),
+    );
+  }, [columns, persistedOrder, hiddenColumns]);
+
+  const queryKey = [
+    "data-table",
+    tableId,
+    appliedSearch,
+    sort?.field ?? "",
+    sort?.direction ?? "",
+    JSON.stringify(appliedFilters),
+    pageSize,
+  ];
+
+  // The server-pre-fetched first page is only valid for the very
+  // first query (default sort, no search, no filters). If we hand it
+  // to every query key, TanStack treats it as fresh data after the
+  // user changes search/filter/sort and never refetches — which
+  // looks like "filters don't work". Provide initialData only when
+  // the query state matches the prefetch.
+  const isPristine =
+    appliedSearch === "" &&
+    Object.keys(appliedFilters).length === 0 &&
+    (!sort ||
+      (sort.field === (defaultSort?.field ?? null) &&
+        sort.direction === (defaultSort?.direction ?? "asc")));
+
+  const query = useInfiniteQuery({
+    queryKey,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }: { pageParam: string | null }) =>
+      fetchPage({
+        cursor: pageParam,
+        limit: pageSize,
+        sort,
+        filters: appliedFilters,
+        search: appliedSearch,
+      }),
+    getNextPageParam: (last) => last.next_cursor,
+    initialData:
+      isPristine && initialPage
+        ? { pages: [initialPage], pageParams: [null] }
+        : undefined,
+    // Refetch on key change. Tables are interactive; users expect a
+    // search press to fire a query, not be silently cached.
+    staleTime: 0,
+  });
+
+  const rows: T[] = useMemo(
+    () => query.data?.pages.flatMap((p) => p.items) ?? [],
+    [query.data],
+  );
+
+  const isInitialLoading = query.isPending && !query.data;
+  const hasNoData =
+    !isInitialLoading && rows.length === 0 && !query.isError;
+  const isFiltered =
+    appliedSearch.length > 0 || Object.keys(appliedFilters).length > 0;
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  function onDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = orderedColumns.findIndex((c) => c.id === active.id);
+    const newIndex = orderedColumns.findIndex((c) => c.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const fullVisible = orderedColumns.map((c) => c.id);
+    const reordered = arrayMove(fullVisible, oldIndex, newIndex);
+
+    // Persist order — include hidden columns at the end so toggling
+    // them back on lands them in a stable spot.
+    const hiddenIds = columns
+      .filter((c) => hiddenColumns.has(c.id))
+      .map((c) => c.id);
+    setColumnOrder([...reordered, ...hiddenIds]);
+  }
+
+  function onSort(field?: string) {
+    if (!field) return;
+    setSort((current) => {
+      if (current?.field !== field) return { field, direction: "asc" };
+      if (current.direction === "asc")
+        return { field, direction: "desc" };
+      return null; // third click clears
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <Toolbar
+        searchPlaceholder={searchPlaceholder}
+        appliedSearch={appliedSearch}
+        onApplySearch={setAppliedSearch}
+        filters={filters}
+        appliedFilters={appliedFilters}
+        onApplyFilters={setAppliedFilters}
+        columns={columns}
+        hiddenColumns={hiddenColumns}
+        onToggleColumn={toggleColumn}
+        sort={sort}
+        onSort={setSort}
+        actions={toolbarActions}
+      />
+
+      {beforeTable}
+
+      {query.isError && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/[0.03] px-3 py-3 text-sm">
+          <div className="flex items-start gap-2 text-destructive">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />
+            <span>Couldn&apos;t load this list.</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => query.refetch()}
+            className="mt-2"
+          >
+            <RefreshCw className="mr-1.5 size-3.5" />
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {/* Responsive split driven by container queries, not viewport.
+          The table view switches in once the wrapper itself (not the
+          viewport) is wide enough to comfortably hold the columns —
+          so the same component looks right inside a sidebar layout,
+          a half-width modal, or a full-page list, without re-tuning
+          the breakpoint per use site. */}
+      <div className="relative @container/data-table">
+        {/* Thin indeterminate progress bar across the top of the
+            container whenever a server refetch is in flight. Includes
+            sort changes, filter applies, search, and "Load more".
+            Gives a clear visual ack even when the result set is small
+            (or unchanged) so the user knows the round-trip happened. */}
+        {(query.isFetching || query.isFetchingNextPage) && !isInitialLoading && (
+          <div
+            aria-hidden
+            className="absolute -top-1 left-0 right-0 z-10 h-0.5 overflow-hidden rounded-full"
+          >
+            <div className="h-full w-1/3 animate-[progress-slide_1s_ease-in-out_infinite] rounded-full bg-brand" />
+          </div>
+        )}
+
+        {/* Desktop table — visible once container >= 42rem (~672px) */}
+        <div className="hidden overflow-hidden rounded-lg border border-border/60 @2xl/data-table:block">
+        <DndContext
+          id={`dt-${tableId}`}
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={onDragEnd}
+        >
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <SortableContext
+                  items={orderedColumns.map((c) => c.id)}
+                  strategy={horizontalListSortingStrategy}
+                >
+                  {orderedColumns.map((col) => (
+                    <DraggableHeader
+                      key={col.id}
+                      column={col}
+                      sort={sort}
+                      onSort={() => onSort(col.sortField)}
+                    />
+                  ))}
+                </SortableContext>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isInitialLoading ? (
+                <SkeletonRows
+                  columns={orderedColumns.length}
+                  rows={Math.min(pageSize, 6)}
+                />
+              ) : hasNoData ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={orderedColumns.length || 1}
+                    className="py-12 text-center text-sm text-muted-foreground"
+                  >
+                    {isFiltered
+                      ? "No results for the current search / filters."
+                      : (emptyState ?? "Nothing here yet.")}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rows.map((row) => (
+                  <TableRow
+                    key={rowKey(row)}
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    className={cn(
+                      onRowClick && "cursor-pointer",
+                    )}
+                  >
+                    {orderedColumns.map((col) => (
+                      <TableCell
+                        key={col.id}
+                        className={cn(
+                          col.align === "right" && "text-right",
+                          col.align === "center" && "text-center",
+                          col.widthClassName,
+                        )}
+                      >
+                        {col.cell(row)}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </DndContext>
+        </div>
+
+        {/* Card layout — visible until container >= 42rem. Uses the
+            consumer's `renderMobileCard` when provided (hand-crafted
+            hierarchy), or falls back to a generic `LABEL — value`
+            stack from the column defs. */}
+        <div className="space-y-2 @2xl/data-table:hidden">
+          {isInitialLoading ? (
+            <MobileCardSkeletons rows={Math.min(pageSize, 4)} />
+          ) : hasNoData ? (
+            <div className="rounded-md border border-dashed border-border/60 py-10 text-center text-sm text-muted-foreground">
+              {isFiltered
+                ? "No results for the current search / filters."
+                : (emptyState ?? "Nothing here yet.")}
+            </div>
+          ) : (
+            rows.map((row) => (
+              <button
+                key={rowKey(row)}
+                type="button"
+                onClick={() => onRowClick?.(row)}
+                className={cn(
+                  "block w-full rounded-md border border-border/60 bg-background p-3 text-left",
+                  onRowClick && "transition-colors hover:bg-muted/30",
+                )}
+              >
+                {renderMobileCard ? (
+                  renderMobileCard(row)
+                ) : (
+                  <dl className="space-y-1.5">
+                    {orderedColumns.map((col) => (
+                      <div
+                        key={col.id}
+                        className="flex items-start justify-between gap-3"
+                      >
+                        <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                          {col.header}
+                        </dt>
+                        <dd className="min-w-0 text-right text-sm">
+                          {(col.mobileCell ?? col.cell)(row)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+
+      <Pagination
+        rowsLoaded={rows.length}
+        hasMore={Boolean(query.hasNextPage)}
+        isFetchingMore={query.isFetchingNextPage}
+        onLoadMore={() => query.fetchNextPage()}
+      />
+    </div>
+  );
+}
+
+function Pagination({
+  rowsLoaded,
+  hasMore,
+  isFetchingMore,
+  onLoadMore,
+}: {
+  rowsLoaded: number;
+  hasMore: boolean;
+  isFetchingMore: boolean;
+  onLoadMore: () => void;
+}) {
+  if (rowsLoaded === 0) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+      <span>
+        Showing <span className="font-medium text-foreground">{rowsLoaded}</span>{" "}
+        {rowsLoaded === 1 ? "row" : "rows"}
+        {hasMore ? "" : " — all loaded"}
+      </span>
+      {hasMore && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onLoadMore}
+          disabled={isFetchingMore}
+        >
+          {isFetchingMore && (
+            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+          )}
+          Load more
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function SkeletonRows({
+  columns,
+  rows,
+}: {
+  columns: number;
+  rows: number;
+}) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => (
+        <TableRow key={i}>
+          {Array.from({ length: Math.max(columns, 1) }).map((_, j) => (
+            <TableCell key={j} className="py-3">
+              <div className="h-4 w-full max-w-32 animate-pulse rounded bg-muted" />
+            </TableCell>
+          ))}
+        </TableRow>
+      ))}
+    </>
+  );
+}
+
+function MobileCardSkeletons({ rows }: { rows: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div
+          key={i}
+          className="h-20 w-full animate-pulse rounded-md border border-border/60 bg-muted/30"
+        />
+      ))}
+    </>
+  );
+}
+
+function resolveColumnOrder<T>(
+  defs: DataTableColumn<T>[],
+  persisted: string[] | null,
+): DataTableColumn<T>[] {
+  if (!persisted || persisted.length === 0) return defs;
+  const byId = new Map(defs.map((c) => [c.id, c]));
+  const ordered: DataTableColumn<T>[] = [];
+  const seen = new Set<string>();
+  for (const id of persisted) {
+    const col = byId.get(id);
+    if (col) {
+      ordered.push(col);
+      seen.add(id);
+    }
+  }
+  // Append any columns the user hasn't manually positioned yet (new
+  // additions, etc.) at the end so they're discoverable.
+  for (const col of defs) {
+    if (!seen.has(col.id)) ordered.push(col);
+  }
+  return ordered;
+}

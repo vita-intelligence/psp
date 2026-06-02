@@ -48,6 +48,11 @@ interface UseLiveFormOptions<T> {
   initialState: T;
   /** Fields where remote inputs should be ignored while WE have focus. */
   protectFocusedFields?: boolean;
+  /** Called when a peer broadcasts `form:committed` (i.e. the creator
+   *  successfully saved/created). Use this to navigate, toast, or
+   *  reset local state. Payload shape is consumer-defined — whatever
+   *  the broadcaster pushed. */
+  onCommit?: (payload: unknown, byUserId: string) => void;
 }
 
 export interface JoinError {
@@ -96,6 +101,10 @@ interface UseLiveFormResult<T> {
   /** Tell peers our cursor has left the form anchor. Called on mouse
    *  leave / blur and on unmount. */
   hideCursor: () => void;
+  /** Broadcast a `form:committed` event to every peer. Use this AFTER
+   *  the HTTP save succeeds — the local component should also handle
+   *  the success path (this hook never persists). */
+  broadcastCommit: (payload: unknown) => void;
 }
 
 /**
@@ -121,7 +130,15 @@ export function useLiveForm<T extends object>({
   resource,
   initialState,
   protectFocusedFields = true,
+  onCommit,
 }: UseLiveFormOptions<T>): UseLiveFormResult<T> {
+  // Latest onCommit handler captured in a ref so the channel
+  // subscription doesn't have to tear down + re-establish every time
+  // the parent component re-renders with a new callback identity.
+  const onCommitRef = useRef(onCommit);
+  useEffect(() => {
+    onCommitRef.current = onCommit;
+  }, [onCommit]);
   const [state, setState] = useState<T>(initialState);
   const [connected, setConnected] = useState(false);
   const [presence, setPresence] = useState<CollabPeer[]>([]);
@@ -229,6 +246,12 @@ export function useLiveForm<T extends object>({
     }
     cursorPendingRef.current = null;
     ch.push("cursor:hide", {});
+  }, []);
+
+  const broadcastCommit = useCallback<
+    UseLiveFormResult<T>["broadcastCommit"]
+  >((payload) => {
+    channelRef.current?.push("form:committed", { payload });
   }, []);
 
   useEffect(() => {
@@ -355,6 +378,11 @@ export function useLiveForm<T extends object>({
         });
       });
 
+      channel.on("form:committed", (msg) => {
+        const { by, payload } = msg as { by: number | string; payload: unknown };
+        onCommitRef.current?.(payload, String(by));
+      });
+
       channel
         .join()
         .receive("ok", (resp) => {
@@ -431,6 +459,7 @@ export function useLiveForm<T extends object>({
     cursors,
     setCursor,
     hideCursor,
+    broadcastCommit,
   };
 }
 

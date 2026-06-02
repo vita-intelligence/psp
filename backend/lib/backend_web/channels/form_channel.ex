@@ -159,6 +159,20 @@ defmodule BackendWeb.FormChannel do
     {:noreply, socket}
   end
 
+  # The creator hit Save / Create successfully — fan-out the event so
+  # every other editor can react (navigate to the new resource on
+  # create, reset local "dirty" state and show a toast on save). The
+  # payload is consumer-defined; we just rebroadcast.
+  @impl true
+  def handle_in("form:committed", payload, socket) do
+    broadcast_from!(socket, "form:committed", %{
+      by: socket.assigns.current_user.id,
+      payload: payload
+    })
+
+    {:noreply, socket}
+  end
+
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
 
   ## ------------------------------------------------------------------

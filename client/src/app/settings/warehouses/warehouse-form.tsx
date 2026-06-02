@@ -128,6 +128,12 @@ export function WarehouseForm({
   // away from the form.
   useFormPresenceBeacon(resource);
 
+  // Commit payload shape — what the creator pushes to peers on success.
+  // Discriminated union so receivers branch cleanly.
+  type CommitPayload =
+    | { kind: "created"; id: number; name: string }
+    | { kind: "saved"; state: FormState };
+
   const {
     state,
     setField,
@@ -142,9 +148,32 @@ export function WarehouseForm({
     cursors,
     setCursor,
     hideCursor,
+    broadcastCommit,
   } = useLiveForm<FormState>({
     resource,
     initialState: useMemo(() => initialFrom(warehouse), [warehouse]),
+    onCommit: (raw) => {
+      // Only the room creator triggers commits — peers react. The
+      // local sender already does its own follow-up (router.push /
+      // setOriginal), so we don't re-fire any of that for them.
+      const msg = raw as CommitPayload | null;
+      if (!msg) return;
+      if (msg.kind === "created") {
+        toast.success("Warehouse created", {
+          description: `${creator?.name ?? "The host"} just finalized "${msg.name}".`,
+        });
+        router.push(`/settings/warehouses/${msg.id}`);
+      } else if (msg.kind === "saved") {
+        toast.success("Saved", {
+          description: `${creator?.name ?? "The host"} just saved the form.`,
+        });
+        // Adopt the committed state as the new baseline so our
+        // "dirty" indicator resets to clean — matching what the
+        // creator sees on their side.
+        setOriginal(msg.state);
+        resetState(msg.state);
+      }
+    },
   });
 
   // Anchor for the live-cursor coordinate space. Senders normalize
@@ -256,7 +285,19 @@ export function WarehouseForm({
       if (res.ok) {
         toast.success(warehouse ? "Warehouse saved" : "Warehouse created");
         setOriginal(state);
-        if (!warehouse) {
+
+        // Tell every other editor in the room: the form is finalized.
+        // Peers receiving `created` navigate to the new resource;
+        // peers receiving `saved` reset their local baseline and
+        // show a toast.
+        if (warehouse) {
+          broadcastCommit({ kind: "saved", state });
+        } else {
+          broadcastCommit({
+            kind: "created",
+            id: res.warehouse.id,
+            name: res.warehouse.name,
+          });
           router.push(`/settings/warehouses/${res.warehouse.id}`);
         }
         return;

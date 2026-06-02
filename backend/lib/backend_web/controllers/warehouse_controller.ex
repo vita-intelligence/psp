@@ -21,11 +21,50 @@ defmodule BackendWeb.WarehouseController do
 
   action_fallback BackendWeb.FallbackController
 
-  def index(conn, _params) do
+  def index(conn, params) do
     user = conn.assigns.current_user
-    warehouses = Warehouses.list_for_company(user.company_id)
-    json(conn, %{warehouses: Enum.map(warehouses, &Payloads.warehouse/1)})
+    opts = list_opts_from_params(params)
+
+    {items, next_cursor} = Warehouses.list_for_company(user.company_id, opts)
+
+    json(conn, %{
+      items: Enum.map(items, &Payloads.warehouse/1),
+      next_cursor: next_cursor
+    })
   end
+
+  ## ------------------------------------------------------------------
+
+  defp list_opts_from_params(params) do
+    [
+      cursor: params["cursor"],
+      limit: params["limit"],
+      sort: parse_sort(params["sort"]),
+      filters: parse_filters(params["filter"]),
+      search: params["search"]
+    ]
+  end
+
+  # `?sort=field:asc` or `?sort=field` (defaults to asc). Returns `nil`
+  # when the param is missing — the context layer will fall back to its
+  # default sort.
+  defp parse_sort(nil), do: nil
+  defp parse_sort(""), do: nil
+
+  defp parse_sort(spec) when is_binary(spec) do
+    case String.split(spec, ":", parts: 2) do
+      [field] -> {field, :asc}
+      [field, "desc"] -> {field, :desc}
+      [field, _] -> {field, :asc}
+    end
+  end
+
+  defp parse_sort(_), do: nil
+
+  # Phoenix parses `?filter[k]=v` as `%{"filter" => %{"k" => "v"}}`.
+  defp parse_filters(nil), do: %{}
+  defp parse_filters(map) when is_map(map), do: map
+  defp parse_filters(_), do: %{}
 
   def show(conn, %{"id" => id}) do
     user = conn.assigns.current_user

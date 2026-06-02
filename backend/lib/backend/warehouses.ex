@@ -12,15 +12,57 @@ defmodule Backend.Warehouses do
   import Ecto.Query, warn: false
   alias Backend.Repo
   alias Backend.Companies
+  alias Backend.ListQueries
   alias Backend.Warehouses.Warehouse
+
+  # Whitelisted column names the table is allowed to sort by. Anything
+  # outside this list silently falls back to @default_sort — protects
+  # against SQL injection AND accidentally sorting on a sensitive col.
+  @sortable_fields ~w(name code is_active inserted_at)a
+  # Equality filters the API will honour.
+  @filter_fields ~w(is_active)a
+  # Columns the free-text `search` parameter ILIKE'es against.
+  @search_fields ~w(name code address)a
+  @default_sort {:name, :asc}
 
   ## Listing / fetching ----------------------------------------------
 
-  def list_for_company(company_id) do
-    Warehouse
-    |> where([w], w.company_id == ^company_id)
-    |> order_by([w], asc: w.is_active == false, asc: w.name)
-    |> Repo.all()
+  @doc """
+  Paginated, sortable, filterable, searchable list. `opts` keys:
+
+    * `:cursor`  — opaque cursor from the previous page (or nil for first page)
+    * `:limit`   — page size (clamped by ListQueries)
+    * `:sort`    — `{:name, :asc}` etc; must be in @sortable_fields
+    * `:filters` — `%{is_active: true}` etc; must be in @filter_fields
+    * `:search`  — free-text ILIKE across @search_fields
+
+  Returns `{items, next_cursor}` — `next_cursor` is `nil` when the
+  caller has reached the end.
+  """
+  def list_for_company(company_id, opts \\ []) do
+    sort = Keyword.get(opts, :sort, @default_sort)
+
+    base =
+      Warehouse
+      |> where([w], w.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_filter(opts[:filters], @filter_fields)
+      |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc "Static config the frontend reads to drive its column controls."
+  def list_config do
+    %{
+      sortable_fields: Enum.map(@sortable_fields, &Atom.to_string/1),
+      filter_fields: Enum.map(@filter_fields, &Atom.to_string/1),
+      search_fields: Enum.map(@search_fields, &Atom.to_string/1),
+      default_sort: %{
+        field: Atom.to_string(elem(@default_sort, 0)),
+        direction: Atom.to_string(elem(@default_sort, 1))
+      }
+    }
   end
 
   def get_for_company(company_id, id) do

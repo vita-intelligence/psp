@@ -109,3 +109,14 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/* Indeterminate progress sliding bar — used by DataTable when a
+   server refetch is in flight (sort change, filter, search, paging). */
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}

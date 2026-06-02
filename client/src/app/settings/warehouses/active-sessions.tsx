@@ -6,7 +6,7 @@ import { usePresence } from "@/lib/realtime/presence-store";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { Button } from "@/components/ui/button";
 import { MAX_COLLABORATORS } from "@/lib/realtime/use-live-form";
-import { Lock, Pencil, Users } from "lucide-react";
+import { Lock, Pencil } from "lucide-react";
 
 interface ActiveEditor {
   userId: string;
@@ -146,8 +146,13 @@ interface WarehouseEditorsBadgeProps {
   currentUserId: number;
 }
 
-/** Avatar stack overlay for a single warehouse card. Renders nothing
- *  when no peer is editing this warehouse. */
+/**
+ * Avatar stack for a single warehouse row. Shows up to 3 small avatars
+ * overlapping, with a "+N" pill for overflow and a tiny pulsing green
+ * dot signalling "live edit happening". Hovering reveals the full
+ * roster via title attribute. Renders nothing when nobody else is in
+ * this warehouse's room.
+ */
 export function WarehouseEditorsBadge({
   warehouseId,
   currentUserId,
@@ -158,14 +163,39 @@ export function WarehouseEditorsBadge({
 
   if (editors.length === 0) return null;
 
+  const shown = editors.slice(0, 3);
+  const overflow = editors.length - shown.length;
+  const tooltip =
+    editors.map((e) => e.name).join(", ") +
+    (editors.length === 1 ? " is editing" : " are editing");
+
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
-      title={editors.map((e) => e.name).join(", ") + " editing now"}
+      className="inline-flex items-center gap-1.5"
+      title={tooltip}
+      aria-label={tooltip}
     >
-      <Users className="size-3" />
-      <span>
-        {editors.length} editing now
+      <span className="relative inline-flex size-2 items-center justify-center">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400/60" />
+        <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+      </span>
+      <span className="flex -space-x-1.5">
+        {shown.map((p) => (
+          <UserAvatar
+            key={p.userId}
+            name={p.name}
+            email={p.email}
+            avatar={p.avatar}
+            sizeClassName="size-5"
+            fallbackClassName="text-[9px]"
+            className="ring-2 ring-background"
+          />
+        ))}
+        {overflow > 0 && (
+          <span className="z-10 inline-flex size-5 items-center justify-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground ring-2 ring-background">
+            +{overflow}
+          </span>
+        )}
       </span>
     </span>
   );
