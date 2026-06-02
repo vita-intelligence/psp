@@ -42,6 +42,7 @@ import {
   createWarehouseAction,
   updateWarehouseAction,
 } from "@/lib/warehouses/actions";
+import { invalidateAudit } from "@/lib/audit/invalidator";
 import {
   AlertCircle,
   Loader2,
@@ -179,6 +180,9 @@ export function WarehouseForm({
         // creator sees on their side.
         setOriginal(msg.state);
         resetState(msg.state);
+        // Refresh the peer's Activity card too — the host just wrote
+        // an audit row that our local view doesn't have yet.
+        if (warehouse) invalidateAudit("warehouse", warehouse.id);
       }
     },
   });
@@ -291,6 +295,11 @@ export function WarehouseForm({
       if (res.ok) {
         toast.success(warehouse ? "Warehouse saved" : "Warehouse created");
         setOriginal(state);
+
+        // Refresh the Activity card on this page without a page
+        // reload — the audit row was just written and the next
+        // /api/audit fetch will pick it up.
+        invalidateAudit("warehouse", res.warehouse.id);
 
         // Tell every other editor in the room: the form is finalized.
         // Peers receiving `created` navigate to the new resource;

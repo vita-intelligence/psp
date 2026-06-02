@@ -31,6 +31,7 @@ import {
   createTemplateAction,
   updateTemplateAction,
 } from "@/lib/templates/actions";
+import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { PermissionMatrix, PermissionTemplate } from "@/lib/types";
 import { AlertCircle, Loader2, Lock, ShieldCheck } from "lucide-react";
 
@@ -107,6 +108,7 @@ export function TemplateForm({
         });
         setOriginal(msg.state);
         resetState(msg.state);
+        if (template) invalidateAudit("template", template.id);
       }
     },
   });
@@ -204,6 +206,7 @@ export function TemplateForm({
         : await createTemplateAction(input);
 
       if (res.ok) {
+        invalidateAudit("template", res.template.id);
         if (template) {
           toast.success("Template saved");
           setOriginal(state);

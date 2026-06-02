@@ -28,6 +28,7 @@ import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
 import { updateUserAccessAction } from "@/lib/users/actions";
+import { invalidateAudit } from "@/lib/audit/invalidator";
 import { ApplyTemplateButton } from "./apply-template-button";
 import { PermissionMatrixGrid } from "@/components/permissions/permission-matrix-grid";
 import type {
@@ -113,6 +114,7 @@ export function UserAccessForm({
         });
         setOriginal(msg.state);
         resetState(msg.state);
+        invalidateAudit("user", subject.id);
         router.refresh();
       }
     },
@@ -227,6 +229,7 @@ export function UserAccessForm({
       if (res.ok) {
         toast.success("Access updated");
         setOriginal(state);
+        invalidateAudit("user", subject.id);
         broadcastCommit({ kind: "saved", state });
         router.refresh();
         return;

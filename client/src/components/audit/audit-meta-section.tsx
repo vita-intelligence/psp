@@ -32,7 +32,7 @@ export function AuditMetaSection({
   return (
     <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
       <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
-        Audit
+        Ownership
       </p>
       <div className="space-y-1.5">
         <MetaRow
