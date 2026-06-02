@@ -32,6 +32,8 @@ defmodule BackendWeb.Router do
     put "/company", CompanyController, :update
     put "/company/locale", CompanyController, :update_locale
     put "/company/bag", CompanyController, :update_bag
+
+    resources "/warehouses", WarehouseController, only: [:index, :show, :create, :update, :delete]
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

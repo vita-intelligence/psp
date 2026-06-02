@@ -56,6 +56,32 @@ export interface UserListEntry extends User {
   is_online: boolean;
 }
 
+export interface Contact {
+  type: "phone" | "email" | "url" | "other";
+  label?: string;
+  value: string;
+}
+
+export interface Warehouse {
+  id: number;
+  company_id: number;
+  name: string;
+  code: string | null;
+  address: string | null;
+  notes: string | null;
+  is_active: boolean;
+  /** `null` ⇒ inherit from company. */
+  timezone: string | null;
+  /** `null` ⇒ inherit from company. */
+  working_hours: Record<string, unknown> | null;
+  /** `null` ⇒ inherit from company. */
+  holidays: Record<string, unknown> | null;
+  contacts: { items: Contact[] };
+  plan: Record<string, unknown> | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
 export interface AuthResponse {
   token: string;
   user: User;

@@ -28,13 +28,20 @@ defmodule Backend.RBAC.Permissions do
     {"roles.edit", "Create, edit, and assign roles"}
   ]
 
+  @warehouses [
+    {"warehouses.view", "View warehouses"},
+    {"warehouses.create", "Create new warehouses"},
+    {"warehouses.edit", "Edit warehouse details, plans, and hours"},
+    {"warehouses.delete", "Delete warehouses"}
+  ]
+
   @doc """
   All permissions, in display order. Used by the Owner-role seeder
   (Owner gets every permission so a future permission addition lights
   up automatically).
   """
   def all do
-    Enum.map(@company ++ @users ++ @roles, &elem(&1, 0))
+    Enum.map(@company ++ @users ++ @roles ++ @warehouses, &elem(&1, 0))
   end
 
   @doc "Permissions grouped by resource for the future admin UI."
@@ -42,7 +49,8 @@ defmodule Backend.RBAC.Permissions do
     %{
       company: @company,
       users: @users,
-      roles: @roles
+      roles: @roles,
+      warehouses: @warehouses
     }
   end
 

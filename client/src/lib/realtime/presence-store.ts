@@ -5,6 +5,11 @@ import { create } from "zustand";
 export interface PresenceMeta {
   name: string;
   email: string;
+  avatar?: string | null;
+  /** `"<resource>:<id>"` (e.g. `"warehouse:42"`, `"warehouse:new"`) or
+   *  `null` when the user isn't on any form route. Updated via the
+   *  lobby channel's `meta:update` event. */
+  current_form?: string | null;
   online_at: number;
 }
 
@@ -14,10 +19,10 @@ interface PresenceEntry {
 
 interface PresenceState {
   byUserId: Record<string, PresenceEntry>;
-  /** Replace state — used on initial `presence_state` from server. */
+  /** Replace state — fed from Phoenix.Presence.onSync. We never
+   *  hand-roll diff merging; Phoenix's JS Presence client tracks
+   *  metas by phx_ref internally and gives us the canonical view. */
   reset: (state: Record<string, PresenceEntry>) => void;
-  /** Merge a diff — used on every `presence_diff` from server. */
-  diff: (joins: Record<string, PresenceEntry>, leaves: Record<string, PresenceEntry>) => void;
   /** Convenience: set of currently-online user ids (string form). */
   onlineUserIds: () => Set<string>;
 }
@@ -27,34 +32,6 @@ export const usePresence = create<PresenceState>((set, get) => ({
 
   reset(state) {
     set({ byUserId: { ...state } });
-  },
-
-  diff(joins, leaves) {
-    set(({ byUserId }) => {
-      const next = { ...byUserId };
-
-      for (const [id, entry] of Object.entries(joins)) {
-        const existing = next[id]?.metas ?? [];
-        next[id] = { metas: [...existing, ...entry.metas] };
-      }
-
-      for (const [id, entry] of Object.entries(leaves)) {
-        const existing = next[id]?.metas ?? [];
-        const leftRefs = new Set(
-          entry.metas.map((m) => `${m.online_at}:${m.name}`),
-        );
-        const remaining = existing.filter(
-          (m) => !leftRefs.has(`${m.online_at}:${m.name}`),
-        );
-        if (remaining.length === 0) {
-          delete next[id];
-        } else {
-          next[id] = { metas: remaining };
-        }
-      }
-
-      return { byUserId: next };
-    });
   },
 
   onlineUserIds() {

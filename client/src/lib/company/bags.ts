@@ -75,9 +75,11 @@ export interface NumberingFormat {
 
 export type NumberingFormats = Partial<Record<string, NumberingFormat>>;
 
-/** Entities that currently have ID number generation in PSP. Grows as
- *  new resources land — keep in lockstep with the backend registry
- *  once we add one. */
+/** Entities that currently have ID number generation in PSP.
+ *  **Standing rule:** every new DB-backed table in PSP must add an
+ *  entry here in the same commit it ships, so admins can configure
+ *  its prefix + padding. */
 export const NUMBERING_ENTITIES: Array<{ key: string; label: string }> = [
   { key: "user", label: "Users" },
+  { key: "warehouse", label: "Warehouses" },
 ];

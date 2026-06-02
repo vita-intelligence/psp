@@ -52,6 +52,25 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  def warehouse(w) do
+    %{
+      id: w.id,
+      company_id: w.company_id,
+      name: w.name,
+      code: w.code,
+      address: w.address,
+      notes: w.notes,
+      is_active: w.is_active,
+      timezone: w.timezone,
+      working_hours: w.working_hours,
+      holidays: w.holidays,
+      contacts: w.contacts,
+      plan: w.plan,
+      inserted_at: w.inserted_at,
+      updated_at: w.updated_at
+    }
+  end
+
   defp roles_for(user) do
     case user.roles do
       %Ecto.Association.NotLoaded{} -> []

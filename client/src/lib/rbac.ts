@@ -13,7 +13,11 @@ export type PermissionCode =
   | "users.invite"
   | "users.deactivate"
   | "roles.view"
-  | "roles.edit";
+  | "roles.edit"
+  | "warehouses.view"
+  | "warehouses.create"
+  | "warehouses.edit"
+  | "warehouses.delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

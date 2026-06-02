@@ -9,6 +9,7 @@ defmodule BackendWeb.UserSocket do
   alias Backend.Accounts
 
   channel "lobby", BackendWeb.LobbyChannel
+  channel "form:*", BackendWeb.FormChannel
 
   @impl true
   def connect(%{"token" => token}, socket, _connect_info) do
