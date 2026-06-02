@@ -13,6 +13,7 @@ defmodule Backend.Warehouses.Warehouse do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Backend.Accounts.User
   alias Backend.Companies.Company
 
   schema "warehouses" do
@@ -33,6 +34,8 @@ defmodule Backend.Warehouses.Warehouse do
     field :plan, :map
 
     belongs_to :company, Company
+    belongs_to :created_by, User
+    belongs_to :updated_by, User
 
     timestamps(type: :utc_datetime)
   end
@@ -49,7 +52,9 @@ defmodule Backend.Warehouses.Warehouse do
       :working_hours,
       :holidays,
       :contacts,
-      :plan
+      :plan,
+      :created_by_id,
+      :updated_by_id
     ])
     |> validate_required([:company_id, :name])
     |> validate_length(:name, min: 1, max: 200)

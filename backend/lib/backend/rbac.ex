@@ -14,10 +14,15 @@ defmodule Backend.RBAC do
 
   import Ecto.Query, warn: false
 
+  alias Backend.Audit
   alias Backend.Repo
   alias Backend.Accounts.User
   alias Backend.ListQueries
   alias Backend.RBAC.{Role, Permissions}
+
+  # Auditable surface for templates — what the history view actually
+  # shows. Excludes bookkeeping columns.
+  @template_audit_fields ~w(name description permissions)a
 
   @sortable_fields ~w(name inserted_at)a
   @search_fields ~w(name description)a
@@ -60,8 +65,16 @@ defmodule Backend.RBAC do
   """
   def get_template(uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
-      {:ok, cast} -> Repo.get_by(Role, uuid: cast)
-      :error -> nil
+      {:ok, cast} ->
+        Role
+        |> Repo.get_by(uuid: cast)
+        |> case do
+          nil -> nil
+          tpl -> Repo.preload(tpl, [:created_by, :updated_by])
+        end
+
+      :error ->
+        nil
     end
   end
 
@@ -82,6 +95,7 @@ defmodule Backend.RBAC do
       |> where([r], r.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @search_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
+      |> preload([:created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
@@ -106,15 +120,20 @@ defmodule Backend.RBAC do
   codes are validated against `Permissions.valid?/1` — unknowns
   surface as a changeset error so the form can highlight them.
   """
-  def create_template(%User{company_id: company_id}, attrs) do
+  def create_template(%User{} = actor, attrs) do
     attrs =
       attrs
       |> normalize_template_attrs()
-      |> Map.put("company_id", company_id)
+      |> Map.merge(%{
+        "company_id" => actor.company_id,
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      })
 
     %Role{}
     |> Role.changeset(attrs)
     |> Repo.insert()
+    |> after_template_create(actor)
   end
 
   @doc """
@@ -122,16 +141,60 @@ defmodule Backend.RBAC do
   are reserved for future demo/starter templates and shouldn't be
   edited from the UI.
   """
-  def update_template(%Role{is_system: true}, _attrs), do: {:error, :system_template}
+  def update_template(_actor, %Role{is_system: true}, _attrs),
+    do: {:error, :system_template}
 
-  def update_template(%Role{} = template, attrs) do
+  def update_template(%User{} = actor, %Role{} = template, attrs) do
+    before_state = template_audit_snapshot(template)
+
     template
-    |> Role.changeset(normalize_template_attrs(attrs))
+    |> Role.changeset(
+      attrs
+      |> normalize_template_attrs()
+      |> Map.put("updated_by_id", actor.id)
+    )
     |> Repo.update()
+    |> after_template_update(actor, before_state)
   end
 
-  def delete_template(%Role{is_system: true}), do: {:error, :system_template}
-  def delete_template(%Role{} = template), do: Repo.delete(template)
+  def delete_template(_actor, %Role{is_system: true}), do: {:error, :system_template}
+
+  def delete_template(%User{} = actor, %Role{} = template) do
+    before_state = template_audit_snapshot(template)
+
+    case Repo.delete(template) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "template", template, before_state)
+        {:ok, deleted}
+
+      other ->
+        other
+    end
+  end
+
+  defp after_template_create({:ok, template}, actor) do
+    Audit.record_created(actor, "template", template, template_audit_snapshot(template))
+    {:ok, Repo.preload(template, [:created_by, :updated_by])}
+  end
+
+  defp after_template_create(other, _actor), do: other
+
+  defp after_template_update({:ok, template}, actor, before_state) do
+    Audit.record_updated(
+      actor,
+      "template",
+      template,
+      before_state,
+      template_audit_snapshot(template)
+    )
+
+    {:ok, Repo.preload(template, [:created_by, :updated_by])}
+  end
+
+  defp after_template_update(other, _actor, _before_state), do: other
+
+  defp template_audit_snapshot(%Role{} = t),
+    do: Map.new(@template_audit_fields, fn k -> {k, Map.get(t, k)} end)
 
   # Slug auto-derivation — admins shouldn't have to think about URL
   # slugs. We keep the column for uniqueness + future shareable links

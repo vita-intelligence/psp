@@ -11,6 +11,7 @@ import type {
 import { Badge } from "@/components/ui/badge-mini";
 import { ShieldCheck } from "lucide-react";
 import { TemplateEditorsBadge } from "./active-sessions";
+import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { PermissionTemplate } from "@/lib/types";
 
 interface TemplatesTableProps {
@@ -105,19 +106,7 @@ export function TemplatesTable({
           </Badge>
         ),
       },
-      {
-        // Off by default — surfaced in the Sort menu for "Newest first".
-        id: "inserted_at",
-        header: "Date added",
-        sortField: "inserted_at",
-        sortLabels: { asc: "Oldest first", desc: "Newest first" },
-        widthClassName: "w-36",
-        cell: (t) => (
-          <span className="text-xs text-muted-foreground">
-            {new Date(t.inserted_at).toLocaleDateString()}
-          </span>
-        ),
-      },
+      ...auditColumns<PermissionTemplate>(),
     ],
     [currentUserId],
   );

@@ -37,6 +37,7 @@ defmodule BackendWeb.Router do
     put "/roles/:id", RoleController, :update
     delete "/roles/:id", RoleController, :delete
     get "/permissions/matrix", UserController, :matrix
+    get "/audit", AuditController, :index
 
     get "/company/defaults", CompanyController, :defaults
     get "/company", CompanyController, :show

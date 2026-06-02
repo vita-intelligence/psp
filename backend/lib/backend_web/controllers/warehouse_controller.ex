@@ -78,7 +78,7 @@ defmodule BackendWeb.WarehouseController do
   def create(conn, params) do
     user = conn.assigns.current_user
 
-    case Warehouses.create(user.company_id, params) do
+    case Warehouses.create(user, user.company_id, params) do
       {:ok, warehouse} ->
         conn
         |> put_status(:created)
@@ -105,7 +105,7 @@ defmodule BackendWeb.WarehouseController do
         {:error, :not_found}
 
       warehouse ->
-        case Warehouses.update(warehouse, Map.delete(params, "id")) do
+        case Warehouses.update(user, warehouse, Map.delete(params, "id")) do
           {:ok, updated} ->
             json(conn, %{warehouse: Payloads.warehouse(updated)})
 
@@ -131,7 +131,7 @@ defmodule BackendWeb.WarehouseController do
         {:error, :not_found}
 
       warehouse ->
-        {:ok, _} = Warehouses.delete(warehouse)
+        {:ok, _} = Warehouses.delete(user, warehouse)
         send_resp(conn, :no_content, "")
     end
   end

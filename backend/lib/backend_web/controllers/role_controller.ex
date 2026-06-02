@@ -99,7 +99,7 @@ defmodule BackendWeb.RoleController do
 
     with %{} = template <- RBAC.get_template(id),
          true <- template.company_id == actor.company_id,
-         {:ok, updated} <- RBAC.update_template(template, params) do
+         {:ok, updated} <- RBAC.update_template(actor, template, params) do
       json(conn, %{template: payload(updated)})
     else
       nil ->
@@ -136,7 +136,7 @@ defmodule BackendWeb.RoleController do
 
     with %{} = template <- RBAC.get_template(id),
          true <- template.company_id == actor.company_id,
-         {:ok, _} <- RBAC.delete_template(template) do
+         {:ok, _} <- RBAC.delete_template(actor, template) do
       send_resp(conn, :no_content, "")
     else
       nil ->
@@ -167,7 +167,17 @@ defmodule BackendWeb.RoleController do
       is_system: template.is_system,
       permissions: template.permissions,
       inserted_at: template.inserted_at,
-      updated_at: template.updated_at
+      updated_at: template.updated_at,
+      created_by: actor(template, :created_by),
+      updated_by: actor(template, :updated_by)
     }
+  end
+
+  defp actor(record, field) do
+    case Map.get(record, field) do
+      %Ecto.Association.NotLoaded{} -> nil
+      nil -> nil
+      user -> BackendWeb.Payloads.audit_actor(user)
+    end
   end
 end

@@ -15,6 +15,7 @@ defmodule Backend.RBAC.Role do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Backend.Accounts.User
   alias Backend.Companies.Company
   alias Backend.RBAC.Permissions
 
@@ -28,6 +29,8 @@ defmodule Backend.RBAC.Role do
     field :permissions, {:array, :string}, default: []
 
     belongs_to :company, Company
+    belongs_to :created_by, User
+    belongs_to :updated_by, User
 
     timestamps(type: :utc_datetime)
   end
@@ -39,7 +42,9 @@ defmodule Backend.RBAC.Role do
       :name,
       :slug,
       :description,
-      :permissions
+      :permissions,
+      :created_by_id,
+      :updated_by_id
     ])
     |> validate_required([:company_id, :name, :slug])
     |> validate_length(:name, min: 1, max: 80)

@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, AlertCircle } from "lucide-react";
 import { WarehouseForm } from "../warehouse-form";
 import { DeleteWarehouseButton } from "./delete-warehouse-button";
+import { AuditMetaSection } from "@/components/audit/audit-meta-section";
+import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -65,6 +67,13 @@ export default async function WarehouseEditPage({ params }: PageProps) {
         company={companyDefaults}
         canEdit={canEdit}
       />
+      <AuditMetaSection
+        inserted_at={warehouse.inserted_at}
+        updated_at={warehouse.updated_at}
+        created_by={warehouse.created_by}
+        updated_by={warehouse.updated_by}
+      />
+      <AuditHistoryCard entityType="warehouse" entityId={warehouse.id} />
     </div>
   );
 }

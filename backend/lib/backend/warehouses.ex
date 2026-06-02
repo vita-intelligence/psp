@@ -10,10 +10,16 @@ defmodule Backend.Warehouses do
   """
 
   import Ecto.Query, warn: false
+  alias Backend.Audit
   alias Backend.Repo
   alias Backend.Companies
   alias Backend.ListQueries
   alias Backend.Warehouses.Warehouse
+
+  # Surface the audit log treats as meaningful. Internal bookkeeping
+  # (created_by_id, updated_by_id) is excluded so history rows only
+  # show user-visible field changes.
+  @audit_fields ~w(name address notes is_active timezone working_hours holidays contacts plan)a
 
   # Whitelisted column names the table is allowed to sort by. Anything
   # outside this list silently falls back to @default_sort — protects
@@ -48,6 +54,7 @@ defmodule Backend.Warehouses do
       |> ListQueries.apply_search(opts[:search], @search_fields)
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
+      |> preload([:created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
@@ -73,8 +80,16 @@ defmodule Backend.Warehouses do
   """
   def get_for_company(company_id, uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
-      {:ok, cast} -> Repo.get_by(Warehouse, uuid: cast, company_id: company_id)
-      :error -> nil
+      {:ok, cast} ->
+        Warehouse
+        |> Repo.get_by(uuid: cast, company_id: company_id)
+        |> case do
+          nil -> nil
+          warehouse -> Repo.preload(warehouse, [:created_by, :updated_by])
+        end
+
+      :error ->
+        nil
     end
   end
 
@@ -82,19 +97,75 @@ defmodule Backend.Warehouses do
 
   ## Mutation --------------------------------------------------------
 
-  def create(company_id, attrs) do
+  @doc """
+  Create a warehouse. `actor` is the user pushing the change — used
+  to stamp `created_by_id` + `updated_by_id` so the audit metadata is
+  populated from row one.
+  """
+  def create(%Backend.Accounts.User{} = actor, company_id, attrs) do
     %Warehouse{}
-    |> Warehouse.changeset(Map.put(stringify_keys(attrs), "company_id", company_id))
+    |> Warehouse.changeset(
+      attrs
+      |> stringify_keys()
+      |> Map.merge(%{
+        "company_id" => company_id,
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      })
+    )
     |> Repo.insert()
+    |> after_create(actor)
   end
 
-  def update(%Warehouse{} = warehouse, attrs) do
+  def update(%Backend.Accounts.User{} = actor, %Warehouse{} = warehouse, attrs) do
+    before_state = audit_snapshot(warehouse)
+
     warehouse
-    |> Warehouse.changeset(stringify_keys(attrs))
+    |> Warehouse.changeset(
+      attrs
+      |> stringify_keys()
+      |> Map.put("updated_by_id", actor.id)
+    )
     |> Repo.update()
+    |> after_update(actor, before_state)
   end
 
-  def delete(%Warehouse{} = warehouse), do: Repo.delete(warehouse)
+  defp after_create({:ok, warehouse}, actor) do
+    Audit.record_created(actor, "warehouse", warehouse, audit_snapshot(warehouse))
+    {:ok, Repo.preload(warehouse, [:created_by, :updated_by])}
+  end
+
+  defp after_create(other, _actor), do: other
+
+  defp after_update({:ok, warehouse}, actor, before_state) do
+    Audit.record_updated(
+      actor,
+      "warehouse",
+      warehouse,
+      before_state,
+      audit_snapshot(warehouse)
+    )
+
+    {:ok, Repo.preload(warehouse, [:created_by, :updated_by])}
+  end
+
+  defp after_update(other, _actor, _before_state), do: other
+
+  defp audit_snapshot(%Warehouse{} = w),
+    do: Map.new(@audit_fields, fn k -> {k, Map.get(w, k)} end)
+
+  def delete(%Backend.Accounts.User{} = actor, %Warehouse{} = warehouse) do
+    before_state = audit_snapshot(warehouse)
+
+    case Repo.delete(warehouse) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "warehouse", warehouse, before_state)
+        {:ok, deleted}
+
+      other ->
+        other
+    end
+  end
 
   ## Inheritance resolvers -------------------------------------------
 

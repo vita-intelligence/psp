@@ -15,6 +15,8 @@ export interface PermissionTemplate {
   permissions: string[];
   inserted_at: string;
   updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
 }
 
 /** Per-user permission matrix shape. One row = one resource; the four
@@ -63,6 +65,9 @@ export interface User {
    *  the UI can render the same way regardless. */
   permissions?: string[];
   inserted_at: string;
+  updated_at?: string | null;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
 }
 
 export interface Company {
@@ -94,6 +99,35 @@ export interface Company {
 
 export interface UserListEntry extends User {
   is_online: boolean;
+}
+
+/** Slim user shape embedded inside audit meta + history events.
+ *  Snapshotted at event time on the backend so a later rename /
+ *  deactivation can't rewrite history. `null` when the actor was
+ *  deleted before the snapshot column shipped (older rows). */
+export interface AuditActor {
+  id: number;
+  /** Present on `created_by` / `updated_by` (live preloaded actor)
+   *  but omitted from history snapshots since those embed the
+   *  name/email at event time. */
+  uuid?: string;
+  name: string;
+  email: string;
+  avatar: string | null;
+}
+
+/** One row from `GET /api/audit?entity_type=&entity_id=`. */
+export interface AuditEvent {
+  id: number;
+  entity_type: "warehouse" | "user" | "template";
+  entity_id: number;
+  entity_uuid: string | null;
+  event: "created" | "updated" | "deleted";
+  /** `{"field": {"old": ..., "new": ...}, ...}` — unchanged fields
+   *  are excluded. */
+  changes: Record<string, { old: unknown; new: unknown }>;
+  at: string;
+  actor: AuditActor | null;
 }
 
 /** Slim org-roster row from `GET /api/team`. Powers the home-page
@@ -153,6 +187,8 @@ export interface Warehouse {
   plan: Record<string, unknown> | null;
   inserted_at: string;
   updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
 }
 
 export interface AuthResponse {

@@ -11,6 +11,7 @@ import type {
 } from "@/components/data-table";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { Badge } from "@/components/ui/badge-mini";
+import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { UserListEntry } from "@/lib/types";
 
 interface UsersTableProps {
@@ -124,18 +125,7 @@ export function UsersTable({ initialPage }: UsersTableProps) {
           </Badge>
         ),
       },
-      {
-        id: "joined",
-        header: "Joined",
-        sortField: "inserted_at",
-        sortLabels: { asc: "Oldest first", desc: "Newest first" },
-        widthClassName: "w-36",
-        cell: (u) => (
-          <span className="text-xs text-muted-foreground">
-            {new Date(u.inserted_at).toLocaleDateString()}
-          </span>
-        ),
-      },
+      ...auditColumns<UserListEntry>(),
     ],
     [],
   );

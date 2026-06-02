@@ -37,12 +37,28 @@ function writeState(tableId: string, state: PersistedTableState) {
  *
  * Defers initial read to a useEffect so SSR + first client render
  * match (no hydration mismatch from variable localStorage).
+ *
+ * `defaultHiddenIds` seeds the hidden-column set on the very first
+ * visit (no persisted entry yet). Once the user customizes via the
+ * Columns menu, their preference takes over.
  */
-export function useTableState(tableId: string) {
+export function useTableState(tableId: string, defaultHiddenIds: string[] = []) {
   const [state, setState] = useState<PersistedTableState>({});
 
   useEffect(() => {
-    setState(readState(tableId));
+    const persisted = readState(tableId);
+    if (persisted.hiddenColumns === undefined && defaultHiddenIds.length > 0) {
+      // First visit — seed with the columns the table author marked
+      // as `defaultHidden`. We don't persist the seed; if the user
+      // toggles one on later, that becomes the persisted state.
+      setState({ ...persisted, hiddenColumns: [...defaultHiddenIds] });
+    } else {
+      setState(persisted);
+    }
+    // defaultHiddenIds is stable per render of the parent (it's
+    // derived from a static columns config), so depending on it would
+    // just re-seed every render. Read on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId]);
 
   function setColumnOrder(order: string[]) {

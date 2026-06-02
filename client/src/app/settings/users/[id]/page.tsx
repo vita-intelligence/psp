@@ -22,6 +22,8 @@ import {
   CircleDot,
 } from "lucide-react";
 import { UserAccessForm } from "./user-access-form";
+import { AuditMetaSection } from "@/components/audit/audit-meta-section";
+import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -139,16 +141,19 @@ export default async function UserAdminPage({ params }: PageProps) {
         canApplyTemplate={canApplyTemplate}
       />
 
-      {/* Placeholders for the next slices. Rendered as dashed cards so
-          the page shows its full shape even before the features ship. */}
+      {/* Departments tab arrives in the next slice. */}
       <PlaceholderCard
         title="Departments"
         description="Assign the user to a department. Departments table arrives in the next slice."
       />
-      <PlaceholderCard
-        title="Activity"
-        description="Login history, last seen, recent edits. Wired in once the audit log lands."
+
+      <AuditMetaSection
+        inserted_at={subject.inserted_at}
+        updated_at={subject.updated_at}
+        created_by={subject.created_by}
+        updated_by={subject.updated_by}
       />
+      <AuditHistoryCard entityType="user" entityId={subject.id} />
     </div>
   );
 }

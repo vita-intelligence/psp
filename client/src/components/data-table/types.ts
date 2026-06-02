@@ -47,6 +47,12 @@ export interface DataTableColumn<T> {
   /** Whether the column can be hidden from the column-visibility menu.
    *  Defaults to true. */
   hideable?: boolean;
+  /** When `true`, the column starts hidden on first render — the user
+   *  has to opt in via the Columns menu to see it. Their choice
+   *  persists in localStorage from then on; this default only seeds
+   *  the very first visit. Use for audit / debugging columns that
+   *  most users don't need by default. */
+  defaultHidden?: boolean;
   /** Optional alignment for the cell content. */
   align?: "left" | "right" | "center";
   /** Tailwind width hint applied to the header (`w-32`, `min-w-[12rem]`). */

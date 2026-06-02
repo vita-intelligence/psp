@@ -73,12 +73,16 @@ export function DataTable<T>({
   beforeTable,
   renderMobileCard,
 }: DataTableProps<T>) {
+  const defaultHiddenIds = useMemo(
+    () => columns.filter((c) => c.defaultHidden).map((c) => c.id),
+    [columns],
+  );
   const {
     columnOrder: persistedOrder,
     hiddenColumns,
     setColumnOrder,
     toggleColumn,
-  } = useTableState(tableId);
+  } = useTableState(tableId, defaultHiddenIds);
 
   const [sort, setSort] = useState<SortSpec | null>(defaultSort ?? null);
   const [appliedSearch, setAppliedSearch] = useState("");

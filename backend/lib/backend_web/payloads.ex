@@ -18,9 +18,31 @@ defmodule BackendWeb.Payloads do
       hourly_wage: user.hourly_wage,
       confirmed_at: user.confirmed_at,
       inserted_at: user.inserted_at,
+      updated_at: Map.get(user, :updated_at),
+      created_by: actor(user, :created_by),
+      updated_by: actor(user, :updated_by),
       company_id: user.company_id,
       permissions: RBAC.effective_permissions(user)
     }
+  end
+
+  @doc """
+  Slim user payload used inside `created_by` / `updated_by` audit
+  meta. Just enough to render an avatar + name in the UI — no
+  permissions, no wage, no admin flag.
+  """
+  def audit_actor(%{} = u) do
+    %{id: u.id, uuid: u.uuid, name: u.name, email: u.email, avatar: u.avatar}
+  end
+
+  def audit_actor(_), do: nil
+
+  defp actor(record, field) do
+    case Map.get(record, field) do
+      %Ecto.Association.NotLoaded{} -> nil
+      nil -> nil
+      user -> audit_actor(user)
+    end
   end
 
   def company(company) do
@@ -94,7 +116,9 @@ defmodule BackendWeb.Payloads do
       contacts: w.contacts,
       plan: w.plan,
       inserted_at: w.inserted_at,
-      updated_at: w.updated_at
+      updated_at: w.updated_at,
+      created_by: actor(w, :created_by),
+      updated_by: actor(w, :updated_by)
     }
   end
 

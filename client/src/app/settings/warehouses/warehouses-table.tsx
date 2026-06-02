@@ -12,6 +12,7 @@ import type {
 import type { Warehouse } from "@/lib/types";
 import { WarehouseEditorsBadge } from "./active-sessions";
 import { Badge } from "@/components/ui/badge-mini";
+import { auditColumns } from "@/components/audit/audit-table-columns";
 
 interface WarehousesTableProps {
   initialPage: PageResult<Warehouse>;
@@ -118,21 +119,7 @@ export function WarehousesTable({
           </Badge>
         ),
       },
-      {
-        // Hidden by default but available in the Sort menu so users can
-        // pick "Newest first". The cell still renders if a user opts
-        // into showing the column via the Columns menu.
-        id: "inserted_at",
-        header: "Date added",
-        sortField: "inserted_at",
-        sortLabels: { asc: "Oldest first", desc: "Newest first" },
-        widthClassName: "w-36",
-        cell: (w) => (
-          <span className="text-xs text-muted-foreground">
-            {new Date(w.inserted_at).toLocaleDateString()}
-          </span>
-        ),
-      },
+      ...auditColumns<Warehouse>(),
     ],
     [currentUserId],
   );

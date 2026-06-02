@@ -43,8 +43,16 @@ defmodule Backend.Accounts do
   """
   def get_user_by_uuid(uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
-      {:ok, cast} -> Repo.get_by(User, uuid: cast)
-      :error -> nil
+      {:ok, cast} ->
+        User
+        |> Repo.get_by(uuid: cast)
+        |> case do
+          nil -> nil
+          user -> Repo.preload(user, [:created_by, :updated_by])
+        end
+
+      :error ->
+        nil
     end
   end
 
@@ -76,6 +84,7 @@ defmodule Backend.Accounts do
       |> ListQueries.apply_search(opts[:search], @search_fields)
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
+      |> preload([:created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end

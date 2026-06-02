@@ -50,6 +50,11 @@ defmodule Backend.Accounts.User do
     field :hourly_wage, :decimal
 
     belongs_to :company, Backend.Companies.Company
+    # Self-referential audit links — `created_by` is the inviting admin
+    # (nil for self-signups / the bootstrap user); `updated_by` is whoever
+    # last edited this user's record (typically via the access matrix).
+    belongs_to :created_by, __MODULE__, foreign_key: :created_by_id
+    belongs_to :updated_by, __MODULE__, foreign_key: :updated_by_id
 
     timestamps(type: :utc_datetime)
   end

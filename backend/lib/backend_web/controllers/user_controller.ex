@@ -20,8 +20,12 @@ defmodule BackendWeb.UserController do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Backend.{Accounts, Repo}
+  alias Backend.{Accounts, Audit, Repo}
   alias Backend.RBAC.Permissions
+
+  # The audit log for user-access changes captures these three fields
+  # only — confirmation tokens and the like aren't user-visible.
+  @user_audit_fields ~w(is_admin permissions hourly_wage)a
   alias BackendWeb.{Errors, Payloads, Presence}
   alias BackendWeb.Plugs.RequirePermission
 
@@ -106,11 +110,22 @@ defmodule BackendWeb.UserController do
          true <- subject.company_id == actor.company_id,
          {:ok, attrs} <- normalize_access_params(params),
          :ok <- check_access_guards(subject, actor, attrs) do
+      before_state = audit_snapshot(subject)
+
       {:ok, updated} =
         subject
-        |> Ecto.Changeset.change(attrs)
+        |> Ecto.Changeset.change(Map.put(attrs, :updated_by_id, actor.id))
         |> Repo.update()
 
+      Audit.record_updated(
+        actor,
+        "user",
+        updated,
+        before_state,
+        audit_snapshot(updated)
+      )
+
+      updated = Repo.preload(updated, [:created_by, :updated_by])
       online = updated.id in Presence.list_online_user_ids()
 
       json(conn, %{
@@ -168,6 +183,9 @@ defmodule BackendWeb.UserController do
   def matrix(conn, _params), do: json(conn, %{matrix: Permissions.matrix()})
 
   ## ------------------------------------------------------------------
+
+  defp audit_snapshot(user),
+    do: Map.new(@user_audit_fields, fn k -> {k, Map.get(user, k)} end)
 
   defp normalize_access_params(params) do
     is_admin = params["is_admin"]

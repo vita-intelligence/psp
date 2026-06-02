@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft } from "lucide-react";
 import { TemplateForm } from "../template-form";
 import { DeleteTemplateButton } from "./delete-template-button";
+import { AuditMetaSection } from "@/components/audit/audit-meta-section";
+import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -51,6 +53,13 @@ export default async function EditTemplatePage({ params }: PageProps) {
         )}
       </div>
       <TemplateForm template={template} matrix={matrix} canEdit={canEdit} />
+      <AuditMetaSection
+        inserted_at={template.inserted_at}
+        updated_at={template.updated_at}
+        created_by={template.created_by}
+        updated_by={template.updated_by}
+      />
+      <AuditHistoryCard entityType="template" entityId={template.id} />
     </div>
   );
 }
