@@ -5,23 +5,31 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
-import { registerAction } from "@/lib/auth/actions";
+import { FieldError } from "@/components/forms/field-error";
+import { registerAction, type FieldErrors } from "@/lib/auth/actions";
+import { cn } from "@/lib/utils";
 import { AlertCircle, CheckCircle2, Loader2, Mail } from "lucide-react";
 
 export function RegisterForm() {
   const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [successEmail, setSuccessEmail] = useState<string | null>(null);
 
   function onSubmit(formData: FormData) {
-    setError(null);
+    setFormError(null);
+    setFieldErrors({});
     const email = (formData.get("email") || "").toString();
+
     startTransition(async () => {
       const res = await registerAction(formData);
       if (res.ok) {
         setSuccessEmail(email);
-      } else {
-        setError(res.error);
+        return;
+      }
+      setFieldErrors(res.fields ?? {});
+      if (!res.fields || Object.keys(res.fields).length === 0) {
+        setFormError(res.detail);
       }
     });
   }
@@ -54,63 +62,44 @@ export function RegisterForm() {
   return (
     <Card className="border-border/60 shadow-lg shadow-foreground/[0.03]">
       <CardContent className="p-6 sm:p-7">
-        <form action={onSubmit} className="space-y-5">
-          <div className="space-y-2">
-            <Label htmlFor="name" className="text-sm font-medium">
-              Full name
-            </Label>
-            <Input
-              id="name"
-              name="name"
-              type="text"
-              autoComplete="name"
-              required
-              minLength={1}
-              maxLength={120}
-              placeholder="Jane Doe"
-              className="h-11"
-            />
-          </div>
+        <form action={onSubmit} noValidate className="space-y-5">
+          <FormField
+            id="name"
+            label="Full name"
+            type="text"
+            autoComplete="name"
+            placeholder="Jane Doe"
+            required
+            errors={fieldErrors.name}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="email" className="text-sm font-medium">
-              Work email
-            </Label>
-            <Input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              required
-              placeholder="you@vitamanufacture.co.uk"
-              className="h-11"
-            />
-          </div>
+          <FormField
+            id="email"
+            label="Work email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@vitamanufacture.co.uk"
+            required
+            errors={fieldErrors.email}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="password" className="text-sm font-medium">
-              Password
-            </Label>
-            <Input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="new-password"
-              required
-              minLength={8}
-              maxLength={72}
-              placeholder="At least 8 characters"
-              className="h-11"
-            />
-          </div>
+          <FormField
+            id="password"
+            label="Password"
+            type="password"
+            autoComplete="new-password"
+            placeholder="At least 8 characters"
+            required
+            errors={fieldErrors.password}
+          />
 
-          {error && (
+          {formError && (
             <div
               role="alert"
               className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
             >
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{error}</span>
+              <span>{formError}</span>
             </div>
           )}
 
@@ -125,5 +114,49 @@ export function RegisterForm() {
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+interface FormFieldProps {
+  id: string;
+  label: string;
+  type: string;
+  autoComplete: string;
+  placeholder: string;
+  required?: boolean;
+  errors?: string[];
+}
+
+function FormField({
+  id,
+  label,
+  type,
+  autoComplete,
+  placeholder,
+  required,
+  errors,
+}: FormFieldProps) {
+  const hasError = Boolean(errors && errors.length > 0);
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id} className="text-sm font-medium">
+        {label}
+      </Label>
+      <Input
+        id={id}
+        name={id}
+        type={type}
+        autoComplete={autoComplete}
+        placeholder={placeholder}
+        required={required}
+        aria-invalid={hasError}
+        aria-describedby={hasError ? `${id}-error` : undefined}
+        className={cn(
+          "h-11",
+          hasError && "border-destructive focus-visible:ring-destructive/20",
+        )}
+      />
+      <FieldError id={`${id}-error`} messages={errors} />
+    </div>
   );
 }

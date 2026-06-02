@@ -2,6 +2,7 @@ defmodule BackendWeb.AuthController do
   use BackendWeb, :controller
 
   alias Backend.Accounts
+  alias BackendWeb.Errors
 
   action_fallback BackendWeb.FallbackController
 
@@ -10,7 +11,6 @@ defmodule BackendWeb.AuthController do
 
     case Accounts.register_user(params, builder) do
       {:ok, user} ->
-        # No token returned — user has to confirm the email first.
         conn
         |> put_status(:created)
         |> json(%{
@@ -19,9 +19,17 @@ defmodule BackendWeb.AuthController do
         })
 
       {:error, %Ecto.Changeset{} = changeset} ->
+        fields = Errors.changeset_fields(changeset)
+
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{errors: changeset_errors(changeset)})
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Please correct the highlighted fields.",
+            fields
+          )
+        )
     end
   end
 
@@ -34,19 +42,35 @@ defmodule BackendWeb.AuthController do
       {:error, :invalid_token} ->
         conn
         |> put_status(:not_found)
-        |> json(%{error: "invalid_or_expired_token"})
+        |> json(
+          Errors.payload(
+            "invalid_or_expired_token",
+            "This confirmation link is invalid or has already been used."
+          )
+        )
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{errors: changeset_errors(cs)})
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Couldn't update the account.",
+            Errors.changeset_fields(cs)
+          )
+        )
     end
   end
 
   def confirm(conn, _params) do
     conn
     |> put_status(:bad_request)
-    |> json(%{error: "token_required"})
+    |> json(
+      Errors.payload(
+        "token_required",
+        "A confirmation token is required."
+      )
+    )
   end
 
   def login(conn, %{"email" => email, "password" => password}) do
@@ -58,19 +82,34 @@ defmodule BackendWeb.AuthController do
       {:error, :unconfirmed} ->
         conn
         |> put_status(:forbidden)
-        |> json(%{error: "email_not_confirmed"})
+        |> json(
+          Errors.payload(
+            "email_not_confirmed",
+            "Your email isn't confirmed yet. Check your inbox for the confirmation link."
+          )
+        )
 
       {:error, :invalid_credentials} ->
         conn
         |> put_status(:unauthorized)
-        |> json(%{error: "invalid_credentials"})
+        |> json(
+          Errors.payload(
+            "invalid_credentials",
+            "That email and password combination didn't work."
+          )
+        )
     end
   end
 
   def login(conn, _params) do
     conn
     |> put_status(:bad_request)
-    |> json(%{error: "email_and_password_required"})
+    |> json(
+      Errors.payload(
+        "email_and_password_required",
+        "Email and password are required."
+      )
+    )
   end
 
   def me(conn, _params) do
@@ -96,13 +135,5 @@ defmodule BackendWeb.AuthController do
       confirmed_at: user.confirmed_at,
       inserted_at: user.inserted_at
     }
-  end
-
-  defp changeset_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Enum.reduce(opts, msg, fn {k, v}, acc ->
-        String.replace(acc, "%{#{k}}", to_string(v))
-      end)
-    end)
   end
 end

@@ -6,9 +6,9 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { serverEnv } from "../env";
-import type { User, AuthResponse } from "../types";
+import type { User } from "../types";
 
 const ONE_MONTH_SECONDS = 60 * 60 * 24 * 30;
 
@@ -35,7 +35,15 @@ export async function getSessionToken(): Promise<string | null> {
 
 /**
  * Reads the session cookie, verifies it against the backend, returns
- * the user or `null` (with the cookie cleared if it was stale).
+ * the user or `null`.
+ *
+ * NOTE: we deliberately don't clear a stale cookie here even when we
+ * get a 401 — `cookies().delete()` is forbidden in server components,
+ * and this helper is called from page render. A stale cookie is
+ * harmless (the middleware lets it through, `requireUser` redirects to
+ * /login, and a fresh login overwrites it). The proxy route handler
+ * at `/api/users` does clear it on 401, which is the path that runs
+ * after the user is interactively past the auth gate.
  */
 export async function getCurrentUser(): Promise<User | null> {
   const token = await getSessionToken();
@@ -44,45 +52,32 @@ export async function getCurrentUser(): Promise<User | null> {
   try {
     const { user } = await api<{ user: User }>("/api/auth/me", { token });
     return user;
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      await clearSessionCookie();
-    }
+  } catch {
     return null;
   }
 }
 
 /**
- * Convenience for protected pages — redirects to /login on missing
- * or invalid session.
+ * Convenience for protected pages — redirects on missing or invalid
+ * session.
+ *
+ * If there's NO cookie at all, sends straight to `/login` (middleware
+ * would do the same; this saves a hop). If there's a stale cookie,
+ * goes through `/api/auth/sign-out` so the cookie actually gets
+ * cleared (server components can't delete cookies themselves — would
+ * otherwise cause a `/` → `/login` → middleware-bounces-back-to-/`
+ * redirect loop on the next page load).
  */
 export async function requireUser(): Promise<User> {
+  const token = await getSessionToken();
+  if (!token) redirect("/login");
+
   const user = await getCurrentUser();
-  if (!user) redirect("/login");
+  if (!user) redirect("/api/auth/sign-out");
+
   return user;
 }
 
-export async function loginAction(
-  email: string,
-  password: string,
-): Promise<AuthResponse> {
-  const res = await api<AuthResponse>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-  await setSessionCookie(res.token);
-  return res;
-}
-
-export async function registerAction(
-  email: string,
-  name: string,
-  password: string,
-): Promise<AuthResponse> {
-  const res = await api<AuthResponse>("/api/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ email, name, password }),
-  });
-  await setSessionCookie(res.token);
-  return res;
-}
+// Action implementations (loginAction / registerAction / logoutAction)
+// live in ./actions.ts so they can be invoked from client components
+// via the "use server" directive.

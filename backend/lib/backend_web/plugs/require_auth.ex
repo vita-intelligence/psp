@@ -7,6 +7,7 @@ defmodule BackendWeb.Plugs.RequireAuth do
 
   import Plug.Conn
   alias Backend.Accounts
+  alias BackendWeb.Errors
 
   def init(opts), do: opts
 
@@ -18,9 +19,15 @@ defmodule BackendWeb.Plugs.RequireAuth do
       |> assign(:current_token, token)
     else
       _ ->
+        body =
+          Errors.payload(
+            "unauthorized",
+            "Your session has expired. Please sign in again."
+          )
+
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(401, Jason.encode!(%{error: "unauthorized"}))
+        |> send_resp(401, Jason.encode!(body))
         |> halt()
     end
   end

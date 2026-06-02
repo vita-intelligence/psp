@@ -6,14 +6,32 @@ import { usePresence } from "@/lib/realtime/presence-store";
 import { initialsOf } from "@/lib/initials";
 import { avatarColour } from "@/lib/avatar-color";
 import { cn } from "@/lib/utils";
+import { messageFor } from "@/lib/errors/codes";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card, CardContent } from "@/components/ui/card";
-import { Loader2, Users, UserCheck, UserX } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { UsersBoardSkeleton } from "./users-board-skeleton";
+import { AlertCircle, RefreshCw, Users, UserCheck, UserX } from "lucide-react";
 import type { UserListEntry } from "@/lib/types";
+
+interface UsersErrorBody {
+  error?: string;
+  detail?: string;
+}
 
 async function fetchUsers(): Promise<UserListEntry[]> {
   const res = await fetch("/api/users", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to load users");
+  if (!res.ok) {
+    let body: UsersErrorBody = {};
+    try {
+      body = (await res.json()) as UsersErrorBody;
+    } catch {
+      // body wasn't JSON
+    }
+    const err = new Error(messageFor(body.error, body.detail));
+    (err as Error & { code?: string }).code = body.error;
+    throw err;
+  }
   const data = (await res.json()) as { users: UserListEntry[] };
   return data.users;
 }
@@ -31,21 +49,41 @@ export function UsersBoard({ currentUserId }: { currentUserId: number }) {
   });
 
   if (usersQuery.isLoading) {
-    return (
-      <Card className="border-border/60">
-        <CardContent className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          Loading team…
-        </CardContent>
-      </Card>
-    );
+    return <UsersBoardSkeleton />;
   }
 
   if (usersQuery.error || !usersQuery.data) {
+    const message =
+      usersQuery.error instanceof Error
+        ? usersQuery.error.message
+        : "Couldn't load the team roster.";
     return (
       <Card className="border-destructive/30 bg-destructive/[0.02]">
-        <CardContent className="py-12 text-center text-sm text-destructive">
-          Couldn't load the team roster.
+        <CardContent className="space-y-3 py-10 text-center">
+          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-destructive/10">
+            <AlertCircle className="size-5 text-destructive" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-destructive">
+              Couldn't load the team
+            </p>
+            <p className="text-xs text-muted-foreground">{message}</p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => usersQuery.refetch()}
+            disabled={usersQuery.isFetching}
+          >
+            <RefreshCw
+              className={cn(
+                "mr-1.5 size-3.5",
+                usersQuery.isFetching && "animate-spin",
+              )}
+            />
+            Try again
+          </Button>
         </CardContent>
       </Card>
     );

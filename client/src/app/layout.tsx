@@ -31,7 +31,7 @@ export default function RootLayout({
     >
       <body className="min-h-full bg-background text-foreground flex flex-col">
         <QueryProvider>{children}</QueryProvider>
-        <Toaster richColors closeButton position="top-right" />
+        <Toaster richColors closeButton position="bottom-right" />
       </body>
     </html>
   );

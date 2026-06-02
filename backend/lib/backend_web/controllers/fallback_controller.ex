@@ -1,15 +1,33 @@
 defmodule BackendWeb.FallbackController do
   use BackendWeb, :controller
 
+  alias BackendWeb.Errors
+
   def call(conn, {:error, :not_found}) do
     conn
     |> put_status(:not_found)
-    |> json(%{error: "not_found"})
+    |> json(Errors.payload("not_found", "We couldn't find what you're looking for."))
   end
 
   def call(conn, {:error, :unauthorized}) do
     conn
     |> put_status(:unauthorized)
-    |> json(%{error: "unauthorized"})
+    |> json(
+      Errors.payload(
+        "unauthorized",
+        "You need to sign in to access this."
+      )
+    )
+  end
+
+  def call(conn, {:error, :forbidden}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(
+      Errors.payload(
+        "forbidden",
+        "You don't have permission to do that."
+      )
+    )
   end
 end

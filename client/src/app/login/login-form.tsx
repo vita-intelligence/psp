@@ -5,25 +5,35 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
-import { loginAction } from "@/lib/auth/actions";
+import { FieldError } from "@/components/forms/field-error";
+import { loginAction, type FieldErrors } from "@/lib/auth/actions";
+import { cn } from "@/lib/utils";
 import { AlertCircle, Loader2 } from "lucide-react";
 
 export function LoginForm() {
   const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
 
   function onSubmit(formData: FormData) {
-    setError(null);
+    setFormError(null);
+    setFieldErrors({});
     startTransition(async () => {
       const res = await loginAction(formData);
-      if (!res.ok) setError(res.error);
+      if (res.ok) return;
+      setFieldErrors(res.fields ?? {});
+      // Only show the banner if we have no field-level errors —
+      // otherwise the inline messages already explain what's wrong.
+      if (!res.fields || Object.keys(res.fields).length === 0) {
+        setFormError(res.detail);
+      }
     });
   }
 
   return (
     <Card className="border-border/60 shadow-lg shadow-foreground/[0.03]">
       <CardContent className="p-6 sm:p-7">
-        <form action={onSubmit} className="space-y-5">
+        <form action={onSubmit} noValidate className="space-y-5">
           <div className="space-y-2">
             <Label htmlFor="email" className="text-sm font-medium">
               Work email
@@ -35,8 +45,15 @@ export function LoginForm() {
               autoComplete="email"
               required
               placeholder="you@vitamanufacture.co.uk"
-              className="h-11"
+              aria-invalid={Boolean(fieldErrors.email)}
+              aria-describedby={fieldErrors.email ? "email-error" : undefined}
+              className={cn(
+                "h-11",
+                fieldErrors.email &&
+                  "border-destructive focus-visible:ring-destructive/20",
+              )}
             />
+            <FieldError id="email-error" messages={fieldErrors.email} />
           </div>
 
           <div className="space-y-2">
@@ -50,17 +67,26 @@ export function LoginForm() {
               autoComplete="current-password"
               required
               placeholder="••••••••"
-              className="h-11"
+              aria-invalid={Boolean(fieldErrors.password)}
+              aria-describedby={
+                fieldErrors.password ? "password-error" : undefined
+              }
+              className={cn(
+                "h-11",
+                fieldErrors.password &&
+                  "border-destructive focus-visible:ring-destructive/20",
+              )}
             />
+            <FieldError id="password-error" messages={fieldErrors.password} />
           </div>
 
-          {error && (
+          {formError && (
             <div
               role="alert"
               className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
             >
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{error}</span>
+              <span>{formError}</span>
             </div>
           )}
 
