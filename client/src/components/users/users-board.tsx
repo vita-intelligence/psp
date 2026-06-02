@@ -10,15 +10,19 @@ import { Button } from "@/components/ui/button";
 import { UsersBoardSkeleton } from "./users-board-skeleton";
 import { UserAvatar } from "./user-avatar";
 import { AlertCircle, RefreshCw, Users, UserCheck, UserX } from "lucide-react";
-import type { UserListEntry } from "@/lib/types";
+import type { TeamMember } from "@/lib/types";
 
 interface UsersErrorBody {
   error?: string;
   detail?: string;
 }
 
-async function fetchUsers(): Promise<UserListEntry[]> {
-  const res = await fetch("/api/users", { cache: "no-store" });
+async function fetchTeam(): Promise<TeamMember[]> {
+  // The home roster uses the slim `/api/team` payload (id/name/email/
+  // avatar/online) so it works regardless of `users.view` — that
+  // permission gates the admin Users settings page, not "who's
+  // here". Single-shot flat read; pagination lives on /api/users.
+  const res = await fetch("/api/team", { cache: "no-store" });
   if (!res.ok) {
     let body: UsersErrorBody = {};
     try {
@@ -30,8 +34,8 @@ async function fetchUsers(): Promise<UserListEntry[]> {
     (err as Error & { code?: string }).code = body.error;
     throw err;
   }
-  const data = (await res.json()) as { users: UserListEntry[] };
-  return data.users;
+  const data = (await res.json()) as { items: TeamMember[] };
+  return data.items;
 }
 
 export function UsersBoard({ currentUserId }: { currentUserId: number }) {
@@ -42,8 +46,8 @@ export function UsersBoard({ currentUserId }: { currentUserId: number }) {
   );
 
   const usersQuery = useQuery({
-    queryKey: ["users"],
-    queryFn: fetchUsers,
+    queryKey: ["team"],
+    queryFn: fetchTeam,
   });
 
   if (usersQuery.isLoading) {
@@ -135,7 +139,7 @@ export function UsersBoard({ currentUserId }: { currentUserId: number }) {
 interface SectionProps {
   title: string;
   count: number;
-  users: UserListEntry[];
+  users: TeamMember[];
   currentUserId: number;
   icon: typeof UserCheck;
   accent: "brand" | "muted";
@@ -202,7 +206,7 @@ function UserRow({
   isYou,
   online,
 }: {
-  user: UserListEntry;
+  user: TeamMember;
   isYou: boolean;
   online: boolean;
 }) {

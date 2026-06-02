@@ -18,7 +18,6 @@ defmodule Backend.Companies do
   import Ecto.Query, warn: false
   alias Backend.Repo
   alias Backend.Companies.Company
-  alias Backend.RBAC
 
   @default_name "Vita Manufacture Limited"
 
@@ -37,10 +36,9 @@ defmodule Backend.Companies do
           |> Company.bootstrap_changeset(%{name: @default_name})
           |> Repo.insert()
 
-        # Seed the three system roles atomically — without them no one
-        # can be assigned anything, including the bootstrap user.
-        {:ok, _owner} = RBAC.seed_system_roles!(company)
-
+        # No system roles to seed: access is per-user
+        # (`is_admin` + `permissions`). Admins create their own
+        # permission templates as needed.
         company
     end
   end

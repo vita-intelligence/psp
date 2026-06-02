@@ -104,11 +104,12 @@ export function Toolbar<T>({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {/* Search input — stays in the toolbar row (wrapping below as
-          needed) so it never hijacks its own line and orphans the
-          buttons. `min-w-[10rem]` floor keeps icon + placeholder from
-          colliding; `sm:max-w-xs` caps growth on wide screens. */}
-      <div className="relative min-w-[10rem] flex-1 sm:max-w-xs">
+      {/* Search input — takes its own row on phone widths so the
+          placeholder fits, then snaps back inline at `sm` where the
+          input + popover buttons share a row comfortably. The four
+          popovers below are narrow enough to live on a second row on
+          phone without orphaning. */}
+      <div className="relative basis-full sm:basis-auto sm:max-w-xs sm:flex-1">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           type="search"

@@ -32,7 +32,7 @@ defmodule BackendWeb.FormChannel do
 
   use Phoenix.Channel
 
-  alias Backend.RBAC
+  alias Backend.{Accounts, RBAC}
   alias BackendWeb.Presence
 
   # Soft cap on concurrent editors per form. Picked to keep the
@@ -45,7 +45,14 @@ defmodule BackendWeb.FormChannel do
 
   @impl true
   def join("form:" <> rest, _params, socket) do
-    user = socket.assigns.current_user
+    # Re-read the user from DB at join time. The socket-assigned
+    # `current_user` is the snapshot from connect (login), so any
+    # permission an admin granted while this user already had a
+    # socket open wouldn't be visible otherwise — and the form's
+    # `can_edit_resource?/2` gate would 403 a user who'd been
+    # rightfully promoted minutes earlier.
+    cached = socket.assigns.current_user
+    user = Accounts.get_user(cached.id) || cached
     topic = "form:" <> rest
 
     case parse_topic(rest) do
@@ -61,7 +68,13 @@ defmodule BackendWeb.FormChannel do
 
           true ->
             send(self(), :after_join)
-            {:ok, %{limit: limit, user_id: user.id}, assign(socket, :form_resource, resource)}
+
+            socket =
+              socket
+              |> assign(:current_user, user)
+              |> assign(:form_resource, resource)
+
+            {:ok, %{limit: limit, user_id: user.id}, socket}
         end
 
       :error ->
@@ -207,6 +220,17 @@ defmodule BackendWeb.FormChannel do
 
   defp can_edit_resource?(user, "company"),
     do: RBAC.has_permission?(user, "company.edit")
+
+  # Per-user matrix editor (admin toggle + permissions array + wage).
+  defp can_edit_resource?(user, "user-access"),
+    do: RBAC.has_permission?(user, "roles.edit")
+
+  # Permission-template editor (create/edit on /settings/roles).
+  # Either roles.edit OR roles.create lets you collaborate on a draft;
+  # the HTTP save layer enforces the right gate per action.
+  defp can_edit_resource?(user, "role"),
+    do: RBAC.has_permission?(user, "roles.edit") or
+        RBAC.has_permission?(user, "roles.create")
 
   defp can_edit_resource?(_user, _resource), do: false
 

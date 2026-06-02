@@ -1,152 +1,166 @@
 defmodule Backend.RBAC do
   @moduledoc """
-  Boundary for role-based access control: permission checks, role
-  CRUD, system-role seeding.
+  Boundary for role-based access control: permission checks +
+  permission-template CRUD.
 
-  Every endpoint that mutates state must run through
-  `require_permission/2` (the plug) or call `has_permission?/2`
-  directly. Owner role bypasses every check — there must be exactly
-  one Owner per company, enforced at the seed layer.
+  Access is per-user (`User.is_admin` short-circuits every check;
+  `User.permissions[]` is the otherwise-authoritative grant set). The
+  `roles` table is repurposed as the home of admin-defined
+  **permission templates** — saved permission-code bundles that admins
+  can apply to a user with one click. Applying just unions the codes
+  into the user's `permissions` array; there is no persistent link
+  between user and template.
   """
 
   import Ecto.Query, warn: false
 
   alias Backend.Repo
   alias Backend.Accounts.User
+  alias Backend.ListQueries
   alias Backend.RBAC.{Role, Permissions}
 
-  ## Bootstrap --------------------------------------------------------
+  @sortable_fields ~w(name inserted_at)a
+  @search_fields ~w(name description)a
+  @default_sort {:name, :asc}
+
+  ## Permission checks -------------------------------------------------
 
   @doc """
-  Seed the three default roles for a freshly-created company:
-
-    * **Owner** — bypasses every check; holds the all-permissions array
-      anyway so the future UI can render its grant set.
-    * **Admin** — every permission today, no Owner bypass.
-    * **Member** — read-only baseline (view company + view team).
+  Returns the deduped, sorted permission codes for the user.
+  `is_admin` short-circuits to the full registry; otherwise the
+  user's direct `permissions` array is the source of truth.
   """
-  def seed_system_roles!(company) do
-    all = Permissions.all()
+  def effective_permissions(%User{is_admin: true}), do: Permissions.all()
 
-    {:ok, owner} =
-      %Role{}
-      |> Role.changeset(%{
-        company_id: company.id,
-        name: "Owner",
-        slug: "owner",
-        description: "Full access — bypasses every permission check.",
-        is_system: true,
-        is_owner: true,
-        permissions: all
-      })
-      |> Repo.insert()
-
-    {:ok, _admin} =
-      %Role{}
-      |> Role.changeset(%{
-        company_id: company.id,
-        name: "Admin",
-        slug: "admin",
-        description: "Full access without the Owner bypass.",
-        is_system: true,
-        is_owner: false,
-        permissions: all
-      })
-      |> Repo.insert()
-
-    {:ok, _member} =
-      %Role{}
-      |> Role.changeset(%{
-        company_id: company.id,
-        name: "Member",
-        slug: "member",
-        description: "Default read-only baseline.",
-        is_system: true,
-        is_owner: false,
-        permissions: ["company.view", "users.view", "roles.view"]
-      })
-      |> Repo.insert()
-
-    {:ok, owner}
+  def effective_permissions(%User{permissions: perms}) when is_list(perms) do
+    perms |> Enum.uniq() |> Enum.sort()
   end
 
-  ## Lookups ----------------------------------------------------------
-
-  def get_role!(id), do: Repo.get!(Role, id)
-  def get_role_by_slug(company_id, slug) when is_binary(slug) do
-    Repo.get_by(Role, company_id: company_id, slug: slug)
-  end
-
-  def list_roles(company_id) do
-    Role
-    |> where([r], r.company_id == ^company_id)
-    |> order_by([r], asc: r.is_owner == false, asc: r.name)
-    |> Repo.all()
-  end
-
-  ## Assignment -------------------------------------------------------
+  def effective_permissions(_), do: []
 
   @doc """
-  Attach `role` to `user` (idempotent — calling twice is a no-op).
-  Returns `{:ok, user}` with roles preloaded.
-  """
-  def assign_role(%User{} = user, %Role{} = role) do
-    Repo.insert_all(
-      "user_roles",
-      [%{user_id: user.id, role_id: role.id}],
-      on_conflict: :nothing
-    )
-
-    {:ok, user |> Repo.preload(:roles, force: true)}
-  end
-
-  def user_with_roles(user_id) do
-    User
-    |> where([u], u.id == ^user_id)
-    |> preload(:roles)
-    |> Repo.one()
-  end
-
-  ## Permission checks ------------------------------------------------
-
-  @doc """
-  Returns the deduped union of permission codes for the user across
-  every role they hold. Owner short-circuits to the full registry.
-  """
-  def effective_permissions(%User{} = user) do
-    user = ensure_roles_loaded(user)
-
-    cond do
-      Enum.any?(user.roles, & &1.is_owner) ->
-        Permissions.all()
-
-      true ->
-        user.roles
-        |> Enum.flat_map(& &1.permissions)
-        |> Enum.uniq()
-        |> Enum.sort()
-    end
-  end
-
-  @doc """
-  True if the user has the given permission. Owner role bypasses; any
-  matching code in any held role grants. Unknown user → false.
+  True if the user has the given permission. `is_admin` bypasses every
+  check; otherwise the code must be in the user's `permissions` array.
   """
   def has_permission?(nil, _), do: false
+  def has_permission?(%User{is_admin: true}, _), do: true
 
-  def has_permission?(%User{} = user, code) when is_binary(code) do
-    user = ensure_roles_loaded(user)
+  def has_permission?(%User{permissions: perms}, code)
+      when is_list(perms) and is_binary(code) do
+    code in perms
+  end
 
-    cond do
-      Enum.any?(user.roles, & &1.is_owner) -> true
-      true -> Enum.any?(user.roles, fn r -> code in r.permissions end)
+  def has_permission?(_, _), do: false
+
+  ## Template lookups --------------------------------------------------
+
+  @doc """
+  Lookup a template by its public UUID. Path-param string in, Role
+  struct out (or nil for unknown / malformed UUIDs).
+  """
+  def get_template(uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} -> Repo.get_by(Role, uuid: cast)
+      :error -> nil
     end
   end
 
-  defp ensure_roles_loaded(%User{} = user) do
-    case user.roles do
-      %Ecto.Association.NotLoaded{} -> Repo.preload(user, :roles)
-      _ -> user
+  def get_template(_), do: nil
+
+  @doc """
+  Paginated/sortable/searchable templates list. Same `{items,
+  next_cursor}` shape every list endpoint produces, so the frontend
+  DataTable that drives Warehouses and Users drives this too. Opts
+  match `Backend.ListQueries` semantics — sortable on `name` /
+  `inserted_at`, search ILIKEs across name and description.
+  """
+  def list_templates(company_id, opts \\ []) do
+    sort = Keyword.get(opts, :sort, @default_sort)
+
+    base =
+      Role
+      |> where([r], r.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc "Static config the frontend reads to drive its column controls."
+  def list_templates_config do
+    %{
+      sortable_fields: Enum.map(@sortable_fields, &Atom.to_string/1),
+      search_fields: Enum.map(@search_fields, &Atom.to_string/1),
+      default_sort: %{
+        field: Atom.to_string(elem(@default_sort, 0)),
+        direction: Atom.to_string(elem(@default_sort, 1))
+      }
+    }
+  end
+
+  ## Template mutations ------------------------------------------------
+
+  @doc """
+  Create a permission template in the actor's company. `name` is
+  required; `slug` is derived from name if not supplied. Permission
+  codes are validated against `Permissions.valid?/1` — unknowns
+  surface as a changeset error so the form can highlight them.
+  """
+  def create_template(%User{company_id: company_id}, attrs) do
+    attrs =
+      attrs
+      |> normalize_template_attrs()
+      |> Map.put("company_id", company_id)
+
+    %Role{}
+    |> Role.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Update a template. Refuses to touch a `is_system: true` row — those
+  are reserved for future demo/starter templates and shouldn't be
+  edited from the UI.
+  """
+  def update_template(%Role{is_system: true}, _attrs), do: {:error, :system_template}
+
+  def update_template(%Role{} = template, attrs) do
+    template
+    |> Role.changeset(normalize_template_attrs(attrs))
+    |> Repo.update()
+  end
+
+  def delete_template(%Role{is_system: true}), do: {:error, :system_template}
+  def delete_template(%Role{} = template), do: Repo.delete(template)
+
+  # Slug auto-derivation — admins shouldn't have to think about URL
+  # slugs. We keep the column for uniqueness + future shareable links
+  # but generate from the name when one isn't supplied.
+  defp normalize_template_attrs(attrs) do
+    attrs = stringify_keys(attrs)
+
+    case Map.get(attrs, "slug") do
+      nil -> Map.put(attrs, "slug", slugify(Map.get(attrs, "name") || ""))
+      "" -> Map.put(attrs, "slug", slugify(Map.get(attrs, "name") || ""))
+      _ -> attrs
+    end
+  end
+
+  defp stringify_keys(map) do
+    Enum.into(map, %{}, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      pair -> pair
+    end)
+  end
+
+  defp slugify(name) do
+    name
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+    |> case do
+      "" -> "template-#{System.unique_integer([:positive])}"
+      s -> s
     end
   end
 end

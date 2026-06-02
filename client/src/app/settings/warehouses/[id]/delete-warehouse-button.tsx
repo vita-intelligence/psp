@@ -16,10 +16,10 @@ import { deleteWarehouseAction } from "@/lib/warehouses/actions";
 import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
 
 export function DeleteWarehouseButton({
-  id,
+  uuid,
   name,
 }: {
-  id: number;
+  uuid: string;
   name: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -27,7 +27,7 @@ export function DeleteWarehouseButton({
 
   function onConfirm() {
     startTransition(async () => {
-      await deleteWarehouseAction(id);
+      await deleteWarehouseAction(uuid);
       // deleteWarehouseAction redirects on success; on failure we just
       // close and let the user retry.
       setOpen(false);

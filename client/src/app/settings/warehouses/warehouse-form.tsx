@@ -36,7 +36,7 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { cn } from "@/lib/utils";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
-import type { Warehouse, Contact, Company } from "@/lib/types";
+import type { Warehouse, Contact, CompanyDefaults } from "@/lib/types";
 import type { FieldErrors } from "@/lib/auth/actions";
 import {
   createWarehouseAction,
@@ -54,7 +54,12 @@ import {
 interface WarehouseFormProps {
   /** `null` ⇒ create mode; otherwise edit. */
   warehouse: Warehouse | null;
-  company: Company;
+  /** Org-wide context used by the form for inheritance display (the
+   *  company name + the timezone the warehouse inherits when its
+   *  override is off). Comes from the unauthed `/company/defaults`
+   *  endpoint so users without `company.view` can still open this
+   *  page. */
+  company: CompanyDefaults;
   canEdit: boolean;
 }
 
@@ -62,7 +67,6 @@ const CONTACT_TYPES: Contact["type"][] = ["phone", "email", "url", "other"];
 
 interface FormState {
   name: string;
-  code: string;
   address: string;
   notes: string;
   is_active: boolean;
@@ -76,7 +80,6 @@ function initialFrom(warehouse: Warehouse | null): FormState {
   if (!warehouse) {
     return {
       name: "",
-      code: "",
       address: "",
       notes: "",
       is_active: true,
@@ -87,7 +90,6 @@ function initialFrom(warehouse: Warehouse | null): FormState {
   }
   return {
     name: warehouse.name,
-    code: warehouse.code ?? "",
     address: warehouse.address ?? "",
     notes: warehouse.notes ?? "",
     is_active: warehouse.is_active,
@@ -122,7 +124,7 @@ export function WarehouseForm({
   canEdit,
 }: WarehouseFormProps) {
   const router = useRouter();
-  const resource = warehouse ? `warehouse:${warehouse.id}` : "warehouse:new";
+  const resource = warehouse ? `warehouse:${warehouse.uuid}` : "warehouse:new";
   // Broadcast our current form on the lobby so the list page can show
   // "X is editing this" badges. Cleared on unmount when we navigate
   // away from the form.
@@ -131,7 +133,7 @@ export function WarehouseForm({
   // Commit payload shape — what the creator pushes to peers on success.
   // Discriminated union so receivers branch cleanly.
   type CommitPayload =
-    | { kind: "created"; id: number; name: string }
+    | { kind: "created"; uuid: string; name: string }
     | { kind: "saved"; state: FormState };
 
   const {
@@ -151,6 +153,11 @@ export function WarehouseForm({
     broadcastCommit,
   } = useLiveForm<FormState>({
     resource,
+    // Viewer (no `warehouses.edit`/`.create`) ⇒ skip the channel:
+    // the backend would 403 the join anyway, and a viewer has nothing
+    // to broadcast. The form below renders read-only from the
+    // server-component fetch — no JoinError card, no presence chips.
+    disabled: !canEdit,
     initialState: useMemo(() => initialFrom(warehouse), [warehouse]),
     onCommit: (raw) => {
       // Only the room creator triggers commits — peers react. The
@@ -162,7 +169,7 @@ export function WarehouseForm({
         toast.success("Warehouse created", {
           description: `${creator?.name ?? "The host"} just finalized "${msg.name}".`,
         });
-        router.push(`/settings/warehouses/${msg.id}`);
+        router.push(`/settings/warehouses/${msg.uuid}`);
       } else if (msg.kind === "saved") {
         toast.success("Saved", {
           description: `${creator?.name ?? "The host"} just saved the form.`,
@@ -259,7 +266,6 @@ export function WarehouseForm({
 
     const payload: Partial<Warehouse> = {
       name: state.name.trim(),
-      code: state.code.trim() || null,
       address: state.address || null,
       notes: state.notes || null,
       is_active: state.is_active,
@@ -279,7 +285,7 @@ export function WarehouseForm({
 
     startTransition(async () => {
       const res = warehouse
-        ? await updateWarehouseAction(warehouse.id, payload)
+        ? await updateWarehouseAction(warehouse.uuid, payload)
         : await createWarehouseAction(payload);
 
       if (res.ok) {
@@ -295,10 +301,10 @@ export function WarehouseForm({
         } else {
           broadcastCommit({
             kind: "created",
-            id: res.warehouse.id,
+            uuid: res.warehouse.uuid,
             name: res.warehouse.name,
           });
-          router.push(`/settings/warehouses/${res.warehouse.id}`);
+          router.push(`/settings/warehouses/${res.warehouse.uuid}`);
         }
         return;
       }
@@ -393,19 +399,6 @@ export function WarehouseForm({
                 onBlur={blurField}
                 editor={fieldEditors.name}
                 errors={fieldErrors.name}
-              />
-              <CollabRow
-                id="code"
-                label="Code"
-                value={state.code}
-                onChange={(v) => setField("code", v.toUpperCase())}
-                onFocus={focusField}
-                onBlur={blurField}
-                editor={fieldEditors.code}
-                errors={fieldErrors.code}
-                placeholder="e.g. LHQ"
-                hint="Short identifier used in URLs and printed labels. Uppercase letters, numbers, _ or -."
-                mono
               />
               <CollabTextareaRow
                 id="address"

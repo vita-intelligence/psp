@@ -1,0 +1,197 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useMemo } from "react";
+import { DataTable } from "@/components/data-table";
+import type {
+  DataTableColumn,
+  FilterDef,
+  PageResult,
+  SortSpec,
+} from "@/components/data-table";
+import { UserAvatar } from "@/components/users/user-avatar";
+import { Badge } from "@/components/ui/badge-mini";
+import type { UserListEntry } from "@/lib/types";
+
+interface UsersTableProps {
+  initialPage: PageResult<UserListEntry>;
+}
+
+const FILTERS: FilterDef[] = [
+  {
+    field: "is_active",
+    label: "Status",
+    options: [
+      { label: "Active", value: true },
+      { label: "Inactive", value: false },
+    ],
+  },
+];
+
+const DEFAULT_SORT: SortSpec = { field: "name", direction: "asc" };
+
+async function fetchUsersPage(params: {
+  cursor: string | null;
+  limit: number;
+  sort: SortSpec | null;
+  filters: Record<string, string | boolean | number>;
+  search: string;
+}): Promise<PageResult<UserListEntry>> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit));
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.sort)
+    qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
+  if (params.search) qs.set("search", params.search);
+  for (const [k, v] of Object.entries(params.filters)) {
+    qs.set(`filter[${k}]`, String(v));
+  }
+
+  const res = await fetch(`/api/users?${qs.toString()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* leave detail */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as PageResult<UserListEntry>;
+}
+
+export function UsersTable({ initialPage }: UsersTableProps) {
+  const router = useRouter();
+
+  const columns = useMemo<DataTableColumn<UserListEntry>[]>(
+    () => [
+      {
+        id: "person",
+        header: "Name",
+        sortField: "name",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        hideable: false,
+        widthClassName: "min-w-[16rem]",
+        cell: (u) => (
+          <div className="flex items-center gap-2.5">
+            <div className="relative shrink-0">
+              <UserAvatar
+                name={u.name}
+                email={u.email}
+                avatar={u.avatar}
+                sizeClassName="size-8"
+                fallbackClassName="text-xs"
+              />
+              {u.is_online && (
+                <span
+                  aria-label="Online"
+                  className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full border-2 border-background bg-emerald-500"
+                />
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">{u.name}</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {u.email}
+              </p>
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: "admin",
+        header: "Admin",
+        widthClassName: "w-24",
+        cell: (u) =>
+          u.is_admin ? (
+            <Badge tone="brand">Admin</Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground/60">—</span>
+          ),
+      },
+      {
+        id: "status",
+        header: "Status",
+        sortField: "is_active",
+        sortLabels: { asc: "Inactive first", desc: "Active first" },
+        widthClassName: "w-28",
+        cell: (u) => (
+          <Badge tone={u.is_active ? "emerald" : "muted"}>
+            {u.is_active ? "Active" : "Inactive"}
+          </Badge>
+        ),
+      },
+      {
+        id: "joined",
+        header: "Joined",
+        sortField: "inserted_at",
+        sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        widthClassName: "w-36",
+        cell: (u) => (
+          <span className="text-xs text-muted-foreground">
+            {new Date(u.inserted_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
+
+  return (
+    <DataTable<UserListEntry>
+      tableId="users"
+      columns={columns}
+      rowKey={(u) => String(u.id)}
+      fetchPage={fetchUsersPage}
+      initialPage={initialPage}
+      defaultSort={DEFAULT_SORT}
+      searchPlaceholder="Search by name or email…"
+      filters={FILTERS}
+      onRowClick={(u) => router.push(`/settings/users/${u.uuid}`)}
+      renderMobileCard={(u) => (
+        <div className="space-y-2">
+          <div className="flex items-start gap-3">
+            <div className="relative shrink-0">
+              <UserAvatar
+                name={u.name}
+                email={u.email}
+                avatar={u.avatar}
+                sizeClassName="size-10"
+                fallbackClassName="text-sm"
+              />
+              {u.is_online && (
+                <span
+                  aria-label="Online"
+                  className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-background bg-emerald-500"
+                />
+              )}
+            </div>
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="truncate text-sm font-semibold">{u.name}</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {u.email}
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <Badge tone={u.is_active ? "emerald" : "muted"}>
+                  {u.is_active ? "Active" : "Inactive"}
+                </Badge>
+                {u.is_admin && <Badge tone="brand">Admin</Badge>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      emptyState={
+        <div className="space-y-1">
+          <p className="text-sm font-medium">No users yet</p>
+          <p className="text-xs text-muted-foreground">
+            Invite teammates to join your company.
+          </p>
+        </div>
+      }
+    />
+  );
+}

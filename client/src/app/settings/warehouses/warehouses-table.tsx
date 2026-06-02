@@ -87,26 +87,11 @@ export function WarehousesTable({
           <div className="flex items-center gap-2">
             <span className="truncate font-medium">{w.name}</span>
             <WarehouseEditorsBadge
-              warehouseId={w.id}
+              warehouseUuid={w.uuid}
               currentUserId={currentUserId}
             />
           </div>
         ),
-      },
-      {
-        id: "code",
-        header: "Code",
-        sortField: "code",
-        sortLabels: { asc: "A → Z", desc: "Z → A" },
-        widthClassName: "w-32",
-        cell: (w) =>
-          w.code ? (
-            <span className="font-mono text-xs text-muted-foreground">
-              {w.code}
-            </span>
-          ) : (
-            <span className="text-xs text-muted-foreground/50">—</span>
-          ),
       },
       {
         id: "address",
@@ -160,9 +145,9 @@ export function WarehousesTable({
       fetchPage={fetchWarehousesPage}
       initialPage={initialPage}
       defaultSort={DEFAULT_SORT}
-      searchPlaceholder="Search by name, code, address…"
+      searchPlaceholder="Search by name or address…"
       filters={FILTERS}
-      onRowClick={(w) => router.push(`/settings/warehouses/${w.id}`)}
+      onRowClick={(w) => router.push(`/settings/warehouses/${w.uuid}`)}
       toolbarActions={toolbarActions}
       beforeTable={beforeTable}
       renderMobileCard={(w) => (
@@ -171,16 +156,13 @@ export function WarehousesTable({
             <div className="min-w-0 flex-1 space-y-1">
               <p className="truncate text-sm font-semibold">{w.name}</p>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                {w.code && (
-                  <span className="font-mono">{w.code}</span>
-                )}
                 <Badge tone={w.is_active ? "emerald" : "muted"}>
                   {w.is_active ? "Active" : "Inactive"}
                 </Badge>
               </div>
             </div>
             <WarehouseEditorsBadge
-              warehouseId={w.id}
+              warehouseUuid={w.uuid}
               currentUserId={currentUserId}
             />
           </div>

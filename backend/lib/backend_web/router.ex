@@ -26,8 +26,19 @@ defmodule BackendWeb.Router do
     get "/auth/me", AuthController, :me
     put "/auth/me", ProfileController, :update
     put "/auth/password", ProfileController, :change_password
+    get "/team", UserController, :team
     get "/users", UserController, :index
+    get "/users/:id", UserController, :show
+    put "/users/:id/access", UserController, :update_access
 
+    get "/roles", RoleController, :index
+    get "/roles/:id", RoleController, :show
+    post "/roles", RoleController, :create
+    put "/roles/:id", RoleController, :update
+    delete "/roles/:id", RoleController, :delete
+    get "/permissions/matrix", UserController, :matrix
+
+    get "/company/defaults", CompanyController, :defaults
     get "/company", CompanyController, :show
     put "/company", CompanyController, :update
     put "/company/locale", CompanyController, :update_locale

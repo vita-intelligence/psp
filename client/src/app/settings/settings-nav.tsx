@@ -4,7 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import type { PermissionCode } from "@/lib/rbac";
-import { User as UserIcon, Building2, Warehouse } from "lucide-react";
+import {
+  User as UserIcon,
+  Building2,
+  Users,
+  Warehouse,
+  ShieldCheck,
+} from "lucide-react";
 
 interface NavItem {
   href: string;
@@ -27,6 +33,18 @@ const ITEMS: NavItem[] = [
     label: "Warehouses",
     icon: Warehouse,
     permission: "warehouses.view",
+  },
+  {
+    href: "/settings/users",
+    label: "Users",
+    icon: Users,
+    permission: "users.view",
+  },
+  {
+    href: "/settings/roles",
+    label: "Templates",
+    icon: ShieldCheck,
+    permission: "roles.view",
   },
 ];
 

@@ -82,4 +82,5 @@ export type NumberingFormats = Partial<Record<string, NumberingFormat>>;
 export const NUMBERING_ENTITIES: Array<{ key: string; label: string }> = [
   { key: "user", label: "Users" },
   { key: "warehouse", label: "Warehouses" },
+  { key: "template", label: "Permission templates" },
 ];

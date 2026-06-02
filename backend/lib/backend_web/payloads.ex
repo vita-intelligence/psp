@@ -9,14 +9,16 @@ defmodule BackendWeb.Payloads do
   def user(user) do
     %{
       id: user.id,
+      uuid: user.uuid,
       email: user.email,
       name: user.name,
       avatar: user.avatar,
       is_active: user.is_active,
+      is_admin: Map.get(user, :is_admin, false),
+      hourly_wage: user.hourly_wage,
       confirmed_at: user.confirmed_at,
       inserted_at: user.inserted_at,
       company_id: user.company_id,
-      roles: roles_for(user),
       permissions: RBAC.effective_permissions(user)
     }
   end
@@ -52,12 +54,37 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  @doc """
+  Slim org-context payload returned by `GET /api/company/defaults`.
+  Any authed user can read this — it carries only the inheritable /
+  display fields downstream pages need (timezone the warehouse picker
+  shows, locale used to format dates, …). Sensitive identity fields
+  (legal address, tax numbers, payment details, IP allow-lists, raw
+  numbering formats) stay on the gated `/api/company` payload.
+  """
+  def company_defaults(company) do
+    %{
+      id: company.id,
+      name: company.name,
+      timezone: company.timezone,
+      working_hours: company.working_hours,
+      holidays: company.holidays,
+      date_format: company.date_format,
+      first_day_of_week: company.first_day_of_week,
+      decimal_separator: company.decimal_separator,
+      thousands_separator: company.thousands_separator,
+      currency_code: company.currency_code,
+      currency_format: company.currency_format,
+      generic_place_name: company.generic_place_name
+    }
+  end
+
   def warehouse(w) do
     %{
       id: w.id,
+      uuid: w.uuid,
       company_id: w.company_id,
       name: w.name,
-      code: w.code,
       address: w.address,
       notes: w.notes,
       is_active: w.is_active,
@@ -71,10 +98,4 @@ defmodule BackendWeb.Payloads do
     }
   end
 
-  defp roles_for(user) do
-    case user.roles do
-      %Ecto.Association.NotLoaded{} -> []
-      roles -> Enum.map(roles, &%{id: &1.id, slug: &1.slug, name: &1.name})
-    end
-  end
 end

@@ -142,7 +142,9 @@ export function useActiveEditors(currentUserId: number): ActiveEditor[] {
 }
 
 interface WarehouseEditorsBadgeProps {
-  warehouseId: number;
+  /** The warehouse's public UUID — matches the form-channel topic the
+   *  edit form broadcasts via `useFormPresenceBeacon`. */
+  warehouseUuid: string;
   currentUserId: number;
 }
 
@@ -154,11 +156,11 @@ interface WarehouseEditorsBadgeProps {
  * this warehouse's room.
  */
 export function WarehouseEditorsBadge({
-  warehouseId,
+  warehouseUuid,
   currentUserId,
 }: WarehouseEditorsBadgeProps) {
   const editors = useActiveEditors(currentUserId).filter(
-    (e) => e.current_form === `warehouse:${warehouseId}`,
+    (e) => e.current_form === `warehouse:${warehouseUuid}`,
   );
 
   if (editors.length === 0) return null;

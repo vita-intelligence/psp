@@ -1,0 +1,170 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useMemo } from "react";
+import { DataTable } from "@/components/data-table";
+import type {
+  DataTableColumn,
+  PageResult,
+  SortSpec,
+} from "@/components/data-table";
+import { Badge } from "@/components/ui/badge-mini";
+import { ShieldCheck } from "lucide-react";
+import { TemplateEditorsBadge } from "./active-sessions";
+import type { PermissionTemplate } from "@/lib/types";
+
+interface TemplatesTableProps {
+  initialPage: PageResult<PermissionTemplate>;
+  currentUserId: number;
+  toolbarActions?: React.ReactNode;
+  beforeTable?: React.ReactNode;
+}
+
+const DEFAULT_SORT: SortSpec = { field: "name", direction: "asc" };
+
+async function fetchTemplatesPage(params: {
+  cursor: string | null;
+  limit: number;
+  sort: SortSpec | null;
+  filters: Record<string, string | boolean | number>;
+  search: string;
+}): Promise<PageResult<PermissionTemplate>> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit));
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.sort)
+    qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
+  if (params.search) qs.set("search", params.search);
+
+  const res = await fetch(`/api/roles?${qs.toString()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* leave detail */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as PageResult<PermissionTemplate>;
+}
+
+export function TemplatesTable({
+  initialPage,
+  currentUserId,
+  toolbarActions,
+  beforeTable,
+}: TemplatesTableProps) {
+  const router = useRouter();
+
+  const columns = useMemo<DataTableColumn<PermissionTemplate>[]>(
+    () => [
+      {
+        id: "name",
+        header: "Name",
+        sortField: "name",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        hideable: false,
+        widthClassName: "min-w-[14rem]",
+        cell: (t) => (
+          <div className="flex items-center gap-2">
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
+              <ShieldCheck className="size-3.5" />
+            </div>
+            <span className="truncate font-medium">{t.name}</span>
+            <TemplateEditorsBadge
+              templateUuid={t.uuid}
+              currentUserId={currentUserId}
+            />
+          </div>
+        ),
+      },
+      {
+        id: "description",
+        header: "Description",
+        widthClassName: "min-w-[16rem]",
+        cell: (t) =>
+          t.description ? (
+            <span className="line-clamp-1 text-sm text-muted-foreground">
+              {t.description}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "permissions",
+        header: "Permissions",
+        widthClassName: "w-32",
+        cell: (t) => (
+          <Badge tone="muted">
+            {t.permissions.length} perm{t.permissions.length === 1 ? "" : "s"}
+          </Badge>
+        ),
+      },
+      {
+        // Off by default — surfaced in the Sort menu for "Newest first".
+        id: "inserted_at",
+        header: "Date added",
+        sortField: "inserted_at",
+        sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        widthClassName: "w-36",
+        cell: (t) => (
+          <span className="text-xs text-muted-foreground">
+            {new Date(t.inserted_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+    ],
+    [currentUserId],
+  );
+
+  return (
+    <DataTable<PermissionTemplate>
+      tableId="templates"
+      columns={columns}
+      rowKey={(t) => String(t.id)}
+      fetchPage={fetchTemplatesPage}
+      initialPage={initialPage}
+      defaultSort={DEFAULT_SORT}
+      searchPlaceholder="Search by name or description…"
+      onRowClick={(t) => router.push(`/settings/roles/${t.uuid}`)}
+      toolbarActions={toolbarActions}
+      beforeTable={beforeTable}
+      renderMobileCard={(t) => (
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="truncate text-sm font-semibold">{t.name}</p>
+              {t.description && (
+                <p className="line-clamp-2 text-xs text-muted-foreground">
+                  {t.description}
+                </p>
+              )}
+              <Badge tone="muted">
+                {t.permissions.length} perm
+                {t.permissions.length === 1 ? "" : "s"}
+              </Badge>
+            </div>
+            <TemplateEditorsBadge
+              templateUuid={t.uuid}
+              currentUserId={currentUserId}
+            />
+          </div>
+        </div>
+      )}
+      emptyState={
+        <div className="space-y-1">
+          <p className="text-sm font-medium">No templates yet</p>
+          <p className="text-xs text-muted-foreground">
+            Templates are optional shortcuts for granting common permission
+            combos. The matrix on each user is still the source of truth.
+          </p>
+        </div>
+      }
+    />
+  );
+}

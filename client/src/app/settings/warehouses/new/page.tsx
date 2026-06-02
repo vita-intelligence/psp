@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
-import { getCompany } from "@/lib/company/server";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, AlertCircle } from "lucide-react";
@@ -15,7 +15,7 @@ export default async function NewWarehousePage() {
     redirect("/settings/warehouses");
   }
 
-  const company = await getCompany();
+  const company = await getCompanyDefaults();
   if (!company) {
     return (
       <div className="rounded-lg border border-destructive/30 bg-destructive/[0.02] px-4 py-10 text-center">

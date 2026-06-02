@@ -13,7 +13,9 @@ export type PermissionCode =
   | "users.invite"
   | "users.deactivate"
   | "roles.view"
+  | "roles.create"
   | "roles.edit"
+  | "roles.delete"
   | "warehouses.view"
   | "warehouses.create"
   | "warehouses.edit"
@@ -22,12 +24,19 @@ export type PermissionCode =
 /**
  * Server-side / RSC-safe permission check. Server components and
  * server actions pass the `User` they already have.
+ *
+ * `is_admin` short-circuits to true — same semantics as the Elixir
+ * `Backend.RBAC.has_permission?/2`. Hide-the-entire-tab behavior on
+ * the frontend should still call this; the bypass keeps admins
+ * seeing everything regardless of the granular code list.
  */
 export function hasPermission(
-  user: Pick<User, "permissions"> | null | undefined,
+  user: Pick<User, "permissions" | "is_admin"> | null | undefined,
   code: PermissionCode,
 ): boolean {
-  if (!user?.permissions) return false;
+  if (!user) return false;
+  if (user.is_admin) return true;
+  if (!user.permissions) return false;
   return user.permissions.includes(code);
 }
 
@@ -36,7 +45,7 @@ export function hasPermission(
  * surface MUST be gated and a fallback render isn't appropriate.
  */
 export function assertPermission(
-  user: Pick<User, "permissions"> | null | undefined,
+  user: Pick<User, "permissions" | "is_admin"> | null | undefined,
   code: PermissionCode,
 ): void {
   if (!hasPermission(user, code)) {

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { getWarehouse } from "@/lib/warehouses/server";
-import { getCompany } from "@/lib/company/server";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, AlertCircle } from "lucide-react";
@@ -22,13 +22,13 @@ export default async function WarehouseEditPage({ params }: PageProps) {
   }
 
   const { id } = await params;
-  const [warehouse, company] = await Promise.all([
+  const [warehouse, companyDefaults] = await Promise.all([
     getWarehouse(id),
-    getCompany(),
+    getCompanyDefaults(),
   ]);
 
   if (!warehouse) notFound();
-  if (!company) {
+  if (!companyDefaults) {
     return (
       <div className="rounded-lg border border-destructive/30 bg-destructive/[0.02] px-4 py-10 text-center">
         <AlertCircle className="mx-auto size-8 text-destructive" />
@@ -57,12 +57,12 @@ export default async function WarehouseEditPage({ params }: PageProps) {
           </Link>
         </Button>
         {canDelete && (
-          <DeleteWarehouseButton id={warehouse.id} name={warehouse.name} />
+          <DeleteWarehouseButton uuid={warehouse.uuid} name={warehouse.name} />
         )}
       </div>
       <WarehouseForm
         warehouse={warehouse}
-        company={company}
+        company={companyDefaults}
         canEdit={canEdit}
       />
     </div>

@@ -48,7 +48,7 @@ export async function createWarehouseAction(
 }
 
 export async function updateWarehouseAction(
-  id: number,
+  uuid: string,
   input: Partial<Warehouse>,
 ): Promise<WarehouseResult> {
   const token = await getSessionToken();
@@ -56,12 +56,15 @@ export async function updateWarehouseAction(
     return { ok: false, code: "unauthorized", detail: "Sign in first." };
 
   try {
-    const res = await api<{ warehouse: Warehouse }>(`/api/warehouses/${id}`, {
-      method: "PUT",
-      token,
-      body: JSON.stringify(input),
-    });
-    revalidatePath(`/settings/warehouses/${id}`);
+    const res = await api<{ warehouse: Warehouse }>(
+      `/api/warehouses/${uuid}`,
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify(input),
+      },
+    );
+    revalidatePath(`/settings/warehouses/${uuid}`);
     revalidatePath("/settings/warehouses");
     return { ok: true, warehouse: res.warehouse };
   } catch (err) {
@@ -69,12 +72,12 @@ export async function updateWarehouseAction(
   }
 }
 
-export async function deleteWarehouseAction(id: number): Promise<void> {
+export async function deleteWarehouseAction(uuid: string): Promise<void> {
   const token = await getSessionToken();
   if (!token) return;
 
   try {
-    await api(`/api/warehouses/${id}`, { method: "DELETE", token });
+    await api(`/api/warehouses/${uuid}`, { method: "DELETE", token });
   } catch {
     // best-effort — UI shows a toast on the optimistic side
   }

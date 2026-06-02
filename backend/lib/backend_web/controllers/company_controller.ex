@@ -7,6 +7,13 @@ defmodule BackendWeb.CompanyController do
     * `:update_locale`  → `company.edit` (locale card)
     * `:update_bag`     → `company.edit` (working hours / holidays /
                           rates / IPs / numbering)
+    * `:defaults`       → any authed user (no permission gate). Slim
+                          subset every page needs to render org-wide
+                          context (timezone the warehouses inherit,
+                          locale used to format dates, …). Distinct
+                          from `:show` so a user without `company.view`
+                          can still open downstream pages that depend
+                          on these defaults.
 
   The shape inside each JSONB bag is validated here (not in the
   Company schema) because each bag has different keys and we want the
@@ -31,6 +38,10 @@ defmodule BackendWeb.CompanyController do
 
   def show(conn, _params) do
     json(conn, %{company: Payloads.company(Companies.current())})
+  end
+
+  def defaults(conn, _params) do
+    json(conn, %{defaults: Payloads.company_defaults(Companies.current())})
   end
 
   def update(conn, params) do

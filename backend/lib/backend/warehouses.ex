@@ -18,11 +18,11 @@ defmodule Backend.Warehouses do
   # Whitelisted column names the table is allowed to sort by. Anything
   # outside this list silently falls back to @default_sort — protects
   # against SQL injection AND accidentally sorting on a sensitive col.
-  @sortable_fields ~w(name code is_active inserted_at)a
+  @sortable_fields ~w(name is_active inserted_at)a
   # Equality filters the API will honour.
   @filter_fields ~w(is_active)a
   # Columns the free-text `search` parameter ILIKE'es against.
-  @search_fields ~w(name code address)a
+  @search_fields ~w(name address)a
   @default_sort {:name, :asc}
 
   ## Listing / fetching ----------------------------------------------
@@ -65,13 +65,20 @@ defmodule Backend.Warehouses do
     }
   end
 
-  def get_for_company(company_id, id) do
-    Repo.get_by(Warehouse, id: id, company_id: company_id)
+  @doc """
+  Lookup by public UUID, scoped to the actor's company. `uuid` is a
+  string from the URL/path; if it doesn't parse as a valid UUID we
+  return `nil` so controllers can render a clean 404 instead of
+  bubbling an Ecto.Query error.
+  """
+  def get_for_company(company_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} -> Repo.get_by(Warehouse, uuid: cast, company_id: company_id)
+      :error -> nil
+    end
   end
 
-  def get_for_company!(company_id, id) do
-    Repo.get_by!(Warehouse, id: id, company_id: company_id)
-  end
+  def get_for_company(_company_id, _), do: nil
 
   ## Mutation --------------------------------------------------------
 

@@ -28,13 +28,16 @@ export async function listWarehousesFirstPage(
   }
 }
 
-export async function getWarehouse(id: string | number): Promise<Warehouse | null> {
+/** Looks up a warehouse by its public UUID — the value from the URL
+ *  param. Returns `null` on 404 / malformed UUID so the caller can
+ *  render `notFound()` cleanly. */
+export async function getWarehouse(uuid: string): Promise<Warehouse | null> {
   const token = await getSessionToken();
   if (!token) return null;
 
   try {
     const { warehouse } = await api<{ warehouse: Warehouse }>(
-      `/api/warehouses/${id}`,
+      `/api/warehouses/${uuid}`,
       { token },
     );
     return warehouse;

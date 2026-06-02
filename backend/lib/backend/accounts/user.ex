@@ -25,6 +25,10 @@ defmodule Backend.Accounts.User do
   @password_reset_validity_seconds 3600
 
   schema "users" do
+    # Public identifier exposed in URLs / API paths / channel topics.
+    # Integer PK stays for cheaper FKs and denser indexes — it just
+    # never leaves the backend.
+    field :uuid, Ecto.UUID, autogenerate: true
     field :email, :string
     field :name, :string
     field :avatar, :string
@@ -37,8 +41,15 @@ defmodule Backend.Accounts.User do
     field :password_reset_token, :string, redact: true
     field :password_reset_sent_at, :utc_datetime
 
+    # Per-user RBAC. `is_admin` short-circuits every permission check;
+    # `permissions` is the direct grant array (whatever the matrix UI
+    # last wrote). No role association — permission templates exist
+    # but they're pure presets, not persistent assignments.
+    field :is_admin, :boolean, default: false
+    field :permissions, {:array, :string}, default: []
+    field :hourly_wage, :decimal
+
     belongs_to :company, Backend.Companies.Company
-    many_to_many :roles, Backend.RBAC.Role, join_through: "user_roles"
 
     timestamps(type: :utc_datetime)
   end

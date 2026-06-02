@@ -53,6 +53,14 @@ interface UseLiveFormOptions<T> {
    *  reset local state. Payload shape is consumer-defined — whatever
    *  the broadcaster pushed. */
   onCommit?: (payload: unknown, byUserId: string) => void;
+  /** Skip the channel join entirely. Use when the caller is a viewer
+   *  (no edit permission) — they get the static `initialState`, no
+   *  presence, no cursors, and `joinError` stays `null` so the UI can
+   *  render a clean read-only form instead of a "you can't edit here"
+   *  banner. Backend channels enforce edit permission on join, so
+   *  letting a viewer try would always 403 — skipping is the
+   *  user-friendly path. */
+  disabled?: boolean;
 }
 
 export interface JoinError {
@@ -131,6 +139,7 @@ export function useLiveForm<T extends object>({
   initialState,
   protectFocusedFields = true,
   onCommit,
+  disabled = false,
 }: UseLiveFormOptions<T>): UseLiveFormResult<T> {
   // Latest onCommit handler captured in a ref so the channel
   // subscription doesn't have to tear down + re-establish every time
@@ -255,6 +264,11 @@ export function useLiveForm<T extends object>({
   }, []);
 
   useEffect(() => {
+    // Viewer mode: caller doesn't have edit perms, so joining the
+    // channel would 403. Skip the socket dance and let the form
+    // render statically from `initialState`.
+    if (disabled) return;
+
     let alive = true;
     let cleanup: (() => void) | null = null;
 
@@ -421,10 +435,11 @@ export function useLiveForm<T extends object>({
       alive = false;
       cleanup?.();
     };
-    // We only want to (re)join when the resource itself changes; the
-    // initialState handler is wired separately above.
+    // We only want to (re)join when the resource itself changes or
+    // when the viewer/editor flag flips; the initialState handler is
+    // wired separately above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resource]);
+  }, [resource, disabled]);
 
   const fieldEditors = useMemo<Record<string, CollabPeer | null>>(() => {
     const map: Record<string, CollabPeer | null> = {};

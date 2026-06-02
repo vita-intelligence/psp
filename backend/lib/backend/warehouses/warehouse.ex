@@ -16,8 +16,10 @@ defmodule Backend.Warehouses.Warehouse do
   alias Backend.Companies.Company
 
   schema "warehouses" do
+    # Public identifier — used in URLs, API paths, channel topics.
+    # Integer PK stays for cheaper FKs.
+    field :uuid, Ecto.UUID, autogenerate: true
     field :name, :string
-    field :code, :string
     field :address, :string
     field :notes, :string
     field :is_active, :boolean, default: true
@@ -40,7 +42,6 @@ defmodule Backend.Warehouses.Warehouse do
     |> cast(attrs, [
       :company_id,
       :name,
-      :code,
       :address,
       :notes,
       :is_active,
@@ -52,15 +53,8 @@ defmodule Backend.Warehouses.Warehouse do
     ])
     |> validate_required([:company_id, :name])
     |> validate_length(:name, min: 1, max: 200)
-    |> validate_length(:code, max: 32)
-    |> validate_format(:code, ~r/^[A-Z0-9_-]*$/,
-      message: "must be uppercase letters, numbers, _ or -"
-    )
     |> unique_constraint([:company_id, :name],
       name: :warehouses_company_id_name_index
-    )
-    |> unique_constraint([:company_id, :code],
-      name: :warehouses_company_id_code_index
     )
   end
 end

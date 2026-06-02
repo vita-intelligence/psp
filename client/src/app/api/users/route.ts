@@ -1,12 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { api, ApiError } from "@/lib/api";
 import { getSessionToken, clearSessionCookie } from "@/lib/auth/server";
 
 // Proxy: browser → Next route → Phoenix /api/users.
-// Browser JS never touches the bearer token. Pass through the backend's
-// structured error shape so client-side error handling stays consistent
-// whether the error came from Phoenix or from this proxy itself.
-export async function GET() {
+//
+// Forwards the full query string verbatim so the DataTable's cursor /
+// sort / filter / search params reach the backend unchanged. Browser
+// JS never touches the bearer token (httpOnly cookie); the structured
+// error shape from Phoenix passes through so client-side error
+// handling stays consistent.
+export async function GET(req: NextRequest) {
   const token = await getSessionToken();
   if (!token) {
     return NextResponse.json(
@@ -18,14 +21,14 @@ export async function GET() {
     );
   }
 
+  const upstream = `/api/users${req.nextUrl.search ?? ""}`;
+
   try {
-    const data = await api("/api/users", { token });
+    const data = await api(upstream, { token });
     return NextResponse.json(data);
   } catch (err) {
     if (err instanceof ApiError) {
-      if (err.status === 401) {
-        await clearSessionCookie();
-      }
+      if (err.status === 401) await clearSessionCookie();
       return NextResponse.json(
         { error: err.code, detail: err.detail, fields: err.fields },
         { status: err.status || 502 },

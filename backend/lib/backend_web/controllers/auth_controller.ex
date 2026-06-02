@@ -2,7 +2,6 @@ defmodule BackendWeb.AuthController do
   use BackendWeb, :controller
 
   alias Backend.Accounts
-  alias Backend.Repo
   alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
@@ -127,11 +126,5 @@ defmodule BackendWeb.AuthController do
     "#{frontend}/confirm?token=#{token}"
   end
 
-  # Ensures the user we're emitting has its roles preloaded so the
-  # payload's `roles` + `permissions` arrays come back populated rather
-  # than empty (a freshly inserted/confirmed user is otherwise emitted
-  # before its assignments hit the cache).
-  defp user_payload(user) do
-    Payloads.user(Repo.preload(user, :roles))
-  end
+  defp user_payload(user), do: Payloads.user(user)
 end

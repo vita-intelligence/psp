@@ -1,32 +1,33 @@
 defmodule Backend.RBAC.Role do
   @moduledoc """
-  A bundle of permissions, scoped to a company. Multiple users can hold
-  the same role; a user can hold multiple roles (their effective
-  permission set is the union).
+  A permission template — a saved bundle of permission codes admins
+  can apply to a user's matrix with one click. The DB table is still
+  called `roles` for schema stability; the UI surfaces them as
+  "templates". There is no persistent link between a user and a
+  template: applying just unions the template's codes into
+  `user.permissions`.
 
-  System roles (`is_system: true`) ship with the app and can't be
-  deleted from the UI. The Owner role (`is_owner: true`) is the
-  god-mode role — `Backend.RBAC.has_permission?/2` short-circuits to
-  true regardless of the actual `permissions` array.
+  System rows (`is_system: true`) are reserved for future demo/seed
+  templates and refuse update/delete via the controller. Today none
+  are seeded.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
 
   alias Backend.Companies.Company
-  alias Backend.Accounts.User
   alias Backend.RBAC.Permissions
 
   schema "roles" do
+    # Public identifier — URLs / API / channel topics use this.
+    field :uuid, Ecto.UUID, autogenerate: true
     field :name, :string
     field :slug, :string
     field :description, :string
     field :is_system, :boolean, default: false
-    field :is_owner, :boolean, default: false
     field :permissions, {:array, :string}, default: []
 
     belongs_to :company, Company
-    many_to_many :users, User, join_through: "user_roles"
 
     timestamps(type: :utc_datetime)
   end
@@ -38,12 +39,11 @@ defmodule Backend.RBAC.Role do
       :name,
       :slug,
       :description,
-      :is_system,
-      :is_owner,
       :permissions
     ])
     |> validate_required([:company_id, :name, :slug])
     |> validate_length(:name, min: 1, max: 80)
+    |> validate_length(:description, max: 400)
     |> validate_format(:slug, ~r/^[a-z][a-z0-9_-]*$/,
       message: "must be lowercase letters, numbers, _ or -"
     )
