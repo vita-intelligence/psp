@@ -37,12 +37,23 @@ import { cn } from "@/lib/utils";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type { Warehouse, Contact, CompanyDefaults } from "@/lib/types";
+import type { WorkingHours, Holiday } from "@/lib/company/bags";
+import {
+  WorkingHoursEditor,
+  summarizeWorkingHours,
+} from "@/components/scheduling/working-hours-editor";
+import {
+  HolidaysEditor,
+  holidaysFromBag,
+  holidaysToBag,
+  summarizeHolidays,
+} from "@/components/scheduling/holidays-editor";
 import type { FieldErrors } from "@/lib/auth/actions";
 import {
   createWarehouseAction,
   updateWarehouseAction,
 } from "@/lib/warehouses/actions";
-import { invalidateAudit } from "@/lib/audit/invalidator";
+import { invalidateAudit, subscribeRestore } from "@/lib/audit/invalidator";
 import {
   AlertCircle,
   Loader2,
@@ -74,6 +85,14 @@ interface FormState {
   timezone: string;
   /** True when this warehouse's timezone overrides the company one. */
   timezone_override: boolean;
+  /** Per-day open/close map, only meaningful when `working_hours_override`
+   *  is true. When false, the warehouse inherits the company bag. */
+  working_hours_override: boolean;
+  working_hours: WorkingHours;
+  /** Flat holiday list — converted to/from the JSONB `{items: [...]}`
+   *  shape at serialize boundaries. */
+  holidays_override: boolean;
+  holidays: Holiday[];
   contacts: Contact[];
 }
 
@@ -86,6 +105,10 @@ function initialFrom(warehouse: Warehouse | null): FormState {
       is_active: true,
       timezone: "",
       timezone_override: false,
+      working_hours_override: false,
+      working_hours: {},
+      holidays_override: false,
+      holidays: [],
       contacts: [],
     };
   }
@@ -96,6 +119,12 @@ function initialFrom(warehouse: Warehouse | null): FormState {
     is_active: warehouse.is_active,
     timezone: warehouse.timezone ?? "",
     timezone_override: warehouse.timezone !== null,
+    working_hours_override: warehouse.working_hours !== null,
+    working_hours: (warehouse.working_hours as WorkingHours) ?? {},
+    holidays_override: warehouse.holidays !== null,
+    holidays: holidaysFromBag(
+      warehouse.holidays as { items?: unknown } | null,
+    ),
     contacts: warehouse.contacts?.items ?? [],
   };
 }
@@ -219,6 +248,35 @@ export function WarehouseForm({
     return () => hideCursor();
   }, [hideCursor]);
 
+  // "Restore version" listener — clicking Restore on an Activity event
+  // dispatches the row's `state_after`. Convert the raw column values
+  // back into form state (handling override flags + JSONB bag shapes)
+  // and replace local state. User then reviews + Saves to record it
+  // as a new audit event.
+  useEffect(() => {
+    if (!warehouse) return;
+    return subscribeRestore("warehouse", warehouse.id, (raw) => {
+      const r = raw as Partial<Warehouse> & Record<string, unknown>;
+      const restored: FormState = {
+        name: typeof r.name === "string" ? r.name : "",
+        address: typeof r.address === "string" ? r.address : "",
+        notes: typeof r.notes === "string" ? r.notes : "",
+        is_active: r.is_active !== false,
+        timezone: typeof r.timezone === "string" ? r.timezone : "",
+        timezone_override: r.timezone != null,
+        working_hours_override: r.working_hours != null,
+        working_hours: (r.working_hours as WorkingHours) ?? {},
+        holidays_override: r.holidays != null,
+        holidays: holidaysFromBag(
+          r.holidays as { items?: unknown } | null,
+        ),
+        contacts:
+          ((r.contacts as { items?: Contact[] } | null)?.items as Contact[]) ?? [],
+      };
+      resetState(restored);
+    });
+  }, [warehouse, resetState]);
+
   const onCursorMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       const el = cursorAnchorRef.current;
@@ -273,8 +331,15 @@ export function WarehouseForm({
       address: state.address || null,
       notes: state.notes || null,
       is_active: state.is_active,
-      timezone: state.timezone_override
-        ? state.timezone || null
+      timezone: state.timezone_override ? state.timezone || null : null,
+      // Inheritance contract for the JSONB columns: `null` means
+      // "use company defaults"; an object means "we've overridden it,
+      // honour what's in here even if empty".
+      working_hours: state.working_hours_override
+        ? (state.working_hours as Record<string, unknown>)
+        : null,
+      holidays: state.holidays_override
+        ? (holidaysToBag(state.holidays) as Record<string, unknown>)
         : null,
       contacts: {
         items: state.contacts
@@ -500,6 +565,110 @@ export function WarehouseForm({
                   </Select>
                   <FieldEditingIndicator peer={fieldEditors.timezone} />
                 </div>
+              )}
+            </div>
+
+            {/* Inheritance: working hours */}
+            <div className="space-y-4 rounded-md border border-border/60 bg-muted/30 p-4">
+              <SectionTitle>Working hours</SectionTitle>
+              <div className="flex items-start gap-3">
+                <Switch
+                  checked={state.working_hours_override}
+                  onCheckedChange={(v) => {
+                    setField("working_hours_override", v);
+                    if (!v) setField("working_hours", {});
+                    else if (
+                      Object.keys(state.working_hours).length === 0 &&
+                      company.working_hours
+                    ) {
+                      // Seed the override from the company defaults so
+                      // the user sees a familiar starting point instead
+                      // of an empty grid.
+                      setField(
+                        "working_hours",
+                        company.working_hours as WorkingHours,
+                      );
+                    }
+                  }}
+                  aria-label="Override company working hours"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">
+                    {state.working_hours_override
+                      ? "Warehouse-specific schedule"
+                      : "Inheriting from company"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Currently:{" "}
+                    <span className="font-medium text-foreground">
+                      {state.working_hours_override
+                        ? summarizeWorkingHours(state.working_hours)
+                        : summarizeWorkingHours(
+                            company.working_hours as WorkingHours,
+                          )}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              {state.working_hours_override && (
+                <WorkingHoursEditor
+                  value={state.working_hours}
+                  onChange={(next) => setField("working_hours", next)}
+                  disabled={!canEdit || pending}
+                  idPrefix={`wh-${warehouse?.uuid ?? "new"}`}
+                />
+              )}
+            </div>
+
+            {/* Inheritance: holidays */}
+            <div className="space-y-4 rounded-md border border-border/60 bg-muted/30 p-4">
+              <SectionTitle>Holidays</SectionTitle>
+              <div className="flex items-start gap-3">
+                <Switch
+                  checked={state.holidays_override}
+                  onCheckedChange={(v) => {
+                    setField("holidays_override", v);
+                    if (!v) setField("holidays", []);
+                    else if (
+                      state.holidays.length === 0 &&
+                      company.holidays
+                    ) {
+                      setField(
+                        "holidays",
+                        holidaysFromBag(
+                          company.holidays as { items?: unknown },
+                        ),
+                      );
+                    }
+                  }}
+                  aria-label="Override company holidays"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">
+                    {state.holidays_override
+                      ? "Warehouse-specific holiday calendar"
+                      : "Inheriting from company"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Currently:{" "}
+                    <span className="font-medium text-foreground">
+                      {state.holidays_override
+                        ? summarizeHolidays(state.holidays)
+                        : summarizeHolidays(
+                            holidaysFromBag(
+                              company.holidays as { items?: unknown },
+                            ),
+                          )}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              {state.holidays_override && (
+                <HolidaysEditor
+                  value={state.holidays}
+                  onChange={(next) => setField("holidays", next)}
+                  disabled={!canEdit || pending}
+                />
               )}
             </div>
 

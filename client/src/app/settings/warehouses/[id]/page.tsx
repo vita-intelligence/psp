@@ -73,7 +73,11 @@ export default async function WarehouseEditPage({ params }: PageProps) {
         created_by={warehouse.created_by}
         updated_by={warehouse.updated_by}
       />
-      <AuditHistoryCard entityType="warehouse" entityId={warehouse.id} />
+      <AuditHistoryCard
+        entityType="warehouse"
+        entityId={warehouse.id}
+        canRestore={canEdit}
+      />
     </div>
   );
 }

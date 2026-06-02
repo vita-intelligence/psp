@@ -153,7 +153,11 @@ export default async function UserAdminPage({ params }: PageProps) {
         created_by={subject.created_by}
         updated_by={subject.updated_by}
       />
-      <AuditHistoryCard entityType="user" entityId={subject.id} />
+      <AuditHistoryCard
+        entityType="user"
+        entityId={subject.id}
+        canRestore={canEditAccess}
+      />
     </div>
   );
 }

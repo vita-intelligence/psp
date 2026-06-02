@@ -28,7 +28,7 @@ import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
 import { updateUserAccessAction } from "@/lib/users/actions";
-import { invalidateAudit } from "@/lib/audit/invalidator";
+import { invalidateAudit, subscribeRestore } from "@/lib/audit/invalidator";
 import { ApplyTemplateButton } from "./apply-template-button";
 import { PermissionMatrixGrid } from "@/components/permissions/permission-matrix-grid";
 import type {
@@ -142,6 +142,26 @@ export function UserAccessForm({
   useEffect(() => {
     return () => hideCursor();
   }, [hideCursor]);
+
+  // "Restore version" listener — see warehouse-form for the pattern.
+  // Hourly wage is stored as Decimal on the server, comes back as a
+  // string from the audit JSONB.
+  useEffect(() => {
+    return subscribeRestore("user", subject.id, (raw) => {
+      const r = raw as Record<string, unknown>;
+      const next: FormState = {
+        is_admin: r.is_admin === true,
+        permissions: Array.isArray(r.permissions)
+          ? (r.permissions as string[]).slice().sort()
+          : [],
+        hourly_wage:
+          r.hourly_wage === null || r.hourly_wage === undefined
+            ? ""
+            : String(r.hourly_wage),
+      };
+      resetState(next);
+    });
+  }, [subject.id, resetState]);
 
   const onCursorMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {

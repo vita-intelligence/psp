@@ -25,6 +25,11 @@ defmodule Backend.Audit.AuditEvent do
     # Per-field diff. `%{"name" => %{"old" => ..., "new" => ...}}`.
     field :changes, :map, default: %{}
 
+    # Full audit-field snapshot at the moment after this event. Used
+    # by the "Restore version" UI to repopulate a form with the values
+    # from this point in time.
+    field :state_after, :map, default: %{}
+
     field :at, :utc_datetime_usec
 
     belongs_to :company, Company

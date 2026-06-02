@@ -59,7 +59,11 @@ export default async function EditTemplatePage({ params }: PageProps) {
         created_by={template.created_by}
         updated_by={template.updated_by}
       />
-      <AuditHistoryCard entityType="template" entityId={template.id} />
+      <AuditHistoryCard
+        entityType="template"
+        entityId={template.id}
+        canRestore={canEdit}
+      />
     </div>
   );
 }

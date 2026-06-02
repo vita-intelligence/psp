@@ -29,7 +29,14 @@ defmodule Backend.Audit do
   should be the keyword/map of columns the create fn actually wrote.
   """
   def record_created(actor, entity_type, entity, attrs_after) do
-    insert_event(actor, entity_type, entity, "created", to_diff(%{}, attrs_after))
+    insert_event(
+      actor,
+      entity_type,
+      entity,
+      "created",
+      to_diff(%{}, attrs_after),
+      stringify_state(attrs_after)
+    )
   end
 
   @doc """
@@ -42,15 +49,31 @@ defmodule Backend.Audit do
     if map_size(diff) == 0 do
       :noop
     else
-      insert_event(actor, entity_type, entity, "updated", diff)
+      insert_event(
+        actor,
+        entity_type,
+        entity,
+        "updated",
+        diff,
+        stringify_state(attrs_after)
+      )
     end
   end
 
   @doc """
-  Stamp a "deleted" event with the row's last-known state.
+  Stamp a "deleted" event with the row's last-known state. The
+  `state_after` snapshot is empty for delete events — the row is gone,
+  there's no "after" state to restore to.
   """
   def record_deleted(actor, entity_type, entity, attrs_before) do
-    insert_event(actor, entity_type, entity, "deleted", to_diff(attrs_before, %{}))
+    insert_event(
+      actor,
+      entity_type,
+      entity,
+      "deleted",
+      to_diff(attrs_before, %{}),
+      %{}
+    )
   end
 
   ## Read paths -------------------------------------------------------
@@ -77,7 +100,7 @@ defmodule Backend.Audit do
 
   ## ------------------------------------------------------------------
 
-  defp insert_event(actor, entity_type, entity, event, changes) do
+  defp insert_event(actor, entity_type, entity, event, changes, state_after) do
     actor_snapshot =
       case actor do
         %User{} = u ->
@@ -101,6 +124,7 @@ defmodule Backend.Audit do
       actor_id: actor_id(actor),
       actor_snapshot: actor_snapshot,
       changes: changes,
+      state_after: state_after,
       at: DateTime.utc_now()
     }
 
@@ -143,4 +167,11 @@ defmodule Backend.Audit do
   defp normalize_value(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp normalize_value(%Date{} = d), do: Date.to_iso8601(d)
   defp normalize_value(v), do: v
+
+  # Same coercion as `normalize_value/1`, but applied to a whole
+  # attrs map and with the keys stringified so the JSONB column is
+  # self-describing.
+  defp stringify_state(attrs) do
+    Map.new(attrs, fn {k, v} -> {to_string(k), normalize_value(v)} end)
+  end
 end

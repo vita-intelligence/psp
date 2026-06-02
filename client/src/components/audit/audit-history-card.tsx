@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { messageFor } from "@/lib/errors/codes";
 import { cn } from "@/lib/utils";
-import { subscribeAudit } from "@/lib/audit/invalidator";
+import { subscribeAudit, dispatchRestore } from "@/lib/audit/invalidator";
+import { toast } from "sonner";
 import {
   fieldLabel,
   formatValue,
@@ -28,11 +29,16 @@ import {
   Pencil,
   Trash2,
   Activity as ActivityIcon,
+  Undo2,
 } from "lucide-react";
 
 interface AuditHistoryCardProps {
   entityType: AuditEvent["entity_type"];
   entityId: number;
+  /** Whether to show the "Restore this version" button on each event.
+   *  Hide when the viewer lacks edit permission — they can read the
+   *  history but can't repopulate the form. */
+  canRestore?: boolean;
 }
 
 interface FetchState {
@@ -61,6 +67,7 @@ const PAGE_SIZE = 20;
 export function AuditHistoryCard({
   entityType,
   entityId,
+  canRestore = false,
 }: AuditHistoryCardProps) {
   const [state, setState] = useState<FetchState>({
     status: "loading",
@@ -274,6 +281,8 @@ export function AuditHistoryCard({
                 key={event.id}
                 event={event}
                 entityType={entityType}
+                entityId={entityId}
+                canRestore={canRestore}
               />
             ))}
 
@@ -312,16 +321,36 @@ export function AuditHistoryCard({
 function EventRow({
   event,
   entityType,
+  entityId,
+  canRestore,
 }: {
   event: AuditEvent;
   entityType: AuditEvent["entity_type"];
+  entityId: number;
+  canRestore: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { icon: Icon, tone } = eventStyle(event.event);
   const hasChanges = Object.keys(event.changes).length > 0;
 
+  // Delete events don't have a meaningful state to restore — the row
+  // is gone. Show no restore button for them.
+  const canRestoreThis =
+    canRestore &&
+    event.event !== "deleted" &&
+    event.state_after &&
+    Object.keys(event.state_after).length > 0;
+
   const summary = summarizeChanges(entityType, event.event, event.changes);
   const when = new Date(event.at);
+
+  function onRestoreClick(e: React.MouseEvent) {
+    e.stopPropagation();
+    dispatchRestore(entityType, entityId, event.state_after);
+    toast.info("Version loaded into the form", {
+      description: "Review the changes, then hit Save to record a new version.",
+    });
+  }
 
   return (
     <li className="relative">
@@ -369,14 +398,34 @@ function EventRow({
           >
             · {relativeTime(when)}
           </span>
-          {hasChanges && (
-            <ChevronDown
-              className={cn(
-                "ml-auto size-3.5 text-muted-foreground/60 transition-transform",
-                expanded && "rotate-180",
-              )}
-            />
-          )}
+          <div className="ml-auto flex items-center gap-1">
+            {canRestoreThis && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={onRestoreClick}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onRestoreClick(e as unknown as React.MouseEvent);
+                  }
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:bg-brand/[0.06] hover:text-brand"
+                title="Load this version into the form. Hit Save afterwards to record it as a new version."
+              >
+                <Undo2 className="size-3" />
+                Restore
+              </span>
+            )}
+            {hasChanges && (
+              <ChevronDown
+                className={cn(
+                  "size-3.5 text-muted-foreground/60 transition-transform",
+                  expanded && "rotate-180",
+                )}
+              />
+            )}
+          </div>
         </div>
       </button>
 

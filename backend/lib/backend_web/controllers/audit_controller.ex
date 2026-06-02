@@ -92,6 +92,7 @@ defmodule BackendWeb.AuditController do
       entity_uuid: event.entity_uuid,
       event: event.event,
       changes: event.changes,
+      state_after: event.state_after,
       at: event.at,
       actor: actor_payload(event)
     }

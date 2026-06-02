@@ -31,7 +31,7 @@ import {
   createTemplateAction,
   updateTemplateAction,
 } from "@/lib/templates/actions";
-import { invalidateAudit } from "@/lib/audit/invalidator";
+import { invalidateAudit, subscribeRestore } from "@/lib/audit/invalidator";
 import type { PermissionMatrix, PermissionTemplate } from "@/lib/types";
 import { AlertCircle, Loader2, Lock, ShieldCheck } from "lucide-react";
 
@@ -135,6 +135,22 @@ export function TemplateForm({
   useEffect(() => {
     return () => hideCursor();
   }, [hideCursor]);
+
+  // "Restore version" listener — see warehouse-form for the pattern.
+  useEffect(() => {
+    if (!template) return;
+    return subscribeRestore("template", template.id, (raw) => {
+      const r = raw as Record<string, unknown>;
+      const next: FormState = {
+        name: typeof r.name === "string" ? r.name : "",
+        description: typeof r.description === "string" ? r.description : "",
+        permissions: Array.isArray(r.permissions)
+          ? (r.permissions as string[]).slice().sort()
+          : [],
+      };
+      resetState(next);
+    });
+  }, [template, resetState]);
 
   const onCursorMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {

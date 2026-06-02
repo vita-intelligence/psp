@@ -126,6 +126,11 @@ export interface AuditEvent {
   /** `{"field": {"old": ..., "new": ...}, ...}` — unchanged fields
    *  are excluded. */
   changes: Record<string, { old: unknown; new: unknown }>;
+  /** Full audit-field snapshot at the moment after this event. The
+   *  "Restore version" button uses this to repopulate the form with
+   *  the values from that point in time. Empty on `deleted` events
+   *  (no after-state to restore). */
+  state_after: Record<string, unknown>;
   at: string;
   actor: AuditActor | null;
 }

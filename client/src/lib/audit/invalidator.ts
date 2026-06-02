@@ -54,3 +54,40 @@ export function subscribeAudit(
     if (set.size === 0) listeners.delete(k);
   };
 }
+
+// "Restore version" channel — the Activity card's Restore button
+// dispatches a snapshot keyed by (entity_type, entity_id); the form
+// on the same page subscribes and populates its state. Separate from
+// the invalidate channel because the payloads are different
+// (snapshot vs. nothing) and the listener semantics differ (apply
+// state vs. trigger a refetch).
+
+type RestoreListener = (state: Record<string, unknown>) => void;
+const restoreListeners = new Map<string, Set<RestoreListener>>();
+
+export function dispatchRestore(
+  entityType: EntityType,
+  entityId: number,
+  state: Record<string, unknown>,
+) {
+  const ls = restoreListeners.get(key(entityType, entityId));
+  if (!ls) return;
+  for (const listener of ls) listener(state);
+}
+
+export function subscribeRestore(
+  entityType: EntityType,
+  entityId: number,
+  listener: RestoreListener,
+): () => void {
+  const k = key(entityType, entityId);
+  if (!restoreListeners.has(k)) restoreListeners.set(k, new Set());
+  restoreListeners.get(k)!.add(listener);
+
+  return () => {
+    const set = restoreListeners.get(k);
+    if (!set) return;
+    set.delete(listener);
+    if (set.size === 0) restoreListeners.delete(k);
+  };
+}
