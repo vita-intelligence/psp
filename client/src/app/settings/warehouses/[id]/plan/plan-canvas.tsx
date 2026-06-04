@@ -11,6 +11,7 @@ import {
 } from "react";
 import { Stage, Layer, Rect, Line, Group, Text, Shape, Circle } from "react-konva";
 import type Konva from "konva";
+import type { RemotePlanCursor } from "@/lib/realtime/use-live-plan";
 import { cn } from "@/lib/utils";
 import {
   GRID_MAJOR_CM,
@@ -83,6 +84,16 @@ interface PlanCanvasProps {
   onSelectionMove: (dx: number, dy: number) => void;
   onOutlineCommitted: (points: Point[]) => void;
   onHoleCommitted: (points: Point[]) => void;
+  /** Live-collab pointer broadcast. Called on every stage mousemove
+   *  with the cursor's world coordinates (cm); the realtime hook
+   *  throttles internally. Pass undefined to skip the broadcast. */
+  onCursorMove?: (worldX: number, worldY: number) => void;
+  /** Stage mouseleave / blur → hide our cursor on peers. */
+  onCursorLeave?: () => void;
+  /** Map of peer-id → cursor position to render as small avatar
+   *  dots on top of the canvas. World coordinates so different
+   *  zoom levels still line up. */
+  remoteCursors?: Record<string, RemotePlanCursor>;
 }
 
 export interface PlanCanvasHandle {
@@ -157,6 +168,9 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onSelectionMove,
       onOutlineCommitted,
       onHoleCommitted,
+      onCursorMove,
+      onCursorLeave,
+      remoteCursors,
     },
     ref,
   ) {
@@ -498,6 +512,20 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     }
 
     function onStageMouseMove() {
+      // Live-collab pointer broadcast — fires alongside the normal
+      // drag / draw logic so peers see our cursor regardless of
+      // which tool we're using. World cm so different zoom levels
+      // line up.
+      if (onCursorMove) {
+        const stage = stageRef.current;
+        const pos = stage?.getPointerPosition();
+        if (pos) {
+          const wx = (pos.x - viewport.x) / viewport.scale;
+          const wy = (pos.y - viewport.y) / viewport.scale;
+          onCursorMove(wx, wy);
+        }
+      }
+
       if (isPanning && panStart.current) {
         const pos = stageRef.current?.getPointerPosition();
         if (!pos) return;
@@ -680,6 +708,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
               setIsPanning(false);
               panStart.current = null;
             }
+            onCursorLeave?.();
           }}
         >
           {/* Grid */}
@@ -895,6 +924,21 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
               />
             )}
           </Layer>
+
+          {/* Remote cursors — rendered last so they sit on top of
+              every drawing layer. Non-interactive (listening=false)
+              so peer cursors never steal click events. */}
+          {remoteCursors && Object.keys(remoteCursors).length > 0 && (
+            <Layer listening={false}>
+              {Object.values(remoteCursors).map((c) => (
+                <RemoteCursorMarker
+                  key={c.peer.id}
+                  cursor={c}
+                  viewportScale={viewport.scale}
+                />
+              ))}
+            </Layer>
+          )}
         </Stage>
 
         {/* Bottom-right overlays. Outside the Stage so they don't
@@ -1583,5 +1627,71 @@ function ScaleBar({ viewportScale }: { viewportScale: number }) {
       />
       <span>1 m</span>
     </div>
+  );
+}
+
+// Deterministic colour palette indexed by peer id so the same peer
+// always shows up in the same colour across reconnects.
+const CURSOR_PALETTE = [
+  "rgb(59,130,246)",  // blue
+  "rgb(16,185,129)",  // emerald
+  "rgb(245,158,11)",  // amber
+  "rgb(168,85,247)",  // purple
+  "rgb(239,68,68)",   // red
+  "rgb(14,165,233)",  // sky
+] as const;
+
+function cursorColorFor(peerId: string): string {
+  let h = 0;
+  for (let i = 0; i < peerId.length; i++) {
+    h = (h * 31 + peerId.charCodeAt(i)) >>> 0;
+  }
+  return CURSOR_PALETTE[h % CURSOR_PALETTE.length]!;
+}
+
+function RemoteCursorMarker({
+  cursor,
+  viewportScale,
+}: {
+  cursor: RemotePlanCursor;
+  viewportScale: number;
+}) {
+  const color = cursorColorFor(cursor.peer.id);
+  // All sizes divided by the viewport scale so the cursor stays a
+  // constant pixel size regardless of zoom.
+  const r = 6 / viewportScale;
+  const fontSize = 11 / viewportScale;
+  const padX = 6 / viewportScale;
+  const padY = 3 / viewportScale;
+  const labelOffset = 12 / viewportScale;
+  // Approximate label width based on the name length so the bg
+  // rectangle fits the text. 0.55em per char is a passable mono
+  // estimate for sans-serif at small sizes.
+  const labelWidth = cursor.peer.name.length * fontSize * 0.6 + padX * 2;
+  return (
+    <Group x={cursor.x} y={cursor.y}>
+      <Circle
+        radius={r}
+        fill={color}
+        stroke="white"
+        strokeWidth={2 / viewportScale}
+      />
+      <Rect
+        x={labelOffset}
+        y={-fontSize}
+        width={labelWidth}
+        height={fontSize + padY * 2}
+        cornerRadius={4 / viewportScale}
+        fill={color}
+      />
+      <Text
+        x={labelOffset + padX}
+        y={-fontSize + padY}
+        text={cursor.peer.name}
+        fontSize={fontSize}
+        fill="white"
+        fontStyle="500"
+      />
+    </Group>
   );
 }

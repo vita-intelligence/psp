@@ -87,5 +87,62 @@ defmodule BackendWeb.WarehousePlanChannel do
     {:noreply, socket}
   end
 
+  # Live cursor — `x` and `y` are world centimetres on the floor
+  # the cursor is hovering. Sender + receiver both render in world
+  # coords so different zoom levels and screen sizes still line up.
+  # Pure broadcast: no presence meta, no persistence. Disappears on
+  # `cursor:hide` or when the user leaves the channel.
+  @impl true
+  def handle_in(
+        "cursor:move",
+        %{"floor_uuid" => floor_uuid, "x" => x, "y" => y},
+        socket
+      )
+      when is_binary(floor_uuid) and is_number(x) and is_number(y) do
+    broadcast_from!(socket, "cursor:move", %{
+      by: socket.assigns.current_user.id,
+      floor_uuid: floor_uuid,
+      x: x,
+      y: y
+    })
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_in("cursor:hide", _payload, socket) do
+    broadcast_from!(socket, "cursor:hide", %{
+      by: socket.assigns.current_user.id
+    })
+
+    {:noreply, socket}
+  end
+
+  # Live canvas state — mid-edit fan-out of the active floor's
+  # canvas_json so peers see walls / outline / hole changes appear
+  # in real time, not just on save. The sender debounces (~250ms)
+  # to keep traffic reasonable; receivers replace their local
+  # canvas if they're on the same floor and aren't mid-drag.
+  #
+  # Locations stay out of this stream — they're first-class DB rows
+  # with their own create/update/delete endpoints, so we keep them
+  # on the existing `floor:invalidated` save broadcast.
+  @impl true
+  def handle_in(
+        "canvas:patch",
+        %{"floor_uuid" => floor_uuid, "canvas" => canvas},
+        socket
+      )
+      when is_binary(floor_uuid) and is_map(canvas) do
+    broadcast_from!(socket, "canvas:patch", %{
+      by: socket.assigns.current_user.id,
+      floor_uuid: floor_uuid,
+      canvas: canvas,
+      ts: System.system_time(:millisecond)
+    })
+
+    {:noreply, socket}
+  end
+
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
 end

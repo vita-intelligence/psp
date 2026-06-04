@@ -9,7 +9,12 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
-import { useLivePlan, type InvalidationEvent } from "@/lib/realtime/use-live-plan";
+import {
+  useLivePlan,
+  type CanvasPatchEvent,
+  type InvalidationEvent,
+  type RemotePlanCursor,
+} from "@/lib/realtime/use-live-plan";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
@@ -224,12 +229,106 @@ export function WarehousePlanEditor({
     [],
   );
 
-  const { others: liveOthers } = useLivePlan({
+  // Flag the next `floorStates` update as remote-originated so the
+  // canvas-broadcast effect below doesn't echo it back to peers.
+  const applyingRemoteRef = useRef(false);
+
+  const onCanvasPatch = useCallback(
+    (event: CanvasPatchEvent) => {
+      if (!event.canvas) return;
+      setFloorStates((prev) => {
+        // Match against `meta.uuid` because the broadcast addresses
+        // floors by uuid; our state map is keyed by integer pk.
+        const entry = Object.entries(prev).find(
+          ([, s]) => s.meta.uuid === event.floor_uuid,
+        );
+        if (!entry) return prev;
+        const [idStr, current] = entry;
+        const id = Number(idStr);
+        const c = event.canvas as {
+          outline?: FloorOutline;
+          walls?: Wall[];
+        };
+        applyingRemoteRef.current = true;
+        return {
+          ...prev,
+          [id]: {
+            ...current,
+            outline: c.outline ?? current.outline,
+            walls: c.walls ?? current.walls,
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const {
+    others: liveOthers,
+    cursors: liveCursors,
+    setCursor: liveSetCursor,
+    hideCursor: liveHideCursor,
+    broadcastCanvas,
+  } = useLivePlan({
     warehouseUuid,
     activeFloorUuid: activeFloor?.meta.uuid ?? null,
     disabled: readOnly,
     onInvalidated: onPeerInvalidation,
+    onCanvasPatch,
   });
+
+  // Track which (floorUuid, outline, walls) tuple we last broadcast
+  // so we don't fire a redundant push on floor-switch or repeat
+  // renders. The reference equality check on outline/walls is enough —
+  // updateActiveFloor always returns new object refs for mutations.
+  const lastSentCanvasRef = useRef<{
+    floorUuid: string;
+    outline: FloorOutline | undefined;
+    walls: Wall[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (readOnly) return;
+    if (!activeFloor) return;
+    if (applyingRemoteRef.current) {
+      // Just applied a peer's patch — reset and don't echo it back.
+      applyingRemoteRef.current = false;
+      lastSentCanvasRef.current = {
+        floorUuid: activeFloor.meta.uuid,
+        outline: activeFloor.outline,
+        walls: activeFloor.walls,
+      };
+      return;
+    }
+    const last = lastSentCanvasRef.current;
+    if (
+      last &&
+      last.floorUuid === activeFloor.meta.uuid &&
+      last.outline === activeFloor.outline &&
+      last.walls === activeFloor.walls
+    ) {
+      return;
+    }
+    lastSentCanvasRef.current = {
+      floorUuid: activeFloor.meta.uuid,
+      outline: activeFloor.outline,
+      walls: activeFloor.walls,
+    };
+    // Skip the very first observation per floor — that's just the
+    // initial-state snapshot, not a real edit.
+    if (last?.floorUuid !== activeFloor.meta.uuid) return;
+    broadcastCanvas(activeFloor.meta.uuid, {
+      outline: activeFloor.outline,
+      walls: activeFloor.walls,
+    });
+  }, [
+    activeFloor?.meta.uuid,
+    activeFloor?.outline,
+    activeFloor?.walls,
+    activeFloor,
+    broadcastCanvas,
+    readOnly,
+  ]);
 
   // Auto-apply when nothing is dirty — the silent path. router
   // refresh re-runs the parent server component so floors / locations
@@ -640,6 +739,17 @@ export function WarehousePlanEditor({
    *  snapshot. Walls / outline / holes store the override in
    *  canvas_json; locations store it as a real column. Pass `null`
    *  to clear (reset to the type's default palette). */
+  // Wrap setCursor to inject the active floor uuid — the canvas
+  // doesn't know which floor it's drawing, the editor does.
+  const onCanvasCursorMove = useCallback(
+    (worldX: number, worldY: number) => {
+      const uuid = activeFloor?.meta.uuid;
+      if (!uuid) return;
+      liveSetCursor(worldX, worldY, uuid);
+    },
+    [activeFloor?.meta.uuid, liveSetCursor],
+  );
+
   const onSelectionColor = useCallback(
     (color: string | null) => {
       const cMaybe = color ?? undefined;
@@ -1060,8 +1170,19 @@ export function WarehousePlanEditor({
   const redoCount =
     activeFloorId != null ? (redoStack[activeFloorId] ?? []).length : 0;
 
+  // Reserve room for the bottom sheet on mobile when it's open so
+  // the canvas isn't visually blocked by the props panel sliding over
+  // it. The 42vh cap on the sheet matches the inset we subtract here.
+  const mobileSheetInset = isMobile && propsSheetOpen ? 0.42 : 0;
   const canvasHeight = isMobile
-    ? Math.max(360, typeof window === "undefined" ? 480 : window.innerHeight - 320)
+    ? Math.max(
+        280,
+        typeof window === "undefined"
+          ? 480
+          : window.innerHeight -
+              320 -
+              window.innerHeight * mobileSheetInset,
+      )
     : 600;
 
   return (
@@ -1204,6 +1325,9 @@ export function WarehousePlanEditor({
           onHoleEdgeBowChange={onHoleEdgeBowChange}
           onLocationAdded={onLocationAdded}
           onSelectionMove={onSelectionMove}
+          onCursorMove={onCanvasCursorMove}
+          onCursorLeave={liveHideCursor}
+          remoteCursors={liveCursors}
           onOutlineCommitted={onOutlineCommitted}
           onHoleCommitted={onHoleCommitted}
           onWallUpdate={onWallUpdate}
@@ -1252,6 +1376,9 @@ export function WarehousePlanEditor({
                 onHoleEdgeBowChange={onHoleEdgeBowChange}
                 onLocationAdded={onLocationAdded}
                 onSelectionMove={onSelectionMove}
+                onCursorMove={onCanvasCursorMove}
+                onCursorLeave={liveHideCursor}
+                remoteCursors={liveCursors}
                 onOutlineCommitted={onOutlineCommitted}
                 onHoleCommitted={onHoleCommitted}
               />
@@ -1332,6 +1459,9 @@ interface MobileLayoutProps {
     height: number;
   }) => void;
   onSelectionMove: (dx: number, dy: number) => void;
+  onCursorMove: (worldX: number, worldY: number) => void;
+  onCursorLeave: () => void;
+  remoteCursors: Record<string, RemotePlanCursor>;
   onOutlineCommitted: (points: Point[]) => void;
   onHoleCommitted: (points: Point[]) => void;
   onWallUpdate: (id: string, patch: Partial<Wall>) => void;
@@ -1371,6 +1501,9 @@ function MobileLayout({
   onHoleEdgeBowChange,
   onLocationAdded,
   onSelectionMove,
+  onCursorMove,
+  onCursorLeave,
+  remoteCursors,
   onOutlineCommitted,
   onHoleCommitted,
   onWallUpdate,
@@ -1408,6 +1541,9 @@ function MobileLayout({
             onHoleEdgeBowChange={onHoleEdgeBowChange}
             onLocationAdded={onLocationAdded}
             onSelectionMove={onSelectionMove}
+            onCursorMove={onCursorMove}
+            onCursorLeave={onCursorLeave}
+            remoteCursors={remoteCursors}
             onOutlineCommitted={onOutlineCommitted}
             onHoleCommitted={onHoleCommitted}
           />
@@ -1434,17 +1570,29 @@ function MobileLayout({
         />
       </div>
 
-      {/* Bottom-sheet properties. Slides up from below the canvas
-          when selection != none. Tap the backdrop or X to close. */}
+      {/* Bottom-sheet properties. Caps at ~40vh so a phone-sized
+          screen still shows most of the canvas above. A grab handle
+          + tap-to-collapse close affordance lets the operator
+          dismiss without losing the selection. */}
       {propsSheetOpen && selection.length > 0 && activeFloor && (
         <div
           className={cn(
-            "fixed inset-x-0 bottom-0 z-40 max-h-[70vh] overflow-y-auto",
+            "fixed inset-x-0 bottom-0 z-40 flex max-h-[42vh] flex-col",
             "rounded-t-xl border-t border-border bg-background shadow-2xl",
             "animate-in slide-in-from-bottom duration-200",
           )}
         >
-          <div className="sticky top-0 flex items-center justify-between border-b border-border/60 bg-background px-4 py-2.5">
+          {/* Grab handle — the universal "this is a sheet, drag to
+              dismiss" affordance. Just tap to collapse for now. */}
+          <button
+            type="button"
+            onClick={() => setPropsSheetOpen(false)}
+            aria-label="Collapse properties"
+            className="flex w-full justify-center py-1.5"
+          >
+            <span className="h-1 w-9 rounded-full bg-muted-foreground/40" />
+          </button>
+          <div className="flex items-center justify-between border-b border-border/60 px-4 pb-2">
             <p className="text-sm font-semibold">
               {selection.length > 1
                 ? `${selection.length} items selected`
@@ -1470,7 +1618,7 @@ function MobileLayout({
               <X className="size-4" />
             </Button>
           </div>
-          <div className="px-4 py-3">
+          <div className="flex-1 overflow-y-auto px-4 py-3">
             <PlanProperties
               selection={selection}
               outline={activeFloor.outline}

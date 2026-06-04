@@ -23,6 +23,12 @@ interface UseLivePlanOptions {
    *  bound user id so a single user editing in two tabs still sees
    *  the events. */
   onInvalidated?: (event: InvalidationEvent) => void;
+  /** Fired when a peer publishes a mid-edit canvas snapshot for the
+   *  same floor this tab is viewing. Receivers replace their local
+   *  canvas (outline + walls + holes) with the broadcast version —
+   *  callers should ignore the event while a local drag is in
+   *  progress to avoid yanking the canvas out from under them. */
+  onCanvasPatch?: (event: CanvasPatchEvent) => void;
 }
 
 export interface InvalidationEvent {
@@ -37,6 +43,25 @@ export interface InvalidationEvent {
     | "location_deleted";
 }
 
+export interface CanvasPatchEvent {
+  by: number;
+  floor_uuid: string;
+  /** Full canvas_json shape — outline + walls + viewport are
+   *  intentionally typed loose here so the hook stays a transport
+   *  and the editor decides what to do with the blob. */
+  canvas: Record<string, unknown>;
+  ts: number;
+}
+
+/** A peer's mouse cursor on the canvas. World centimetres so any
+ *  zoom / pan reproduces correctly. */
+export interface RemotePlanCursor {
+  peer: CollabPeer;
+  floorUuid: string;
+  x: number;
+  y: number;
+}
+
 interface UseLivePlanResult {
   /** True once the channel has joined and presence sync'd. */
   connected: boolean;
@@ -45,6 +70,20 @@ interface UseLivePlanResult {
   peers: CollabPeer[];
   /** Same list without self — for "who else is here" UIs. */
   others: CollabPeer[];
+  /** Map of user id → remote cursor position. */
+  cursors: Record<string, RemotePlanCursor>;
+  /** Broadcast our cursor position in world centimetres. Internally
+   *  throttled to ~20fps (50 ms). Pass `null` to hide. */
+  setCursor: (x: number, y: number, floorUuid: string) => void;
+  /** Tell peers our cursor has left the canvas (e.g. on mouse leave
+   *  / blur). Cheap idempotent — safe to call repeatedly. */
+  hideCursor: () => void;
+  /** Broadcast a mid-edit canvas snapshot. Internally debounced
+   *  ~250 ms so a typing-fast operator doesn't flood the channel. */
+  broadcastCanvas: (
+    floorUuid: string,
+    canvas: Record<string, unknown>,
+  ) => void;
 }
 
 /** Realtime presence + invalidation listener for the warehouse plan
@@ -52,14 +91,26 @@ interface UseLivePlanResult {
  *  data still lands via the existing REST endpoints. Pair this hook
  *  with a `router.refresh()` (when not dirty) or a "someone updated
  *  this floor" banner (when dirty) to react to incoming events. */
+// Cursor broadcast budget: 20 messages/second per editor. CSS-side
+// transitions on the receiver smooth the gaps so the cursor feels
+// fluid without flooding the channel.
+const CURSOR_THROTTLE_MS = 50;
+// Canvas patch debounce: editors that touch state on every drag
+// frame would otherwise spam the channel. 250 ms strikes a balance —
+// peers see edits land within a quarter-second of the local user
+// letting go, and a fast typist still gets aggregated updates.
+const CANVAS_DEBOUNCE_MS = 250;
+
 export function useLivePlan({
   warehouseUuid,
   activeFloorUuid,
   disabled,
   onInvalidated,
+  onCanvasPatch,
 }: UseLivePlanOptions): UseLivePlanResult {
   const [connected, setConnected] = useState(false);
   const [peers, setPeers] = useState<CollabPeer[]>([]);
+  const [cursors, setCursors] = useState<Record<string, RemotePlanCursor>>({});
   const [selfId, setSelfId] = useState<string | null>(null);
   // Mirror selfId into a ref so the channel "floor:invalidated"
   // handler — which closes over the FIRST render's selfId — can read
@@ -77,6 +128,24 @@ export function useLivePlan({
   useEffect(() => {
     onInvalidatedRef.current = onInvalidated;
   }, [onInvalidated]);
+  const onCanvasPatchRef = useRef(onCanvasPatch);
+  useEffect(() => {
+    onCanvasPatchRef.current = onCanvasPatch;
+  }, [onCanvasPatch]);
+  // Active floor mirror so the cursor handler can label incoming
+  // cursors with "wrong floor" — we drop them rather than render a
+  // ghost on the wrong plan.
+  const activeFloorRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeFloorRef.current = activeFloorUuid ?? null;
+  }, [activeFloorUuid]);
+  // Snapshot the latest peers map so the cursor handler can
+  // attach a CollabPeer to incoming cursor events without re-binding
+  // the channel.
+  const peersRef = useRef<CollabPeer[]>([]);
+  useEffect(() => {
+    peersRef.current = peers;
+  }, [peers]);
 
   // --- join the channel once per (warehouseUuid, enabled) pair
   useEffect(() => {
@@ -121,6 +190,57 @@ export function useLivePlan({
         onInvalidatedRef.current?.(event);
       });
 
+      channel.on(
+        "cursor:move",
+        (event: {
+          by: number;
+          floor_uuid: string;
+          x: number;
+          y: number;
+        }) => {
+          if (cancelled) return;
+          // Drop our own broadcasts so we don't render a "you are
+          // here" ghost on top of the real cursor.
+          if (String(event.by) === selfIdRef.current) return;
+          // Drop cursors from peers viewing a different floor —
+          // shouldn't happen often (the sender includes their floor
+          // uuid) but defensive.
+          if (event.floor_uuid !== activeFloorRef.current) return;
+          const peer = peersRef.current.find(
+            (p) => p.id === String(event.by),
+          );
+          if (!peer) return;
+          setCursors((prev) => ({
+            ...prev,
+            [String(event.by)]: {
+              peer,
+              floorUuid: event.floor_uuid,
+              x: event.x,
+              y: event.y,
+            },
+          }));
+        },
+      );
+
+      channel.on("cursor:hide", (event: { by: number }) => {
+        if (cancelled) return;
+        const key = String(event.by);
+        setCursors((prev) => {
+          if (!prev[key]) return prev;
+          // Object.fromEntries skips the entry being dropped — fast
+          // and avoids reaching for a separate mutate-then-spread.
+          return Object.fromEntries(
+            Object.entries(prev).filter(([k]) => k !== key),
+          );
+        });
+      });
+
+      channel.on("canvas:patch", (event: CanvasPatchEvent) => {
+        if (cancelled) return;
+        if (String(event.by) === selfIdRef.current) return;
+        onCanvasPatchRef.current?.(event);
+      });
+
       channelRef.current = channel;
     })();
 
@@ -146,7 +266,88 @@ export function useLivePlan({
     [peers, selfId],
   );
 
-  return { connected, peers, others };
+  // --- cursor broadcast (throttled)
+  const lastCursorSentAt = useRef(0);
+  const setCursor = useCallback(
+    (x: number, y: number, floorUuid: string) => {
+      const channel = channelRef.current;
+      if (!channel || !connected) return;
+      const now = performance.now();
+      if (now - lastCursorSentAt.current < CURSOR_THROTTLE_MS) return;
+      lastCursorSentAt.current = now;
+      channel.push("cursor:move", { floor_uuid: floorUuid, x, y });
+    },
+    [connected],
+  );
+
+  const hideCursor = useCallback(() => {
+    const channel = channelRef.current;
+    if (!channel || !connected) return;
+    channel.push("cursor:hide", {});
+  }, [connected]);
+
+  // --- canvas broadcast (debounced)
+  const canvasTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCanvas = useRef<{
+    floorUuid: string;
+    canvas: Record<string, unknown>;
+  } | null>(null);
+
+  const flushCanvas = useCallback(() => {
+    canvasTimer.current = null;
+    const pending = pendingCanvas.current;
+    pendingCanvas.current = null;
+    const channel = channelRef.current;
+    if (!pending || !channel || !connected) return;
+    channel.push("canvas:patch", {
+      floor_uuid: pending.floorUuid,
+      canvas: pending.canvas,
+    });
+  }, [connected]);
+
+  const broadcastCanvas = useCallback(
+    (floorUuid: string, canvas: Record<string, unknown>) => {
+      pendingCanvas.current = { floorUuid, canvas };
+      if (canvasTimer.current) clearTimeout(canvasTimer.current);
+      canvasTimer.current = setTimeout(flushCanvas, CANVAS_DEBOUNCE_MS);
+    },
+    [flushCanvas],
+  );
+
+  // Cleanup the debounce timer on unmount so a pending flush after
+  // teardown doesn't push to a stale channel.
+  useEffect(() => {
+    return () => {
+      if (canvasTimer.current) clearTimeout(canvasTimer.current);
+    };
+  }, []);
+
+  // Drop cursors for peers that left the room — otherwise their
+  // ghost would linger until a new presence_state arrived.
+  useEffect(() => {
+    setCursors((prev) => {
+      const knownIds = new Set(peers.map((p) => p.id));
+      const filtered = Object.entries(prev).filter(([k]) => knownIds.has(k));
+      if (filtered.length === Object.keys(prev).length) return prev;
+      return Object.fromEntries(filtered);
+    });
+  }, [peers]);
+
+  // Drop cursors when we switch to a different floor — they belong
+  // to the previous canvas and would otherwise sit on the wrong one.
+  useEffect(() => {
+    setCursors({});
+  }, [activeFloorUuid]);
+
+  return {
+    connected,
+    peers,
+    others,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCanvas,
+  };
 }
 
 // --- presence helpers ---------------------------------------------
