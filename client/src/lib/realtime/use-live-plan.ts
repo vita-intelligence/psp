@@ -70,6 +70,14 @@ interface UseLivePlanResult {
   peers: CollabPeer[];
   /** Same list without self — for "who else is here" UIs. */
   others: CollabPeer[];
+  /** Earliest joiner of the plan room — the de-facto session owner.
+   *  Promoted automatically when the previous owner leaves. `null`
+   *  until presence has synced. */
+  creator: CollabPeer | null;
+  /** Convenience: `true` when WE are the room creator. Use this to
+   *  gate the Save button so only the session owner can persist
+   *  while a multi-tab collab is happening. */
+  isCreator: boolean;
   /** Map of user id → remote cursor position. */
   cursors: Record<string, RemotePlanCursor>;
   /** Broadcast our cursor position in world centimetres. Internally
@@ -266,6 +274,24 @@ export function useLivePlan({
     [peers, selfId],
   );
 
+  // Earliest joinedAt across everyone in the room. Promotes
+  // automatically when the previous owner leaves (peers is kept in
+  // sort order by joinedAt in peersFromPresence / applyPresenceDiff).
+  const creator = useMemo<CollabPeer | null>(() => {
+    if (peers.length === 0) return null;
+    return peers[0]!;
+  }, [peers]);
+
+  const isCreator = useMemo(() => {
+    if (!selfId) {
+      // Not joined yet — treat as creator so single-user flows
+      // (the channel disabled or socket missing) keep saving.
+      return true;
+    }
+    if (!creator) return true;
+    return creator.id === selfId;
+  }, [creator, selfId]);
+
   // --- cursor broadcast (throttled)
   const lastCursorSentAt = useRef(0);
   const setCursor = useCallback(
@@ -343,6 +369,8 @@ export function useLivePlan({
     connected,
     peers,
     others,
+    creator,
+    isCreator,
     cursors,
     setCursor,
     hideCursor,

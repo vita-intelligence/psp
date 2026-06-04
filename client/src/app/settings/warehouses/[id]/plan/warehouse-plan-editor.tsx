@@ -275,6 +275,8 @@ export function WarehousePlanEditor({
 
   const {
     others: liveOthers,
+    creator: liveCreator,
+    isCreator: liveIsCreator,
     cursors: liveCursors,
     setCursor: liveSetCursor,
     hideCursor: liveHideCursor,
@@ -1209,6 +1211,10 @@ export function WarehousePlanEditor({
 
   const onSave = useCallback(() => {
     if (!activeFloor) return;
+    // Only the room owner persists. The Save button is already
+    // disabled in this case but keep the guard so a hot-keyed
+    // Ctrl+S can't slip through.
+    if (!liveIsCreator) return;
     setActionError(null);
 
     startSaving(async () => {
@@ -1326,7 +1332,7 @@ export function WarehousePlanEditor({
         description: `Saved "${state.meta.name}".`,
       });
     });
-  }, [activeFloor, canvasJsonFor, router, warehouseId, warehouseUuid]);
+  }, [activeFloor, canvasJsonFor, liveIsCreator, router, warehouseId, warehouseUuid]);
 
   const onDiscard = useCallback(() => {
     if (!activeFloor) return;
@@ -1425,6 +1431,13 @@ export function WarehousePlanEditor({
           {liveOthers.length > 0 && (
             <CollabAvatars peers={liveOthers} max={4} className="hidden sm:flex" />
           )}
+          {liveOthers.length > 0 && liveCreator && (
+            <Badge tone={liveIsCreator ? "muted" : "amber"}>
+              {liveIsCreator
+                ? "You're saving"
+                : `${liveCreator.name} can save`}
+            </Badge>
+          )}
           {activeFloor && (
             <AuditHistoryDialog
               entityType="floor"
@@ -1484,7 +1497,12 @@ export function WarehousePlanEditor({
                 type="button"
                 size="sm"
                 onClick={onSave}
-                disabled={!anyDirty || saving}
+                disabled={!anyDirty || saving || !liveIsCreator}
+                title={
+                  !liveIsCreator && liveCreator
+                    ? `Only ${liveCreator.name} can save this session`
+                    : undefined
+                }
               >
                 {saving ? (
                   <Loader2 className="mr-1.5 size-4 animate-spin" />
