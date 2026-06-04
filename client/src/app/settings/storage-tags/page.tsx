@@ -20,7 +20,10 @@ export default async function StorageTagsPage() {
   }
 
   const tags = (await listStorageTags()) ?? [];
-  const canEdit = hasPermission(user, "warehouses.edit");
+  // Non-admins can browse the vocabulary (so they see what's
+  // available in the picker) but only `storage_tags.manage` holders
+  // get the add / edit / delete affordances.
+  const canEdit = hasPermission(user, "storage_tags.manage");
 
   return (
     <Card className="border-border/60">

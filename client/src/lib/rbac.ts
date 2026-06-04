@@ -19,7 +19,8 @@ export type PermissionCode =
   | "warehouses.view"
   | "warehouses.create"
   | "warehouses.edit"
-  | "warehouses.delete";
+  | "warehouses.delete"
+  | "storage_tags.manage";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

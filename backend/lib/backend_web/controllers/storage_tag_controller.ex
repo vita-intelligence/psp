@@ -12,9 +12,12 @@ defmodule BackendWeb.StorageTagController do
     * `PUT    /api/storage-tags/:id`
     * `DELETE /api/storage-tags/:id`
 
-  RBAC: viewing (and therefore picking) requires `warehouses.view`;
-  managing (create / update / delete) requires `warehouses.edit`,
-  matching the rest of the warehouse plan editor surface.
+  RBAC: viewing (and therefore picking from the warehouse-plan tag
+  picker) requires `warehouses.view`; managing the vocabulary
+  (create / update / delete) requires the admin-level
+  `storage_tags.manage`. The split exists so a warehouse operator
+  can pick tags without being able to redefine the vocabulary
+  everyone else uses.
   """
 
   use BackendWeb, :controller
@@ -24,7 +27,7 @@ defmodule BackendWeb.StorageTagController do
   alias BackendWeb.Plugs.RequirePermission
 
   plug RequirePermission, "warehouses.view" when action in [:index, :show]
-  plug RequirePermission, "warehouses.edit" when action in [:create, :update, :delete]
+  plug RequirePermission, "storage_tags.manage" when action in [:create, :update, :delete]
 
   action_fallback BackendWeb.FallbackController
 

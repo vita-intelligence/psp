@@ -43,8 +43,21 @@ defmodule Backend.RBAC.Permissions do
     {"warehouses.delete", "Delete warehouses"}
   ]
 
+  # Storage tag vocabulary — the company-wide classification labels
+  # picked from the chip-picker on storage locations and cells. View
+  # is implicit in `warehouses.view` (the picker reads it on every
+  # plan-tab load); only the admin-level vocabulary management gets
+  # its own permission because a warehouse operator shouldn't be
+  # redefining the categories everyone else uses.
+  @storage_tags [
+    {"storage_tags.manage", "Manage the company-wide storage tag vocabulary"}
+  ]
+
   def all do
-    Enum.map(@company ++ @users ++ @roles ++ @warehouses, &elem(&1, 0))
+    Enum.map(
+      @company ++ @users ++ @roles ++ @warehouses ++ @storage_tags,
+      &elem(&1, 0)
+    )
   end
 
   @doc "Permissions grouped by resource for the future admin UI."
@@ -53,7 +66,8 @@ defmodule Backend.RBAC.Permissions do
       company: @company,
       users: @users,
       roles: @roles,
-      warehouses: @warehouses
+      warehouses: @warehouses,
+      storage_tags: @storage_tags
     }
   end
 
@@ -111,6 +125,16 @@ defmodule Backend.RBAC.Permissions do
             create: "roles.create",
             update: "roles.edit",
             delete: "roles.delete"
+          },
+          %{
+            key: "storage_tags",
+            label: "Storage tag vocabulary",
+            description:
+              "Company-wide classification labels used on storage locations and shelves (cold-zone, pallet, hazmat-3, etc.).",
+            read: nil,
+            create: "storage_tags.manage",
+            update: "storage_tags.manage",
+            delete: "storage_tags.manage"
           }
         ]
       }
