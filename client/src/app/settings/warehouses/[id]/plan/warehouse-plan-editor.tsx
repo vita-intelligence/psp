@@ -15,6 +15,7 @@ import {
   type InvalidationEvent,
   type RemotePlanCursor,
 } from "@/lib/realtime/use-live-plan";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
@@ -202,6 +203,13 @@ export function WarehousePlanEditor({
   const activeFloor = activeFloorId != null ? floorStates[activeFloorId] : null;
   const anyDirty = Object.values(floorStates).some((s) => s.dirty);
 
+  // Tell the lobby presence we're on this warehouse so the
+  // /settings/warehouses list still shows the "editing now" pulse on
+  // this card while the operator is in the plan tab. Uses the same
+  // form-key shape the warehouse edit form does ("warehouse:<uuid>")
+  // so the list filter picks both up.
+  useFormPresenceBeacon(`warehouse:${warehouseUuid}`);
+
   // ------------------------------------------------------- live collab
   //
   // Pending invalidation event we received from a peer's save. When
@@ -244,6 +252,8 @@ export function WarehousePlanEditor({
         const c = event.canvas as {
           outline?: FloorOutline;
           walls?: Wall[];
+          texts?: TextAnnotation[];
+          arrows?: ArrowAnnotation[];
         };
         applyingRemoteRef.current = true;
         return {
@@ -252,6 +262,8 @@ export function WarehousePlanEditor({
             ...current,
             outline: c.outline ?? current.outline,
             walls: c.walls ?? current.walls,
+            texts: c.texts ?? current.texts,
+            arrows: c.arrows ?? current.arrows,
           },
         };
       });
@@ -273,14 +285,16 @@ export function WarehousePlanEditor({
     onCanvasPatch,
   });
 
-  // Track which (floorUuid, outline, walls) tuple we last broadcast
-  // so we don't fire a redundant push on floor-switch or repeat
-  // renders. The reference equality check on outline/walls is enough —
-  // updateActiveFloor always returns new object refs for mutations.
+  // Track which (floorUuid, outline, walls, texts, arrows) tuple we
+  // last broadcast so we don't fire a redundant push on floor-switch
+  // or repeat renders. Reference equality is enough — updateActiveFloor
+  // always returns new object refs for mutations.
   const lastSentCanvasRef = useRef<{
     floorUuid: string;
     outline: FloorOutline | undefined;
     walls: Wall[];
+    texts: TextAnnotation[];
+    arrows: ArrowAnnotation[];
   } | null>(null);
 
   useEffect(() => {
@@ -293,6 +307,8 @@ export function WarehousePlanEditor({
         floorUuid: activeFloor.meta.uuid,
         outline: activeFloor.outline,
         walls: activeFloor.walls,
+        texts: activeFloor.texts,
+        arrows: activeFloor.arrows,
       };
       return;
     }
@@ -301,7 +317,9 @@ export function WarehousePlanEditor({
       last &&
       last.floorUuid === activeFloor.meta.uuid &&
       last.outline === activeFloor.outline &&
-      last.walls === activeFloor.walls
+      last.walls === activeFloor.walls &&
+      last.texts === activeFloor.texts &&
+      last.arrows === activeFloor.arrows
     ) {
       return;
     }
@@ -309,6 +327,8 @@ export function WarehousePlanEditor({
       floorUuid: activeFloor.meta.uuid,
       outline: activeFloor.outline,
       walls: activeFloor.walls,
+      texts: activeFloor.texts,
+      arrows: activeFloor.arrows,
     };
     // Skip the very first observation per floor — that's just the
     // initial-state snapshot, not a real edit.
@@ -316,11 +336,15 @@ export function WarehousePlanEditor({
     broadcastCanvas(activeFloor.meta.uuid, {
       outline: activeFloor.outline,
       walls: activeFloor.walls,
+      texts: activeFloor.texts,
+      arrows: activeFloor.arrows,
     });
   }, [
     activeFloor?.meta.uuid,
     activeFloor?.outline,
     activeFloor?.walls,
+    activeFloor?.texts,
+    activeFloor?.arrows,
     activeFloor,
     broadcastCanvas,
     readOnly,
@@ -1478,6 +1502,7 @@ export function WarehousePlanEditor({
           onHoleEdgeBowChange={onHoleEdgeBowChange}
           onLocationAdded={onLocationAdded}
           onTextAdded={onTextAdded}
+          onTextEdit={(id, content) => onTextUpdate(id, { text: content })}
           onArrowAdded={onArrowAdded}
           onSelectionMove={onSelectionMove}
           onCursorMove={onCanvasCursorMove}
@@ -1535,6 +1560,7 @@ export function WarehousePlanEditor({
                 onHoleEdgeBowChange={onHoleEdgeBowChange}
                 onLocationAdded={onLocationAdded}
                 onTextAdded={onTextAdded}
+                onTextEdit={(id, content) => onTextUpdate(id, { text: content })}
                 onArrowAdded={onArrowAdded}
                 onSelectionMove={onSelectionMove}
                 onCursorMove={onCanvasCursorMove}
@@ -1631,6 +1657,7 @@ interface MobileLayoutProps {
     width: number;
     height: number;
   }) => void;
+  onTextEdit: (id: string, text: string) => void;
   onArrowAdded: (arrow: ArrowAnnotation) => void;
   onSelectionMove: (dx: number, dy: number) => void;
   onCursorMove: (worldX: number, worldY: number) => void;
@@ -1677,6 +1704,7 @@ function MobileLayout({
   onHoleEdgeBowChange,
   onLocationAdded,
   onTextAdded,
+  onTextEdit,
   onArrowAdded,
   onSelectionMove,
   onCursorMove,
@@ -1742,6 +1770,7 @@ function MobileLayout({
             onHoleEdgeBowChange={onHoleEdgeBowChange}
             onLocationAdded={onLocationAdded}
             onTextAdded={onTextAdded}
+            onTextEdit={onTextEdit}
             onArrowAdded={onArrowAdded}
             onSelectionMove={onSelectionMove}
             onCursorMove={onCursorMove}

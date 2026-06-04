@@ -31,6 +31,7 @@ import {
   edgeBowHandle,
   edgeChordMidpoint,
   edgeControlPoint,
+  estimateTextHeightCm,
   findClosestSnap,
   gridSnapDragBound,
   hexToRgba,
@@ -96,6 +97,10 @@ interface PlanCanvasProps {
     width: number;
     height: number;
   }) => void;
+  /** Commit a new text content for an existing text annotation —
+   *  fires when the inline editor (double-click on a text box) is
+   *  blurred / Enter-without-Shift / Esc. */
+  onTextEdit: (id: string, text: string) => void;
   onArrowAdded: (arrow: ArrowAnnotation) => void;
   /** Translate every selected item by (dx, dy) cm in one snapshot.
    *  Fires once on drag end for the wall / location the user grabbed;
@@ -199,6 +204,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onHoleEdgeBowChange,
       onLocationAdded,
       onTextAdded,
+      onTextEdit,
       onArrowAdded,
       onSelectionMove,
       onOutlineCommitted,
@@ -215,6 +221,10 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
 
     const [draft, setDraft] = useState<Draft | null>(null);
     const [snapIndicator, setSnapIndicator] = useState<Point | null>(null);
+    // When non-null, an inline `<textarea>` overlays the matching
+    // TextShape so the user can edit the label in place. Cleared on
+    // blur / Enter without Shift / Esc.
+    const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
     // Snap targets recomputed when geometry changes. Cheap (handful
     // of points), but useMemo means event handlers don't rebuild.
@@ -976,6 +986,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 viewportScale={viewport.scale}
                 onSelect={(e) => selectItem({ kind: "text", id: t.id }, e)}
                 onGroupMove={onSelectionMove}
+                onEditRequest={(id) => setEditingTextId(id)}
               />
             ))}
           </Layer>
@@ -1080,6 +1091,53 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             </Layer>
           )}
         </Stage>
+
+        {/* Inline text editor overlay — positioned in screen pixels
+            over the text box being edited. Lives outside the stage
+            so the DOM textarea handles input events natively. */}
+        {editingTextId &&
+          (() => {
+            const t = texts.find((x) => x.id === editingTextId);
+            if (!t) return null;
+            const screenX = t.x * viewport.scale + viewport.x;
+            const screenY = t.y * viewport.scale + viewport.y;
+            const screenW = t.width * viewport.scale;
+            const fontSizePx = (t.fontSize ?? 30) * viewport.scale;
+            const minHeightPx = fontSizePx + 16;
+            return (
+              <textarea
+                autoFocus
+                defaultValue={t.text}
+                onBlur={(e) => {
+                  onTextEdit(t.id, e.target.value);
+                  setEditingTextId(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setEditingTextId(null);
+                    e.preventDefault();
+                  } else if (e.key === "Enter" && !e.shiftKey) {
+                    const v = (e.target as HTMLTextAreaElement).value;
+                    onTextEdit(t.id, v);
+                    setEditingTextId(null);
+                    e.preventDefault();
+                  }
+                }}
+                spellCheck={false}
+                className="absolute resize-none rounded-md border-2 border-primary bg-white/95 px-2 py-1 leading-tight shadow-lg outline-none"
+                style={{
+                  left: screenX,
+                  top: screenY,
+                  width: Math.max(80, screenW),
+                  minHeight: minHeightPx,
+                  fontSize: Math.max(10, fontSizePx),
+                  fontWeight: 500,
+                  color: isHexColor(t.color) ? t.color : "rgb(15,23,42)",
+                  zIndex: 50,
+                }}
+              />
+            );
+          })()}
 
         {/* Bottom-right overlays. Outside the Stage so they don't
             pan/scale with the canvas. */}
@@ -1213,9 +1271,22 @@ function WallShape({
   const bow = wall.bow ?? 0;
   const isCurved = Math.abs(bow) > 0.5;
 
-  const baseColor = isHexColor(wall.color) ? wall.color : "rgb(45,45,45)";
-  const stroke = selected ? "rgb(59,130,246)" : baseColor;
+  const hasCustomColor = isHexColor(wall.color);
+  const baseColor = hasCustomColor ? wall.color : "rgb(45,45,45)";
+  // When the user has picked a colour we keep that colour visible
+  // and indicate selection with a soft blue shadow instead of
+  // overriding the stroke. Without a custom colour we fall back to
+  // the old "stroke turns blue" cue.
+  const stroke = selected && !hasCustomColor ? "rgb(59,130,246)" : baseColor;
   const strokeWidth = selected ? 12 : 10;
+  const selectionShadow = selected
+    ? {
+        shadowColor: "rgb(59,130,246)",
+        shadowBlur: 10,
+        shadowOpacity: 0.9,
+        shadowEnabled: true,
+      }
+    : { shadowEnabled: false };
   const draggable = !readOnly && selected;
 
   // Common drag end: snap the Konva node offset to the 50cm grid,
@@ -1257,6 +1328,7 @@ function WallShape({
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
       onDragEnd={draggable ? handleDragEnd : undefined}
+      {...selectionShadow}
     />
   ) : (
     <Line
@@ -1270,6 +1342,7 @@ function WallShape({
       draggable={draggable}
       dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onDragEnd={draggable ? handleDragEnd : undefined}
+      {...selectionShadow}
     />
   );
 
@@ -1735,11 +1808,24 @@ function ArrowShape({
   onSelect: SelectHandler;
   onGroupMove: (dx: number, dy: number) => void;
 }) {
-  const baseColor = isHexColor(arrow.color) ? arrow.color : "rgb(15,23,42)";
-  const stroke = selected ? "rgb(59,130,246)" : baseColor;
+  const hasCustomColor = isHexColor(arrow.color);
+  const baseColor = hasCustomColor ? arrow.color : "rgb(15,23,42)";
+  // Keep the custom colour visible when selected — indicate
+  // selection with a blue shadow glow instead of overriding the
+  // stroke. Falls back to the old "stroke turns blue" cue only when
+  // the user hasn't picked a colour yet.
+  const stroke = selected && !hasCustomColor ? "rgb(59,130,246)" : baseColor;
   const fill = stroke;
   const strokeWidth = selected ? 5 : 4;
   const draggable = !readOnly && selected;
+  const selectionShadow = selected
+    ? {
+        shadowColor: "rgb(59,130,246)",
+        shadowBlur: 10,
+        shadowOpacity: 0.9,
+        shadowEnabled: true,
+      }
+    : { shadowEnabled: false };
 
   const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
     const dx = snapCm(e.target.x());
@@ -1764,6 +1850,7 @@ function ArrowShape({
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
       onDragEnd={draggable ? handleDragEnd : undefined}
+      {...selectionShadow}
     />
   );
 }
@@ -1772,9 +1859,9 @@ function TextShape({
   text,
   selected,
   readOnly,
-  viewportScale,
   onSelect,
   onGroupMove,
+  onEditRequest,
 }: {
   text: TextAnnotation;
   selected: boolean;
@@ -1782,11 +1869,28 @@ function TextShape({
   viewportScale: number;
   onSelect: SelectHandler;
   onGroupMove: (dx: number, dy: number) => void;
+  onEditRequest: (id: string) => void;
 }) {
-  const baseColor = isHexColor(text.color) ? text.color : "rgb(15,23,42)";
-  const stroke = selected ? "rgb(59,130,246)" : baseColor;
+  const hasCustomColor = isHexColor(text.color);
+  const baseColor = hasCustomColor ? text.color : "rgb(15,23,42)";
+  const stroke = selected && !hasCustomColor ? "rgb(59,130,246)" : baseColor;
   const fontSize = Math.max(8, text.fontSize ?? 30);
   const draggable = !readOnly && selected;
+  // Auto-grow height so multi-line content always fits — width is
+  // user-controlled (drag-out on creation, edit in the properties
+  // panel), height tracks the wrapped text.
+  const autoHeight = Math.max(
+    estimateTextHeightCm(text.text || "Text", text.width, fontSize),
+    text.height || 0,
+  );
+  const selectionShadow = selected
+    ? {
+        shadowColor: "rgb(59,130,246)",
+        shadowBlur: 10,
+        shadowOpacity: 0.9,
+        shadowEnabled: true,
+      }
+    : { shadowEnabled: false };
 
   return (
     <Group
@@ -1796,6 +1900,8 @@ function TextShape({
       dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
+      onDblClick={readOnly ? undefined : () => onEditRequest(text.id)}
+      onDblTap={readOnly ? undefined : () => onEditRequest(text.id)}
       onDragEnd={
         draggable
           ? (e) => {
@@ -1812,7 +1918,7 @@ function TextShape({
     >
       <Rect
         width={text.width}
-        height={text.height}
+        height={autoHeight}
         fill={
           selected ? "rgba(59,130,246,0.08)" : "rgba(255,255,255,0.85)"
         }
@@ -1820,18 +1926,17 @@ function TextShape({
         strokeWidth={selected ? 2 : 1.5}
         dash={[10, 6]}
         cornerRadius={6}
+        {...selectionShadow}
       />
       <Text
         text={text.text || "Text"}
         x={8}
         y={8}
         width={text.width - 16}
-        height={text.height - 16}
         fontSize={fontSize}
         fontStyle="500"
         fill={baseColor}
         wrap="word"
-        ellipsis
         listening={false}
       />
     </Group>

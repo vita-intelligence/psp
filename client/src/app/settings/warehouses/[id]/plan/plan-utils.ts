@@ -115,6 +115,30 @@ export function cmToMetres(cm: number): number {
   return cm / 100;
 }
 
+// ---------------------------------------------------- text sizing
+
+/** Rough but stable text-height estimator for the auto-growing text
+ *  annotation box. We avoid measuring through a canvas context so
+ *  the value is deterministic between SSR / hydration. Assumes a
+ *  500-weight sans-serif at ~0.55em average glyph width. */
+export function estimateTextHeightCm(
+  text: string,
+  widthCm: number,
+  fontSizeCm: number,
+): number {
+  const padding = 16;
+  const usable = Math.max(20, widthCm - padding);
+  const charsPerLine = Math.max(1, Math.floor(usable / (fontSizeCm * 0.55)));
+  const explicitLines = (text || " ").split("\n");
+  let total = 0;
+  for (const line of explicitLines) {
+    const words = line.length === 0 ? 1 : Math.ceil(line.length / charsPerLine);
+    total += Math.max(1, words);
+  }
+  const lineHeight = fontSizeCm * 1.3;
+  return Math.max(fontSizeCm + padding, total * lineHeight + padding);
+}
+
 // ---------------------------------------------------- colour helpers
 
 /** True when `value` is a strict `#RRGGBB` hex string. Used to gate
