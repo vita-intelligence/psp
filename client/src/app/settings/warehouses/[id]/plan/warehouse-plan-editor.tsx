@@ -284,19 +284,72 @@ export function WarehousePlanEditor({
     [updateActiveFloor, warehouseId],
   );
 
-  const onLocationMove = useCallback(
-    (id: string | number, x: number, y: number) => {
+  /** Translate every currently-selected item by (dx, dy) centimetres
+   *  in a single snapshotted update so undo treats a group drag as
+   *  one step. Callers (WallShape / LocationShape) snap dx/dy to the
+   *  50cm grid before firing — no clamping happens here. Items that
+   *  aren't selected stay put. */
+  const onSelectionMove = useCallback(
+    (dx: number, dy: number) => {
+      if (dx === 0 && dy === 0) return;
       updateActiveFloor(
-        (s) => ({
-          ...s,
-          locations: s.locations.map((l) =>
-            (l.tempId ?? l.uuid) === id ? { ...l, x, y, dirty: true } : l,
-          ),
-        }),
+        (s) => {
+          const wallIds = new Set(
+            selection
+              .filter((it): it is { kind: "wall"; id: string } => it.kind === "wall")
+              .map((it) => it.id),
+          );
+          const locationIds = new Set(
+            selection
+              .filter(
+                (it): it is { kind: "location"; id: string } => it.kind === "location",
+              )
+              .map((it) => it.id),
+          );
+          const holeIds = new Set(
+            selection
+              .filter((it): it is { kind: "hole"; id: string } => it.kind === "hole")
+              .map((it) => it.id),
+          );
+          const outlineSelected = selection.some((it) => it.kind === "outline");
+
+          const walls = wallIds.size
+            ? s.walls.map((w) =>
+                wallIds.has(w.id)
+                  ? { ...w, x1: w.x1 + dx, y1: w.y1 + dy, x2: w.x2 + dx, y2: w.y2 + dy }
+                  : w,
+              )
+            : s.walls;
+
+          const locations = locationIds.size
+            ? s.locations.map((l) =>
+                locationIds.has(String(l.tempId ?? l.uuid))
+                  ? { ...l, x: l.x + dx, y: l.y + dy, dirty: true }
+                  : l,
+              )
+            : s.locations;
+
+          let outline = s.outline;
+          if (outline && (outlineSelected || holeIds.size)) {
+            outline = {
+              ...outline,
+              points: outlineSelected
+                ? outline.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+                : outline.points,
+              holes: outline.holes?.map((h) =>
+                outlineSelected || holeIds.has(h.id)
+                  ? { ...h, points: h.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) }
+                  : h,
+              ),
+            };
+          }
+
+          return { ...s, walls, locations, outline };
+        },
         { snapshot: true },
       );
     },
-    [updateActiveFloor],
+    [selection, updateActiveFloor],
   );
 
   const onWallUpdate = useCallback(
@@ -908,7 +961,7 @@ export function WarehousePlanEditor({
           onWallAdded={onWallAdded}
           onWallBowChange={onWallBowChange}
           onLocationAdded={onLocationAdded}
-          onLocationMove={onLocationMove}
+          onSelectionMove={onSelectionMove}
           onOutlineCommitted={onOutlineCommitted}
           onHoleCommitted={onHoleCommitted}
           onWallUpdate={onWallUpdate}
@@ -952,7 +1005,7 @@ export function WarehousePlanEditor({
                 onWallAdded={onWallAdded}
                 onWallBowChange={onWallBowChange}
                 onLocationAdded={onLocationAdded}
-                onLocationMove={onLocationMove}
+                onSelectionMove={onSelectionMove}
                 onOutlineCommitted={onOutlineCommitted}
                 onHoleCommitted={onHoleCommitted}
               />
@@ -1026,7 +1079,7 @@ interface MobileLayoutProps {
     width: number;
     height: number;
   }) => void;
-  onLocationMove: (id: string | number, x: number, y: number) => void;
+  onSelectionMove: (dx: number, dy: number) => void;
   onOutlineCommitted: (points: Point[]) => void;
   onHoleCommitted: (points: Point[]) => void;
   onWallUpdate: (id: string, patch: Partial<Wall>) => void;
@@ -1061,7 +1114,7 @@ function MobileLayout({
   onWallAdded,
   onWallBowChange,
   onLocationAdded,
-  onLocationMove,
+  onSelectionMove,
   onOutlineCommitted,
   onHoleCommitted,
   onWallUpdate,
@@ -1094,7 +1147,7 @@ function MobileLayout({
             onWallAdded={onWallAdded}
             onWallBowChange={onWallBowChange}
             onLocationAdded={onLocationAdded}
-            onLocationMove={onLocationMove}
+            onSelectionMove={onSelectionMove}
             onOutlineCommitted={onOutlineCommitted}
             onHoleCommitted={onHoleCommitted}
           />

@@ -61,7 +61,12 @@ interface PlanCanvasProps {
     width: number;
     height: number;
   }) => void;
-  onLocationMove: (id: string | number, x: number, y: number) => void;
+  /** Translate every selected item by (dx, dy) cm in one snapshot.
+   *  Fires once on drag end for the wall / location the user grabbed;
+   *  the parent applies the delta to every selected item so a group
+   *  drag is a single undo step. dx/dy are already snapped to 50cm.
+   *  For a single-selected item this collapses to a normal move. */
+  onSelectionMove: (dx: number, dy: number) => void;
   onOutlineCommitted: (points: Point[]) => void;
   onHoleCommitted: (points: Point[]) => void;
 }
@@ -133,7 +138,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onWallAdded,
       onWallBowChange,
       onLocationAdded,
-      onLocationMove,
+      onSelectionMove,
       onOutlineCommitted,
       onHoleCommitted,
     },
@@ -763,6 +768,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 viewportScale={viewport.scale}
                 onSelect={(e) => selectItem({ kind: "wall", id: wall.id }, e)}
                 onBowChange={(bow) => onWallBowChange(wall.id, bow)}
+                onGroupMove={onSelectionMove}
               />
             ))}
           </Layer>
@@ -778,7 +784,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   selected={isSelected(selection, { kind: "location", id })}
                   readOnly={readOnly}
                   onSelect={(e) => selectItem({ kind: "location", id }, e)}
-                  onDragEnd={(x, y) => onLocationMove(id, x, y)}
+                  onGroupMove={onSelectionMove}
                 />
               );
             })}
@@ -961,6 +967,7 @@ function WallShape({
   viewportScale,
   onSelect,
   onBowChange,
+  onGroupMove,
 }: {
   wall: Wall;
   selected: boolean;
@@ -968,12 +975,29 @@ function WallShape({
   viewportScale: number;
   onSelect: SelectHandler;
   onBowChange: (bow: number) => void;
+  /** Fire on drag end of this wall — the canvas-level handler
+   *  applies the snapped (dx, dy) translation to every selected
+   *  item so a multi-select drag is a single undo step. The wall
+   *  is itself part of the selection, so it moves too. */
+  onGroupMove: (dx: number, dy: number) => void;
 }) {
   const bow = wall.bow ?? 0;
   const isCurved = Math.abs(bow) > 0.5;
 
   const stroke = selected ? "rgb(59,130,246)" : "rgb(45,45,45)";
   const strokeWidth = selected ? 12 : 10;
+  const draggable = !readOnly && selected;
+
+  // Common drag end: snap the Konva node offset to the 50cm grid,
+  // fire the canvas-level handler with that delta, then zero the
+  // node so the next render (which has the new wall coords baked
+  // into `points`) doesn't double-offset.
+  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+    const dx = snapCm(e.target.x());
+    const dy = snapCm(e.target.y());
+    e.target.position({ x: 0, y: 0 });
+    if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
+  };
 
   // Straight wall is rendered as a Konva.Line so we keep the well-
   // tested hit detection. Curved walls use a Shape with sceneFunc +
@@ -998,8 +1022,10 @@ function WallShape({
       strokeWidth={strokeWidth}
       lineCap="round"
       hitStrokeWidth={28}
+      draggable={draggable}
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
+      onDragEnd={draggable ? handleDragEnd : undefined}
     />
   ) : (
     <Line
@@ -1010,6 +1036,8 @@ function WallShape({
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
       hitStrokeWidth={28}
+      draggable={draggable}
+      onDragEnd={draggable ? handleDragEnd : undefined}
     />
   );
 
@@ -1156,13 +1184,17 @@ function LocationShape({
   selected,
   readOnly,
   onSelect,
-  onDragEnd,
+  onGroupMove,
 }: {
   location: LocalLocation;
   selected: boolean;
   readOnly: boolean;
   onSelect: SelectHandler;
-  onDragEnd: (x: number, y: number) => void;
+  /** Fire on drag end of this location — the canvas-level handler
+   *  applies the snapped (dx, dy) to every selected item so group
+   *  moves are a single undo step. The dragged location is always
+   *  selected so it moves too. */
+  onGroupMove: (dx: number, dy: number) => void;
 }) {
   const kindColor: Record<string, { fill: string; stroke: string }> = {
     rack: { fill: "rgba(16,185,129,0.18)", stroke: "rgb(16,185,129)" },
@@ -1187,7 +1219,9 @@ function LocationShape({
         const nx = snapCm(node.x());
         const ny = snapCm(node.y());
         node.position({ x: nx, y: ny });
-        onDragEnd(nx, ny);
+        const dx = nx - location.x;
+        const dy = ny - location.y;
+        if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
       }}
     >
       <Rect
