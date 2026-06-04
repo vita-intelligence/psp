@@ -25,6 +25,7 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
+  PathAnnotation,
   Point,
   SelectionItem,
   SelectionSet,
@@ -44,6 +45,7 @@ interface PlanPropertiesProps {
   walls: Wall[];
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
+  paths: PathAnnotation[];
   locations: LocalLocation[];
   /** Parent warehouse uuid — needed by the LocationBody to open the
    *  Cells dialog (which calls server actions scoped to the
@@ -68,6 +70,8 @@ interface PlanPropertiesProps {
   onTextDelete: (id: string) => void;
   onArrowUpdate: (id: string, patch: Partial<ArrowAnnotation>) => void;
   onArrowDelete: (id: string) => void;
+  onPathUpdate: (id: string, patch: Partial<PathAnnotation>) => void;
+  onPathDelete: (id: string) => void;
   onSelectionColor: (color: string | null) => void;
   onLocationUpdate: (
     id: string | number,
@@ -95,6 +99,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
     walls,
     texts,
     arrows,
+    paths,
     locations,
     readOnly,
     layout = "side",
@@ -110,6 +115,8 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onTextDelete,
     onArrowUpdate,
     onArrowDelete,
+    onPathUpdate,
+    onPathDelete,
     onSelectionColor,
     onLocationUpdate,
     onLocationDelete,
@@ -220,6 +227,17 @@ export function PlanProperties(props: PlanPropertiesProps) {
           onDelete={() => onArrowDelete(arrow.id)}
         />
       ) : null;
+    } else if (item.kind === "path") {
+      const path = paths.find((p) => p.id === item.id);
+      title = "Path / route";
+      body = path ? (
+        <PathBody
+          path={path}
+          readOnly={readOnly}
+          onUpdate={(patch) => onPathUpdate(path.id, patch)}
+          onDelete={() => onPathDelete(path.id)}
+        />
+      ) : null;
     } else {
       const location = locations.find(
         (l) => (l.tempId ?? l.uuid) === item.id,
@@ -276,7 +294,8 @@ function MultiSelectBody({
       s.kind === "hole" ||
       s.kind === "location" ||
       s.kind === "text" ||
-      s.kind === "arrow",
+      s.kind === "arrow" ||
+      s.kind === "path",
   ).length;
   // Count by kind for the breakdown badge row.
   const counts = selection.reduce(
@@ -295,6 +314,7 @@ function MultiSelectBody({
     location: "locations",
     text: "texts",
     arrow: "arrows",
+    path: "paths",
   };
   return (
     <div className="space-y-3 text-xs">
@@ -1152,6 +1172,94 @@ function ArrowBody({
           >
             <Trash2 className="mr-1.5 size-3.5" />
             Delete arrow
+          </Button>
+        )}
+      </div>
+    </fieldset>
+  );
+}
+
+function PathBody({
+  path,
+  readOnly,
+  onUpdate,
+  onDelete,
+}: {
+  path: PathAnnotation;
+  readOnly: boolean;
+  onUpdate: (patch: Partial<PathAnnotation>) => void;
+  onDelete: () => void;
+}) {
+  const widthCm = (path.width_m ?? 1.2) * 100;
+  return (
+    <fieldset disabled={readOnly} className="contents">
+      <div className="space-y-3">
+        <div className="space-y-1">
+          <Label htmlFor="path-name" className="text-xs">
+            Label (optional)
+          </Label>
+          <Input
+            id="path-name"
+            value={path.name ?? ""}
+            onChange={(e) =>
+              onUpdate({ name: e.target.value || undefined })
+            }
+            placeholder="Forklift route A"
+            className="h-8 text-xs"
+          />
+        </div>
+
+        <Row label="Vertices">
+          <span className="font-mono text-xs">{path.points.length}</span>
+        </Row>
+
+        <div className="space-y-1">
+          <Label htmlFor="path-width" className="text-xs">
+            Lane width (m)
+          </Label>
+          <MetresInput
+            valueCm={widthCm}
+            allowEmpty
+            placeholder="1.2"
+            onChange={(cm) =>
+              onUpdate({
+                width_m:
+                  cm === null
+                    ? undefined
+                    : Number(cmToMetres(cm).toFixed(2)),
+              })
+            }
+          />
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            Physical width of the lane. Forklift routes are typically
+            1.2 – 1.8 m; walking paths 0.6 – 0.9 m.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Colour
+          </div>
+          <ColorPicker
+            value={path.color ?? null}
+            defaultColor="#f59e0b"
+            readOnly={readOnly}
+            onChange={(c) =>
+              onUpdate({ color: c === null ? undefined : c })
+            }
+          />
+        </div>
+
+        {!readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            className="w-full justify-start text-destructive hover:text-destructive"
+          >
+            <Trash2 className="mr-1.5 size-3.5" />
+            Delete path
           </Button>
         )}
       </div>

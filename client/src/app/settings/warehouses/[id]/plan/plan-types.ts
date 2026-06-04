@@ -111,6 +111,24 @@ export interface ArrowAnnotation {
   color?: string;
 }
 
+/** Path / route annotation — a multi-segment polyline. Used for
+ *  marking forklift routes, walking lanes, emergency exits, loading
+ *  flows. `width_m` is the physical lane width in metres so a wide
+ *  forklift road and a narrow walking path can coexist on the same
+ *  canvas. */
+export interface PathAnnotation {
+  id: string;
+  /** Open polyline — the renderer does NOT close it back to points[0]. */
+  points: Point[];
+  /** Path width in metres of world space. Default ~1.2 m (single
+   *  forklift lane). */
+  width_m?: number;
+  /** `#RRGGBB` stroke colour. undefined = the neutral default. */
+  color?: string;
+  /** Optional label rendered next to the path's midpoint. */
+  name?: string;
+}
+
 /** Full shape of `floor.canvas_json`. Schema is open so the editor
  *  can evolve without backend migrations; the FE always writes the
  *  full blob on save. Phase-4 rooms have been retired — connected
@@ -121,6 +139,7 @@ export interface CanvasJson {
   walls?: Wall[];
   texts?: TextAnnotation[];
   arrows?: ArrowAnnotation[];
+  paths?: PathAnnotation[];
 }
 
 export type ToolMode =
@@ -131,7 +150,8 @@ export type ToolMode =
   | "hole"
   | "location"
   | "text"
-  | "arrow";
+  | "arrow"
+  | "path";
 
 /** One selected element. The outline is a singleton per floor so it
  *  has no id; everything else is addressable. `outline-edge` and
@@ -146,7 +166,8 @@ export type SelectionItem =
   | { kind: "hole-edge"; holeId: string; index: number }
   | { kind: "location"; id: string }
   | { kind: "text"; id: string }
-  | { kind: "arrow"; id: string };
+  | { kind: "arrow"; id: string }
+  | { kind: "path"; id: string };
 
 /** The editor's selection is a SET — shift / ctrl / cmd clicking adds
  *  to it, marquee-drag adds anything intersecting the box, a plain

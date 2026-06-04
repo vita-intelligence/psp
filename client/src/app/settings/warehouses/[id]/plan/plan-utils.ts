@@ -6,6 +6,7 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
+  PathAnnotation,
   Point,
   SelectionItem,
   SelectionSet,
@@ -547,6 +548,7 @@ export function itemsInMarquee(
   outline: FloorOutline | undefined,
   texts: TextAnnotation[] = [],
   arrows: ArrowAnnotation[] = [],
+  paths: PathAnnotation[] = [],
 ): SelectionSet {
   const out: SelectionSet = [];
 
@@ -592,6 +594,13 @@ export function itemsInMarquee(
     const ab = normaliseRect(a.x1, a.y1, a.x2 - a.x1, a.y2 - a.y1);
     if (bboxOverlap(box, ab)) {
       out.push({ kind: "arrow", id: a.id });
+    }
+  }
+
+  for (const p of paths) {
+    const pb = polygonBbox(p.points);
+    if (pb && bboxOverlap(box, pb)) {
+      out.push({ kind: "path", id: p.id });
     }
   }
 

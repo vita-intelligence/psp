@@ -12,6 +12,7 @@ import {
   Minus,
   MousePointer2,
   PackageOpen,
+  Route,
   Type,
   ZoomIn,
   ZoomOut,
@@ -48,6 +49,7 @@ const TOOLS: ToolDef[] = [
   { id: "location", label: "Storage location", icon: PackageOpen, shortcut: "L" },
   { id: "text", label: "Text", icon: Type, shortcut: "T" },
   { id: "arrow", label: "Arrow", icon: ArrowUpRight, shortcut: "A" },
+  { id: "path", label: "Path / route", icon: Route, shortcut: "R" },
 ];
 
 /**

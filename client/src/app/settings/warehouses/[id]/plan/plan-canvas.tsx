@@ -52,6 +52,7 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
+  PathAnnotation,
   Point,
   SelectionItem,
   SelectionSet,
@@ -66,6 +67,7 @@ interface PlanCanvasProps {
   walls: Wall[];
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
+  paths: PathAnnotation[];
   locations: LocalLocation[];
   selection: SelectionSet;
   tool: ToolMode;
@@ -102,6 +104,7 @@ interface PlanCanvasProps {
    *  blurred / Enter-without-Shift / Esc. */
   onTextEdit: (id: string, text: string) => void;
   onArrowAdded: (arrow: ArrowAnnotation) => void;
+  onPathAdded: (path: PathAnnotation) => void;
   /** Translate every selected item by (dx, dy) cm in one snapshot.
    *  Fires once on drag end for the wall / location the user grabbed;
    *  the parent applies the delta to every selected item so a group
@@ -140,6 +143,7 @@ const DEFAULT_TEXT_HEIGHT_CM = 80;
 type Draft =
   | { kind: "wall"; x1: number; y1: number; x2: number; y2: number }
   | { kind: "arrow"; x1: number; y1: number; x2: number; y2: number }
+  | { kind: "path"; points: Point[] }
   | {
       kind: "location";
       x: number;
@@ -190,6 +194,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       walls,
       texts,
       arrows,
+      paths,
       locations,
       selection,
       tool,
@@ -206,6 +211,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onTextAdded,
       onTextEdit,
       onArrowAdded,
+      onPathAdded,
       onSelectionMove,
       onOutlineCommitted,
       onHoleCommitted,
@@ -388,6 +394,14 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             width: DEFAULT_TEXT_WIDTH_CM,
             height: DEFAULT_TEXT_HEIGHT_CM,
           });
+        } else if (tool === "path" && isBackground) {
+          // Multi-vertex polyline. Each click extends the draft;
+          // double-click on the stage commits via dblCommitDraft.
+          if (draft?.kind === "path") {
+            setDraft({ kind: "path", points: [...draft.points, p] });
+          } else {
+            setDraft({ kind: "path", points: [p] });
+          }
         } else if (tool === "outline" && isBackground) {
           if (draft?.kind === "outline") {
             const first = draft.points[0];
@@ -439,7 +453,8 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           tool === "outline" ||
           tool === "hole" ||
           tool === "wall" ||
-          tool === "arrow"
+          tool === "arrow" ||
+          tool === "path"
         ) {
           snappedPointer();
         }
@@ -541,6 +556,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           outline,
           texts,
           arrows,
+          paths,
         );
         onSelectionChange(
           draft.additive ? mergeSelections(selection, found) : found,
@@ -563,16 +579,26 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       outline,
       texts,
       arrows,
+      paths,
       viewport.scale,
     ]);
 
-    /** Commit the in-progress outline / hole. Bound to dblclick. */
+    /** Commit the in-progress polyline draft. Bound to dblclick. */
     function dblCommitDraft() {
       if (!draft) return;
       if (draft.kind === "outline" && draft.points.length >= 3) {
         onOutlineCommitted(draft.points);
       } else if (draft.kind === "hole" && draft.points.length >= 3) {
         onHoleCommitted(draft.points);
+      } else if (draft.kind === "path" && draft.points.length >= 2) {
+        // Drop the second-to-last vertex — double-click adds one
+        // before firing, so the final point is duplicated otherwise.
+        const pts = draft.points.slice(0, -1);
+        onPathAdded({
+          id: `path_${crypto.randomUUID()}`,
+          points: pts,
+          width_m: 1.2,
+        });
       }
       setDraft(null);
       setSnapIndicator(null);
@@ -960,6 +986,21 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             })}
           </Layer>
 
+          {/* Paths / routes */}
+          <Layer>
+            {paths.map((p) => (
+              <PathShape
+                key={p.id}
+                path={p}
+                selected={isSelected(selection, { kind: "path", id: p.id })}
+                readOnly={readOnly}
+                viewportScale={viewport.scale}
+                onSelect={(e) => selectItem({ kind: "path", id: p.id }, e)}
+                onGroupMove={onSelectionMove}
+              />
+            ))}
+          </Layer>
+
           {/* Arrows */}
           <Layer>
             {arrows.map((a) => (
@@ -1049,6 +1090,13 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
               <DraftPolyline
                 points={draft.points}
                 color="rgb(239,68,68)"
+                viewportScale={viewport.scale}
+              />
+            )}
+            {draft?.kind === "path" && (
+              <DraftPolyline
+                points={draft.points}
+                color="rgb(245,158,11)"
                 viewportScale={viewport.scale}
               />
             )}
@@ -1151,12 +1199,22 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         {/* Status badge for in-progress polygon draw. Helps the user
             understand they need to click the first vertex (or dbl)
             to commit. */}
-        {(draft?.kind === "outline" || draft?.kind === "hole") && (
+        {(draft?.kind === "outline" ||
+          draft?.kind === "hole" ||
+          draft?.kind === "path") && (
           <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-foreground/85 px-2 py-1 text-[11px] font-medium text-background shadow-sm backdrop-blur">
-            {draft.kind === "outline" ? "Drawing floor outline" : "Drawing hole"}
+            {draft.kind === "outline"
+              ? "Drawing floor outline"
+              : draft.kind === "hole"
+                ? "Drawing hole"
+                : "Drawing path / route"}
             {" · "}
-            Click first vertex or double-click to close
-            {draft.points.length < 3 && ` · ${3 - draft.points.length} more`}
+            {draft.kind === "path"
+              ? "Click to add a vertex · double-click to finish"
+              : "Click first vertex or double-click to close"}
+            {draft.kind !== "path" &&
+              draft.points.length < 3 &&
+              ` · ${3 - draft.points.length} more`}
           </div>
         )}
       </div>
@@ -1933,6 +1991,83 @@ function TextShape({
         listening={false}
       />
     </Group>
+  );
+}
+
+function PathShape({
+  path,
+  selected,
+  readOnly,
+  viewportScale,
+  onSelect,
+  onGroupMove,
+}: {
+  path: PathAnnotation;
+  selected: boolean;
+  readOnly: boolean;
+  viewportScale: number;
+  onSelect: SelectHandler;
+  onGroupMove: (dx: number, dy: number) => void;
+}) {
+  const hasCustomColor = isHexColor(path.color);
+  const baseColor = hasCustomColor ? path.color : "rgb(245,158,11)";
+  const stroke = selected && !hasCustomColor ? "rgb(59,130,246)" : baseColor;
+  // World-space width in cm (storage `width_m` is metres). Falls
+  // back to a 1.2 m forklift lane.
+  const widthCm = Math.max(10, (path.width_m ?? 1.2) * 100);
+  const draggable = !readOnly && selected;
+  const selectionShadow = selected
+    ? {
+        shadowColor: "rgb(59,130,246)",
+        shadowBlur: 10,
+        shadowOpacity: 0.9,
+        shadowEnabled: true,
+      }
+    : { shadowEnabled: false };
+
+  // Flatten Point[] → number[] for Konva.Line.
+  const flat: number[] = [];
+  for (const pt of path.points) flat.push(pt.x, pt.y);
+
+  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+    const dx = snapCm(e.target.x());
+    const dy = snapCm(e.target.y());
+    e.target.position({ x: 0, y: 0 });
+    if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
+  };
+
+  if (path.points.length < 2) return null;
+
+  return (
+    <>
+      <Line
+        points={flat}
+        stroke={stroke}
+        strokeWidth={widthCm}
+        opacity={0.45}
+        lineCap="round"
+        lineJoin="round"
+        hitStrokeWidth={Math.max(widthCm, 28)}
+        draggable={draggable}
+        dragBoundFunc={draggable ? gridSnapDragBound : undefined}
+        onClick={readOnly ? undefined : onSelect}
+        onTap={readOnly ? undefined : onSelect}
+        onDragEnd={draggable ? handleDragEnd : undefined}
+        {...selectionShadow}
+      />
+      {/* Centre stripe — dashed so the path reads as a route rather
+          than a filled corridor. Not interactive. */}
+      <Line
+        points={flat}
+        stroke={stroke}
+        strokeWidth={Math.max(4, widthCm / 12)}
+        dash={[widthCm / 2, widthCm / 2]}
+        lineCap="round"
+        lineJoin="round"
+        listening={false}
+        opacity={0.9}
+      />
+    </>
   );
 }
 
