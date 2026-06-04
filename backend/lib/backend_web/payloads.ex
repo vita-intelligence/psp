@@ -122,4 +122,54 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  @doc """
+  Floor payload. `storage_locations` is included when the association
+  has been preloaded — otherwise omitted so the FE knows "not loaded"
+  rather than "no locations". Empty list means "loaded, but empty".
+  """
+  def floor(f) do
+    base = %{
+      id: f.id,
+      uuid: f.uuid,
+      warehouse_id: f.warehouse_id,
+      name: f.name,
+      ordinal: f.ordinal,
+      canvas_json: f.canvas_json,
+      inserted_at: f.inserted_at,
+      updated_at: f.updated_at,
+      created_by: actor(f, :created_by),
+      updated_by: actor(f, :updated_by)
+    }
+
+    case Map.get(f, :storage_locations) do
+      %Ecto.Association.NotLoaded{} -> base
+      nil -> base
+      locations -> Map.put(base, :storage_locations, Enum.map(locations, &storage_location/1))
+    end
+  end
+
+  def storage_location(l) do
+    %{
+      id: l.id,
+      uuid: l.uuid,
+      warehouse_id: l.warehouse_id,
+      floor_id: l.floor_id,
+      name: l.name,
+      code: l.code,
+      kind: l.kind,
+      x: l.x,
+      y: l.y,
+      width: l.width,
+      height: l.height,
+      width_m: l.width_m,
+      height_m: l.height_m,
+      depth_m: l.depth_m,
+      capacity: l.capacity,
+      notes: l.notes,
+      inserted_at: l.inserted_at,
+      updated_at: l.updated_at,
+      created_by: actor(l, :created_by),
+      updated_by: actor(l, :updated_by)
+    }
+  end
 end

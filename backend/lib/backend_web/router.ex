@@ -45,7 +45,20 @@ defmodule BackendWeb.Router do
     put "/company/locale", CompanyController, :update_locale
     put "/company/bag", CompanyController, :update_bag
 
-    resources "/warehouses", WarehouseController, only: [:index, :show, :create, :update, :delete]
+    resources "/warehouses", WarehouseController,
+      only: [:index, :show, :create, :update, :delete] do
+      # Floors are nested — /warehouses/:warehouse_id/floors. Phoenix
+      # passes the parent uuid as `warehouse_id` (URL param naming is
+      # by resource, not by column name).
+      resources "/floors", FloorController, except: [:new, :edit]
+
+      # Locations are nested under the warehouse rather than the
+      # floor because the body may carry a new `floor_uuid` to move
+      # them between floors on update. Lookup is by warehouse +
+      # location uuid.
+      resources "/storage-locations", StorageLocationController,
+        except: [:new, :edit, :index]
+    end
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
