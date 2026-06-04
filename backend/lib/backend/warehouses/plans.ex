@@ -21,6 +21,8 @@ defmodule Backend.Warehouses.Plans do
 
   alias Backend.Accounts.User
   alias Backend.Audit
+  alias Backend.Companies.Company
+  alias Backend.Numbering
   alias Backend.Repo
   alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, Warehouse}
 
@@ -195,6 +197,7 @@ defmodule Backend.Warehouses.Plans do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
+      |> maybe_assign_code("storage_location", floor.company_id)
 
     %StorageLocation{}
     |> StorageLocation.changeset(attrs)
@@ -391,5 +394,28 @@ defmodule Backend.Warehouses.Plans do
       {k, v} when is_atom(k) -> {Atom.to_string(k), v}
       pair -> pair
     end)
+  end
+
+  # Stamp a generated code on insert when the caller didn't supply
+  # one and the company has a numbering format configured. Operators
+  # can still type their own; we only fill the gap so a blank Code
+  # field on the UI produces `SL00012`, `FL00003`, … instead of nil.
+  defp maybe_assign_code(attrs, entity_key, company_id) do
+    case Map.get(attrs, "code") do
+      val when is_binary(val) and val != "" ->
+        attrs
+
+      _ ->
+        case Repo.get(Company, company_id) do
+          nil ->
+            attrs
+
+          company ->
+            case Numbering.next_code(company, entity_key) do
+              nil -> attrs
+              code -> Map.put(attrs, "code", code)
+            end
+        end
+    end
   end
 end

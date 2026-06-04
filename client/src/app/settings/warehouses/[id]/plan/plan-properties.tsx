@@ -761,19 +761,6 @@ function LocationBody({
     <fieldset disabled={readOnly} className="contents">
       <div className="space-y-3">
         <div className="space-y-1">
-          <Label htmlFor="loc-name" className="text-xs">
-            Name
-          </Label>
-          <Input
-            id="loc-name"
-            value={location.name}
-            onChange={(e) => onUpdate({ name: e.target.value })}
-            maxLength={120}
-            className="h-8 text-xs"
-          />
-        </div>
-
-        <div className="space-y-1">
           <Label htmlFor="loc-code" className="text-xs">
             Code
           </Label>
@@ -781,10 +768,19 @@ function LocationBody({
             id="loc-code"
             value={location.code ?? ""}
             onChange={(e) => onUpdate({ code: e.target.value || null })}
-            placeholder="SL00012"
+            placeholder={
+              location.id > 0
+                ? "SL00012"
+                : "Auto-generated on save"
+            }
             maxLength={40}
             className="h-8 font-mono text-xs"
           />
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            Unique identifier for this rack/zone. Leave blank and the
+            system stamps the next sequence number using your company&apos;s
+            numbering format (e.g. <span className="font-mono">SL00012</span>).
+          </p>
         </div>
 
         <TagsField
@@ -794,58 +790,79 @@ function LocationBody({
           help="Free-form labels for the whole rack/zone. Cells inherit these for allocation — set once, every level uses them."
         />
 
-        <Row label="Position (m)">
-          <div className="grid grid-cols-2 gap-1.5">
-            <MetresInput
-              valueCm={location.x}
-              onChange={(cm) => cm !== null && onUpdate({ x: cm })}
-              placeholder="X"
-            />
-            <MetresInput
-              valueCm={location.y}
-              onChange={(cm) => cm !== null && onUpdate({ y: cm })}
-              placeholder="Y"
-            />
+        <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-3">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Where it sits on the floor map
           </div>
-        </Row>
 
-        <Row label="Footprint (m)">
-          <div className="grid grid-cols-2 gap-1.5">
-            <MetresInput
-              valueCm={location.width}
-              onChange={(cm) =>
-                cm !== null && onUpdate({ width: Math.max(20, cm) })
-              }
-              placeholder="W"
-            />
-            <MetresInput
-              valueCm={location.height}
-              onChange={(cm) =>
-                cm !== null && onUpdate({ height: Math.max(20, cm) })
-              }
-              placeholder="D"
-            />
+          <div className="space-y-1">
+            <Label className="text-xs">Position (m) — X, Y</Label>
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetresInput
+                valueCm={location.x}
+                onChange={(cm) => cm !== null && onUpdate({ x: cm })}
+                placeholder="X"
+              />
+              <MetresInput
+                valueCm={location.y}
+                onChange={(cm) => cm !== null && onUpdate({ y: cm })}
+                placeholder="Y"
+              />
+            </div>
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              Top-left corner of the rectangle on the floor plan,
+              measured from the floor&apos;s origin (0, 0).
+            </p>
           </div>
-        </Row>
 
-        <div className="space-y-1">
-          <Label htmlFor="loc-depth" className="text-xs">
-            Height / vertical depth (m)
-          </Label>
-          <MetresInput
-            valueCm={
-              location.depth_m === null || location.depth_m === undefined
-                ? null
-                : Number(location.depth_m) * 100
-            }
-            allowEmpty
-            placeholder="e.g. 2.5"
-            onChange={(cm) =>
-              onUpdate({
-                depth_m: cm === null ? null : String(cmToMetres(cm).toFixed(2)),
-              })
-            }
-          />
+          <div className="space-y-1">
+            <Label className="text-xs">Footprint (m) — Width × Depth</Label>
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetresInput
+                valueCm={location.width}
+                onChange={(cm) =>
+                  cm !== null && onUpdate({ width: Math.max(20, cm) })
+                }
+                placeholder="W"
+              />
+              <MetresInput
+                valueCm={location.height}
+                onChange={(cm) =>
+                  cm !== null && onUpdate({ height: Math.max(20, cm) })
+                }
+                placeholder="D"
+              />
+            </div>
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              How much floor space this rack takes up — its footprint
+              from above. Width = side-to-side, Depth = front-to-back.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="loc-depth" className="text-xs">
+              Total height (m)
+            </Label>
+            <MetresInput
+              valueCm={
+                location.depth_m === null || location.depth_m === undefined
+                  ? null
+                  : Number(location.depth_m) * 100
+              }
+              allowEmpty
+              placeholder="e.g. 2.5"
+              onChange={(cm) =>
+                onUpdate({
+                  depth_m: cm === null ? null : String(cmToMetres(cm).toFixed(2)),
+                })
+              }
+            />
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              How tall the whole rack is from the floor up. Per-level
+              heights are set inside Cells (so a 5-shelf rack at 2.5 m
+              total has roughly 0.5 m per cell unless levels differ).
+            </p>
+          </div>
         </div>
 
         <div className="space-y-1">
@@ -875,26 +892,42 @@ function LocationBody({
           />
         </div>
 
-        {location.id > 0 && (
-          <CellsDialog
-            warehouseUuid={warehouseUuid}
-            location={{
-              uuid: location.uuid,
-              name: location.name,
-              cells: location.cells ?? [],
-            }}
-            trigger={
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start"
-              >
-                <Layers className="mr-1.5 size-3.5" />
-                Cells ({location.cells?.length ?? 0})
-              </Button>
-            }
-          />
+        {location.id > 0 ? (
+          <div className="space-y-1.5 rounded-md border border-primary/30 bg-primary/[0.04] p-3">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-primary">
+              Levels (shelves inside this rack)
+            </div>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Every level has its own width × depth × height. Tag a
+              level if it&apos;s special (e.g. <span className="font-mono">picking</span>{" "}
+              on the top, <span className="font-mono">cold</span> in
+              the back); allocation matches items to levels that fit.
+            </p>
+            <CellsDialog
+              warehouseUuid={warehouseUuid}
+              location={{
+                uuid: location.uuid,
+                name: location.name,
+                cells: location.cells ?? [],
+              }}
+              trigger={
+                <Button
+                  type="button"
+                  size="sm"
+                  className="w-full justify-center"
+                >
+                  <Layers className="mr-1.5 size-3.5" />
+                  {(location.cells?.length ?? 0) === 0
+                    ? "Subdivide into levels"
+                    : `Manage ${location.cells?.length} level${location.cells?.length === 1 ? "" : "s"}`}
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-[11px] text-muted-foreground">
+            Save this location first to add levels.
+          </div>
         )}
 
         {location.id > 0 && (

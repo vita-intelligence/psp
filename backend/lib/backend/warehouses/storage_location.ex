@@ -87,8 +87,8 @@ defmodule Backend.Warehouses.StorageLocation do
       :created_by_id,
       :updated_by_id
     ])
-    |> validate_required([:warehouse_id, :floor_id, :company_id, :name])
-    |> validate_length(:name, min: 1, max: 120)
+    |> validate_required([:warehouse_id, :floor_id, :company_id])
+    |> validate_length(:name, max: 120)
     |> validate_length(:code, max: 40)
     # validate_number only runs when the field is present in the
     # changeset's changes — so the metre fields stay optional without

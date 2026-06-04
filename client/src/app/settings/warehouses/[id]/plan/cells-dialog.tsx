@@ -68,8 +68,8 @@ export function CellsDialog({
     startTransition(async () => {
       const res = await createCellAction(warehouseUuid, location.uuid, {
         // Server picks the next free ordinal — leave it off and the
-        // new level lands on top.
-        name: `Level ${(cells[0]?.ordinal ?? -1) + 2}`,
+        // new level lands on top. Display label is "Level N" derived
+        // from ordinal, so no need to store a name.
         tags: [],
       });
       if (!res.ok) {
@@ -215,7 +215,6 @@ function CellRow({
   // Local draft so the user can keep typing without each keystroke
   // round-tripping. Commit on blur — the audit log + realtime
   // channel fire once per coherent edit, not once per character.
-  const [name, setName] = useState(cell.name ?? "");
   const [w, setW] = useState(cell.width_m ?? "");
   const [d, setD] = useState(cell.depth_m ?? "");
   const [h, setH] = useState(cell.height_m ?? "");
@@ -249,18 +248,6 @@ function CellRow({
       </div>
 
       <div className="mt-2 space-y-2">
-        <div className="space-y-1">
-          <Label className="text-[11px]">Name</Label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={() => onPatch({ name: name.trim() || null })}
-            placeholder="Bottom shelf"
-            maxLength={80}
-            className="h-8 text-xs"
-          />
-        </div>
-
         <div className="grid grid-cols-3 gap-1.5">
           <Field
             label="Width (m)"
