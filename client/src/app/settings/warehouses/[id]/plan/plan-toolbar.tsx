@@ -4,15 +4,17 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolMode } from "./plan-types";
 import {
-  Hand,
-  MousePointer2,
-  Minus,
-  PackageOpen,
-  Frame,
+  ArrowUpRight,
   CircleDashed,
+  Frame,
+  Hand,
+  Maximize2,
+  Minus,
+  MousePointer2,
+  PackageOpen,
+  Type,
   ZoomIn,
   ZoomOut,
-  Maximize2,
 } from "lucide-react";
 
 interface PlanToolbarProps {
@@ -44,6 +46,8 @@ const TOOLS: ToolDef[] = [
   { id: "outline", label: "Floor outline", icon: Frame, shortcut: "F" },
   { id: "hole", label: "Cut a hole", icon: CircleDashed, shortcut: "O" },
   { id: "location", label: "Storage location", icon: PackageOpen, shortcut: "L" },
+  { id: "text", label: "Text", icon: Type, shortcut: "T" },
+  { id: "arrow", label: "Arrow", icon: ArrowUpRight, shortcut: "A" },
 ];
 
 /**

@@ -34,12 +34,14 @@ import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { Floor } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import type {
+  ArrowAnnotation,
   CanvasJson,
   FloorOutline,
   Hole,
   LocalLocation,
   Point,
   SelectionSet,
+  TextAnnotation,
   ToolMode,
   Viewport,
   Wall,
@@ -81,6 +83,8 @@ interface FloorState {
   meta: Floor;
   outline: FloorOutline | undefined;
   walls: Wall[];
+  texts: TextAnnotation[];
+  arrows: ArrowAnnotation[];
   locations: LocalLocation[];
   viewport: Viewport;
   /** True when canvas_json or any location row has been touched. */
@@ -90,6 +94,8 @@ interface FloorState {
 interface HistoryEntry {
   outline: FloorOutline | undefined;
   walls: Wall[];
+  texts: TextAnnotation[];
+  arrows: ArrowAnnotation[];
   locations: LocalLocation[];
 }
 
@@ -105,6 +111,8 @@ function buildFloorState(meta: Floor): FloorState {
     meta,
     outline: canvas.outline,
     walls: canvas.walls ?? [],
+    texts: canvas.texts ?? [],
+    arrows: canvas.arrows ?? [],
     locations,
     viewport: canvas.viewport ?? DEFAULT_VIEWPORT,
     dirty: false,
@@ -355,6 +363,8 @@ export function WarehousePlanEditor({
       const entry: HistoryEntry = {
         outline: state.outline,
         walls: state.walls,
+        texts: state.texts,
+        arrows: state.arrows,
         locations: state.locations,
       };
       const next = [...stack, entry].slice(-HISTORY_LIMIT);
@@ -390,6 +400,81 @@ export function WarehousePlanEditor({
       );
       setTool("select");
       setSelection([{ kind: "wall", id: wall.id }]);
+    },
+    [updateActiveFloor],
+  );
+
+  const onTextAdded = useCallback(
+    (geom: { x: number; y: number; width: number; height: number }) => {
+      const text: TextAnnotation = {
+        id: `txt_${crypto.randomUUID()}`,
+        x: geom.x,
+        y: geom.y,
+        width: geom.width,
+        height: geom.height,
+        text: "Text",
+        fontSize: 30,
+      };
+      updateActiveFloor(
+        (s) => ({ ...s, texts: [...s.texts, text] }),
+        { snapshot: true },
+      );
+      setTool("select");
+      setSelection([{ kind: "text", id: text.id }]);
+    },
+    [updateActiveFloor],
+  );
+
+  const onArrowAdded = useCallback(
+    (arrow: ArrowAnnotation) => {
+      updateActiveFloor(
+        (s) => ({ ...s, arrows: [...s.arrows, arrow] }),
+        { snapshot: true },
+      );
+      setTool("select");
+      setSelection([{ kind: "arrow", id: arrow.id }]);
+    },
+    [updateActiveFloor],
+  );
+
+  const onTextUpdate = useCallback(
+    (id: string, patch: Partial<TextAnnotation>) => {
+      updateActiveFloor((s) => ({
+        ...s,
+        texts: s.texts.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+      }));
+    },
+    [updateActiveFloor],
+  );
+
+  const onTextDelete = useCallback(
+    (id: string) => {
+      updateActiveFloor(
+        (s) => ({ ...s, texts: s.texts.filter((t) => t.id !== id) }),
+        { snapshot: true },
+      );
+      setSelection([]);
+    },
+    [updateActiveFloor],
+  );
+
+  const onArrowUpdate = useCallback(
+    (id: string, patch: Partial<ArrowAnnotation>) => {
+      updateActiveFloor((s) => ({
+        ...s,
+        arrows: s.arrows.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      }));
+    },
+    [updateActiveFloor],
+  );
+
+  const onArrowDelete = useCallback(
+    (id: string) => {
+      updateActiveFloor(
+        (s) => ({ ...s, arrows: s.arrows.filter((a) => a.id !== id) }),
+        { snapshot: true },
+      );
+      setSelection([]);
     },
     [updateActiveFloor],
   );
@@ -461,6 +546,16 @@ export function WarehousePlanEditor({
               .filter((it): it is { kind: "hole"; id: string } => it.kind === "hole")
               .map((it) => it.id),
           );
+          const textIds = new Set(
+            selection
+              .filter((it): it is { kind: "text"; id: string } => it.kind === "text")
+              .map((it) => it.id),
+          );
+          const arrowIds = new Set(
+            selection
+              .filter((it): it is { kind: "arrow"; id: string } => it.kind === "arrow")
+              .map((it) => it.id),
+          );
           const outlineSelected = selection.some((it) => it.kind === "outline");
 
           const walls = wallIds.size
@@ -479,6 +574,26 @@ export function WarehousePlanEditor({
               )
             : s.locations;
 
+          const texts = textIds.size
+            ? s.texts.map((t) =>
+                textIds.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t,
+              )
+            : s.texts;
+
+          const arrows = arrowIds.size
+            ? s.arrows.map((a) =>
+                arrowIds.has(a.id)
+                  ? {
+                      ...a,
+                      x1: a.x1 + dx,
+                      y1: a.y1 + dy,
+                      x2: a.x2 + dx,
+                      y2: a.y2 + dy,
+                    }
+                  : a,
+              )
+            : s.arrows;
+
           let outline = s.outline;
           if (outline && (outlineSelected || holeIds.size)) {
             outline = {
@@ -494,7 +609,7 @@ export function WarehousePlanEditor({
             };
           }
 
-          return { ...s, walls, locations, outline };
+          return { ...s, walls, locations, texts, arrows, outline };
         },
         { snapshot: true },
       );
@@ -765,6 +880,16 @@ export function WarehousePlanEditor({
               )
               .map((it) => it.id),
           );
+          const textIds = new Set(
+            selection
+              .filter((it): it is { kind: "text"; id: string } => it.kind === "text")
+              .map((it) => it.id),
+          );
+          const arrowIds = new Set(
+            selection
+              .filter((it): it is { kind: "arrow"; id: string } => it.kind === "arrow")
+              .map((it) => it.id),
+          );
           const outlineSelected = selection.some((it) => it.kind === "outline");
 
           const walls = wallIds.size
@@ -781,6 +906,18 @@ export function WarehousePlanEditor({
               )
             : s.locations;
 
+          const texts = textIds.size
+            ? s.texts.map((t) =>
+                textIds.has(t.id) ? { ...t, color: cMaybe } : t,
+              )
+            : s.texts;
+
+          const arrows = arrowIds.size
+            ? s.arrows.map((a) =>
+                arrowIds.has(a.id) ? { ...a, color: cMaybe } : a,
+              )
+            : s.arrows;
+
           let outline = s.outline;
           if (outline && (outlineSelected || holeIds.size)) {
             outline = {
@@ -792,7 +929,7 @@ export function WarehousePlanEditor({
             };
           }
 
-          return { ...s, walls, locations, outline };
+          return { ...s, walls, locations, texts, arrows, outline };
         },
         { snapshot: true },
       );
@@ -844,6 +981,16 @@ export function WarehousePlanEditor({
             )
             .map((it) => it.id),
         );
+        const textIds = new Set(
+          selection
+            .filter((it): it is { kind: "text"; id: string } => it.kind === "text")
+            .map((it) => it.id),
+        );
+        const arrowIds = new Set(
+          selection
+            .filter((it): it is { kind: "arrow"; id: string } => it.kind === "arrow")
+            .map((it) => it.id),
+        );
         const dropOutline = selection.some((it) => it.kind === "outline");
 
         return {
@@ -859,6 +1006,8 @@ export function WarehousePlanEditor({
                 }
               : s.outline,
           walls: s.walls.filter((w) => !wallIds.has(w.id)),
+          texts: s.texts.filter((t) => !textIds.has(t.id)),
+          arrows: s.arrows.filter((a) => !arrowIds.has(a.id)),
           locations: s.locations.map((l) => {
             const id = l.tempId ?? l.uuid;
             if (!locationIds.has(id)) return l;
@@ -890,6 +1039,8 @@ export function WarehousePlanEditor({
           {
             outline: current.outline,
             walls: current.walls,
+            texts: current.texts,
+            arrows: current.arrows,
             locations: current.locations,
           },
         ],
@@ -900,6 +1051,8 @@ export function WarehousePlanEditor({
           ...current,
           outline: last.outline,
           walls: last.walls,
+          texts: last.texts,
+          arrows: last.arrows,
           locations: last.locations,
           dirty: true,
         },
@@ -924,6 +1077,8 @@ export function WarehousePlanEditor({
           {
             outline: current.outline,
             walls: current.walls,
+            texts: current.texts,
+            arrows: current.arrows,
             locations: current.locations,
           },
         ],
@@ -934,6 +1089,8 @@ export function WarehousePlanEditor({
           ...current,
           outline: last.outline,
           walls: last.walls,
+          texts: last.texts,
+          arrows: last.arrows,
           locations: last.locations,
           dirty: true,
         },
@@ -989,6 +1146,12 @@ export function WarehousePlanEditor({
         case "l":
           setTool("location");
           break;
+        case "t":
+          setTool("text");
+          break;
+        case "a":
+          setTool("arrow");
+          break;
         case "escape":
           canvasRef.current?.cancelDraft();
           setSelection([]);
@@ -1013,6 +1176,8 @@ export function WarehousePlanEditor({
       viewport: s.viewport,
       outline: s.outline,
       walls: s.walls,
+      texts: s.texts.length > 0 ? s.texts : undefined,
+      arrows: s.arrows.length > 0 ? s.arrows : undefined,
     };
   }, []);
 
@@ -1312,6 +1477,8 @@ export function WarehousePlanEditor({
           onOutlineEdgeBowChange={onOutlineEdgeBowChange}
           onHoleEdgeBowChange={onHoleEdgeBowChange}
           onLocationAdded={onLocationAdded}
+          onTextAdded={onTextAdded}
+          onArrowAdded={onArrowAdded}
           onSelectionMove={onSelectionMove}
           onCursorMove={onCanvasCursorMove}
           onCursorLeave={liveHideCursor}
@@ -1324,6 +1491,10 @@ export function WarehousePlanEditor({
           onOutlineDelete={onOutlineDelete}
           onHoleUpdate={onHoleUpdate}
           onHoleDelete={onHoleDelete}
+          onTextUpdate={onTextUpdate}
+          onTextDelete={onTextDelete}
+          onArrowUpdate={onArrowUpdate}
+          onArrowDelete={onArrowDelete}
           onLocationUpdate={onLocationUpdate}
           onLocationDelete={onLocationDelete}
           onSelectionColor={onSelectionColor}
@@ -1348,6 +1519,8 @@ export function WarehousePlanEditor({
                 ref={canvasRef}
                 outline={activeFloor.outline}
                 walls={activeFloor.walls}
+                texts={activeFloor.texts}
+                arrows={activeFloor.arrows}
                 locations={activeFloor.locations}
                 selection={selection}
                 tool={tool}
@@ -1361,6 +1534,8 @@ export function WarehousePlanEditor({
                 onOutlineEdgeBowChange={onOutlineEdgeBowChange}
                 onHoleEdgeBowChange={onHoleEdgeBowChange}
                 onLocationAdded={onLocationAdded}
+                onTextAdded={onTextAdded}
+                onArrowAdded={onArrowAdded}
                 onSelectionMove={onSelectionMove}
                 onCursorMove={onCanvasCursorMove}
                 onCursorLeave={liveHideCursor}
@@ -1379,6 +1554,8 @@ export function WarehousePlanEditor({
             selection={selection}
             outline={activeFloor?.outline}
             walls={activeFloor?.walls ?? []}
+            texts={activeFloor?.texts ?? []}
+            arrows={activeFloor?.arrows ?? []}
             locations={activeFloor?.locations ?? []}
             readOnly={readOnly}
             layout="side"
@@ -1390,6 +1567,10 @@ export function WarehousePlanEditor({
             onHoleDelete={onHoleDelete}
             onOutlineEdgeBowChange={onOutlineEdgeBowChange}
             onHoleEdgeBowChange={onHoleEdgeBowChange}
+            onTextUpdate={onTextUpdate}
+            onTextDelete={onTextDelete}
+            onArrowUpdate={onArrowUpdate}
+            onArrowDelete={onArrowDelete}
             onLocationUpdate={onLocationUpdate}
             onLocationDelete={onLocationDelete}
             onSelectionColor={onSelectionColor}
@@ -1444,6 +1625,13 @@ interface MobileLayoutProps {
     width: number;
     height: number;
   }) => void;
+  onTextAdded: (g: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) => void;
+  onArrowAdded: (arrow: ArrowAnnotation) => void;
   onSelectionMove: (dx: number, dy: number) => void;
   onCursorMove: (worldX: number, worldY: number) => void;
   onCursorLeave: () => void;
@@ -1456,6 +1644,10 @@ interface MobileLayoutProps {
   onOutlineDelete: () => void;
   onHoleUpdate: (id: string, patch: Partial<Hole>) => void;
   onHoleDelete: (id: string) => void;
+  onTextUpdate: (id: string, patch: Partial<TextAnnotation>) => void;
+  onTextDelete: (id: string) => void;
+  onArrowUpdate: (id: string, patch: Partial<ArrowAnnotation>) => void;
+  onArrowDelete: (id: string) => void;
   onLocationUpdate: (
     id: string | number,
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
@@ -1484,6 +1676,8 @@ function MobileLayout({
   onOutlineEdgeBowChange,
   onHoleEdgeBowChange,
   onLocationAdded,
+  onTextAdded,
+  onArrowAdded,
   onSelectionMove,
   onCursorMove,
   onCursorLeave,
@@ -1496,6 +1690,10 @@ function MobileLayout({
   onOutlineDelete,
   onHoleUpdate,
   onHoleDelete,
+  onTextUpdate,
+  onTextDelete,
+  onArrowUpdate,
+  onArrowDelete,
   onLocationUpdate,
   onLocationDelete,
   onSelectionColor,
@@ -1528,6 +1726,8 @@ function MobileLayout({
             ref={canvasRef}
             outline={activeFloor.outline}
             walls={activeFloor.walls}
+            texts={activeFloor.texts}
+            arrows={activeFloor.arrows}
             locations={activeFloor.locations}
             selection={selection}
             tool={tool}
@@ -1541,6 +1741,8 @@ function MobileLayout({
             onOutlineEdgeBowChange={onOutlineEdgeBowChange}
             onHoleEdgeBowChange={onHoleEdgeBowChange}
             onLocationAdded={onLocationAdded}
+            onTextAdded={onTextAdded}
+            onArrowAdded={onArrowAdded}
             onSelectionMove={onSelectionMove}
             onCursorMove={onCursorMove}
             onCursorLeave={onCursorLeave}
@@ -1596,7 +1798,11 @@ function MobileLayout({
                         ? `Cutout edge ${selection[0]!.index + 1}`
                         : selection[0]!.kind === "wall"
                           ? "Wall"
-                          : "Storage location"}
+                          : selection[0]!.kind === "text"
+                            ? "Text"
+                            : selection[0]!.kind === "arrow"
+                              ? "Arrow"
+                              : "Storage location"}
             </p>
             <Button
               type="button"
@@ -1614,6 +1820,8 @@ function MobileLayout({
               selection={selection}
               outline={activeFloor.outline}
               walls={activeFloor.walls}
+              texts={activeFloor.texts}
+              arrows={activeFloor.arrows}
               locations={activeFloor.locations}
               readOnly={readOnly}
               layout="sheet"
@@ -1625,6 +1833,10 @@ function MobileLayout({
               onHoleDelete={onHoleDelete}
               onOutlineEdgeBowChange={onOutlineEdgeBowChange}
               onHoleEdgeBowChange={onHoleEdgeBowChange}
+              onTextUpdate={onTextUpdate}
+              onTextDelete={onTextDelete}
+              onArrowUpdate={onArrowUpdate}
+              onArrowDelete={onArrowDelete}
               onLocationUpdate={onLocationUpdate}
               onLocationDelete={onLocationDelete}
               onSelectionColor={onSelectionColor}

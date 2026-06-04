@@ -80,6 +80,37 @@ export interface Viewport {
   scale: number;
 }
 
+/** Free-form text annotation — a labelled rectangle drawn on top of
+ *  the architectural layer. Position + size in cm, just like every
+ *  other shape. Selectable, draggable, paintable. */
+export interface TextAnnotation {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  /** Font size in centimetres of world space (so it scales with the
+   *  rest of the drawing instead of staying a fixed pixel size). */
+  fontSize?: number;
+  /** `#RRGGBB` colour override — affects the text + the box border.
+   *  undefined = the neutral default. */
+  color?: string;
+}
+
+/** Arrow / pointer annotation — a straight line from (x1,y1) to
+ *  (x2,y2) with a triangular head at the (x2,y2) end. Useful for
+ *  "loading bay direction", "fire exit", etc. */
+export interface ArrowAnnotation {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** `#RRGGBB` colour override — affects the line + the head. */
+  color?: string;
+}
+
 /** Full shape of `floor.canvas_json`. Schema is open so the editor
  *  can evolve without backend migrations; the FE always writes the
  *  full blob on save. Phase-4 rooms have been retired — connected
@@ -88,6 +119,8 @@ export interface CanvasJson {
   viewport?: Viewport;
   outline?: FloorOutline;
   walls?: Wall[];
+  texts?: TextAnnotation[];
+  arrows?: ArrowAnnotation[];
 }
 
 export type ToolMode =
@@ -96,7 +129,9 @@ export type ToolMode =
   | "wall"
   | "outline"
   | "hole"
-  | "location";
+  | "location"
+  | "text"
+  | "arrow";
 
 /** One selected element. The outline is a singleton per floor so it
  *  has no id; everything else is addressable. `outline-edge` and
@@ -109,7 +144,9 @@ export type SelectionItem =
   | { kind: "outline-edge"; index: number }
   | { kind: "hole"; id: string }
   | { kind: "hole-edge"; holeId: string; index: number }
-  | { kind: "location"; id: string };
+  | { kind: "location"; id: string }
+  | { kind: "text"; id: string }
+  | { kind: "arrow"; id: string };
 
 /** The editor's selection is a SET — shift / ctrl / cmd clicking adds
  *  to it, marquee-drag adds anything intersecting the box, a plain

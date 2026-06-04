@@ -9,7 +9,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { Stage, Layer, Rect, Line, Group, Text, Shape, Circle } from "react-konva";
+import {
+  Arrow,
+  Circle,
+  Group,
+  Layer,
+  Line,
+  Rect,
+  Shape,
+  Stage,
+  Text,
+} from "react-konva";
 import type Konva from "konva";
 import type { RemotePlanCursor } from "@/lib/realtime/use-live-plan";
 import { cn } from "@/lib/utils";
@@ -37,12 +47,14 @@ import {
   toggleSelection,
 } from "./plan-utils";
 import type {
+  ArrowAnnotation,
   FloorOutline,
   Hole,
   LocalLocation,
   Point,
   SelectionItem,
   SelectionSet,
+  TextAnnotation,
   ToolMode,
   Viewport,
   Wall,
@@ -51,6 +63,8 @@ import type {
 interface PlanCanvasProps {
   outline: FloorOutline | undefined;
   walls: Wall[];
+  texts: TextAnnotation[];
+  arrows: ArrowAnnotation[];
   locations: LocalLocation[];
   selection: SelectionSet;
   tool: ToolMode;
@@ -76,6 +90,13 @@ interface PlanCanvasProps {
     width: number;
     height: number;
   }) => void;
+  onTextAdded: (geom: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) => void;
+  onArrowAdded: (arrow: ArrowAnnotation) => void;
   /** Translate every selected item by (dx, dy) cm in one snapshot.
    *  Fires once on drag end for the wall / location the user grabbed;
    *  the parent applies the delta to every selected item so a group
@@ -108,11 +129,21 @@ const MIN_SCALE = 0.05;
 const MAX_SCALE = 4;
 const DEFAULT_LOCATION_CM = 100; // 1m × 1m default tile
 const MIN_MARQUEE_PX = 4;        // smaller than this = treat as a plain click
+const DEFAULT_TEXT_WIDTH_CM = 250; // 2.5m × 0.8m initial textbox size
+const DEFAULT_TEXT_HEIGHT_CM = 80;
 
 type Draft =
   | { kind: "wall"; x1: number; y1: number; x2: number; y2: number }
+  | { kind: "arrow"; x1: number; y1: number; x2: number; y2: number }
   | {
       kind: "location";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }
+  | {
+      kind: "text";
       x: number;
       y: number;
       width: number;
@@ -152,6 +183,8 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     {
       outline,
       walls,
+      texts,
+      arrows,
       locations,
       selection,
       tool,
@@ -165,6 +198,8 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onOutlineEdgeBowChange,
       onHoleEdgeBowChange,
       onLocationAdded,
+      onTextAdded,
+      onArrowAdded,
       onSelectionMove,
       onOutlineCommitted,
       onHoleCommitted,
@@ -325,6 +360,8 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
 
         if (tool === "wall" && isBackground) {
           setDraft({ kind: "wall", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
+        } else if (tool === "arrow" && isBackground) {
+          setDraft({ kind: "arrow", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
         } else if (tool === "location" && isBackground) {
           setDraft({
             kind: "location",
@@ -332,6 +369,14 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             y: snapCm(p.y - DEFAULT_LOCATION_CM / 2),
             width: DEFAULT_LOCATION_CM,
             height: DEFAULT_LOCATION_CM,
+          });
+        } else if (tool === "text" && isBackground) {
+          setDraft({
+            kind: "text",
+            x: p.x,
+            y: p.y,
+            width: DEFAULT_TEXT_WIDTH_CM,
+            height: DEFAULT_TEXT_HEIGHT_CM,
           });
         } else if (tool === "outline" && isBackground) {
           if (draft?.kind === "outline") {
@@ -380,7 +425,12 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
 
     const updateDraw = useCallback(() => {
       if (!draft) {
-        if (tool === "outline" || tool === "hole" || tool === "wall") {
+        if (
+          tool === "outline" ||
+          tool === "hole" ||
+          tool === "wall" ||
+          tool === "arrow"
+        ) {
           snappedPointer();
         }
         return;
@@ -396,9 +446,9 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       const p = snappedPointer();
       if (!p) return;
 
-      if (draft.kind === "wall") {
+      if (draft.kind === "wall" || draft.kind === "arrow") {
         setDraft({ ...draft, x2: p.x, y2: p.y });
-      } else if (draft.kind === "location") {
+      } else if (draft.kind === "location" || draft.kind === "text") {
         setDraft({
           ...draft,
           width: Math.max(GRID_MINOR_CM, p.x - draft.x),
@@ -424,8 +474,33 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         setDraft(null);
         return;
       }
+      if (draft.kind === "arrow") {
+        if (draft.x1 === draft.x2 && draft.y1 === draft.y2) {
+          setDraft(null);
+          return;
+        }
+        onArrowAdded({
+          id: `arr_${crypto.randomUUID()}`,
+          x1: draft.x1,
+          y1: draft.y1,
+          x2: draft.x2,
+          y2: draft.y2,
+        });
+        setDraft(null);
+        return;
+      }
       if (draft.kind === "location") {
         onLocationAdded({
+          x: draft.x,
+          y: draft.y,
+          width: Math.max(GRID_MINOR_CM, draft.width),
+          height: Math.max(GRID_MINOR_CM, draft.height),
+        });
+        setDraft(null);
+        return;
+      }
+      if (draft.kind === "text") {
+        onTextAdded({
           x: draft.x,
           y: draft.y,
           width: Math.max(GRID_MINOR_CM, draft.width),
@@ -449,7 +524,14 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           setDraft(null);
           return;
         }
-        const found = itemsInMarquee(box, walls, locations, outline);
+        const found = itemsInMarquee(
+          box,
+          walls,
+          locations,
+          outline,
+          texts,
+          arrows,
+        );
         onSelectionChange(
           draft.additive ? mergeSelections(selection, found) : found,
         );
@@ -461,12 +543,16 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     }, [
       draft,
       onWallAdded,
+      onArrowAdded,
       onLocationAdded,
+      onTextAdded,
       onSelectionChange,
       selection,
       walls,
       locations,
       outline,
+      texts,
+      arrows,
       viewport.scale,
     ]);
 
@@ -864,6 +950,36 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             })}
           </Layer>
 
+          {/* Arrows */}
+          <Layer>
+            {arrows.map((a) => (
+              <ArrowShape
+                key={a.id}
+                arrow={a}
+                selected={isSelected(selection, { kind: "arrow", id: a.id })}
+                readOnly={readOnly}
+                viewportScale={viewport.scale}
+                onSelect={(e) => selectItem({ kind: "arrow", id: a.id }, e)}
+                onGroupMove={onSelectionMove}
+              />
+            ))}
+          </Layer>
+
+          {/* Texts */}
+          <Layer>
+            {texts.map((t) => (
+              <TextShape
+                key={t.id}
+                text={t}
+                selected={isSelected(selection, { kind: "text", id: t.id })}
+                readOnly={readOnly}
+                viewportScale={viewport.scale}
+                onSelect={(e) => selectItem({ kind: "text", id: t.id }, e)}
+                onGroupMove={onSelectionMove}
+              />
+            ))}
+          </Layer>
+
           {/* Drafts + snap indicator */}
           <Layer listening={false}>
             {draft?.kind === "wall" && (
@@ -875,6 +991,18 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 dash={[10, 6]}
               />
             )}
+            {draft?.kind === "arrow" && (
+              <Arrow
+                points={[draft.x1, draft.y1, draft.x2, draft.y2]}
+                stroke="rgb(59,130,246)"
+                fill="rgb(59,130,246)"
+                strokeWidth={3}
+                pointerLength={20 / viewport.scale}
+                pointerWidth={16 / viewport.scale}
+                lineCap="round"
+                dash={[8, 6]}
+              />
+            )}
             {draft?.kind === "location" && (
               <Rect
                 x={Math.min(draft.x, draft.x + draft.width)}
@@ -883,6 +1011,18 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 height={Math.abs(draft.height)}
                 fill="rgba(16,185,129,0.15)"
                 stroke="rgb(16,185,129)"
+                strokeWidth={2}
+                dash={[6, 4]}
+              />
+            )}
+            {draft?.kind === "text" && (
+              <Rect
+                x={Math.min(draft.x, draft.x + draft.width)}
+                y={Math.min(draft.y, draft.y + draft.height)}
+                width={Math.abs(draft.width)}
+                height={Math.abs(draft.height)}
+                fill="rgba(59,130,246,0.08)"
+                stroke="rgb(59,130,246)"
                 strokeWidth={2}
                 dash={[6, 4]}
               />
@@ -1576,6 +1716,124 @@ function LocationShape({
           listening={false}
         />
       )}
+    </Group>
+  );
+}
+
+function ArrowShape({
+  arrow,
+  selected,
+  readOnly,
+  viewportScale,
+  onSelect,
+  onGroupMove,
+}: {
+  arrow: ArrowAnnotation;
+  selected: boolean;
+  readOnly: boolean;
+  viewportScale: number;
+  onSelect: SelectHandler;
+  onGroupMove: (dx: number, dy: number) => void;
+}) {
+  const baseColor = isHexColor(arrow.color) ? arrow.color : "rgb(15,23,42)";
+  const stroke = selected ? "rgb(59,130,246)" : baseColor;
+  const fill = stroke;
+  const strokeWidth = selected ? 5 : 4;
+  const draggable = !readOnly && selected;
+
+  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+    const dx = snapCm(e.target.x());
+    const dy = snapCm(e.target.y());
+    e.target.position({ x: 0, y: 0 });
+    if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
+  };
+
+  return (
+    <Arrow
+      points={[arrow.x1, arrow.y1, arrow.x2, arrow.y2]}
+      stroke={stroke}
+      fill={fill}
+      strokeWidth={strokeWidth}
+      pointerLength={24 / viewportScale + 4}
+      pointerWidth={18 / viewportScale + 4}
+      lineCap="round"
+      lineJoin="round"
+      hitStrokeWidth={28}
+      draggable={draggable}
+      dragBoundFunc={draggable ? gridSnapDragBound : undefined}
+      onClick={readOnly ? undefined : onSelect}
+      onTap={readOnly ? undefined : onSelect}
+      onDragEnd={draggable ? handleDragEnd : undefined}
+    />
+  );
+}
+
+function TextShape({
+  text,
+  selected,
+  readOnly,
+  viewportScale,
+  onSelect,
+  onGroupMove,
+}: {
+  text: TextAnnotation;
+  selected: boolean;
+  readOnly: boolean;
+  viewportScale: number;
+  onSelect: SelectHandler;
+  onGroupMove: (dx: number, dy: number) => void;
+}) {
+  const baseColor = isHexColor(text.color) ? text.color : "rgb(15,23,42)";
+  const stroke = selected ? "rgb(59,130,246)" : baseColor;
+  const fontSize = Math.max(8, text.fontSize ?? 30);
+  const draggable = !readOnly && selected;
+
+  return (
+    <Group
+      x={text.x}
+      y={text.y}
+      draggable={draggable}
+      dragBoundFunc={draggable ? gridSnapDragBound : undefined}
+      onClick={readOnly ? undefined : onSelect}
+      onTap={readOnly ? undefined : onSelect}
+      onDragEnd={
+        draggable
+          ? (e) => {
+              const node = e.target;
+              const nx = snapCm(node.x());
+              const ny = snapCm(node.y());
+              node.position({ x: nx, y: ny });
+              const dx = nx - text.x;
+              const dy = ny - text.y;
+              if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
+            }
+          : undefined
+      }
+    >
+      <Rect
+        width={text.width}
+        height={text.height}
+        fill={
+          selected ? "rgba(59,130,246,0.08)" : "rgba(255,255,255,0.85)"
+        }
+        stroke={stroke}
+        strokeWidth={selected ? 2 : 1.5}
+        dash={[10, 6]}
+        cornerRadius={6}
+      />
+      <Text
+        text={text.text || "Text"}
+        x={8}
+        y={8}
+        width={text.width - 16}
+        height={text.height - 16}
+        fontSize={fontSize}
+        fontStyle="500"
+        fill={baseColor}
+        wrap="word"
+        ellipsis
+        listening={false}
+      />
     </Group>
   );
 }

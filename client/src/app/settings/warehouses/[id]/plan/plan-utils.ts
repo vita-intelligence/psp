@@ -2,14 +2,16 @@
 // Coordinate convention: 1 canvas unit = 1 cm. UI displays in metres.
 
 import type {
+  ArrowAnnotation,
+  FloorOutline,
   Hole,
   LocalLocation,
   Point,
   SelectionItem,
   SelectionSet,
   SnapTarget,
+  TextAnnotation,
   Wall,
-  FloorOutline,
 } from "./plan-types";
 
 export const GRID_MINOR_CM = 50;      // half-metre grid lines
@@ -529,6 +531,8 @@ export function itemsInMarquee(
   walls: Wall[],
   locations: LocalLocation[],
   outline: FloorOutline | undefined,
+  texts: TextAnnotation[] = [],
+  arrows: ArrowAnnotation[] = [],
 ): SelectionSet {
   const out: SelectionSet = [];
 
@@ -559,6 +563,21 @@ export function itemsInMarquee(
     if (bboxOverlap(box, locationBbox(location))) {
       const id = location.tempId ?? location.uuid;
       out.push({ kind: "location", id });
+    }
+  }
+
+  for (const t of texts) {
+    if (
+      bboxOverlap(box, { x: t.x, y: t.y, width: t.width, height: t.height })
+    ) {
+      out.push({ kind: "text", id: t.id });
+    }
+  }
+
+  for (const a of arrows) {
+    const ab = normaliseRect(a.x1, a.y1, a.x2 - a.x1, a.y2 - a.y1);
+    if (bboxOverlap(box, ab)) {
+      out.push({ kind: "arrow", id: a.id });
     }
   }
 

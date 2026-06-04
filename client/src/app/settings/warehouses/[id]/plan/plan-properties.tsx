@@ -28,6 +28,7 @@ import {
   wallLengthCm,
 } from "./plan-utils";
 import type {
+  ArrowAnnotation,
   FloorOutline,
   Hole,
   LocalLocation,
@@ -35,6 +36,7 @@ import type {
   SelectionItem,
   SelectionSet,
   StorageLocationKind,
+  TextAnnotation,
   Wall,
 } from "./plan-types";
 import { Info, Trash2 } from "lucide-react";
@@ -44,6 +46,8 @@ interface PlanPropertiesProps {
   selection: SelectionSet;
   outline: FloorOutline | undefined;
   walls: Wall[];
+  texts: TextAnnotation[];
+  arrows: ArrowAnnotation[];
   locations: LocalLocation[];
   readOnly: boolean;
   /** Mobile layout: render as a bottom sheet body without the fixed
@@ -57,6 +61,10 @@ interface PlanPropertiesProps {
   onOutlineUpdate: (patch: Partial<FloorOutline>) => void;
   onOutlineEdgeBowChange: (index: number, bow: number) => void;
   onHoleEdgeBowChange: (holeId: string, index: number, bow: number) => void;
+  onTextUpdate: (id: string, patch: Partial<TextAnnotation>) => void;
+  onTextDelete: (id: string) => void;
+  onArrowUpdate: (id: string, patch: Partial<ArrowAnnotation>) => void;
+  onArrowDelete: (id: string) => void;
   onSelectionColor: (color: string | null) => void;
   onLocationUpdate: (
     id: string | number,
@@ -91,6 +99,8 @@ export function PlanProperties(props: PlanPropertiesProps) {
     selection,
     outline,
     walls,
+    texts,
+    arrows,
     locations,
     readOnly,
     layout = "side",
@@ -102,6 +112,10 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onOutlineUpdate,
     onOutlineEdgeBowChange,
     onHoleEdgeBowChange,
+    onTextUpdate,
+    onTextDelete,
+    onArrowUpdate,
+    onArrowDelete,
     onSelectionColor,
     onLocationUpdate,
     onLocationDelete,
@@ -188,6 +202,28 @@ export function PlanProperties(props: PlanPropertiesProps) {
           onDelete={() => onWallDelete(wall.id)}
         />
       ) : null;
+    } else if (item.kind === "text") {
+      const text = texts.find((t) => t.id === item.id);
+      title = "Text";
+      body = text ? (
+        <TextBody
+          text={text}
+          readOnly={readOnly}
+          onUpdate={(patch) => onTextUpdate(text.id, patch)}
+          onDelete={() => onTextDelete(text.id)}
+        />
+      ) : null;
+    } else if (item.kind === "arrow") {
+      const arrow = arrows.find((a) => a.id === item.id);
+      title = "Arrow";
+      body = arrow ? (
+        <ArrowBody
+          arrow={arrow}
+          readOnly={readOnly}
+          onUpdate={(patch) => onArrowUpdate(arrow.id, patch)}
+          onDelete={() => onArrowDelete(arrow.id)}
+        />
+      ) : null;
     } else {
       const location = locations.find(
         (l) => (l.tempId ?? l.uuid) === item.id,
@@ -234,14 +270,15 @@ function MultiSelectBody({
   onColorChange: (color: string | null) => void;
   onDelete: () => void;
 }) {
-  // Only walls, outline, holes and locations carry a colour today —
   // outline-edge / hole-edge entries are sub-handles, not paintable.
   const paintableCount = selection.filter(
     (s) =>
       s.kind === "wall" ||
       s.kind === "outline" ||
       s.kind === "hole" ||
-      s.kind === "location",
+      s.kind === "location" ||
+      s.kind === "text" ||
+      s.kind === "arrow",
   ).length;
   // Count by kind for the breakdown badge row.
   const counts = selection.reduce(
@@ -258,6 +295,8 @@ function MultiSelectBody({
     hole: "holes",
     "hole-edge": "cutout edges",
     location: "locations",
+    text: "texts",
+    arrow: "arrows",
   };
   return (
     <div className="space-y-3 text-xs">
@@ -894,6 +933,180 @@ function LocationBody({
 }
 
 // ---------------------------------------------------------------- atoms
+
+function TextBody({
+  text,
+  readOnly,
+  onUpdate,
+  onDelete,
+}: {
+  text: TextAnnotation;
+  readOnly: boolean;
+  onUpdate: (patch: Partial<TextAnnotation>) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <fieldset disabled={readOnly} className="contents">
+      <div className="space-y-3">
+        <div className="space-y-1">
+          <Label htmlFor="txt-content" className="text-xs">
+            Text
+          </Label>
+          <Textarea
+            id="txt-content"
+            value={text.text}
+            onChange={(e) => onUpdate({ text: e.target.value })}
+            rows={3}
+            className="text-xs"
+            placeholder="Type your label…"
+          />
+        </div>
+        <Row label="Position (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={text.x}
+              onChange={(cm) => cm !== null && onUpdate({ x: cm })}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={text.y}
+              onChange={(cm) => cm !== null && onUpdate({ y: cm })}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
+        <Row label="Size (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={text.width}
+              onChange={(cm) =>
+                cm !== null && onUpdate({ width: Math.max(20, cm) })
+              }
+              placeholder="W"
+            />
+            <MetresInput
+              valueCm={text.height}
+              onChange={(cm) =>
+                cm !== null && onUpdate({ height: Math.max(20, cm) })
+              }
+              placeholder="H"
+            />
+          </div>
+        </Row>
+        <Row label="Font (cm)">
+          <Input
+            type="number"
+            value={text.fontSize ?? 30}
+            min={8}
+            max={200}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v)) onUpdate({ fontSize: Math.max(8, v) });
+            }}
+            className="h-8 w-20 text-xs"
+          />
+        </Row>
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Colour
+          </div>
+          <ColorPicker
+            value={text.color ?? null}
+            defaultColor="#0f172a"
+            readOnly={readOnly}
+            onChange={(c) =>
+              onUpdate({ color: c === null ? undefined : c })
+            }
+          />
+        </div>
+        {!readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            className="w-full justify-start text-destructive hover:text-destructive"
+          >
+            <Trash2 className="mr-1.5 size-3.5" />
+            Delete text
+          </Button>
+        )}
+      </div>
+    </fieldset>
+  );
+}
+
+function ArrowBody({
+  arrow,
+  readOnly,
+  onUpdate,
+  onDelete,
+}: {
+  arrow: ArrowAnnotation;
+  readOnly: boolean;
+  onUpdate: (patch: Partial<ArrowAnnotation>) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <fieldset disabled={readOnly} className="contents">
+      <div className="space-y-3">
+        <Row label="Start (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={arrow.x1}
+              onChange={(cm) => cm !== null && onUpdate({ x1: cm })}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={arrow.y1}
+              onChange={(cm) => cm !== null && onUpdate({ y1: cm })}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
+        <Row label="End (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={arrow.x2}
+              onChange={(cm) => cm !== null && onUpdate({ x2: cm })}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={arrow.y2}
+              onChange={(cm) => cm !== null && onUpdate({ y2: cm })}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Colour
+          </div>
+          <ColorPicker
+            value={arrow.color ?? null}
+            defaultColor="#0f172a"
+            readOnly={readOnly}
+            onChange={(c) =>
+              onUpdate({ color: c === null ? undefined : c })
+            }
+          />
+        </div>
+        {!readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            className="w-full justify-start text-destructive hover:text-destructive"
+          >
+            <Trash2 className="mr-1.5 size-3.5" />
+            Delete arrow
+          </Button>
+        )}
+      </div>
+    </fieldset>
+  );
+}
 
 function Row({
   label,
