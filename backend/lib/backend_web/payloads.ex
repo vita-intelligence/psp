@@ -10,6 +10,7 @@ defmodule BackendWeb.Payloads do
     %{
       id: user.id,
       uuid: user.uuid,
+      code: Map.get(user, :code),
       email: user.email,
       name: user.name,
       avatar: user.avatar,
@@ -105,6 +106,7 @@ defmodule BackendWeb.Payloads do
     %{
       id: w.id,
       uuid: w.uuid,
+      code: w.code,
       company_id: w.company_id,
       name: w.name,
       address: w.address,

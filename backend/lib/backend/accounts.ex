@@ -19,7 +19,7 @@ defmodule Backend.Accounts do
   alias Backend.ListQueries
 
   # Whitelisted columns the Users table can sort by.
-  @sortable_fields ~w(name email is_active inserted_at)a
+  @sortable_fields ~w(code name email is_active inserted_at)a
   # Equality filters available on the list endpoint.
   @filter_fields ~w(is_active)a
   # Free-text ILIKE search hits these columns.
@@ -139,6 +139,15 @@ defmodule Backend.Accounts do
             is_admin: false,
             permissions: ~w(company.view users.view roles.view warehouses.view)
           }
+        end
+
+      # Auto-generate a U00001-style code if the company has a
+      # numbering format configured. Skipped silently otherwise — the
+      # code column allows nil so legacy paths keep working.
+      access_attrs =
+        case Backend.Numbering.next_code(company, "user") do
+          nil -> access_attrs
+          code -> Map.put(access_attrs, :code, code)
         end
 
       {:ok, user} =

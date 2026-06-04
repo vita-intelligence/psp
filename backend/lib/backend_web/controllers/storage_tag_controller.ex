@@ -34,12 +34,26 @@ defmodule BackendWeb.StorageTagController do
   def index(conn, params) do
     actor = conn.assigns.current_user
 
-    items =
-      StorageTags.list_for_company(actor.company_id,
-        kind: params["kind"]
-      )
+    # Two shapes — picker (server component fetches all matching
+    # `kind`) vs admin table (cursor-paginated, searchable, sortable).
+    # Picker hits this with `?kind=location|cell`; admin table hits
+    # with the standard list params and no kind filter.
+    if is_binary(params["kind"]) do
+      items =
+        StorageTags.list_for_company(actor.company_id,
+          kind: params["kind"]
+        )
 
-    json(conn, %{items: Enum.map(items, &Payloads.storage_tag/1)})
+      json(conn, %{items: Enum.map(items, &Payloads.storage_tag/1)})
+    else
+      opts = list_opts_from_params(params)
+      {items, next_cursor} = StorageTags.list_page(actor.company_id, opts)
+
+      json(conn, %{
+        items: Enum.map(items, &Payloads.storage_tag/1),
+        next_cursor: next_cursor
+      })
+    end
   end
 
   def show(conn, %{"id" => uuid}) do
@@ -90,6 +104,28 @@ defmodule BackendWeb.StorageTagController do
     else
       _ -> {:error, :not_found}
     end
+  end
+
+  defp list_opts_from_params(params) do
+    [
+      cursor: params["cursor"],
+      limit: params["limit"],
+      sort: parse_sort(params["sort"]),
+      search: params["search"]
+    ]
+  end
+
+  defp parse_sort(nil), do: nil
+  defp parse_sort(""), do: nil
+
+  defp parse_sort(s) when is_binary(s) do
+    case String.split(s, ":", parts: 2) do
+      [field, "asc"] -> {String.to_existing_atom(field), :asc}
+      [field, "desc"] -> {String.to_existing_atom(field), :desc}
+      _ -> nil
+    end
+  rescue
+    ArgumentError -> nil
   end
 
   defp changeset_error(conn, cs) do

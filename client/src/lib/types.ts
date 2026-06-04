@@ -8,6 +8,9 @@ export interface PermissionTemplate {
   id: number;
   /** Public identifier — what URLs, API paths and channel topics use. */
   uuid: string;
+  /** Short auto-generated identifier (PT00001, …). nil for legacy
+   *  rows that landed before the migration. */
+  code: string | null;
   slug: string;
   name: string;
   description: string | null;
@@ -45,6 +48,9 @@ export interface User {
   id: number;
   /** Public identifier — what URLs, API paths and channel topics use. */
   uuid: string;
+  /** Short auto-generated identifier (U00001, …). nil for legacy
+   *  rows that landed before the migration. */
+  code: string | null;
   email: string;
   name: string;
   /** Base64 data URL or null. Returned by every user-facing endpoint
@@ -184,6 +190,9 @@ export interface Warehouse {
   id: number;
   /** Public identifier — what URLs, API paths and channel topics use. */
   uuid: string;
+  /** Short auto-generated identifier (WH00001, …). nil for legacy
+   *  rows that landed before the migration. */
+  code: string | null;
   company_id: number;
   name: string;
   address: string | null;

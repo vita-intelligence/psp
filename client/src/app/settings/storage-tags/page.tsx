@@ -1,7 +1,8 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
-import { listStorageTags } from "@/lib/storage-tags/server";
 import { hasPermission } from "@/lib/rbac";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -9,7 +10,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { StorageTagsManager } from "./storage-tags-manager";
+import { Plus } from "lucide-react";
+import { listStorageTagsPage } from "@/lib/storage-tags/server";
+import { StorageTagsTable } from "./storage-tags-table";
 
 export const metadata = { title: "Storage tags · Settings · PSP" };
 
@@ -19,30 +22,36 @@ export default async function StorageTagsPage() {
     redirect("/settings/profile");
   }
 
-  const tags = (await listStorageTags()) ?? [];
-  // Non-admins can browse the vocabulary (so they see what's
-  // available in the picker) but only `storage_tags.manage` holders
-  // get the add / edit / delete affordances.
+  const initialPage = await listStorageTagsPage();
   const canEdit = hasPermission(user, "storage_tags.manage");
 
   return (
     <Card className="border-border/60">
       <CardHeader>
-        <div className="space-y-1.5">
-          <CardTitle>Storage tags</CardTitle>
-          <CardDescription>
-            The company-wide vocabulary used to classify storage
-            locations and shelves. Operators pick from this list when
-            tagging a rack or a level; allocation later matches items
-            against the same keys. Keep entries lowercase and
-            hyphen-separated (<span className="font-mono">cold-zone</span>,{" "}
-            <span className="font-mono">hazmat-3</span>) so the picker
-            and the matcher agree on equality.
-          </CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1.5">
+            <CardTitle>Storage tags</CardTitle>
+            <CardDescription>
+              Company-wide classification vocabulary used to tag storage
+              locations and shelves. Operators pick from this list in the
+              warehouse plan editor; allocation later matches items against
+              the same keys, so consistent spelling matters.
+            </CardDescription>
+          </div>
+          {canEdit && (
+            <Button asChild size="sm" className="shrink-0">
+              <Link href="/settings/storage-tags/new">
+                <Plus className="mr-1.5 size-4" />
+                New tag
+              </Link>
+            </Button>
+          )}
         </div>
       </CardHeader>
       <CardContent>
-        <StorageTagsManager initialTags={tags} canEdit={canEdit} />
+        <StorageTagsTable
+          initialPage={initialPage ?? { items: [], next_cursor: null }}
+        />
       </CardContent>
     </Card>
   );

@@ -17,13 +17,18 @@ defmodule Backend.Numbering do
 
   import Ecto.Query, warn: false
 
-  alias Backend.Repo
+  alias Backend.Accounts.User
   alias Backend.Companies.Company
-  alias Backend.Warehouses.{Floor, StorageCell, StorageLocation}
+  alias Backend.RBAC.Role
+  alias Backend.Repo
+  alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, Warehouse}
 
   @entity_schemas %{
-    "storage_location" => StorageLocation,
+    "warehouse" => Warehouse,
+    "user" => User,
+    "template" => Role,
     "floor" => Floor,
+    "storage_location" => StorageLocation,
     "storage_cell" => StorageCell
   }
 

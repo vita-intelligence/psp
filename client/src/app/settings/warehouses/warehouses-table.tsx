@@ -78,6 +78,21 @@ export function WarehousesTable({
   const columns = useMemo<DataTableColumn<Warehouse>[]>(
     () => [
       {
+        id: "code",
+        header: "Code",
+        sortField: "code",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        widthClassName: "w-28",
+        cell: (w) =>
+          w.code ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              {w.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
         id: "name",
         header: "Name",
         sortField: "name",

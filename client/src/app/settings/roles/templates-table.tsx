@@ -64,6 +64,21 @@ export function TemplatesTable({
   const columns = useMemo<DataTableColumn<PermissionTemplate>[]>(
     () => [
       {
+        id: "code",
+        header: "Code",
+        sortField: "code",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        widthClassName: "w-24",
+        cell: (t) =>
+          t.code ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              {t.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
         id: "name",
         header: "Name",
         sortField: "name",

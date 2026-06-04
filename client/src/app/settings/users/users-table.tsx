@@ -70,6 +70,21 @@ export function UsersTable({ initialPage }: UsersTableProps) {
   const columns = useMemo<DataTableColumn<UserListEntry>[]>(
     () => [
       {
+        id: "code",
+        header: "Code",
+        sortField: "code",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        widthClassName: "w-24",
+        cell: (u) =>
+          u.code ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              {u.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
         id: "person",
         header: "Name",
         sortField: "name",

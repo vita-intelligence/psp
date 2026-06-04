@@ -13,12 +13,46 @@ defmodule Backend.Warehouses.StorageTags do
 
   alias Backend.Accounts.User
   alias Backend.Audit
+  alias Backend.ListQueries
   alias Backend.Repo
   alias Backend.Warehouses.StorageTag
 
   @audit_fields ~w(key label description kind)a
+  @sortable_fields ~w(key label kind inserted_at)a
+  @search_fields ~w(key label description)a
+  @default_sort {:label, :asc}
 
   ## ----- read ------------------------------------------------------
+
+  @doc """
+  Cursor-paginated list for the admin DataTable. Mirrors the
+  `list_templates/2` pattern in `Backend.RBAC` so the same shape
+  (`{items, next_cursor}`) flows through the reusable table component.
+  """
+  def list_page(company_id, opts \\ []) do
+    sort = Keyword.get(opts, :sort, @default_sort)
+
+    base =
+      StorageTag
+      |> where([t], t.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
+      |> preload([:created_by, :updated_by])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc "Static config used by the FE table controls."
+  def list_config do
+    %{
+      sortable_fields: Enum.map(@sortable_fields, &Atom.to_string/1),
+      search_fields: Enum.map(@search_fields, &Atom.to_string/1),
+      default_sort: %{
+        field: Atom.to_string(elem(@default_sort, 0)),
+        direction: Atom.to_string(elem(@default_sort, 1))
+      }
+    }
+  end
 
   def list_for_company(company_id, opts \\ []) do
     base =

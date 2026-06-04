@@ -29,6 +29,9 @@ defmodule Backend.Accounts.User do
     # Integer PK stays for cheaper FKs and denser indexes — it just
     # never leaves the backend.
     field :uuid, Ecto.UUID, autogenerate: true
+    # Short public identifier (U00001, …). Auto-generated on create
+    # from the company's numbering format. Per-company unique.
+    field :code, :string
     field :email, :string
     field :name, :string
     field :avatar, :string
