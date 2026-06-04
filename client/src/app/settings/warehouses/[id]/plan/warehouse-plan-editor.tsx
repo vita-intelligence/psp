@@ -17,6 +17,7 @@ import {
 } from "@/lib/realtime/use-live-plan";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
@@ -49,6 +50,7 @@ import type {
 } from "./plan-types";
 import type { PlanCanvasHandle } from "./plan-canvas";
 import {
+  History,
   Loader2,
   Redo2,
   RefreshCw,
@@ -1422,6 +1424,26 @@ export function WarehousePlanEditor({
               ownership cues (cursor, save button, etc.). */}
           {liveOthers.length > 0 && (
             <CollabAvatars peers={liveOthers} max={4} className="hidden sm:flex" />
+          )}
+          {activeFloor && (
+            <AuditHistoryDialog
+              entityType="floor"
+              entityId={activeFloor.meta.id}
+              title={`History · ${activeFloor.meta.name}`}
+              description="Every save of this floor's plan, with who changed what and when."
+              canRestore={false}
+              trigger={
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  title="Floor history"
+                  aria-label="Floor history"
+                >
+                  <History className="size-4" />
+                </Button>
+              }
+            />
           )}
           {!readOnly && (
             <>

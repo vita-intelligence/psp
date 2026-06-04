@@ -119,7 +119,12 @@ export interface AuditActor {
 /** One row from `GET /api/audit?entity_type=&entity_id=`. */
 export interface AuditEvent {
   id: number;
-  entity_type: "warehouse" | "user" | "template";
+  entity_type:
+    | "warehouse"
+    | "user"
+    | "template"
+    | "floor"
+    | "storage_location";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";

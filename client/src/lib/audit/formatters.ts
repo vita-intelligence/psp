@@ -34,6 +34,27 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     description: "Description",
     permissions: "Permissions",
   },
+  floor: {
+    name: "Name",
+    ordinal: "Floor order",
+    canvas_json: "Drawing",
+  },
+  storage_location: {
+    name: "Name",
+    code: "Code",
+    kind: "Kind",
+    x: "X position",
+    y: "Y position",
+    width: "Width",
+    height: "Depth",
+    width_m: "Width (m)",
+    height_m: "Depth (m)",
+    depth_m: "Vertical depth (m)",
+    capacity: "Capacity",
+    notes: "Notes",
+    color: "Colour",
+    floor_id: "Floor",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {
@@ -92,6 +113,42 @@ export function formatValue(
     return Array.isArray(items)
       ? `${items.length} contact${items.length === 1 ? "" : "s"}`
       : "configured";
+  }
+
+  // Floor plan blob — summarise instead of dumping the full JSON.
+  if (field === "canvas_json" && isPlainObject(value)) {
+    const v = value as {
+      walls?: unknown[];
+      outline?: { points?: unknown[]; holes?: unknown[] };
+      texts?: unknown[];
+      arrows?: unknown[];
+    };
+    const parts: string[] = [];
+    if (v.outline?.points && Array.isArray(v.outline.points)) {
+      parts.push(`outline ${v.outline.points.length} vertex`);
+      const holes = v.outline.holes;
+      if (Array.isArray(holes) && holes.length > 0) {
+        parts.push(`${holes.length} hole${holes.length === 1 ? "" : "s"}`);
+      }
+    }
+    if (Array.isArray(v.walls) && v.walls.length > 0) {
+      parts.push(`${v.walls.length} wall${v.walls.length === 1 ? "" : "s"}`);
+    }
+    if (Array.isArray(v.texts) && v.texts.length > 0) {
+      parts.push(`${v.texts.length} text${v.texts.length === 1 ? "" : "s"}`);
+    }
+    if (Array.isArray(v.arrows) && v.arrows.length > 0) {
+      parts.push(`${v.arrows.length} arrow${v.arrows.length === 1 ? "" : "s"}`);
+    }
+    return parts.length === 0 ? "empty drawing" : parts.join(", ");
+  }
+
+  // `#RRGGBB` colour values render with a small inline swatch in the
+  // event detail. For the plain-text summary we still return the
+  // hex so the user can read it; the row component will detect this
+  // and add the swatch.
+  if (field === "color" && typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value)) {
+    return value;
   }
 
   if (Array.isArray(value)) {

@@ -10,7 +10,12 @@
 // The runtime is the browser; this module's state is fine being
 // in-memory and ephemeral. Cleanup happens on subscriber unmount.
 
-type EntityType = "warehouse" | "user" | "template";
+type EntityType =
+  | "warehouse"
+  | "user"
+  | "template"
+  | "floor"
+  | "storage_location";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();

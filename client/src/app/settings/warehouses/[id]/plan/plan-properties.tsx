@@ -39,8 +39,9 @@ import type {
   TextAnnotation,
   Wall,
 } from "./plan-types";
-import { Info, Trash2 } from "lucide-react";
+import { History, Info, Trash2 } from "lucide-react";
 import { ColorPicker } from "./plan-color-picker";
+import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 
 interface PlanPropertiesProps {
   selection: SelectionSet;
@@ -914,6 +915,27 @@ function LocationBody({
             onChange={(c) => onUpdate({ color: c })}
           />
         </div>
+
+        {location.id > 0 && (
+          <AuditHistoryDialog
+            entityType="storage_location"
+            entityId={location.id}
+            title={`History · ${location.name}`}
+            description="Every recorded change to this storage location."
+            canRestore={false}
+            trigger={
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start"
+              >
+                <History className="mr-1.5 size-3.5" />
+                View history
+              </Button>
+            }
+          />
+        )}
 
         {!readOnly && (
           <Button
