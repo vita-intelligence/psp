@@ -85,9 +85,85 @@ export function cmToMetres(cm: number): number {
   return cm / 100;
 }
 
-/** Length of a wall in cm. */
-export function wallLengthCm(wall: Wall): number {
+/** Straight-line distance between the wall's endpoints. For curved
+ *  walls this is the chord length, not the arc length — see
+ *  `wallArcLengthCm` for the visible-along-the-curve number. */
+export function wallChordLengthCm(wall: Wall): number {
   return Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1);
+}
+
+/** Backwards-compatible alias — older callers read this as "the
+ *  wall's length" (always treated as chord, which is correct for
+ *  straight walls and a sensible default for curves too). */
+export const wallLengthCm = wallChordLengthCm;
+
+/** Midpoint of the wall's chord — base for the bow handle. */
+export function wallChordMidpoint(wall: Wall): Point {
+  return { x: (wall.x1 + wall.x2) / 2, y: (wall.y1 + wall.y2) / 2 };
+}
+
+/** Unit perpendicular to the chord, rotated 90° CCW from the chord
+ *  direction. Positive bow displaces the handle along this vector. */
+export function wallPerpendicular(wall: Wall): Point {
+  const dx = wall.x2 - wall.x1;
+  const dy = wall.y2 - wall.y1;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: 0, y: 0 };
+  // Rotate (dx, dy) by +90°: (−dy, dx), then normalise.
+  return { x: -dy / len, y: dx / len };
+}
+
+/** Position of the bow handle for a wall — the point on the arc
+ *  the user grabs to bend the wall. Sits at
+ *  `chord_midpoint + perpendicular * bow`. */
+export function wallBowHandle(wall: Wall): Point {
+  const m = wallChordMidpoint(wall);
+  const p = wallPerpendicular(wall);
+  const bow = wall.bow ?? 0;
+  return { x: m.x + p.x * bow, y: m.y + p.y * bow };
+}
+
+/** Quadratic-Bezier control point that makes the curve pass through
+ *  the bow handle at t=0.5. The bezier midpoint sits halfway between
+ *  the chord midpoint and the control point, so the control point is
+ *  offset by `2 * bow` along the perpendicular. */
+export function wallControlPoint(wall: Wall): Point {
+  const m = wallChordMidpoint(wall);
+  const p = wallPerpendicular(wall);
+  const bow = wall.bow ?? 0;
+  return { x: m.x + p.x * 2 * bow, y: m.y + p.y * 2 * bow };
+}
+
+/** Approximate arc length of a curved wall by sampling the Bezier.
+ *  Straight walls fall through to the chord length. 24 samples is
+ *  more than enough for centimetre-level display accuracy at the
+ *  scales we deal with. */
+export function wallArcLengthCm(wall: Wall): number {
+  if (!wall.bow || wall.bow === 0) return wallChordLengthCm(wall);
+  const c = wallControlPoint(wall);
+  const samples = 24;
+  let prev: Point = { x: wall.x1, y: wall.y1 };
+  let total = 0;
+  for (let i = 1; i <= samples; i++) {
+    const t = i / samples;
+    const u = 1 - t;
+    const p: Point = {
+      x: u * u * wall.x1 + 2 * u * t * c.x + t * t * wall.x2,
+      y: u * u * wall.y1 + 2 * u * t * c.y + t * t * wall.y2,
+    };
+    total += Math.hypot(p.x - prev.x, p.y - prev.y);
+    prev = p;
+  }
+  return total;
+}
+
+/** Project a candidate handle position onto the perpendicular axis
+ *  of the wall to compute the new bow value. Used by the bow-handle
+ *  drag. Returns a signed centimetre value (snap applied by caller). */
+export function projectBow(wall: Wall, candidate: Point): number {
+  const m = wallChordMidpoint(wall);
+  const p = wallPerpendicular(wall);
+  return (candidate.x - m.x) * p.x + (candidate.y - m.y) * p.y;
 }
 
 /** Shoelace area of a closed polygon in cm². Positive area = CCW. */

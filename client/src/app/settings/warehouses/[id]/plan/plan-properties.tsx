@@ -20,6 +20,7 @@ import {
   parseDimensionToCm,
   polygonAreaCm2,
   polygonPerimeterCm,
+  wallArcLengthCm,
   wallLengthCm,
 } from "./plan-utils";
 import type {
@@ -389,11 +390,19 @@ function WallBody({
   onDelete: () => void;
 }) {
   const length = wallLengthCm(wall);
+  const bow = wall.bow ?? 0;
+  // Cap the slider at ± half the chord length — beyond that the
+  // bezier control point swings further than makes any architectural
+  // sense (the arc loops in on itself). Minimum 1m so very short
+  // walls still get a meaningful range.
+  const bowRangeCm = Math.max(100, Math.round(length / 2));
+  const isCurved = Math.abs(bow) > 0.5;
+  const arcLength = isCurved ? wallArcLengthCm(wall) : length;
   return (
     <fieldset disabled={readOnly} className="contents">
       <div className="space-y-3">
-        <Row label="Length">
-          <span className="font-mono text-xs">{formatLength(length)}</span>
+        <Row label={isCurved ? "Arc length" : "Length"}>
+          <span className="font-mono text-xs">{formatLength(arcLength)}</span>
         </Row>
         <Row label="Start (m)">
           <span className="font-mono text-[11px] text-muted-foreground">
@@ -413,6 +422,37 @@ function WallBody({
             />
           </div>
         </Row>
+        <Row label="Curve (m)">
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={-bowRangeCm}
+              max={bowRangeCm}
+              step={10}
+              value={Math.round(bow)}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                onUpdate({ bow: Math.abs(v) < 0.5 ? undefined : v });
+              }}
+              disabled={readOnly}
+              className="h-1.5 flex-1 accent-primary"
+            />
+            <span className="w-12 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+              {cmToMetres(bow).toFixed(2)}
+            </span>
+          </div>
+        </Row>
+        {isCurved && !readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onUpdate({ bow: undefined })}
+            className="w-full justify-start"
+          >
+            Make straight
+          </Button>
+        )}
         {!readOnly && (
           <Button
             type="button"

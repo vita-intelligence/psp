@@ -54,6 +54,7 @@ interface PlanCanvasProps {
   onSelectionChange: (next: SelectionSet) => void;
   onViewportChange: (next: Viewport) => void;
   onWallAdded: (wall: Wall) => void;
+  onWallBowChange: (id: string, bow: number) => void;
   onLocationAdded: (location: {
     x: number;
     y: number;
@@ -130,6 +131,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onSelectionChange,
       onViewportChange,
       onWallAdded,
+      onWallBowChange,
       onLocationAdded,
       onLocationMove,
       onOutlineCommitted,
@@ -758,7 +760,9 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 wall={wall}
                 selected={isSelected(selection, { kind: "wall", id: wall.id })}
                 readOnly={readOnly}
+                viewportScale={viewport.scale}
                 onSelect={(e) => selectItem({ kind: "wall", id: wall.id }, e)}
+                onBowChange={(bow) => onWallBowChange(wall.id, bow)}
               />
             ))}
           </Layer>
@@ -954,24 +958,169 @@ function WallShape({
   wall,
   selected,
   readOnly,
+  viewportScale,
   onSelect,
+  onBowChange,
 }: {
   wall: Wall;
   selected: boolean;
   readOnly: boolean;
+  viewportScale: number;
   onSelect: SelectHandler;
+  onBowChange: (bow: number) => void;
 }) {
-  return (
+  const bow = wall.bow ?? 0;
+  const isCurved = Math.abs(bow) > 0.5;
+
+  const stroke = selected ? "rgb(59,130,246)" : "rgb(45,45,45)";
+  const strokeWidth = selected ? 12 : 10;
+
+  // Straight wall is rendered as a Konva.Line so we keep the well-
+  // tested hit detection. Curved walls use a Shape with sceneFunc +
+  // hitFunc so the click area follows the curve, not the chord.
+  const wallNode = isCurved ? (
+    <Shape
+      sceneFunc={(ctx, shape) => {
+        const c = bezierControl(wall);
+        ctx.beginPath();
+        ctx.moveTo(wall.x1, wall.y1);
+        ctx.quadraticCurveTo(c.x, c.y, wall.x2, wall.y2);
+        ctx.strokeShape(shape);
+      }}
+      hitFunc={(ctx, shape) => {
+        const c = bezierControl(wall);
+        ctx.beginPath();
+        ctx.moveTo(wall.x1, wall.y1);
+        ctx.quadraticCurveTo(c.x, c.y, wall.x2, wall.y2);
+        ctx.strokeShape(shape);
+      }}
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      lineCap="round"
+      hitStrokeWidth={28}
+      onClick={readOnly ? undefined : onSelect}
+      onTap={readOnly ? undefined : onSelect}
+    />
+  ) : (
     <Line
       points={[wall.x1, wall.y1, wall.x2, wall.y2]}
-      stroke={selected ? "rgb(59,130,246)" : "rgb(45,45,45)"}
-      strokeWidth={selected ? 12 : 10}
+      stroke={stroke}
+      strokeWidth={strokeWidth}
       lineCap="round"
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
       hitStrokeWidth={28}
     />
   );
+
+  if (!selected || readOnly) {
+    return wallNode;
+  }
+
+  // Bow handle — visible only when the wall is selected. Sits at the
+  // arc midpoint; drag it perpendicular to the chord to bow the wall.
+  // Snap to 50 cm so curves feel as crisp as straight walls.
+  const mid = chordMidpoint(wall);
+  const handle = bowHandlePoint(wall);
+  const r = 9 / viewportScale;
+  return (
+    <>
+      {wallNode}
+      {/* Faint guide line from chord midpoint to the bow handle so
+          the perpendicular axis is obvious while dragging. */}
+      <Line
+        points={[mid.x, mid.y, handle.x, handle.y]}
+        stroke="rgba(59,130,246,0.45)"
+        strokeWidth={1 / viewportScale}
+        dash={[4 / viewportScale, 3 / viewportScale]}
+        listening={false}
+      />
+      <Circle
+        x={handle.x}
+        y={handle.y}
+        radius={r}
+        fill="white"
+        stroke="rgb(59,130,246)"
+        strokeWidth={2 / viewportScale}
+        draggable
+        onDragMove={(e) => {
+          // Constrain the handle visually to the perpendicular axis
+          // so the user only feels a 1-D drag. The bow value is the
+          // signed projection onto that axis.
+          const p = projectOntoPerpendicular(wall, {
+            x: e.target.x(),
+            y: e.target.y(),
+          });
+          e.target.position(p.handle);
+        }}
+        onDragEnd={(e) => {
+          const newBow = signedBowFromHandle(wall, {
+            x: e.target.x(),
+            y: e.target.y(),
+          });
+          // Snap to 50 cm to match the rest of the grid feel.
+          const snapped = Math.round(newBow / 50) * 50;
+          // Move the handle visually onto the snapped position to
+          // avoid a one-frame jump on the next render.
+          const newHandle = snappedHandlePosition(wall, snapped);
+          e.target.position(newHandle);
+          onBowChange(snapped);
+        }}
+      />
+    </>
+  );
+}
+
+// --- Wall-curve geometry kept inline so the shape component stays
+//     self-contained. (Same math as plan-utils.wallControlPoint
+//     et al., but local to avoid prop-drilling helpers through Konva.)
+
+function chordMidpoint(wall: Wall): Point {
+  return { x: (wall.x1 + wall.x2) / 2, y: (wall.y1 + wall.y2) / 2 };
+}
+
+function chordPerpendicular(wall: Wall): Point {
+  const dx = wall.x2 - wall.x1;
+  const dy = wall.y2 - wall.y1;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: 0, y: 0 };
+  return { x: -dy / len, y: dx / len };
+}
+
+function bowHandlePoint(wall: Wall): Point {
+  const m = chordMidpoint(wall);
+  const p = chordPerpendicular(wall);
+  const bow = wall.bow ?? 0;
+  return { x: m.x + p.x * bow, y: m.y + p.y * bow };
+}
+
+function bezierControl(wall: Wall): Point {
+  const m = chordMidpoint(wall);
+  const p = chordPerpendicular(wall);
+  const bow = wall.bow ?? 0;
+  return { x: m.x + p.x * 2 * bow, y: m.y + p.y * 2 * bow };
+}
+
+function signedBowFromHandle(wall: Wall, candidate: Point): number {
+  const m = chordMidpoint(wall);
+  const p = chordPerpendicular(wall);
+  return (candidate.x - m.x) * p.x + (candidate.y - m.y) * p.y;
+}
+
+function projectOntoPerpendicular(
+  wall: Wall,
+  candidate: Point,
+): { handle: Point } {
+  const m = chordMidpoint(wall);
+  const p = chordPerpendicular(wall);
+  const bow = (candidate.x - m.x) * p.x + (candidate.y - m.y) * p.y;
+  return { handle: { x: m.x + p.x * bow, y: m.y + p.y * bow } };
+}
+
+function snappedHandlePosition(wall: Wall, snappedBow: number): Point {
+  const m = chordMidpoint(wall);
+  const p = chordPerpendicular(wall);
+  return { x: m.x + p.x * snappedBow, y: m.y + p.y * snappedBow };
 }
 
 function HoleOutline({

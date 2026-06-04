@@ -15,15 +15,24 @@ export interface Point {
   y: number;
 }
 
-/** Architectural shape — a wall is a straight line segment. Curved
- *  walls land in a follow-up commit; the model gets a `type`
- *  discriminator then. For now every wall is implicitly straight. */
+/** Architectural shape — a wall segment.
+ *
+ *  By default a wall is a straight line from (x1,y1) to (x2,y2). When
+ *  `bow` is set, the wall renders as a quadratic Bezier curve that
+ *  passes through `chord midpoint + perpendicular * bow`. Positive
+ *  bow curves "to the right" of the chord (after rotating the chord
+ *  onto the x axis); negative bows the other way. Undefined or 0 =
+ *  straight. Backward compatible — every existing wall reads as
+ *  straight because `bow` is optional. */
 export interface Wall {
   id: string;
   x1: number;
   y1: number;
   x2: number;
   y2: number;
+  /** Perpendicular sagitta of the arc midpoint relative to the chord,
+   *  in centimetres. */
+  bow?: number;
 }
 
 /** The floor's perimeter polygon — what counts as walkable floor.

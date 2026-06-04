@@ -309,6 +309,24 @@ export function WarehousePlanEditor({
     [updateActiveFloor],
   );
 
+  /** Bow handle drag commits via this — snapshotted so undo treats
+   *  the curve change as a discrete step. Forwarded to the canvas
+   *  via the WallShape's onBowChange hook. */
+  const onWallBowChange = useCallback(
+    (id: string, bow: number) => {
+      updateActiveFloor(
+        (s) => ({
+          ...s,
+          walls: s.walls.map((w) =>
+            w.id === id ? { ...w, bow: bow === 0 ? undefined : bow } : w,
+          ),
+        }),
+        { snapshot: true },
+      );
+    },
+    [updateActiveFloor],
+  );
+
   const onWallDelete = useCallback(
     (id: string) => {
       updateActiveFloor(
@@ -888,6 +906,7 @@ export function WarehousePlanEditor({
           readOnly={readOnly}
           onViewportChange={onViewportChange}
           onWallAdded={onWallAdded}
+          onWallBowChange={onWallBowChange}
           onLocationAdded={onLocationAdded}
           onLocationMove={onLocationMove}
           onOutlineCommitted={onOutlineCommitted}
@@ -931,6 +950,7 @@ export function WarehousePlanEditor({
                 onSelectionChange={setSelection}
                 onViewportChange={onViewportChange}
                 onWallAdded={onWallAdded}
+                onWallBowChange={onWallBowChange}
                 onLocationAdded={onLocationAdded}
                 onLocationMove={onLocationMove}
                 onOutlineCommitted={onOutlineCommitted}
@@ -999,6 +1019,7 @@ interface MobileLayoutProps {
   readOnly: boolean;
   onViewportChange: (v: Viewport) => void;
   onWallAdded: (w: Wall) => void;
+  onWallBowChange: (id: string, bow: number) => void;
   onLocationAdded: (g: {
     x: number;
     y: number;
@@ -1038,6 +1059,7 @@ function MobileLayout({
   readOnly,
   onViewportChange,
   onWallAdded,
+  onWallBowChange,
   onLocationAdded,
   onLocationMove,
   onOutlineCommitted,
@@ -1070,6 +1092,7 @@ function MobileLayout({
             onSelectionChange={setSelection}
             onViewportChange={onViewportChange}
             onWallAdded={onWallAdded}
+            onWallBowChange={onWallBowChange}
             onLocationAdded={onLocationAdded}
             onLocationMove={onLocationMove}
             onOutlineCommitted={onOutlineCommitted}
