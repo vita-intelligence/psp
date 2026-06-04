@@ -31,10 +31,12 @@ import type {
   TextAnnotation,
   Wall,
 } from "./plan-types";
+import type { StorageTag } from "@/lib/types";
 import { History, Info, Layers, Trash2 } from "lucide-react";
 import { ColorPicker } from "./plan-color-picker";
 import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 import { CellsDialog } from "./cells-dialog";
+import { TagPicker } from "./tag-picker";
 
 interface PlanPropertiesProps {
   selection: SelectionSet;
@@ -47,6 +49,9 @@ interface PlanPropertiesProps {
    *  Cells dialog (which calls server actions scoped to the
    *  warehouse). */
   warehouseUuid: string;
+  /** Company-wide tag registry. Passed down to the tag picker on
+   *  LocationBody + CellsDialog. */
+  storageTags: StorageTag[];
   readOnly: boolean;
   /** Mobile layout: render as a bottom sheet body without the fixed
    *  side-panel chrome. */
@@ -110,6 +115,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onLocationDelete,
     onDeleteSelected,
     warehouseUuid,
+    storageTags,
   } = props;
 
   let body: React.ReactNode;
@@ -224,6 +230,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
           location={location}
           readOnly={readOnly}
           warehouseUuid={warehouseUuid}
+          storageTags={storageTags}
           onUpdate={(patch) =>
             onLocationUpdate(location.tempId ?? location.uuid, patch)
           }
@@ -746,12 +753,14 @@ function LocationBody({
   location,
   readOnly,
   warehouseUuid,
+  storageTags,
   onUpdate,
   onDelete,
 }: {
   location: LocalLocation;
   readOnly: boolean;
   warehouseUuid: string;
+  storageTags: StorageTag[];
   onUpdate: (
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
   ) => void;
@@ -783,11 +792,14 @@ function LocationBody({
           </p>
         </div>
 
-        <TagsField
+        <TagPicker
           value={location.tags ?? []}
+          known={storageTags}
+          kind="location"
+          label="Zone tags"
+          help="Pick tags that apply to the whole rack/zone. Cells inherit these for allocation — set once, every level uses them. Manage the list at /settings/storage-tags."
+          readOnly={readOnly}
           onCommit={(tags) => onUpdate({ tags })}
-          placeholder="pallet, cold-zone, hazmat-3"
-          help="Free-form labels for the whole rack/zone. Cells inherit these for allocation — set once, every level uses them."
         />
 
         <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-3">
@@ -858,9 +870,11 @@ function LocationBody({
               }
             />
             <p className="text-[10px] leading-snug text-muted-foreground">
-              How tall the whole rack is from the floor up. Per-level
-              heights are set inside Cells (so a 5-shelf rack at 2.5 m
-              total has roughly 0.5 m per cell unless levels differ).
+              Optional — total physical height of the rack (floor to
+              top). Per-level heights are independent: set each
+              level&apos;s height in Cells, and they can differ
+              (e.g. three 0.6 m pallet levels at the bottom + two
+              0.3 m picking shelves up top = 2.4 m total).
             </p>
           </div>
         </div>
@@ -905,6 +919,7 @@ function LocationBody({
             </p>
             <CellsDialog
               warehouseUuid={warehouseUuid}
+              storageTags={storageTags}
               location={{
                 uuid: location.uuid,
                 name: location.name,

@@ -102,9 +102,32 @@ defmodule Backend.Warehouses.StorageLocation do
       message: "must be a #RRGGBB hex colour"
     )
     |> normalise_tags()
+    |> validate_tag_membership()
     |> unique_constraint([:warehouse_id, :code],
       name: :storage_locations_warehouse_id_code_index
     )
+  end
+
+  # Reject any tag not in the company's storage_tags registry. The
+  # company id is captured via the changeset because the registry is
+  # company-scoped (multi-tenant safe).
+  defp validate_tag_membership(changeset) do
+    company_id =
+      Ecto.Changeset.get_field(changeset, :company_id) ||
+        case Ecto.Changeset.get_field(changeset, :company_id) do
+          nil -> nil
+          id -> id
+        end
+
+    if is_integer(company_id) do
+      Backend.Warehouses.StorageTags.validate_tag_membership(
+        changeset,
+        :tags,
+        company_id
+      )
+    else
+      changeset
+    end
   end
 
   # Tags are user-typed; same normalisation as `StorageCell` so a

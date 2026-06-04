@@ -7,6 +7,7 @@ import type { PermissionCode } from "@/lib/rbac";
 import {
   User as UserIcon,
   Building2,
+  Tags,
   Users,
   Warehouse,
   ShieldCheck,
@@ -32,6 +33,12 @@ const ITEMS: NavItem[] = [
     href: "/settings/warehouses",
     label: "Warehouses",
     icon: Warehouse,
+    permission: "warehouses.view",
+  },
+  {
+    href: "/settings/storage-tags",
+    label: "Storage tags",
+    icon: Tags,
     permission: "warehouses.view",
   },
   {

@@ -66,6 +66,12 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     notes: "Notes",
     storage_location_id: "Parent location",
   },
+  storage_tag: {
+    key: "Key",
+    label: "Label",
+    description: "Description",
+    kind: "Where it applies",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

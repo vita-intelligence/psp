@@ -180,6 +180,26 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  One row from the company-scoped tag registry. The picker on the
+  warehouse plan editor reads from this; allocation matches against
+  `key` (the lowercased canonical identifier).
+  """
+  def storage_tag(t) do
+    %{
+      id: t.id,
+      uuid: t.uuid,
+      key: t.key,
+      label: t.label,
+      description: t.description,
+      kind: t.kind,
+      inserted_at: t.inserted_at,
+      updated_at: t.updated_at,
+      created_by: actor(t, :created_by),
+      updated_by: actor(t, :updated_by)
+    }
+  end
+
+  @doc """
   One level of a storage location. Cells stack from `ordinal: 0`
   (bottom) upward. Dimensions in metres, tags freeform.
   """

@@ -26,7 +26,8 @@ defmodule BackendWeb.AuditController do
     # warehouse, you can see how its plan got to its current state.
     "floor" => "warehouses.view",
     "storage_location" => "warehouses.view",
-    "storage_cell" => "warehouses.view"
+    "storage_cell" => "warehouses.view",
+    "storage_tag" => "warehouses.view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -100,6 +101,13 @@ defmodule BackendWeb.AuditController do
 
   # Cells don't carry warehouse_id directly — hop through their
   # storage_location to find the parent warehouse.
+  defp check_entity_in_company(actor, "storage_tag", entity_id) do
+    case Backend.Repo.get(Backend.Warehouses.StorageTag, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
   defp check_entity_in_company(actor, "storage_cell", entity_id) do
     case Backend.Repo.get(Backend.Warehouses.StorageCell, entity_id) do
       %{storage_location_id: location_id} ->

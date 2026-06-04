@@ -16,7 +16,8 @@ type EntityType =
   | "template"
   | "floor"
   | "storage_location"
-  | "storage_cell";
+  | "storage_cell"
+  | "storage_tag";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();

@@ -21,11 +21,15 @@ import {
   updateCellAction,
 } from "@/lib/storage-cells/actions";
 import type { ErrorResult } from "@/lib/errors/server";
-import type { StorageCell, StorageLocation } from "@/lib/types";
+import type { StorageCell, StorageLocation, StorageTag } from "@/lib/types";
+import { TagPicker } from "./tag-picker";
 
 interface CellsDialogProps {
   warehouseUuid: string;
   location: Pick<StorageLocation, "uuid" | "name" | "cells">;
+  /** Company-wide tag registry — passed straight to the per-cell
+   *  TagPicker so each level can pick its own override tags. */
+  storageTags: StorageTag[];
   /** Open/close passed in so the parent controls (LocationBody owns
    *  the button that triggers this). */
   trigger: React.ReactNode;
@@ -45,6 +49,7 @@ interface CellsDialogProps {
 export function CellsDialog({
   warehouseUuid,
   location,
+  storageTags,
   trigger,
 }: CellsDialogProps) {
   const router = useRouter();
@@ -170,6 +175,7 @@ export function CellsDialog({
               >
                 <CellRow
                   cell={cell}
+                  storageTags={storageTags}
                   disabled={pending}
                   onPatch={(patch) => onPatch(cell.uuid, patch)}
                   onDelete={() => onDelete(cell.uuid)}
@@ -203,11 +209,13 @@ interface CellPatch {
 
 function CellRow({
   cell,
+  storageTags,
   disabled,
   onPatch,
   onDelete,
 }: {
   cell: StorageCell;
+  storageTags: StorageTag[];
   disabled: boolean;
   onPatch: (patch: Partial<CellPatch>) => void;
   onDelete: () => void;
@@ -219,15 +227,6 @@ function CellRow({
   const [d, setD] = useState(cell.depth_m ?? "");
   const [h, setH] = useState(cell.height_m ?? "");
   const [maxW, setMaxW] = useState(cell.max_weight_kg ?? "");
-  const [tagsStr, setTagsStr] = useState((cell.tags ?? []).join(", "));
-
-  const commitTags = () => {
-    const parsed = tagsStr
-      .split(",")
-      .map((t) => t.trim().toLowerCase())
-      .filter((t) => t.length > 0);
-    onPatch({ tags: parsed });
-  };
 
   return (
     <fieldset disabled={disabled} className="contents">
@@ -276,21 +275,15 @@ function CellRow({
           onCommit={(v) => onPatch({ max_weight_kg: v })}
         />
 
-        <div className="space-y-1">
-          <Label className="text-[11px]">Tags</Label>
-          <Input
-            value={tagsStr}
-            onChange={(e) => setTagsStr(e.target.value)}
-            onBlur={commitTags}
-            placeholder="cold, allergen-nuts, raw-oil"
-            className="h-8 font-mono text-xs"
-          />
-          <p className="text-[10px] text-muted-foreground">
-            Comma-separated. Free-form labels — the segregation rules
-            engine reads these later (cold → must match a cold cell,
-            quarantine → cell goes exclusive, etc.).
-          </p>
-        </div>
+        <TagPicker
+          value={cell.tags ?? []}
+          known={storageTags}
+          kind="cell"
+          label="Level tags (override)"
+          help="Only set when this specific level differs from the rack. The location's tags already apply to every level."
+          readOnly={disabled}
+          onCommit={(tags) => onPatch({ tags })}
+        />
       </div>
     </fieldset>
   );

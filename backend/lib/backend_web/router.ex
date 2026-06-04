@@ -65,6 +65,11 @@ defmodule BackendWeb.Router do
           except: [:new, :edit, :index]
       end
     end
+
+    # Company-scoped tag vocabulary used by the warehouse plan editor
+    # picker. Top-level (not nested under warehouses) because the
+    # registry is shared across every warehouse.
+    resources "/storage-tags", StorageTagController, except: [:new, :edit]
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

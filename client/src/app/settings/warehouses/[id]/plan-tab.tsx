@@ -6,6 +6,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { listFloors } from "@/lib/floors/server";
+import { listStorageTags } from "@/lib/storage-tags/server";
 import { LayoutGrid } from "lucide-react";
 import { NewFloorButton } from "./new-floor-button";
 import { WarehousePlanEditor } from "./plan/warehouse-plan-editor";
@@ -31,7 +32,10 @@ export async function PlanTab({
   warehouseName,
   canEdit,
 }: PlanTabProps) {
-  const floors = await listFloors(warehouseUuid);
+  const [floors, storageTags] = await Promise.all([
+    listFloors(warehouseUuid),
+    listStorageTags(),
+  ]);
 
   if (floors.length === 0) {
     return (
@@ -77,6 +81,7 @@ export async function PlanTab({
       warehouseId={warehouseId}
       warehouseName={warehouseName}
       floors={floors}
+      storageTags={storageTags ?? []}
       canEdit={canEdit}
     />
   );

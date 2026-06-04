@@ -125,7 +125,8 @@ export interface AuditEvent {
     | "template"
     | "floor"
     | "storage_location"
-    | "storage_cell";
+    | "storage_cell"
+    | "storage_tag";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";
@@ -210,6 +211,24 @@ export interface Warehouse {
  *  dropped from the backend (cosmetic-only, classification moved to
  *  `tags[]`). Don't reach for this in new code. */
 export type StorageLocationKind = "other";
+
+/** One row from the company-scoped storage tag vocabulary. The
+ *  picker on the warehouse plan editor only allows tags from this
+ *  list — operators stop spelling `cold-zone` three different ways.
+ *  Allocation joins on `key` (lowercased, hyphen-separated). */
+export interface StorageTag {
+  id: number;
+  uuid: string;
+  key: string;
+  label: string;
+  description: string | null;
+  /** Where the tag is applicable. `both` = either context. */
+  kind: "location" | "cell" | "both";
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
 
 /** One physical level / subdivision of a storage location. A shelf
  *  with five usable levels has five cells, ordered bottom-to-top

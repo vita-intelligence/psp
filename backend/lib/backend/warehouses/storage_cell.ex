@@ -68,10 +68,25 @@ defmodule Backend.Warehouses.StorageCell do
     |> validate_number(:height_m, greater_than: 0)
     |> validate_number(:max_weight_kg, greater_than: 0)
     |> validate_tags()
+    |> validate_tag_membership()
     |> unique_constraint([:storage_location_id, :ordinal],
       name: :storage_cells_storage_location_id_ordinal_index,
       message: "another level already uses this position"
     )
+  end
+
+  defp validate_tag_membership(changeset) do
+    company_id = Ecto.Changeset.get_field(changeset, :company_id)
+
+    if is_integer(company_id) do
+      Backend.Warehouses.StorageTags.validate_tag_membership(
+        changeset,
+        :tags,
+        company_id
+      )
+    else
+      changeset
+    end
   end
 
   # Tags are user-typed; normalise to lowercased trim, drop blanks and

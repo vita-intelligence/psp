@@ -33,7 +33,7 @@ import {
 } from "@/lib/storage-locations/actions";
 import { updateFloorAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
-import type { Floor } from "@/lib/types";
+import type { Floor, StorageTag } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import type {
   ArrowAnnotation,
@@ -77,6 +77,10 @@ interface WarehousePlanEditorProps {
   warehouseId: number;
   warehouseName: string;
   floors: Floor[];
+  /** Company-wide storage tag registry. Used by the location and
+   *  cell tag pickers — operators can only select from this list,
+   *  the admin maintains the vocabulary at /settings/storage-tags. */
+  storageTags: StorageTag[];
   canEdit: boolean;
 }
 
@@ -164,6 +168,7 @@ export function WarehousePlanEditor({
   warehouseId,
   warehouseName,
   floors,
+  storageTags,
   canEdit,
 }: WarehousePlanEditorProps) {
   const router = useRouter();
@@ -1534,6 +1539,7 @@ export function WarehousePlanEditor({
           canvasHeight={canvasHeight}
           readOnly={readOnly}
           warehouseUuid={warehouseUuid}
+          storageTags={storageTags}
           onViewportChange={onViewportChange}
           onWallAdded={onWallAdded}
           onWallBowChange={onWallBowChange}
@@ -1623,6 +1629,7 @@ export function WarehousePlanEditor({
             arrows={activeFloor?.arrows ?? []}
             locations={activeFloor?.locations ?? []}
             warehouseUuid={warehouseUuid}
+            storageTags={storageTags}
             readOnly={readOnly}
             layout="side"
             onWallUpdate={onWallUpdate}
@@ -1681,6 +1688,7 @@ interface MobileLayoutProps {
   canvasHeight: number;
   readOnly: boolean;
   warehouseUuid: string;
+  storageTags: StorageTag[];
   onViewportChange: (v: Viewport) => void;
   onWallAdded: (w: Wall) => void;
   onWallBowChange: (id: string, bow: number) => void;
@@ -1739,6 +1747,7 @@ function MobileLayout({
   canvasHeight,
   readOnly,
   warehouseUuid,
+  storageTags,
   onViewportChange,
   onWallAdded,
   onWallBowChange,
@@ -1895,6 +1904,7 @@ function MobileLayout({
               arrows={activeFloor.arrows}
               locations={activeFloor.locations}
               warehouseUuid={warehouseUuid}
+              storageTags={storageTags}
               readOnly={readOnly}
               layout="sheet"
               onWallUpdate={onWallUpdate}
