@@ -15,6 +15,7 @@ defmodule Backend.Warehouses.StorageLocation do
   import Ecto.Changeset
 
   alias Backend.Accounts.User
+  alias Backend.Companies.Company
   alias Backend.Warehouses.{Floor, Warehouse}
 
   # The kinds the UI exposes. Add a value here AND in the FE picker
@@ -41,6 +42,10 @@ defmodule Backend.Warehouses.StorageLocation do
 
     belongs_to :warehouse, Warehouse
     belongs_to :floor, Floor
+    # Denormalised from `warehouse.company_id` for the same reason
+    # `Floor` has it — audit_events.company_id is NOT NULL and the
+    # cross-company filter stays a single-index lookup.
+    belongs_to :company, Company
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -54,6 +59,7 @@ defmodule Backend.Warehouses.StorageLocation do
     |> cast(attrs, [
       :warehouse_id,
       :floor_id,
+      :company_id,
       :name,
       :code,
       :kind,
@@ -69,7 +75,7 @@ defmodule Backend.Warehouses.StorageLocation do
       :created_by_id,
       :updated_by_id
     ])
-    |> validate_required([:warehouse_id, :floor_id, :name])
+    |> validate_required([:warehouse_id, :floor_id, :company_id, :name])
     |> validate_length(:name, min: 1, max: 120)
     |> validate_length(:code, max: 40)
     |> validate_length(:capacity, max: 60)

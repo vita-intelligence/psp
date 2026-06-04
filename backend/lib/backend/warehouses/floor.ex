@@ -12,6 +12,7 @@ defmodule Backend.Warehouses.Floor do
   import Ecto.Changeset
 
   alias Backend.Accounts.User
+  alias Backend.Companies.Company
   alias Backend.Warehouses.{StorageLocation, Warehouse}
 
   schema "warehouse_floors" do
@@ -23,6 +24,11 @@ defmodule Backend.Warehouses.Floor do
     field :canvas_json, :map, default: %{}
 
     belongs_to :warehouse, Warehouse
+    # Denormalised from `warehouse.company_id` so the audit_events
+    # insert (which needs company_id directly on the entity) and the
+    # cross-company isolation filter work without joining the parent
+    # warehouse on every read.
+    belongs_to :company, Company
     belongs_to :created_by, User
     belongs_to :updated_by, User
     has_many :storage_locations, StorageLocation
@@ -34,13 +40,14 @@ defmodule Backend.Warehouses.Floor do
     floor
     |> cast(attrs, [
       :warehouse_id,
+      :company_id,
       :name,
       :ordinal,
       :canvas_json,
       :created_by_id,
       :updated_by_id
     ])
-    |> validate_required([:warehouse_id, :name])
+    |> validate_required([:warehouse_id, :company_id, :name])
     |> validate_length(:name, min: 1, max: 80)
     |> validate_number(:ordinal, greater_than_or_equal_to: 0)
     |> unique_constraint([:warehouse_id, :name],

@@ -75,6 +75,10 @@ defmodule Backend.Warehouses.Plans do
       |> Map.put_new("ordinal", next_ordinal)
       |> Map.merge(%{
         "warehouse_id" => warehouse.id,
+        # Denormalised from the parent warehouse so the audit_events
+        # insert (which needs entity.company_id) succeeds. See the
+        # `AddCompanyIdToFloorsAndLocations` migration for the why.
+        "company_id" => warehouse.company_id,
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
@@ -170,6 +174,9 @@ defmodule Backend.Warehouses.Plans do
       |> Map.merge(%{
         "warehouse_id" => floor.warehouse_id,
         "floor_id" => floor.id,
+        # Same denormalisation as floors — audit_events.company_id
+        # needs to be populated for the row to insert.
+        "company_id" => floor.company_id,
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
