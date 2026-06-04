@@ -19,12 +19,10 @@ defmodule Backend.Warehouses.Warehouse do
 
   schema "warehouses" do
     # Public identifier — used in URLs, API paths, channel topics.
-    # Integer PK stays for cheaper FKs.
+    # Integer PK stays for cheaper FKs. Display code (WH00001, …) is
+    # rendered on the fly from `companies.numbering_formats["warehouse"]`
+    # + the PK id; not stored on the row.
     field :uuid, Ecto.UUID, autogenerate: true
-    # Short public identifier (WH00001, …). Auto-generated on create
-    # from `companies.numbering_formats["warehouse"]`; admins can also
-    # type one in by hand. Per-company unique.
-    field :code, :string
     field :name, :string
     field :address, :string
     field :notes, :string
@@ -51,7 +49,6 @@ defmodule Backend.Warehouses.Warehouse do
     warehouse
     |> cast(attrs, [
       :company_id,
-      :code,
       :name,
       :address,
       :notes,
@@ -66,13 +63,8 @@ defmodule Backend.Warehouses.Warehouse do
     ])
     |> validate_required([:company_id, :name])
     |> validate_length(:name, min: 1, max: 200)
-    |> validate_length(:code, max: 40)
     |> unique_constraint([:company_id, :name],
       name: :warehouses_company_id_name_index
-    )
-    |> unique_constraint([:company_id, :code],
-      name: :warehouses_company_id_code_index,
-      message: "this code is already in use"
     )
   end
 end

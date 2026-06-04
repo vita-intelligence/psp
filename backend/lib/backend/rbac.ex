@@ -24,8 +24,10 @@ defmodule Backend.RBAC do
   # shows. Excludes bookkeeping columns.
   @template_audit_fields ~w(name description permissions)a
 
-  @sortable_fields ~w(code name inserted_at)a
-  @search_fields ~w(name description code)a
+  # `code` sorts are remapped to `:id` in normalise_sort/1 — the
+  # display code is computed on the fly so id order = code order.
+  @sortable_fields ~w(id name inserted_at)a
+  @search_fields ~w(name description)a
   @default_sort {:name, :asc}
 
   ## Permission checks -------------------------------------------------
@@ -88,7 +90,7 @@ defmodule Backend.RBAC do
   `inserted_at`, search ILIKEs across name and description.
   """
   def list_templates(company_id, opts \\ []) do
-    sort = Keyword.get(opts, :sort, @default_sort)
+    sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
     base =
       Role
@@ -99,6 +101,9 @@ defmodule Backend.RBAC do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp normalise_sort({:code, dir}), do: {:id, dir}
+  defp normalise_sort(other), do: other
 
   @doc "Static config the frontend reads to drive its column controls."
   def list_templates_config do
@@ -129,31 +134,11 @@ defmodule Backend.RBAC do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
-      |> maybe_assign_template_code(actor.company_id)
 
     %Role{}
     |> Role.changeset(attrs)
     |> Repo.insert()
     |> after_template_create(actor)
-  end
-
-  defp maybe_assign_template_code(attrs, company_id) do
-    case Map.get(attrs, "code") do
-      val when is_binary(val) and val != "" ->
-        attrs
-
-      _ ->
-        case Repo.get(Backend.Companies.Company, company_id) do
-          nil ->
-            attrs
-
-          company ->
-            case Backend.Numbering.next_code(company, "template") do
-              nil -> attrs
-              code -> Map.put(attrs, "code", code)
-            end
-        end
-    end
   end
 
   @doc """

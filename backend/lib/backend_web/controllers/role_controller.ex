@@ -161,7 +161,7 @@ defmodule BackendWeb.RoleController do
     %{
       id: template.id,
       uuid: template.uuid,
-      code: Map.get(template, :code),
+      code: BackendWeb.Payloads.render_entity_code(template, "template"),
       name: template.name,
       slug: template.slug,
       description: template.description,

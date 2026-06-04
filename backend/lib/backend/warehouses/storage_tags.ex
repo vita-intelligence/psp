@@ -17,9 +17,11 @@ defmodule Backend.Warehouses.StorageTags do
   alias Backend.Repo
   alias Backend.Warehouses.StorageTag
 
-  @audit_fields ~w(code key label description kind)a
-  @sortable_fields ~w(code key label kind inserted_at)a
-  @search_fields ~w(code key label description)a
+  @audit_fields ~w(key label description kind)a
+  # `code` sorts are remapped to `:id` in normalise_sort/1 — the
+  # display code is computed on the fly so id order = code order.
+  @sortable_fields ~w(id key label kind inserted_at)a
+  @search_fields ~w(key label description)a
   @default_sort {:label, :asc}
 
   ## ----- read ------------------------------------------------------
@@ -30,7 +32,7 @@ defmodule Backend.Warehouses.StorageTags do
   (`{items, next_cursor}`) flows through the reusable table component.
   """
   def list_page(company_id, opts \\ []) do
-    sort = Keyword.get(opts, :sort, @default_sort)
+    sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
     base =
       StorageTag
@@ -41,6 +43,9 @@ defmodule Backend.Warehouses.StorageTags do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp normalise_sort({:code, dir}), do: {:id, dir}
+  defp normalise_sort(other), do: other
 
   @doc "Static config used by the FE table controls."
   def list_config do
@@ -117,33 +122,11 @@ defmodule Backend.Warehouses.StorageTags do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
-      |> maybe_assign_code(company_id)
 
     %StorageTag{}
     |> StorageTag.changeset(attrs)
     |> Repo.insert()
     |> after_create(actor)
-  end
-
-  # Stamp an auto-generated code from companies.numbering_formats when
-  # the caller didn't supply one. Same pattern as Warehouses.create/3.
-  defp maybe_assign_code(attrs, company_id) do
-    case Map.get(attrs, "code") do
-      val when is_binary(val) and val != "" ->
-        attrs
-
-      _ ->
-        case Repo.get(Backend.Companies.Company, company_id) do
-          nil ->
-            attrs
-
-          company ->
-            case Backend.Numbering.next_code(company, "storage_tag") do
-              nil -> attrs
-              code -> Map.put(attrs, "code", code)
-            end
-        end
-    end
   end
 
   def update(%User{} = actor, %StorageTag{} = tag, attrs) do

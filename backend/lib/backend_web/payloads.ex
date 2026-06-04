@@ -2,15 +2,20 @@ defmodule BackendWeb.Payloads do
   @moduledoc """
   Shared payload shapers — keeps every controller emitting the same
   field set for users and companies so the frontend types are stable.
+
+  Display codes (`PT00007`, `WH00001`, …) are computed here, not
+  stored on the row. Each shaper resolves the current company from a
+  per-request process cache (`current_company/0`) and hands its
+  numbering format to `Backend.Numbering.render/3`.
   """
 
-  alias Backend.RBAC
+  alias Backend.{Numbering, RBAC}
 
   def user(user) do
     %{
       id: user.id,
       uuid: user.uuid,
-      code: Map.get(user, :code),
+      code: render_code(user, "user"),
       email: user.email,
       name: user.name,
       avatar: user.avatar,
@@ -106,7 +111,7 @@ defmodule BackendWeb.Payloads do
     %{
       id: w.id,
       uuid: w.uuid,
-      code: w.code,
+      code: render_code(w, "warehouse"),
       company_id: w.company_id,
       name: w.name,
       address: w.address,
@@ -190,7 +195,7 @@ defmodule BackendWeb.Payloads do
     %{
       id: t.id,
       uuid: t.uuid,
-      code: t.code,
+      code: render_code(t, "storage_tag"),
       key: t.key,
       label: t.label,
       description: t.description,
@@ -225,4 +230,37 @@ defmodule BackendWeb.Payloads do
       updated_by: actor(c, :updated_by)
     }
   end
+
+  @doc """
+  Public wrapper around the internal `render_code/2` so callers that
+  shape their own payloads (e.g. the role controller's `defp payload/1`)
+  can render display codes the same way every other shaper does.
+  """
+  def render_entity_code(entity, entity_key), do: render_code(entity, entity_key)
+
+  ## ----- code rendering --------------------------------------------
+
+  # Resolve the Company once per request and cache it in the process
+  # dictionary. Phoenix gives each request its own process so the
+  # cache scope is per-request — no cross-request leakage.
+  defp current_company do
+    case Process.get(:cached_payload_company) do
+      nil ->
+        company = Backend.Companies.current()
+        Process.put(:cached_payload_company, company)
+        company
+
+      company ->
+        company
+    end
+  end
+
+  defp render_code(%{id: id}, entity_key) when is_integer(id) do
+    case current_company() do
+      nil -> nil
+      company -> Numbering.render(id, company, entity_key)
+    end
+  end
+
+  defp render_code(_entity, _entity_key), do: nil
 end

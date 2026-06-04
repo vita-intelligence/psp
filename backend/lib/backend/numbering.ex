@@ -1,18 +1,18 @@
 defmodule Backend.Numbering do
   @moduledoc """
-  Generate human-friendly codes for DB-backed entities using the
-  per-entity format the company stored in `companies.numbering_formats`.
+  Render a display code for any numbered entity on the fly:
 
-  Read the prefix + padding, count existing rows of that entity for
-  the same company, format as `<PREFIX><zero-padded number>`.
+      Numbering.render(template.id, company, "template")
+      # → "PT00007"
 
-  Concurrency: there's a `(warehouse_id, code)` unique constraint on
-  storage_locations and similar elsewhere — if two concurrent inserts
-  race on the same sequence number, Postgres rejects the second. The
-  caller is expected to catch `:storage_locations_warehouse_id_code_index`
-  conflicts and retry with `next_code/3` once; that's enough at the
-  scale we operate at and avoids a separate `numbering_sequences`
-  table for the MVP.
+  No code is stored on the row — the integer PK is the canonical
+  sequence and the prefix/padding live in `companies.numbering_formats`.
+  Changing the format is a single JSONB write that takes immediate
+  effect across every payload, with no row rewrites.
+
+  Sorting by display code is equivalent to sorting by PK id (given
+  the same prefix + padding), so contexts translate `:code` sort
+  requests to `:id` before hitting Ecto.
   """
 
   import Ecto.Query, warn: false
@@ -35,26 +35,94 @@ defmodule Backend.Numbering do
 
   @default_padding 5
 
-  @doc "Public read of the entity-key → schema map, for callers that need to iterate all numbered entities (e.g. the re-stamp routine after a prefix change)."
+  @doc "Map of entity-key → Ecto schema for callers that need to iterate."
   def entity_schemas, do: @entity_schemas
 
-  @doc "Default zero-padding used when the company hasn't configured one."
+  @doc "Default zero-padding when the company hasn't configured one."
   def default_padding, do: @default_padding
 
   @doc """
-  Return the next code string for `entity_key` in the given company,
-  or `nil` if no numbering format is configured (operator is expected
-  to type a code by hand in that case).
+  Render the display code for `id` under the given `company` and
+  `entity_key`. Returns `nil` when no format is configured for that
+  entity (the FE renders `—` for nil) — same behaviour as before so
+  legacy payloads stay graceful.
 
-      next_code(company, "storage_location")
-      # → "SL00012"
+      Numbering.render(7, company, "template")  # → "PT00007"
+      Numbering.render(7, company, "unknown")   # → nil
+  """
+  def render(id, %Company{} = company, entity_key)
+      when is_integer(id) and is_binary(entity_key) do
+    case get_format(company, entity_key) do
+      %{} = format ->
+        case fetch_prefix(format) do
+          {:ok, prefix} ->
+            padding = fetch_padding(format)
+            prefix <> String.pad_leading(Integer.to_string(id), padding, "0")
+
+          :error ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def render(_id, _company, _entity_key), do: nil
+
+  @doc """
+  Parse a search string that looks like a rendered code (`PT00007`)
+  back into the underlying integer id, scoped to the given entity's
+  format. Returns the id or `nil` if the string doesn't match the
+  current prefix.
+
+  Used by list contexts to support "search by code" on a column
+  that isn't really stored.
+  """
+  def parse_search(search, %Company{} = company, entity_key)
+      when is_binary(search) and is_binary(entity_key) do
+    case get_format(company, entity_key) do
+      %{} = format ->
+        case fetch_prefix(format) do
+          {:ok, prefix} ->
+            pattern = ~r/^#{Regex.escape(prefix)}0*(\d+)$/i
+
+            case Regex.run(pattern, String.trim(search)) do
+              [_, digits] -> String.to_integer(digits)
+              _ -> nil
+            end
+
+          :error ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def parse_search(_search, _company, _entity_key), do: nil
+
+  @doc """
+  Legacy code generator — kept for entities that still **store** their
+  code on the row (floor, storage_location, storage_cell). New entities
+  should use `render/3` instead of stamping a column.
+
+  Counts existing rows for the company and formats `prefix + lpad(n+1)`.
+  Caller is expected to retry on unique-constraint collision (same
+  contract as before).
   """
   def next_code(%Company{} = company, entity_key) when is_binary(entity_key) do
     with %{} = format <- get_format(company, entity_key),
          {:ok, prefix} <- fetch_prefix(format),
          padding <- fetch_padding(format),
          schema when not is_nil(schema) <- @entity_schemas[entity_key] do
-      n = next_sequence(schema, company.id)
+      n =
+        schema
+        |> where([s], s.company_id == ^company.id)
+        |> Repo.aggregate(:count, :id)
+        |> Kernel.+(1)
+
       prefix <> String.pad_leading(Integer.to_string(n), padding, "0")
     else
       _ -> nil
@@ -68,9 +136,8 @@ defmodule Backend.Numbering do
   defp get_format(%Company{numbering_formats: nil}, _), do: nil
 
   defp get_format(%Company{numbering_formats: formats}, key)
-       when is_map(formats) do
-    formats[key]
-  end
+       when is_map(formats),
+       do: formats[key]
 
   defp fetch_prefix(%{} = format) do
     case format["prefix"] || format[:prefix] do
@@ -84,15 +151,5 @@ defmodule Backend.Numbering do
       n when is_integer(n) and n > 0 -> n
       _ -> @default_padding
     end
-  end
-
-  # `+1` because we're returning the NEXT sequence number, not the
-  # current count. Race-tolerant via the unique index on the caller's
-  # table — see module doc.
-  defp next_sequence(schema, company_id) do
-    schema
-    |> where([s], s.company_id == ^company_id)
-    |> Repo.aggregate(:count, :id)
-    |> Kernel.+(1)
   end
 end

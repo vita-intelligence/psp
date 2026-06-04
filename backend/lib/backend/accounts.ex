@@ -18,8 +18,10 @@ defmodule Backend.Accounts do
   alias Backend.Companies
   alias Backend.ListQueries
 
-  # Whitelisted columns the Users table can sort by.
-  @sortable_fields ~w(code name email is_active inserted_at)a
+  # Whitelisted columns the Users table can sort by. `code` from the
+  # FE is translated to `:id` in normalise_sort (display code is
+  # `prefix + lpad(id)`, so id order = code order).
+  @sortable_fields ~w(id name email is_active inserted_at)a
   # Equality filters available on the list endpoint.
   @filter_fields ~w(is_active)a
   # Free-text ILIKE search hits these columns.
@@ -76,7 +78,7 @@ defmodule Backend.Accounts do
     * `:search`  — ILIKE across @search_fields
   """
   def list_for_company(company_id, opts \\ []) do
-    sort = Keyword.get(opts, :sort, @default_sort)
+    sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
     base =
       User
@@ -88,6 +90,11 @@ defmodule Backend.Accounts do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  # Code column sorts use `:code` from the FE — translate to :id
+  # because the display code is computed from id + numbering format.
+  defp normalise_sort({:code, dir}), do: {:id, dir}
+  defp normalise_sort(other), do: other
 
   @doc """
   Slim org-roster lookup: every active user in the company, sorted by
@@ -139,15 +146,6 @@ defmodule Backend.Accounts do
             is_admin: false,
             permissions: ~w(company.view users.view roles.view warehouses.view)
           }
-        end
-
-      # Auto-generate a U00001-style code if the company has a
-      # numbering format configured. Skipped silently otherwise — the
-      # code column allows nil so legacy paths keep working.
-      access_attrs =
-        case Backend.Numbering.next_code(company, "user") do
-          nil -> access_attrs
-          code -> Map.put(access_attrs, :code, code)
         end
 
       {:ok, user} =

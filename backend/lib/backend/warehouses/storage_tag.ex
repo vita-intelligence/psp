@@ -25,7 +25,6 @@ defmodule Backend.Warehouses.StorageTag do
 
   schema "storage_tags" do
     field :uuid, Ecto.UUID, autogenerate: true
-    field :code, :string
     field :key, :string
     field :label, :string
     field :description, :string
@@ -44,7 +43,6 @@ defmodule Backend.Warehouses.StorageTag do
     tag
     |> cast(attrs, [
       :company_id,
-      :code,
       :key,
       :label,
       :description,
@@ -54,7 +52,6 @@ defmodule Backend.Warehouses.StorageTag do
     ])
     |> validate_required([:company_id, :key, :label])
     |> normalise_key()
-    |> validate_length(:code, max: 40)
     |> validate_length(:key, min: 1, max: 60)
     |> validate_length(:label, min: 1, max: 80)
     |> validate_format(:key, ~r/\A[a-z0-9][a-z0-9-]*\z/,
@@ -66,10 +63,6 @@ defmodule Backend.Warehouses.StorageTag do
     |> unique_constraint([:company_id, :key],
       name: :storage_tags_company_id_key_index,
       message: "this key is already in use"
-    )
-    |> unique_constraint([:company_id, :code],
-      name: :storage_tags_company_id_code_index,
-      message: "this code is already in use"
     )
   end
 

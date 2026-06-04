@@ -24,10 +24,14 @@ defmodule Backend.Warehouses do
   # Whitelisted column names the table is allowed to sort by. Anything
   # outside this list silently falls back to @default_sort — protects
   # against SQL injection AND accidentally sorting on a sensitive col.
-  @sortable_fields ~w(code name is_active inserted_at)a
+  # `code` is a render-time field (prefix + padded id) — sorting by it
+  # is equivalent to sorting by :id, so the list_for_company helper
+  # translates `:code` → `:id` before passing to ListQueries.
+  @sortable_fields ~w(id name is_active inserted_at)a
   # Equality filters the API will honour.
   @filter_fields ~w(is_active)a
-  # Columns the free-text `search` parameter ILIKE'es against.
+  # Columns the free-text `search` parameter ILIKE'es against. `code`
+  # search is handled separately via Numbering.parse_search.
   @search_fields ~w(name address)a
   @default_sort {:name, :asc}
 
@@ -46,7 +50,7 @@ defmodule Backend.Warehouses do
   caller has reached the end.
   """
   def list_for_company(company_id, opts \\ []) do
-    sort = Keyword.get(opts, :sort, @default_sort)
+    sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
     base =
       Warehouse
@@ -58,6 +62,12 @@ defmodule Backend.Warehouses do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  # FE sends `sort=code:asc` from the Code column header. The display
+  # code is `prefix + lpad(id, padding)` so id order = code order under
+  # any consistent format — translate before Ecto sees it.
+  defp normalise_sort({:code, dir}), do: {:id, dir}
+  defp normalise_sort(other), do: other
 
   @doc "Static config the frontend reads to drive its column controls."
   def list_config do
@@ -112,32 +122,9 @@ defmodule Backend.Warehouses do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
-      |> maybe_assign_code("warehouse", company_id)
     )
     |> Repo.insert()
     |> after_create(actor)
-  end
-
-  # Stamp an auto-generated code when the caller didn't supply one
-  # AND the company has a numbering format configured. Mirrors the
-  # pattern in Backend.Warehouses.Plans for storage_locations.
-  defp maybe_assign_code(attrs, entity_key, company_id) do
-    case Map.get(attrs, "code") do
-      val when is_binary(val) and val != "" ->
-        attrs
-
-      _ ->
-        case Repo.get(Backend.Companies.Company, company_id) do
-          nil ->
-            attrs
-
-          company ->
-            case Backend.Numbering.next_code(company, entity_key) do
-              nil -> attrs
-              code -> Map.put(attrs, "code", code)
-            end
-        end
-    end
   end
 
   def update(%Backend.Accounts.User{} = actor, %Warehouse{} = warehouse, attrs) do

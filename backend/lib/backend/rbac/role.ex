@@ -22,9 +22,8 @@ defmodule Backend.RBAC.Role do
   schema "roles" do
     # Public identifier — URLs / API / channel topics use this.
     field :uuid, Ecto.UUID, autogenerate: true
-    # Short public identifier (PT00001, …). Auto-generated on create
-    # from the company's numbering format. Per-company unique.
-    field :code, :string
+    # Display code (PT00001, …) is rendered on the fly from
+    # `companies.numbering_formats["template"]` + the PK id; not stored.
     field :name, :string
     field :slug, :string
     field :description, :string
@@ -42,7 +41,6 @@ defmodule Backend.RBAC.Role do
     role
     |> cast(attrs, [
       :company_id,
-      :code,
       :name,
       :slug,
       :description,
@@ -52,17 +50,12 @@ defmodule Backend.RBAC.Role do
     ])
     |> validate_required([:company_id, :name, :slug])
     |> validate_length(:name, min: 1, max: 80)
-    |> validate_length(:code, max: 40)
     |> validate_length(:description, max: 400)
     |> validate_format(:slug, ~r/^[a-z][a-z0-9_-]*$/,
       message: "must be lowercase letters, numbers, _ or -"
     )
     |> validate_permissions()
     |> unique_constraint([:company_id, :slug])
-    |> unique_constraint([:company_id, :code],
-      name: :roles_company_id_code_index,
-      message: "this code is already in use"
-    )
   end
 
   defp validate_permissions(changeset) do
