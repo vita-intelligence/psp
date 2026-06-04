@@ -530,6 +530,7 @@ export function WarehousePlanEditor({
             depth_m: null,
             capacity: null,
             color: null,
+            cells: [],
             notes: null,
             inserted_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -1535,6 +1536,7 @@ export function WarehousePlanEditor({
           setSelection={setSelection}
           canvasHeight={canvasHeight}
           readOnly={readOnly}
+          warehouseUuid={warehouseUuid}
           onViewportChange={onViewportChange}
           onWallAdded={onWallAdded}
           onWallBowChange={onWallBowChange}
@@ -1623,6 +1625,7 @@ export function WarehousePlanEditor({
             texts={activeFloor?.texts ?? []}
             arrows={activeFloor?.arrows ?? []}
             locations={activeFloor?.locations ?? []}
+            warehouseUuid={warehouseUuid}
             readOnly={readOnly}
             layout="side"
             onWallUpdate={onWallUpdate}
@@ -1680,6 +1683,7 @@ interface MobileLayoutProps {
   setSelection: (s: SelectionSet) => void;
   canvasHeight: number;
   readOnly: boolean;
+  warehouseUuid: string;
   onViewportChange: (v: Viewport) => void;
   onWallAdded: (w: Wall) => void;
   onWallBowChange: (id: string, bow: number) => void;
@@ -1737,6 +1741,7 @@ function MobileLayout({
   setSelection,
   canvasHeight,
   readOnly,
+  warehouseUuid,
   onViewportChange,
   onWallAdded,
   onWallBowChange,
@@ -1892,6 +1897,7 @@ function MobileLayout({
               texts={activeFloor.texts}
               arrows={activeFloor.arrows}
               locations={activeFloor.locations}
+              warehouseUuid={warehouseUuid}
               readOnly={readOnly}
               layout="sheet"
               onWallUpdate={onWallUpdate}

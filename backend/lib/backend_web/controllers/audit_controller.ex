@@ -21,11 +21,12 @@ defmodule BackendWeb.AuditController do
     "warehouse" => "warehouses.view",
     "user" => "users.view",
     "template" => "roles.view",
-    # Floor + storage location histories ride the same permission as
-    # the parent warehouse — if you can see the warehouse, you can
-    # see how its plan and locations got to their current state.
+    # Floor + storage location + storage cell histories ride the
+    # same permission as the parent warehouse — if you can see the
+    # warehouse, you can see how its plan got to its current state.
     "floor" => "warehouses.view",
-    "storage_location" => "warehouses.view"
+    "storage_location" => "warehouses.view",
+    "storage_cell" => "warehouses.view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -95,6 +96,22 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "storage_location", entity_id) do
     check_via_warehouse_id(actor, Backend.Warehouses.StorageLocation, entity_id)
+  end
+
+  # Cells don't carry warehouse_id directly — hop through their
+  # storage_location to find the parent warehouse.
+  defp check_entity_in_company(actor, "storage_cell", entity_id) do
+    case Backend.Repo.get(Backend.Warehouses.StorageCell, entity_id) do
+      %{storage_location_id: location_id} ->
+        check_via_warehouse_id(
+          actor,
+          Backend.Warehouses.StorageLocation,
+          location_id
+        )
+
+      _ ->
+        {:error, :cross_company}
+    end
   end
 
   defp check_entity_in_company(_actor, _, _), do: {:error, :unknown_entity}

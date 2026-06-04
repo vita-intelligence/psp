@@ -55,6 +55,17 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     color: "Colour",
     floor_id: "Floor",
   },
+  storage_cell: {
+    name: "Name",
+    ordinal: "Level",
+    width_m: "Width (m)",
+    depth_m: "Depth (m)",
+    height_m: "Height (m)",
+    max_weight_kg: "Max weight (kg)",
+    tags: "Tags",
+    notes: "Notes",
+    storage_location_id: "Parent location",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

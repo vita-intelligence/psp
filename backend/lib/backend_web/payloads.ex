@@ -149,7 +149,7 @@ defmodule BackendWeb.Payloads do
   end
 
   def storage_location(l) do
-    %{
+    base = %{
       id: l.id,
       uuid: l.uuid,
       warehouse_id: l.warehouse_id,
@@ -171,6 +171,36 @@ defmodule BackendWeb.Payloads do
       updated_at: l.updated_at,
       created_by: actor(l, :created_by),
       updated_by: actor(l, :updated_by)
+    }
+
+    case Map.get(l, :cells) do
+      %Ecto.Association.NotLoaded{} -> Map.put(base, :cells, [])
+      nil -> Map.put(base, :cells, [])
+      cells -> Map.put(base, :cells, Enum.map(cells, &storage_cell/1))
+    end
+  end
+
+  @doc """
+  One level of a storage location. Cells stack from `ordinal: 0`
+  (bottom) upward. Dimensions in metres, tags freeform.
+  """
+  def storage_cell(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      storage_location_id: c.storage_location_id,
+      ordinal: c.ordinal,
+      name: c.name,
+      width_m: c.width_m,
+      depth_m: c.depth_m,
+      height_m: c.height_m,
+      max_weight_kg: c.max_weight_kg,
+      tags: c.tags || [],
+      notes: c.notes,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at,
+      created_by: actor(c, :created_by),
+      updated_by: actor(c, :updated_by)
     }
   end
 end

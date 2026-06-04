@@ -16,7 +16,7 @@ defmodule Backend.Warehouses.StorageLocation do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
-  alias Backend.Warehouses.{Floor, Warehouse}
+  alias Backend.Warehouses.{Floor, StorageCell, Warehouse}
 
   # The kinds the UI exposes. Add a value here AND in the FE picker
   # when shipping a new category — the changeset rejects unknowns.
@@ -52,6 +52,10 @@ defmodule Backend.Warehouses.StorageLocation do
     belongs_to :company, Company
     belongs_to :created_by, User
     belongs_to :updated_by, User
+
+    has_many :cells, StorageCell,
+      foreign_key: :storage_location_id,
+      preload_order: [asc: :ordinal]
 
     timestamps(type: :utc_datetime)
   end

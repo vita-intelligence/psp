@@ -39,9 +39,10 @@ import type {
   TextAnnotation,
   Wall,
 } from "./plan-types";
-import { History, Info, Trash2 } from "lucide-react";
+import { History, Info, Layers, Trash2 } from "lucide-react";
 import { ColorPicker } from "./plan-color-picker";
 import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
+import { CellsDialog } from "./cells-dialog";
 
 interface PlanPropertiesProps {
   selection: SelectionSet;
@@ -50,6 +51,10 @@ interface PlanPropertiesProps {
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
   locations: LocalLocation[];
+  /** Parent warehouse uuid — needed by the LocationBody to open the
+   *  Cells dialog (which calls server actions scoped to the
+   *  warehouse). */
+  warehouseUuid: string;
   readOnly: boolean;
   /** Mobile layout: render as a bottom sheet body without the fixed
    *  side-panel chrome. */
@@ -121,6 +126,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onLocationUpdate,
     onLocationDelete,
     onDeleteSelected,
+    warehouseUuid,
   } = props;
 
   let body: React.ReactNode;
@@ -234,6 +240,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
         <LocationBody
           location={location}
           readOnly={readOnly}
+          warehouseUuid={warehouseUuid}
           onUpdate={(patch) =>
             onLocationUpdate(location.tempId ?? location.uuid, patch)
           }
@@ -755,11 +762,13 @@ function PolygonEdgeBody({
 function LocationBody({
   location,
   readOnly,
+  warehouseUuid,
   onUpdate,
   onDelete,
 }: {
   location: LocalLocation;
   readOnly: boolean;
+  warehouseUuid: string;
   onUpdate: (
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
   ) => void;
@@ -915,6 +924,28 @@ function LocationBody({
             onChange={(c) => onUpdate({ color: c })}
           />
         </div>
+
+        {location.id > 0 && (
+          <CellsDialog
+            warehouseUuid={warehouseUuid}
+            location={{
+              uuid: location.uuid,
+              name: location.name,
+              cells: location.cells ?? [],
+            }}
+            trigger={
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start"
+              >
+                <Layers className="mr-1.5 size-3.5" />
+                Cells ({location.cells?.length ?? 0})
+              </Button>
+            }
+          />
+        )}
 
         {location.id > 0 && (
           <AuditHistoryDialog

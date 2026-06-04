@@ -124,7 +124,8 @@ export interface AuditEvent {
     | "user"
     | "template"
     | "floor"
-    | "storage_location";
+    | "storage_location"
+    | "storage_cell";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";
@@ -214,6 +215,32 @@ export type StorageLocationKind =
   | "staging"
   | "other";
 
+/** One physical level / subdivision of a storage location. A shelf
+ *  with five usable levels has five cells, ordered bottom-to-top
+ *  via `ordinal`. Tags are freeform classification labels for the
+ *  segregation rules engine to consume later (cold, hazmat-3,
+ *  allergen-nuts, …). */
+export interface StorageCell {
+  id: number;
+  uuid: string;
+  storage_location_id: number;
+  ordinal: number;
+  name: string | null;
+  /** Physical dimensions in metres. May differ from the parent
+   *  location's overall footprint (e.g. a half-depth top shelf). */
+  width_m: string | null;
+  depth_m: string | null;
+  height_m: string | null;
+  /** Optional weight cap — null = "no enforced limit". */
+  max_weight_kg: string | null;
+  tags: string[];
+  notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
 /** One storage location inside a warehouse. First-class entity
  *  (matches the `storage_locations` table) — has its own audit trail
  *  and will be referenced by stock + transfer records once the
@@ -240,6 +267,10 @@ export interface StorageLocation {
   /** Optional `#RRGGBB` fill colour override. nil = use the kind's
    *  default palette. */
   color: string | null;
+  /** Cells of this location, bottom-to-top. Empty list when the
+   *  operator hasn't subdivided yet — treat as a single bulk
+   *  storage zone. */
+  cells: StorageCell[];
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

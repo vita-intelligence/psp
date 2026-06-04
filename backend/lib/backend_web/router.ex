@@ -57,7 +57,13 @@ defmodule BackendWeb.Router do
       # them between floors on update. Lookup is by warehouse +
       # location uuid.
       resources "/storage-locations", StorageLocationController,
-        except: [:new, :edit, :index]
+        except: [:new, :edit, :index] do
+        # Cells nest directly under their location — they have no
+        # meaning outside the parent so :index is omitted (cells
+        # come along on the location payload).
+        resources "/cells", StorageCellController,
+          except: [:new, :edit, :index]
+      end
     end
   end
 
