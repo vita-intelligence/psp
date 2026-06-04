@@ -15,6 +15,8 @@ import {
 import { cn } from "@/lib/utils";
 import {
   cmToMetres,
+  edgeArcLengthCm,
+  edgeChordLengthCm,
   formatArea,
   formatLength,
   parseDimensionToCm,
@@ -27,6 +29,7 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
+  Point,
   SelectionItem,
   SelectionSet,
   StorageLocationKind,
@@ -48,6 +51,8 @@ interface PlanPropertiesProps {
   onOutlineDelete: () => void;
   onHoleUpdate: (id: string, patch: Partial<Hole>) => void;
   onHoleDelete: (id: string) => void;
+  onOutlineEdgeBowChange: (index: number, bow: number) => void;
+  onHoleEdgeBowChange: (holeId: string, index: number, bow: number) => void;
   onLocationUpdate: (
     id: string | number,
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
@@ -89,6 +94,8 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onOutlineDelete,
     onHoleUpdate,
     onHoleDelete,
+    onOutlineEdgeBowChange,
+    onHoleEdgeBowChange,
     onLocationUpdate,
     onLocationDelete,
     onDeleteSelected,
@@ -121,6 +128,20 @@ export function PlanProperties(props: PlanPropertiesProps) {
           onDelete={onOutlineDelete}
         />
       ) : null;
+    } else if (item.kind === "outline-edge") {
+      title = `Edge ${item.index + 1}`;
+      body =
+        outline && outline.points.length >= 3 ? (
+          <PolygonEdgeBody
+            p1={outline.points[item.index]!}
+            p2={
+              outline.points[(item.index + 1) % outline.points.length]!
+            }
+            bow={outline.edgeBows?.[item.index] ?? 0}
+            readOnly={readOnly}
+            onBowChange={(b) => onOutlineEdgeBowChange(item.index, b)}
+          />
+        ) : null;
     } else if (item.kind === "hole") {
       const hole = outline?.holes?.find((h) => h.id === item.id);
       title = "Floor cutout";
@@ -131,6 +152,21 @@ export function PlanProperties(props: PlanPropertiesProps) {
           onDelete={() => onHoleDelete(hole.id)}
         />
       ) : null;
+    } else if (item.kind === "hole-edge") {
+      const hole = outline?.holes?.find((h) => h.id === item.holeId);
+      title = `Cutout edge ${item.index + 1}`;
+      body =
+        hole && hole.points.length >= 3 ? (
+          <PolygonEdgeBody
+            p1={hole.points[item.index]!}
+            p2={hole.points[(item.index + 1) % hole.points.length]!}
+            bow={hole.edgeBows?.[item.index] ?? 0}
+            readOnly={readOnly}
+            onBowChange={(b) =>
+              onHoleEdgeBowChange(hole.id, item.index, b)
+            }
+          />
+        ) : null;
     } else if (item.kind === "wall") {
       const wall = walls.find((w) => w.id === item.id);
       title = "Wall";
@@ -202,7 +238,9 @@ function MultiSelectBody({
   const labels: Record<SelectionItem["kind"], string> = {
     wall: "walls",
     outline: "floor outline",
+    "outline-edge": "outline edges",
     hole: "holes",
+    "hole-edge": "cutout edges",
     location: "locations",
   };
   return (
@@ -463,6 +501,78 @@ function WallBody({
           >
             <Trash2 className="mr-1.5 size-3.5" />
             Delete wall
+          </Button>
+        )}
+      </div>
+    </fieldset>
+  );
+}
+
+/** Shared body for a single polygon edge (outline or hole). Exposes
+ *  the same bow controls as WallBody so curving a floor outline edge
+ *  feels identical to curving a wall. */
+function PolygonEdgeBody({
+  p1,
+  p2,
+  bow,
+  readOnly,
+  onBowChange,
+}: {
+  p1: Point;
+  p2: Point;
+  bow: number;
+  readOnly: boolean;
+  onBowChange: (bow: number) => void;
+}) {
+  const length = edgeChordLengthCm(p1, p2);
+  const bowRangeCm = Math.max(100, Math.round(length / 2));
+  const isCurved = Math.abs(bow) > 0.5;
+  const arcLength = isCurved ? edgeArcLengthCm(p1, p2, bow) : length;
+  return (
+    <fieldset disabled={readOnly} className="contents">
+      <div className="space-y-3">
+        <Row label={isCurved ? "Arc length" : "Length"}>
+          <span className="font-mono text-xs">{formatLength(arcLength)}</span>
+        </Row>
+        <Row label="Start (m)">
+          <span className="font-mono text-[11px] text-muted-foreground">
+            ({cmToMetres(p1.x).toFixed(2)}, {cmToMetres(p1.y).toFixed(2)})
+          </span>
+        </Row>
+        <Row label="End (m)">
+          <span className="font-mono text-[11px] text-muted-foreground">
+            ({cmToMetres(p2.x).toFixed(2)}, {cmToMetres(p2.y).toFixed(2)})
+          </span>
+        </Row>
+        <Row label="Curve (m)">
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={-bowRangeCm}
+              max={bowRangeCm}
+              step={10}
+              value={Math.round(bow)}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                onBowChange(Math.abs(v) < 0.5 ? 0 : v);
+              }}
+              disabled={readOnly}
+              className="h-1.5 flex-1 accent-primary"
+            />
+            <span className="w-12 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+              {cmToMetres(bow).toFixed(2)}
+            </span>
+          </div>
+        </Row>
+        {isCurved && !readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onBowChange(0)}
+            className="w-full justify-start"
+          >
+            Make straight
           </Button>
         )}
       </div>

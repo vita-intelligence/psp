@@ -17,11 +17,16 @@ import {
   GRID_MINOR_CM,
   SNAP_THRESHOLD_PX,
   collectSnapTargets,
+  edgeBowHandle,
+  edgeChordMidpoint,
+  edgeControlPoint,
   findClosestSnap,
   isSelected,
   itemsInMarquee,
   mergeSelections,
   normaliseRect,
+  projectEdgeBow,
+  projectEdgeHandleAxis,
   snapCm,
   snapPoint,
   toggleSelection,
@@ -55,6 +60,11 @@ interface PlanCanvasProps {
   onViewportChange: (next: Viewport) => void;
   onWallAdded: (wall: Wall) => void;
   onWallBowChange: (id: string, bow: number) => void;
+  /** Commit a new bow value (cm sagitta) for a single outline edge.
+   *  Snapshotted by the parent so each curve change is one undo step. */
+  onOutlineEdgeBowChange: (index: number, bow: number) => void;
+  /** Same as `onOutlineEdgeBowChange` but for a specific hole's edge. */
+  onHoleEdgeBowChange: (holeId: string, index: number, bow: number) => void;
   onLocationAdded: (location: {
     x: number;
     y: number;
@@ -137,6 +147,8 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onViewportChange,
       onWallAdded,
       onWallBowChange,
+      onOutlineEdgeBowChange,
+      onHoleEdgeBowChange,
       onLocationAdded,
       onSelectionMove,
       onOutlineCommitted,
@@ -674,72 +686,81 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           {/* Floor outline */}
           {outline && outline.points.length >= 3 && (
             <Layer>
+              {/* Fill polygon — no stroke; the per-edge overlay
+                  shapes below paint the visible border so each edge
+                  can be hit-tested and selected independently. */}
               <Shape
                 sceneFunc={(ctx, shape) => {
                   ctx.beginPath();
-                  outline.points.forEach((p, i) =>
-                    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y),
-                  );
-                  ctx.closePath();
+                  tracePolygonPath(ctx, outline.points, outline.edgeBows);
                   for (const hole of outline.holes ?? []) {
                     if (hole.points.length < 3) continue;
-                    ctx.moveTo(hole.points[0]!.x, hole.points[0]!.y);
-                    for (let i = 1; i < hole.points.length; i++) {
-                      ctx.lineTo(hole.points[i]!.x, hole.points[i]!.y);
-                    }
-                    ctx.closePath();
+                    tracePolygonPath(ctx, hole.points, hole.edgeBows);
                   }
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const native = ctx as any;
                   native.fillStyle = shape.fill();
                   if (native.fill) native.fill("evenodd");
-                  if (shape.stroke()) {
-                    native.strokeStyle = shape.stroke();
-                    native.lineWidth = shape.strokeWidth();
-                    ctx.stroke();
-                  }
                 }}
-                /**
-                 * Konva auto-derives a shape's hit area from its
-                 * sceneFunc only when the renderer follows simple
-                 * fill / stroke paths. Because we hand-write a path
-                 * with even-odd fill, Konva can't tell where to
-                 * intercept clicks. Provide an explicit hitFunc
-                 * that traces the outer perimeter — clicks anywhere
-                 * inside the outline (including holes) select it,
-                 * and the holes themselves stay clickable via their
-                 * own line shapes drawn above.
-                 */
                 hitFunc={(ctx, shape) => {
                   ctx.beginPath();
-                  outline.points.forEach((p, i) =>
-                    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y),
-                  );
-                  ctx.closePath();
+                  tracePolygonPath(ctx, outline.points, outline.edgeBows);
                   ctx.fillStrokeShape(shape);
                 }}
                 fill="rgba(241,245,249,1)"
-                stroke={
-                  isSelected(selection, { kind: "outline" })
-                    ? "rgb(59,130,246)"
-                    : "rgba(15,23,42,0.55)"
-                }
-                strokeWidth={
-                  isSelected(selection, { kind: "outline" }) ? 3 : 2
-                }
                 onClick={(e) => selectItem({ kind: "outline" }, e)}
                 onTap={(e) => selectItem({ kind: "outline" }, e)}
               />
+              {/* Per-edge selectable strokes — each edge intercepts
+                  clicks on top of the fill so it can be bowed
+                  individually. */}
+              {outline.points.map((_, i) => {
+                const p1 = outline.points[i]!;
+                const p2 = outline.points[
+                  (i + 1) % outline.points.length
+                ]!;
+                const bow = outline.edgeBows?.[i] ?? 0;
+                const edgeItem: SelectionItem = {
+                  kind: "outline-edge",
+                  index: i,
+                };
+                const outlineSelected = isSelected(selection, {
+                  kind: "outline",
+                });
+                return (
+                  <PolygonEdgeShape
+                    key={`oe-${i}`}
+                    p1={p1}
+                    p2={p2}
+                    bow={bow}
+                    selected={isSelected(selection, edgeItem)}
+                    parentSelected={outlineSelected}
+                    color="outline"
+                    readOnly={readOnly}
+                    viewportScale={viewport.scale}
+                    onSelect={(e) => selectItem(edgeItem, e)}
+                    onBowChange={(b) => onOutlineEdgeBowChange(i, b)}
+                  />
+                );
+              })}
               {(outline.holes ?? []).map((hole) => (
                 <HoleOutline
                   key={hole.id}
                   hole={hole}
-                  selected={isSelected(selection, {
-                    kind: "hole",
-                    id: hole.id,
-                  })}
-                  onSelect={(e) =>
+                  selection={selection}
+                  readOnly={readOnly}
+                  viewportScale={viewport.scale}
+                  onSelectHole={(e) =>
                     selectItem({ kind: "hole", id: hole.id }, e)
+                  }
+                  onSelectEdge={(index, e) =>
+                    selectItem(
+                      { kind: "hole-edge", holeId: hole.id, index },
+                      e,
+                    )
+                  }
+                  onEdgeBowChange={(index, bow) =>
+                    onHoleEdgeBowChange(hole.id, index, bow)
                   }
                 />
               ))}
@@ -1151,31 +1172,232 @@ function snappedHandlePosition(wall: Wall, snappedBow: number): Point {
   return { x: m.x + p.x * snappedBow, y: m.y + p.y * snappedBow };
 }
 
-function HoleOutline({
-  hole,
-  selected,
-  onSelect,
-}: {
-  hole: Hole;
-  selected: boolean;
-  onSelect: SelectHandler;
-}) {
-  if (hole.points.length < 2) return null;
-  const points: number[] = [];
-  for (const p of hole.points) {
-    points.push(p.x, p.y);
+/** Trace a closed (possibly-curved) polygon onto a 2D canvas context.
+ *  Each edge follows either a straight line or a quadratic Bezier
+ *  depending on the matching `edgeBows[i]` entry. Caller is
+ *  responsible for `ctx.beginPath()` and `closePath()` semantics —
+ *  the function itself just emits moveTo / lineTo / quadraticCurveTo
+ *  + closePath so it can be combined with other sub-paths
+ *  (e.g. the outline plus its hole cutouts for an evenodd fill). */
+function tracePolygonPath(
+  ctx: Konva.Context | CanvasRenderingContext2D,
+  points: Point[],
+  edgeBows: number[] | undefined,
+): void {
+  const n = points.length;
+  if (n < 3) return;
+  const p0 = points[0]!;
+  ctx.moveTo(p0.x, p0.y);
+  for (let i = 0; i < n; i++) {
+    const a = points[i]!;
+    const b = points[(i + 1) % n]!;
+    const bow = edgeBows?.[i] ?? 0;
+    if (Math.abs(bow) > 0.5) {
+      const c = edgeControlPoint(a, b, bow);
+      ctx.quadraticCurveTo(c.x, c.y, b.x, b.y);
+    } else {
+      ctx.lineTo(b.x, b.y);
+    }
   }
-  return (
+  ctx.closePath();
+}
+
+/** Shared per-edge component for outline + hole polygons. Renders
+ *  the visible stroke for that edge as a Line or curved Shape,
+ *  intercepts clicks to select the edge, and (when selected) draws
+ *  the perpendicular bow handle the user grabs to bend the edge. */
+function PolygonEdgeShape({
+  p1,
+  p2,
+  bow,
+  selected,
+  parentSelected,
+  color,
+  readOnly,
+  viewportScale,
+  onSelect,
+  onBowChange,
+}: {
+  p1: Point;
+  p2: Point;
+  bow: number;
+  selected: boolean;
+  /** True when the parent polygon (whole outline / whole hole) is
+   *  selected — used so the edge highlights too instead of staying
+   *  in its default colour. */
+  parentSelected: boolean;
+  /** Visual variant — outline uses the dark perimeter colour, holes
+   *  use the dashed red cutout colour. */
+  color: "outline" | "hole";
+  readOnly: boolean;
+  viewportScale: number;
+  onSelect: SelectHandler;
+  onBowChange: (bow: number) => void;
+}) {
+  const isCurved = Math.abs(bow) > 0.5;
+  const palette =
+    color === "outline"
+      ? { selected: "rgb(59,130,246)", base: "rgba(15,23,42,0.55)" }
+      : { selected: "rgb(239,68,68)", base: "rgba(239,68,68,0.7)" };
+  const stroke =
+    selected || parentSelected ? palette.selected : palette.base;
+  const baseWidth = color === "outline" ? 2 : 1.5;
+  const strokeWidth = selected ? baseWidth + 1 : baseWidth;
+  const dash = color === "hole" ? [8, 4] : undefined;
+
+  const edgeNode = isCurved ? (
+    <Shape
+      sceneFunc={(ctx, shape) => {
+        const c = edgeControlPoint(p1, p2, bow);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.quadraticCurveTo(c.x, c.y, p2.x, p2.y);
+        ctx.strokeShape(shape);
+      }}
+      hitFunc={(ctx, shape) => {
+        const c = edgeControlPoint(p1, p2, bow);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.quadraticCurveTo(c.x, c.y, p2.x, p2.y);
+        ctx.strokeShape(shape);
+      }}
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      lineCap="round"
+      dash={dash}
+      hitStrokeWidth={20}
+      onClick={readOnly ? undefined : onSelect}
+      onTap={readOnly ? undefined : onSelect}
+    />
+  ) : (
     <Line
-      points={points}
-      closed
-      stroke={selected ? "rgb(239,68,68)" : "rgba(239,68,68,0.7)"}
-      strokeWidth={selected ? 2 : 1.5}
-      dash={[8, 4]}
-      onClick={onSelect}
-      onTap={onSelect}
+      points={[p1.x, p1.y, p2.x, p2.y]}
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      lineCap="round"
+      dash={dash}
+      onClick={readOnly ? undefined : onSelect}
+      onTap={readOnly ? undefined : onSelect}
       hitStrokeWidth={20}
     />
+  );
+
+  if (!selected || readOnly) return edgeNode;
+
+  const mid = edgeChordMidpoint(p1, p2);
+  const handle = edgeBowHandle(p1, p2, bow);
+  const r = 9 / viewportScale;
+  return (
+    <>
+      {edgeNode}
+      <Line
+        points={[mid.x, mid.y, handle.x, handle.y]}
+        stroke="rgba(59,130,246,0.45)"
+        strokeWidth={1 / viewportScale}
+        dash={[4 / viewportScale, 3 / viewportScale]}
+        listening={false}
+      />
+      <Circle
+        x={handle.x}
+        y={handle.y}
+        radius={r}
+        fill="white"
+        stroke="rgb(59,130,246)"
+        strokeWidth={2 / viewportScale}
+        draggable
+        onDragMove={(e) => {
+          const proj = projectEdgeHandleAxis(p1, p2, {
+            x: e.target.x(),
+            y: e.target.y(),
+          });
+          e.target.position(proj.handle);
+        }}
+        onDragEnd={(e) => {
+          const newBow = projectEdgeBow(p1, p2, {
+            x: e.target.x(),
+            y: e.target.y(),
+          });
+          const snapped = Math.round(newBow / 50) * 50;
+          const snappedHandle = edgeBowHandle(p1, p2, snapped);
+          e.target.position(snappedHandle);
+          onBowChange(snapped);
+        }}
+      />
+    </>
+  );
+}
+
+function HoleOutline({
+  hole,
+  selection,
+  readOnly,
+  viewportScale,
+  onSelectHole,
+  onSelectEdge,
+  onEdgeBowChange,
+}: {
+  hole: Hole;
+  selection: SelectionSet;
+  readOnly: boolean;
+  viewportScale: number;
+  onSelectHole: SelectHandler;
+  onSelectEdge: (
+    index: number,
+    e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
+  ) => void;
+  onEdgeBowChange: (index: number, bow: number) => void;
+}) {
+  if (hole.points.length < 2) return null;
+  const holeSelected = isSelected(selection, { kind: "hole", id: hole.id });
+
+  // Tiny invisible Shape giving the hole interior a hit area so
+  // tapping the cutout selects the whole hole (matches pre-curve
+  // behaviour — clicking inside the dashed boundary selects the
+  // hole as a whole). The per-edge shapes below paint the visible
+  // dashed stroke and intercept edge clicks.
+  return (
+    <>
+      {hole.points.length >= 3 && (
+        <Shape
+          sceneFunc={() => {
+            // No visible draw — fill handled by the parent outline.
+          }}
+          hitFunc={(ctx, shape) => {
+            ctx.beginPath();
+            tracePolygonPath(ctx, hole.points, hole.edgeBows);
+            ctx.fillStrokeShape(shape);
+          }}
+          fill="transparent"
+          onClick={readOnly ? undefined : onSelectHole}
+          onTap={readOnly ? undefined : onSelectHole}
+        />
+      )}
+      {hole.points.map((_, i) => {
+        const p1 = hole.points[i]!;
+        const p2 = hole.points[(i + 1) % hole.points.length]!;
+        const bow = hole.edgeBows?.[i] ?? 0;
+        const edgeItem: SelectionItem = {
+          kind: "hole-edge",
+          holeId: hole.id,
+          index: i,
+        };
+        return (
+          <PolygonEdgeShape
+            key={`he-${hole.id}-${i}`}
+            p1={p1}
+            p2={p2}
+            bow={bow}
+            selected={isSelected(selection, edgeItem)}
+            parentSelected={holeSelected}
+            color="hole"
+            readOnly={readOnly}
+            viewportScale={viewportScale}
+            onSelect={(e) => onSelectEdge(i, e)}
+            onBowChange={(b) => onEdgeBowChange(i, b)}
+          />
+        );
+      })}
+    </>
   );
 }
 

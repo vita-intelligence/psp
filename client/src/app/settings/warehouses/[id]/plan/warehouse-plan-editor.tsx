@@ -380,6 +380,60 @@ export function WarehousePlanEditor({
     [updateActiveFloor],
   );
 
+  /** Apply a new bow value to one edge of the floor outline. The
+   *  edgeBows array is stored sparsely — if every entry collapses
+   *  to 0 we drop the array entirely to keep canvas_json tidy. */
+  const onOutlineEdgeBowChange = useCallback(
+    (index: number, bow: number) => {
+      updateActiveFloor(
+        (s) => {
+          if (!s.outline) return s;
+          const n = s.outline.points.length;
+          const next = Array.from({ length: n }, (_, i) =>
+            i === index ? bow : s.outline?.edgeBows?.[i] ?? 0,
+          );
+          const allZero = next.every((v) => !v || Math.abs(v) < 0.5);
+          return {
+            ...s,
+            outline: {
+              ...s.outline,
+              edgeBows: allZero ? undefined : next,
+            },
+          };
+        },
+        { snapshot: true },
+      );
+    },
+    [updateActiveFloor],
+  );
+
+  const onHoleEdgeBowChange = useCallback(
+    (holeId: string, index: number, bow: number) => {
+      updateActiveFloor(
+        (s) => {
+          if (!s.outline?.holes) return s;
+          return {
+            ...s,
+            outline: {
+              ...s.outline,
+              holes: s.outline.holes.map((h) => {
+                if (h.id !== holeId) return h;
+                const n = h.points.length;
+                const next = Array.from({ length: n }, (_, i) =>
+                  i === index ? bow : h.edgeBows?.[i] ?? 0,
+                );
+                const allZero = next.every((v) => !v || Math.abs(v) < 0.5);
+                return { ...h, edgeBows: allZero ? undefined : next };
+              }),
+            },
+          };
+        },
+        { snapshot: true },
+      );
+    },
+    [updateActiveFloor],
+  );
+
   const onWallDelete = useCallback(
     (id: string) => {
       updateActiveFloor(
@@ -960,6 +1014,8 @@ export function WarehousePlanEditor({
           onViewportChange={onViewportChange}
           onWallAdded={onWallAdded}
           onWallBowChange={onWallBowChange}
+          onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+          onHoleEdgeBowChange={onHoleEdgeBowChange}
           onLocationAdded={onLocationAdded}
           onSelectionMove={onSelectionMove}
           onOutlineCommitted={onOutlineCommitted}
@@ -1004,6 +1060,8 @@ export function WarehousePlanEditor({
                 onViewportChange={onViewportChange}
                 onWallAdded={onWallAdded}
                 onWallBowChange={onWallBowChange}
+                onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+                onHoleEdgeBowChange={onHoleEdgeBowChange}
                 onLocationAdded={onLocationAdded}
                 onSelectionMove={onSelectionMove}
                 onOutlineCommitted={onOutlineCommitted}
@@ -1028,6 +1086,8 @@ export function WarehousePlanEditor({
             onOutlineDelete={onOutlineDelete}
             onHoleUpdate={onHoleUpdate}
             onHoleDelete={onHoleDelete}
+            onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+            onHoleEdgeBowChange={onHoleEdgeBowChange}
             onLocationUpdate={onLocationUpdate}
             onLocationDelete={onLocationDelete}
             onDeleteSelected={onDeleteSelected}
@@ -1073,6 +1133,8 @@ interface MobileLayoutProps {
   onViewportChange: (v: Viewport) => void;
   onWallAdded: (w: Wall) => void;
   onWallBowChange: (id: string, bow: number) => void;
+  onOutlineEdgeBowChange: (index: number, bow: number) => void;
+  onHoleEdgeBowChange: (holeId: string, index: number, bow: number) => void;
   onLocationAdded: (g: {
     x: number;
     y: number;
@@ -1113,6 +1175,8 @@ function MobileLayout({
   onViewportChange,
   onWallAdded,
   onWallBowChange,
+  onOutlineEdgeBowChange,
+  onHoleEdgeBowChange,
   onLocationAdded,
   onSelectionMove,
   onOutlineCommitted,
@@ -1146,6 +1210,8 @@ function MobileLayout({
             onViewportChange={onViewportChange}
             onWallAdded={onWallAdded}
             onWallBowChange={onWallBowChange}
+            onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+            onHoleEdgeBowChange={onHoleEdgeBowChange}
             onLocationAdded={onLocationAdded}
             onSelectionMove={onSelectionMove}
             onOutlineCommitted={onOutlineCommitted}
@@ -1223,6 +1289,8 @@ function MobileLayout({
               onOutlineDelete={onOutlineDelete}
               onHoleUpdate={onHoleUpdate}
               onHoleDelete={onHoleDelete}
+              onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+              onHoleEdgeBowChange={onHoleEdgeBowChange}
               onLocationUpdate={onLocationUpdate}
               onLocationDelete={onLocationDelete}
               onDeleteSelected={onDeleteSelected}

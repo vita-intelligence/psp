@@ -166,6 +166,79 @@ export function projectBow(wall: Wall, candidate: Point): number {
   return (candidate.x - m.x) * p.x + (candidate.y - m.y) * p.y;
 }
 
+// ----------------------------------------------------- generic edges
+//
+// Outline + hole edges share the same bow geometry as walls — the
+// helpers below operate on a raw (p1, p2, bow) triple so the same
+// math drives walls and polygon edges without duplication.
+
+export function edgeChordMidpoint(p1: Point, p2: Point): Point {
+  return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+}
+
+export function edgePerpendicular(p1: Point, p2: Point): Point {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: 0, y: 0 };
+  return { x: -dy / len, y: dx / len };
+}
+
+export function edgeBowHandle(p1: Point, p2: Point, bow: number): Point {
+  const m = edgeChordMidpoint(p1, p2);
+  const p = edgePerpendicular(p1, p2);
+  return { x: m.x + p.x * bow, y: m.y + p.y * bow };
+}
+
+export function edgeControlPoint(p1: Point, p2: Point, bow: number): Point {
+  const m = edgeChordMidpoint(p1, p2);
+  const p = edgePerpendicular(p1, p2);
+  return { x: m.x + p.x * 2 * bow, y: m.y + p.y * 2 * bow };
+}
+
+export function edgeChordLengthCm(p1: Point, p2: Point): number {
+  return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+}
+
+export function edgeArcLengthCm(p1: Point, p2: Point, bow: number): number {
+  if (!bow || bow === 0) return edgeChordLengthCm(p1, p2);
+  const c = edgeControlPoint(p1, p2, bow);
+  const samples = 24;
+  let prev: Point = { x: p1.x, y: p1.y };
+  let total = 0;
+  for (let i = 1; i <= samples; i++) {
+    const t = i / samples;
+    const u = 1 - t;
+    const sp: Point = {
+      x: u * u * p1.x + 2 * u * t * c.x + t * t * p2.x,
+      y: u * u * p1.y + 2 * u * t * c.y + t * t * p2.y,
+    };
+    total += Math.hypot(sp.x - prev.x, sp.y - prev.y);
+    prev = sp;
+  }
+  return total;
+}
+
+/** Signed projection of `candidate` onto the edge's perpendicular —
+ *  this is the new bow value when dragging the bow handle. */
+export function projectEdgeBow(p1: Point, p2: Point, candidate: Point): number {
+  const m = edgeChordMidpoint(p1, p2);
+  const p = edgePerpendicular(p1, p2);
+  return (candidate.x - m.x) * p.x + (candidate.y - m.y) * p.y;
+}
+
+/** Clamp `candidate` to the perpendicular axis through the chord
+ *  midpoint — used during the bow-handle drag so the user feels a
+ *  1-D drag along the bow direction. */
+export function projectEdgeHandleAxis(
+  p1: Point,
+  p2: Point,
+  candidate: Point,
+): { handle: Point; bow: number } {
+  const bow = projectEdgeBow(p1, p2, candidate);
+  return { handle: edgeBowHandle(p1, p2, bow), bow };
+}
+
 /** Shoelace area of a closed polygon in cm². Positive area = CCW. */
 export function polygonAreaCm2(points: Point[]): number {
   if (points.length < 3) return 0;
@@ -269,10 +342,18 @@ export function normaliseRect(
 // -------------------------------------------------- selection helpers
 
 /** Equality for SelectionItem. The outline is a singleton (no id) so
- *  any two outline items are equal; everything else compares by id. */
+ *  any two outline items are equal; everything else compares by id
+ *  or composite (holeId, index). */
 export function selectionEquals(a: SelectionItem, b: SelectionItem): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "outline") return true;
+  if (a.kind === "outline-edge") {
+    return a.index === (b as { index: number }).index;
+  }
+  if (a.kind === "hole-edge") {
+    const bb = b as { holeId: string; index: number };
+    return a.holeId === bb.holeId && a.index === bb.index;
+  }
   // Both have an id at this branch — narrowing keeps TS happy.
   return (a as { id: string }).id === (b as { id: string }).id;
 }

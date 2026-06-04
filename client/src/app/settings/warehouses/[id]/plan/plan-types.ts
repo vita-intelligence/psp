@@ -38,15 +38,25 @@ export interface Wall {
 /** The floor's perimeter polygon — what counts as walkable floor.
  *  `points` is an open list; the renderer closes it implicitly.
  *  Holes are cutouts (e.g. a stairwell on the upper floor) — they
- *  shave area off the polygon visually and conceptually. */
+ *  shave area off the polygon visually and conceptually. Each edge
+ *  (the segment from points[i] to points[(i+1) % length]) may carry
+ *  a perpendicular sagitta in `edgeBows[i]` to bow that edge into a
+ *  quadratic Bezier. Missing entries or 0 = straight edge. */
 export interface FloorOutline {
   points: Point[];
+  /** Parallel to `points`; index i is the bow on the edge starting
+   *  at points[i]. Optional + sparse-tolerant: undefined or 0 means
+   *  that edge is straight. */
+  edgeBows?: number[];
   holes?: Hole[];
 }
 
 export interface Hole {
   id: string;
   points: Point[];
+  /** Same convention as FloorOutline.edgeBows — perpendicular
+   *  sagitta per edge so holes can have curved sides too. */
+  edgeBows?: number[];
 }
 
 /** Viewport state persisted per floor — re-opening the editor
@@ -80,11 +90,16 @@ export type ToolMode =
   | "location";
 
 /** One selected element. The outline is a singleton per floor so it
- *  has no id; everything else is addressable. */
+ *  has no id; everything else is addressable. `outline-edge` and
+ *  `hole-edge` address one segment of the polygon — clicking an
+ *  outline / hole edge picks the edge instead of the whole shape so
+ *  the user can bow that single edge. */
 export type SelectionItem =
   | { kind: "wall"; id: string }
   | { kind: "outline" }
+  | { kind: "outline-edge"; index: number }
   | { kind: "hole"; id: string }
+  | { kind: "hole-edge"; holeId: string; index: number }
   | { kind: "location"; id: string };
 
 /** The editor's selection is a SET — shift / ctrl / cmd clicking adds
