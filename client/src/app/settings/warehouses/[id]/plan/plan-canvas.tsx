@@ -717,6 +717,16 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 }
                 onClick={(e) => selectItem({ kind: "outline" }, e)}
                 onTap={(e) => selectItem({ kind: "outline" }, e)}
+                draggable={
+                  !readOnly &&
+                  isSelected(selection, { kind: "outline" })
+                }
+                onDragEnd={(e) => {
+                  const dx = snapCm(e.target.x());
+                  const dy = snapCm(e.target.y());
+                  e.target.position({ x: 0, y: 0 });
+                  if (dx !== 0 || dy !== 0) onSelectionMove(dx, dy);
+                }}
               />
               {/* Per-edge selectable strokes — each edge intercepts
                   clicks on top of the fill so it can be bowed
@@ -773,6 +783,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   onEdgeBowChange={(index, bow) =>
                     onHoleEdgeBowChange(hole.id, index, bow)
                   }
+                  onGroupMove={onSelectionMove}
                 />
               ))}
               {isSelected(selection, { kind: "outline" }) &&
@@ -1355,6 +1366,7 @@ function HoleOutline({
   onSelectHole,
   onSelectEdge,
   onEdgeBowChange,
+  onGroupMove,
 }: {
   hole: Hole;
   selection: SelectionSet;
@@ -1366,9 +1378,15 @@ function HoleOutline({
     e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
   ) => void;
   onEdgeBowChange: (index: number, bow: number) => void;
+  /** Same contract as walls / locations — drag end fires the
+   *  canvas-level selection translator with snapped (dx, dy). The
+   *  parent applies the delta to every selected item including
+   *  this hole. */
+  onGroupMove: (dx: number, dy: number) => void;
 }) {
   if (hole.points.length < 2) return null;
   const holeSelected = isSelected(selection, { kind: "hole", id: hole.id });
+  const draggable = !readOnly && holeSelected;
 
   // Tiny invisible Shape giving the hole interior a hit area so
   // tapping the cutout selects the whole hole (matches pre-curve
@@ -1390,6 +1408,17 @@ function HoleOutline({
           fill="transparent"
           onClick={readOnly ? undefined : onSelectHole}
           onTap={readOnly ? undefined : onSelectHole}
+          draggable={draggable}
+          onDragEnd={
+            draggable
+              ? (e) => {
+                  const dx = snapCm(e.target.x());
+                  const dy = snapCm(e.target.y());
+                  e.target.position({ x: 0, y: 0 });
+                  if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
+                }
+              : undefined
+          }
         />
       )}
       {hole.points.map((_, i) => {
