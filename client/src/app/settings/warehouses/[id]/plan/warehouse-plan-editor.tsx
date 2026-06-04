@@ -261,6 +261,7 @@ export function WarehousePlanEditor({
           walls?: Wall[];
           texts?: TextAnnotation[];
           arrows?: ArrowAnnotation[];
+          locations?: LocalLocation[];
         };
         applyingRemoteRef.current = true;
         return {
@@ -271,6 +272,10 @@ export function WarehousePlanEditor({
             walls: c.walls ?? current.walls,
             texts: c.texts ?? current.texts,
             arrows: c.arrows ?? current.arrows,
+            // Storage locations now ride the realtime channel too so
+            // a peer dragging a rack, recolouring it, or retagging it
+            // shows up live instead of waiting for save+invalidate.
+            locations: c.locations ?? current.locations,
           },
         };
       });
@@ -304,6 +309,7 @@ export function WarehousePlanEditor({
     walls: Wall[];
     texts: TextAnnotation[];
     arrows: ArrowAnnotation[];
+    locations: LocalLocation[];
   } | null>(null);
 
   useEffect(() => {
@@ -318,6 +324,7 @@ export function WarehousePlanEditor({
         walls: activeFloor.walls,
         texts: activeFloor.texts,
         arrows: activeFloor.arrows,
+        locations: activeFloor.locations,
       };
       return;
     }
@@ -328,7 +335,8 @@ export function WarehousePlanEditor({
       last.outline === activeFloor.outline &&
       last.walls === activeFloor.walls &&
       last.texts === activeFloor.texts &&
-      last.arrows === activeFloor.arrows
+      last.arrows === activeFloor.arrows &&
+      last.locations === activeFloor.locations
     ) {
       return;
     }
@@ -338,6 +346,7 @@ export function WarehousePlanEditor({
       walls: activeFloor.walls,
       texts: activeFloor.texts,
       arrows: activeFloor.arrows,
+      locations: activeFloor.locations,
     };
     // Skip the very first observation per floor — that's just the
     // initial-state snapshot, not a real edit.
@@ -347,6 +356,7 @@ export function WarehousePlanEditor({
       walls: activeFloor.walls,
       texts: activeFloor.texts,
       arrows: activeFloor.arrows,
+      locations: activeFloor.locations,
     });
   }, [
     activeFloor?.meta.uuid,
@@ -354,6 +364,7 @@ export function WarehousePlanEditor({
     activeFloor?.walls,
     activeFloor?.texts,
     activeFloor?.arrows,
+    activeFloor?.locations,
     activeFloor,
     broadcastCanvas,
     readOnly,
@@ -517,13 +528,15 @@ export function WarehousePlanEditor({
       const tempId = `tmp_${crypto.randomUUID()}`;
       updateActiveFloor(
         (s) => {
-          const count = s.locations.filter((l) => !l.deleted).length;
           const newLoc: LocalLocation = {
             id: -1,
             uuid: tempId,
             warehouse_id: warehouseId,
             floor_id: s.meta.id,
-            name: `Location ${count + 1}`,
+            // Name is no longer surfaced in the UI — identifier is
+            // `code`, auto-generated on save. Leaving as null avoids
+            // a stale "Location 1" sticking around in audit diffs.
+            name: "",
             code: null,
             x: geom.x,
             y: geom.y,
@@ -1239,7 +1252,13 @@ export function WarehousePlanEditor({
       );
       const deletedRows = state.locations.filter((l) => !l.tempId && l.deleted);
 
-      const tempIdToServerId = new Map<string, { id: number; uuid: string }>();
+      // Also stash the server-assigned code so the canvas label
+      // refreshes from "(unsaved)" → "SL00012" on save without a
+      // round-trip through router.refresh().
+      const tempIdToServerData = new Map<
+        string,
+        { id: number; uuid: string; code: string | null }
+      >();
 
       for (const loc of newRows) {
         const res = await createLocationAction(warehouseUuid, {
@@ -1262,9 +1281,10 @@ export function WarehousePlanEditor({
           return;
         }
         if (loc.tempId) {
-          tempIdToServerId.set(loc.tempId, {
+          tempIdToServerData.set(loc.tempId, {
             id: res.storage_location.id,
             uuid: res.storage_location.uuid,
+            code: res.storage_location.code,
           });
         }
       }
@@ -1304,12 +1324,13 @@ export function WarehousePlanEditor({
           .filter((l) => !l.deleted)
           .map((l) => {
             if (l.tempId) {
-              const remote = tempIdToServerId.get(l.tempId);
+              const remote = tempIdToServerData.get(l.tempId);
               if (remote) {
                 return {
                   ...l,
                   id: remote.id,
                   uuid: remote.uuid,
+                  code: remote.code,
                   tempId: undefined,
                   dirty: false,
                 };

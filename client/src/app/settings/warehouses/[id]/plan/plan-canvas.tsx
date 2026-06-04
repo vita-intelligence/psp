@@ -1768,7 +1768,13 @@ function LocationShape({
         cornerRadius={6}
       />
       <Text
-        text={location.code ? `${location.code}` : location.name || "—"}
+        text={
+          location.code
+            ? location.code
+            : location.tempId
+              ? "(unsaved)"
+              : location.name || "—"
+        }
         x={8}
         y={8}
         fontSize={14}
@@ -1776,19 +1782,6 @@ function LocationShape({
         fill="rgba(15,23,42,0.85)"
         listening={false}
       />
-      {location.code && location.name && (
-        <Text
-          text={location.name}
-          x={8}
-          y={26}
-          fontSize={12}
-          fill="rgba(51,65,85,0.7)"
-          width={location.width - 16}
-          ellipsis
-          wrap="none"
-          listening={false}
-        />
-      )}
     </Group>
   );
 }
