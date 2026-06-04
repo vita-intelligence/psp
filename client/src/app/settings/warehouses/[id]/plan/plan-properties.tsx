@@ -22,6 +22,7 @@ import {
   locationColor,
   parseDimensionToCm,
   polygonAreaCm2,
+  polygonBbox,
   polygonPerimeterCm,
   wallArcLengthCm,
   wallLengthCm,
@@ -361,6 +362,22 @@ function OutlineBody({
     0,
   );
   const walkable = Math.max(0, area - holeArea);
+  const bbox = polygonBbox(outline.points);
+
+  /** Translate every outline point AND every hole point by (dx, dy).
+   *  Holes are nested inside the outline so we keep them in lock-step
+   *  with the perimeter — otherwise editing X / Y would leave a
+   *  stairwell floating outside the new outline position. */
+  const translate = (dx: number, dy: number) => {
+    if (dx === 0 && dy === 0) return;
+    onUpdate({
+      points: outline.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+      holes: outline.holes?.map((h) => ({
+        ...h,
+        points: h.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+      })),
+    });
+  };
 
   return (
     <div className="space-y-3">
@@ -376,6 +393,22 @@ function OutlineBody({
       <Row label="Holes">
         <span className="font-mono text-xs">{outline.holes?.length ?? 0}</span>
       </Row>
+      {bbox && (
+        <Row label="Position (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={bbox.x}
+              onChange={(cm) => cm !== null && translate(cm - bbox.x, 0)}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={bbox.y}
+              onChange={(cm) => cm !== null && translate(0, cm - bbox.y)}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
+      )}
       {(outline.holes?.length ?? 0) > 0 && (
         <Row label="Walkable area">
           <span className="font-mono text-xs">{formatArea(walkable)}</span>
@@ -429,6 +462,13 @@ function HoleBody({
 }) {
   const area = polygonAreaCm2(hole.points);
   const perimeter = polygonPerimeterCm(hole.points);
+  const bbox = polygonBbox(hole.points);
+  const translate = (dx: number, dy: number) => {
+    if (dx === 0 && dy === 0) return;
+    onUpdate({
+      points: hole.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+    });
+  };
   return (
     <div className="space-y-3">
       <Row label="Vertices">
@@ -440,6 +480,22 @@ function HoleBody({
       <Row label="Area">
         <span className="font-mono text-xs">{formatArea(area)}</span>
       </Row>
+      {bbox && (
+        <Row label="Position (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={bbox.x}
+              onChange={(cm) => cm !== null && translate(cm - bbox.x, 0)}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={bbox.y}
+              onChange={(cm) => cm !== null && translate(0, cm - bbox.y)}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
+      )}
       <div className="space-y-1.5">
         <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Outline colour
