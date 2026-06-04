@@ -5,15 +5,27 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
-import { Stage, Layer, Rect, Line, Group, Text } from "react-konva";
+import { Stage, Layer, Rect, Line, Group, Text, Shape, Circle } from "react-konva";
 import type Konva from "konva";
 import { cn } from "@/lib/utils";
+import {
+  GRID_MAJOR_CM,
+  GRID_MINOR_CM,
+  SNAP_THRESHOLD_PX,
+  collectSnapTargets,
+  findClosestSnap,
+  snapCm,
+  snapPoint,
+} from "./plan-utils";
 import type {
+  FloorOutline,
+  Hole,
   LocalLocation,
-  Room,
+  Point,
   Selection,
   ToolMode,
   Viewport,
@@ -21,18 +33,21 @@ import type {
 } from "./plan-types";
 
 interface PlanCanvasProps {
+  outline: FloorOutline | undefined;
   walls: Wall[];
-  rooms: Room[];
   locations: LocalLocation[];
   selection: Selection;
   tool: ToolMode;
   viewport: Viewport;
   /** Whether the canvas is in read-only mode (viewer permissions). */
   readOnly: boolean;
+  /** Canvas height in CSS pixels — the parent picks this so the
+   *  mobile layout can use most of the viewport while desktop stays
+   *  at a fixed height. */
+  heightPx: number;
   onSelectionChange: (next: Selection) => void;
   onViewportChange: (next: Viewport) => void;
   onWallAdded: (wall: Wall) => void;
-  onRoomAdded: (room: Room) => void;
   onLocationAdded: (location: {
     x: number;
     y: number;
@@ -40,90 +55,106 @@ interface PlanCanvasProps {
     height: number;
   }) => void;
   onLocationMove: (id: string | number, x: number, y: number) => void;
-  onRoomMove: (id: string, x: number, y: number) => void;
+  onOutlineCommitted: (points: Point[]) => void;
+  onHoleCommitted: (points: Point[]) => void;
 }
 
 export interface PlanCanvasHandle {
   zoomIn: () => void;
   zoomOut: () => void;
   resetView: () => void;
+  /** Cancel any in-progress polygon draw. Bound to Esc. */
+  cancelDraft: () => void;
 }
 
-const GRID_SIZE = 20;
-const MIN_SCALE = 0.2;
+const MIN_SCALE = 0.05;
 const MAX_SCALE = 4;
-const DEFAULT_LOCATION_SIZE = 80;
+const DEFAULT_LOCATION_CM = 100; // 1m × 1m default tile
 
-/** Snap a canvas-world coordinate to the nearest grid line. */
-function snap(value: number): number {
-  return Math.round(value / GRID_SIZE) * GRID_SIZE;
-}
+type Draft =
+  | { kind: "wall"; x1: number; y1: number; x2: number; y2: number }
+  | {
+      kind: "location";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }
+  | { kind: "outline"; points: Point[] }
+  | { kind: "hole"; points: Point[] };
 
 /**
- * The Konva canvas itself. Responsible for rendering walls, rooms,
- * and storage locations + handling pan, zoom, draw, and select
- * interactions. Pure presentational with respect to data — the
- * parent owns state and gets called back on every interaction.
+ * The Konva canvas itself. Renders the floor outline, walls, and
+ * storage locations + handles pan, zoom, draw, and select
+ * interactions. Pure presentational — the parent owns state and gets
+ * called back on every interaction.
  *
  * Layers (back to front):
- *   1. Grid    — purely decorative, not interactive
- *   2. Rooms   — coloured rectangles with labels
- *   3. Walls   — thick lines on top of rooms
- *   4. Locations — bordered rects with code/name labels
+ *   1. Grid               — purely decorative, not interactive
+ *   2. Floor outline      — filled polygon with hole cutouts (evenodd)
+ *   3. Walls              — thick lines on top of the floor
+ *   4. Storage locations  — bordered rects with code / name labels
+ *   5. Overlays           — in-progress draft + snap indicator
  *
- * The Stage uses Konva's own pan/scale so coordinates inside Layer
- * stay in "world space" — no manual maths in shape render code.
+ * Touch support: pinch-zoom on two-finger gesture, single-finger
+ * drag pans when in pan mode (or anywhere when no tool active).
  */
 export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
   function PlanCanvas(
     {
+      outline,
       walls,
-      rooms,
       locations,
       selection,
       tool,
       viewport,
       readOnly,
+      heightPx,
       onSelectionChange,
       onViewportChange,
       onWallAdded,
-      onRoomAdded,
       onLocationAdded,
       onLocationMove,
-      onRoomMove,
+      onOutlineCommitted,
+      onHoleCommitted,
     },
     ref,
   ) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const stageRef = useRef<Konva.Stage | null>(null);
-    // Track container size so the Stage stretches to fill it. Konva
-    // doesn't auto-resize.
-    const [size, setSize] = useState({ width: 800, height: 600 });
+    const [size, setSize] = useState({ width: 800, height: heightPx });
 
-    // Live in-progress draw (drag from down to current). Persisted to
-    // state on draw end. Null when not drawing.
-    const [draft, setDraft] = useState<
-      | { kind: "wall"; x1: number; y1: number; x2: number; y2: number }
-      | {
-          kind: "room" | "location";
-          x: number;
-          y: number;
-          width: number;
-          height: number;
-        }
-      | null
-    >(null);
+    const [draft, setDraft] = useState<Draft | null>(null);
+    const [snapIndicator, setSnapIndicator] = useState<Point | null>(null);
+
+    // Snap targets recomputed when geometry changes. Cheap (handful
+    // of points), but useMemo means event handlers don't rebuild.
+    const snapTargets = useMemo(
+      () => collectSnapTargets(walls, outline),
+      [walls, outline],
+    );
 
     useImperativeHandle(
       ref,
       () => ({
         zoomIn: () => zoomBy(1.2),
         zoomOut: () => zoomBy(1 / 1.2),
-        resetView: () => onViewportChange({ x: 0, y: 0, scale: 1 }),
+        resetView: () => onViewportChange({ x: 0, y: 0, scale: 0.4 }),
+        cancelDraft: () => {
+          setDraft(null);
+          setSnapIndicator(null);
+        },
       }),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [viewport.scale],
+      [viewport.scale, size.width, size.height],
     );
+
+    // Drop the draft whenever the tool changes so half-drawn
+    // outlines / holes don't bleed into a different mode.
+    useEffect(() => {
+      setDraft(null);
+      setSnapIndicator(null);
+    }, [tool]);
 
     useEffect(() => {
       const el = containerRef.current;
@@ -131,19 +162,19 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       const update = () => {
         const rect = el.getBoundingClientRect();
         setSize({
-          width: Math.max(320, rect.width),
-          height: Math.max(400, rect.height),
+          width: Math.max(280, rect.width),
+          height: Math.max(320, heightPx),
         });
       };
       update();
       const observer = new ResizeObserver(update);
       observer.observe(el);
       return () => observer.disconnect();
-    }, []);
+    }, [heightPx]);
 
-    /** Translate a pointer event's screen position into world (canvas)
+    /** Translate the pointer's screen position into world (cm)
      *  coordinates, accounting for pan + zoom. */
-    function pointerWorld(): { x: number; y: number } | null {
+    function pointerWorld(): Point | null {
       const stage = stageRef.current;
       if (!stage) return null;
       const pos = stage.getPointerPosition();
@@ -154,13 +185,27 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       };
     }
 
+    /** Apply endpoint snap if any candidate is within range; fall
+     *  back to grid snap otherwise. Updates the visible snap
+     *  indicator as a side-effect. */
+    function snappedPointer(): Point | null {
+      const world = pointerWorld();
+      if (!world) return null;
+      const radius = SNAP_THRESHOLD_PX / viewport.scale;
+      const target = findClosestSnap(world, snapTargets, radius);
+      if (target) {
+        setSnapIndicator(target.point);
+        return { ...target.point };
+      }
+      setSnapIndicator(null);
+      return snapPoint(world);
+    }
+
     function zoomBy(factor: number) {
       const next = Math.min(
         MAX_SCALE,
         Math.max(MIN_SCALE, viewport.scale * factor),
       );
-      // Keep the centre of the visible area fixed during programmatic
-      // zoom — feels natural compared to "from origin".
       const cx = size.width / 2;
       const cy = size.height / 2;
       const worldX = (cx - viewport.x) / viewport.scale;
@@ -172,7 +217,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       });
     }
 
-    // Wheel = zoom toward cursor. Same UX as Figma, Miro, etc.
+    // Wheel = zoom toward cursor.
     const onWheel = useCallback(
       (e: Konva.KonvaEventObject<WheelEvent>) => {
         e.evt.preventDefault();
@@ -197,113 +242,130 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       [viewport, onViewportChange],
     );
 
-    const onMouseDown = useCallback(
-      (e: Konva.KonvaEventObject<MouseEvent>) => {
-        if (readOnly) return;
-        // Background hit? clicks on shapes bubble up too but with a
-        // distinct target. Only start drawing/clearing when the user
-        // clicked empty space.
-        const isBackground = e.target === e.target.getStage();
+    // ------------------------------------------------------ draw events
 
-        const world = pointerWorld();
-        if (!world) return;
+    const beginDraw = useCallback(
+      (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+        if (readOnly) return;
+        const isBackground = e.target === e.target.getStage();
+        const p = snappedPointer();
+        if (!p) return;
 
         if (tool === "wall" && isBackground) {
-          const sx = snap(world.x);
-          const sy = snap(world.y);
-          setDraft({ kind: "wall", x1: sx, y1: sy, x2: sx, y2: sy });
-        } else if (tool === "room" && isBackground) {
-          setDraft({
-            kind: "room",
-            x: snap(world.x),
-            y: snap(world.y),
-            width: 0,
-            height: 0,
-          });
+          setDraft({ kind: "wall", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
         } else if (tool === "location" && isBackground) {
-          // Locations are click-to-place, fixed default size. Drag is
-          // for finer dimensions — we commit on mouseup.
           setDraft({
             kind: "location",
-            x: snap(world.x - DEFAULT_LOCATION_SIZE / 2),
-            y: snap(world.y - DEFAULT_LOCATION_SIZE / 2),
-            width: DEFAULT_LOCATION_SIZE,
-            height: DEFAULT_LOCATION_SIZE,
+            x: snapCm(p.x - DEFAULT_LOCATION_CM / 2),
+            y: snapCm(p.y - DEFAULT_LOCATION_CM / 2),
+            width: DEFAULT_LOCATION_CM,
+            height: DEFAULT_LOCATION_CM,
           });
+        } else if (tool === "outline" && isBackground) {
+          if (draft?.kind === "outline") {
+            // First-vertex click closes the polygon.
+            const first = draft.points[0];
+            if (first && distance(p, first) < SNAP_THRESHOLD_PX / viewport.scale) {
+              if (draft.points.length >= 3) onOutlineCommitted(draft.points);
+              setDraft(null);
+              setSnapIndicator(null);
+              return;
+            }
+            setDraft({ kind: "outline", points: [...draft.points, p] });
+          } else {
+            setDraft({ kind: "outline", points: [p] });
+          }
+        } else if (tool === "hole" && isBackground) {
+          if (draft?.kind === "hole") {
+            const first = draft.points[0];
+            if (first && distance(p, first) < SNAP_THRESHOLD_PX / viewport.scale) {
+              if (draft.points.length >= 3) onHoleCommitted(draft.points);
+              setDraft(null);
+              setSnapIndicator(null);
+              return;
+            }
+            setDraft({ kind: "hole", points: [...draft.points, p] });
+          } else {
+            setDraft({ kind: "hole", points: [p] });
+          }
         } else if (tool === "select" && isBackground) {
           onSelectionChange({ kind: "none" });
         }
       },
-      [tool, readOnly, viewport, onSelectionChange],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [tool, readOnly, draft, viewport.scale, snapTargets],
     );
 
-    const onMouseMove = useCallback(() => {
-      if (!draft) return;
-      const world = pointerWorld();
-      if (!world) return;
-      const sx = snap(world.x);
-      const sy = snap(world.y);
+    const updateDraw = useCallback(() => {
+      if (!draft) {
+        // Even when not drawing, polygon tools show a snap indicator
+        // on hover so the user sees where vertices will land.
+        if (tool === "outline" || tool === "hole" || tool === "wall") {
+          snappedPointer();
+        }
+        return;
+      }
+      const p = snappedPointer();
+      if (!p) return;
 
       if (draft.kind === "wall") {
-        setDraft({ ...draft, x2: sx, y2: sy });
-      } else if (draft.kind === "room") {
-        setDraft({
-          ...draft,
-          width: sx - draft.x,
-          height: sy - draft.y,
-        });
+        setDraft({ ...draft, x2: p.x, y2: p.y });
       } else if (draft.kind === "location") {
-        // For locations, mouse-move while dragging adjusts width/height
-        // from the press point.
         setDraft({
           ...draft,
-          width: Math.max(GRID_SIZE, sx - draft.x),
-          height: Math.max(GRID_SIZE, sy - draft.y),
+          width: Math.max(GRID_MINOR_CM, p.x - draft.x),
+          height: Math.max(GRID_MINOR_CM, p.y - draft.y),
         });
       }
-    }, [draft, viewport]);
+      // Outline / hole rubber-bands via the rendering path; the draft
+      // itself only updates on click.
+    }, [draft, tool, viewport.scale]);
 
-    const onMouseUp = useCallback(() => {
+    const finishDraw = useCallback(() => {
       if (!draft) return;
-      const d = draft;
-      setDraft(null);
-
-      if (d.kind === "wall") {
-        // Drop zero-length walls — happens when the user clicks
-        // without dragging.
-        if (d.x1 === d.x2 && d.y1 === d.y2) return;
+      if (draft.kind === "wall") {
+        if (draft.x1 === draft.x2 && draft.y1 === draft.y2) {
+          setDraft(null);
+          return;
+        }
         onWallAdded({
           id: crypto.randomUUID(),
-          x1: d.x1,
-          y1: d.y1,
-          x2: d.x2,
-          y2: d.y2,
+          x1: draft.x1,
+          y1: draft.y1,
+          x2: draft.x2,
+          y2: draft.y2,
         });
-      } else if (d.kind === "room") {
-        // Normalise negative dimensions (the user dragged
-        // up-and-left).
-        const x = Math.min(d.x, d.x + d.width);
-        const y = Math.min(d.y, d.y + d.height);
-        const width = Math.abs(d.width);
-        const height = Math.abs(d.height);
-        if (width < GRID_SIZE || height < GRID_SIZE) return;
-        onRoomAdded({
-          id: crypto.randomUUID(),
-          x,
-          y,
-          width,
-          height,
-        });
-      } else if (d.kind === "location") {
-        const x = Math.min(d.x, d.x + d.width);
-        const y = Math.min(d.y, d.y + d.height);
-        const width = Math.max(GRID_SIZE, Math.abs(d.width));
-        const height = Math.max(GRID_SIZE, Math.abs(d.height));
-        onLocationAdded({ x, y, width, height });
+        setDraft(null);
+        return;
       }
-    }, [draft, onWallAdded, onRoomAdded, onLocationAdded]);
+      if (draft.kind === "location") {
+        onLocationAdded({
+          x: draft.x,
+          y: draft.y,
+          width: Math.max(GRID_MINOR_CM, draft.width),
+          height: Math.max(GRID_MINOR_CM, draft.height),
+        });
+        setDraft(null);
+        return;
+      }
+      // Outline / hole stay in draft until explicit close (click on
+      // first vertex) or double-click.
+    }, [draft, onWallAdded, onLocationAdded]);
 
-    // Pan via drag with the "pan" tool active OR middle-click anywhere
+    /** Commit the in-progress outline / hole. Bound to dblclick. */
+    function dblCommitDraft() {
+      if (!draft) return;
+      if (draft.kind === "outline" && draft.points.length >= 3) {
+        onOutlineCommitted(draft.points);
+      } else if (draft.kind === "hole" && draft.points.length >= 3) {
+        onHoleCommitted(draft.points);
+      }
+      setDraft(null);
+      setSnapIndicator(null);
+    }
+
+    // ----------------------------------------------------------- pan
+
     const [isPanning, setIsPanning] = useState(false);
     const panStart = useRef<{
       mouseX: number;
@@ -328,7 +390,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         };
         return;
       }
-      onMouseDown(e);
+      beginDraw(e);
     }
 
     function onStageMouseMove() {
@@ -342,7 +404,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         });
         return;
       }
-      onMouseMove();
+      updateDraw();
     }
 
     function onStageMouseUp() {
@@ -351,8 +413,125 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         panStart.current = null;
         return;
       }
-      onMouseUp();
+      finishDraw();
     }
+
+    // -------------------------------------------------------- touch
+
+    const touchState = useRef<
+      | null
+      | {
+          mode: "pan" | "pinch";
+          startDist?: number;
+          startScale?: number;
+          startCenterScreen?: { x: number; y: number };
+          startCenterWorld?: { x: number; y: number };
+          startViewport?: { x: number; y: number };
+          startTouch?: { x: number; y: number };
+        }
+    >(null);
+
+    function getTouchCenter(touches: TouchList) {
+      const a = touches[0]!;
+      const b = touches[1]!;
+      return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+    }
+    function getTouchDist(touches: TouchList) {
+      const a = touches[0]!;
+      const b = touches[1]!;
+      return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    }
+
+    function onTouchStart(e: Konva.KonvaEventObject<TouchEvent>) {
+      const touches = e.evt.touches;
+      if (touches.length === 2) {
+        // Two-finger pinch — switch into zoom/pan mode regardless of
+        // the active tool. Cancels any draft.
+        e.evt.preventDefault();
+        if (draft) setDraft(null);
+        const stage = stageRef.current;
+        if (!stage) return;
+        const center = getTouchCenter(touches);
+        const containerRect = stage.container().getBoundingClientRect();
+        const stageCenter = {
+          x: center.x - containerRect.left,
+          y: center.y - containerRect.top,
+        };
+        touchState.current = {
+          mode: "pinch",
+          startDist: getTouchDist(touches),
+          startScale: viewport.scale,
+          startCenterScreen: stageCenter,
+          startCenterWorld: {
+            x: (stageCenter.x - viewport.x) / viewport.scale,
+            y: (stageCenter.y - viewport.y) / viewport.scale,
+          },
+          startViewport: { x: viewport.x, y: viewport.y },
+        };
+        return;
+      }
+
+      if (touches.length === 1) {
+        if (tool === "pan") {
+          const t = touches[0]!;
+          touchState.current = {
+            mode: "pan",
+            startViewport: { x: viewport.x, y: viewport.y },
+            startTouch: { x: t.clientX, y: t.clientY },
+          };
+          return;
+        }
+        beginDraw(e);
+      }
+    }
+
+    function onTouchMove(e: Konva.KonvaEventObject<TouchEvent>) {
+      const touches = e.evt.touches;
+      const st = touchState.current;
+
+      if (st?.mode === "pinch" && touches.length === 2 && st.startDist) {
+        e.evt.preventDefault();
+        const dist = getTouchDist(touches);
+        const newScale = Math.min(
+          MAX_SCALE,
+          Math.max(MIN_SCALE, st.startScale! * (dist / st.startDist)),
+        );
+        onViewportChange({
+          x: st.startCenterScreen!.x - st.startCenterWorld!.x * newScale,
+          y: st.startCenterScreen!.y - st.startCenterWorld!.y * newScale,
+          scale: newScale,
+        });
+        return;
+      }
+
+      if (st?.mode === "pan" && touches.length === 1) {
+        const t = touches[0]!;
+        onViewportChange({
+          ...viewport,
+          x: st.startViewport!.x + (t.clientX - st.startTouch!.x),
+          y: st.startViewport!.y + (t.clientY - st.startTouch!.y),
+        });
+        return;
+      }
+
+      if (touches.length === 1) {
+        updateDraw();
+      }
+    }
+
+    function onTouchEnd() {
+      if (touchState.current?.mode === "pinch") {
+        touchState.current = null;
+        return;
+      }
+      if (touchState.current?.mode === "pan") {
+        touchState.current = null;
+        return;
+      }
+      finishDraw();
+    }
+
+    // ------------------------------------------------------- cursors
 
     const cursorClass = readOnly
       ? "cursor-default"
@@ -364,17 +543,16 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           ? "cursor-default"
           : "cursor-crosshair";
 
-    // Visible storage locations only — `deleted: true` ones are
-    // hidden but kept in state so save can DELETE them.
     const visibleLocations = locations.filter((l) => !l.deleted);
 
     return (
       <div
         ref={containerRef}
         className={cn(
-          "relative h-[600px] w-full overflow-hidden rounded-md border border-border/60 bg-muted/30",
+          "relative w-full overflow-hidden rounded-md border border-border/60 bg-muted/30",
           cursorClass,
         )}
+        style={{ height: heightPx, touchAction: "none" }}
       >
         <Stage
           ref={stageRef}
@@ -388,50 +566,90 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           onMouseDown={onStageMouseDown}
           onMouseMove={onStageMouseMove}
           onMouseUp={onStageMouseUp}
+          onDblClick={dblCommitDraft}
+          onDblTap={dblCommitDraft}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
           onMouseLeave={() => {
-            if (draft) onMouseUp();
             if (isPanning) {
               setIsPanning(false);
               panStart.current = null;
             }
           }}
         >
-          {/* Grid layer — purely decorative, sized to a generous
-              world bounds (5000x5000) so the user can drag well past
-              the visible viewport before running out of grid. */}
+          {/* Grid */}
           <Layer listening={false}>
             <GridLayer />
           </Layer>
 
-          {/* Rooms */}
-          <Layer>
-            {rooms.map((room) => (
-              <RoomShape
-                key={room.id}
-                room={room}
-                selected={selection.kind === "room" && selection.id === room.id}
-                readOnly={readOnly}
-                onSelect={() =>
-                  onSelectionChange({ kind: "room", id: room.id })
+          {/* Floor outline */}
+          {outline && outline.points.length >= 3 && (
+            <Layer>
+              <Shape
+                sceneFunc={(ctx, shape) => {
+                  ctx.beginPath();
+                  outline.points.forEach((p, i) =>
+                    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y),
+                  );
+                  ctx.closePath();
+                  for (const hole of outline.holes ?? []) {
+                    if (hole.points.length < 3) continue;
+                    ctx.moveTo(hole.points[0]!.x, hole.points[0]!.y);
+                    for (let i = 1; i < hole.points.length; i++) {
+                      ctx.lineTo(hole.points[i]!.x, hole.points[i]!.y);
+                    }
+                    ctx.closePath();
+                  }
+                  // Even-odd fill subtracts the hole sub-paths from
+                  // the outer perimeter — visually matches the
+                  // "second floor with a hole in the middle" mental
+                  // model.
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const native = ctx as any;
+                  native.fillStyle = shape.fill();
+                  if (native.fill) native.fill("evenodd");
+                  if (shape.stroke()) {
+                    native.strokeStyle = shape.stroke();
+                    native.lineWidth = shape.strokeWidth();
+                    ctx.stroke();
+                  }
+                }}
+                fill="rgba(241,245,249,1)"
+                stroke={
+                  selection.kind === "outline"
+                    ? "rgb(59,130,246)"
+                    : "rgba(15,23,42,0.55)"
                 }
-                onDragEnd={(x, y) => onRoomMove(room.id, x, y)}
+                strokeWidth={selection.kind === "outline" ? 3 : 2}
+                onClick={() => onSelectionChange({ kind: "outline" })}
+                onTap={() => onSelectionChange({ kind: "outline" })}
               />
-            ))}
-
-            {draft?.kind === "room" && (
-              <Rect
-                x={Math.min(draft.x, draft.x + draft.width)}
-                y={Math.min(draft.y, draft.y + draft.height)}
-                width={Math.abs(draft.width)}
-                height={Math.abs(draft.height)}
-                fill="rgba(59,130,246,0.08)"
-                stroke="rgb(59,130,246)"
-                strokeWidth={1.5}
-                dash={[6, 4]}
-                listening={false}
-              />
-            )}
-          </Layer>
+              {(outline.holes ?? []).map((hole) => (
+                <HoleOutline
+                  key={hole.id}
+                  hole={hole}
+                  selected={
+                    selection.kind === "hole" && selection.id === hole.id
+                  }
+                  onSelect={() =>
+                    onSelectionChange({ kind: "hole", id: hole.id })
+                  }
+                />
+              ))}
+              {selection.kind === "outline" &&
+                outline.points.map((p, i) => (
+                  <Circle
+                    key={`v-${i}`}
+                    x={p.x}
+                    y={p.y}
+                    radius={6 / viewport.scale}
+                    fill="rgb(59,130,246)"
+                    listening={false}
+                  />
+                ))}
+            </Layer>
+          )}
 
           {/* Walls */}
           <Layer>
@@ -446,17 +664,6 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 }
               />
             ))}
-
-            {draft?.kind === "wall" && (
-              <Line
-                points={[draft.x1, draft.y1, draft.x2, draft.y2]}
-                stroke="rgb(59,130,246)"
-                strokeWidth={6}
-                lineCap="round"
-                dash={[10, 6]}
-                listening={false}
-              />
-            )}
           </Layer>
 
           {/* Locations */}
@@ -481,7 +688,19 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 }
               />
             ))}
+          </Layer>
 
+          {/* Drafts + snap indicator */}
+          <Layer listening={false}>
+            {draft?.kind === "wall" && (
+              <Line
+                points={[draft.x1, draft.y1, draft.x2, draft.y2]}
+                stroke="rgb(59,130,246)"
+                strokeWidth={6}
+                lineCap="round"
+                dash={[10, 6]}
+              />
+            )}
             {draft?.kind === "location" && (
               <Rect
                 x={Math.min(draft.x, draft.x + draft.width)}
@@ -492,53 +711,119 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 stroke="rgb(16,185,129)"
                 strokeWidth={2}
                 dash={[6, 4]}
-                listening={false}
+              />
+            )}
+            {draft?.kind === "outline" && (
+              <DraftPolyline
+                points={draft.points}
+                color="rgb(59,130,246)"
+                viewportScale={viewport.scale}
+              />
+            )}
+            {draft?.kind === "hole" && (
+              <DraftPolyline
+                points={draft.points}
+                color="rgb(239,68,68)"
+                viewportScale={viewport.scale}
+              />
+            )}
+            {snapIndicator && (
+              <Circle
+                x={snapIndicator.x}
+                y={snapIndicator.y}
+                radius={SNAP_THRESHOLD_PX / viewport.scale}
+                stroke="rgb(59,130,246)"
+                strokeWidth={2 / viewport.scale}
+                opacity={0.8}
               />
             )}
           </Layer>
         </Stage>
 
-        {/* Bottom-right viewport overlay so the user sees current
-            zoom level. Easy debug + reassurance. */}
-        <div className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-background/80 px-2 py-1 text-[10px] font-medium text-muted-foreground shadow-sm backdrop-blur">
-          {Math.round(viewport.scale * 100)}%
+        {/* Bottom-right overlays. Outside the Stage so they don't
+            pan/scale with the canvas. */}
+        <div className="pointer-events-none absolute bottom-2 right-2 flex flex-col items-end gap-1">
+          <ScaleBar viewportScale={viewport.scale} />
+          <div className="rounded-md bg-background/80 px-2 py-1 text-[10px] font-medium text-muted-foreground shadow-sm backdrop-blur">
+            {Math.round(viewport.scale * 100)}%
+          </div>
         </div>
+
+        {/* Status badge for in-progress polygon draw. Helps the user
+            understand they need to click the first vertex (or dbl)
+            to commit. */}
+        {(draft?.kind === "outline" || draft?.kind === "hole") && (
+          <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-foreground/85 px-2 py-1 text-[11px] font-medium text-background shadow-sm backdrop-blur">
+            {draft.kind === "outline" ? "Drawing floor outline" : "Drawing hole"}
+            {" · "}
+            Click first vertex or double-click to close
+            {draft.points.length < 3 && ` · ${3 - draft.points.length} more`}
+          </div>
+        )}
       </div>
     );
   },
 );
 
 // ----------------------------------------------------------------
-// Internal shape components
+// Internal helpers + shape components
+
+function distance(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
 
 function GridLayer() {
-  // Render a sparse grid over the world bounds. We render fewer lines
-  // than pixels — Konva is OK with this many shapes (~250) and the
-  // grid lives on a non-listening layer so it doesn't affect
-  // interaction perf.
-  const halfSize = 2500;
-  const lines: React.ReactNode[] = [];
-  for (let x = -halfSize; x <= halfSize; x += GRID_SIZE * 5) {
-    lines.push(
+  // World bounds for the grid render. 50m × 50m around origin is
+  // plenty for a single warehouse floor; pan/zoom is unlimited.
+  const halfSize = 5000; // 50m in cm
+
+  const minorLines: React.ReactNode[] = [];
+  const majorLines: React.ReactNode[] = [];
+
+  for (let x = -halfSize; x <= halfSize; x += GRID_MINOR_CM) {
+    const isMajor = x % GRID_MAJOR_CM === 0;
+    const stroke =
+      x === 0
+        ? "rgba(15,23,42,0.32)"
+        : isMajor
+          ? "rgba(15,23,42,0.12)"
+          : "rgba(15,23,42,0.05)";
+    const line = (
       <Line
         key={`v-${x}`}
         points={[x, -halfSize, x, halfSize]}
-        stroke={x === 0 ? "rgba(0,0,0,0.18)" : "rgba(0,0,0,0.06)"}
+        stroke={stroke}
         strokeWidth={1}
-      />,
+      />
     );
+    if (isMajor || x === 0) majorLines.push(line);
+    else minorLines.push(line);
   }
-  for (let y = -halfSize; y <= halfSize; y += GRID_SIZE * 5) {
-    lines.push(
+  for (let y = -halfSize; y <= halfSize; y += GRID_MINOR_CM) {
+    const isMajor = y % GRID_MAJOR_CM === 0;
+    const stroke =
+      y === 0
+        ? "rgba(15,23,42,0.32)"
+        : isMajor
+          ? "rgba(15,23,42,0.12)"
+          : "rgba(15,23,42,0.05)";
+    const line = (
       <Line
         key={`h-${y}`}
         points={[-halfSize, y, halfSize, y]}
-        stroke={y === 0 ? "rgba(0,0,0,0.18)" : "rgba(0,0,0,0.06)"}
+        stroke={stroke}
         strokeWidth={1}
-      />,
+      />
     );
+    if (isMajor || y === 0) majorLines.push(line);
+    else minorLines.push(line);
   }
-  return <>{lines}</>;
+  return (
+    <>
+      {minorLines}
+      {majorLines}
+    </>
+  );
 }
 
 function WallShape({
@@ -556,60 +841,40 @@ function WallShape({
     <Line
       points={[wall.x1, wall.y1, wall.x2, wall.y2]}
       stroke={selected ? "rgb(59,130,246)" : "rgb(45,45,45)"}
-      strokeWidth={selected ? 8 : 6}
+      strokeWidth={selected ? 12 : 10}
       lineCap="round"
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
-      hitStrokeWidth={20}
+      hitStrokeWidth={28}
     />
   );
 }
 
-function RoomShape({
-  room,
+function HoleOutline({
+  hole,
   selected,
-  readOnly,
   onSelect,
-  onDragEnd,
 }: {
-  room: Room;
+  hole: Hole;
   selected: boolean;
-  readOnly: boolean;
   onSelect: () => void;
-  onDragEnd: (x: number, y: number) => void;
 }) {
+  if (hole.points.length < 2) return null;
+  const points: number[] = [];
+  for (const p of hole.points) {
+    points.push(p.x, p.y);
+  }
   return (
-    <Group
-      x={room.x}
-      y={room.y}
-      draggable={!readOnly && selected}
-      onClick={readOnly ? undefined : onSelect}
-      onTap={readOnly ? undefined : onSelect}
-      onDragEnd={(e) => {
-        const node = e.target;
-        const nx = snap(node.x());
-        const ny = snap(node.y());
-        node.position({ x: nx, y: ny });
-        onDragEnd(nx, ny);
-      }}
-    >
-      <Rect
-        width={room.width}
-        height={room.height}
-        fill="rgba(148,163,184,0.18)"
-        stroke={selected ? "rgb(59,130,246)" : "rgba(100,116,139,0.6)"}
-        strokeWidth={selected ? 2 : 1}
-      />
-      {room.label && (
-        <Text
-          text={room.label}
-          x={6}
-          y={6}
-          fontSize={12}
-          fill="rgba(51,65,85,0.8)"
-        />
-      )}
-    </Group>
+    <Line
+      points={points}
+      closed
+      stroke={selected ? "rgb(239,68,68)" : "rgba(239,68,68,0.7)"}
+      strokeWidth={selected ? 2 : 1.5}
+      dash={[8, 4]}
+      onClick={onSelect}
+      onTap={onSelect}
+      hitStrokeWidth={20}
+    />
   );
 }
 
@@ -629,14 +894,8 @@ function LocationShape({
   const kindColor: Record<string, { fill: string; stroke: string }> = {
     rack: { fill: "rgba(16,185,129,0.18)", stroke: "rgb(16,185,129)" },
     shelf: { fill: "rgba(59,130,246,0.18)", stroke: "rgb(59,130,246)" },
-    pallet_zone: {
-      fill: "rgba(245,158,11,0.18)",
-      stroke: "rgb(245,158,11)",
-    },
-    cold_storage: {
-      fill: "rgba(14,165,233,0.18)",
-      stroke: "rgb(14,165,233)",
-    },
+    pallet_zone: { fill: "rgba(245,158,11,0.18)", stroke: "rgb(245,158,11)" },
+    cold_storage: { fill: "rgba(14,165,233,0.18)", stroke: "rgb(14,165,233)" },
     hazmat: { fill: "rgba(239,68,68,0.18)", stroke: "rgb(239,68,68)" },
     staging: { fill: "rgba(168,85,247,0.18)", stroke: "rgb(168,85,247)" },
     other: { fill: "rgba(100,116,139,0.18)", stroke: "rgb(100,116,139)" },
@@ -652,8 +911,8 @@ function LocationShape({
       onTap={readOnly ? undefined : onSelect}
       onDragEnd={(e) => {
         const node = e.target;
-        const nx = snap(node.x());
-        const ny = snap(node.y());
+        const nx = snapCm(node.x());
+        const ny = snapCm(node.y());
         node.position({ x: nx, y: ny });
         onDragEnd(nx, ny);
       }}
@@ -663,29 +922,81 @@ function LocationShape({
         height={location.height}
         fill={palette.fill}
         stroke={selected ? "rgb(59,130,246)" : palette.stroke}
-        strokeWidth={selected ? 2.5 : 1.5}
-        cornerRadius={4}
+        strokeWidth={selected ? 3 : 2}
+        cornerRadius={6}
       />
       <Text
         text={location.code ? `${location.code}` : location.name || "—"}
-        x={6}
-        y={6}
-        fontSize={11}
+        x={8}
+        y={8}
+        fontSize={14}
         fontStyle="bold"
         fill="rgba(15,23,42,0.85)"
+        listening={false}
       />
       {location.code && location.name && (
         <Text
           text={location.name}
-          x={6}
-          y={22}
-          fontSize={10}
+          x={8}
+          y={26}
+          fontSize={12}
           fill="rgba(51,65,85,0.7)"
-          width={location.width - 12}
+          width={location.width - 16}
           ellipsis
           wrap="none"
+          listening={false}
         />
       )}
     </Group>
+  );
+}
+
+function DraftPolyline({
+  points,
+  color,
+  viewportScale,
+}: {
+  points: Point[];
+  color: string;
+  viewportScale: number;
+}) {
+  if (points.length === 0) return null;
+  const flat: number[] = [];
+  for (const p of points) flat.push(p.x, p.y);
+  return (
+    <>
+      <Line
+        points={flat}
+        stroke={color}
+        strokeWidth={2}
+        dash={[10, 6]}
+        opacity={0.85}
+      />
+      {points.map((p, i) => (
+        <Circle
+          key={i}
+          x={p.x}
+          y={p.y}
+          radius={(i === 0 ? 8 : 5) / viewportScale}
+          fill={i === 0 ? color : "white"}
+          stroke={color}
+          strokeWidth={2 / viewportScale}
+        />
+      ))}
+    </>
+  );
+}
+
+function ScaleBar({ viewportScale }: { viewportScale: number }) {
+  // 1m of world space in screen pixels.
+  const widthPx = 100 * viewportScale;
+  return (
+    <div className="flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[10px] font-medium text-muted-foreground shadow-sm backdrop-blur">
+      <div
+        className="h-1 rounded-sm bg-foreground/70"
+        style={{ width: `${widthPx}px` }}
+      />
+      <span>1 m</span>
+    </div>
   );
 }

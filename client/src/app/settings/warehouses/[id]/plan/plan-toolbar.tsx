@@ -8,7 +8,8 @@ import {
   MousePointer2,
   Minus,
   PackageOpen,
-  Square,
+  Frame,
+  CircleDashed,
   ZoomIn,
   ZoomOut,
   Maximize2,
@@ -20,14 +21,19 @@ interface PlanToolbarProps {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetView: () => void;
+  /** Hole tool is only enabled once an outline exists — there's
+   *  nothing to cut a hole out of otherwise. */
+  hasOutline: boolean;
   disabled?: boolean;
+  /** Mobile layout: render as a horizontal scrollable bar instead of
+   *  the vertical desktop column. */
+  layout?: "vertical" | "horizontal";
 }
 
 interface ToolDef {
   id: ToolMode;
   label: string;
   icon: typeof MousePointer2;
-  /** Keyboard shortcut. Surfaced in the tooltip title. */
   shortcut: string;
 }
 
@@ -35,17 +41,18 @@ const TOOLS: ToolDef[] = [
   { id: "select", label: "Select", icon: MousePointer2, shortcut: "V" },
   { id: "pan", label: "Pan", icon: Hand, shortcut: "H" },
   { id: "wall", label: "Wall", icon: Minus, shortcut: "W" },
-  { id: "room", label: "Room", icon: Square, shortcut: "R" },
+  { id: "outline", label: "Floor outline", icon: Frame, shortcut: "F" },
+  { id: "hole", label: "Cut a hole", icon: CircleDashed, shortcut: "O" },
   { id: "location", label: "Storage location", icon: PackageOpen, shortcut: "L" },
 ];
 
 /**
- * Vertical toolbar that sits flush against the left edge of the
- * canvas. Mirrors Figma / Miro: drawing tools first, then zoom
- * controls grouped at the bottom.
+ * Tool palette + zoom controls. Two layouts:
+ *   - `vertical`   (desktop): narrow column flush against the canvas
+ *   - `horizontal` (mobile): scrollable bar pinned below the canvas
  *
- * Keyboard shortcuts (V/H/W/R/L) are wired up at the editor shell
- * level — this component just shows them in tooltips.
+ * Active tool gets a filled background; disabled tools (hole without
+ * an outline, anything on a read-only floor) are dimmed.
  */
 export function PlanToolbar({
   tool,
@@ -53,15 +60,30 @@ export function PlanToolbar({
   onZoomIn,
   onZoomOut,
   onResetView,
+  hasOutline,
   disabled = false,
+  layout = "vertical",
 }: PlanToolbarProps) {
+  const isVertical = layout === "vertical";
+
   return (
-    <div className="flex h-full w-12 flex-col gap-1 rounded-md border border-border/60 bg-background p-1.5 shadow-sm">
+    <div
+      className={cn(
+        "shrink-0 rounded-md border border-border/60 bg-background p-1.5 shadow-sm",
+        isVertical
+          ? "flex h-full w-12 flex-col gap-1"
+          : "flex w-full flex-row gap-1 overflow-x-auto",
+      )}
+    >
       {TOOLS.map((t) => (
         <ToolButton
           key={t.id}
           active={tool === t.id}
-          disabled={disabled && t.id !== "select" && t.id !== "pan"}
+          disabled={
+            disabled ||
+            // Hole only makes sense after we have an outline.
+            (t.id === "hole" && !hasOutline)
+          }
           title={`${t.label} (${t.shortcut})`}
           onClick={() => onToolChange(t.id)}
         >
@@ -69,7 +91,13 @@ export function PlanToolbar({
         </ToolButton>
       ))}
 
-      <div className="mt-auto flex flex-col gap-1 border-t border-border/60 pt-1.5">
+      <div
+        className={cn(
+          isVertical
+            ? "mt-auto flex flex-col gap-1 border-t border-border/60 pt-1.5"
+            : "ml-auto flex flex-row gap-1 border-l border-border/60 pl-1.5",
+        )}
+      >
         <ToolButton title="Zoom in" onClick={onZoomIn}>
           <ZoomIn className="size-4" />
         </ToolButton>

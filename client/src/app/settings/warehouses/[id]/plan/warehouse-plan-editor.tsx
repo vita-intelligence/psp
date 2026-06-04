@@ -3,7 +3,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useTransition,
@@ -27,27 +26,35 @@ import { updateFloorAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { Floor } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
+import { cn } from "@/lib/utils";
 import type {
   CanvasJson,
+  FloorOutline,
+  Hole,
   LocalLocation,
-  Room,
+  Point,
   Selection,
   ToolMode,
   Viewport,
   Wall,
 } from "./plan-types";
 import type { PlanCanvasHandle } from "./plan-canvas";
-import { Loader2, Save, Undo2, Redo2 } from "lucide-react";
+import {
+  ChevronDown,
+  Loader2,
+  Redo2,
+  Save,
+  Undo2,
+  X,
+} from "lucide-react";
 
-// react-konva pulls in browser-only globals (window, document). Skip
-// SSR to avoid hydration errors; show a tiny placeholder while it
-// loads on the client.
+// react-konva touches window / document on import — skip SSR.
 const PlanCanvas = dynamic(
   () => import("./plan-canvas").then((m) => m.PlanCanvas),
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-[600px] items-center justify-center rounded-md border border-border/60 bg-muted/30 text-xs text-muted-foreground">
+      <div className="flex h-[480px] items-center justify-center rounded-md border border-border/60 bg-muted/30 text-xs text-muted-foreground">
         Loading canvas…
       </div>
     ),
@@ -64,10 +71,10 @@ interface WarehousePlanEditorProps {
 
 interface FloorState {
   /** Server-side floor metadata + canvas_json. We never mutate
-   *  `meta` after first load; edits live in walls/rooms/locations. */
+   *  `meta` after first load; edits live in outline/walls/locations. */
   meta: Floor;
+  outline: FloorOutline | undefined;
   walls: Wall[];
-  rooms: Room[];
   locations: LocalLocation[];
   viewport: Viewport;
   /** True when canvas_json or any location row has been touched. */
@@ -75,16 +82,13 @@ interface FloorState {
 }
 
 interface HistoryEntry {
+  outline: FloorOutline | undefined;
   walls: Wall[];
-  rooms: Room[];
   locations: LocalLocation[];
 }
 
 const HISTORY_LIMIT = 50;
-
-function emptyViewport(): Viewport {
-  return { x: 0, y: 0, scale: 1 };
-}
+const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, scale: 0.4 };
 
 function buildFloorState(meta: Floor): FloorState {
   const canvas = (meta.canvas_json ?? {}) as CanvasJson;
@@ -93,33 +97,50 @@ function buildFloorState(meta: Floor): FloorState {
   );
   return {
     meta,
+    outline: canvas.outline,
     walls: canvas.walls ?? [],
-    rooms: canvas.rooms ?? [],
     locations,
-    viewport: canvas.viewport ?? emptyViewport(),
+    viewport: canvas.viewport ?? DEFAULT_VIEWPORT,
     dirty: false,
   };
 }
 
+function useIsMobile(): boolean {
+  // 768px = Tailwind's md breakpoint. Below that we switch the
+  // editor into mobile layout: horizontal toolbar at the bottom,
+  // bottom sheet for properties.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 767px)");
+    const apply = () => setIsMobile(mql.matches);
+    apply();
+    mql.addEventListener("change", apply);
+    return () => mql.removeEventListener("change", apply);
+  }, []);
+  return isMobile;
+}
+
 /**
- * The whole plan editor — canvas + toolbar + properties + save flow.
+ * The plan editor shell — canvas + toolbar + properties + save flow.
+ *
+ * Layout adapts:
+ *   • md+ (desktop): three-column flexbox — toolbar | canvas | props
+ *   • <md (mobile):  canvas + horizontal toolbar underneath + a
+ *                    bottom-sheet that slides in when selection !=
+ *                    none. Two-finger pan/zoom, tap to select.
  *
  * State model:
- *   • `floorStates` keys by floor.id and holds the LOCAL working
- *     copy of every floor's walls/rooms/locations + viewport + dirty
- *     flag. Switching floors doesn't drop unsaved work.
- *   • `activeFloorId` picks which one the canvas renders.
- *   • `history` / `redoStack` per active floor for ctrl+Z / ctrl+Y.
- *   • `selection` is per-floor too — switching clears selection.
+ *   • `floorStates` keys by floor.id and holds the local working
+ *     copy of every floor's outline / walls / locations + viewport
+ *     + dirty flag. Switching floors doesn't drop unsaved work.
+ *   • Per-floor undo / redo stacks (50 entries each). Ctrl/Cmd+Z and
+ *     Ctrl/Cmd+Y bound globally (skipped when typing).
  *
  * Save flow:
- *   • On click Save we PUT the floor (canvas_json), then for each
- *     local location we POST new ones / PUT dirty ones / DELETE
- *     marked-deleted ones, all in parallel where order is safe.
- *   • Audit invalidator fires after the floor PUT so the Activity
- *     timeline picks up the new event without a refresh.
- *
- * Realtime collab arrives in phase 5 — for now this is single-user.
+ *   • PUT the floor (canvas_json: outline + walls + viewport).
+ *   • POST new locations / PUT dirty ones / DELETE marked-deleted.
+ *   • Audit invalidator fires so the Activity card refreshes.
+ *   • Local tempIds get reconciled to server uuids on success.
  */
 export function WarehousePlanEditor({
   warehouseUuid,
@@ -131,10 +152,8 @@ export function WarehousePlanEditor({
   const router = useRouter();
   const canvasRef = useRef<PlanCanvasHandle | null>(null);
   const readOnly = !canEdit;
+  const isMobile = useIsMobile();
 
-  // Build initial per-floor state from props. We never re-derive
-  // from props after first mount — the user's local edits are the
-  // source of truth until Save (or Discard).
   const [floorStates, setFloorStates] = useState<Record<number, FloorState>>(
     () => Object.fromEntries(floors.map((f) => [f.id, buildFloorState(f)])),
   );
@@ -144,16 +163,23 @@ export function WarehousePlanEditor({
   );
   const [tool, setTool] = useState<ToolMode>("select");
   const [selection, setSelection] = useState<Selection>({ kind: "none" });
-  // Per-floor undo/redo stacks. The active floor's stack is read &
-  // written; switching floors keeps the other stacks intact.
   const [history, setHistory] = useState<Record<number, HistoryEntry[]>>({});
   const [redoStack, setRedoStack] = useState<Record<number, HistoryEntry[]>>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [saving, startSaving] = useTransition();
+  // Mobile-only: the properties sheet is collapsed by default and
+  // opens when selection becomes non-none.
+  const [propsSheetOpen, setPropsSheetOpen] = useState(false);
 
-  // Re-build state when the floors prop changes (e.g. a new floor
-  // was added via the bottom switcher's button). Preserve any local
-  // dirty edits the user already had — only seed brand-new floors.
+  // Open the mobile sheet automatically when something is selected;
+  // close it when selection clears.
+  useEffect(() => {
+    if (!isMobile) return;
+    setPropsSheetOpen(selection.kind !== "none");
+  }, [isMobile, selection.kind]);
+
+  // Seed brand-new floors that arrived via the bottom switcher's
+  // "Add floor" button. Preserve any local dirty edits on others.
   useEffect(() => {
     setFloorStates((prev) => {
       const next = { ...prev };
@@ -170,31 +196,29 @@ export function WarehousePlanEditor({
   }, [floors, activeFloorId]);
 
   const activeFloor = activeFloorId != null ? floorStates[activeFloorId] : null;
-
   const anyDirty = Object.values(floorStates).some((s) => s.dirty);
 
   // -------------------------------------------------------------- helpers
 
-  const pushHistory = useCallback(
-    (floorId: number, state: FloorState) => {
-      setHistory((prev) => {
-        const stack = prev[floorId] ?? [];
-        const entry: HistoryEntry = {
-          walls: state.walls,
-          rooms: state.rooms,
-          locations: state.locations,
-        };
-        const next = [...stack, entry].slice(-HISTORY_LIMIT);
-        return { ...prev, [floorId]: next };
-      });
-      // Any new edit invalidates the redo stack.
-      setRedoStack((prev) => ({ ...prev, [floorId]: [] }));
-    },
-    [],
-  );
+  const pushHistory = useCallback((floorId: number, state: FloorState) => {
+    setHistory((prev) => {
+      const stack = prev[floorId] ?? [];
+      const entry: HistoryEntry = {
+        outline: state.outline,
+        walls: state.walls,
+        locations: state.locations,
+      };
+      const next = [...stack, entry].slice(-HISTORY_LIMIT);
+      return { ...prev, [floorId]: next };
+    });
+    setRedoStack((prev) => ({ ...prev, [floorId]: [] }));
+  }, []);
 
   const updateActiveFloor = useCallback(
-    (mutator: (prev: FloorState) => FloorState, options?: { snapshot?: boolean }) => {
+    (
+      mutator: (prev: FloorState) => FloorState,
+      options?: { snapshot?: boolean },
+    ) => {
       if (activeFloorId == null) return;
       setFloorStates((prev) => {
         const current = prev[activeFloorId];
@@ -217,18 +241,6 @@ export function WarehousePlanEditor({
       );
       setTool("select");
       setSelection({ kind: "wall", id: wall.id });
-    },
-    [updateActiveFloor],
-  );
-
-  const onRoomAdded = useCallback(
-    (room: Room) => {
-      updateActiveFloor(
-        (s) => ({ ...s, rooms: [...s.rooms, room] }),
-        { snapshot: true },
-      );
-      setTool("select");
-      setSelection({ kind: "room", id: room.id });
     },
     [updateActiveFloor],
   );
@@ -278,23 +290,8 @@ export function WarehousePlanEditor({
         (s) => ({
           ...s,
           locations: s.locations.map((l) =>
-            (l.tempId ?? l.uuid) === id
-              ? { ...l, x, y, dirty: true }
-              : l,
+            (l.tempId ?? l.uuid) === id ? { ...l, x, y, dirty: true } : l,
           ),
-        }),
-        { snapshot: true },
-      );
-    },
-    [updateActiveFloor],
-  );
-
-  const onRoomMove = useCallback(
-    (id: string, x: number, y: number) => {
-      updateActiveFloor(
-        (s) => ({
-          ...s,
-          rooms: s.rooms.map((r) => (r.id === id ? { ...r, x, y } : r)),
         }),
         { snapshot: true },
       );
@@ -316,27 +313,6 @@ export function WarehousePlanEditor({
     (id: string) => {
       updateActiveFloor(
         (s) => ({ ...s, walls: s.walls.filter((w) => w.id !== id) }),
-        { snapshot: true },
-      );
-      setSelection({ kind: "none" });
-    },
-    [updateActiveFloor],
-  );
-
-  const onRoomUpdate = useCallback(
-    (id: string, patch: Partial<Room>) => {
-      updateActiveFloor((s) => ({
-        ...s,
-        rooms: s.rooms.map((r) => (r.id === id ? { ...r, ...patch } : r)),
-      }));
-    },
-    [updateActiveFloor],
-  );
-
-  const onRoomDelete = useCallback(
-    (id: string) => {
-      updateActiveFloor(
-        (s) => ({ ...s, rooms: s.rooms.filter((r) => r.id !== id) }),
         { snapshot: true },
       );
       setSelection({ kind: "none" });
@@ -368,10 +344,7 @@ export function WarehousePlanEditor({
           ...s,
           locations: s.locations.map((l) =>
             (l.tempId ?? l.uuid) === id
-              ? // New (unsaved) locations are removed outright;
-                // existing rows get marked-deleted so save can DELETE
-                // them.
-                l.tempId
+              ? l.tempId
                 ? { ...l, deleted: true }
                 : { ...l, deleted: true, dirty: true }
               : l,
@@ -386,10 +359,96 @@ export function WarehousePlanEditor({
 
   const onViewportChange = useCallback(
     (next: Viewport) => {
-      // Viewport changes aren't snapshot — they're not really "edits"
-      // worth undo/redo, just camera. They DO mark dirty so the
-      // saved canvas_json carries the user's last view.
+      // Viewport changes mark dirty (so they save) but don't snapshot
+      // for undo — camera moves shouldn't fill the history.
       updateActiveFloor((s) => ({ ...s, viewport: next }));
+    },
+    [updateActiveFloor],
+  );
+
+  const onOutlineCommitted = useCallback(
+    (points: Point[]) => {
+      updateActiveFloor(
+        (s) => ({
+          ...s,
+          // Replace outline entirely on commit. Holes are dropped —
+          // they were tied to the previous perimeter. Same model as
+          // most CAD tools.
+          outline: { points, holes: [] },
+        }),
+        { snapshot: true },
+      );
+      setTool("select");
+      setSelection({ kind: "outline" });
+    },
+    [updateActiveFloor],
+  );
+
+  const onHoleCommitted = useCallback(
+    (points: Point[]) => {
+      const holeId = crypto.randomUUID();
+      updateActiveFloor(
+        (s) => {
+          if (!s.outline) return s;
+          const newHole: Hole = { id: holeId, points };
+          return {
+            ...s,
+            outline: {
+              ...s.outline,
+              holes: [...(s.outline.holes ?? []), newHole],
+            },
+          };
+        },
+        { snapshot: true },
+      );
+      setTool("select");
+      setSelection({ kind: "hole", id: holeId });
+    },
+    [updateActiveFloor],
+  );
+
+  const onOutlineDelete = useCallback(() => {
+    updateActiveFloor(
+      (s) => ({ ...s, outline: undefined }),
+      { snapshot: true },
+    );
+    setSelection({ kind: "none" });
+  }, [updateActiveFloor]);
+
+  const onHoleUpdate = useCallback(
+    (id: string, patch: Partial<Hole>) => {
+      updateActiveFloor((s) => {
+        if (!s.outline) return s;
+        return {
+          ...s,
+          outline: {
+            ...s.outline,
+            holes: (s.outline.holes ?? []).map((h) =>
+              h.id === id ? { ...h, ...patch } : h,
+            ),
+          },
+        };
+      });
+    },
+    [updateActiveFloor],
+  );
+
+  const onHoleDelete = useCallback(
+    (id: string) => {
+      updateActiveFloor(
+        (s) => {
+          if (!s.outline) return s;
+          return {
+            ...s,
+            outline: {
+              ...s.outline,
+              holes: (s.outline.holes ?? []).filter((h) => h.id !== id),
+            },
+          };
+        },
+        { snapshot: true },
+      );
+      setSelection({ kind: "none" });
     },
     [updateActiveFloor],
   );
@@ -409,8 +468,8 @@ export function WarehousePlanEditor({
         [activeFloorId]: [
           ...(r[activeFloorId] ?? []),
           {
+            outline: current.outline,
             walls: current.walls,
-            rooms: current.rooms,
             locations: current.locations,
           },
         ],
@@ -419,17 +478,14 @@ export function WarehousePlanEditor({
         ...prev,
         [activeFloorId]: {
           ...current,
+          outline: last.outline,
           walls: last.walls,
-          rooms: last.rooms,
           locations: last.locations,
           dirty: true,
         },
       };
     });
-    setHistory((prev) => ({
-      ...prev,
-      [activeFloorId]: stack.slice(0, -1),
-    }));
+    setHistory((prev) => ({ ...prev, [activeFloorId]: stack.slice(0, -1) }));
     setSelection({ kind: "none" });
   }, [activeFloorId, history]);
 
@@ -446,8 +502,8 @@ export function WarehousePlanEditor({
         [activeFloorId]: [
           ...(h[activeFloorId] ?? []),
           {
+            outline: current.outline,
             walls: current.walls,
-            rooms: current.rooms,
             locations: current.locations,
           },
         ],
@@ -456,17 +512,14 @@ export function WarehousePlanEditor({
         ...prev,
         [activeFloorId]: {
           ...current,
+          outline: last.outline,
           walls: last.walls,
-          rooms: last.rooms,
           locations: last.locations,
           dirty: true,
         },
       };
     });
-    setRedoStack((prev) => ({
-      ...prev,
-      [activeFloorId]: stack.slice(0, -1),
-    }));
+    setRedoStack((prev) => ({ ...prev, [activeFloorId]: stack.slice(0, -1) }));
     setSelection({ kind: "none" });
   }, [activeFloorId, redoStack]);
 
@@ -475,7 +528,6 @@ export function WarehousePlanEditor({
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
-      // Skip when typing in a form field.
       if (
         target &&
         (target.tagName === "INPUT" ||
@@ -508,28 +560,32 @@ export function WarehousePlanEditor({
         case "w":
           setTool("wall");
           break;
-        case "r":
-          setTool("room");
+        case "f":
+          setTool("outline");
+          break;
+        case "o":
+          if (activeFloor?.outline) setTool("hole");
           break;
         case "l":
           setTool("location");
           break;
         case "escape":
+          canvasRef.current?.cancelDraft();
           setSelection({ kind: "none" });
           break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo, readOnly]);
+  }, [undo, redo, readOnly, activeFloor?.outline]);
 
   // ----------------------------------------------------------- save flow
 
   const canvasJsonFor = useCallback((s: FloorState): CanvasJson => {
     return {
       viewport: s.viewport,
+      outline: s.outline,
       walls: s.walls,
-      rooms: s.rooms,
     };
   }, []);
 
@@ -539,23 +595,14 @@ export function WarehousePlanEditor({
 
     startSaving(async () => {
       const state = activeFloor;
-      // 1. Update the floor's canvas_json
-      const floorRes = await updateFloorAction(
-        warehouseUuid,
-        state.meta.uuid,
-        { canvas_json: canvasJsonFor(state) as unknown as Record<string, unknown> },
-      );
+      const floorRes = await updateFloorAction(warehouseUuid, state.meta.uuid, {
+        canvas_json: canvasJsonFor(state) as unknown as Record<string, unknown>,
+      });
 
       if (!floorRes.ok) {
         setActionError(floorRes);
         return;
       }
-
-      // 2. Process locations
-      // New (tempId, not deleted): POST
-      // Existing dirty (no tempId, dirty, not deleted): PUT
-      // Existing marked-deleted (no tempId, deleted): DELETE
-      // Unsaved-and-deleted (tempId, deleted): skip (only existed locally)
 
       const newRows = state.locations.filter((l) => l.tempId && !l.deleted);
       const dirtyRows = state.locations.filter(
@@ -565,9 +612,6 @@ export function WarehousePlanEditor({
 
       const tempIdToServerId = new Map<string, { id: number; uuid: string }>();
 
-      // Run creates sequentially so audit events stay ordered + we
-      // collect their ids. They're cheap (small payloads); parallel
-      // not worth the complexity.
       for (const loc of newRows) {
         const res = await createLocationAction(warehouseUuid, {
           floor_uuid: state.meta.uuid,
@@ -596,8 +640,6 @@ export function WarehousePlanEditor({
         }
       }
 
-      // Updates + deletes can run in parallel — they affect distinct
-      // rows.
       const opResults = await Promise.all([
         ...dirtyRows.map((loc) =>
           updateLocationAction(warehouseUuid, loc.uuid, {
@@ -626,13 +668,10 @@ export function WarehousePlanEditor({
         return;
       }
 
-      // Reconcile local state with server: replace tempIds with real
-      // uuids, drop marked-deleted rows, clear dirty flags.
       setFloorStates((prev) => {
         const current = prev[state.meta.id];
         if (!current) return prev;
         const merged: LocalLocation[] = current.locations
-          .filter((l) => !(l.deleted && !l.tempId === false)) // drop already-applied deletes below
           .filter((l) => !l.deleted)
           .map((l) => {
             if (l.tempId) {
@@ -661,26 +700,16 @@ export function WarehousePlanEditor({
         };
       });
 
-      // Tell the Activity card to refetch + push the freshest server
-      // state into the page.
       invalidateAudit("warehouse", warehouseId);
       router.refresh();
       toast.success("Plan saved", {
         description: `Saved "${state.meta.name}".`,
       });
     });
-  }, [
-    activeFloor,
-    canvasJsonFor,
-    router,
-    warehouseId,
-    warehouseUuid,
-  ]);
+  }, [activeFloor, canvasJsonFor, router, warehouseId, warehouseUuid]);
 
   const onDiscard = useCallback(() => {
     if (!activeFloor) return;
-    // Rebuild from the floor.meta we have on hand. If the user wants
-    // a true "discard back to server state", they can refresh.
     const reset = buildFloorState(activeFloor.meta);
     setFloorStates((prev) => ({ ...prev, [activeFloor.meta.id]: reset }));
     setHistory((prev) => ({ ...prev, [activeFloor.meta.id]: [] }));
@@ -692,20 +721,26 @@ export function WarehousePlanEditor({
   // ----------------------------------------------------------- render
 
   if (floors.length === 0) {
-    return null; // PlanTab handles the empty state with NewFloorButton
+    return null; // parent handles the empty state with NewFloorButton
   }
 
-  const undoCount = activeFloorId != null ? (history[activeFloorId] ?? []).length : 0;
-  const redoCount = activeFloorId != null ? (redoStack[activeFloorId] ?? []).length : 0;
+  const undoCount =
+    activeFloorId != null ? (history[activeFloorId] ?? []).length : 0;
+  const redoCount =
+    activeFloorId != null ? (redoStack[activeFloorId] ?? []).length : 0;
+
+  const canvasHeight = isMobile
+    ? Math.max(360, typeof window === "undefined" ? 480 : window.innerHeight - 320)
+    : 600;
 
   return (
     <div className="space-y-3">
-      {/* Toolbar row: save state + actions */}
+      {/* Header row */}
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={activeFloor?.dirty ? "amber" : "muted"}>
           {activeFloor?.dirty ? "Unsaved changes" : "Saved"}
         </Badge>
-        <p className="text-xs text-muted-foreground">
+        <p className="hidden text-xs text-muted-foreground sm:block">
           Editing{" "}
           <span className="font-medium text-foreground">{warehouseName}</span>
           {activeFloor && (
@@ -728,6 +763,7 @@ export function WarehousePlanEditor({
                 onClick={undo}
                 disabled={undoCount === 0 || saving}
                 title="Undo (Ctrl/Cmd Z)"
+                aria-label="Undo"
               >
                 <Undo2 className="size-4" />
               </Button>
@@ -738,6 +774,7 @@ export function WarehousePlanEditor({
                 onClick={redo}
                 disabled={redoCount === 0 || saving}
                 title="Redo (Ctrl/Cmd Shift Z)"
+                aria-label="Redo"
               >
                 <Redo2 className="size-4" />
               </Button>
@@ -778,60 +815,93 @@ export function WarehousePlanEditor({
         />
       )}
 
-      {/* Main editor — toolbar + canvas + properties */}
-      <div className="flex gap-3">
-        <PlanToolbar
+      {/* Editor body — layout swaps at md */}
+      {isMobile ? (
+        <MobileLayout
+          activeFloor={activeFloor}
+          canvasRef={canvasRef}
           tool={tool}
-          onToolChange={(t) => setTool(t)}
-          onZoomIn={() => canvasRef.current?.zoomIn()}
-          onZoomOut={() => canvasRef.current?.zoomOut()}
-          onResetView={() => canvasRef.current?.resetView()}
-          disabled={!activeFloor || readOnly}
-        />
-
-        <div className="min-w-0 flex-1">
-          {activeFloor ? (
-            <PlanCanvas
-              ref={canvasRef}
-              walls={activeFloor.walls}
-              rooms={activeFloor.rooms}
-              locations={activeFloor.locations}
-              selection={selection}
-              tool={tool}
-              viewport={activeFloor.viewport}
-              readOnly={readOnly}
-              onSelectionChange={setSelection}
-              onViewportChange={onViewportChange}
-              onWallAdded={onWallAdded}
-              onRoomAdded={onRoomAdded}
-              onLocationAdded={onLocationAdded}
-              onLocationMove={onLocationMove}
-              onRoomMove={onRoomMove}
-            />
-          ) : (
-            <div className="flex h-[600px] items-center justify-center rounded-md border border-border/60 bg-muted/30 text-sm text-muted-foreground">
-              Select a floor below to start editing.
-            </div>
-          )}
-        </div>
-
-        <PlanProperties
+          setTool={setTool}
           selection={selection}
-          walls={activeFloor?.walls ?? []}
-          rooms={activeFloor?.rooms ?? []}
-          locations={activeFloor?.locations ?? []}
+          setSelection={setSelection}
+          canvasHeight={canvasHeight}
           readOnly={readOnly}
+          onViewportChange={onViewportChange}
+          onWallAdded={onWallAdded}
+          onLocationAdded={onLocationAdded}
+          onLocationMove={onLocationMove}
+          onOutlineCommitted={onOutlineCommitted}
+          onHoleCommitted={onHoleCommitted}
           onWallUpdate={onWallUpdate}
           onWallDelete={onWallDelete}
-          onRoomUpdate={onRoomUpdate}
-          onRoomDelete={onRoomDelete}
+          onOutlineDelete={onOutlineDelete}
+          onHoleUpdate={onHoleUpdate}
+          onHoleDelete={onHoleDelete}
           onLocationUpdate={onLocationUpdate}
           onLocationDelete={onLocationDelete}
+          propsSheetOpen={propsSheetOpen}
+          setPropsSheetOpen={setPropsSheetOpen}
         />
-      </div>
+      ) : (
+        <div className="flex gap-3">
+          <PlanToolbar
+            tool={tool}
+            onToolChange={setTool}
+            onZoomIn={() => canvasRef.current?.zoomIn()}
+            onZoomOut={() => canvasRef.current?.zoomOut()}
+            onResetView={() => canvasRef.current?.resetView()}
+            hasOutline={!!activeFloor?.outline}
+            disabled={!activeFloor || readOnly}
+            layout="vertical"
+          />
 
-      {/* Floor switcher + add */}
-      <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            {activeFloor ? (
+              <PlanCanvas
+                ref={canvasRef}
+                outline={activeFloor.outline}
+                walls={activeFloor.walls}
+                locations={activeFloor.locations}
+                selection={selection}
+                tool={tool}
+                viewport={activeFloor.viewport}
+                readOnly={readOnly}
+                heightPx={canvasHeight}
+                onSelectionChange={setSelection}
+                onViewportChange={onViewportChange}
+                onWallAdded={onWallAdded}
+                onLocationAdded={onLocationAdded}
+                onLocationMove={onLocationMove}
+                onOutlineCommitted={onOutlineCommitted}
+                onHoleCommitted={onHoleCommitted}
+              />
+            ) : (
+              <div className="flex h-[600px] items-center justify-center rounded-md border border-border/60 bg-muted/30 text-sm text-muted-foreground">
+                Select a floor below to start editing.
+              </div>
+            )}
+          </div>
+
+          <PlanProperties
+            selection={selection}
+            outline={activeFloor?.outline}
+            walls={activeFloor?.walls ?? []}
+            locations={activeFloor?.locations ?? []}
+            readOnly={readOnly}
+            layout="side"
+            onWallUpdate={onWallUpdate}
+            onWallDelete={onWallDelete}
+            onOutlineDelete={onOutlineDelete}
+            onHoleUpdate={onHoleUpdate}
+            onHoleDelete={onHoleDelete}
+            onLocationUpdate={onLocationUpdate}
+            onLocationDelete={onLocationDelete}
+          />
+        </div>
+      )}
+
+      {/* Floor switcher */}
+      <div className="flex flex-wrap items-center gap-2">
         <PlanFloorSwitcher
           floors={floors}
           activeFloorId={activeFloorId}
@@ -839,9 +909,6 @@ export function WarehousePlanEditor({
             setActiveFloorId(id);
             setSelection({ kind: "none" });
           }}
-          // The switcher's own "Add floor" button is suppressed here —
-          // the sibling <NewFloorButton> below opens a richer dialog
-          // (named input, validation, etc.).
           onAddFloor={() => undefined}
           canAdd={false}
           hasUnsavedChanges={activeFloor?.dirty}
@@ -853,6 +920,187 @@ export function WarehousePlanEditor({
           />
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- mobile
+
+interface MobileLayoutProps {
+  activeFloor: FloorState | null;
+  canvasRef: React.MutableRefObject<PlanCanvasHandle | null>;
+  tool: ToolMode;
+  setTool: (t: ToolMode) => void;
+  selection: Selection;
+  setSelection: (s: Selection) => void;
+  canvasHeight: number;
+  readOnly: boolean;
+  onViewportChange: (v: Viewport) => void;
+  onWallAdded: (w: Wall) => void;
+  onLocationAdded: (g: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) => void;
+  onLocationMove: (id: string | number, x: number, y: number) => void;
+  onOutlineCommitted: (points: Point[]) => void;
+  onHoleCommitted: (points: Point[]) => void;
+  onWallUpdate: (id: string, patch: Partial<Wall>) => void;
+  onWallDelete: (id: string) => void;
+  onOutlineDelete: () => void;
+  onHoleUpdate: (id: string, patch: Partial<Hole>) => void;
+  onHoleDelete: (id: string) => void;
+  onLocationUpdate: (
+    id: string | number,
+    patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
+  ) => void;
+  onLocationDelete: (id: string | number) => void;
+  propsSheetOpen: boolean;
+  setPropsSheetOpen: (open: boolean) => void;
+}
+
+/**
+ * Mobile layout: canvas takes most of the viewport; toolbar pinned
+ * below; properties slide up as a bottom sheet on selection.
+ */
+function MobileLayout({
+  activeFloor,
+  canvasRef,
+  tool,
+  setTool,
+  selection,
+  setSelection,
+  canvasHeight,
+  readOnly,
+  onViewportChange,
+  onWallAdded,
+  onLocationAdded,
+  onLocationMove,
+  onOutlineCommitted,
+  onHoleCommitted,
+  onWallUpdate,
+  onWallDelete,
+  onOutlineDelete,
+  onHoleUpdate,
+  onHoleDelete,
+  onLocationUpdate,
+  onLocationDelete,
+  propsSheetOpen,
+  setPropsSheetOpen,
+}: MobileLayoutProps) {
+  return (
+    <div className="relative">
+      <div>
+        {activeFloor ? (
+          <PlanCanvas
+            ref={canvasRef}
+            outline={activeFloor.outline}
+            walls={activeFloor.walls}
+            locations={activeFloor.locations}
+            selection={selection}
+            tool={tool}
+            viewport={activeFloor.viewport}
+            readOnly={readOnly}
+            heightPx={canvasHeight}
+            onSelectionChange={setSelection}
+            onViewportChange={onViewportChange}
+            onWallAdded={onWallAdded}
+            onLocationAdded={onLocationAdded}
+            onLocationMove={onLocationMove}
+            onOutlineCommitted={onOutlineCommitted}
+            onHoleCommitted={onHoleCommitted}
+          />
+        ) : (
+          <div
+            style={{ height: canvasHeight }}
+            className="flex items-center justify-center rounded-md border border-border/60 bg-muted/30 text-sm text-muted-foreground"
+          >
+            Pick a floor below to start.
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2">
+        <PlanToolbar
+          tool={tool}
+          onToolChange={setTool}
+          onZoomIn={() => canvasRef.current?.zoomIn()}
+          onZoomOut={() => canvasRef.current?.zoomOut()}
+          onResetView={() => canvasRef.current?.resetView()}
+          hasOutline={!!activeFloor?.outline}
+          disabled={!activeFloor || readOnly}
+          layout="horizontal"
+        />
+      </div>
+
+      {/* Bottom-sheet properties. Slides up from below the canvas
+          when selection != none. Tap the backdrop or X to close. */}
+      {propsSheetOpen && selection.kind !== "none" && activeFloor && (
+        <div
+          className={cn(
+            "fixed inset-x-0 bottom-0 z-40 max-h-[70vh] overflow-y-auto",
+            "rounded-t-xl border-t border-border bg-background shadow-2xl",
+            "animate-in slide-in-from-bottom duration-200",
+          )}
+        >
+          <div className="sticky top-0 flex items-center justify-between border-b border-border/60 bg-background px-4 py-2.5">
+            <p className="text-sm font-semibold">
+              {selection.kind === "outline"
+                ? "Floor outline"
+                : selection.kind === "hole"
+                  ? "Floor cutout"
+                  : selection.kind === "wall"
+                    ? "Wall"
+                    : "Storage location"}
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setPropsSheetOpen(false);
+                setSelection({ kind: "none" });
+              }}
+              aria-label="Close"
+              className="size-8"
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+          <div className="px-4 py-3">
+            <PlanProperties
+              selection={selection}
+              outline={activeFloor.outline}
+              walls={activeFloor.walls}
+              locations={activeFloor.locations}
+              readOnly={readOnly}
+              layout="sheet"
+              onWallUpdate={onWallUpdate}
+              onWallDelete={onWallDelete}
+              onOutlineDelete={onOutlineDelete}
+              onHoleUpdate={onHoleUpdate}
+              onHoleDelete={onHoleDelete}
+              onLocationUpdate={onLocationUpdate}
+              onLocationDelete={onLocationDelete}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Floating "↓ show properties" button when something is
+          selected but the sheet is collapsed. Lets the user re-open
+          without re-clicking the canvas element. */}
+      {!propsSheetOpen && selection.kind !== "none" && (
+        <button
+          type="button"
+          onClick={() => setPropsSheetOpen(true)}
+          className="fixed bottom-4 right-4 z-30 inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1.5 text-xs font-medium text-background shadow-lg"
+        >
+          <ChevronDown className="size-3.5 rotate-180" />
+          Properties
+        </button>
+      )}
     </div>
   );
 }
