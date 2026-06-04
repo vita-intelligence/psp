@@ -53,7 +53,6 @@ import {
   History,
   Loader2,
   Redo2,
-  RefreshCw,
   Save,
   Undo2,
   X,
@@ -194,11 +193,32 @@ export function WarehousePlanEditor({
   // "Add floor" button. Preserve any local dirty edits on others.
   useEffect(() => {
     setFloorStates((prev) => {
-      const next = { ...prev };
+      const next: Record<number, FloorState> = {};
       for (const f of floors) {
-        if (!(f.id in next)) {
+        const existing = prev[f.id];
+        if (!existing) {
           next[f.id] = buildFloorState(f);
+          continue;
         }
+        // The floor's server-side updated_at is the canonical "did
+        // anything land on this floor since I last looked?" signal —
+        // any location create / update / delete bumps it via the
+        // controller's broadcast, and any floor save bumps it too.
+        // If it's unchanged we keep our local FloorState intact (the
+        // user's mid-edit buffer survives router.refresh from an
+        // unrelated source). If it advanced, rebuild from the new
+        // meta but preserve unsaved (tempId) drafts that the server
+        // doesn't know about yet.
+        if (existing.meta.updated_at === f.updated_at) {
+          next[f.id] = existing;
+          continue;
+        }
+        const drafts = existing.locations.filter((l) => l.tempId);
+        const fresh = buildFloorState(f);
+        next[f.id] = {
+          ...fresh,
+          locations: [...fresh.locations, ...drafts],
+        };
       }
       return next;
     });
@@ -219,25 +239,16 @@ export function WarehousePlanEditor({
 
   // ------------------------------------------------------- live collab
   //
-  // Pending invalidation event we received from a peer's save. When
-  // null, no remote change is waiting. When non-null, we either show
-  // a banner (because the local user has unsaved changes that would
-  // be clobbered by a refresh) or auto-refresh (because state is
-  // clean — silently sync to the new server truth).
-  const [pendingInvalidation, setPendingInvalidation] =
-    useState<InvalidationEvent | null>(null);
-
+  // Peer mutation arrived — pull the latest server state. The floors
+  // useEffect above merges via updated_at so the local user's
+  // mid-edit buffer on OTHER floors stays intact, and unsaved
+  // drafts (tempId locations) on the affected floor survive too.
+  // No banner, no confirmation — the user wanted silent sync.
   const onPeerInvalidation = useCallback(
-    (event: InvalidationEvent) => {
-      // Self-originating events also reach us through the channel —
-      // skip them so saving doesn't re-trigger a "someone else saved"
-      // banner against ourselves.
-      // Note: the channel doesn't currently expose the joining user's
-      // id back; we use the unanimous "if any state is dirty, ask"
-      // policy below so a same-user second tab still gets prompted.
-      setPendingInvalidation(event);
+    (_event: InvalidationEvent) => {
+      router.refresh();
     },
-    [],
+    [router],
   );
 
   // Flag the next `floorStates` update as remote-originated so the
@@ -369,35 +380,6 @@ export function WarehousePlanEditor({
     broadcastCanvas,
     readOnly,
   ]);
-
-  // Auto-apply when nothing is dirty — the silent path. router
-  // refresh re-runs the parent server component so floors / locations
-  // come back fresh, and the editor remounts with the new prop.
-  useEffect(() => {
-    if (!pendingInvalidation) return;
-    if (anyDirty) return; // wait for the user to discard
-    setPendingInvalidation(null);
-    router.refresh();
-  }, [pendingInvalidation, anyDirty, router]);
-
-  const onAcceptInvalidation = useCallback(() => {
-    setPendingInvalidation(null);
-    // Drop every dirty buffer — the next render uses the server's
-    // version. Loses local changes by design; the banner warned.
-    for (const id of Object.keys(floorStates).map(Number)) {
-      const meta = floorStates[id]?.meta;
-      if (!meta) continue;
-      setFloorStates((prev) => ({ ...prev, [id]: buildFloorState(meta) }));
-      setHistory((prev) => ({ ...prev, [id]: [] }));
-      setRedoStack((prev) => ({ ...prev, [id]: [] }));
-    }
-    setSelection([]);
-    router.refresh();
-  }, [floorStates, router]);
-
-  const onDismissInvalidation = useCallback(() => {
-    setPendingInvalidation(null);
-  }, []);
 
   // -------------------------------------------------------------- helpers
 
@@ -1396,39 +1378,6 @@ export function WarehousePlanEditor({
 
   return (
     <div className="space-y-3">
-      {/* Remote-update banner — shown only when a peer's mutation
-          landed AND the local user has unsaved changes that would
-          otherwise be clobbered. Clean state silently refreshes
-          (handled in the useEffect above). */}
-      {pendingInvalidation && anyDirty && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-950/50 dark:text-amber-200">
-          <RefreshCw className="size-3.5" />
-          <span className="font-medium">Someone else updated this plan.</span>
-          <span className="text-amber-900/80 dark:text-amber-200/80">
-            Saving will overwrite their changes. Discard yours to load
-            the latest.
-          </span>
-          <div className="ml-auto flex items-center gap-1">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={onDismissInvalidation}
-              className="h-7"
-            >
-              Keep mine
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={onAcceptInvalidation}
-              className="h-7"
-            >
-              Load latest
-            </Button>
-          </div>
-        </div>
-      )}
 
       {/* Header row */}
       <div className="flex flex-wrap items-center gap-2">
