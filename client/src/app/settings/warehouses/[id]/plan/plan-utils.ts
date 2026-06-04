@@ -1,16 +1,29 @@
 // Helpers shared across the canvas + properties + editor shell.
 // Coordinate convention: 1 canvas unit = 1 cm. UI displays in metres.
 
-import type { Point, SnapTarget, Wall, FloorOutline } from "./plan-types";
+import type {
+  Hole,
+  LocalLocation,
+  Point,
+  SelectionItem,
+  SelectionSet,
+  SnapTarget,
+  Wall,
+  FloorOutline,
+} from "./plan-types";
 
 export const GRID_MINOR_CM = 50;      // half-metre grid lines
 export const GRID_MAJOR_CM = 200;     // 2-metre grid lines
 export const SNAP_THRESHOLD_PX = 12;  // screen-pixel radius for endpoint snap
+/** Grid snap = 50 cm so every vertex / wall end lands on the visible
+ *  minor gridline. Fine adjustment (5 cm and below) is reachable via
+ *  direct numeric input in the properties panel — the canvas itself
+ *  always feels "snappy" to the half-metre grid. */
+export const SNAP_GRID_CM = 50;
 
-/** Snap a centimetre value to the nearest 5 cm — small enough to feel
- *  precise, big enough to remove jitter from coarse mouse handling. */
+/** Snap a centimetre value to the visible 50 cm grid. */
 export function snapCm(value: number): number {
-  return Math.round(value / 5) * 5;
+  return Math.round(value / SNAP_GRID_CM) * SNAP_GRID_CM;
 }
 
 export function snapPoint(p: Point): Point {
@@ -176,3 +189,134 @@ export function normaliseRect(
     height: Math.abs(height),
   };
 }
+
+// -------------------------------------------------- selection helpers
+
+/** Equality for SelectionItem. The outline is a singleton (no id) so
+ *  any two outline items are equal; everything else compares by id. */
+export function selectionEquals(a: SelectionItem, b: SelectionItem): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "outline") return true;
+  // Both have an id at this branch — narrowing keeps TS happy.
+  return (a as { id: string }).id === (b as { id: string }).id;
+}
+
+export function isSelected(set: SelectionSet, item: SelectionItem): boolean {
+  return set.some((s) => selectionEquals(s, item));
+}
+
+/** Toggle membership of `item` in the selection set. */
+export function toggleSelection(
+  set: SelectionSet,
+  item: SelectionItem,
+): SelectionSet {
+  if (isSelected(set, item)) {
+    return set.filter((s) => !selectionEquals(s, item));
+  }
+  return [...set, item];
+}
+
+/** Union of two selection sets — used when a marquee drag was
+ *  additive (shift held). De-duplicates by item identity. */
+export function mergeSelections(
+  base: SelectionSet,
+  add: SelectionSet,
+): SelectionSet {
+  const result: SelectionSet = [...base];
+  for (const item of add) {
+    if (!isSelected(result, item)) result.push(item);
+  }
+  return result;
+}
+
+// --------------------------------------------------- bbox + marquee
+
+/** Axis-aligned bounding box. */
+export interface Bbox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export function wallBbox(wall: Wall): Bbox {
+  return normaliseRect(wall.x1, wall.y1, wall.x2 - wall.x1, wall.y2 - wall.y1);
+}
+
+export function locationBbox(location: LocalLocation): Bbox {
+  return { x: location.x, y: location.y, width: location.width, height: location.height };
+}
+
+export function polygonBbox(points: Point[]): Bbox | null {
+  if (points.length === 0) return null;
+  let minX = points[0]!.x;
+  let minY = points[0]!.y;
+  let maxX = minX;
+  let maxY = minY;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/** True when two axis-aligned boxes overlap at all. */
+export function bboxOverlap(a: Bbox, b: Bbox): boolean {
+  return !(
+    a.x + a.width < b.x ||
+    a.x > b.x + b.width ||
+    a.y + a.height < b.y ||
+    a.y > b.y + b.height
+  );
+}
+
+/**
+ * Find every editable item that overlaps the marquee `box`. Used on
+ * marquee drag end to populate the new selection.
+ */
+export function itemsInMarquee(
+  box: Bbox,
+  walls: Wall[],
+  locations: LocalLocation[],
+  outline: FloorOutline | undefined,
+): SelectionSet {
+  const out: SelectionSet = [];
+
+  // Outline: include when any vertex of the outline polygon is inside
+  // the marquee bbox, OR the bbox of the outline overlaps the marquee.
+  if (outline && outline.points.length >= 3) {
+    const obb = polygonBbox(outline.points);
+    if (obb && bboxOverlap(box, obb)) {
+      out.push({ kind: "outline" });
+    }
+  }
+
+  for (const hole of outline?.holes ?? []) {
+    const hbb = polygonBbox(hole.points);
+    if (hbb && bboxOverlap(box, hbb)) {
+      out.push({ kind: "hole", id: hole.id });
+    }
+  }
+
+  for (const wall of walls) {
+    if (bboxOverlap(box, wallBbox(wall))) {
+      out.push({ kind: "wall", id: wall.id });
+    }
+  }
+
+  for (const location of locations) {
+    if (location.deleted) continue;
+    if (bboxOverlap(box, locationBbox(location))) {
+      const id = location.tempId ?? location.uuid;
+      out.push({ kind: "location", id });
+    }
+  }
+
+  return out;
+}
+
+// Re-export Hole so utils consumers don't have to import it from
+// `plan-types` separately.
+export type { Hole };

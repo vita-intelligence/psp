@@ -70,15 +70,19 @@ export type ToolMode =
   | "hole"
   | "location";
 
-/** What the editor has currently selected. Each kind drives a
- *  different right-side properties form. The outline is a singleton
- *  per floor so it has no id; holes are addressable by id. */
-export type Selection =
-  | { kind: "none" }
+/** One selected element. The outline is a singleton per floor so it
+ *  has no id; everything else is addressable. */
+export type SelectionItem =
   | { kind: "wall"; id: string }
   | { kind: "outline" }
   | { kind: "hole"; id: string }
   | { kind: "location"; id: string };
+
+/** The editor's selection is a SET — shift / ctrl / cmd clicking adds
+ *  to it, marquee-drag adds anything intersecting the box, a plain
+ *  click replaces. Order is "most recently added at the end" so the
+ *  properties panel can prefer the latest pick. */
+export type SelectionSet = SelectionItem[];
 
 /** Snap-target candidate surfaced during draw / drag interactions.
  *  When the pointer is within a screen-space threshold of a

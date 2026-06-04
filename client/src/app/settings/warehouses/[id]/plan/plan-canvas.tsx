@@ -18,15 +18,21 @@ import {
   SNAP_THRESHOLD_PX,
   collectSnapTargets,
   findClosestSnap,
+  isSelected,
+  itemsInMarquee,
+  mergeSelections,
+  normaliseRect,
   snapCm,
   snapPoint,
+  toggleSelection,
 } from "./plan-utils";
 import type {
   FloorOutline,
   Hole,
   LocalLocation,
   Point,
-  Selection,
+  SelectionItem,
+  SelectionSet,
   ToolMode,
   Viewport,
   Wall,
@@ -36,7 +42,7 @@ interface PlanCanvasProps {
   outline: FloorOutline | undefined;
   walls: Wall[];
   locations: LocalLocation[];
-  selection: Selection;
+  selection: SelectionSet;
   tool: ToolMode;
   viewport: Viewport;
   /** Whether the canvas is in read-only mode (viewer permissions). */
@@ -45,7 +51,7 @@ interface PlanCanvasProps {
    *  mobile layout can use most of the viewport while desktop stays
    *  at a fixed height. */
   heightPx: number;
-  onSelectionChange: (next: Selection) => void;
+  onSelectionChange: (next: SelectionSet) => void;
   onViewportChange: (next: Viewport) => void;
   onWallAdded: (wall: Wall) => void;
   onLocationAdded: (location: {
@@ -70,6 +76,7 @@ export interface PlanCanvasHandle {
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 4;
 const DEFAULT_LOCATION_CM = 100; // 1m × 1m default tile
+const MIN_MARQUEE_PX = 4;        // smaller than this = treat as a plain click
 
 type Draft =
   | { kind: "wall"; x1: number; y1: number; x2: number; y2: number }
@@ -79,6 +86,16 @@ type Draft =
       y: number;
       width: number;
       height: number;
+    }
+  | {
+      kind: "marquee";
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      /** Shift / Ctrl / Cmd was held — add to existing selection on
+       *  finish instead of replacing. */
+      additive: boolean;
     }
   | { kind: "outline"; points: Point[] }
   | { kind: "hole"; points: Point[] };
@@ -132,6 +149,23 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     const snapTargets = useMemo(
       () => collectSnapTargets(walls, outline),
       [walls, outline],
+    );
+
+    /** Pick the right behaviour for a shape click: shift / ctrl /
+     *  cmd toggles, anything else replaces. Centralised here so every
+     *  shape's onClick uses the same rule. */
+    const selectItem = useCallback(
+      (
+        item: SelectionItem,
+        e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
+      ) => {
+        if (isAdditiveEvent(e)) {
+          onSelectionChange(toggleSelection(selection, item));
+        } else {
+          onSelectionChange([item]);
+        }
+      },
+      [onSelectionChange, selection],
     );
 
     useImperativeHandle(
@@ -250,6 +284,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         const isBackground = e.target === e.target.getStage();
         const p = snappedPointer();
         if (!p) return;
+        const additive = isAdditiveEvent(e);
 
         if (tool === "wall" && isBackground) {
           setDraft({ kind: "wall", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
@@ -263,7 +298,6 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           });
         } else if (tool === "outline" && isBackground) {
           if (draft?.kind === "outline") {
-            // First-vertex click closes the polygon.
             const first = draft.points[0];
             if (first && distance(p, first) < SNAP_THRESHOLD_PX / viewport.scale) {
               if (draft.points.length >= 3) onOutlineCommitted(draft.points);
@@ -289,7 +323,18 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             setDraft({ kind: "hole", points: [p] });
           }
         } else if (tool === "select" && isBackground) {
-          onSelectionChange({ kind: "none" });
+          // Start a marquee. Use raw cursor position (no grid snap)
+          // so the rectangle tracks the finger / cursor exactly.
+          const raw = pointerWorld();
+          if (!raw) return;
+          setDraft({
+            kind: "marquee",
+            x1: raw.x,
+            y1: raw.y,
+            x2: raw.x,
+            y2: raw.y,
+            additive,
+          });
         }
       },
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -298,13 +343,19 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
 
     const updateDraw = useCallback(() => {
       if (!draft) {
-        // Even when not drawing, polygon tools show a snap indicator
-        // on hover so the user sees where vertices will land.
         if (tool === "outline" || tool === "hole" || tool === "wall") {
           snappedPointer();
         }
         return;
       }
+
+      if (draft.kind === "marquee") {
+        const raw = pointerWorld();
+        if (!raw) return;
+        setDraft({ ...draft, x2: raw.x, y2: raw.y });
+        return;
+      }
+
       const p = snappedPointer();
       if (!p) return;
 
@@ -317,8 +368,6 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           height: Math.max(GRID_MINOR_CM, p.y - draft.y),
         });
       }
-      // Outline / hole rubber-bands via the rendering path; the draft
-      // itself only updates on click.
     }, [draft, tool, viewport.scale]);
 
     const finishDraw = useCallback(() => {
@@ -348,9 +397,41 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         setDraft(null);
         return;
       }
+      if (draft.kind === "marquee") {
+        const box = normaliseRect(
+          draft.x1,
+          draft.y1,
+          draft.x2 - draft.x1,
+          draft.y2 - draft.y1,
+        );
+        // World-space threshold for "this is a click, not a drag".
+        const tinyWorld = MIN_MARQUEE_PX / viewport.scale;
+        if (box.width < tinyWorld && box.height < tinyWorld) {
+          // Click on empty space — clear selection unless additive.
+          if (!draft.additive) onSelectionChange([]);
+          setDraft(null);
+          return;
+        }
+        const found = itemsInMarquee(box, walls, locations, outline);
+        onSelectionChange(
+          draft.additive ? mergeSelections(selection, found) : found,
+        );
+        setDraft(null);
+        return;
+      }
       // Outline / hole stay in draft until explicit close (click on
       // first vertex) or double-click.
-    }, [draft, onWallAdded, onLocationAdded]);
+    }, [
+      draft,
+      onWallAdded,
+      onLocationAdded,
+      onSelectionChange,
+      selection,
+      walls,
+      locations,
+      outline,
+      viewport.scale,
+    ]);
 
     /** Commit the in-progress outline / hole. Bound to dblclick. */
     function dblCommitDraft() {
@@ -601,10 +682,6 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                     }
                     ctx.closePath();
                   }
-                  // Even-odd fill subtracts the hole sub-paths from
-                  // the outer perimeter — visually matches the
-                  // "second floor with a hole in the middle" mental
-                  // model.
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const native = ctx as any;
                   native.fillStyle = shape.fill();
@@ -615,29 +692,51 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                     ctx.stroke();
                   }
                 }}
+                /**
+                 * Konva auto-derives a shape's hit area from its
+                 * sceneFunc only when the renderer follows simple
+                 * fill / stroke paths. Because we hand-write a path
+                 * with even-odd fill, Konva can't tell where to
+                 * intercept clicks. Provide an explicit hitFunc
+                 * that traces the outer perimeter — clicks anywhere
+                 * inside the outline (including holes) select it,
+                 * and the holes themselves stay clickable via their
+                 * own line shapes drawn above.
+                 */
+                hitFunc={(ctx, shape) => {
+                  ctx.beginPath();
+                  outline.points.forEach((p, i) =>
+                    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y),
+                  );
+                  ctx.closePath();
+                  ctx.fillStrokeShape(shape);
+                }}
                 fill="rgba(241,245,249,1)"
                 stroke={
-                  selection.kind === "outline"
+                  isSelected(selection, { kind: "outline" })
                     ? "rgb(59,130,246)"
                     : "rgba(15,23,42,0.55)"
                 }
-                strokeWidth={selection.kind === "outline" ? 3 : 2}
-                onClick={() => onSelectionChange({ kind: "outline" })}
-                onTap={() => onSelectionChange({ kind: "outline" })}
+                strokeWidth={
+                  isSelected(selection, { kind: "outline" }) ? 3 : 2
+                }
+                onClick={(e) => selectItem({ kind: "outline" }, e)}
+                onTap={(e) => selectItem({ kind: "outline" }, e)}
               />
               {(outline.holes ?? []).map((hole) => (
                 <HoleOutline
                   key={hole.id}
                   hole={hole}
-                  selected={
-                    selection.kind === "hole" && selection.id === hole.id
-                  }
-                  onSelect={() =>
-                    onSelectionChange({ kind: "hole", id: hole.id })
+                  selected={isSelected(selection, {
+                    kind: "hole",
+                    id: hole.id,
+                  })}
+                  onSelect={(e) =>
+                    selectItem({ kind: "hole", id: hole.id }, e)
                   }
                 />
               ))}
-              {selection.kind === "outline" &&
+              {isSelected(selection, { kind: "outline" }) &&
                 outline.points.map((p, i) => (
                   <Circle
                     key={`v-${i}`}
@@ -657,37 +756,28 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
               <WallShape
                 key={wall.id}
                 wall={wall}
-                selected={selection.kind === "wall" && selection.id === wall.id}
+                selected={isSelected(selection, { kind: "wall", id: wall.id })}
                 readOnly={readOnly}
-                onSelect={() =>
-                  onSelectionChange({ kind: "wall", id: wall.id })
-                }
+                onSelect={(e) => selectItem({ kind: "wall", id: wall.id }, e)}
               />
             ))}
           </Layer>
 
           {/* Locations */}
           <Layer>
-            {visibleLocations.map((loc) => (
-              <LocationShape
-                key={loc.tempId ?? loc.uuid ?? loc.id}
-                location={loc}
-                selected={
-                  selection.kind === "location" &&
-                  selection.id === (loc.tempId ?? loc.uuid)
-                }
-                readOnly={readOnly}
-                onSelect={() =>
-                  onSelectionChange({
-                    kind: "location",
-                    id: loc.tempId ?? loc.uuid,
-                  })
-                }
-                onDragEnd={(x, y) =>
-                  onLocationMove(loc.tempId ?? loc.uuid, x, y)
-                }
-              />
-            ))}
+            {visibleLocations.map((loc) => {
+              const id = loc.tempId ?? loc.uuid;
+              return (
+                <LocationShape
+                  key={id ?? loc.id}
+                  location={loc}
+                  selected={isSelected(selection, { kind: "location", id })}
+                  readOnly={readOnly}
+                  onSelect={(e) => selectItem({ kind: "location", id }, e)}
+                  onDragEnd={(x, y) => onLocationMove(id, x, y)}
+                />
+              );
+            })}
           </Layer>
 
           {/* Drafts + snap indicator */}
@@ -737,6 +827,18 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 opacity={0.8}
               />
             )}
+            {draft?.kind === "marquee" && (
+              <Rect
+                x={Math.min(draft.x1, draft.x2)}
+                y={Math.min(draft.y1, draft.y2)}
+                width={Math.abs(draft.x2 - draft.x1)}
+                height={Math.abs(draft.y2 - draft.y1)}
+                fill="rgba(59,130,246,0.08)"
+                stroke="rgb(59,130,246)"
+                strokeWidth={1 / viewport.scale}
+                dash={[6 / viewport.scale, 4 / viewport.scale]}
+              />
+            )}
           </Layer>
         </Stage>
 
@@ -770,6 +872,24 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
 
 function distance(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/** Read shift / ctrl / cmd off a Konva event. We treat any of the
+ *  three as "additive" — shift on Mac, ctrl on Windows / Linux, cmd
+ *  for the Mac browsers that emit metaKey instead. */
+function isAdditiveEvent(
+  e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
+): boolean {
+  const evt = e.evt as MouseEvent | TouchEvent & {
+    shiftKey?: boolean;
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+  };
+  return !!(
+    (evt as MouseEvent).shiftKey ||
+    (evt as MouseEvent).ctrlKey ||
+    (evt as MouseEvent).metaKey
+  );
 }
 
 function GridLayer() {
@@ -826,6 +946,10 @@ function GridLayer() {
   );
 }
 
+type SelectHandler = (
+  e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
+) => void;
+
 function WallShape({
   wall,
   selected,
@@ -835,7 +959,7 @@ function WallShape({
   wall: Wall;
   selected: boolean;
   readOnly: boolean;
-  onSelect: () => void;
+  onSelect: SelectHandler;
 }) {
   return (
     <Line
@@ -857,7 +981,7 @@ function HoleOutline({
 }: {
   hole: Hole;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: SelectHandler;
 }) {
   if (hole.points.length < 2) return null;
   const points: number[] = [];
@@ -888,7 +1012,7 @@ function LocationShape({
   location: LocalLocation;
   selected: boolean;
   readOnly: boolean;
-  onSelect: () => void;
+  onSelect: SelectHandler;
   onDragEnd: (x: number, y: number) => void;
 }) {
   const kindColor: Record<string, { fill: string; stroke: string }> = {

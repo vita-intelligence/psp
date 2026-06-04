@@ -33,7 +33,7 @@ import type {
   Hole,
   LocalLocation,
   Point,
-  Selection,
+  SelectionSet,
   ToolMode,
   Viewport,
   Wall,
@@ -162,7 +162,7 @@ export function WarehousePlanEditor({
     floors[0]?.id ?? null,
   );
   const [tool, setTool] = useState<ToolMode>("select");
-  const [selection, setSelection] = useState<Selection>({ kind: "none" });
+  const [selection, setSelection] = useState<SelectionSet>([]);
   const [history, setHistory] = useState<Record<number, HistoryEntry[]>>({});
   const [redoStack, setRedoStack] = useState<Record<number, HistoryEntry[]>>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
@@ -175,8 +175,8 @@ export function WarehousePlanEditor({
   // close it when selection clears.
   useEffect(() => {
     if (!isMobile) return;
-    setPropsSheetOpen(selection.kind !== "none");
-  }, [isMobile, selection.kind]);
+    setPropsSheetOpen(selection.length > 0);
+  }, [isMobile, selection.length]);
 
   // Seed brand-new floors that arrived via the bottom switcher's
   // "Add floor" button. Preserve any local dirty edits on others.
@@ -240,7 +240,7 @@ export function WarehousePlanEditor({
         { snapshot: true },
       );
       setTool("select");
-      setSelection({ kind: "wall", id: wall.id });
+      setSelection([{ kind: "wall", id: wall.id }]);
     },
     [updateActiveFloor],
   );
@@ -279,7 +279,7 @@ export function WarehousePlanEditor({
         { snapshot: true },
       );
       setTool("select");
-      setSelection({ kind: "location", id: tempId });
+      setSelection([{ kind: "location", id: tempId }]);
     },
     [updateActiveFloor, warehouseId],
   );
@@ -315,7 +315,7 @@ export function WarehousePlanEditor({
         (s) => ({ ...s, walls: s.walls.filter((w) => w.id !== id) }),
         { snapshot: true },
       );
-      setSelection({ kind: "none" });
+      setSelection([]);
     },
     [updateActiveFloor],
   );
@@ -352,7 +352,7 @@ export function WarehousePlanEditor({
         }),
         { snapshot: true },
       );
-      setSelection({ kind: "none" });
+      setSelection([]);
     },
     [updateActiveFloor],
   );
@@ -379,7 +379,7 @@ export function WarehousePlanEditor({
         { snapshot: true },
       );
       setTool("select");
-      setSelection({ kind: "outline" });
+      setSelection([{ kind: "outline" }]);
     },
     [updateActiveFloor],
   );
@@ -402,7 +402,7 @@ export function WarehousePlanEditor({
         { snapshot: true },
       );
       setTool("select");
-      setSelection({ kind: "hole", id: holeId });
+      setSelection([{ kind: "hole", id: holeId }]);
     },
     [updateActiveFloor],
   );
@@ -412,7 +412,7 @@ export function WarehousePlanEditor({
       (s) => ({ ...s, outline: undefined }),
       { snapshot: true },
     );
-    setSelection({ kind: "none" });
+    setSelection([]);
   }, [updateActiveFloor]);
 
   const onHoleUpdate = useCallback(
@@ -448,10 +448,63 @@ export function WarehousePlanEditor({
         },
         { snapshot: true },
       );
-      setSelection({ kind: "none" });
+      setSelection([]);
     },
     [updateActiveFloor],
   );
+
+  /** Bulk-delete everything in the current selection. One snapshot
+   *  for the whole operation so undo restores it as a single step. */
+  const onDeleteSelected = useCallback(() => {
+    if (selection.length === 0) return;
+    updateActiveFloor(
+      (s) => {
+        const wallIds = new Set(
+          selection
+            .filter((it): it is { kind: "wall"; id: string } => it.kind === "wall")
+            .map((it) => it.id),
+        );
+        const holeIds = new Set(
+          selection
+            .filter((it): it is { kind: "hole"; id: string } => it.kind === "hole")
+            .map((it) => it.id),
+        );
+        const locationIds = new Set(
+          selection
+            .filter(
+              (it): it is { kind: "location"; id: string } =>
+                it.kind === "location",
+            )
+            .map((it) => it.id),
+        );
+        const dropOutline = selection.some((it) => it.kind === "outline");
+
+        return {
+          ...s,
+          outline: dropOutline
+            ? undefined
+            : s.outline
+              ? {
+                  ...s.outline,
+                  holes: (s.outline.holes ?? []).filter(
+                    (h) => !holeIds.has(h.id),
+                  ),
+                }
+              : s.outline,
+          walls: s.walls.filter((w) => !wallIds.has(w.id)),
+          locations: s.locations.map((l) => {
+            const id = l.tempId ?? l.uuid;
+            if (!locationIds.has(id)) return l;
+            return l.tempId
+              ? { ...l, deleted: true }
+              : { ...l, deleted: true, dirty: true };
+          }),
+        };
+      },
+      { snapshot: true },
+    );
+    setSelection([]);
+  }, [selection, updateActiveFloor]);
 
   // ----------------------------------------------------------- undo/redo
 
@@ -486,7 +539,7 @@ export function WarehousePlanEditor({
       };
     });
     setHistory((prev) => ({ ...prev, [activeFloorId]: stack.slice(0, -1) }));
-    setSelection({ kind: "none" });
+    setSelection([]);
   }, [activeFloorId, history]);
 
   const redo = useCallback(() => {
@@ -520,7 +573,7 @@ export function WarehousePlanEditor({
       };
     });
     setRedoStack((prev) => ({ ...prev, [activeFloorId]: stack.slice(0, -1) }));
-    setSelection({ kind: "none" });
+    setSelection([]);
   }, [activeFloorId, redoStack]);
 
   // ----------------------------------------------------------- shortcuts
@@ -571,13 +624,20 @@ export function WarehousePlanEditor({
           break;
         case "escape":
           canvasRef.current?.cancelDraft();
-          setSelection({ kind: "none" });
+          setSelection([]);
+          break;
+        case "delete":
+        case "backspace":
+          if (selection.length > 0) {
+            e.preventDefault();
+            onDeleteSelected();
+          }
           break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo, readOnly, activeFloor?.outline]);
+  }, [undo, redo, readOnly, activeFloor?.outline, selection.length, onDeleteSelected]);
 
   // ----------------------------------------------------------- save flow
 
@@ -714,7 +774,7 @@ export function WarehousePlanEditor({
     setFloorStates((prev) => ({ ...prev, [activeFloor.meta.id]: reset }));
     setHistory((prev) => ({ ...prev, [activeFloor.meta.id]: [] }));
     setRedoStack((prev) => ({ ...prev, [activeFloor.meta.id]: [] }));
-    setSelection({ kind: "none" });
+    setSelection([]);
     setActionError(null);
   }, [activeFloor]);
 
@@ -839,6 +899,7 @@ export function WarehousePlanEditor({
           onHoleDelete={onHoleDelete}
           onLocationUpdate={onLocationUpdate}
           onLocationDelete={onLocationDelete}
+          onDeleteSelected={onDeleteSelected}
           propsSheetOpen={propsSheetOpen}
           setPropsSheetOpen={setPropsSheetOpen}
         />
@@ -896,6 +957,7 @@ export function WarehousePlanEditor({
             onHoleDelete={onHoleDelete}
             onLocationUpdate={onLocationUpdate}
             onLocationDelete={onLocationDelete}
+            onDeleteSelected={onDeleteSelected}
           />
         </div>
       )}
@@ -907,7 +969,7 @@ export function WarehousePlanEditor({
           activeFloorId={activeFloorId}
           onSelect={(id) => {
             setActiveFloorId(id);
-            setSelection({ kind: "none" });
+            setSelection([]);
           }}
           onAddFloor={() => undefined}
           canAdd={false}
@@ -931,8 +993,8 @@ interface MobileLayoutProps {
   canvasRef: React.MutableRefObject<PlanCanvasHandle | null>;
   tool: ToolMode;
   setTool: (t: ToolMode) => void;
-  selection: Selection;
-  setSelection: (s: Selection) => void;
+  selection: SelectionSet;
+  setSelection: (s: SelectionSet) => void;
   canvasHeight: number;
   readOnly: boolean;
   onViewportChange: (v: Viewport) => void;
@@ -956,6 +1018,7 @@ interface MobileLayoutProps {
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
   ) => void;
   onLocationDelete: (id: string | number) => void;
+  onDeleteSelected: () => void;
   propsSheetOpen: boolean;
   setPropsSheetOpen: (open: boolean) => void;
 }
@@ -986,6 +1049,7 @@ function MobileLayout({
   onHoleDelete,
   onLocationUpdate,
   onLocationDelete,
+  onDeleteSelected,
   propsSheetOpen,
   setPropsSheetOpen,
 }: MobileLayoutProps) {
@@ -1036,7 +1100,7 @@ function MobileLayout({
 
       {/* Bottom-sheet properties. Slides up from below the canvas
           when selection != none. Tap the backdrop or X to close. */}
-      {propsSheetOpen && selection.kind !== "none" && activeFloor && (
+      {propsSheetOpen && selection.length > 0 && activeFloor && (
         <div
           className={cn(
             "fixed inset-x-0 bottom-0 z-40 max-h-[70vh] overflow-y-auto",
@@ -1046,13 +1110,15 @@ function MobileLayout({
         >
           <div className="sticky top-0 flex items-center justify-between border-b border-border/60 bg-background px-4 py-2.5">
             <p className="text-sm font-semibold">
-              {selection.kind === "outline"
-                ? "Floor outline"
-                : selection.kind === "hole"
-                  ? "Floor cutout"
-                  : selection.kind === "wall"
-                    ? "Wall"
-                    : "Storage location"}
+              {selection.length > 1
+                ? `${selection.length} items selected`
+                : selection[0]!.kind === "outline"
+                  ? "Floor outline"
+                  : selection[0]!.kind === "hole"
+                    ? "Floor cutout"
+                    : selection[0]!.kind === "wall"
+                      ? "Wall"
+                      : "Storage location"}
             </p>
             <Button
               type="button"
@@ -1060,7 +1126,7 @@ function MobileLayout({
               size="icon"
               onClick={() => {
                 setPropsSheetOpen(false);
-                setSelection({ kind: "none" });
+                setSelection([]);
               }}
               aria-label="Close"
               className="size-8"
@@ -1083,6 +1149,7 @@ function MobileLayout({
               onHoleDelete={onHoleDelete}
               onLocationUpdate={onLocationUpdate}
               onLocationDelete={onLocationDelete}
+              onDeleteSelected={onDeleteSelected}
             />
           </div>
         </div>
@@ -1091,7 +1158,7 @@ function MobileLayout({
       {/* Floating "↓ show properties" button when something is
           selected but the sheet is collapsed. Lets the user re-open
           without re-clicking the canvas element. */}
-      {!propsSheetOpen && selection.kind !== "none" && (
+      {!propsSheetOpen && selection.length > 0 && (
         <button
           type="button"
           onClick={() => setPropsSheetOpen(true)}

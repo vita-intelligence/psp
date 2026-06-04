@@ -26,14 +26,15 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
-  Selection,
+  SelectionItem,
+  SelectionSet,
   StorageLocationKind,
   Wall,
 } from "./plan-types";
 import { Info, Trash2 } from "lucide-react";
 
 interface PlanPropertiesProps {
-  selection: Selection;
+  selection: SelectionSet;
   outline: FloorOutline | undefined;
   walls: Wall[];
   locations: LocalLocation[];
@@ -51,6 +52,7 @@ interface PlanPropertiesProps {
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
   ) => void;
   onLocationDelete: (id: string | number) => void;
+  onDeleteSelected: () => void;
 }
 
 const KIND_OPTIONS: Array<{ value: StorageLocationKind; label: string }> = [
@@ -88,56 +90,78 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onHoleDelete,
     onLocationUpdate,
     onLocationDelete,
+    onDeleteSelected,
   } = props;
 
   let body: React.ReactNode;
   let title: string;
 
-  if (selection.kind === "none") {
+  if (selection.length === 0) {
     title = "No selection";
     body = <NoSelectionBody />;
-  } else if (selection.kind === "outline") {
-    title = "Floor outline";
-    body = outline ? (
-      <OutlineBody
-        outline={outline}
+  } else if (selection.length > 1) {
+    title = `${selection.length} selected`;
+    body = (
+      <MultiSelectBody
+        selection={selection}
         readOnly={readOnly}
-        onDelete={onOutlineDelete}
+        onDelete={onDeleteSelected}
       />
-    ) : null;
-  } else if (selection.kind === "hole") {
-    const hole = outline?.holes?.find((h) => h.id === selection.id);
-    title = "Floor cutout";
-    body = hole ? (
-      <HoleBody hole={hole} readOnly={readOnly} onDelete={() => onHoleDelete(hole.id)} />
-    ) : null;
-  } else if (selection.kind === "wall") {
-    const wall = walls.find((w) => w.id === selection.id);
-    title = "Wall";
-    body = wall ? (
-      <WallBody
-        wall={wall}
-        readOnly={readOnly}
-        onUpdate={(patch) => onWallUpdate(wall.id, patch)}
-        onDelete={() => onWallDelete(wall.id)}
-      />
-    ) : null;
-  } else {
-    const location = locations.find(
-      (l) => (l.tempId ?? l.uuid) === selection.id,
     );
-    title = "Storage location";
-    body = location ? (
-      <LocationBody
-        location={location}
-        readOnly={readOnly}
-        onUpdate={(patch) =>
-          onLocationUpdate(location.tempId ?? location.uuid, patch)
-        }
-        onDelete={() => onLocationDelete(location.tempId ?? location.uuid)}
-      />
-    ) : null;
+  } else {
+    // Single-item — pick a panel by kind.
+    const item = selection[0]!;
+    if (item.kind === "outline") {
+      title = "Floor outline";
+      body = outline ? (
+        <OutlineBody
+          outline={outline}
+          readOnly={readOnly}
+          onDelete={onOutlineDelete}
+        />
+      ) : null;
+    } else if (item.kind === "hole") {
+      const hole = outline?.holes?.find((h) => h.id === item.id);
+      title = "Floor cutout";
+      body = hole ? (
+        <HoleBody
+          hole={hole}
+          readOnly={readOnly}
+          onDelete={() => onHoleDelete(hole.id)}
+        />
+      ) : null;
+    } else if (item.kind === "wall") {
+      const wall = walls.find((w) => w.id === item.id);
+      title = "Wall";
+      body = wall ? (
+        <WallBody
+          wall={wall}
+          readOnly={readOnly}
+          onUpdate={(patch) => onWallUpdate(wall.id, patch)}
+          onDelete={() => onWallDelete(wall.id)}
+        />
+      ) : null;
+    } else {
+      const location = locations.find(
+        (l) => (l.tempId ?? l.uuid) === item.id,
+      );
+      title = "Storage location";
+      body = location ? (
+        <LocationBody
+          location={location}
+          readOnly={readOnly}
+          onUpdate={(patch) =>
+            onLocationUpdate(location.tempId ?? location.uuid, patch)
+          }
+          onDelete={() => onLocationDelete(location.tempId ?? location.uuid)}
+        />
+      ) : null;
+    }
   }
+  // Silence unused-var lint when onHoleUpdate isn't called for the
+  // current selection shape — the prop is still wired for future
+  // hole-vertex editing.
+  void onHoleUpdate;
 
   // Sheet variant skips the side-panel chrome — the parent
   // (mobile-bottom-sheet) already provides a sheet header.
@@ -156,6 +180,62 @@ export function PlanProperties(props: PlanPropertiesProps) {
 }
 
 // ---------------------------------------------------------------- bodies
+
+function MultiSelectBody({
+  selection,
+  readOnly,
+  onDelete,
+}: {
+  selection: SelectionItem[];
+  readOnly: boolean;
+  onDelete: () => void;
+}) {
+  // Count by kind for the breakdown badge row.
+  const counts = selection.reduce(
+    (acc, item) => {
+      acc[item.kind] = (acc[item.kind] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<SelectionItem["kind"], number>,
+  );
+  const labels: Record<SelectionItem["kind"], string> = {
+    wall: "walls",
+    outline: "floor outline",
+    hole: "holes",
+    location: "locations",
+  };
+  return (
+    <div className="space-y-3 text-xs">
+      <div className="rounded-md bg-muted/40 px-3 py-2 text-muted-foreground">
+        <p className="font-medium text-foreground">
+          {selection.length} item{selection.length === 1 ? "" : "s"} selected
+        </p>
+        <ul className="mt-1 space-y-0.5">
+          {(Object.keys(counts) as SelectionItem["kind"][]).map((k) => (
+            <li key={k}>
+              {counts[k]} {counts[k] === 1 ? labels[k].replace(/s$/, "") : labels[k]}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="rounded-md border border-dashed border-border/60 px-2.5 py-2 text-[11px] text-muted-foreground">
+        Click a single item to edit its individual properties.
+      </div>
+      {!readOnly && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onDelete}
+          className="w-full justify-start text-destructive hover:text-destructive"
+        >
+          <Trash2 className="mr-1.5 size-3.5" />
+          Delete selected
+        </Button>
+      )}
+    </div>
+  );
+}
 
 function NoSelectionBody() {
   return (
@@ -178,10 +258,13 @@ function NoSelectionBody() {
           <Kbd>F</Kbd> floor outline · <Kbd>O</Kbd> cut a hole
         </li>
         <li>
-          <Kbd>Esc</Kbd> cancel current draw
+          <Kbd>Esc</Kbd> cancel · <Kbd>Del</Kbd> delete selected
         </li>
         <li>
           <Kbd>Ctrl/⌘ Z</Kbd> undo · <Kbd>Ctrl/⌘ Y</Kbd> redo
+        </li>
+        <li>
+          <Kbd>Shift</Kbd>-click to add to selection · drag empty space to box-select
         </li>
       </ul>
       <div className="rounded-md border border-dashed border-border/60 px-2.5 py-2 text-[11px] text-muted-foreground">
