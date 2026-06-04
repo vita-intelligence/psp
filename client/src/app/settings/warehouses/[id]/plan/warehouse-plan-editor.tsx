@@ -33,7 +33,6 @@ import { updateFloorAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { Floor } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
-import { cn } from "@/lib/utils";
 import type {
   CanvasJson,
   FloorOutline,
@@ -47,7 +46,6 @@ import type {
 } from "./plan-types";
 import type { PlanCanvasHandle } from "./plan-canvas";
 import {
-  ChevronDown,
   Loader2,
   Redo2,
   RefreshCw,
@@ -175,16 +173,6 @@ export function WarehousePlanEditor({
   const [redoStack, setRedoStack] = useState<Record<number, HistoryEntry[]>>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [saving, startSaving] = useTransition();
-  // Mobile-only: the properties sheet is collapsed by default and
-  // opens when selection becomes non-none.
-  const [propsSheetOpen, setPropsSheetOpen] = useState(false);
-
-  // Open the mobile sheet automatically when something is selected;
-  // close it when selection clears.
-  useEffect(() => {
-    if (!isMobile) return;
-    setPropsSheetOpen(selection.length > 0);
-  }, [isMobile, selection.length]);
 
   // Seed brand-new floors that arrived via the bottom switcher's
   // "Add floor" button. Preserve any local dirty edits on others.
@@ -1170,18 +1158,18 @@ export function WarehousePlanEditor({
   const redoCount =
     activeFloorId != null ? (redoStack[activeFloorId] ?? []).length : 0;
 
-  // Reserve room for the bottom sheet on mobile when it's open so
-  // the canvas isn't visually blocked by the props panel sliding over
-  // it. The 42vh cap on the sheet matches the inset we subtract here.
-  const mobileSheetInset = isMobile && propsSheetOpen ? 0.42 : 0;
+  // Mobile cap: roughly half the viewport so the toolbar + selected-
+  // item properties below have room to live without forcing a tap-
+  // and-scroll loop. Desktop stays at a roomy fixed 600.
   const canvasHeight = isMobile
     ? Math.max(
-        280,
-        typeof window === "undefined"
-          ? 480
-          : window.innerHeight -
-              320 -
-              window.innerHeight * mobileSheetInset,
+        300,
+        Math.min(
+          480,
+          typeof window === "undefined"
+            ? 420
+            : Math.round(window.innerHeight * 0.55),
+        ),
       )
     : 600;
 
@@ -1340,8 +1328,6 @@ export function WarehousePlanEditor({
           onLocationDelete={onLocationDelete}
           onSelectionColor={onSelectionColor}
           onDeleteSelected={onDeleteSelected}
-          propsSheetOpen={propsSheetOpen}
-          setPropsSheetOpen={setPropsSheetOpen}
         />
       ) : (
         <div className="flex gap-3">
@@ -1477,8 +1463,6 @@ interface MobileLayoutProps {
   onLocationDelete: (id: string | number) => void;
   onSelectionColor: (color: string | null) => void;
   onDeleteSelected: () => void;
-  propsSheetOpen: boolean;
-  setPropsSheetOpen: (open: boolean) => void;
 }
 
 /**
@@ -1516,9 +1500,26 @@ function MobileLayout({
   onLocationDelete,
   onSelectionColor,
   onDeleteSelected,
-  propsSheetOpen,
-  setPropsSheetOpen,
 }: MobileLayoutProps) {
+  // Anchor for the inline properties section — when something is
+  // selected we scroll it into view so the operator doesn't have
+  // to drag the page after every tap.
+  const propsAnchorRef = useRef<HTMLDivElement | null>(null);
+  const lastSelectionKey = selection
+    .map((it) => `${it.kind}:${"id" in it ? it.id : "index" in it ? it.index : ""}`)
+    .join("|");
+  useEffect(() => {
+    if (selection.length === 0) return;
+    // Brief defer so the section renders before we measure / scroll.
+    const t = setTimeout(() => {
+      propsAnchorRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 50);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastSelectionKey]);
   return (
     <div className="relative">
       <div>
@@ -1570,55 +1571,45 @@ function MobileLayout({
         />
       </div>
 
-      {/* Bottom-sheet properties. Caps at ~40vh so a phone-sized
-          screen still shows most of the canvas above. A grab handle
-          + tap-to-collapse close affordance lets the operator
-          dismiss without losing the selection. */}
-      {propsSheetOpen && selection.length > 0 && activeFloor && (
-        <div
-          className={cn(
-            "fixed inset-x-0 bottom-0 z-40 flex max-h-[42vh] flex-col",
-            "rounded-t-xl border-t border-border bg-background shadow-2xl",
-            "animate-in slide-in-from-bottom duration-200",
-          )}
+      {/* Inline properties section — sits below the canvas + toolbar
+          and scrolls with the page so the editor view is never
+          covered by a floating drawer. When something is selected we
+          render it; when nothing is selected we hide it to save
+          vertical room. */}
+      {selection.length > 0 && activeFloor && (
+        <section
+          ref={propsAnchorRef}
+          className="mt-3 rounded-lg border border-border/60 bg-background"
+          aria-label="Selected item properties"
         >
-          {/* Grab handle — the universal "this is a sheet, drag to
-              dismiss" affordance. Just tap to collapse for now. */}
-          <button
-            type="button"
-            onClick={() => setPropsSheetOpen(false)}
-            aria-label="Collapse properties"
-            className="flex w-full justify-center py-1.5"
-          >
-            <span className="h-1 w-9 rounded-full bg-muted-foreground/40" />
-          </button>
-          <div className="flex items-center justify-between border-b border-border/60 px-4 pb-2">
+          <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
             <p className="text-sm font-semibold">
               {selection.length > 1
                 ? `${selection.length} items selected`
                 : selection[0]!.kind === "outline"
                   ? "Floor outline"
-                  : selection[0]!.kind === "hole"
-                    ? "Floor cutout"
-                    : selection[0]!.kind === "wall"
-                      ? "Wall"
-                      : "Storage location"}
+                  : selection[0]!.kind === "outline-edge"
+                    ? `Edge ${selection[0]!.index + 1}`
+                    : selection[0]!.kind === "hole"
+                      ? "Floor cutout"
+                      : selection[0]!.kind === "hole-edge"
+                        ? `Cutout edge ${selection[0]!.index + 1}`
+                        : selection[0]!.kind === "wall"
+                          ? "Wall"
+                          : "Storage location"}
             </p>
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              onClick={() => {
-                setPropsSheetOpen(false);
-                setSelection([]);
-              }}
-              aria-label="Close"
+              onClick={() => setSelection([])}
+              aria-label="Clear selection"
               className="size-8"
             >
               <X className="size-4" />
             </Button>
           </div>
-          <div className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="px-4 py-3">
             <PlanProperties
               selection={selection}
               outline={activeFloor.outline}
@@ -1640,21 +1631,7 @@ function MobileLayout({
               onDeleteSelected={onDeleteSelected}
             />
           </div>
-        </div>
-      )}
-
-      {/* Floating "↓ show properties" button when something is
-          selected but the sheet is collapsed. Lets the user re-open
-          without re-clicking the canvas element. */}
-      {!propsSheetOpen && selection.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setPropsSheetOpen(true)}
-          className="fixed bottom-4 right-4 z-30 inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1.5 text-xs font-medium text-background shadow-lg"
-        >
-          <ChevronDown className="size-3.5 rotate-180" />
-          Properties
-        </button>
+        </section>
       )}
     </div>
   );
