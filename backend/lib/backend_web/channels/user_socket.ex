@@ -10,6 +10,7 @@ defmodule BackendWeb.UserSocket do
 
   channel "lobby", BackendWeb.LobbyChannel
   channel "form:*", BackendWeb.FormChannel
+  channel "plan:warehouse:*", BackendWeb.WarehousePlanChannel
 
   @impl true
   def connect(%{"token" => token}, socket, _connect_info) do

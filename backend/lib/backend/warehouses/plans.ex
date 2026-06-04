@@ -59,6 +59,20 @@ defmodule Backend.Warehouses.Plans do
 
   def get_floor(_warehouse, _), do: nil
 
+  @doc """
+  Lookup variant by integer primary key. Used when an associated
+  row (storage_location) only carries `floor_id` and the caller
+  wants the floor's uuid (e.g. realtime broadcasts).
+  """
+  def get_floor_by_id(%Warehouse{} = warehouse, floor_id)
+      when is_integer(floor_id) do
+    Floor
+    |> where([f], f.warehouse_id == ^warehouse.id and f.id == ^floor_id)
+    |> Repo.one()
+  end
+
+  def get_floor_by_id(_warehouse, _), do: nil
+
   ## Floors — mutation ---------------------------------------------
 
   @doc """

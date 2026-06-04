@@ -18,7 +18,7 @@ defmodule BackendWeb.StorageLocationController do
 
   alias Backend.Warehouses
   alias Backend.Warehouses.Plans
-  alias BackendWeb.{Errors, Payloads}
+  alias BackendWeb.{Errors, Payloads, WarehousePlanBroadcast}
   alias BackendWeb.Plugs.RequirePermission
 
   plug RequirePermission, "warehouses.view" when action in [:show]
@@ -43,6 +43,11 @@ defmodule BackendWeb.StorageLocationController do
 
       case Plans.create_location(actor, floor, attrs) do
         {:ok, location} ->
+          WarehousePlanBroadcast.invalidate(warehouse, floor.uuid,
+            actor: actor,
+            kind: "location_added"
+          )
+
           conn
           |> put_status(:created)
           |> json(%{storage_location: Payloads.storage_location(location)})
@@ -75,6 +80,13 @@ defmodule BackendWeb.StorageLocationController do
          {:ok, attrs} <- resolve_floor_id(warehouse, params, location.floor_id) do
       case Plans.update_location(actor, location, attrs) do
         {:ok, updated} ->
+          WarehousePlanBroadcast.invalidate(
+            warehouse,
+            floor_uuid_for(warehouse, updated.floor_id),
+            actor: actor,
+            kind: "location_updated"
+          )
+
           json(conn, %{storage_location: Payloads.storage_location(updated)})
 
         {:error, %Ecto.Changeset{} = cs} ->
@@ -103,7 +115,25 @@ defmodule BackendWeb.StorageLocationController do
     with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid),
          %{} = location <- Plans.get_location(warehouse, location_uuid),
          {:ok, _} <- Plans.delete_location(actor, location) do
+      WarehousePlanBroadcast.invalidate(
+        warehouse,
+        floor_uuid_for(warehouse, location.floor_id),
+        actor: actor,
+        kind: "location_deleted"
+      )
+
       send_resp(conn, :no_content, "")
+    end
+  end
+
+  # Look up a floor's uuid from its integer FK — the location row
+  # carries `floor_id` (int) but the channel topic + invalidation
+  # payload speak in uuids so peers can address floors without
+  # caring about internal numeric ids.
+  defp floor_uuid_for(warehouse, floor_id) do
+    case Plans.get_floor_by_id(warehouse, floor_id) do
+      nil -> nil
+      floor -> floor.uuid
     end
   end
 

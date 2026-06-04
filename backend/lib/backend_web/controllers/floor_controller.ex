@@ -16,7 +16,7 @@ defmodule BackendWeb.FloorController do
 
   alias Backend.Warehouses
   alias Backend.Warehouses.Plans
-  alias BackendWeb.{Errors, Payloads}
+  alias BackendWeb.{Errors, Payloads, WarehousePlanBroadcast}
   alias BackendWeb.Plugs.RequirePermission
 
   plug RequirePermission, "warehouses.view" when action in [:index, :show]
@@ -45,6 +45,11 @@ defmodule BackendWeb.FloorController do
     with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid) do
       case Plans.create_floor(actor, warehouse, Map.drop(params, ["warehouse_id"])) do
         {:ok, floor} ->
+          WarehousePlanBroadcast.invalidate(warehouse, floor.uuid,
+            actor: actor,
+            kind: "floor_added"
+          )
+
           conn
           |> put_status(:created)
           |> json(%{floor: Payloads.floor(floor)})
@@ -62,6 +67,11 @@ defmodule BackendWeb.FloorController do
          %{} = floor <- Plans.get_floor(warehouse, floor_uuid) do
       case Plans.update_floor(actor, floor, Map.drop(params, ["warehouse_id", "id"])) do
         {:ok, updated} ->
+          WarehousePlanBroadcast.invalidate(warehouse, updated.uuid,
+            actor: actor,
+            kind: "floor_saved"
+          )
+
           json(conn, %{floor: Payloads.floor(updated)})
 
         {:error, %Ecto.Changeset{} = cs} ->
@@ -76,6 +86,11 @@ defmodule BackendWeb.FloorController do
     with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid),
          %{} = floor <- Plans.get_floor(warehouse, floor_uuid),
          {:ok, _} <- Plans.delete_floor(actor, floor) do
+      WarehousePlanBroadcast.invalidate(warehouse, floor.uuid,
+        actor: actor,
+        kind: "floor_deleted"
+      )
+
       send_resp(conn, :no_content, "")
     end
   end
