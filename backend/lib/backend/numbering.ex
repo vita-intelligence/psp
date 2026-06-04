@@ -35,6 +35,12 @@ defmodule Backend.Numbering do
 
   @default_padding 5
 
+  @doc "Public read of the entity-key → schema map, for callers that need to iterate all numbered entities (e.g. the re-stamp routine after a prefix change)."
+  def entity_schemas, do: @entity_schemas
+
+  @doc "Default zero-padding used when the company hasn't configured one."
+  def default_padding, do: @default_padding
+
   @doc """
   Return the next code string for `entity_key` in the given company,
   or `nil` if no numbering format is configured (operator is expected
