@@ -6,22 +6,24 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { FieldError } from "@/components/forms/field-error";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import { resetPasswordAction } from "@/lib/auth/profile-actions";
 import type { FieldErrors } from "@/lib/auth/actions";
+import type { ErrorResult } from "@/lib/errors/server";
 import { cn } from "@/lib/utils";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 export function ResetPasswordForm({ token }: { token: string }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
 
     const errors: FieldErrors = {};
     if (!password) errors.password = ["Choose a new password."];
@@ -40,9 +42,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
       // Success path calls redirect("/") so we never see ok:true here.
       if (res && !res.ok) {
         setFieldErrors(res.fields ?? {});
-        if (!res.fields || Object.keys(res.fields).length === 0) {
-          setFormError(res.detail);
-        }
+        setActionError(res);
       }
     });
   }
@@ -71,15 +71,15 @@ export function ResetPasswordForm({ token }: { token: string }) {
             errors={fieldErrors.confirm}
           />
 
-          {formError && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-            >
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{formError}</span>
-            </div>
-          )}
+          {actionError &&
+            (!actionError.fields ||
+              Object.keys(actionError.fields).length === 0) && (
+              <ErrorBanner
+                detail={actionError.detail}
+                code={actionError.code}
+                debug={actionError.debug}
+              />
+            )}
 
           <Button
             type="submit"

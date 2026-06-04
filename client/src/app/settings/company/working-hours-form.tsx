@@ -13,6 +13,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { updateCompanyBagAction } from "@/lib/company/bag-actions";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import type { ErrorResult } from "@/lib/errors/server";
 import {
   WEEKDAYS,
   WEEKDAY_LABELS,
@@ -21,7 +23,7 @@ import {
   type WorkingHours,
 } from "@/lib/company/bags";
 import type { Company } from "@/lib/types";
-import { AlertCircle, Loader2, LockKeyhole } from "lucide-react";
+import { Loader2, LockKeyhole } from "lucide-react";
 
 interface Props {
   company: Company;
@@ -55,7 +57,7 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
     normalize(company.working_hours),
   );
   const [state, setState] = useState(() => normalize(company.working_hours));
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
@@ -69,7 +71,7 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setFormError(null);
+    setActionError(null);
 
     // Trim closed days to null, drop daily rows that are entirely empty
     // so the stored bag is clean.
@@ -90,13 +92,13 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
         setOriginal(normalize(cleaned));
         return;
       }
-      setFormError(res.detail);
+      setActionError(res);
     });
   }
 
   function onReset() {
     setState(original);
-    setFormError(null);
+    setActionError(null);
   }
 
   return (
@@ -153,14 +155,12 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
               </div>
             ))}
 
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
+            {actionError && (
+              <ErrorBanner
+                detail={actionError.detail}
+                code={actionError.code}
+                debug={actionError.debug}
+              />
             )}
 
             {canEdit && (

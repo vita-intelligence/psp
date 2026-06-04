@@ -1,10 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { getSessionToken } from "../auth/server";
 import type { Company } from "../types";
-import type { ErrorResult } from "../auth/actions";
+import {
+  toErrorResult,
+  unauthorizedResult,
+  type ErrorResult,
+} from "../errors/server";
 
 type BagField =
   | "working_hours"
@@ -14,22 +18,6 @@ type BagField =
   | "numbering_formats";
 
 export type BagResult = { ok: true; company: Company } | ErrorResult;
-
-function toErrorResult(err: unknown): ErrorResult {
-  if (err instanceof ApiError) {
-    return {
-      ok: false,
-      code: err.code,
-      detail: err.detail,
-      fields: err.fields,
-    };
-  }
-  return {
-    ok: false,
-    code: "unknown",
-    detail: "Something went wrong. Please try again.",
-  };
-}
 
 /**
  * Replace the entire value at `field` atomically. Caller is
@@ -41,8 +29,7 @@ export async function updateCompanyBagAction(
   value: unknown,
 ): Promise<BagResult> {
   const token = await getSessionToken();
-  if (!token)
-    return { ok: false, code: "unauthorized", detail: "Sign in first." };
+  if (!token) return unauthorizedResult(`updateCompanyBagAction:${field}`);
 
   try {
     const res = await api<{ company: Company }>("/api/company/bag", {
@@ -53,6 +40,9 @@ export async function updateCompanyBagAction(
     revalidatePath("/settings/company");
     return { ok: true, company: res.company };
   } catch (err) {
-    return toErrorResult(err);
+    return toErrorResult(err, {
+      source: `updateCompanyBagAction:${field}`,
+      fallbackDetail: `Couldn't save the ${field.replace(/_/g, " ")} settings.`,
+    });
   }
 }

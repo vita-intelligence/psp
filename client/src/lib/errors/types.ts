@@ -8,6 +8,28 @@ export interface ApiErrorBody {
   readonly fields?: Record<string, string[]>;
 }
 
+/**
+ * Technical diagnostics attached to every ErrorResult so the user
+ * isn't left staring at "Something went wrong." Surfaced in the
+ * collapsed "Technical details" panel of the error banner; the user
+ * can copy this and paste it into a bug report.
+ *
+ * `request_id` is server-generated per failed action so the same
+ * string appears in our log files — making it trivial to grep for
+ * the exact request the user reported.
+ */
+export interface ErrorDebug {
+  /** Where in our code the error originated, e.g. "createWarehouseAction". */
+  source: string;
+  /** Best-effort one-line technical summary of the underlying exception. */
+  exception?: string;
+  /** HTTP status when the failure was a backend response; absent for
+   *  thrown JS exceptions. */
+  http_status?: number;
+  /** Unique id correlating UI message ↔ server log line. */
+  request_id: string;
+}
+
 export type ApiErrorCode =
   | "validation_failed"
   | "invalid_credentials"

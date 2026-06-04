@@ -22,9 +22,11 @@ import {
 import { FieldError } from "@/components/forms/field-error";
 import { cn } from "@/lib/utils";
 import { updateCompanyLocaleAction } from "@/lib/company/actions";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import type { Company } from "@/lib/types";
 import type { FieldErrors } from "@/lib/auth/actions";
-import { AlertCircle, Loader2, LockKeyhole } from "lucide-react";
+import type { ErrorResult } from "@/lib/errors/server";
+import { Loader2, LockKeyhole } from "lucide-react";
 
 interface CompanyLocaleFormProps {
   company: Company;
@@ -94,7 +96,7 @@ export function CompanyLocaleForm({ company, canEdit }: CompanyLocaleFormProps) 
   const [original, setOriginal] = useState<FormState>(initialFrom(company));
   const [form, setForm] = useState<FormState>(initialFrom(company));
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(form) !== JSON.stringify(original);
@@ -104,7 +106,7 @@ export function CompanyLocaleForm({ company, canEdit }: CompanyLocaleFormProps) 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
     startTransition(async () => {
       const res = await updateCompanyLocaleAction(form);
       if (res.ok) {
@@ -113,16 +115,14 @@ export function CompanyLocaleForm({ company, canEdit }: CompanyLocaleFormProps) 
         return;
       }
       setFieldErrors(res.fields ?? {});
-      if (!res.fields || Object.keys(res.fields).length === 0) {
-        setFormError(res.detail);
-      }
+      setActionError(res);
     });
   }
 
   function onReset() {
     setForm(original);
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
   }
 
   return (
@@ -221,15 +221,15 @@ export function CompanyLocaleForm({ company, canEdit }: CompanyLocaleFormProps) 
               errors={fieldErrors.generic_place_name}
             />
 
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
+            {actionError &&
+              (!actionError.fields ||
+                Object.keys(actionError.fields).length === 0) && (
+                <ErrorBanner
+                  detail={actionError.detail}
+                  code={actionError.code}
+                  debug={actionError.debug}
+                />
+              )}
 
             {canEdit && (
               <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">

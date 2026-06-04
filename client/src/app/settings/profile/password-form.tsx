@@ -23,17 +23,19 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { FieldError } from "@/components/forms/field-error";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import { changePasswordAction } from "@/lib/auth/profile-actions";
 import type { FieldErrors } from "@/lib/auth/actions";
-import { AlertCircle, Loader2, ShieldCheck } from "lucide-react";
+import type { ErrorResult } from "@/lib/errors/server";
+import { Loader2, ShieldCheck } from "lucide-react";
 
 export function PasswordForm() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -42,7 +44,7 @@ export function PasswordForm() {
     setPassword("");
     setConfirm("");
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
   }
 
   function preflight(): FieldErrors | null {
@@ -63,11 +65,11 @@ export function PasswordForm() {
     const preflightErrors = preflight();
     if (preflightErrors) {
       setFieldErrors(preflightErrors);
-      setFormError(null);
+      setActionError(null);
       return;
     }
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
     setConfirmOpen(true);
   }
 
@@ -86,9 +88,7 @@ export function PasswordForm() {
         return;
       }
       setFieldErrors(res.fields ?? {});
-      if (!res.fields || Object.keys(res.fields).length === 0) {
-        setFormError(res.detail);
-      }
+      setActionError(res);
     });
   }
 
@@ -131,15 +131,15 @@ export function PasswordForm() {
               errors={fieldErrors.confirm}
             />
 
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
+            {actionError &&
+              (!actionError.fields ||
+                Object.keys(actionError.fields).length === 0) && (
+                <ErrorBanner
+                  detail={actionError.detail}
+                  code={actionError.code}
+                  debug={actionError.debug}
+                />
+              )}
 
             <div className="flex justify-end">
               <Button type="submit" disabled={pending}>

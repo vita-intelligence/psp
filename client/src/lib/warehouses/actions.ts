@@ -2,37 +2,24 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { getSessionToken } from "../auth/server";
 import type { Warehouse } from "../types";
-import type { ErrorResult } from "../auth/actions";
+import {
+  toErrorResult,
+  unauthorizedResult,
+  type ErrorResult,
+} from "../errors/server";
 
 export type WarehouseResult =
   | { ok: true; warehouse: Warehouse }
   | ErrorResult;
 
-function toErrorResult(err: unknown): ErrorResult {
-  if (err instanceof ApiError) {
-    return {
-      ok: false,
-      code: err.code,
-      detail: err.detail,
-      fields: err.fields,
-    };
-  }
-  return {
-    ok: false,
-    code: "unknown",
-    detail: "Something went wrong. Please try again.",
-  };
-}
-
 export async function createWarehouseAction(
   input: Partial<Warehouse>,
 ): Promise<WarehouseResult> {
   const token = await getSessionToken();
-  if (!token)
-    return { ok: false, code: "unauthorized", detail: "Sign in first." };
+  if (!token) return unauthorizedResult("createWarehouseAction");
 
   try {
     const res = await api<{ warehouse: Warehouse }>("/api/warehouses", {
@@ -43,7 +30,10 @@ export async function createWarehouseAction(
     revalidatePath("/settings/warehouses");
     return { ok: true, warehouse: res.warehouse };
   } catch (err) {
-    return toErrorResult(err);
+    return toErrorResult(err, {
+      source: "createWarehouseAction",
+      fallbackDetail: "Couldn't create the warehouse.",
+    });
   }
 }
 
@@ -52,8 +42,7 @@ export async function updateWarehouseAction(
   input: Partial<Warehouse>,
 ): Promise<WarehouseResult> {
   const token = await getSessionToken();
-  if (!token)
-    return { ok: false, code: "unauthorized", detail: "Sign in first." };
+  if (!token) return unauthorizedResult("updateWarehouseAction");
 
   try {
     const res = await api<{ warehouse: Warehouse }>(
@@ -68,7 +57,10 @@ export async function updateWarehouseAction(
     revalidatePath("/settings/warehouses");
     return { ok: true, warehouse: res.warehouse };
   } catch (err) {
-    return toErrorResult(err);
+    return toErrorResult(err, {
+      source: "updateWarehouseAction",
+      fallbackDetail: "Couldn't save the warehouse.",
+    });
   }
 }
 

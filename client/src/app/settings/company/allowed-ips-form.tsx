@@ -13,10 +13,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { updateCompanyBagAction } from "@/lib/company/bag-actions";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import { clientValidationError } from "@/lib/errors/client";
 import type { AllowedIp } from "@/lib/company/bags";
 import type { Company } from "@/lib/types";
+import type { ErrorResult } from "@/lib/errors/server";
 import {
-  AlertCircle,
   AlertTriangle,
   Loader2,
   LockKeyhole,
@@ -61,7 +63,7 @@ export function AllowedIpsForm({ company, canEdit }: Props) {
     normalize(company.allowed_ips),
   );
   const [state, setState] = useState<State>(() => normalize(company.allowed_ips));
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
@@ -90,7 +92,7 @@ export function AllowedIpsForm({ company, canEdit }: Props) {
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setFormError(null);
+    setActionError(null);
 
     const cleanedItems = state.items
       .map((i) => ({
@@ -101,14 +103,25 @@ export function AllowedIpsForm({ company, canEdit }: Props) {
 
     for (const i of cleanedItems) {
       if (!CIDR_PATTERN.test(i.cidr)) {
-        setFormError(`"${i.cidr}" doesn't look like a valid IP or CIDR.`);
+        setActionError(
+          clientValidationError({
+            source: "AllowedIpsForm",
+            detail: `"${i.cidr}" doesn't look like a valid IP or CIDR.`,
+            exception: `invalid CIDR: ${i.cidr}`,
+          }),
+        );
         return;
       }
     }
 
     if (state.enabled && cleanedItems.length === 0) {
-      setFormError(
-        "Turn the allow-list off, or add at least one IP. Otherwise you'd lock everyone out.",
+      setActionError(
+        clientValidationError({
+          source: "AllowedIpsForm",
+          detail:
+            "Turn the allow-list off, or add at least one IP. Otherwise you'd lock everyone out.",
+          exception: "allow-list enabled with zero entries",
+        }),
       );
       return;
     }
@@ -126,13 +139,13 @@ export function AllowedIpsForm({ company, canEdit }: Props) {
         setState(payload);
         return;
       }
-      setFormError(res.detail);
+      setActionError(res);
     });
   }
 
   function onReset() {
     setState(original);
-    setFormError(null);
+    setActionError(null);
   }
 
   return (
@@ -242,14 +255,12 @@ export function AllowedIpsForm({ company, canEdit }: Props) {
               </Button>
             )}
 
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
+            {actionError && (
+              <ErrorBanner
+                detail={actionError.detail}
+                code={actionError.code}
+                debug={actionError.debug}
+              />
             )}
 
             {canEdit && (

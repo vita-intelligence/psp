@@ -30,6 +30,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { FieldError } from "@/components/forms/field-error";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import type { ErrorResult } from "@/lib/errors/server";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -294,7 +296,7 @@ export function WarehouseForm({
     initialFrom(warehouse),
   );
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
@@ -324,7 +326,7 @@ export function WarehouseForm({
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
 
     const payload: Partial<Warehouse> = {
       name: state.name.trim(),
@@ -383,16 +385,14 @@ export function WarehouseForm({
         return;
       }
       setFieldErrors(res.fields ?? {});
-      if (!res.fields || Object.keys(res.fields).length === 0) {
-        setFormError(res.detail);
-      }
+      setActionError(res);
     });
   }
 
   function onReset() {
     resetState(original);
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
   }
 
   // If we couldn't join the form channel (capacity / permission), short-
@@ -769,14 +769,12 @@ export function WarehouseForm({
               )}
             </div>
 
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
+            {actionError && (
+              <ErrorBanner
+                detail={actionError.detail}
+                code={actionError.code}
+                debug={actionError.debug}
+              />
             )}
 
             {canEdit && (

@@ -18,8 +18,10 @@ import {
   type NumberingFormat,
   type NumberingFormats,
 } from "@/lib/company/bags";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import type { Company } from "@/lib/types";
-import { AlertCircle, Loader2, LockKeyhole } from "lucide-react";
+import type { ErrorResult } from "@/lib/errors/server";
+import { Loader2, LockKeyhole } from "lucide-react";
 
 interface Props {
   company: Company;
@@ -58,7 +60,7 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
   const [state, setState] = useState<NumberingFormats>(() =>
     normalize(company.numbering_formats),
   );
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
@@ -72,7 +74,7 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setFormError(null);
+    setActionError(null);
 
     const cleaned: NumberingFormats = {};
     for (const entity of NUMBERING_ENTITIES) {
@@ -92,13 +94,13 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
         setState(cleaned);
         return;
       }
-      setFormError(res.detail);
+      setActionError(res);
     });
   }
 
   function onReset() {
     setState(original);
-    setFormError(null);
+    setActionError(null);
   }
 
   return (
@@ -185,14 +187,12 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
               })}
             </ul>
 
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
+            {actionError && (
+              <ErrorBanner
+                detail={actionError.detail}
+                code={actionError.code}
+                debug={actionError.debug}
+              />
             )}
 
             {canEdit && (

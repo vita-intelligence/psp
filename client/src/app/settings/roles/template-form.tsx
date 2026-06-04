@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/card";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { PermissionMatrixGrid } from "@/components/permissions/permission-matrix-grid";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import type { ErrorResult } from "@/lib/errors/server";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
@@ -169,7 +171,7 @@ export function TemplateForm({
   const [original, setOriginal] = useState<FormState>(() =>
     initialFrom(template),
   );
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [pending, startTransition] = useTransition();
 
@@ -207,7 +209,7 @@ export function TemplateForm({
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setFormError(null);
+    setActionError(null);
     setFieldErrors({});
 
     startTransition(async () => {
@@ -240,13 +242,13 @@ export function TemplateForm({
         return;
       }
       setFieldErrors(res.fields ?? {});
-      setFormError(res.detail);
+      setActionError(res);
     });
   }
 
   function onReset() {
     resetState(original);
-    setFormError(null);
+    setActionError(null);
     setFieldErrors({});
   }
 
@@ -365,15 +367,23 @@ export function TemplateForm({
                 onToggleResource={(res, on) => toggleResource(res, on)}
               />
               {fieldErrors.permissions?.[0] && (
-                <FieldErrorBanner message={fieldErrors.permissions[0]} />
+                <ErrorBanner
+                  detail={fieldErrors.permissions[0]}
+                  code={actionError?.code}
+                  debug={actionError?.debug}
+                />
               )}
             </div>
 
-            {formError &&
+            {actionError &&
               !fieldErrors.name?.[0] &&
               !fieldErrors.description?.[0] &&
               !fieldErrors.permissions?.[0] && (
-                <FieldErrorBanner message={formError} />
+                <ErrorBanner
+                  detail={actionError.detail}
+                  code={actionError.code}
+                  debug={actionError.debug}
+                />
               )}
 
             {canEdit && (
@@ -424,17 +434,6 @@ export function TemplateForm({
   );
 }
 
-function FieldErrorBanner({ message }: { message: string }) {
-  return (
-    <div
-      role="alert"
-      className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-    >
-      <AlertCircle className="mt-0.5 size-4 shrink-0" />
-      <span>{message}</span>
-    </div>
-  );
-}
 
 function JoinErrorCard({
   reason,

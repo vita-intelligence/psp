@@ -8,11 +8,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { FieldError } from "@/components/forms/field-error";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { cn } from "@/lib/utils";
 import { updateProfileAction } from "@/lib/auth/profile-actions";
 import { compressImage } from "@/lib/image-compress";
 import type { FieldErrors } from "@/lib/auth/actions";
+import type { ErrorResult } from "@/lib/errors/server";
 import { AlertCircle, ImageUp, Loader2, Trash2 } from "lucide-react";
 
 interface ProfileFormProps {
@@ -38,7 +40,7 @@ export function ProfileForm({
   const [originalAvatar] = useState(initialAvatar);
   const [fileError, setFileError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [processing, setProcessing] = useState(false);
   const [pending, startTransition] = useTransition();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -80,7 +82,7 @@ export function ProfileForm({
     setName(originalName);
     setAvatar(originalAvatar);
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
     setFileError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -88,7 +90,7 @@ export function ProfileForm({
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFieldErrors({});
-    setFormError(null);
+    setActionError(null);
 
     startTransition(async () => {
       const res = await updateProfileAction({
@@ -100,9 +102,7 @@ export function ProfileForm({
         return;
       }
       setFieldErrors(res.fields ?? {});
-      if (!res.fields || Object.keys(res.fields).length === 0) {
-        setFormError(res.detail);
-      }
+      setActionError(res);
     });
   }
 
@@ -206,15 +206,15 @@ export function ProfileForm({
             </p>
           </div>
 
-          {formError && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-            >
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{formError}</span>
-            </div>
-          )}
+          {actionError &&
+            (!actionError.fields ||
+              Object.keys(actionError.fields).length === 0) && (
+              <ErrorBanner
+                detail={actionError.detail}
+                code={actionError.code}
+                debug={actionError.debug}
+              />
+            )}
 
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
             {dirty && !pending && (

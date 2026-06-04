@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { api, ApiError } from "@/lib/api";
 import { getSessionToken, clearSessionCookie } from "@/lib/auth/server";
+import { toJsonError } from "@/lib/errors/server";
 
 // Proxy: browser → Next route → Phoenix /api/team.
 //
@@ -24,19 +25,13 @@ export async function GET() {
     const data = await api("/api/team", { token });
     return NextResponse.json(data);
   } catch (err) {
-    if (err instanceof ApiError) {
-      if (err.status === 401) await clearSessionCookie();
-      return NextResponse.json(
-        { error: err.code, detail: err.detail, fields: err.fields },
-        { status: err.status || 502 },
-      );
+    if (err instanceof ApiError && err.status === 401) {
+      await clearSessionCookie();
     }
-    return NextResponse.json(
-      {
-        error: "server_error",
-        detail: "Something went wrong on our end. Please try again.",
-      },
-      { status: 500 },
-    );
+    const { payload, status } = toJsonError(err, {
+      source: "proxy:/api/team",
+      fallbackDetail: "Couldn't load the team roster.",
+    });
+    return NextResponse.json(payload, { status });
   }
 }

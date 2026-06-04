@@ -1,30 +1,18 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { getSessionToken } from "../auth/server";
 import type { User } from "../types";
-import type { ErrorResult } from "../auth/actions";
+import {
+  toErrorResult,
+  unauthorizedResult,
+  type ErrorResult,
+} from "../errors/server";
 
 export type UpdateAccessResult =
   | { ok: true; user: User & { is_online?: boolean } }
   | ErrorResult;
-
-function toErrorResult(err: unknown): ErrorResult {
-  if (err instanceof ApiError) {
-    return {
-      ok: false,
-      code: err.code,
-      detail: err.detail,
-      fields: err.fields,
-    };
-  }
-  return {
-    ok: false,
-    code: "unknown",
-    detail: "Something went wrong. Please try again.",
-  };
-}
 
 /**
  * Replace a user's matrix access — Admin flag, direct permission
@@ -41,8 +29,7 @@ export async function updateUserAccessAction(
   },
 ): Promise<UpdateAccessResult> {
   const token = await getSessionToken();
-  if (!token)
-    return { ok: false, code: "unauthorized", detail: "Sign in first." };
+  if (!token) return unauthorizedResult("updateUserAccessAction");
 
   try {
     const res = await api<{ user: User & { is_online?: boolean } }>(
@@ -57,6 +44,9 @@ export async function updateUserAccessAction(
     revalidatePath("/settings/users");
     return { ok: true, user: res.user };
   } catch (err) {
-    return toErrorResult(err);
+    return toErrorResult(err, {
+      source: "updateUserAccessAction",
+      fallbackDetail: "Couldn't update access for this user.",
+    });
   }
 }

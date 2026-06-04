@@ -6,21 +6,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { FieldError } from "@/components/forms/field-error";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import { forgotPasswordAction } from "@/lib/auth/profile-actions";
+import type { ErrorResult } from "@/lib/errors/server";
 import { cn } from "@/lib/utils";
-import { AlertCircle, CheckCircle2, Loader2, Mail } from "lucide-react";
+import { CheckCircle2, Loader2, Mail } from "lucide-react";
 
 export function ForgotPasswordForm() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setEmailError(null);
-    setFormError(null);
+    setActionError(null);
     startTransition(async () => {
       const res = await forgotPasswordAction(email);
       if (res.ok) {
@@ -28,7 +30,7 @@ export function ForgotPasswordForm() {
         return;
       }
       if (res.fields?.email?.[0]) setEmailError(res.fields.email[0]);
-      else setFormError(res.detail);
+      else setActionError(res);
     });
   }
 
@@ -84,14 +86,12 @@ export function ForgotPasswordForm() {
             <FieldError messages={emailError ? [emailError] : undefined} />
           </div>
 
-          {formError && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
-            >
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{formError}</span>
-            </div>
+          {actionError && (
+            <ErrorBanner
+              detail={actionError.detail}
+              code={actionError.code}
+              debug={actionError.debug}
+            />
           )}
 
           <Button

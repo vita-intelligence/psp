@@ -2,30 +2,18 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import { getSessionToken } from "../auth/server";
 import type { PermissionTemplate } from "../types";
-import type { ErrorResult } from "../auth/actions";
+import {
+  toErrorResult,
+  unauthorizedResult,
+  type ErrorResult,
+} from "../errors/server";
 
 export type TemplateResult =
   | { ok: true; template: PermissionTemplate }
   | ErrorResult;
-
-function toErrorResult(err: unknown): ErrorResult {
-  if (err instanceof ApiError) {
-    return {
-      ok: false,
-      code: err.code,
-      detail: err.detail,
-      fields: err.fields,
-    };
-  }
-  return {
-    ok: false,
-    code: "unknown",
-    detail: "Something went wrong. Please try again.",
-  };
-}
 
 interface TemplateInput {
   name: string;
@@ -37,8 +25,7 @@ export async function createTemplateAction(
   input: TemplateInput,
 ): Promise<TemplateResult> {
   const token = await getSessionToken();
-  if (!token)
-    return { ok: false, code: "unauthorized", detail: "Sign in first." };
+  if (!token) return unauthorizedResult("createTemplateAction");
 
   try {
     const res = await api<{ template: PermissionTemplate }>("/api/roles", {
@@ -49,7 +36,10 @@ export async function createTemplateAction(
     revalidatePath("/settings/roles");
     return { ok: true, template: res.template };
   } catch (err) {
-    return toErrorResult(err);
+    return toErrorResult(err, {
+      source: "createTemplateAction",
+      fallbackDetail: "Couldn't create the template.",
+    });
   }
 }
 
@@ -58,8 +48,7 @@ export async function updateTemplateAction(
   input: TemplateInput,
 ): Promise<TemplateResult> {
   const token = await getSessionToken();
-  if (!token)
-    return { ok: false, code: "unauthorized", detail: "Sign in first." };
+  if (!token) return unauthorizedResult("updateTemplateAction");
 
   try {
     const res = await api<{ template: PermissionTemplate }>(
@@ -74,7 +63,10 @@ export async function updateTemplateAction(
     revalidatePath("/settings/roles");
     return { ok: true, template: res.template };
   } catch (err) {
-    return toErrorResult(err);
+    return toErrorResult(err, {
+      source: "updateTemplateAction",
+      fallbackDetail: "Couldn't save the template.",
+    });
   }
 }
 
