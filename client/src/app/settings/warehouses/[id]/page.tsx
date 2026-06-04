@@ -98,6 +98,7 @@ export default async function WarehouseEditPage({
       ) : (
         <PlanTab
           warehouseUuid={warehouse.uuid}
+          warehouseId={warehouse.id}
           warehouseName={warehouse.name}
           canEdit={canEdit}
         />
