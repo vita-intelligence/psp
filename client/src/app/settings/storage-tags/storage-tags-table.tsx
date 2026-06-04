@@ -66,8 +66,23 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
   const columns = useMemo<DataTableColumn<StorageTag>[]>(
     () => [
       {
-        id: "key",
+        id: "code",
         header: "Code",
+        sortField: "code",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        widthClassName: "w-28",
+        cell: (t) =>
+          t.code ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              {t.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "key",
+        header: "Key",
         sortField: "key",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-44",
@@ -121,7 +136,7 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
       rowKey={(t) => String(t.id)}
       fetchPage={fetchTagsPage}
       initialPage={initialPage}
-      searchPlaceholder="Search by key, label or description…"
+      searchPlaceholder="Search by code, key, label or description…"
       defaultSort={DEFAULT_SORT}
       onRowClick={(t) => router.push(`/settings/storage-tags/${t.uuid}`)}
       emptyState={

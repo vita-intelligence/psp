@@ -107,6 +107,16 @@ export function StorageTagForm({ tag, canEdit }: FormProps) {
       onSubmit={onSubmit}
       className="space-y-5 rounded-lg border border-border/60 bg-background p-5"
     >
+      {isEdit && tag?.code && (
+        <div className="flex items-center gap-2 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs">
+          <span className="font-medium text-muted-foreground">Code</span>
+          <span className="font-mono">{tag.code}</span>
+          <span className="text-muted-foreground/70">
+            — auto-generated from your Numbering format, cannot be edited
+          </span>
+        </div>
+      )}
+
       <fieldset disabled={!canEdit || pending} className="space-y-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">

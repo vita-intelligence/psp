@@ -190,6 +190,7 @@ defmodule BackendWeb.Payloads do
     %{
       id: t.id,
       uuid: t.uuid,
+      code: t.code,
       key: t.key,
       label: t.label,
       description: t.description,

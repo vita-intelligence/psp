@@ -228,6 +228,11 @@ export type StorageLocationKind = "other";
 export interface StorageTag {
   id: number;
   uuid: string;
+  /** Auto-generated admin-facing identifier (`TA00001`). Stays in
+   *  sync with `companies.numbering_formats.storage_tag`. */
+  code: string | null;
+  /** Lowercase slug allocation joins on (`cold-zone`). Immutable
+   *  once set so callers don't have to chase rename cascades. */
   key: string;
   label: string;
   description: string | null;

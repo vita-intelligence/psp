@@ -17,9 +17,9 @@ defmodule Backend.Warehouses.StorageTags do
   alias Backend.Repo
   alias Backend.Warehouses.StorageTag
 
-  @audit_fields ~w(key label description kind)a
-  @sortable_fields ~w(key label kind inserted_at)a
-  @search_fields ~w(key label description)a
+  @audit_fields ~w(code key label description kind)a
+  @sortable_fields ~w(code key label kind inserted_at)a
+  @search_fields ~w(code key label description)a
   @default_sort {:label, :asc}
 
   ## ----- read ------------------------------------------------------
@@ -117,11 +117,33 @@ defmodule Backend.Warehouses.StorageTags do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
+      |> maybe_assign_code(company_id)
 
     %StorageTag{}
     |> StorageTag.changeset(attrs)
     |> Repo.insert()
     |> after_create(actor)
+  end
+
+  # Stamp an auto-generated code from companies.numbering_formats when
+  # the caller didn't supply one. Same pattern as Warehouses.create/3.
+  defp maybe_assign_code(attrs, company_id) do
+    case Map.get(attrs, "code") do
+      val when is_binary(val) and val != "" ->
+        attrs
+
+      _ ->
+        case Repo.get(Backend.Companies.Company, company_id) do
+          nil ->
+            attrs
+
+          company ->
+            case Backend.Numbering.next_code(company, "storage_tag") do
+              nil -> attrs
+              code -> Map.put(attrs, "code", code)
+            end
+        end
+    end
   end
 
   def update(%User{} = actor, %StorageTag{} = tag, attrs) do

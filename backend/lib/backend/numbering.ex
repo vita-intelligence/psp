@@ -21,7 +21,7 @@ defmodule Backend.Numbering do
   alias Backend.Companies.Company
   alias Backend.RBAC.Role
   alias Backend.Repo
-  alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, Warehouse}
+  alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, StorageTag, Warehouse}
 
   @entity_schemas %{
     "warehouse" => Warehouse,
@@ -29,7 +29,8 @@ defmodule Backend.Numbering do
     "template" => Role,
     "floor" => Floor,
     "storage_location" => StorageLocation,
-    "storage_cell" => StorageCell
+    "storage_cell" => StorageCell,
+    "storage_tag" => StorageTag
   }
 
   @default_padding 5
