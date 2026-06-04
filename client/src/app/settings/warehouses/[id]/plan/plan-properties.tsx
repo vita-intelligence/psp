@@ -500,10 +500,16 @@ function WallBody({
           <span className="font-mono text-xs">{formatLength(arcLength)}</span>
         </Row>
         <Row label="Start (m)">
-          <span className="font-mono text-[11px] text-muted-foreground">
-            ({cmToMetres(wall.x1).toFixed(2)},{" "}
-            {cmToMetres(wall.y1).toFixed(2)})
-          </span>
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={wall.x1}
+              onChange={(cm) => cm !== null && onUpdate({ x1: cm })}
+            />
+            <MetresInput
+              valueCm={wall.y1}
+              onChange={(cm) => cm !== null && onUpdate({ y1: cm })}
+            />
+          </div>
         </Row>
         <Row label="End (m)">
           <div className="grid grid-cols-2 gap-1.5">
@@ -716,6 +722,21 @@ function LocationBody({
             </Select>
           </div>
         </div>
+
+        <Row label="Position (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={location.x}
+              onChange={(cm) => cm !== null && onUpdate({ x: cm })}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={location.y}
+              onChange={(cm) => cm !== null && onUpdate({ y: cm })}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
 
         <Row label="Footprint (m)">
           <div className="grid grid-cols-2 gap-1.5">

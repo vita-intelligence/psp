@@ -21,6 +21,7 @@ import {
   edgeChordMidpoint,
   edgeControlPoint,
   findClosestSnap,
+  gridSnapDragBound,
   hexToRgba,
   isHexColor,
   isSelected,
@@ -721,6 +722,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   !readOnly &&
                   isSelected(selection, { kind: "outline" })
                 }
+                dragBoundFunc={gridSnapDragBound}
                 onDragEnd={(e) => {
                   const dx = snapCm(e.target.x());
                   const dy = snapCm(e.target.y());
@@ -1067,6 +1069,7 @@ function WallShape({
       lineCap="round"
       hitStrokeWidth={28}
       draggable={draggable}
+      dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
       onDragEnd={draggable ? handleDragEnd : undefined}
@@ -1081,6 +1084,7 @@ function WallShape({
       onTap={readOnly ? undefined : onSelect}
       hitStrokeWidth={28}
       draggable={draggable}
+      dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onDragEnd={draggable ? handleDragEnd : undefined}
     />
   );
@@ -1409,6 +1413,7 @@ function HoleOutline({
           onClick={readOnly ? undefined : onSelectHole}
           onTap={readOnly ? undefined : onSelectHole}
           draggable={draggable}
+          dragBoundFunc={draggable ? gridSnapDragBound : undefined}
           onDragEnd={
             draggable
               ? (e) => {
@@ -1482,6 +1487,9 @@ function LocationShape({
       x={location.x}
       y={location.y}
       draggable={!readOnly && selected}
+      dragBoundFunc={
+        !readOnly && selected ? gridSnapDragBound : undefined
+      }
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
       onDragEnd={(e) => {

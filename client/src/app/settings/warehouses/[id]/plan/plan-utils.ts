@@ -30,6 +30,34 @@ export function snapPoint(p: Point): Point {
   return { x: snapCm(p.x), y: snapCm(p.y) };
 }
 
+/** Konva `dragBoundFunc` that snaps the dragged node's WORLD
+ *  position to the 50 cm grid as the user moves the pointer. Hand
+ *  it to every draggable shape so dragging feels as crisp as the
+ *  rest of the editor — no need to wait until release to see the
+ *  grid alignment. Reads the stage transform via `this.getStage()`
+ *  (Konva binds the node as `this`), so the snap stays correct at
+ *  any zoom / pan. Must be a regular function, NOT an arrow, for
+ *  the `this` binding to work. */
+export function gridSnapDragBound(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  this: any,
+  pos: { x: number; y: number },
+): { x: number; y: number } {
+  // `this` is a Konva.Node — fetch the stage so we can map screen
+  // coords back into world centimetres.
+  const stage = this?.getStage?.();
+  if (!stage) return pos;
+  const scale = stage.scaleX() || 1;
+  const wx = (pos.x - stage.x()) / scale;
+  const wy = (pos.y - stage.y()) / scale;
+  const sx = snapCm(wx);
+  const sy = snapCm(wy);
+  return {
+    x: sx * scale + stage.x(),
+    y: sy * scale + stage.y(),
+  };
+}
+
 /** Convert cm → "M.MM m" for display. Numbers under 1 m show "MM cm"
  *  for legibility (a 12cm location reads as "12 cm" not "0.12 m"). */
 export function formatLength(cm: number): string {
