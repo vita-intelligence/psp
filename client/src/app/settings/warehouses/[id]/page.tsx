@@ -10,20 +10,31 @@ import { WarehouseForm } from "../warehouse-form";
 import { DeleteWarehouseButton } from "./delete-warehouse-button";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import {
+  WarehouseTabsBar,
+  type WarehouseTab,
+} from "./warehouse-tabs-bar";
+import { PlanTab } from "./plan-tab";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }
 
 export const metadata = { title: "Warehouse · Settings · PSP" };
 
-export default async function WarehouseEditPage({ params }: PageProps) {
+export default async function WarehouseEditPage({
+  params,
+  searchParams,
+}: PageProps) {
   const user = await requireUser();
   if (!hasPermission(user, "warehouses.view")) {
     redirect("/settings/profile");
   }
 
-  const { id } = await params;
+  const [{ id }, { tab: rawTab }] = await Promise.all([params, searchParams]);
+  const tab: WarehouseTab = rawTab === "plan" ? "plan" : "details";
+
   const [warehouse, companyDefaults] = await Promise.all([
     getWarehouse(id),
     getCompanyDefaults(),
@@ -62,22 +73,35 @@ export default async function WarehouseEditPage({ params }: PageProps) {
           <DeleteWarehouseButton uuid={warehouse.uuid} name={warehouse.name} />
         )}
       </div>
-      <WarehouseForm
-        warehouse={warehouse}
-        company={companyDefaults}
-        canEdit={canEdit}
-      />
-      <AuditMetaSection
-        inserted_at={warehouse.inserted_at}
-        updated_at={warehouse.updated_at}
-        created_by={warehouse.created_by}
-        updated_by={warehouse.updated_by}
-      />
-      <AuditHistoryCard
-        entityType="warehouse"
-        entityId={warehouse.id}
-        canRestore={canEdit}
-      />
+
+      <WarehouseTabsBar active={tab} warehouseUuid={warehouse.uuid} />
+
+      {tab === "details" ? (
+        <>
+          <WarehouseForm
+            warehouse={warehouse}
+            company={companyDefaults}
+            canEdit={canEdit}
+          />
+          <AuditMetaSection
+            inserted_at={warehouse.inserted_at}
+            updated_at={warehouse.updated_at}
+            created_by={warehouse.created_by}
+            updated_by={warehouse.updated_by}
+          />
+          <AuditHistoryCard
+            entityType="warehouse"
+            entityId={warehouse.id}
+            canRestore={canEdit}
+          />
+        </>
+      ) : (
+        <PlanTab
+          warehouseUuid={warehouse.uuid}
+          warehouseName={warehouse.name}
+          canEdit={canEdit}
+        />
+      )}
     </div>
   );
 }

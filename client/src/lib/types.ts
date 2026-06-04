@@ -196,6 +196,68 @@ export interface Warehouse {
   updated_by?: AuditActor | null;
 }
 
+/** Storage location kinds — the picker on the location properties
+ *  panel restricts to this list. Adding a value here AND in
+ *  `Backend.Warehouses.StorageLocation.@valid_kinds` ships a new
+ *  category. */
+export type StorageLocationKind =
+  | "rack"
+  | "shelf"
+  | "pallet_zone"
+  | "cold_storage"
+  | "hazmat"
+  | "staging"
+  | "other";
+
+/** One storage location inside a warehouse. First-class entity
+ *  (matches the `storage_locations` table) — has its own audit trail
+ *  and will be referenced by stock + transfer records once the
+ *  inventory module ships. */
+export interface StorageLocation {
+  id: number;
+  uuid: string;
+  warehouse_id: number;
+  floor_id: number;
+  name: string;
+  code: string | null;
+  kind: StorageLocationKind | null;
+  /** Canvas position (units). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Physical dimensions in metres (decoupled from canvas units). */
+  width_m: string | null;
+  height_m: string | null;
+  depth_m: string | null;
+  capacity: string | null;
+  notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+/** One floor of a warehouse. Walls + rooms live in canvas_json;
+ *  storage locations are their own entities and come preloaded on
+ *  the list endpoint. */
+export interface Floor {
+  id: number;
+  uuid: string;
+  warehouse_id: number;
+  name: string;
+  ordinal: number;
+  /** Architectural shapes (walls, rooms) + viewport state. Schema is
+   *  intentionally open so we can evolve the editor without
+   *  migrations. */
+  canvas_json: Record<string, unknown>;
+  storage_locations?: StorageLocation[];
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
 export interface AuthResponse {
   token: string;
   user: User;
