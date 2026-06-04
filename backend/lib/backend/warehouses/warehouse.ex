@@ -15,6 +15,7 @@ defmodule Backend.Warehouses.Warehouse do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
+  alias Backend.Warehouses.{Floor, StorageLocation}
 
   schema "warehouses" do
     # Public identifier — used in URLs, API paths, channel topics.
@@ -36,6 +37,8 @@ defmodule Backend.Warehouses.Warehouse do
     belongs_to :company, Company
     belongs_to :created_by, User
     belongs_to :updated_by, User
+    has_many :floors, Floor, preload_order: [asc: :ordinal]
+    has_many :storage_locations, StorageLocation
 
     timestamps(type: :utc_datetime)
   end

@@ -20,7 +20,12 @@ defmodule BackendWeb.AuditController do
   @entity_view_perms %{
     "warehouse" => "warehouses.view",
     "user" => "users.view",
-    "template" => "roles.view"
+    "template" => "roles.view",
+    # Floor + storage location histories ride the same permission as
+    # the parent warehouse — if you can see the warehouse, you can
+    # see how its plan and locations got to their current state.
+    "floor" => "warehouses.view",
+    "storage_location" => "warehouses.view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -82,7 +87,30 @@ defmodule BackendWeb.AuditController do
     end
   end
 
+  # Floors + storage locations carry warehouse_id directly so the
+  # cross-company check just looks at the parent warehouse's company.
+  defp check_entity_in_company(actor, "floor", entity_id) do
+    check_via_warehouse_id(actor, Backend.Warehouses.Floor, entity_id)
+  end
+
+  defp check_entity_in_company(actor, "storage_location", entity_id) do
+    check_via_warehouse_id(actor, Backend.Warehouses.StorageLocation, entity_id)
+  end
+
   defp check_entity_in_company(_actor, _, _), do: {:error, :unknown_entity}
+
+  defp check_via_warehouse_id(actor, schema, entity_id) do
+    case Backend.Repo.get(schema, entity_id) do
+      %{warehouse_id: warehouse_id} ->
+        case Backend.Repo.get(Backend.Warehouses.Warehouse, warehouse_id) do
+          %{company_id: company_id} when company_id == actor.company_id -> :ok
+          _ -> {:error, :cross_company}
+        end
+
+      _ ->
+        {:error, :cross_company}
+    end
+  end
 
   defp payload(event) do
     %{
