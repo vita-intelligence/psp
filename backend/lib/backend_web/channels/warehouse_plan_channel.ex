@@ -123,10 +123,6 @@ defmodule BackendWeb.WarehousePlanChannel do
   # in real time, not just on save. The sender debounces (~250ms)
   # to keep traffic reasonable; receivers replace their local
   # canvas if they're on the same floor and aren't mid-drag.
-  #
-  # Locations stay out of this stream — they're first-class DB rows
-  # with their own create/update/delete endpoints, so we keep them
-  # on the existing `floor:invalidated` save broadcast.
   @impl true
   def handle_in(
         "canvas:patch",
@@ -138,6 +134,39 @@ defmodule BackendWeb.WarehousePlanChannel do
       by: socket.assigns.current_user.id,
       floor_uuid: floor_uuid,
       canvas: canvas,
+      ts: System.system_time(:millisecond)
+    })
+
+    {:noreply, socket}
+  end
+
+  # Late-joiner catch-up. The channel doesn't store state, so when a
+  # new tab joins it asks for a snapshot of whatever in-progress
+  # work the room currently has. Any existing peer is eligible to
+  # respond; receivers dedupe by acting on the first arrival.
+  @impl true
+  def handle_in("snapshot:request", _payload, socket) do
+    broadcast_from!(socket, "snapshot:request", %{
+      by: socket.assigns.current_user.id
+    })
+
+    {:noreply, socket}
+  end
+
+  # `to` is the joining user_id the snapshot is addressed to. The
+  # receiving client filters on it so a roomful of peers don't all
+  # apply the same snapshot.
+  @impl true
+  def handle_in(
+        "snapshot:response",
+        %{"to" => to, "floors" => floors},
+        socket
+      )
+      when is_list(floors) do
+    broadcast_from!(socket, "snapshot:response", %{
+      by: socket.assigns.current_user.id,
+      to: to,
+      floors: floors,
       ts: System.system_time(:millisecond)
     })
 

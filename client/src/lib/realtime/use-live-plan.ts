@@ -29,6 +29,15 @@ interface UseLivePlanOptions {
    *  callers should ignore the event while a local drag is in
    *  progress to avoid yanking the canvas out from under them. */
   onCanvasPatch?: (event: CanvasPatchEvent) => void;
+  /** Fired when another peer asks for a snapshot of our in-progress
+   *  work. Caller serialises their current per-floor canvas state
+   *  and returns it — the hook fans it out via snapshot:response
+   *  addressed to the requester. */
+  onSnapshotRequest?: () => SnapshotFloor[];
+  /** Fired when a snapshot addressed to us arrives. Receivers apply
+   *  the per-floor canvas state on top of their own, treating it the
+   *  same way a canvas:patch is treated. */
+  onSnapshot?: (event: SnapshotEvent) => void;
 }
 
 export interface InvalidationEvent {
@@ -50,6 +59,22 @@ export interface CanvasPatchEvent {
    *  intentionally typed loose here so the hook stays a transport
    *  and the editor decides what to do with the blob. */
   canvas: Record<string, unknown>;
+  ts: number;
+}
+
+/** One floor's worth of snapshot data. The shape mirrors a
+ *  canvas:patch payload but is sent inside a snapshot:response so a
+ *  late-joining peer can catch up on every floor at once, not just
+ *  the active one. */
+export interface SnapshotFloor {
+  floor_uuid: string;
+  canvas: Record<string, unknown>;
+}
+
+export interface SnapshotEvent {
+  by: number;
+  to: number;
+  floors: SnapshotFloor[];
   ts: number;
 }
 
@@ -115,6 +140,8 @@ export function useLivePlan({
   disabled,
   onInvalidated,
   onCanvasPatch,
+  onSnapshotRequest,
+  onSnapshot,
 }: UseLivePlanOptions): UseLivePlanResult {
   const [connected, setConnected] = useState(false);
   const [peers, setPeers] = useState<CollabPeer[]>([]);
@@ -140,6 +167,14 @@ export function useLivePlan({
   useEffect(() => {
     onCanvasPatchRef.current = onCanvasPatch;
   }, [onCanvasPatch]);
+  const onSnapshotRequestRef = useRef(onSnapshotRequest);
+  useEffect(() => {
+    onSnapshotRequestRef.current = onSnapshotRequest;
+  }, [onSnapshotRequest]);
+  const onSnapshotRef = useRef(onSnapshot);
+  useEffect(() => {
+    onSnapshotRef.current = onSnapshot;
+  }, [onSnapshot]);
   // Active floor mirror so the cursor handler can label incoming
   // cursors with "wrong floor" — we drop them rather than render a
   // ghost on the wrong plan.
@@ -172,6 +207,14 @@ export function useLivePlan({
           if (cancelled) return;
           if (resp?.user_id != null) setSelfId(String(resp.user_id));
           setConnected(true);
+          // Late-joiner catch-up: ask the room for an in-progress
+          // snapshot. Existing peers each receive the request and
+          // can respond with their current per-floor state. Slight
+          // delay so the initial presence_state lands first.
+          setTimeout(() => {
+            if (cancelled) return;
+            channel?.push("snapshot:request", {});
+          }, 250);
         })
         .receive("error", () => {
           if (!cancelled) setConnected(false);
@@ -247,6 +290,27 @@ export function useLivePlan({
         if (cancelled) return;
         if (String(event.by) === selfIdRef.current) return;
         onCanvasPatchRef.current?.(event);
+      });
+
+      channel.on("snapshot:request", (event: { by: number }) => {
+        if (cancelled) return;
+        // Skip our own request and only answer when we actually have
+        // something useful (caller returns non-empty floors).
+        if (String(event.by) === selfIdRef.current) return;
+        const floors = onSnapshotRequestRef.current?.() ?? [];
+        if (floors.length === 0) return;
+        channel?.push("snapshot:response", {
+          to: event.by,
+          floors,
+        });
+      });
+
+      channel.on("snapshot:response", (event: SnapshotEvent) => {
+        if (cancelled) return;
+        // Only act on snapshots addressed to us. Drop everything
+        // else — peers don't need to replay each other's catch-up.
+        if (String(event.to) !== selfIdRef.current) return;
+        onSnapshotRef.current?.(event);
       });
 
       channelRef.current = channel;

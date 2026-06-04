@@ -14,6 +14,8 @@ import {
   type CanvasPatchEvent,
   type InvalidationEvent,
   type RemotePlanCursor,
+  type SnapshotEvent,
+  type SnapshotFloor,
 } from "@/lib/realtime/use-live-plan";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
@@ -294,6 +296,72 @@ export function WarehousePlanEditor({
     [],
   );
 
+  // Live-collab snapshot bridge. The channel asks every existing
+  // peer for the in-progress state when a new tab joins; we serialise
+  // our current per-floor canvas from a ref (state would close over a
+  // stale snapshot here) and hand it back.
+  const floorStatesRef = useRef(floorStates);
+  useEffect(() => {
+    floorStatesRef.current = floorStates;
+  }, [floorStates]);
+
+  const onSnapshotRequest = useCallback((): SnapshotFloor[] => {
+    const snapshot: SnapshotFloor[] = [];
+    for (const s of Object.values(floorStatesRef.current)) {
+      snapshot.push({
+        floor_uuid: s.meta.uuid,
+        canvas: {
+          outline: s.outline,
+          walls: s.walls,
+          texts: s.texts,
+          arrows: s.arrows,
+          // Locations + cells too so a late joiner sees unsaved
+          // drags / colour changes / tag edits — not just the
+          // architectural layer.
+          locations: s.locations,
+        },
+      });
+    }
+    return snapshot;
+  }, []);
+
+  const onSnapshotReceived = useCallback(
+    (event: SnapshotEvent) => {
+      setFloorStates((prev) => {
+        let next = prev;
+        for (const f of event.floors) {
+          const entry = Object.entries(next).find(
+            ([, s]) => s.meta.uuid === f.floor_uuid,
+          );
+          if (!entry) continue;
+          const [idStr, current] = entry;
+          const id = Number(idStr);
+          const c = f.canvas as {
+            outline?: FloorOutline;
+            walls?: Wall[];
+            texts?: TextAnnotation[];
+            arrows?: ArrowAnnotation[];
+            locations?: LocalLocation[];
+          };
+          applyingRemoteRef.current = true;
+          next = {
+            ...next,
+            [id]: {
+              ...current,
+              outline: c.outline ?? current.outline,
+              walls: c.walls ?? current.walls,
+              texts: c.texts ?? current.texts,
+              arrows: c.arrows ?? current.arrows,
+              locations: c.locations ?? current.locations,
+            },
+          };
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
   const {
     others: liveOthers,
     creator: liveCreator,
@@ -307,6 +375,8 @@ export function WarehousePlanEditor({
     activeFloorUuid: activeFloor?.meta.uuid ?? null,
     disabled: readOnly,
     onInvalidated: onPeerInvalidation,
+    onSnapshotRequest,
+    onSnapshot: onSnapshotReceived,
     onCanvasPatch,
   });
 
