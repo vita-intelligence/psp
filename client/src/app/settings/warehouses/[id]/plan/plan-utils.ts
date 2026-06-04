@@ -161,28 +161,18 @@ export function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-/** Per-kind default colour for storage locations. The user can
- *  override with `location.color` — the canvas resolves the final
- *  colour via `locationColor(kind, override)`. Hex form so it round-
- *  trips through the colour picker. */
-export const LOCATION_KIND_COLOR: Record<string, string> = {
-  rack: "#10b981",
-  shelf: "#3b82f6",
-  pallet_zone: "#f59e0b",
-  cold_storage: "#0ea5e9",
-  hazmat: "#ef4444",
-  staging: "#a855f7",
-  other: "#64748b",
-};
+/** Neutral default stroke for storage locations. The user can
+ *  override with `location.color`; without an override, the canvas
+ *  uses this slate. The legacy `kind` parameter is accepted for
+ *  callers that haven't been refactored yet — it's ignored. */
+export const LOCATION_DEFAULT_COLOR = "#64748b";
 
-/** Resolve a location's final stroke colour: explicit override
- *  beats the kind palette. */
 export function locationColor(
-  kind: string | null | undefined,
+  _kind: string | null | undefined,
   override: string | null | undefined,
 ): string {
   if (isHexColor(override)) return override;
-  return LOCATION_KIND_COLOR[kind ?? "other"] ?? LOCATION_KIND_COLOR.other!;
+  return LOCATION_DEFAULT_COLOR;
 }
 
 /** Practical 12-swatch palette tuned for warehouse diagrams. Order is

@@ -520,7 +520,6 @@ export function WarehousePlanEditor({
             floor_id: s.meta.id,
             name: `Location ${count + 1}`,
             code: null,
-            kind: "rack",
             x: geom.x,
             y: geom.y,
             width: geom.width,
@@ -528,8 +527,8 @@ export function WarehousePlanEditor({
             width_m: null,
             height_m: null,
             depth_m: null,
-            capacity: null,
             color: null,
+            tags: [],
             cells: [],
             notes: null,
             inserted_at: new Date().toISOString(),
@@ -1242,7 +1241,6 @@ export function WarehousePlanEditor({
           floor_uuid: state.meta.uuid,
           name: loc.name,
           code: loc.code,
-          kind: loc.kind,
           x: loc.x,
           y: loc.y,
           width: loc.width,
@@ -1250,9 +1248,9 @@ export function WarehousePlanEditor({
           width_m: loc.width_m,
           height_m: loc.height_m,
           depth_m: loc.depth_m,
-          capacity: loc.capacity,
           notes: loc.notes,
           color: loc.color,
+          tags: loc.tags ?? [],
         });
         if (!res.ok) {
           setActionError(res);
@@ -1271,7 +1269,6 @@ export function WarehousePlanEditor({
           updateLocationAction(warehouseUuid, loc.uuid, {
             name: loc.name,
             code: loc.code,
-            kind: loc.kind,
             x: loc.x,
             y: loc.y,
             width: loc.width,
@@ -1279,9 +1276,9 @@ export function WarehousePlanEditor({
             width_m: loc.width_m,
             height_m: loc.height_m,
             depth_m: loc.depth_m,
-            capacity: loc.capacity,
             notes: loc.notes,
             color: loc.color,
+            tags: loc.tags ?? [],
           }),
         ),
         ...deletedRows.map((loc) =>

@@ -18,7 +18,6 @@ interface LocationInput {
   floor_uuid?: string;
   name: string;
   code?: string | null;
-  kind?: string | null;
   x: number;
   y: number;
   width: number;
@@ -26,9 +25,9 @@ interface LocationInput {
   width_m?: string | null;
   height_m?: string | null;
   depth_m?: string | null;
-  capacity?: string | null;
   notes?: string | null;
   color?: string | null;
+  tags?: string[];
 }
 
 export async function createLocationAction(

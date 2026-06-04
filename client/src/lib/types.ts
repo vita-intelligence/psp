@@ -206,14 +206,10 @@ export interface Warehouse {
  *  panel restricts to this list. Adding a value here AND in
  *  `Backend.Warehouses.StorageLocation.@valid_kinds` ships a new
  *  category. */
-export type StorageLocationKind =
-  | "rack"
-  | "shelf"
-  | "pallet_zone"
-  | "cold_storage"
-  | "hazmat"
-  | "staging"
-  | "other";
+/** Kept for backwards-compat shims only — the `kind` column was
+ *  dropped from the backend (cosmetic-only, classification moved to
+ *  `tags[]`). Don't reach for this in new code. */
+export type StorageLocationKind = "other";
 
 /** One physical level / subdivision of a storage location. A shelf
  *  with five usable levels has five cells, ordered bottom-to-top
@@ -252,7 +248,6 @@ export interface StorageLocation {
   floor_id: number;
   name: string;
   code: string | null;
-  kind: StorageLocationKind | null;
   /** Canvas position (units). */
   x: number;
   y: number;
@@ -262,11 +257,13 @@ export interface StorageLocation {
   width_m: string | null;
   height_m: string | null;
   depth_m: string | null;
-  capacity: string | null;
   notes: string | null;
-  /** Optional `#RRGGBB` fill colour override. nil = use the kind's
-   *  default palette. */
+  /** Optional `#RRGGBB` fill colour override. nil = neutral default. */
   color: string | null;
+  /** Free-form classification labels (`pallet`, `cold-zone`, etc.).
+   *  Allocation reads the union of `location.tags` and each cell's
+   *  own tags, so marking the whole zone once is enough. */
+  tags: string[];
   /** Cells of this location, bottom-to-top. Empty list when the
    *  operator hasn't subdivided yet — treat as a single bulk
    *  storage zone. */

@@ -83,4 +83,7 @@ export const NUMBERING_ENTITIES: Array<{ key: string; label: string }> = [
   { key: "user", label: "Users" },
   { key: "warehouse", label: "Warehouses" },
   { key: "template", label: "Permission templates" },
+  { key: "floor", label: "Floors" },
+  { key: "storage_location", label: "Storage locations" },
+  { key: "storage_cell", label: "Storage cells" },
 ];

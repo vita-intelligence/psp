@@ -1,17 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
   cmToMetres,
@@ -35,7 +28,6 @@ import type {
   Point,
   SelectionItem,
   SelectionSet,
-  StorageLocationKind,
   TextAnnotation,
   Wall,
 } from "./plan-types";
@@ -80,15 +72,6 @@ interface PlanPropertiesProps {
   onDeleteSelected: () => void;
 }
 
-const KIND_OPTIONS: Array<{ value: StorageLocationKind; label: string }> = [
-  { value: "rack", label: "Rack" },
-  { value: "shelf", label: "Shelf" },
-  { value: "pallet_zone", label: "Pallet zone" },
-  { value: "cold_storage", label: "Cold storage" },
-  { value: "hazmat", label: "Hazmat" },
-  { value: "staging", label: "Staging" },
-  { value: "other", label: "Other" },
-];
 
 /**
  * Right-side properties panel (desktop) / bottom sheet body
@@ -790,43 +773,26 @@ function LocationBody({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <Label htmlFor="loc-code" className="text-xs">
-              Code
-            </Label>
-            <Input
-              id="loc-code"
-              value={location.code ?? ""}
-              onChange={(e) =>
-                onUpdate({ code: e.target.value || null })
-              }
-              placeholder="A-12"
-              maxLength={40}
-              className="h-8 font-mono text-xs"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Kind</Label>
-            <Select
-              value={location.kind ?? ""}
-              onValueChange={(v) =>
-                onUpdate({ kind: (v || null) as StorageLocationKind | null })
-              }
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue placeholder="Pick…" />
-              </SelectTrigger>
-              <SelectContent>
-                {KIND_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+        <div className="space-y-1">
+          <Label htmlFor="loc-code" className="text-xs">
+            Code
+          </Label>
+          <Input
+            id="loc-code"
+            value={location.code ?? ""}
+            onChange={(e) => onUpdate({ code: e.target.value || null })}
+            placeholder="SL00012"
+            maxLength={40}
+            className="h-8 font-mono text-xs"
+          />
         </div>
+
+        <TagsField
+          value={location.tags ?? []}
+          onCommit={(tags) => onUpdate({ tags })}
+          placeholder="pallet, cold-zone, hazmat-3"
+          help="Free-form labels for the whole rack/zone. Cells inherit these for allocation — set once, every level uses them."
+        />
 
         <Row label="Position (m)">
           <div className="grid grid-cols-2 gap-1.5">
@@ -883,22 +849,6 @@ function LocationBody({
         </div>
 
         <div className="space-y-1">
-          <Label htmlFor="loc-capacity" className="text-xs">
-            Capacity
-          </Label>
-          <Input
-            id="loc-capacity"
-            value={location.capacity ?? ""}
-            onChange={(e) =>
-              onUpdate({ capacity: e.target.value || null })
-            }
-            placeholder="e.g. 12 pallets"
-            maxLength={60}
-            className="h-8 text-xs"
-          />
-        </div>
-
-        <div className="space-y-1">
           <Label htmlFor="loc-notes" className="text-xs">
             Notes
           </Label>
@@ -919,7 +869,7 @@ function LocationBody({
           </div>
           <ColorPicker
             value={location.color ?? null}
-            defaultColor={locationColor(location.kind, null)}
+            defaultColor={locationColor(null, null)}
             readOnly={readOnly}
             onChange={(c) => onUpdate({ color: c })}
           />
@@ -1158,6 +1108,73 @@ function ArrowBody({
         )}
       </div>
     </fieldset>
+  );
+}
+
+/** Shared tags editor — comma-separated input that renders the
+ *  committed list as chips so the operator sees what's actually
+ *  going to the server. Used on both StorageLocation and StorageCell
+ *  bodies. */
+function TagsField({
+  value,
+  onCommit,
+  placeholder,
+  help,
+}: {
+  value: string[];
+  onCommit: (tags: string[]) => void;
+  placeholder?: string;
+  help?: string;
+}) {
+  const [draft, setDraft] = useState((value ?? []).join(", "));
+  // Sync incoming changes (multi-select, remote updates) into the
+  // local draft so the input stays consistent.
+  useEffect(() => {
+    setDraft((value ?? []).join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [(value ?? []).join(" ")]);
+
+  const parsed = (raw: string) =>
+    raw
+      .split(",")
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        Tags
+      </div>
+      {value && value.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {value.map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center rounded-full bg-foreground/10 px-2 py-0.5 font-mono text-[10px] text-foreground"
+            >
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+      <Input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => onCommit(parsed(draft))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onCommit(parsed(draft));
+          }
+        }}
+        placeholder={placeholder ?? "tag-a, tag-b, tag-c"}
+        spellCheck={false}
+        className="h-8 font-mono text-xs"
+      />
+      {help && (
+        <p className="text-[10px] leading-snug text-muted-foreground">{help}</p>
+      )}
+    </div>
   );
 }
 

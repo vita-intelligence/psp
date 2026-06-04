@@ -1,14 +1,21 @@
 defmodule Backend.Warehouses.StorageLocation do
   @moduledoc """
-  A first-class storage spot inside a warehouse (rack, shelf, pallet
-  zone, etc.) — not just a shape on the canvas. Has its own UUID,
-  audit trail, and dimensions. Stock records and transfer logs will
-  FK into this once the inventory module ships.
+  A first-class storage spot inside a warehouse — the rectangle the
+  operator draws on the plan canvas. The location itself is a
+  geographic group; the actual storage math (does an item fit, how
+  much room is left) lives on its `cells`.
 
   Canvas position (`x`, `y`, `width`, `height`) is in canvas units —
   the schematic the operator drew. Physical dimensions
-  (`width_m`, `height_m`, `depth_m`) are in metres and stay accurate
-  even if the operator tweaks the canvas drawing for legibility.
+  (`width_m`, `height_m`, `depth_m`) are in metres and describe the
+  location's outer footprint; cells beneath carry their own per-level
+  W × D × H so a 5-shelf rack can have a shallow top level without
+  affecting the rest.
+
+  Free-form `tags` classify the whole zone (`pallet`, `cold-zone`,
+  `hazmat-3`). When the allocation engine looks at a cell its
+  effective tag set is `location.tags ∪ cell.tags`, so an operator
+  marks "this rack is pallet-only" once and every level inherits.
   """
 
   use Ecto.Schema
@@ -18,15 +25,10 @@ defmodule Backend.Warehouses.StorageLocation do
   alias Backend.Companies.Company
   alias Backend.Warehouses.{Floor, StorageCell, Warehouse}
 
-  # The kinds the UI exposes. Add a value here AND in the FE picker
-  # when shipping a new category — the changeset rejects unknowns.
-  @valid_kinds ~w(rack shelf pallet_zone cold_storage hazmat staging other)
-
   schema "storage_locations" do
     field :uuid, Ecto.UUID, autogenerate: true
     field :name, :string
     field :code, :string
-    field :kind, :string
 
     field :x, :integer, default: 0
     field :y, :integer, default: 0
@@ -37,12 +39,16 @@ defmodule Backend.Warehouses.StorageLocation do
     field :height_m, :decimal
     field :depth_m, :decimal
 
-    field :capacity, :string
     field :notes, :string
 
-    # Optional `#RRGGBB` colour override for the canvas. nil = use the
-    # kind's default palette (see frontend `LocationShape`).
+    # Optional `#RRGGBB` colour override for the canvas. nil = the
+    # neutral default (slate). Cosmetic — does not affect allocation.
     field :color, :string
+
+    # Free-form classification labels. No fixed vocabulary so the
+    # segregation rules engine can plug in without a schema change.
+    # `validate_tags/1` normalises (lowercase, trim, dedupe) on write.
+    field :tags, {:array, :string}, default: []
 
     belongs_to :warehouse, Warehouse
     belongs_to :floor, Floor
@@ -60,8 +66,6 @@ defmodule Backend.Warehouses.StorageLocation do
     timestamps(type: :utc_datetime)
   end
 
-  def valid_kinds, do: @valid_kinds
-
   def changeset(location, attrs) do
     location
     |> cast(attrs, [
@@ -70,7 +74,6 @@ defmodule Backend.Warehouses.StorageLocation do
       :company_id,
       :name,
       :code,
-      :kind,
       :x,
       :y,
       :width,
@@ -78,19 +81,15 @@ defmodule Backend.Warehouses.StorageLocation do
       :width_m,
       :height_m,
       :depth_m,
-      :capacity,
       :notes,
       :color,
+      :tags,
       :created_by_id,
       :updated_by_id
     ])
     |> validate_required([:warehouse_id, :floor_id, :company_id, :name])
     |> validate_length(:name, min: 1, max: 120)
     |> validate_length(:code, max: 40)
-    |> validate_length(:capacity, max: 60)
-    |> validate_inclusion(:kind, @valid_kinds,
-      message: "must be one of: #{Enum.join(@valid_kinds, ", ")}"
-    )
     # validate_number only runs when the field is present in the
     # changeset's changes — so the metre fields stay optional without
     # any extra opts.
@@ -102,8 +101,30 @@ defmodule Backend.Warehouses.StorageLocation do
     |> validate_format(:color, ~r/\A#[0-9a-fA-F]{6}\z/,
       message: "must be a #RRGGBB hex colour"
     )
+    |> normalise_tags()
     |> unique_constraint([:warehouse_id, :code],
       name: :storage_locations_warehouse_id_code_index
     )
+  end
+
+  # Tags are user-typed; same normalisation as `StorageCell` so a
+  # cell and its parent location agree on equality.
+  defp normalise_tags(changeset) do
+    case get_change(changeset, :tags) do
+      nil ->
+        changeset
+
+      list when is_list(list) ->
+        clean =
+          list
+          |> Enum.map(fn t -> t |> to_string() |> String.trim() |> String.downcase() end)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        put_change(changeset, :tags, clean)
+
+      _ ->
+        add_error(changeset, :tags, "must be a list of strings")
+    end
   end
 end

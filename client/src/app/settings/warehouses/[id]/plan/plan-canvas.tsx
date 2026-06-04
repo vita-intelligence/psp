@@ -1733,7 +1733,7 @@ function LocationShape({
   // Custom location colour beats the kind default. Stroke = full
   // opacity; fill = same colour at 18% alpha so the label text stays
   // legible on top.
-  const baseStroke = locationColor(location.kind, location.color);
+  const baseStroke = locationColor(null, location.color);
   const palette = {
     fill: hexToRgba(baseStroke, 0.18),
     stroke: baseStroke,

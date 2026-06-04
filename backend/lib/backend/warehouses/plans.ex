@@ -27,7 +27,7 @@ defmodule Backend.Warehouses.Plans do
   # Audit surfaces — what the history rows actually show. Bookkeeping
   # columns (created_by_id, updated_by_id) are excluded.
   @floor_audit_fields ~w(name ordinal canvas_json)a
-  @location_audit_fields ~w(name code kind x y width height width_m height_m depth_m capacity notes color floor_id)a
+  @location_audit_fields ~w(name code x y width height width_m height_m depth_m notes color tags floor_id)a
   @cell_audit_fields ~w(name ordinal width_m depth_m height_m max_weight_kg tags notes storage_location_id)a
 
   ## Floors — read --------------------------------------------------
