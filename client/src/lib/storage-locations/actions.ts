@@ -28,6 +28,7 @@ interface LocationInput {
   depth_m?: string | null;
   capacity?: string | null;
   notes?: string | null;
+  color?: string | null;
 }
 
 export async function createLocationAction(

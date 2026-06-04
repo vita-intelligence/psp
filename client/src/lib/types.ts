@@ -232,6 +232,9 @@ export interface StorageLocation {
   depth_m: string | null;
   capacity: string | null;
   notes: string | null;
+  /** Optional `#RRGGBB` fill colour override. nil = use the kind's
+   *  default palette. */
+  color: string | null;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

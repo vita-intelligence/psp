@@ -267,6 +267,7 @@ export function WarehousePlanEditor({
             height_m: null,
             depth_m: null,
             capacity: null,
+            color: null,
             notes: null,
             inserted_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -558,6 +559,87 @@ export function WarehousePlanEditor({
     [updateActiveFloor],
   );
 
+  /** Patch metadata on the outline itself (currently just `color`).
+   *  Snapshotted so each paint lands as a discrete undo step. */
+  const onOutlineUpdate = useCallback(
+    (patch: Partial<FloorOutline>) => {
+      updateActiveFloor(
+        (s) => {
+          if (!s.outline) return s;
+          return { ...s, outline: { ...s.outline, ...patch } };
+        },
+        { snapshot: true },
+      );
+    },
+    [updateActiveFloor],
+  );
+
+  /** Paint every currently-selected item the same colour in one
+   *  snapshot. Walls / outline / holes store the override in
+   *  canvas_json; locations store it as a real column. Pass `null`
+   *  to clear (reset to the type's default palette). */
+  const onSelectionColor = useCallback(
+    (color: string | null) => {
+      const cMaybe = color ?? undefined;
+      updateActiveFloor(
+        (s) => {
+          const wallIds = new Set(
+            selection
+              .filter(
+                (it): it is { kind: "wall"; id: string } => it.kind === "wall",
+              )
+              .map((it) => it.id),
+          );
+          const holeIds = new Set(
+            selection
+              .filter(
+                (it): it is { kind: "hole"; id: string } => it.kind === "hole",
+              )
+              .map((it) => it.id),
+          );
+          const locationIds = new Set(
+            selection
+              .filter(
+                (it): it is { kind: "location"; id: string } =>
+                  it.kind === "location",
+              )
+              .map((it) => it.id),
+          );
+          const outlineSelected = selection.some((it) => it.kind === "outline");
+
+          const walls = wallIds.size
+            ? s.walls.map((w) =>
+                wallIds.has(w.id) ? { ...w, color: cMaybe } : w,
+              )
+            : s.walls;
+
+          const locations = locationIds.size
+            ? s.locations.map((l) =>
+                locationIds.has(String(l.tempId ?? l.uuid))
+                  ? { ...l, color: color, dirty: true }
+                  : l,
+              )
+            : s.locations;
+
+          let outline = s.outline;
+          if (outline && (outlineSelected || holeIds.size)) {
+            outline = {
+              ...outline,
+              color: outlineSelected ? cMaybe : outline.color,
+              holes: outline.holes?.map((h) =>
+                holeIds.has(h.id) ? { ...h, color: cMaybe } : h,
+              ),
+            };
+          }
+
+          return { ...s, walls, locations, outline };
+        },
+        { snapshot: true },
+      );
+    },
+    [selection, updateActiveFloor],
+  );
+
   const onHoleDelete = useCallback(
     (id: string) => {
       updateActiveFloor(
@@ -812,6 +894,7 @@ export function WarehousePlanEditor({
           depth_m: loc.depth_m,
           capacity: loc.capacity,
           notes: loc.notes,
+          color: loc.color,
         });
         if (!res.ok) {
           setActionError(res);
@@ -840,6 +923,7 @@ export function WarehousePlanEditor({
             depth_m: loc.depth_m,
             capacity: loc.capacity,
             notes: loc.notes,
+            color: loc.color,
           }),
         ),
         ...deletedRows.map((loc) =>
@@ -1022,11 +1106,13 @@ export function WarehousePlanEditor({
           onHoleCommitted={onHoleCommitted}
           onWallUpdate={onWallUpdate}
           onWallDelete={onWallDelete}
+          onOutlineUpdate={onOutlineUpdate}
           onOutlineDelete={onOutlineDelete}
           onHoleUpdate={onHoleUpdate}
           onHoleDelete={onHoleDelete}
           onLocationUpdate={onLocationUpdate}
           onLocationDelete={onLocationDelete}
+          onSelectionColor={onSelectionColor}
           onDeleteSelected={onDeleteSelected}
           propsSheetOpen={propsSheetOpen}
           setPropsSheetOpen={setPropsSheetOpen}
@@ -1083,6 +1169,7 @@ export function WarehousePlanEditor({
             layout="side"
             onWallUpdate={onWallUpdate}
             onWallDelete={onWallDelete}
+            onOutlineUpdate={onOutlineUpdate}
             onOutlineDelete={onOutlineDelete}
             onHoleUpdate={onHoleUpdate}
             onHoleDelete={onHoleDelete}
@@ -1090,6 +1177,7 @@ export function WarehousePlanEditor({
             onHoleEdgeBowChange={onHoleEdgeBowChange}
             onLocationUpdate={onLocationUpdate}
             onLocationDelete={onLocationDelete}
+            onSelectionColor={onSelectionColor}
             onDeleteSelected={onDeleteSelected}
           />
         </div>
@@ -1146,6 +1234,7 @@ interface MobileLayoutProps {
   onHoleCommitted: (points: Point[]) => void;
   onWallUpdate: (id: string, patch: Partial<Wall>) => void;
   onWallDelete: (id: string) => void;
+  onOutlineUpdate: (patch: Partial<FloorOutline>) => void;
   onOutlineDelete: () => void;
   onHoleUpdate: (id: string, patch: Partial<Hole>) => void;
   onHoleDelete: (id: string) => void;
@@ -1154,6 +1243,7 @@ interface MobileLayoutProps {
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
   ) => void;
   onLocationDelete: (id: string | number) => void;
+  onSelectionColor: (color: string | null) => void;
   onDeleteSelected: () => void;
   propsSheetOpen: boolean;
   setPropsSheetOpen: (open: boolean) => void;
@@ -1183,11 +1273,13 @@ function MobileLayout({
   onHoleCommitted,
   onWallUpdate,
   onWallDelete,
+  onOutlineUpdate,
   onOutlineDelete,
   onHoleUpdate,
   onHoleDelete,
   onLocationUpdate,
   onLocationDelete,
+  onSelectionColor,
   onDeleteSelected,
   propsSheetOpen,
   setPropsSheetOpen,
@@ -1286,6 +1378,7 @@ function MobileLayout({
               layout="sheet"
               onWallUpdate={onWallUpdate}
               onWallDelete={onWallDelete}
+              onOutlineUpdate={onOutlineUpdate}
               onOutlineDelete={onOutlineDelete}
               onHoleUpdate={onHoleUpdate}
               onHoleDelete={onHoleDelete}
@@ -1293,6 +1386,7 @@ function MobileLayout({
               onHoleEdgeBowChange={onHoleEdgeBowChange}
               onLocationUpdate={onLocationUpdate}
               onLocationDelete={onLocationDelete}
+              onSelectionColor={onSelectionColor}
               onDeleteSelected={onDeleteSelected}
             />
           </div>

@@ -40,6 +40,10 @@ defmodule Backend.Warehouses.StorageLocation do
     field :capacity, :string
     field :notes, :string
 
+    # Optional `#RRGGBB` colour override for the canvas. nil = use the
+    # kind's default palette (see frontend `LocationShape`).
+    field :color, :string
+
     belongs_to :warehouse, Warehouse
     belongs_to :floor, Floor
     # Denormalised from `warehouse.company_id` for the same reason
@@ -72,6 +76,7 @@ defmodule Backend.Warehouses.StorageLocation do
       :depth_m,
       :capacity,
       :notes,
+      :color,
       :created_by_id,
       :updated_by_id
     ])
@@ -90,6 +95,9 @@ defmodule Backend.Warehouses.StorageLocation do
     |> validate_number(:width_m, greater_than: 0)
     |> validate_number(:height_m, greater_than: 0)
     |> validate_number(:depth_m, greater_than: 0)
+    |> validate_format(:color, ~r/\A#[0-9a-fA-F]{6}\z/,
+      message: "must be a #RRGGBB hex colour"
+    )
     |> unique_constraint([:warehouse_id, :code],
       name: :storage_locations_warehouse_id_code_index
     )

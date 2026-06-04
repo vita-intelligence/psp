@@ -19,6 +19,7 @@ import {
   edgeChordLengthCm,
   formatArea,
   formatLength,
+  locationColor,
   parseDimensionToCm,
   polygonAreaCm2,
   polygonPerimeterCm,
@@ -36,6 +37,7 @@ import type {
   Wall,
 } from "./plan-types";
 import { Info, Trash2 } from "lucide-react";
+import { ColorPicker } from "./plan-color-picker";
 
 interface PlanPropertiesProps {
   selection: SelectionSet;
@@ -51,8 +53,10 @@ interface PlanPropertiesProps {
   onOutlineDelete: () => void;
   onHoleUpdate: (id: string, patch: Partial<Hole>) => void;
   onHoleDelete: (id: string) => void;
+  onOutlineUpdate: (patch: Partial<FloorOutline>) => void;
   onOutlineEdgeBowChange: (index: number, bow: number) => void;
   onHoleEdgeBowChange: (holeId: string, index: number, bow: number) => void;
+  onSelectionColor: (color: string | null) => void;
   onLocationUpdate: (
     id: string | number,
     patch: Partial<Omit<LocalLocation, "id" | "uuid" | "tempId">>,
@@ -94,8 +98,10 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onOutlineDelete,
     onHoleUpdate,
     onHoleDelete,
+    onOutlineUpdate,
     onOutlineEdgeBowChange,
     onHoleEdgeBowChange,
+    onSelectionColor,
     onLocationUpdate,
     onLocationDelete,
     onDeleteSelected,
@@ -113,6 +119,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
       <MultiSelectBody
         selection={selection}
         readOnly={readOnly}
+        onColorChange={onSelectionColor}
         onDelete={onDeleteSelected}
       />
     );
@@ -125,6 +132,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
         <OutlineBody
           outline={outline}
           readOnly={readOnly}
+          onUpdate={onOutlineUpdate}
           onDelete={onOutlineDelete}
         />
       ) : null;
@@ -149,6 +157,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
         <HoleBody
           hole={hole}
           readOnly={readOnly}
+          onUpdate={(patch) => onHoleUpdate(hole.id, patch)}
           onDelete={() => onHoleDelete(hole.id)}
         />
       ) : null;
@@ -195,11 +204,6 @@ export function PlanProperties(props: PlanPropertiesProps) {
       ) : null;
     }
   }
-  // Silence unused-var lint when onHoleUpdate isn't called for the
-  // current selection shape — the prop is still wired for future
-  // hole-vertex editing.
-  void onHoleUpdate;
-
   // Sheet variant skips the side-panel chrome — the parent
   // (mobile-bottom-sheet) already provides a sheet header.
   if (layout === "sheet") {
@@ -221,12 +225,23 @@ export function PlanProperties(props: PlanPropertiesProps) {
 function MultiSelectBody({
   selection,
   readOnly,
+  onColorChange,
   onDelete,
 }: {
   selection: SelectionItem[];
   readOnly: boolean;
+  onColorChange: (color: string | null) => void;
   onDelete: () => void;
 }) {
+  // Only walls, outline, holes and locations carry a colour today —
+  // outline-edge / hole-edge entries are sub-handles, not paintable.
+  const paintableCount = selection.filter(
+    (s) =>
+      s.kind === "wall" ||
+      s.kind === "outline" ||
+      s.kind === "hole" ||
+      s.kind === "location",
+  ).length;
   // Count by kind for the breakdown badge row.
   const counts = selection.reduce(
     (acc, item) => {
@@ -260,6 +275,18 @@ function MultiSelectBody({
       <div className="rounded-md border border-dashed border-border/60 px-2.5 py-2 text-[11px] text-muted-foreground">
         Click a single item to edit its individual properties.
       </div>
+      {paintableCount > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Paint {paintableCount} item{paintableCount === 1 ? "" : "s"}
+          </div>
+          <ColorPicker
+            value={null}
+            readOnly={readOnly}
+            onChange={onColorChange}
+          />
+        </div>
+      )}
       {!readOnly && (
         <Button
           type="button"
@@ -319,10 +346,12 @@ function NoSelectionBody() {
 function OutlineBody({
   outline,
   readOnly,
+  onUpdate,
   onDelete,
 }: {
   outline: FloorOutline;
   readOnly: boolean;
+  onUpdate: (patch: Partial<FloorOutline>) => void;
   onDelete: () => void;
 }) {
   const perimeter = polygonPerimeterCm(outline.points);
@@ -352,6 +381,19 @@ function OutlineBody({
           <span className="font-mono text-xs">{formatArea(walkable)}</span>
         </Row>
       )}
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          Floor colour
+        </div>
+        <ColorPicker
+          value={outline.color ?? null}
+          defaultColor="#f1f5f9"
+          readOnly={readOnly}
+          onChange={(c) =>
+            onUpdate({ color: c === null ? undefined : c })
+          }
+        />
+      </div>
       <div className="rounded-md bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
         Need a stairwell or atrium? Switch to{" "}
         <strong className="font-semibold text-foreground">Cut a hole</strong>{" "}
@@ -377,10 +419,12 @@ function OutlineBody({
 function HoleBody({
   hole,
   readOnly,
+  onUpdate,
   onDelete,
 }: {
   hole: Hole;
   readOnly: boolean;
+  onUpdate: (patch: Partial<Hole>) => void;
   onDelete: () => void;
 }) {
   const area = polygonAreaCm2(hole.points);
@@ -396,6 +440,19 @@ function HoleBody({
       <Row label="Area">
         <span className="font-mono text-xs">{formatArea(area)}</span>
       </Row>
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          Outline colour
+        </div>
+        <ColorPicker
+          value={hole.color ?? null}
+          defaultColor="#ef4444"
+          readOnly={readOnly}
+          onChange={(c) =>
+            onUpdate({ color: c === null ? undefined : c })
+          }
+        />
+      </div>
       <div className="rounded-md bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
         Holes are non-walkable areas inside the floor — stairwells,
         atriums, lift shafts.
@@ -491,6 +548,19 @@ function WallBody({
             Make straight
           </Button>
         )}
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Wall colour
+          </div>
+          <ColorPicker
+            value={wall.color ?? null}
+            defaultColor="#2d2d2d"
+            readOnly={readOnly}
+            onChange={(c) =>
+              onUpdate({ color: c === null ? undefined : c })
+            }
+          />
+        </div>
         {!readOnly && (
           <Button
             type="button"
@@ -714,6 +784,18 @@ function LocationBody({
             }
             rows={2}
             className="text-xs"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Colour
+          </div>
+          <ColorPicker
+            value={location.color ?? null}
+            defaultColor={locationColor(location.kind, null)}
+            readOnly={readOnly}
+            onChange={(c) => onUpdate({ color: c })}
           />
         </div>
 

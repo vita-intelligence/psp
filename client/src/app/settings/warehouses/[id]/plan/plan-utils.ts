@@ -85,6 +85,69 @@ export function cmToMetres(cm: number): number {
   return cm / 100;
 }
 
+// ---------------------------------------------------- colour helpers
+
+/** True when `value` is a strict `#RRGGBB` hex string. Used to gate
+ *  custom-colour input — the renderer assumes the format is valid. */
+export function isHexColor(value: string | null | undefined): value is string {
+  if (typeof value !== "string") return false;
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+/** Convert `#RRGGBB` → `rgba(r, g, b, a)`. Used so a single picked
+ *  colour drives both the stroke (full opacity) and the translucent
+ *  fill of locations without a second picker. Falls back to the
+ *  input string when it isn't a valid hex (e.g. already an rgba()
+ *  literal). */
+export function hexToRgba(hex: string, alpha: number): string {
+  if (!isHexColor(hex)) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Per-kind default colour for storage locations. The user can
+ *  override with `location.color` — the canvas resolves the final
+ *  colour via `locationColor(kind, override)`. Hex form so it round-
+ *  trips through the colour picker. */
+export const LOCATION_KIND_COLOR: Record<string, string> = {
+  rack: "#10b981",
+  shelf: "#3b82f6",
+  pallet_zone: "#f59e0b",
+  cold_storage: "#0ea5e9",
+  hazmat: "#ef4444",
+  staging: "#a855f7",
+  other: "#64748b",
+};
+
+/** Resolve a location's final stroke colour: explicit override
+ *  beats the kind palette. */
+export function locationColor(
+  kind: string | null | undefined,
+  override: string | null | undefined,
+): string {
+  if (isHexColor(override)) return override;
+  return LOCATION_KIND_COLOR[kind ?? "other"] ?? LOCATION_KIND_COLOR.other!;
+}
+
+/** Practical 12-swatch palette tuned for warehouse diagrams. Order is
+ *  left-to-right, top-to-bottom in the picker grid. */
+export const COLOR_PALETTE: readonly string[] = [
+  "#0f172a", // slate-900
+  "#64748b", // slate-500
+  "#ef4444", // red
+  "#f97316", // orange
+  "#f59e0b", // amber
+  "#eab308", // yellow
+  "#84cc16", // lime
+  "#22c55e", // green
+  "#14b8a6", // teal
+  "#0ea5e9", // sky
+  "#3b82f6", // blue
+  "#a855f7", // purple
+];
+
 /** Straight-line distance between the wall's endpoints. For curved
  *  walls this is the chord length, not the arc length — see
  *  `wallArcLengthCm` for the visible-along-the-curve number. */

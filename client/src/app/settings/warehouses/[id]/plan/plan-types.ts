@@ -33,6 +33,9 @@ export interface Wall {
   /** Perpendicular sagitta of the arc midpoint relative to the chord,
    *  in centimetres. */
   bow?: number;
+  /** Optional `#RRGGBB` stroke colour override. undefined = use the
+   *  default dark wall colour (or selection blue when selected). */
+  color?: string;
 }
 
 /** The floor's perimeter polygon — what counts as walkable floor.
@@ -48,6 +51,9 @@ export interface FloorOutline {
    *  at points[i]. Optional + sparse-tolerant: undefined or 0 means
    *  that edge is straight. */
   edgeBows?: number[];
+  /** Optional `#RRGGBB` fill colour. undefined = the neutral light
+   *  slate default. */
+  color?: string;
   holes?: Hole[];
 }
 
@@ -57,6 +63,9 @@ export interface Hole {
   /** Same convention as FloorOutline.edgeBows — perpendicular
    *  sagitta per edge so holes can have curved sides too. */
   edgeBows?: number[];
+  /** Optional `#RRGGBB` stroke colour override for the cutout
+   *  outline. undefined = the default red. */
+  color?: string;
 }
 
 /** Viewport state persisted per floor — re-opening the editor

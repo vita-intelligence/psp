@@ -166,6 +166,7 @@ defmodule BackendWeb.Payloads do
       depth_m: l.depth_m,
       capacity: l.capacity,
       notes: l.notes,
+      color: l.color,
       inserted_at: l.inserted_at,
       updated_at: l.updated_at,
       created_by: actor(l, :created_by),

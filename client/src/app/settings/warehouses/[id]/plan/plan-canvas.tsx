@@ -21,8 +21,11 @@ import {
   edgeChordMidpoint,
   edgeControlPoint,
   findClosestSnap,
+  hexToRgba,
+  isHexColor,
   isSelected,
   itemsInMarquee,
+  locationColor,
   mergeSelections,
   normaliseRect,
   projectEdgeBow,
@@ -707,7 +710,11 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   tracePolygonPath(ctx, outline.points, outline.edgeBows);
                   ctx.fillStrokeShape(shape);
                 }}
-                fill="rgba(241,245,249,1)"
+                fill={
+                  isHexColor(outline.color)
+                    ? outline.color
+                    : "rgba(241,245,249,1)"
+                }
                 onClick={(e) => selectItem({ kind: "outline" }, e)}
                 onTap={(e) => selectItem({ kind: "outline" }, e)}
               />
@@ -735,7 +742,11 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                     bow={bow}
                     selected={isSelected(selection, edgeItem)}
                     parentSelected={outlineSelected}
-                    color="outline"
+                    variant="outline"
+                    /* outline.color paints the FILL, not the
+                       perimeter stroke — keep the edge stroke at
+                       the default dark colour. */
+                    ownerColor={undefined}
                     readOnly={readOnly}
                     viewportScale={viewport.scale}
                     onSelect={(e) => selectItem(edgeItem, e)}
@@ -1005,7 +1016,8 @@ function WallShape({
   const bow = wall.bow ?? 0;
   const isCurved = Math.abs(bow) > 0.5;
 
-  const stroke = selected ? "rgb(59,130,246)" : "rgb(45,45,45)";
+  const baseColor = isHexColor(wall.color) ? wall.color : "rgb(45,45,45)";
+  const stroke = selected ? "rgb(59,130,246)" : baseColor;
   const strokeWidth = selected ? 12 : 10;
   const draggable = !readOnly && selected;
 
@@ -1212,7 +1224,8 @@ function PolygonEdgeShape({
   bow,
   selected,
   parentSelected,
-  color,
+  variant,
+  ownerColor,
   readOnly,
   viewportScale,
   onSelect,
@@ -1228,7 +1241,11 @@ function PolygonEdgeShape({
   parentSelected: boolean;
   /** Visual variant — outline uses the dark perimeter colour, holes
    *  use the dashed red cutout colour. */
-  color: "outline" | "hole";
+  variant: "outline" | "hole";
+  /** Optional `#RRGGBB` override coming from the parent polygon
+   *  (outline.color / hole.color). When set, the edge paints with
+   *  that colour instead of the default palette. */
+  ownerColor: string | undefined;
   readOnly: boolean;
   viewportScale: number;
   onSelect: SelectHandler;
@@ -1236,14 +1253,17 @@ function PolygonEdgeShape({
 }) {
   const isCurved = Math.abs(bow) > 0.5;
   const palette =
-    color === "outline"
+    variant === "outline"
       ? { selected: "rgb(59,130,246)", base: "rgba(15,23,42,0.55)" }
       : { selected: "rgb(239,68,68)", base: "rgba(239,68,68,0.7)" };
+  const overrideBase = isHexColor(ownerColor) ? ownerColor : undefined;
   const stroke =
-    selected || parentSelected ? palette.selected : palette.base;
-  const baseWidth = color === "outline" ? 2 : 1.5;
+    selected || parentSelected
+      ? palette.selected
+      : (overrideBase ?? palette.base);
+  const baseWidth = variant === "outline" ? 2 : 1.5;
   const strokeWidth = selected ? baseWidth + 1 : baseWidth;
-  const dash = color === "hole" ? [8, 4] : undefined;
+  const dash = variant === "hole" ? [8, 4] : undefined;
 
   const edgeNode = isCurved ? (
     <Shape
@@ -1389,7 +1409,8 @@ function HoleOutline({
             bow={bow}
             selected={isSelected(selection, edgeItem)}
             parentSelected={holeSelected}
-            color="hole"
+            variant="hole"
+            ownerColor={hole.color}
             readOnly={readOnly}
             viewportScale={viewportScale}
             onSelect={(e) => onSelectEdge(i, e)}
@@ -1418,16 +1439,14 @@ function LocationShape({
    *  selected so it moves too. */
   onGroupMove: (dx: number, dy: number) => void;
 }) {
-  const kindColor: Record<string, { fill: string; stroke: string }> = {
-    rack: { fill: "rgba(16,185,129,0.18)", stroke: "rgb(16,185,129)" },
-    shelf: { fill: "rgba(59,130,246,0.18)", stroke: "rgb(59,130,246)" },
-    pallet_zone: { fill: "rgba(245,158,11,0.18)", stroke: "rgb(245,158,11)" },
-    cold_storage: { fill: "rgba(14,165,233,0.18)", stroke: "rgb(14,165,233)" },
-    hazmat: { fill: "rgba(239,68,68,0.18)", stroke: "rgb(239,68,68)" },
-    staging: { fill: "rgba(168,85,247,0.18)", stroke: "rgb(168,85,247)" },
-    other: { fill: "rgba(100,116,139,0.18)", stroke: "rgb(100,116,139)" },
+  // Custom location colour beats the kind default. Stroke = full
+  // opacity; fill = same colour at 18% alpha so the label text stays
+  // legible on top.
+  const baseStroke = locationColor(location.kind, location.color);
+  const palette = {
+    fill: hexToRgba(baseStroke, 0.18),
+    stroke: baseStroke,
   };
-  const palette = kindColor[location.kind ?? "other"] ?? kindColor.other;
 
   return (
     <Group
