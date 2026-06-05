@@ -46,12 +46,18 @@ export async function api<T = unknown>(
   path: string,
   { token, headers, ...init }: ApiOptions = {},
 ): Promise<T> {
+  // Multipart uploads need the browser to set Content-Type itself so
+  // the multipart boundary lands in the header. If the caller is
+  // sending FormData, skip the JSON default — fetch handles it.
+  const isFormData =
+    typeof FormData !== "undefined" && init.body instanceof FormData;
+
   let res: Response;
   try {
     res = await fetch(`${env.apiUrl}${path}`, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         Accept: "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers,

@@ -17,7 +17,18 @@ type EntityType =
   | "floor"
   | "storage_location"
   | "storage_cell"
-  | "storage_tag";
+  | "storage_tag"
+  | "unit_of_measurement"
+  | "item"
+  | "product_family"
+  | "attribute_definition"
+  | "raw_material_compliance"
+  | "raw_material_risk_assessment"
+  | "finished_product_spec"
+  | "packaging_compliance"
+  | "certificate"
+  | "item_certificate"
+  | "item_image";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();

@@ -20,7 +20,20 @@ export type PermissionCode =
   | "warehouses.create"
   | "warehouses.edit"
   | "warehouses.delete"
-  | "storage_tags.manage";
+  | "storage_tags.manage"
+  | "units.view"
+  | "units.manage"
+  | "items.view"
+  | "items.create"
+  | "items.edit"
+  | "items.delete"
+  | "product_families.manage"
+  | "attribute_definitions.manage"
+  | "risk_assessments.view"
+  | "risk_assessments.create"
+  | "risk_assessments.approve"
+  | "certificates.view"
+  | "certificates.manage";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

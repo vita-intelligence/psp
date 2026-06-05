@@ -14,6 +14,7 @@ defmodule BackendWeb.AuditController do
   use BackendWeb, :controller
 
   alias Backend.{Audit, Accounts, RBAC, Warehouses}
+  alias BackendWeb.Errors
 
   action_fallback BackendWeb.FallbackController
 
@@ -27,7 +28,21 @@ defmodule BackendWeb.AuditController do
     "floor" => "warehouses.view",
     "storage_location" => "warehouses.view",
     "storage_cell" => "warehouses.view",
-    "storage_tag" => "warehouses.view"
+    "storage_tag" => "warehouses.view",
+    "unit_of_measurement" => "units.view",
+    "item" => "items.view",
+    "product_family" => "items.view",
+    "attribute_definition" => "items.view",
+    # Sub-table audit borrows the parent's view perm. Risk
+    # assessment uses its own perm because not everyone with item
+    # read should see risk scores.
+    "raw_material_compliance" => "items.view",
+    "raw_material_risk_assessment" => "risk_assessments.view",
+    "finished_product_spec" => "items.view",
+    "packaging_compliance" => "items.view",
+    "certificate" => "certificates.view",
+    "item_certificate" => "items.view",
+    "item_image" => "items.view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -47,14 +62,46 @@ defmodule BackendWeb.AuditController do
         next_cursor: next_cursor
       })
     else
-      :error -> {:error, :not_found}
-      {:error, :unknown_entity} -> {:error, :not_found}
-      {:error, :cross_company} -> {:error, :not_found}
-      {:error, :forbidden} -> {:error, :forbidden}
+      # `entity_id` didn't parse as an integer. The client typed
+      # something nonsensical into the query string.
+      :error ->
+        send_error(conn, :bad_request, "invalid_entity_id",
+          "entity_id query param must be an integer.")
+
+      # The entity_type isn't in `@entity_view_perms`. Likely a missed
+      # wiring step when adding a new audited entity — surface the
+      # actual type so the dev can spot it in prod logs.
+      {:error, :unknown_entity} ->
+        send_error(conn, :not_found, "unknown_entity_type",
+          "Activity isn't wired for entity_type=#{inspect(entity_type)}. " <>
+          "Check AuditController.@entity_view_perms.")
+
+      # Row exists in another company, or doesn't exist at all. We
+      # collapse the two for security (don't leak "this id exists in
+      # another tenant"), but still tell the user something useful.
+      {:error, :cross_company} ->
+        send_error(conn, :not_found, "entity_not_found",
+          "No #{entity_type} with id=#{entity_id_str} is visible to your company.")
+
+      # User is logged in but lacks the view permission for this
+      # entity type. Include the required code so admins can grant it.
+      {:error, :forbidden} ->
+        required = Map.get(@entity_view_perms, entity_type)
+        send_error(conn, :forbidden, "missing_permission",
+          "You need the `#{required}` permission to view #{entity_type} activity.")
     end
   end
 
-  def index(_conn, _params), do: {:error, :bad_request}
+  def index(conn, _params) do
+    send_error(conn, :bad_request, "missing_params",
+      "GET /api/audit requires entity_type and entity_id query params.")
+  end
+
+  defp send_error(conn, status, code, detail) do
+    conn
+    |> put_status(status)
+    |> json(Errors.payload(code, detail))
+  end
 
   ## ------------------------------------------------------------------
 
@@ -103,6 +150,80 @@ defmodule BackendWeb.AuditController do
   # storage_location to find the parent warehouse.
   defp check_entity_in_company(actor, "storage_tag", entity_id) do
     case Backend.Repo.get(Backend.Warehouses.StorageTag, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "unit_of_measurement", entity_id) do
+    case Backend.Repo.get(Backend.Units.UnitOfMeasurement, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "item", entity_id) do
+    case Backend.Repo.get(Backend.Items.Item, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "product_family", entity_id) do
+    case Backend.Repo.get(Backend.Catalogs.ProductFamily, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "attribute_definition", entity_id) do
+    case Backend.Repo.get(Backend.Catalogs.AttributeDefinition, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  # Sub-table audit rows reference the item id directly (1:1 keying).
+  # Check the parent item's company.
+  defp check_entity_in_company(actor, "raw_material_compliance", entity_id) do
+    check_parent_item(actor, entity_id)
+  end
+
+  defp check_entity_in_company(actor, "raw_material_risk_assessment", entity_id) do
+    check_parent_item(actor, entity_id)
+  end
+
+  defp check_entity_in_company(actor, "finished_product_spec", entity_id) do
+    check_parent_item(actor, entity_id)
+  end
+
+  defp check_entity_in_company(actor, "packaging_compliance", entity_id) do
+    check_parent_item(actor, entity_id)
+  end
+
+  defp check_entity_in_company(actor, "certificate", entity_id) do
+    case Backend.Repo.get(Backend.Certificates.Certificate, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "item_certificate", entity_id) do
+    case Backend.Repo.get(Backend.Certificates.ItemCertificate, entity_id) do
+      %{item_id: item_id} -> check_parent_item(actor, item_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "item_image", entity_id) do
+    case Backend.Repo.get(Backend.Items.ItemImage, entity_id) do
+      %{item_id: item_id} -> check_parent_item(actor, item_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_item(actor, item_id) do
+    case Backend.Repo.get(Backend.Items.Item, item_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

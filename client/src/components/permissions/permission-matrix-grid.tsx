@@ -48,12 +48,23 @@ export function PermissionMatrixGrid({
   return (
     <div
       className={cn(
-        "rounded-md border border-border/60 overflow-hidden",
+        "rounded-md border border-border/60",
         dimmed && "opacity-60",
       )}
     >
-      {/* Desktop table */}
-      <table className="hidden w-full text-sm md:table">
+      {/* Desktop table — wrapper scrolls horizontally as a safety net
+          if a viewport is too narrow to comfortably fit Resource + four
+          action columns; `table-fixed` + explicit column widths prevent
+          a long Resource description from squeezing the action columns
+          off the card entirely. */}
+      <div className="hidden overflow-x-auto md:block">
+      <table className="w-full table-fixed text-sm">
+        <colgroup>
+          <col />
+          {ACTIONS.map((a) => (
+            <col key={a} className="w-20" />
+          ))}
+        </colgroup>
         <thead className="bg-muted/40">
           <tr>
             <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -94,7 +105,7 @@ export function PermissionMatrixGrid({
                   className="border-t border-border/40 hover:bg-muted/20"
                 >
                   <td className="px-3 py-2">
-                    <label className="flex cursor-pointer items-center gap-2">
+                    <label className="flex cursor-pointer items-start gap-2">
                       <Checkbox
                         checked={
                           allGranted
@@ -106,13 +117,12 @@ export function PermissionMatrixGrid({
                         onCheckedChange={(v) =>
                           onToggleResource(res, Boolean(v))
                         }
+                        className="mt-0.5"
                       />
-                      <span className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {res.label}
-                        </p>
+                      <span className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{res.label}</p>
                         {res.description && (
-                          <p className="truncate text-xs text-muted-foreground">
+                          <p className="text-xs text-muted-foreground">
                             {res.description}
                           </p>
                         )}
@@ -147,6 +157,7 @@ export function PermissionMatrixGrid({
           ])}
         </tbody>
       </table>
+      </div>
 
       {/* Mobile stacked layout — one card per resource with action
           chips that wrap freely. No horizontal scroll required, every

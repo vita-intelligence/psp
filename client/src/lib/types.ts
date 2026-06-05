@@ -132,7 +132,18 @@ export interface AuditEvent {
     | "floor"
     | "storage_location"
     | "storage_cell"
-    | "storage_tag";
+    | "storage_tag"
+    | "unit_of_measurement"
+    | "item"
+    | "product_family"
+    | "attribute_definition"
+    | "raw_material_compliance"
+    | "raw_material_risk_assessment"
+    | "finished_product_spec"
+    | "packaging_compliance"
+    | "certificate"
+    | "item_certificate"
+    | "item_image";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";
@@ -238,6 +249,497 @@ export interface StorageTag {
   description: string | null;
   /** Where the tag is applicable. `both` = either context. */
   kind: "location" | "cell" | "both";
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+/** Discriminator on the items table. Drives which compliance subtable
+ *  is loaded and which AttributeDefinitions render in the form. */
+export type ItemType =
+  | "raw_material"
+  | "semi_finished"
+  | "finished_product"
+  | "packaging";
+
+export interface ItemUnitCompact {
+  id: number;
+  uuid: string;
+  name: string;
+  symbol: string;
+  dimension: UnitDimension;
+}
+
+export interface ProductFamilyCompact {
+  id: number;
+  uuid: string;
+  name: string;
+}
+
+/** Raw material `use_as` — functional classification within a
+ *  formulation. Drives BOM line role + how the item shows in the
+ *  picker. */
+export type RawMaterialUseAs =
+  | "active"
+  | "sweetener"
+  | "bulking_agent"
+  | "flavouring"
+  | "colour"
+  | "acidity_regulator"
+  | "glazing_agent"
+  | "gelling_agent"
+  | "emulsifier"
+  | "disintegrant"
+  | "stabiliser"
+  | "anti_caking"
+  | "coating"
+  | "preservative"
+  | "carrier"
+  | "excipient"
+  | "other";
+
+export type AllergenStatus = "free" | "contains_traces" | "contains";
+export type VeganStatus =
+  | "vegan"
+  | "vegetarian"
+  | "non_vegetarian"
+  | "unknown";
+export type HalalStatus = "certified" | "not_certified" | "not_applicable";
+export type KosherStatus = "certified" | "not_certified" | "not_applicable";
+export type OrganicStatus =
+  | "certified"
+  | "in_conversion"
+  | "non_organic"
+  | "not_applicable";
+export type NovelFoodStatus =
+  | "not_novel"
+  | "authorised"
+  | "pending"
+  | "not_authorised";
+export type GmoStatus = "gmo_free" | "contains_gmo" | "unknown";
+export type RiskLevel = "low" | "medium" | "high" | "critical";
+
+/** Per-item raw-material compliance row. Only meaningfully populated
+ *  when `item_type = "raw_material"`. */
+export interface RawMaterialCompliance {
+  use_as: RawMaterialUseAs | null;
+  allergen_status: AllergenStatus | null;
+  vegan_status: VeganStatus | null;
+  halal_status: HalalStatus | null;
+  kosher_status: KosherStatus | null;
+  organic_status: OrganicStatus | null;
+  novel_food_status: NovelFoodStatus | null;
+  gmo_status: GmoStatus | null;
+  country_of_origin: string | null;
+  purity_pct: string | null;
+  extract_ratio: string | null;
+  overage_pct: string | null;
+  powder_water_dose_mg_per_ml: string | null;
+  shelf_life_months: number | null;
+  storage_conditions: string | null;
+  spec_document_url: string | null;
+  last_reviewed_at: string | null;
+  last_reviewed_by: AuditActor | null;
+  review_frequency_months: number | null;
+  review_due_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export type RegulatoryCategory =
+  | "food_supplement"
+  | "functional_food"
+  | "cosmetic"
+  | "medical_device";
+
+export type DosageForm =
+  | "capsule"
+  | "tablet"
+  | "softgel"
+  | "powder"
+  | "liquid"
+  | "gummy";
+
+export type CapsuleSize = "000" | "00" | "0" | "1" | "2" | "3" | "4";
+export type PowderType = "standard" | "protein";
+
+/** One per-active claim — refers to a `claim_register` row + carries
+ *  the per-product mg amount + NRV%. */
+export interface ActiveClaim {
+  claim_register_uuid?: string;
+  active_substance?: string;
+  mg_per_serving?: string;
+  nrv_pct?: string;
+}
+
+/** Structured nutrition table — per-100g + per-serving + NRV%.
+ *  Shape is regulator-driven; the FE form follows the EU 1169/2011
+ *  declaration order. */
+export interface NutritionTable {
+  energy_kj?: string;
+  energy_kcal?: string;
+  fat?: string;
+  saturates?: string;
+  carbohydrate?: string;
+  sugars?: string;
+  fibre?: string;
+  protein?: string;
+  salt?: string;
+  /** Per-vitamin / per-mineral / per-active rows beyond the standard
+   *  declaration. Each row carries amount + NRV%. */
+  custom?: Array<{
+    nutrient: string;
+    amount_per_serving?: string;
+    amount_per_100g?: string;
+    nrv_pct?: string;
+  }>;
+}
+
+/** Shape of the contaminant-limit overrides JSONB. Matches the
+ *  org-default shape so reads can merge with `companies.default_spec_limits`. */
+export interface ContaminantLimits {
+  total_aerobic?: string;
+  total_yeast?: string;
+  e_coli?: string;
+  salmonella?: string;
+  pah?: string;
+  heavy_metal?: string;
+  pesticides?: string;
+  others?: Record<string, string>;
+}
+
+/** Per-item finished-product specification. Only meaningfully populated
+ *  when `item_type = "finished_product"`. */
+export interface FinishedProductSpec {
+  regulatory_category: RegulatoryCategory | null;
+  dosage_form: DosageForm | null;
+  capsule_size: CapsuleSize | null;
+  tablet_size_mm: string | null;
+  powder_type: PowderType | null;
+  serving_size: string | null;
+  serving_size_uom: ItemUnitCompact | null;
+  serving_size_uom_id: number | null;
+  servings_per_pack: number | null;
+  net_quantity: string | null;
+  net_quantity_uom: ItemUnitCompact | null;
+  net_quantity_uom_id: number | null;
+  directions_of_use: string | null;
+  suggested_dosage: string | null;
+  warnings_text: string | null;
+  appearance: string | null;
+  disintegration_spec: string | null;
+  weight_uniformity_pct: string | null;
+  shelf_life_months: number | null;
+  storage_conditions: string | null;
+  food_contact_status: string | null;
+  active_claims: ActiveClaim[];
+  /** Array of claim_register UUIDs. */
+  general_claims: string[];
+  nutrition_table: NutritionTable;
+  target_markets: string[];
+  spec_document_url: string | null;
+  /** Array of allergen UUIDs flagged for "may contain" warning. */
+  may_contain_allergens: string[];
+  may_contain_justification: string | null;
+  may_contain_assessed_at: string | null;
+  may_contain_assessed_by: AuditActor | null;
+  contaminant_limits_overrides: ContaminantLimits;
+  inserted_at: string;
+  updated_at: string;
+}
+
+/** One image attached to an item. `url` is rendered server-side by the
+ *  storage adapter — for the local adapter it's an authed Phoenix
+ *  route; in production it'll be a short-lived signed URL. */
+export interface ItemImage {
+  uuid: string;
+  item_id: number;
+  url: string | null;
+  caption: string | null;
+  is_primary: boolean;
+  sort_order: number;
+  original_filename: string | null;
+  content_type: string | null;
+  byte_size: number | null;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
+export type CertificateType =
+  | "organic"
+  | "halal"
+  | "kosher"
+  | "iso_22000"
+  | "brc"
+  | "fssc_22000"
+  | "gmp"
+  | "ifs"
+  | "haccp"
+  | "usda_organic"
+  | "non_gmo_project"
+  | "other";
+
+/** Company-scoped certificate definition. */
+export interface Certificate {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  certificate_type: CertificateType;
+  issuing_body: string | null;
+  default_validity_months: number | null;
+  description: string | null;
+  is_active: boolean;
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+export interface CertificateCompact {
+  id: number;
+  uuid: string;
+  name: string;
+  certificate_type: CertificateType;
+  issuing_body: string | null;
+}
+
+/** Per-item certificate attachment. */
+export interface ItemCertificate {
+  uuid: string;
+  item_id: number;
+  certificate_id: number;
+  certificate: CertificateCompact | null;
+  certificate_number: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  document_url: string | null;
+  notes: string | null;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
+/** "Reviews due" queue row — raw-material compliance reviews coming up
+ *  in the next N days (or already overdue). */
+export interface ReviewDueQueueRow {
+  item: {
+    id: number;
+    uuid: string;
+    name: string;
+    item_type: ItemType;
+    external_sku: string | null;
+  };
+  review_due_at: string;
+  last_reviewed_at: string | null;
+  days_until_due: number;
+  is_overdue: boolean;
+}
+
+/** "Certificates expiring" queue row — item certificate attachments
+ *  with valid_until within the next N days. */
+export interface CertExpiringQueueRow {
+  item: {
+    id: number;
+    uuid: string;
+    name: string;
+    item_type: ItemType;
+  };
+  certificate: {
+    uuid: string | null;
+    name: string | null;
+    certificate_type: CertificateType | null;
+  };
+  certificate_number: string | null;
+  valid_until: string;
+  days_until_expiry: number;
+  is_expired: boolean;
+  document_url: string | null;
+}
+
+export type PackagingMaterial =
+  | "glass"
+  | "hdpe"
+  | "pet"
+  | "pp"
+  | "cardboard"
+  | "aluminum"
+  | "multi_layer"
+  | "other";
+
+/** Per-item packaging compliance. Populated when `item_type = "packaging"`. */
+export interface PackagingCompliance {
+  material: PackagingMaterial | null;
+  food_contact_compliant: boolean | null;
+  food_contact_declaration_url: string | null;
+  recyclability_code: string | null;
+  migration_test_url: string | null;
+  migration_test_expires_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+/** Per-item raw-material risk scorecard. Computed level comes from
+ *  the 7 scores; override is opt-in and requires justification. */
+export interface RawMaterialRisk {
+  physical_risk_score: number | null;
+  chemical_risk_score: number | null;
+  biological_risk_score: number | null;
+  allergen_risk_score: number | null;
+  radiological_risk_score: number | null;
+  fraud_vulnerability_score: number | null;
+  malicious_risk_score: number | null;
+  computed_overall_level: RiskLevel | null;
+  overridden_overall_level: RiskLevel | null;
+  override_justification: string | null;
+  justification: string | null;
+  required_controls: string | null;
+  assessed_at: string | null;
+  assessed_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+/** Core item row. Per-type compliance data (raw material, finished
+ *  product, packaging) lives in 1:1 subtables and arrives on this
+ *  payload as separate keys when preloaded by the show endpoint. */
+export interface Item {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  description: string | null;
+  item_type: ItemType;
+  external_sku: string | null;
+  barcode: string | null;
+  stock_uom: ItemUnitCompact | null;
+  stock_uom_id: number | null;
+  product_family: ProductFamilyCompact | null;
+  product_family_id: number | null;
+  attributes: Record<string, unknown>;
+  is_active: boolean;
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+  /** Present only on show endpoints (list endpoints skip the join). */
+  raw_material_compliance?: RawMaterialCompliance | null;
+  raw_material_risk?: RawMaterialRisk | null;
+  finished_product_spec?: FinishedProductSpec | null;
+  packaging_compliance?: PackagingCompliance | null;
+  certificate_attachments?: ItemCertificate[];
+  images?: ItemImage[];
+  allergens?: Allergen[];
+}
+
+export interface ProductFamily {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+export type AttributeScope =
+  | "raw_material"
+  | "semi_finished"
+  | "finished_product"
+  | "packaging"
+  | "item_any";
+
+export type AttributeType =
+  | "text"
+  | "number"
+  | "boolean"
+  | "date"
+  | "enum"
+  | "url";
+
+export interface AttributeEnumChoice {
+  value: string;
+  label: string;
+}
+
+/** Admin-defined custom attribute. Values live in `items.attributes`,
+ *  validated server-side against the definition's `attribute_type`
+ *  and `enum_choices`. */
+export interface AttributeDefinition {
+  id: number;
+  uuid: string;
+  code: string | null;
+  scope: AttributeScope;
+  key: string;
+  label: string;
+  attribute_type: AttributeType;
+  enum_choices: AttributeEnumChoice[];
+  required: boolean;
+  default_value: unknown;
+  unit_symbol: string | null;
+  help_text: string | null;
+  sort_order: number;
+  is_active: boolean;
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+/** Global EU 1169/2011 Annex II declared allergens. Read-only. */
+export interface Allergen {
+  uuid: string;
+  key: string;
+  label: string;
+  source: string;
+  sort_order: number;
+}
+
+export type ClaimStatus = "authorised" | "rejected" | "pending" | "withdrawn";
+
+/** One row from the regulator claim register (EU 1924/2006 etc.).
+ *  Read-only — seeded by data migration. */
+export interface RegisteredClaim {
+  uuid: string;
+  claim_code: string;
+  claim_text: string;
+  category: string;
+  nutrient_substance: string | null;
+  conditions_of_use: string | null;
+  jurisdictions: string[];
+  source: string;
+  status: ClaimStatus;
+}
+
+/** One row of the company-scoped unit-of-measurement registry. Within
+ *  a dimension exactly one unit is `is_base=true` (factor 1); every
+ *  other unit converts to it via a single multiply by `factor_to_base`.
+ *  Serialised as a string by the backend so JS doesn't lose precision
+ *  on tiny ratios (e.g. mg → kg = 0.000001). */
+export type UnitDimension =
+  | "mass"
+  | "volume"
+  | "count"
+  | "length"
+  | "area"
+  | "time";
+
+export interface UnitOfMeasurement {
+  id: number;
+  uuid: string;
+  /** Auto-generated display code (`UM00001`). Derived from id +
+   *  numbering format, like every other entity. */
+  code: string | null;
+  name: string;
+  symbol: string;
+  dimension: UnitDimension;
+  /** Decimal string. One unit = factor × base_unit_of_dimension. */
+  factor_to_base: string;
+  is_base: boolean;
+  is_active: boolean;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

@@ -48,7 +48,9 @@ export default async function UserAdminPage({ params }: PageProps) {
   const canApplyTemplate = hasPermission(currentUser, "roles.view");
 
   return (
-    <div className="space-y-4">
+    // max-w-3xl pins the whole stack — access matrix + audit cards —
+    // to one width so they line up edge-to-edge.
+    <div className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <Button
           asChild

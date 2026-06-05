@@ -232,6 +232,28 @@ defmodule BackendWeb.FormChannel do
     do: RBAC.has_permission?(user, "roles.edit") or
         RBAC.has_permission?(user, "roles.create")
 
+  # Units-of-measurement editor. units.manage gates both new + edit;
+  # there's no separate create/edit split because the matrix uses one
+  # code for both.
+  defp can_edit_resource?(user, "unit-of-measurement"),
+    do: RBAC.has_permission?(user, "units.manage")
+
+  # Stock items — split between create + edit so a draft form can
+  # accept either role for collab.
+  defp can_edit_resource?(user, "item"),
+    do:
+      RBAC.has_permission?(user, "items.edit") or
+        RBAC.has_permission?(user, "items.create")
+
+  defp can_edit_resource?(user, "product-family"),
+    do: RBAC.has_permission?(user, "product_families.manage")
+
+  defp can_edit_resource?(user, "attribute-definition"),
+    do: RBAC.has_permission?(user, "attribute_definitions.manage")
+
+  defp can_edit_resource?(user, "certificate"),
+    do: RBAC.has_permission?(user, "certificates.manage")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

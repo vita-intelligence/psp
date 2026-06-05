@@ -35,7 +35,11 @@ export default async function EditTemplatePage({ params }: PageProps) {
   const canDelete = hasPermission(user, "roles.delete") && !template.is_system;
 
   return (
-    <div className="space-y-4">
+    // max-w-3xl pins the whole stack — form + ownership + activity —
+    // to one width so they line up edge-to-edge. The form's live-
+    // cursor coords are anchored to the form Card, but every editor
+    // sees the same Card width because the parent caps it.
+    <div className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <Button
           asChild

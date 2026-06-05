@@ -92,10 +92,25 @@ export function DataTable<T>({
   // order wins when present; new columns (introduced by a code change)
   // land at the end of the visible list.
   const orderedColumns = useMemo(() => {
-    return resolveColumnOrder(columns, persistedOrder).filter(
+    const resolved = resolveColumnOrder(columns, persistedOrder).filter(
       (c) => !hiddenColumns.has(c.id),
     );
-  }, [columns, persistedOrder, hiddenColumns]);
+    if (process.env.NODE_ENV !== "production") {
+      const seen = new Set<string>();
+      const dups: string[] = [];
+      for (const c of resolved) {
+        if (seen.has(c.id)) dups.push(c.id);
+        else seen.add(c.id);
+      }
+      if (dups.length > 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[DataTable:${tableId}] duplicate column id(s) after resolve: ${dups.join(", ")} — check the columns prop or clear localStorage key dataTable.${tableId}`,
+        );
+      }
+    }
+    return resolved;
+  }, [columns, persistedOrder, hiddenColumns, tableId]);
 
   const queryKey = [
     "data-table",
@@ -141,10 +156,32 @@ export function DataTable<T>({
     staleTime: 0,
   });
 
-  const rows: T[] = useMemo(
-    () => query.data?.pages.flatMap((p) => p.items) ?? [],
-    [query.data],
-  );
+  const rows: T[] = useMemo(() => {
+    const flat = query.data?.pages.flatMap((p) => p.items) ?? [];
+    // Defensive dedupe by rowKey — pagination overlap (e.g. a row's
+    // sort position shifting between fetches) can produce the same row
+    // twice in the flattened array. React then complains about
+    // duplicate keys; uniqueness here is cheap and correct.
+    const seen = new Set<string>();
+    const dups: string[] = [];
+    const out: T[] = [];
+    for (const row of flat) {
+      const k = rowKey(row);
+      if (seen.has(k)) {
+        dups.push(k);
+        continue;
+      }
+      seen.add(k);
+      out.push(row);
+    }
+    if (process.env.NODE_ENV !== "production" && dups.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[DataTable:${tableId}] dropped duplicate rowKey(s): ${dups.join(", ")} — server returned the same row twice across pagination`,
+      );
+    }
+    return out;
+  }, [query.data, rowKey, tableId]);
 
   const isInitialLoading = query.isPending && !query.data;
   const hasNoData =
@@ -457,7 +494,13 @@ function resolveColumnOrder<T>(
   const byId = new Map(defs.map((c) => [c.id, c]));
   const ordered: DataTableColumn<T>[] = [];
   const seen = new Set<string>();
+  // Persisted order can contain duplicates if older code (or a buggy
+  // reorder) wrote a malformed array. Skip anything we've already
+  // placed so we never produce a duplicate-id column list — duplicate
+  // ids mean duplicate React keys on TableCell, which React surfaces
+  // as the misleading "missing key" warning.
   for (const id of persisted) {
+    if (seen.has(id)) continue;
     const col = byId.get(id);
     if (col) {
       ordered.push(col);

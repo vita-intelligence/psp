@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { UserAvatar } from "@/components/users/user-avatar";
-import { messageFor } from "@/lib/errors/codes";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import type { ErrorDebug } from "@/lib/errors/types";
 import { cn } from "@/lib/utils";
 import { subscribeAudit, dispatchRestore } from "@/lib/audit/invalidator";
 import { toast } from "sonner";
@@ -21,7 +22,6 @@ import {
 } from "@/lib/audit/formatters";
 import type { AuditEvent } from "@/lib/types";
 import {
-  AlertCircle,
   ChevronDown,
   Loader2,
   RefreshCw,
@@ -41,12 +41,25 @@ interface AuditHistoryCardProps {
   canRestore?: boolean;
 }
 
+/** Structured error so the banner can show code + detail + technical
+ *  drawer the same way every other form-error banner does. Saves the
+ *  "wait, why did this 404?" guessing in production. */
+interface ActivityError {
+  /** Human-readable message — always present. Falls back to a stable
+   *  phrase only when the backend gave us literally nothing. */
+  detail: string;
+  /** Backend error code (`unknown_entity_type`, `missing_permission`,
+   *  `entity_not_found`, …). Surfaced inside Technical details. */
+  code?: string;
+  debug?: ErrorDebug;
+}
+
 interface FetchState {
   status: "loading" | "ready" | "error";
   events: AuditEvent[];
   cursor: string | null;
   loadingMore: boolean;
-  error: string | null;
+  error: ActivityError | null;
 }
 
 const PAGE_SIZE = 20;
@@ -92,18 +105,15 @@ export function AuditHistoryCard({
         { cache: "no-store" },
       );
       if (!res.ok) {
-        let body: { error?: string; detail?: string } = {};
-        try {
-          body = await res.json();
-        } catch {
-          // body wasn't JSON
-        }
         setState({
           status: "error",
           events: [],
           cursor: null,
           loadingMore: false,
-          error: messageFor(body.error, body.detail),
+          error: await extractError(
+            res,
+            `proxy:/api/audit?entity_type=${entityType}&entity_id=${entityId}`,
+          ),
         });
         return;
       }
@@ -118,13 +128,24 @@ export function AuditHistoryCard({
         loadingMore: false,
         error: null,
       });
-    } catch {
+    } catch (err) {
       setState({
         status: "error",
         events: [],
         cursor: null,
         loadingMore: false,
-        error: "Couldn't load activity. Please try again.",
+        error: {
+          detail:
+            err instanceof Error
+              ? `Couldn't reach the server: ${err.message}`
+              : "Couldn't reach the server.",
+          code: "network_error",
+          debug: {
+            source: `audit-history-card:${entityType}/${entityId}`,
+            exception: err instanceof Error ? err.message : String(err),
+            request_id: synthesizeRequestId(),
+          },
+        },
       });
     }
   }, [entityType, entityId]);
@@ -176,11 +197,16 @@ export function AuditHistoryCard({
       );
       if (!res.ok) {
         // Fail soft on pagination — keep what we have, surface a
-        // small error banner but let the user retry.
+        // small error banner but let the user retry. The banner shows
+        // the backend code + detail so a prod issue is debuggable.
+        const detailed = await extractError(
+          res,
+          `proxy:/api/audit?cursor=…&entity_type=${entityType}&entity_id=${entityId}`,
+        );
         setState((s) => ({
           ...s,
           loadingMore: false,
-          error: "Couldn't load more activity. Try scrolling again.",
+          error: detailed,
         }));
         return;
       }
@@ -194,11 +220,22 @@ export function AuditHistoryCard({
         cursor: data.next_cursor,
         loadingMore: false,
       }));
-    } catch {
+    } catch (err) {
       setState((s) => ({
         ...s,
         loadingMore: false,
-        error: "Couldn't load more activity. Try scrolling again.",
+        error: {
+          detail:
+            err instanceof Error
+              ? `Couldn't reach the server: ${err.message}`
+              : "Couldn't reach the server.",
+          code: "network_error",
+          debug: {
+            source: `audit-history-card:loadMore:${entityType}/${entityId}`,
+            exception: err instanceof Error ? err.message : String(err),
+            request_id: synthesizeRequestId(),
+          },
+        },
       }));
     } finally {
       loadingMoreRef.current = false;
@@ -250,12 +287,13 @@ export function AuditHistoryCard({
           </div>
         )}
 
-        {state.status === "error" && (
+        {state.status === "error" && state.error && (
           <div className="space-y-3">
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{state.error}</span>
-            </div>
+            <ErrorBanner
+              detail={state.error.detail}
+              code={state.error.code}
+              debug={state.error.debug}
+            />
             <Button
               type="button"
               size="sm"
@@ -304,11 +342,21 @@ export function AuditHistoryCard({
             )}
 
             {state.error && state.events.length > 0 && (
-              <li className="-ml-6">
-                <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                  <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                  <span>{state.error}</span>
-                </div>
+              <li className="-ml-6 space-y-2">
+                <ErrorBanner
+                  detail={state.error.detail}
+                  code={state.error.code}
+                  debug={state.error.debug}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void loadMore()}
+                >
+                  <RefreshCw className="mr-1.5 size-3.5" />
+                  Try loading more
+                </Button>
               </li>
             )}
           </ol>
@@ -529,6 +577,70 @@ function eventStyle(kind: AuditEvent["event"]) {
     case "deleted":
       return { icon: Trash2, tone: "destructive" as const };
   }
+}
+
+/**
+ * Pull a structured error out of a non-OK response. Preserves the
+ * backend's `code` + `detail` + any `debug` block so the ErrorBanner
+ * can show the same level of diagnostic depth forms get — no more
+ * "we couldn't find what you're looking for" with zero context.
+ *
+ * Order of preference, most informative to least:
+ *   1. Backend JSON `{ error, detail, debug }` (the standard payload)
+ *   2. Raw response body (HTML error page, plain text, etc.)
+ *   3. Status code phrase as last resort
+ */
+async function extractError(
+  res: Response,
+  source: string,
+): Promise<ActivityError> {
+  // Synthesise a request id on the FE when the backend didn't stamp
+  // one. Keeps the "paste this id into a bug report" support flow
+  // alive even for client-side errors and pre-route 404s.
+  const debug: ErrorDebug = {
+    source,
+    http_status: res.status,
+    request_id: synthesizeRequestId(),
+  };
+  type ErrorBody = {
+    error?: string;
+    detail?: string;
+    debug?: Partial<ErrorDebug>;
+  };
+  let body: ErrorBody | null = null;
+  let rawText: string | null = null;
+  try {
+    rawText = await res.text();
+    body = rawText ? (JSON.parse(rawText) as ErrorBody) : null;
+  } catch {
+    // Body wasn't JSON — leave body null, fall through.
+  }
+  if (body?.detail) {
+    return {
+      detail: body.detail,
+      code: body.error,
+      debug: { ...debug, ...(body.debug ?? {}) },
+    };
+  }
+  if (rawText && rawText.trim().length > 0 && rawText.length < 400) {
+    return {
+      detail: `Server returned HTTP ${res.status}: ${rawText.trim()}`,
+      code: body?.error,
+      debug,
+    };
+  }
+  return {
+    detail: `Server returned HTTP ${res.status} (${res.statusText || "no status text"}). Open Technical details for the request id.`,
+    code: body?.error,
+    debug,
+  };
+}
+
+function synthesizeRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `fe-${crypto.randomUUID()}`;
+  }
+  return `fe-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** "5m ago", "yesterday", "Jan 12" — readable relative time. */

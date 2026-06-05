@@ -18,9 +18,13 @@ defmodule Backend.Numbering do
   import Ecto.Query, warn: false
 
   alias Backend.Accounts.User
+  alias Backend.Catalogs.{AttributeDefinition, ProductFamily}
+  alias Backend.Certificates.Certificate
   alias Backend.Companies.Company
+  alias Backend.Items.Item
   alias Backend.RBAC.Role
   alias Backend.Repo
+  alias Backend.Units.UnitOfMeasurement
   alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, StorageTag, Warehouse}
 
   @entity_schemas %{
@@ -30,7 +34,12 @@ defmodule Backend.Numbering do
     "floor" => Floor,
     "storage_location" => StorageLocation,
     "storage_cell" => StorageCell,
-    "storage_tag" => StorageTag
+    "storage_tag" => StorageTag,
+    "unit_of_measurement" => UnitOfMeasurement,
+    "item" => Item,
+    "product_family" => ProductFamily,
+    "attribute_definition" => AttributeDefinition,
+    "certificate" => Certificate
   }
 
   @default_padding 5

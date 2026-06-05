@@ -208,6 +208,315 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Item — name + type + identity + audit. Per-type compliance subtable
+  data (raw-material, finished-product, packaging) is preloaded
+  separately by the controller; this shaper covers the core row only.
+  """
+  def item(i) do
+    base = %{
+      id: i.id,
+      uuid: i.uuid,
+      code: render_code(i, "item"),
+      name: i.name,
+      description: i.description,
+      item_type: i.item_type,
+      external_sku: i.external_sku,
+      barcode: i.barcode,
+      stock_uom: maybe_unit_compact(i.stock_uom),
+      stock_uom_id: i.stock_uom_id,
+      product_family: maybe_family_compact(i.product_family),
+      product_family_id: i.product_family_id,
+      attributes: i.attributes || %{},
+      is_active: i.is_active,
+      inserted_at: i.inserted_at,
+      updated_at: i.updated_at,
+      created_by: actor(i, :created_by),
+      updated_by: actor(i, :updated_by)
+    }
+
+    # Sub-tables are only included when preloaded — list endpoints
+    # never load them (saves a join per row), show endpoints do.
+    base
+    |> add_optional(:raw_material_compliance, i.raw_material_compliance, &raw_material_compliance/1)
+    |> add_optional(:raw_material_risk, i.raw_material_risk, &raw_material_risk/1)
+    |> add_optional(:finished_product_spec, i.finished_product_spec, &finished_product_spec/1)
+    |> add_optional(:packaging_compliance, i.packaging_compliance, &packaging_compliance/1)
+    |> add_optional(:certificate_attachments, i.certificate_attachments, fn list ->
+      Enum.map(list, &item_certificate/1)
+    end)
+    |> add_optional(:images, i.images, fn list -> Enum.map(list, &item_image/1) end)
+    |> add_optional(:allergens, i.allergens, fn list -> Enum.map(list, &allergen/1) end)
+  end
+
+  def certificate(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      code: render_code(c, "certificate"),
+      name: c.name,
+      certificate_type: c.certificate_type,
+      issuing_body: c.issuing_body,
+      default_validity_months: c.default_validity_months,
+      description: c.description,
+      is_active: c.is_active,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at,
+      created_by: actor(c, :created_by),
+      updated_by: actor(c, :updated_by)
+    }
+  end
+
+  @doc """
+  Per-item image. `url` is rendered through the storage adapter — for
+  the local adapter it's an authed Phoenix route; for cloud adapters
+  it'll be a short-lived signed URL.
+  """
+  def item_image(i) do
+    %{
+      uuid: i.uuid,
+      item_id: i.item_id,
+      url: Backend.Storage.public_url(i.blob_path),
+      caption: i.caption,
+      is_primary: i.is_primary,
+      sort_order: i.sort_order,
+      original_filename: i.original_filename,
+      content_type: i.content_type,
+      byte_size: i.byte_size,
+      uploaded_at: i.uploaded_at,
+      uploaded_by: actor(i, :uploaded_by)
+    }
+  end
+
+  def item_certificate(a) do
+    %{
+      uuid: a.uuid,
+      item_id: a.item_id,
+      certificate_id: a.certificate_id,
+      certificate: maybe_certificate_compact(a.certificate),
+      certificate_number: a.certificate_number,
+      valid_from: a.valid_from,
+      valid_until: a.valid_until,
+      document_url: a.document_url,
+      notes: a.notes,
+      uploaded_at: a.uploaded_at,
+      uploaded_by: actor(a, :uploaded_by)
+    }
+  end
+
+  defp maybe_certificate_compact(%Backend.Certificates.Certificate{} = c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      name: c.name,
+      certificate_type: c.certificate_type,
+      issuing_body: c.issuing_body
+    }
+  end
+
+  defp maybe_certificate_compact(_), do: nil
+
+  def packaging_compliance(p) do
+    %{
+      material: p.material,
+      food_contact_compliant: p.food_contact_compliant,
+      food_contact_declaration_url: p.food_contact_declaration_url,
+      recyclability_code: p.recyclability_code,
+      migration_test_url: p.migration_test_url,
+      migration_test_expires_at: p.migration_test_expires_at,
+      inserted_at: p.inserted_at,
+      updated_at: p.updated_at
+    }
+  end
+
+  def finished_product_spec(s) do
+    %{
+      regulatory_category: s.regulatory_category,
+      dosage_form: s.dosage_form,
+      capsule_size: s.capsule_size,
+      tablet_size_mm: decimal_to_string(s.tablet_size_mm),
+      powder_type: s.powder_type,
+      serving_size: decimal_to_string(s.serving_size),
+      serving_size_uom: maybe_unit_compact(s.serving_size_uom),
+      serving_size_uom_id: s.serving_size_uom_id,
+      servings_per_pack: s.servings_per_pack,
+      net_quantity: decimal_to_string(s.net_quantity),
+      net_quantity_uom: maybe_unit_compact(s.net_quantity_uom),
+      net_quantity_uom_id: s.net_quantity_uom_id,
+      directions_of_use: s.directions_of_use,
+      suggested_dosage: s.suggested_dosage,
+      warnings_text: s.warnings_text,
+      appearance: s.appearance,
+      disintegration_spec: s.disintegration_spec,
+      weight_uniformity_pct: decimal_to_string(s.weight_uniformity_pct),
+      shelf_life_months: s.shelf_life_months,
+      storage_conditions: s.storage_conditions,
+      food_contact_status: s.food_contact_status,
+      active_claims: s.active_claims || [],
+      general_claims: s.general_claims || [],
+      nutrition_table: s.nutrition_table || %{},
+      target_markets: s.target_markets || [],
+      spec_document_url: s.spec_document_url,
+      may_contain_allergens: s.may_contain_allergens || [],
+      may_contain_justification: s.may_contain_justification,
+      may_contain_assessed_at: s.may_contain_assessed_at,
+      may_contain_assessed_by: actor(s, :may_contain_assessed_by),
+      contaminant_limits_overrides: s.contaminant_limits_overrides || %{},
+      inserted_at: s.inserted_at,
+      updated_at: s.updated_at
+    }
+  end
+
+  defp add_optional(map, _key, %Ecto.Association.NotLoaded{}, _shaper), do: map
+  defp add_optional(map, key, nil, _shaper), do: Map.put(map, key, nil)
+  defp add_optional(map, key, value, shaper), do: Map.put(map, key, shaper.(value))
+
+  def raw_material_compliance(c) do
+    %{
+      use_as: c.use_as,
+      allergen_status: c.allergen_status,
+      vegan_status: c.vegan_status,
+      halal_status: c.halal_status,
+      kosher_status: c.kosher_status,
+      organic_status: c.organic_status,
+      novel_food_status: c.novel_food_status,
+      gmo_status: c.gmo_status,
+      country_of_origin: c.country_of_origin,
+      purity_pct: decimal_to_string(c.purity_pct),
+      extract_ratio: c.extract_ratio,
+      overage_pct: decimal_to_string(c.overage_pct),
+      powder_water_dose_mg_per_ml: decimal_to_string(c.powder_water_dose_mg_per_ml),
+      shelf_life_months: c.shelf_life_months,
+      storage_conditions: c.storage_conditions,
+      spec_document_url: c.spec_document_url,
+      last_reviewed_at: c.last_reviewed_at,
+      last_reviewed_by: actor(c, :last_reviewed_by),
+      review_frequency_months: c.review_frequency_months,
+      review_due_at: c.review_due_at,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at
+    }
+  end
+
+  def raw_material_risk(r) do
+    %{
+      physical_risk_score: r.physical_risk_score,
+      chemical_risk_score: r.chemical_risk_score,
+      biological_risk_score: r.biological_risk_score,
+      allergen_risk_score: r.allergen_risk_score,
+      radiological_risk_score: r.radiological_risk_score,
+      fraud_vulnerability_score: r.fraud_vulnerability_score,
+      malicious_risk_score: r.malicious_risk_score,
+      computed_overall_level: r.computed_overall_level,
+      overridden_overall_level: r.overridden_overall_level,
+      override_justification: r.override_justification,
+      justification: r.justification,
+      required_controls: r.required_controls,
+      assessed_at: r.assessed_at,
+      assessed_by: actor(r, :assessed_by),
+      inserted_at: r.inserted_at,
+      updated_at: r.updated_at
+    }
+  end
+
+  defp maybe_unit_compact(%Backend.Units.UnitOfMeasurement{} = u),
+    do: %{id: u.id, uuid: u.uuid, name: u.name, symbol: u.symbol, dimension: u.dimension}
+
+  defp maybe_unit_compact(_), do: nil
+
+  defp maybe_family_compact(%Backend.Catalogs.ProductFamily{} = f),
+    do: %{id: f.id, uuid: f.uuid, name: f.name}
+
+  defp maybe_family_compact(_), do: nil
+
+  def product_family(f) do
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      code: render_code(f, "product_family"),
+      name: f.name,
+      description: f.description,
+      is_active: f.is_active,
+      inserted_at: f.inserted_at,
+      updated_at: f.updated_at,
+      created_by: actor(f, :created_by),
+      updated_by: actor(f, :updated_by)
+    }
+  end
+
+  def attribute_definition(a) do
+    %{
+      id: a.id,
+      uuid: a.uuid,
+      code: render_code(a, "attribute_definition"),
+      scope: a.scope,
+      key: a.key,
+      label: a.label,
+      attribute_type: a.attribute_type,
+      enum_choices: a.enum_choices || [],
+      required: a.required,
+      default_value: a.default_value,
+      unit_symbol: a.unit_symbol,
+      help_text: a.help_text,
+      sort_order: a.sort_order,
+      is_active: a.is_active,
+      inserted_at: a.inserted_at,
+      updated_at: a.updated_at,
+      created_by: actor(a, :created_by),
+      updated_by: actor(a, :updated_by)
+    }
+  end
+
+  def allergen(a) do
+    %{
+      uuid: a.uuid,
+      key: a.key,
+      label: a.label,
+      source: a.source,
+      sort_order: a.sort_order
+    }
+  end
+
+  def claim(c) do
+    %{
+      uuid: c.uuid,
+      claim_code: c.claim_code,
+      claim_text: c.claim_text,
+      category: c.category,
+      nutrient_substance: c.nutrient_substance,
+      conditions_of_use: c.conditions_of_use,
+      jurisdictions: c.jurisdictions || [],
+      source: c.source,
+      status: c.status
+    }
+  end
+
+  @doc """
+  One row from the company-scoped units-of-measurement registry.
+  `factor_to_base` is serialised as a string so JS doesn't lose
+  precision on tiny ratios (e.g. mg → kg = 0.000001).
+  """
+  def unit_of_measurement(u) do
+    %{
+      id: u.id,
+      uuid: u.uuid,
+      code: render_code(u, "unit_of_measurement"),
+      name: u.name,
+      symbol: u.symbol,
+      dimension: u.dimension,
+      factor_to_base: decimal_to_string(u.factor_to_base),
+      is_base: u.is_base,
+      is_active: u.is_active,
+      inserted_at: u.inserted_at,
+      updated_at: u.updated_at,
+      created_by: actor(u, :created_by),
+      updated_by: actor(u, :updated_by)
+    }
+  end
+
+  defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+  defp decimal_to_string(other), do: other
+
+  @doc """
   One level of a storage location. Cells stack from `ordinal: 0`
   (bottom) upward. Dimensions in metres, tags freeform.
   """

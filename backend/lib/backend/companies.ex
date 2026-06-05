@@ -39,6 +39,13 @@ defmodule Backend.Companies do
         # No system roles to seed: access is per-user
         # (`is_admin` + `permissions`). Admins create their own
         # permission templates as needed.
+        #
+        # Units of measurement DO get pre-seeded — every tenant needs
+        # kg / g / L / pcs / m to be useful out of the box, so we
+        # don't make admins type them in. Idempotent via the
+        # (company_id, symbol) unique index.
+        Backend.Units.seed_defaults_for_company(company.id)
+
         company
     end
   end

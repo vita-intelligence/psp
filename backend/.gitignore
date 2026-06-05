@@ -25,3 +25,6 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 backend-*.tar
 
+
+# Local-adapter image uploads — bytes don't belong in the repo
+priv/uploads/

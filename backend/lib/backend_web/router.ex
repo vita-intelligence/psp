@@ -70,6 +70,76 @@ defmodule BackendWeb.Router do
     # picker. Top-level (not nested under warehouses) because the
     # registry is shared across every warehouse.
     resources "/storage-tags", StorageTagController, except: [:new, :edit]
+
+    # Company-scoped units-of-measurement registry. Used by the items
+    # and recipe forms (once they land) for stock + conversion math;
+    # admins manage at /settings/units-of-measurement.
+    resources "/units-of-measurement", UnitOfMeasurementController,
+      except: [:new, :edit]
+
+    # Core stock items. Per-type compliance subtables (raw_material /
+    # finished_product / packaging) are managed by sibling controllers
+    # and stitched in by the item payload shaper.
+    resources "/items", ItemController, except: [:new, :edit] do
+      # Atomic mega-save: identity + per-type compliance subtable in
+      # one transaction. Used by the unified item-edit form.
+      put "/full", ItemController, :update_full
+
+      # Per-item image gallery. Bytes are stored via the configured
+      # `Backend.Storage` adapter (filesystem in dev, swap to Azure /
+      # S3 in prod). The serving route is RBAC-gated so reads still
+      # honour items.view.
+      get "/images", ItemImageController, :index
+      post "/images", ItemImageController, :create
+      get "/images/:id/file", ItemImageController, :serve_file
+      put "/images/:id", ItemImageController, :update
+      put "/images/:id/primary", ItemImageController, :set_primary
+      delete "/images/:id", ItemImageController, :delete
+
+      # Raw-material sub-data. Each route validates the parent is in
+      # fact a raw material before writing.
+      put "/raw-material-compliance", RawMaterialController, :upsert_compliance
+      put "/raw-material-risk", RawMaterialController, :upsert_risk
+      put "/allergens", RawMaterialController, :set_allergens
+
+      # Finished-product spec — only writes for items of type
+      # `finished_product`.
+      put "/finished-product-spec", FinishedProductController, :upsert
+
+      # Packaging compliance — only writes for items of type
+      # `packaging`.
+      put "/packaging-compliance", PackagingController, :upsert
+
+      # Per-item certificate attachments. Cert registry itself is
+      # a sibling resource below.
+      resources "/certificates", ItemCertificateController,
+        only: [:create, :update, :delete]
+    end
+
+    # Company-scoped certificate registry (definitions). Per-item
+    # attachments are nested under items above.
+    resources "/certificates", CertificateController, except: [:new, :edit]
+
+    # Catalogue shape — product families + admin-extensible attribute
+    # definitions. Read paths borrow `items.view`; write paths gated
+    # by their dedicated `.manage` permission codes.
+    resources "/product-families", ProductFamilyController,
+      except: [:new, :edit]
+
+    resources "/attribute-definitions", AttributeDefinitionController,
+      except: [:new, :edit]
+
+    # Global lookups — EU 1169/2011 Annex II allergens + the regulator
+    # claim register. Read-only; `items.view` for access.
+    get "/allergens", AllergenController, :index
+    get "/claim-register", ClaimRegisterController, :index
+
+    # "Needs attention" queues. Surface raw-material reviews coming
+    # due + certificate attachments expiring soon.
+    scope "/queues" do
+      get "/reviews-due", QueueController, :reviews_due
+      get "/certificates-expiring", QueueController, :certificates_expiring
+    end
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

@@ -115,16 +115,24 @@ defmodule Backend.Audit do
           %{}
       end
 
+    # Sub-tables (raw_material_compliance, raw_material_risk_assessment,
+    # finished_product_spec, packaging_compliance) use `item_id` as the
+    # PK and don't carry their own `company_id` / `uuid` columns. Fall
+    # back to the parent item for those so the audit row is still
+    # tenant-scoped and the Activity card can navigate back.
+    entity_id = Map.get(entity, :id) || Map.get(entity, :item_id)
+    {company_id, entity_uuid} = derive_scope(entity)
+
     attrs = %{
-      company_id: Map.get(entity, :company_id),
+      company_id: company_id,
       entity_type: entity_type,
-      entity_id: entity.id,
-      entity_uuid: Map.get(entity, :uuid),
+      entity_id: entity_id,
+      entity_uuid: entity_uuid,
       event: event,
       actor_id: actor_id(actor),
       actor_snapshot: actor_snapshot,
-      changes: changes,
-      state_after: state_after,
+      changes: stringify_decimal_values(changes),
+      state_after: stringify_decimal_values(state_after),
       at: DateTime.utc_now()
     }
 
@@ -135,6 +143,48 @@ defmodule Backend.Audit do
 
   defp actor_id(%User{id: id}), do: id
   defp actor_id(_), do: nil
+
+  # Pull company_id + uuid from the entity itself; for sub-tables that
+  # lack them, look up via the parent item. One small extra query per
+  # audit write — cheap, and we never cache it.
+  defp derive_scope(entity) do
+    own_company = Map.get(entity, :company_id)
+    own_uuid = Map.get(entity, :uuid)
+
+    cond do
+      not is_nil(own_company) ->
+        {own_company, own_uuid}
+
+      not is_nil(Map.get(entity, :item_id)) ->
+        case Repo.get(Backend.Items.Item, Map.get(entity, :item_id)) do
+          %{company_id: cid, uuid: uuid} -> {cid, own_uuid || uuid}
+          _ -> {nil, own_uuid}
+        end
+
+      true ->
+        {nil, own_uuid}
+    end
+  end
+
+  # Jason doesn't ship a default Decimal encoder, so any Decimal value
+  # in the snapshot crashes the JSONB write. Convert recursively to a
+  # canonical string the FE can re-parse.
+  defp stringify_decimal_values(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {k, stringify_decimal(v)} end)
+  end
+
+  defp stringify_decimal_values(other), do: other
+
+  defp stringify_decimal(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+
+  defp stringify_decimal(%{__struct__: _} = struct), do: struct
+
+  defp stringify_decimal(%{} = m), do: stringify_decimal_values(m)
+
+  defp stringify_decimal(list) when is_list(list),
+    do: Enum.map(list, &stringify_decimal/1)
+
+  defp stringify_decimal(other), do: other
 
   # `before` + `after` are flat field => value maps. Build a per-field
   # diff that omits unchanged fields and stringifies keys so the JSONB

@@ -4,8 +4,9 @@ import { logoutAction } from "@/lib/auth/actions";
 import { Wordmark } from "@/components/brand/wordmark";
 import { ConnectionPill } from "@/components/realtime/connection-pill";
 import { UserAvatar } from "@/components/users/user-avatar";
-import { LogOut } from "lucide-react";
+import { ListChecks, LogOut } from "lucide-react";
 import type { User } from "@/lib/types";
+import { hasPermission } from "@/lib/rbac";
 
 export function TopBar({ user }: { user: User }) {
   return (
@@ -15,6 +16,17 @@ export function TopBar({ user }: { user: User }) {
 
         <div className="flex items-center gap-2 sm:gap-3">
           <ConnectionPill />
+
+          {hasPermission(user, "items.view") && (
+            <Link
+              href="/queues"
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              title="Review + expiry queues"
+            >
+              <ListChecks className="size-4" />
+              <span className="hidden sm:inline">Queues</span>
+            </Link>
+          )}
 
           <span
             aria-hidden

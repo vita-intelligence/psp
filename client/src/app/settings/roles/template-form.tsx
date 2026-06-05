@@ -263,7 +263,7 @@ export function TemplateForm({
       ref={cursorAnchorRef}
       onMouseMove={canEdit ? onCursorMove : undefined}
       onMouseLeave={canEdit ? hideCursor : undefined}
-      className="relative max-w-3xl border-border/60"
+      className="relative border-border/60"
     >
       <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
         {Object.entries(cursors).map(([id, cursor]) => (

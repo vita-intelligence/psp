@@ -53,9 +53,60 @@ defmodule Backend.RBAC.Permissions do
     {"storage_tags.manage", "Manage the company-wide storage tag vocabulary"}
   ]
 
+  # Unit of measurement registry — global units (kg, mL, pcs, …) used
+  # by stock + recipes. View is split from manage because every
+  # operator reads the list (pickers), but only admins should be able
+  # to add/edit/delete the company-wide vocabulary.
+  @units [
+    {"units.view", "View the company unit-of-measurement registry"},
+    {"units.manage", "Create, edit, and delete units of measurement"}
+  ]
+
+  # Stock items — raw materials, semi-finished, finished products,
+  # packaging. Read/create/edit/delete are split because operators
+  # need to read for stock moves and BOMs but only specific roles
+  # should change the catalogue.
+  @items [
+    {"items.view", "View stock items"},
+    {"items.create", "Create new stock items"},
+    {"items.edit", "Edit stock items"},
+    {"items.delete", "Delete stock items"}
+  ]
+
+  # Product families and the AttributeDefinition admin tool sit
+  # behind a single admin-level permission — both are catalogue
+  # shape concerns rather than per-row operational changes.
+  @catalogues [
+    {"product_families.manage", "Create, edit, and delete product families"},
+    {"attribute_definitions.manage", "Create, edit, and delete custom attribute definitions"}
+  ]
+
+  # Risk assessment is intentionally separate from items.edit so a
+  # senior QA can hold the override gate even when ops can edit
+  # item identity.
+  @risk_assessments [
+    {"risk_assessments.view", "View raw-material risk assessments"},
+    {"risk_assessments.create", "Create / update risk assessments"},
+    {"risk_assessments.approve", "Override the computed risk level (with justification)"}
+  ]
+
+  @certificates [
+    {"certificates.view", "View supplier / ingredient certificates"},
+    {"certificates.manage", "Create, edit, and delete certificates"}
+  ]
+
   def all do
     Enum.map(
-      @company ++ @users ++ @roles ++ @warehouses ++ @storage_tags,
+      @company ++
+        @users ++
+        @roles ++
+        @warehouses ++
+        @storage_tags ++
+        @units ++
+        @items ++
+        @catalogues ++
+        @risk_assessments ++
+        @certificates,
       &elem(&1, 0)
     )
   end
@@ -67,7 +118,12 @@ defmodule Backend.RBAC.Permissions do
       users: @users,
       roles: @roles,
       warehouses: @warehouses,
-      storage_tags: @storage_tags
+      storage_tags: @storage_tags,
+      units: @units,
+      items: @items,
+      catalogues: @catalogues,
+      risk_assessments: @risk_assessments,
+      certificates: @certificates
     }
   end
 
@@ -135,6 +191,71 @@ defmodule Backend.RBAC.Permissions do
             create: "storage_tags.manage",
             update: "storage_tags.manage",
             delete: "storage_tags.manage"
+          },
+          %{
+            key: "units_of_measurement",
+            label: "Units of measurement",
+            description:
+              "Global unit registry — mass, volume, count, length. Drives stock + recipe conversions.",
+            read: "units.view",
+            create: "units.manage",
+            update: "units.manage",
+            delete: "units.manage"
+          }
+        ]
+      },
+      %{
+        section: "Catalogue",
+        resources: [
+          %{
+            key: "items",
+            label: "Stock items",
+            description:
+              "Raw materials, semi-finished, finished products, packaging. Carries the regulatory compliance subtables.",
+            read: "items.view",
+            create: "items.create",
+            update: "items.edit",
+            delete: "items.delete"
+          },
+          %{
+            key: "product_families",
+            label: "Product families",
+            description:
+              "Marketing-level grouping of variant SKUs (e.g. Vitamin D 30/60/90).",
+            read: nil,
+            create: "product_families.manage",
+            update: "product_families.manage",
+            delete: "product_families.manage"
+          },
+          %{
+            key: "attribute_definitions",
+            label: "Custom attribute definitions",
+            description:
+              "Admin-extensible typed custom fields per item type. Values stored on items.attributes JSONB.",
+            read: nil,
+            create: "attribute_definitions.manage",
+            update: "attribute_definitions.manage",
+            delete: "attribute_definitions.manage"
+          },
+          %{
+            key: "risk_assessments",
+            label: "Risk assessments",
+            description:
+              "TACCP / VACCP / HACCP scorecards on raw materials. `Approve` gates the override on the computed level.",
+            read: "risk_assessments.view",
+            create: "risk_assessments.create",
+            update: "risk_assessments.create",
+            delete: nil
+          },
+          %{
+            key: "certificates",
+            label: "Certificates",
+            description:
+              "Supplier and ingredient certificates (organic, halal, GMP, ISO 22000, etc.).",
+            read: "certificates.view",
+            create: "certificates.manage",
+            update: "certificates.manage",
+            delete: "certificates.manage"
           }
         ]
       }

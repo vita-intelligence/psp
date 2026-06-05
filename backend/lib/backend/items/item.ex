@@ -1,0 +1,146 @@
+defmodule Backend.Items.Item do
+  @moduledoc """
+  Core stock item — name + type + identity. Per-type compliance lives
+  in 1:1 joined subtables (Slice 2-4); this row is the parent
+  everything else hangs off of.
+
+  `attributes` is a JSONB bag of per-tenant custom fields, validated
+  by the context against `attribute_definitions` for this item's type
+  before write. Universal regulatory dimensions DO NOT live here —
+  see `Backend.Items.RawMaterialCompliance` etc.
+
+  Display code is rendered from id + numbering format in
+  `BackendWeb.Payloads`. No `code` column stored.
+  """
+
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  alias Backend.Accounts.User
+  alias Backend.Allergens.Allergen
+  alias Backend.Catalogs.ProductFamily
+  alias Backend.Companies.Company
+  alias Backend.Items.{
+    FinishedProductSpec,
+    ItemAllergen,
+    PackagingCompliance,
+    RawMaterialCompliance,
+    RawMaterialRiskAssessment
+  }
+  alias Backend.Units.UnitOfMeasurement
+
+  @valid_item_types ~w(raw_material semi_finished finished_product packaging)
+
+  schema "items" do
+    field :uuid, Ecto.UUID, autogenerate: true
+    field :name, :string
+    field :description, :string
+    field :item_type, :string
+    field :external_sku, :string
+    field :barcode, :string
+    field :attributes, :map, default: %{}
+    field :is_active, :boolean, default: true
+
+    belongs_to :company, Company
+    belongs_to :stock_uom, UnitOfMeasurement
+    belongs_to :product_family, ProductFamily
+    belongs_to :created_by, User
+    belongs_to :updated_by, User
+
+    # Per-type compliance subtables — only one is meaningfully
+    # populated per item, depending on `item_type`. The controller
+    # preloads the matching one based on type for the show payload.
+    has_one :raw_material_compliance, RawMaterialCompliance,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
+    has_one :raw_material_risk, RawMaterialRiskAssessment,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
+    has_one :finished_product_spec, FinishedProductSpec,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
+    has_one :packaging_compliance, PackagingCompliance,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
+    # Certificate attachments. Each row joins to a `certificates`
+    # registry definition + carries its own validity window.
+    has_many :certificate_attachments, Backend.Certificates.ItemCertificate,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
+    # Image gallery. Bytes stored via the Storage adapter; this row
+    # carries the blob path + metadata. Primary-first ordering is
+    # enforced at the read side.
+    has_many :images, Backend.Items.ItemImage,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
+    # Allergen M:N via item_allergens, joined through the global
+    # allergen lookup. Populated only on raw-material items today;
+    # the FE form gates the section on item_type.
+    many_to_many :allergens, Allergen,
+      join_through: ItemAllergen,
+      join_keys: [item_id: :id, allergen_id: :id],
+      on_replace: :delete
+
+    timestamps(type: :utc_datetime)
+  end
+
+  def valid_item_types, do: @valid_item_types
+
+  def changeset(item, attrs) do
+    item
+    |> cast(attrs, [
+      :company_id,
+      :name,
+      :description,
+      :item_type,
+      :external_sku,
+      :barcode,
+      :stock_uom_id,
+      :product_family_id,
+      :attributes,
+      :is_active,
+      :created_by_id,
+      :updated_by_id
+    ])
+    |> validate_required([:company_id, :name, :item_type])
+    |> trim_strings([:name, :external_sku, :barcode])
+    |> validate_length(:name, min: 1, max: 200)
+    |> validate_length(:external_sku, max: 80)
+    |> validate_length(:barcode, max: 24)
+    |> validate_inclusion(:item_type, @valid_item_types,
+      message: "must be one of: #{Enum.join(@valid_item_types, ", ")}"
+    )
+    |> unique_constraint([:company_id, :name],
+      name: :items_company_id_name_index,
+      message: "an item with this name already exists"
+    )
+    |> unique_constraint([:company_id, :external_sku],
+      name: :items_company_id_external_sku_index,
+      message: "this external SKU is already in use"
+    )
+  end
+
+  defp trim_strings(changeset, fields) do
+    Enum.reduce(fields, changeset, fn field, cs ->
+      case get_change(cs, field) do
+        raw when is_binary(raw) ->
+          trimmed = String.trim(raw)
+
+          if trimmed == "" do
+            put_change(cs, field, nil)
+          else
+            put_change(cs, field, trimmed)
+          end
+
+        _ ->
+          cs
+      end
+    end)
+  end
+end

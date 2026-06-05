@@ -28,7 +28,7 @@ export default async function NewWarehousePage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-3xl space-y-4">
       <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
         <Link href="/settings/warehouses">
           <ChevronLeft className="mr-1 size-4" />

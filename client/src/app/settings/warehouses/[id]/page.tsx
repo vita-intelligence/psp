@@ -56,7 +56,7 @@ export default async function WarehouseEditPage({
   const canDelete = hasPermission(user, "warehouses.delete");
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <Button
           asChild

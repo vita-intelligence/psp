@@ -406,11 +406,11 @@ export function WarehouseForm({
       ref={cursorAnchorRef}
       onMouseMove={onCursorMove}
       onMouseLeave={hideCursor}
-      // `max-w-3xl` pins the form to ~768px so the same cursor
-      // fraction lands at the same visual pixel for every editor —
-      // without this, a 1280px and a 1920px viewport render the
-      // anchor at different widths and 0.5 means different things.
-      className="relative max-w-3xl border-border/60"
+      // The form Card's width is capped by `max-w-3xl` on the parent
+      // page wrapper — that's what keeps the cursor-fraction → pixel
+      // mapping consistent across collaborators on different viewport
+      // sizes (also makes form + audit cards line up).
+      className="relative border-border/60"
     >
       {/* Remote cursors layer — anchored to the Card so coordinates
           stay in sync with the form's actual bounding box, not the
