@@ -91,11 +91,37 @@ export function TagPicker({
     onCommit(next);
   };
 
+  // Suggested chips — the registry minus what's already selected,
+  // capped so the row stays one line on most viewports. One-click
+  // adds. This is the "don't forget to tag" nudge: every operator
+  // sees the company's vocabulary right there at the form.
+  const suggestions = useMemo(
+    () => available.filter((t) => !value.includes(t.key)).slice(0, 6),
+    [available, value],
+  );
+
   return (
     <div className="space-y-1.5" ref={containerRef}>
       <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
+
+      {!readOnly && suggestions.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {suggestions.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => toggle(t.key)}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border bg-background px-2 py-0.5 font-mono text-[10px] text-muted-foreground hover:border-primary hover:text-primary"
+              title={t.description ?? `Add ${t.label}`}
+            >
+              <Plus className="size-2.5" />
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Selected chips */}
       <div className="flex flex-wrap gap-1">

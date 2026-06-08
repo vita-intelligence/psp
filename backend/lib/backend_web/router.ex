@@ -58,6 +58,17 @@ defmodule BackendWeb.Router do
       # location uuid.
       resources "/storage-locations", StorageLocationController,
         except: [:new, :edit, :index] do
+        # One-shot helper: split a rack into N levels with the
+        # supplied heights, in one transaction. Lives above the
+        # `resources` so it doesn't clash with `cells/:id`.
+        post "/cells/split", StorageCellController, :split
+
+        # Push the rack's current tags down to every existing
+        # level. Used by the FE confirm prompt that fires after the
+        # operator edits rack tags — inheritance is otherwise
+        # creation-time only.
+        post "/cells/sync-tags", StorageCellController, :sync_tags
+
         # Cells nest directly under their location — they have no
         # meaning outside the parent so :index is omitted (cells
         # come along on the location payload).

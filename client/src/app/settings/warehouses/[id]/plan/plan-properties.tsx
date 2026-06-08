@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,7 +37,19 @@ import { History, Info, Layers, Trash2 } from "lucide-react";
 import { ColorPicker } from "./plan-color-picker";
 import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 import { CellsDialog } from "./cells-dialog";
+import { RackElevationSvg } from "./rack-elevation-svg";
 import { TagPicker } from "./tag-picker";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { syncCellTagsAction } from "@/lib/storage-cells/actions";
 
 interface PlanPropertiesProps {
   selection: SelectionSet;
@@ -786,6 +798,66 @@ function LocationBody({
   ) => void;
   onDelete: () => void;
 }) {
+  // Auto-pop the levels editor the first time a brand-new rack is
+  // saved (id flips from temp -1 to a real positive id). The
+  // sessionStorage flag means we only prompt once per session per
+  // location — re-opening the warehouse page doesn't nag the user.
+  const promptKey = `psp:cells-prompt:${location.uuid}`;
+  const [cellsOpen, setCellsOpen] = useState(false);
+  const justGotRealId = useRef(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (location.id <= 0) {
+      justGotRealId.current = true;
+      return;
+    }
+    if (!justGotRealId.current) return;
+    justGotRealId.current = false;
+    const already = window.sessionStorage.getItem(promptKey);
+    if (already) return;
+    if ((location.cells?.length ?? 0) > 0) return;
+    window.sessionStorage.setItem(promptKey, "1");
+    setCellsOpen(true);
+  }, [location.id, location.cells?.length, promptKey]);
+  const totalHeight_m = numberOrNull(location.depth_m);
+  const cellsBottomUp = [...(location.cells ?? [])].sort(
+    (a, b) => a.ordinal - b.ordinal,
+  );
+  const sumHeights_m = cellsBottomUp.reduce(
+    (acc, c) => acc + (numberOrNull(c.height_m) ?? 0),
+    0,
+  );
+  const overshoot_m =
+    totalHeight_m !== null && sumHeights_m - totalHeight_m > 0.005
+      ? sumHeights_m - totalHeight_m
+      : 0;
+
+  // Tag-sync prompt: when the operator edits the rack's tags AND
+  // existing levels currently have a different tag set, ask whether
+  // to push the new tags down. The prompt holds the pending new
+  // tags so we can either apply or skip after the user decides.
+  const [syncPrompt, setSyncPrompt] = useState<{
+    nextTags: string[];
+    divergentCount: number;
+  } | null>(null);
+
+  function commitTags(nextTags: string[]) {
+    const previousTags = location.tags ?? [];
+    onUpdate({ tags: nextTags });
+    if (location.id <= 0) return;
+    if (sameSet(previousTags, nextTags)) return;
+    const divergent = (location.cells ?? []).filter(
+      (c) => !sameSet(c.tags ?? [], nextTags),
+    ).length;
+    if (divergent === 0) return;
+    setSyncPrompt({ nextTags, divergentCount: divergent });
+  }
+
+  async function applyTagsToLevels() {
+    if (!syncPrompt) return;
+    setSyncPrompt(null);
+    await syncCellTagsAction(warehouseUuid, location.uuid);
+  }
   return (
     <fieldset disabled={readOnly} className="contents">
       <div className="space-y-3">
@@ -816,11 +888,32 @@ function LocationBody({
           value={location.tags ?? []}
           known={storageTags}
           kind="location"
-          label="Zone tags"
-          help="Pick tags that apply to the whole rack/zone. Cells inherit these for allocation — set once, every level uses them. Manage the list at /settings/storage-tags."
+          label="Rack tags"
+          help="Seeds new levels with these tags. Existing levels keep their own — edit the rack's tags later and you'll be asked whether to push to existing levels too. Manage the vocabulary at /settings/storage-tags."
           readOnly={readOnly}
-          onCommit={(tags) => onUpdate({ tags })}
+          onCommit={commitTags}
         />
+
+        <AlertDialog
+          open={syncPrompt !== null}
+          onOpenChange={(open) => !open && setSyncPrompt(null)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Apply rack tags to existing levels?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {syncPrompt &&
+                  `${syncPrompt.divergentCount} level${syncPrompt.divergentCount === 1 ? "" : "s"} currently has different tags. Overwrite them with the rack's new tag set, or leave each level untouched?`}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Leave levels untouched</AlertDialogCancel>
+              <AlertDialogAction onClick={applyTagsToLevels}>
+                Apply to all levels
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-3">
           <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -927,23 +1020,45 @@ function LocationBody({
         </div>
 
         {location.id > 0 ? (
-          <div className="space-y-1.5 rounded-md border border-primary/30 bg-primary/[0.04] p-3">
-            <div className="text-[11px] font-medium uppercase tracking-wide text-primary">
-              Levels (shelves inside this rack)
+          <div className="space-y-2 rounded-md border border-primary/30 bg-primary/[0.04] p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-0.5">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-primary">
+                  Levels (shelves inside this rack)
+                </div>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  {(location.cells?.length ?? 0) === 0
+                    ? "Treat as one bulk zone, or split into stacked shelves so stock lots know what level they sit at."
+                    : `${location.cells?.length} level${location.cells?.length === 1 ? "" : "s"} · ${sumHeights_m.toFixed(2)} m${totalHeight_m !== null ? ` of ${totalHeight_m.toFixed(2)} m` : ""}`}
+                </p>
+              </div>
+              <RackElevationSvg
+                width={56}
+                variant="thumb"
+                totalHeight_m={totalHeight_m}
+                levels={cellsBottomUp.map((c) => ({
+                  uuid: c.uuid,
+                  ordinalDisplay: c.ordinal + 1,
+                  height_m: numberOrNull(c.height_m),
+                }))}
+              />
             </div>
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              Every level has its own width × depth × height. Tag a
-              level if it&apos;s special (e.g. <span className="font-mono">picking</span>{" "}
-              on the top, <span className="font-mono">cold</span> in
-              the back); allocation matches items to levels that fit.
-            </p>
+            {overshoot_m > 0 && (
+              <p className="text-[10px] font-medium text-destructive">
+                Σ levels {sumHeights_m.toFixed(2)} m &gt; rack{" "}
+                {(totalHeight_m ?? 0).toFixed(2)} m
+              </p>
+            )}
             <CellsDialog
               warehouseUuid={warehouseUuid}
               storageTags={storageTags}
+              open={cellsOpen}
+              onOpenChange={setCellsOpen}
               location={{
                 uuid: location.uuid,
                 name: location.name,
                 cells: location.cells ?? [],
+                depth_m: location.depth_m,
               }}
               trigger={
                 <Button
@@ -1349,6 +1464,18 @@ function Row({
       {children}
     </div>
   );
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function sameSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setA = new Set(a);
+  return b.every((t) => setA.has(t));
 }
 
 function Kbd({ children }: { children: React.ReactNode }) {

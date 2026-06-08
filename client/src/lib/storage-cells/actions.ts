@@ -74,6 +74,71 @@ export async function updateCellAction(
   }
 }
 
+export type SplitResult =
+  | { ok: true; cells: StorageCell[] }
+  | ErrorResult;
+
+export type SyncTagsResult =
+  | { ok: true; updated: number }
+  | ErrorResult;
+
+/**
+ * Push the rack's current tag set down to every level. Used by the
+ * confirm prompt that fires after a rack tag edit when existing
+ * levels already had their own tags. Tag inheritance is otherwise
+ * creation-time only.
+ */
+export async function syncCellTagsAction(
+  warehouseUuid: string,
+  locationUuid: string,
+): Promise<SyncTagsResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("syncCellTagsAction");
+
+  try {
+    const res = await api<{ updated: number }>(
+      `/api/warehouses/${warehouseUuid}/storage-locations/${locationUuid}/cells/sync-tags`,
+      { method: "POST", token, body: "{}" },
+    );
+    revalidatePath(`/settings/warehouses/${warehouseUuid}`);
+    return { ok: true, updated: res.updated };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "syncCellTagsAction",
+      fallbackDetail: "Couldn't apply the rack's tags to its levels.",
+    });
+  }
+}
+
+/**
+ * Seed N cells onto a location in one round-trip. Each entry of
+ * `heights_m` becomes one level; ordinals start at the location's
+ * next free slot so calling this on a rack that already has cells
+ * appends rather than overwrites.
+ */
+export async function splitCellsAction(
+  warehouseUuid: string,
+  locationUuid: string,
+  heights_m: number[],
+): Promise<SplitResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("splitCellsAction");
+
+  try {
+    const res = await api<{ cells: StorageCell[] }>(
+      `/api/warehouses/${warehouseUuid}/storage-locations/${locationUuid}/cells/split`,
+      { method: "POST", token, body: JSON.stringify({ heights_m }) },
+    );
+    revalidatePath(`/settings/warehouses/${warehouseUuid}`);
+    return { ok: true, cells: res.cells };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "splitCellsAction",
+      fallbackDetail: "Couldn't split the rack into levels.",
+    });
+  }
+}
+
 export async function deleteCellAction(
   warehouseUuid: string,
   locationUuid: string,

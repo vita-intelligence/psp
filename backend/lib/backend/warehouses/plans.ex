@@ -301,12 +301,85 @@ defmodule Backend.Warehouses.Plans do
         "updated_by_id" => actor.id
       })
       |> Map.put_new_lazy("ordinal", fn -> next_cell_ordinal(location) end)
+      |> inherit_footprint_from_location(location)
 
     %StorageCell{}
     |> StorageCell.changeset(attrs)
     |> Repo.insert()
     |> after_cell_create(actor)
   end
+
+  # New levels default to the rack's outer footprint — most shelves
+  # span the full rack and re-typing the same dimensions on every
+  # level is friction the operator never wins. Caller-supplied
+  # width_m / depth_m still take precedence: explicit override wins
+  # over inheritance.
+  #
+  # Source of truth for the rack footprint is the canvas integer
+  # `width` / `height` (cm), since that's where the FE writes the
+  # operator's stated dimensions. The schema's `width_m`/`height_m`
+  # columns are reserved for future use and may be nil.
+  defp inherit_footprint_from_location(attrs, %StorageLocation{} = location) do
+    attrs
+    |> maybe_inherit_metres("width_m", location.width)
+    |> maybe_inherit_metres("depth_m", location.height)
+    |> maybe_inherit_tags(location.tags)
+  end
+
+  # Levels are the authoritative source for allocation tags — at
+  # create time we seed them from the rack so most operators don't
+  # have to repeat themselves, but the level then owns its set and
+  # can add or remove freely. A caller passing `tags: []` opts the
+  # level out of inheritance (explicit empty list wins over the
+  # rack's defaults).
+  defp maybe_inherit_tags(attrs, rack_tags) when is_list(rack_tags) do
+    case Map.get(attrs, "tags") do
+      nil -> Map.put(attrs, "tags", rack_tags)
+      _ -> attrs
+    end
+  end
+
+  defp maybe_inherit_tags(attrs, _), do: attrs
+
+  @doc """
+  Overwrite every cell on this location with the rack's current tag
+  set. Called from the FE confirm prompt that fires after a rack tag
+  edit. Tag inheritance is normally one-way at creation; this is the
+  explicit "yes, push my new rack tags to existing levels" door.
+
+  Returns `{:ok, count}` where `count` is the number of cells
+  updated. Each touched cell gets a normal `update_cell` so audit
+  history reflects the change.
+  """
+  def sync_tags_to_cells(%User{} = actor, %StorageLocation{} = location) do
+    cells = list_cells(location)
+    target_tags = location.tags || []
+
+    Repo.transaction(fn ->
+      Enum.reduce(cells, 0, fn cell, acc ->
+        if Enum.sort(cell.tags || []) == Enum.sort(target_tags) do
+          acc
+        else
+          case update_cell(actor, cell, %{"tags" => target_tags}) do
+            {:ok, _} -> acc + 1
+            {:error, cs} -> Repo.rollback(cs)
+          end
+        end
+      end)
+    end)
+  end
+
+  defp maybe_inherit_metres(attrs, key, cm) when is_integer(cm) and cm > 0 do
+    case Map.get(attrs, key) do
+      v when v in [nil, ""] ->
+        Map.put(attrs, key, cm |> Decimal.new() |> Decimal.div(100))
+
+      _ ->
+        attrs
+    end
+  end
+
+  defp maybe_inherit_metres(attrs, _key, _), do: attrs
 
   def update_cell(%User{} = actor, %StorageCell{} = cell, attrs) do
     before_state = cell_audit_snapshot(cell)
@@ -327,6 +400,7 @@ defmodule Backend.Warehouses.Plans do
     case Repo.delete(cell) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "storage_cell", cell, before_state)
+        touch_floor_for_cell(cell)
         {:ok, deleted}
 
       other ->
@@ -334,8 +408,80 @@ defmodule Backend.Warehouses.Plans do
     end
   end
 
+  @doc """
+  Seed N cells onto a location in one transaction. Caller supplies the
+  per-level heights (in metres) — equal-split is the common case but
+  manual heights are accepted too so a "0.6 / 0.6 / 0.6 / 0.3 / 0.3"
+  rack can be created in one round-trip.
+
+  Ordinals start at the location's next free slot, so calling this on
+  a rack that already has two cells appends rather than overwrites.
+
+  Returns `{:ok, [%StorageCell{}, …]}` (top-to-bottom — ordinal
+  ascending) or `{:error, reason}`. Reasons: `:no_levels`,
+  `{:bad_height, value}`, or an `%Ecto.Changeset{}` from the first
+  failing insert (the whole transaction rolls back).
+  """
+  def split_cells(%User{} = actor, %StorageLocation{} = location, heights_m)
+      when is_list(heights_m) do
+    cond do
+      heights_m == [] ->
+        {:error, :no_levels}
+
+      Enum.any?(heights_m, &(not valid_height?(&1))) ->
+        bad = Enum.find(heights_m, &(not valid_height?(&1)))
+        {:error, {:bad_height, bad}}
+
+      true ->
+        start_ordinal = next_cell_ordinal(location)
+
+        Repo.transaction(fn ->
+          heights_m
+          |> Enum.with_index(start_ordinal)
+          |> Enum.reduce_while([], fn {h, ordinal}, acc ->
+            attrs = %{
+              "ordinal" => ordinal,
+              "height_m" => h
+            }
+
+            case create_cell(actor, location, attrs) do
+              {:ok, cell} -> {:cont, [cell | acc]}
+              {:error, cs} -> {:halt, {:error, cs}}
+            end
+          end)
+          |> case do
+            {:error, cs} -> Repo.rollback(cs)
+            list when is_list(list) -> Enum.reverse(list)
+          end
+        end)
+    end
+  end
+
+  defp valid_height?(value) do
+    case parse_decimal(value) do
+      {:ok, d} -> Decimal.positive?(d)
+      :error -> false
+    end
+  end
+
+  defp parse_decimal(%Decimal{} = d), do: {:ok, d}
+  defp parse_decimal(value) when is_integer(value), do: {:ok, Decimal.new(value)}
+
+  defp parse_decimal(value) when is_float(value),
+    do: {:ok, Decimal.from_float(value)}
+
+  defp parse_decimal(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {d, ""} -> {:ok, d}
+      _ -> :error
+    end
+  end
+
+  defp parse_decimal(_), do: :error
+
   defp after_cell_create({:ok, cell}, actor) do
     Audit.record_created(actor, "storage_cell", cell, cell_audit_snapshot(cell))
+    touch_floor_for_cell(cell)
     {:ok, Repo.preload(cell, [:created_by, :updated_by])}
   end
 
@@ -350,10 +496,27 @@ defmodule Backend.Warehouses.Plans do
       cell_audit_snapshot(cell)
     )
 
+    touch_floor_for_cell(cell)
     {:ok, Repo.preload(cell, [:created_by, :updated_by])}
   end
 
   defp after_cell_update(other, _actor, _before_state), do: other
+
+  # Cell mutations live on a child table — the warehouse plan FE
+  # gates "did this floor change?" on `floor.updated_at`, so we need
+  # to bump the floor row whenever a cell lands, otherwise the
+  # post-action refetch is silently ignored. One UPDATE per mutation
+  # is cheap; the FE merge already preserves user drafts.
+  defp touch_floor_for_cell(%StorageCell{storage_location_id: loc_id}) do
+    from(f in Floor,
+      join: l in StorageLocation,
+      on: l.floor_id == f.id,
+      where: l.id == ^loc_id
+    )
+    |> Repo.update_all(set: [updated_at: DateTime.utc_now() |> DateTime.truncate(:second)])
+
+    :ok
+  end
 
   defp cell_audit_snapshot(%StorageCell{} = c),
     do: Map.new(@cell_audit_fields, fn k -> {k, Map.get(c, k)} end)
