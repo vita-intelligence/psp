@@ -151,6 +151,24 @@ defmodule BackendWeb.Router do
       get "/reviews-due", QueueController, :reviews_due
       get "/certificates-expiring", QueueController, :certificates_expiring
     end
+
+    # Stock — lots, placements, movements. Read-only in Slice 1;
+    # receive/move/consume/dispose endpoints land in subsequent
+    # slices through dedicated POST routes (no generic CRUD because
+    # qty changes are always recorded movements).
+    scope "/stock" do
+      # Manual lot creation — operator-authored entries (opening
+      # balances, ad-hoc adjustments). Sits above `resources` so the
+      # `/manual` segment doesn't collide with `/:id`. Real receives
+      # against a Purchase Order will land on a dedicated endpoint
+      # in the procurement module.
+      post "/lots/manual", StockLotController, :create_manual
+      resources "/lots", StockLotController, only: [:index, :show]
+
+      # Flat cell picker for the create-manual-lot form — returns
+      # every company cell with warehouse + location breadcrumbs.
+      get "/cells", StockLotController, :cells
+    end
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

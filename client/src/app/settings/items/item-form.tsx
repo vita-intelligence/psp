@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
+import { TagPicker } from "@/components/forms/tag-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -69,6 +70,7 @@ import type {
   RawMaterialUseAs,
   RegulatoryCategory,
   RiskLevel,
+  StorageTag,
   UnitOfMeasurement,
   VeganStatus,
 } from "@/lib/types";
@@ -85,6 +87,10 @@ interface FormProps {
   attributeDefinitions: AttributeDefinition[];
   /** All EU 14 allergens — used by the may-contain section. */
   allAllergens: Allergen[];
+  /** Company storage tag registry. Powers the storage_tags picker —
+   *  same vocabulary used by storage locations + cells so allocation
+   *  matches are a single set check. */
+  storageTags: StorageTag[];
 }
 
 const ITEM_TYPE_OPTIONS: Array<{ value: ItemType; label: string; desc: string }> = [
@@ -221,6 +227,9 @@ interface FormState {
   stock_uom_id: number | null;
   product_family_id: number | null;
   attributes: Record<string, unknown>;
+  /** Storage requirement tags — drive the cell picker filter on the
+   *  receive-lot form so this item only lands in compatible cells. */
+  storage_tags: string[];
   is_active: boolean;
 
   // Raw material compliance
@@ -322,6 +331,7 @@ function initialFrom(item: Item | null): FormState {
     stock_uom_id: item?.stock_uom_id ?? null,
     product_family_id: item?.product_family_id ?? null,
     attributes: item?.attributes ?? {},
+    storage_tags: item?.storage_tags ?? [],
     is_active: item?.is_active ?? true,
 
     rm_use_as: compliance?.use_as ?? "",
@@ -420,6 +430,7 @@ export function ItemForm({
   families,
   attributeDefinitions,
   allAllergens,
+  storageTags,
 }: FormProps) {
   const router = useRouter();
   const isEdit = item !== null;
@@ -580,6 +591,7 @@ export function ItemForm({
         stock_uom_id: state.stock_uom_id,
         product_family_id: state.product_family_id,
         attributes: state.attributes,
+        storage_tags: state.storage_tags,
         is_active: state.is_active,
       };
 
@@ -982,6 +994,19 @@ export function ItemForm({
             />
             <FieldEditingIndicator peer={fieldEditors.description} />
             <FieldError messages={fieldErrors["item.description"]} />
+          </FieldRow>
+
+          <FieldRow label="Storage tags">
+            <TagPicker
+              value={state.storage_tags}
+              known={storageTags}
+              kind="cell"
+              label=""
+              help="Cells whose effective tags (location + cell) cover every tag listed here will appear in this item's destination picker on the receive form. Leave empty to allow any cell."
+              readOnly={!canEdit}
+              onCommit={(tags) => setField("storage_tags", tags)}
+            />
+            <FieldError messages={fieldErrors["item.storage_tags"]} />
           </FieldRow>
 
           <label className="relative flex items-start gap-2 rounded-md border border-border/40 bg-muted/20 px-3 py-2 text-sm">

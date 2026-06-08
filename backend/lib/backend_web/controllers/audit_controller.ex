@@ -42,7 +42,13 @@ defmodule BackendWeb.AuditController do
     "packaging_compliance" => "items.view",
     "certificate" => "certificates.view",
     "item_certificate" => "items.view",
-    "item_image" => "items.view"
+    "item_image" => "items.view",
+    # Stock domain. All three entities (lot, placement, movement)
+    # ride the same view perm — operators with stock.view can read
+    # the whole audit trail of a lot they can already see.
+    "stock_lot" => "stock.view",
+    "stock_lot_placement" => "stock.view",
+    "stock_movement" => "stock.view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -240,6 +246,34 @@ defmodule BackendWeb.AuditController do
 
       _ ->
         {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "stock_lot", entity_id) do
+    case Backend.Repo.get(Backend.Stock.Lot, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "stock_lot_placement", entity_id) do
+    case Backend.Repo.get(Backend.Stock.Placement, entity_id) do
+      %{stock_lot_id: lot_id} -> check_parent_stock_lot(actor, lot_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "stock_movement", entity_id) do
+    case Backend.Repo.get(Backend.Stock.Movement, entity_id) do
+      %{stock_lot_id: lot_id} -> check_parent_stock_lot(actor, lot_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_stock_lot(actor, lot_id) do
+    case Backend.Repo.get(Backend.Stock.Lot, lot_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
     end
   end
 

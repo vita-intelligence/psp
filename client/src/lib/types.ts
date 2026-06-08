@@ -617,6 +617,10 @@ export interface Item {
   product_family: ProductFamilyCompact | null;
   product_family_id: number | null;
   attributes: Record<string, unknown>;
+  /** Storage requirement tags — the receive form filters destination
+   *  cells to ones whose effective tags (location ∪ cell) are a
+   *  superset of this list. */
+  storage_tags: string[];
   is_active: boolean;
   inserted_at: string;
   updated_at: string;
@@ -827,6 +831,160 @@ export interface Floor {
   updated_at: string;
   created_by?: AuditActor | null;
   updated_by?: AuditActor | null;
+}
+
+// ---------- Stock ---------------------------------------------------
+
+export type StockLotStatus =
+  | "requested"
+  | "received"
+  | "quarantine"
+  | "depleted"
+  | "disposed"
+  | "rejected";
+
+export type StockSourceKind =
+  | "purchase_order"
+  | "manufacturing_order"
+  | "opening_balance"
+  | "return"
+  | "adjustment";
+
+export type StockMovementKind =
+  | "receive"
+  | "move"
+  | "consume"
+  | "adjust_up"
+  | "adjust_down"
+  | "dispose"
+  | "return";
+
+export type ComplianceState =
+  | "pending"
+  | "requested"
+  | "received"
+  | "accepted"
+  | "rejected"
+  | "na";
+
+export interface StockLotItemSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  item_type: string;
+  external_sku: string | null;
+}
+
+export interface StockLotUomSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  symbol: string;
+  name: string;
+}
+
+export interface StockLotCellSummary {
+  id: number;
+  uuid: string;
+  ordinal: number;
+  name: string | null;
+  storage_location_id: number;
+}
+
+/** Tag-aware cell picker row — extends the basic cell with location
+ *  and effective tag sets so the receive form can do client-side
+ *  filtering against item.storage_tags. */
+
+export interface StockLotPlacement {
+  id: number;
+  uuid: string;
+  stock_lot_id: number;
+  storage_cell_id: number;
+  qty: string;
+  storage_cell?: StockLotCellSummary | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface StockMovement {
+  id: number;
+  uuid: string;
+  stock_lot_id: number;
+  from_cell_id: number | null;
+  to_cell_id: number | null;
+  delta_qty: string;
+  kind: StockMovementKind;
+  reason: string | null;
+  reference_kind: string | null;
+  reference_ref: string | null;
+  occurred_at: string;
+  actor: AuditActor | null;
+  inserted_at: string;
+}
+
+/** A stock lot — one received (or produced) batch. `qty_received` is
+ *  immutable; `qty_on_hand` is summed from placements at payload
+ *  time, and `qty_available` will subtract reservations once those
+ *  ship. */
+export interface StockLot {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: StockLotStatus;
+  qty_received: string;
+  qty_on_hand: string;
+  qty_available: string;
+  unit_cost: string | null;
+  currency: string | null;
+  source_kind: StockSourceKind | null;
+  source_ref: string | null;
+  supplier_batch_no: string | null;
+  country_of_origin: string | null;
+  revision: string | null;
+  overall_risk: "low" | "medium" | "high" | null;
+  allergen_status: ComplianceState | null;
+  coa_status: ComplianceState | null;
+  quality_status: ComplianceState | null;
+  manufactured_at: string | null;
+  expiry_at: string | null;
+  available_from: string | null;
+  received_at: string | null;
+  notes: string | null;
+  item_id: number;
+  item: StockLotItemSummary | null;
+  unit_of_measurement_id: number;
+  unit_of_measurement: StockLotUomSummary | null;
+  placements: StockLotPlacement[];
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+/** Picker row from /api/stock/cells — flat cell with warehouse +
+ *  location breadcrumbs so the receive form can render one
+ *  searchable dropdown. */
+export interface StockCellPickerRow {
+  id: number;
+  uuid: string;
+  ordinal: number;
+  name: string | null;
+  /** Tags assigned directly to the cell. */
+  tags: string[];
+  /** Union of cell.tags + location.tags. The receive form tests
+   *  `item.storage_tags ⊆ effective_tags` to decide if the cell
+   *  qualifies. */
+  effective_tags: string[];
+  storage_location: {
+    id: number;
+    uuid: string;
+    name: string;
+    code: string | null;
+    tags: string[];
+  };
+  floor: { id: number; uuid: string; name: string };
+  warehouse: { id: number; uuid: string; name: string };
 }
 
 export interface AuthResponse {

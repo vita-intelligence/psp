@@ -22,6 +22,7 @@ interface ItemInput {
   stock_uom_id?: number | null;
   product_family_id?: number | null;
   attributes?: Record<string, unknown>;
+  storage_tags?: string[];
   is_active?: boolean;
 }
 

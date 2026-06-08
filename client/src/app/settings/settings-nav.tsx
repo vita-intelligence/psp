@@ -21,6 +21,7 @@ import {
   Ruler,
   ChevronDown,
   Package,
+  Layers,
   Award,
   Settings2,
 } from "lucide-react";
@@ -63,6 +64,12 @@ const ITEMS: NavItem[] = [
     href: "/settings/items",
     label: "Items",
     icon: Package,
+    permission: "items.view",
+  },
+  {
+    href: "/settings/product-families",
+    label: "Product families",
+    icon: Layers,
     permission: "items.view",
   },
   {

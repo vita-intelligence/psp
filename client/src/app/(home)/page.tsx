@@ -2,6 +2,7 @@ import { requireUser } from "@/lib/auth/server";
 import { TopBar } from "@/components/layout/top-bar";
 import { UsersBoard } from "@/components/users/users-board";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { ModuleGrid } from "./module-grid";
 
 export default async function HomePage() {
   const user = await requireUser();
@@ -14,19 +15,25 @@ export default async function HomePage() {
       <PresenceMount />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-6xl space-y-8">
+        <div className="mx-auto max-w-6xl space-y-10">
           <header className="space-y-1.5">
             <p className="text-sm font-medium text-brand">{greeting}</p>
             <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
               Hi {firstName}
             </h1>
             <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Here's who's around right now. Updates in real time as your
-              teammates sign in and out.
+              Jump into a module, or check who&apos;s around right now.
             </p>
           </header>
 
-          <UsersBoard currentUserId={user.id} />
+          <ModuleGrid user={user} />
+
+          <section className="space-y-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Who&apos;s around
+            </h2>
+            <UsersBoard currentUserId={user.id} />
+          </section>
         </div>
       </main>
     </div>

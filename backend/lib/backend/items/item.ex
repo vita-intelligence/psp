@@ -39,6 +39,11 @@ defmodule Backend.Items.Item do
     field :external_sku, :string
     field :barcode, :string
     field :attributes, :map, default: %{}
+    # Storage requirement tags — the receive form filters
+    # destination cells to those whose effective tags
+    # (location.tags ∪ cell.tags) are a superset. Shares the
+    # company-scoped storage_tags registry.
+    field :storage_tags, {:array, :string}, default: []
     field :is_active, :boolean, default: true
 
     belongs_to :company, Company
@@ -104,6 +109,7 @@ defmodule Backend.Items.Item do
       :stock_uom_id,
       :product_family_id,
       :attributes,
+      :storage_tags,
       :is_active,
       :created_by_id,
       :updated_by_id
@@ -116,6 +122,8 @@ defmodule Backend.Items.Item do
     |> validate_inclusion(:item_type, @valid_item_types,
       message: "must be one of: #{Enum.join(@valid_item_types, ", ")}"
     )
+    |> normalise_storage_tags()
+    |> validate_storage_tag_membership()
     |> unique_constraint([:company_id, :name],
       name: :items_company_id_name_index,
       message: "an item with this name already exists"
@@ -124,6 +132,42 @@ defmodule Backend.Items.Item do
       name: :items_company_id_external_sku_index,
       message: "this external SKU is already in use"
     )
+  end
+
+  # Same normalisation as StorageLocation: lowercase trim, drop
+  # blanks, dedupe. Keeps cell.tags and item.storage_tags equal-by-
+  # value so the receive-form filter is a simple set check.
+  defp normalise_storage_tags(changeset) do
+    case get_change(changeset, :storage_tags) do
+      nil ->
+        changeset
+
+      list when is_list(list) ->
+        clean =
+          list
+          |> Enum.map(fn t -> t |> to_string() |> String.trim() |> String.downcase() end)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        put_change(changeset, :storage_tags, clean)
+
+      _ ->
+        add_error(changeset, :storage_tags, "must be a list of strings")
+    end
+  end
+
+  defp validate_storage_tag_membership(changeset) do
+    company_id = get_field(changeset, :company_id)
+
+    if is_integer(company_id) do
+      Backend.Warehouses.StorageTags.validate_tag_membership(
+        changeset,
+        :storage_tags,
+        company_id
+      )
+    else
+      changeset
+    end
   end
 
   defp trim_strings(changeset, fields) do

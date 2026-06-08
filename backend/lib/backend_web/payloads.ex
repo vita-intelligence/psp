@@ -227,6 +227,7 @@ defmodule BackendWeb.Payloads do
       product_family: maybe_family_compact(i.product_family),
       product_family_id: i.product_family_id,
       attributes: i.attributes || %{},
+      storage_tags: i.storage_tags || [],
       is_active: i.is_active,
       inserted_at: i.inserted_at,
       updated_at: i.updated_at,
@@ -538,6 +539,142 @@ defmodule BackendWeb.Payloads do
       created_by: actor(c, :created_by),
       updated_by: actor(c, :updated_by)
     }
+  end
+
+  @doc """
+  Stock lot — the logical batch identity. qty_on_hand and
+  qty_available are derived from placements; callers should preload
+  placements before calling this shaper so the sum is one Decimal
+  reduce rather than a query.
+  """
+  def stock_lot(l) do
+    placements = preloaded_or_empty(l, :placements)
+    qty_on_hand = sum_decimal(placements, & &1.qty)
+
+    %{
+      id: l.id,
+      uuid: l.uuid,
+      code: render_code(l, "stock_lot"),
+      status: l.status,
+      qty_received: l.qty_received,
+      qty_on_hand: qty_on_hand,
+      qty_available: qty_on_hand,
+      unit_cost: l.unit_cost,
+      currency: l.currency,
+      source_kind: l.source_kind,
+      source_ref: l.source_ref,
+      supplier_batch_no: l.supplier_batch_no,
+      country_of_origin: l.country_of_origin,
+      revision: l.revision,
+      overall_risk: l.overall_risk,
+      allergen_status: l.allergen_status,
+      coa_status: l.coa_status,
+      quality_status: l.quality_status,
+      manufactured_at: l.manufactured_at,
+      expiry_at: l.expiry_at,
+      available_from: l.available_from,
+      received_at: l.received_at,
+      notes: l.notes,
+      item_id: l.item_id,
+      item: preloaded_or_nil(l, :item, &item_summary/1),
+      unit_of_measurement_id: l.unit_of_measurement_id,
+      unit_of_measurement: preloaded_or_nil(l, :unit_of_measurement, &uom_summary/1),
+      placements: Enum.map(placements, &stock_lot_placement/1),
+      inserted_at: l.inserted_at,
+      updated_at: l.updated_at,
+      created_by: actor(l, :created_by),
+      updated_by: actor(l, :updated_by)
+    }
+  end
+
+  def stock_lot_placement(p) do
+    %{
+      id: p.id,
+      uuid: p.uuid,
+      stock_lot_id: p.stock_lot_id,
+      storage_cell_id: p.storage_cell_id,
+      qty: p.qty,
+      storage_cell: preloaded_or_nil(p, :storage_cell, &storage_cell_summary/1),
+      inserted_at: p.inserted_at,
+      updated_at: p.updated_at
+    }
+  end
+
+  def stock_movement(m) do
+    %{
+      id: m.id,
+      uuid: m.uuid,
+      stock_lot_id: m.stock_lot_id,
+      from_cell_id: m.from_cell_id,
+      to_cell_id: m.to_cell_id,
+      delta_qty: m.delta_qty,
+      kind: m.kind,
+      reason: m.reason,
+      reference_kind: m.reference_kind,
+      reference_ref: m.reference_ref,
+      occurred_at: m.occurred_at,
+      actor: actor(m, :actor),
+      inserted_at: m.inserted_at
+    }
+  end
+
+  # Minimal item / uom / cell summaries — embedded inside stock_lot
+  # so the list endpoint doesn't need a second fetch on the FE side.
+  defp item_summary(i) do
+    %{
+      id: i.id,
+      uuid: i.uuid,
+      code: render_code(i, "item"),
+      name: i.name,
+      item_type: i.item_type,
+      external_sku: i.external_sku
+    }
+  end
+
+  defp uom_summary(u) do
+    %{
+      id: u.id,
+      uuid: u.uuid,
+      code: render_code(u, "unit_of_measurement"),
+      symbol: u.symbol,
+      name: u.name
+    }
+  end
+
+  defp storage_cell_summary(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      ordinal: c.ordinal,
+      name: c.name,
+      storage_location_id: c.storage_location_id
+    }
+  end
+
+  defp preloaded_or_nil(record, field, shape_fn) do
+    case Map.get(record, field) do
+      %Ecto.Association.NotLoaded{} -> nil
+      nil -> nil
+      value -> shape_fn.(value)
+    end
+  end
+
+  defp preloaded_or_empty(record, field) do
+    case Map.get(record, field) do
+      %Ecto.Association.NotLoaded{} -> []
+      nil -> []
+      list when is_list(list) -> list
+    end
+  end
+
+  defp sum_decimal(items, getter) do
+    Enum.reduce(items, Decimal.new(0), fn item, acc ->
+      case getter.(item) do
+        nil -> acc
+        %Decimal{} = d -> Decimal.add(acc, d)
+        n when is_integer(n) -> Decimal.add(acc, Decimal.new(n))
+      end
+    end)
   end
 
   @doc """

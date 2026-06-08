@@ -24,6 +24,7 @@ defmodule Backend.Numbering do
   alias Backend.Items.Item
   alias Backend.RBAC.Role
   alias Backend.Repo
+  alias Backend.Stock.Lot, as: StockLot
   alias Backend.Units.UnitOfMeasurement
   alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, StorageTag, Warehouse}
 
@@ -39,7 +40,8 @@ defmodule Backend.Numbering do
     "item" => Item,
     "product_family" => ProductFamily,
     "attribute_definition" => AttributeDefinition,
-    "certificate" => Certificate
+    "certificate" => Certificate,
+    "stock_lot" => StockLot
   }
 
   @default_padding 5

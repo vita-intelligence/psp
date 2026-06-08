@@ -12,6 +12,7 @@ import {
 } from "@/lib/catalogs/server";
 import { listAllergens } from "@/lib/allergens/server";
 import { listCertificatesForPicker } from "@/lib/certificates/server";
+import { listStorageTags } from "@/lib/storage-tags/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { ItemForm } from "../item-form";
@@ -34,14 +35,21 @@ export default async function EditItemPage({
   const item = await getItem(uuid);
   if (!item) notFound();
 
-  const [units, families, attributeDefinitions, allergens, certificates] =
-    await Promise.all([
-      listUnitsOfMeasurement(),
-      listProductFamiliesForPicker(),
-      listActiveAttributeDefinitionsForScope(item.item_type),
-      listAllergens(),
-      listCertificatesForPicker(),
-    ]);
+  const [
+    units,
+    families,
+    attributeDefinitions,
+    allergens,
+    certificates,
+    storageTags,
+  ] = await Promise.all([
+    listUnitsOfMeasurement(),
+    listProductFamiliesForPicker(),
+    listActiveAttributeDefinitionsForScope(item.item_type),
+    listAllergens(),
+    listCertificatesForPicker(),
+    listStorageTags(),
+  ]);
 
   const canEdit = hasPermission(user, "items.edit");
   const canEditRisk = hasPermission(user, "risk_assessments.create");
@@ -81,6 +89,7 @@ export default async function EditItemPage({
         families={families ?? []}
         attributeDefinitions={attributeDefinitions ?? []}
         allAllergens={allergens ?? []}
+        storageTags={storageTags ?? []}
       />
 
       {/* Certificate attachments are M:N with per-row state. */}

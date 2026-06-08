@@ -10,6 +10,7 @@ import {
   listProductFamiliesForPicker,
 } from "@/lib/catalogs/server";
 import { listAllergens } from "@/lib/allergens/server";
+import { listStorageTags } from "@/lib/storage-tags/server";
 import { ItemForm } from "../item-form";
 
 export const metadata = { title: "New item · Settings · PSP" };
@@ -20,12 +21,13 @@ export default async function NewItemPage() {
     redirect("/settings/items");
   }
 
-  const [units, families, attributeDefinitions, allergens] =
+  const [units, families, attributeDefinitions, allergens, storageTags] =
     await Promise.all([
       listUnitsOfMeasurement(),
       listProductFamiliesForPicker(),
       listActiveAttributeDefinitionsForScope("raw_material"),
       listAllergens(),
+      listStorageTags(),
     ]);
 
   const canEditRisk = hasPermission(user, "risk_assessments.create");
@@ -57,6 +59,7 @@ export default async function NewItemPage() {
         families={families ?? []}
         attributeDefinitions={attributeDefinitions ?? []}
         allAllergens={allergens ?? []}
+        storageTags={storageTags ?? []}
       />
     </div>
   );

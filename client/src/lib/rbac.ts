@@ -33,7 +33,12 @@ export type PermissionCode =
   | "risk_assessments.create"
   | "risk_assessments.approve"
   | "certificates.view"
-  | "certificates.manage";
+  | "certificates.manage"
+  | "stock.view"
+  | "stock.receive"
+  | "stock.move"
+  | "stock.adjust"
+  | "stock.dispose";
 
 /**
  * Server-side / RSC-safe permission check. Server components and
