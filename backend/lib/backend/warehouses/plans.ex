@@ -42,6 +42,11 @@ defmodule Backend.Warehouses.Plans do
   def list_floors(%Warehouse{} = warehouse) do
     Floor
     |> where([f], f.warehouse_id == ^warehouse.id)
+    # Hide system slots — the auto-managed Unregistered hierarchy
+    # exists only so manual lots have somewhere to land before
+    # they're scan-moved to a real shelf. Operators shouldn't see
+    # it in the plan editor or floor list.
+    |> where([f], is_nil(f.system_kind))
     |> order_by([f], asc: f.ordinal, asc: f.id)
     |> preload([:created_by, :updated_by, storage_locations: ^location_query()])
     |> Repo.all()
@@ -540,6 +545,7 @@ defmodule Backend.Warehouses.Plans do
   # count and the editor opens straight onto the existing list.
   defp location_query do
     from(l in StorageLocation,
+      where: is_nil(l.system_kind),
       preload: [:created_by, :updated_by, cells: ^cell_query()],
       order_by: [asc: l.name]
     )
@@ -547,6 +553,7 @@ defmodule Backend.Warehouses.Plans do
 
   defp cell_query do
     from(c in StorageCell,
+      where: is_nil(c.system_kind),
       preload: [:created_by, :updated_by],
       order_by: [asc: c.ordinal, asc: c.id]
     )

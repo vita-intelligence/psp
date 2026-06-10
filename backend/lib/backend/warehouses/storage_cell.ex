@@ -36,6 +36,11 @@ defmodule Backend.Warehouses.StorageCell do
 
     field :notes, :string
 
+    # Marks system-managed slots (`"unregistered"` for now). Real
+    # operator-owned cells leave it `nil`; the cell picker filters
+    # `IS NOT NULL` out of the visible list.
+    field :system_kind, :string
+
     belongs_to :storage_location, StorageLocation
     belongs_to :company, Company
     belongs_to :created_by, User

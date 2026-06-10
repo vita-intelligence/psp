@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Info, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { Info, Loader2, MapPin, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,19 +15,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
-import { CellPicker } from "@/components/forms/cell-picker";
 import {
   createManualLotAction,
   type ManualLotInput,
 } from "@/lib/stock/actions";
-import type {
-  ComplianceState,
-  Item,
-  StockCellPickerRow,
-  Warehouse,
-} from "@/lib/types";
+import type { ComplianceState, Item, Warehouse } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
-import { clientId } from "@/lib/utils";
 
 interface ReceiveFormProps {
   items: Item[];
@@ -52,10 +45,14 @@ const RISK_OPTIONS = [
 type FieldErrors = Record<string, string[]>;
 
 /**
- * Receive a new lot. Lays out fields in collapsible groups so the
- * required basics (item + qty + cell) are above the fold and the
- * compliance/provenance metadata sits below. On success: redirect
- * back to /stock/lots with a fresh list.
+ * Manual lot create — simplified to "what landed, how much, in which
+ * warehouse". The lot drops into that warehouse's auto-managed
+ * Unregistered cell; operators scan-move it to a real shelf later.
+ *
+ * Why the cell picker is gone: nobody knows the exact shelf the
+ * moment a pallet rolls in, and forcing them to pick one was the
+ * original source of "stock said one place, was physically another"
+ * drift. Site is the only honest answer available at receive time.
  */
 export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
   const router = useRouter();
@@ -65,27 +62,10 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
 
   // Required
   const [itemId, setItemId] = useState<string>("");
-  // Multi-row placements — each row a destination cell + qty. The
-  // lot's total qty_received is the sum. `cellRow` is the resolved
-  // breadcrumb the CellPicker returned, kept around so the trigger
-  // button still shows the selection even after the picker closes.
-  const [rows, setRows] = useState<
-    Array<{
-      id: string;
-      cellId: string;
-      cellRow: StockCellPickerRow | null;
-      qty: string;
-    }>
-  >([{ id: clientId(), cellId: "", cellRow: null, qty: "" }]);
-
-  // Cell filters — passed through to the CellPicker so the server
-  // narrows results before they ever hit the wire.
-  const [siteId, setSiteId] = useState<string>(""); // warehouse filter
-  // Tag filter: when the item declares storage_tags, the server
-  // hides cells whose effective_tags don't satisfy them. The
-  // operator can flip it off for exceptional placements (returns
-  // into the wrong-but-only-available cell, etc.).
-  const [matchTags, setMatchTags] = useState(true);
+  const [warehouseId, setWarehouseId] = useState<string>(
+    warehouses.length === 1 ? String(warehouses[0].id) : "",
+  );
+  const [qty, setQty] = useState<string>("");
 
   // Optional
   const [unitCost, setUnitCost] = useState("");
@@ -106,46 +86,22 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
     () => new Map(items.map((i) => [String(i.id), i])),
     [items],
   );
+  const warehouseById = useMemo(
+    () => new Map(warehouses.map((w) => [String(w.id), w])),
+    [warehouses],
+  );
 
   const selectedItem = itemId ? itemById.get(itemId) : undefined;
+  const selectedWarehouse = warehouseId
+    ? warehouseById.get(warehouseId)
+    : undefined;
   const uomSymbol = selectedItem?.stock_uom?.symbol ?? "—";
   const uomId = selectedItem?.stock_uom?.id ?? null;
   const itemTags = selectedItem?.storage_tags ?? [];
 
-  // Live total — formatted with the item's UoM symbol.
-  const totalQty = useMemo(() => {
-    return rows.reduce((acc, r) => {
-      const n = Number(r.qty);
-      return Number.isFinite(n) && n > 0 ? acc + n : acc;
-    }, 0);
-  }, [rows]);
-
-  const validRows = rows.filter(
-    (r) => r.cellId && Number(r.qty) > 0,
-  );
-
+  const qtyValid = Number(qty) > 0;
   const canSubmit =
-    !!itemId && !!uomId && validRows.length > 0 && !pending;
-
-  function updateRow(
-    id: string,
-    patch: Partial<{ cellId: string; cellRow: StockCellPickerRow | null; qty: string }>,
-  ) {
-    setRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, ...patch } : r)),
-    );
-  }
-  function addRow() {
-    setRows((prev) => [
-      ...prev,
-      { id: clientId(), cellId: "", cellRow: null, qty: "" },
-    ]);
-  }
-  function removeRow(id: string) {
-    setRows((prev) =>
-      prev.length === 1 ? prev : prev.filter((r) => r.id !== id),
-    );
-  }
+    !!itemId && !!uomId && !!warehouseId && qtyValid && !pending;
 
   function clearFieldError(field: string) {
     setFieldErrors((prev) => {
@@ -165,10 +121,8 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
     const input: ManualLotInput = {
       item_id: Number(itemId),
       unit_of_measurement_id: uomId!,
-      placements: validRows.map((r) => ({
-        cell_id: Number(r.cellId),
-        qty: r.qty,
-      })),
+      warehouse_id: Number(warehouseId),
+      qty_received: qty,
       unit_cost: unitCost || null,
       currency: unitCost ? currency : null,
       supplier_batch_no: supplierBatch || null,
@@ -188,8 +142,6 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
       const res = await createManualLotAction(input);
       if (!res.ok) {
         setActionError(res);
-        // Pull field-level errors out of the structured `debug` blob
-        // (Errors.changeset_fields shape) for inline highlighting.
         const debug = (res.debug as { fields?: FieldErrors } | undefined)?.fields;
         if (debug) setFieldErrors(debug);
         return;
@@ -289,129 +241,80 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
           </div>
         </section>
 
-        {/* Storage placements */}
+        {/* Destination */}
         <section className="space-y-4 rounded-lg border border-border/60 bg-card p-4">
-          <header className="space-y-1">
+          <header className="space-y-1.5">
             <h2 className="text-sm font-semibold tracking-tight">
-              Storage placements
+              Destination
             </h2>
-            <p className="text-xs text-muted-foreground">
-              Where the lot lives. Split across multiple cells if the
-              batch landed in more than one place — each row gets its
-              own receive movement.
-            </p>
+            <div className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/[0.04] px-3 py-2 text-[11px] text-muted-foreground">
+              <Info className="mt-0.5 size-3.5 shrink-0 text-primary" />
+              <span>
+                Lot lands in the warehouse&apos;s{" "}
+                <strong>Unregistered</strong> location. Scan it onto a
+                real shelf later from the mobile app and the system
+                records the move automatically.
+              </span>
+            </div>
           </header>
 
-          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-            <Field label="Site">
+          <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
+            <Field
+              label="Site"
+              required
+              error={fieldErrors.warehouse_id}
+            >
               <Select
-                value={siteId}
-                onValueChange={(v) => setSiteId(v === "__all__" ? "" : v)}
+                value={warehouseId}
+                onValueChange={(v) => {
+                  setWarehouseId(v);
+                  clearFieldError("warehouse_id");
+                }}
               >
                 <SelectTrigger className="h-9">
-                  <SelectValue placeholder="All sites" />
+                  <SelectValue placeholder="Pick a warehouse…" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__all__">All sites</SelectItem>
                   {warehouses.map((w) => (
                     <SelectItem key={w.id} value={String(w.id)}>
-                      {w.name}
+                      <span className="flex items-center gap-2">
+                        <MapPin className="size-3.5 text-muted-foreground" />
+                        <span>{w.name}</span>
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {selectedWarehouse && (
+                <p className="text-[11px] text-muted-foreground">
+                  → <span className="font-medium">{selectedWarehouse.name}</span>{" "}
+                  · Unregistered
+                </p>
+              )}
             </Field>
 
-            {itemTags.length > 0 && (
-              <label className="flex cursor-pointer items-end gap-2 self-end pb-2 text-[11px] text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={matchTags}
-                  onChange={(e) => setMatchTags(e.target.checked)}
-                  className="size-3.5 accent-primary"
+            <Field
+              label="Quantity"
+              required
+              error={fieldErrors.qty_received}
+            >
+              <div className="flex items-stretch gap-1">
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={qty}
+                  onChange={(e) => {
+                    setQty(e.target.value);
+                    clearFieldError("qty_received");
+                  }}
+                  placeholder="0.00"
+                  className="h-9 font-mono"
                 />
-                <span>
-                  Only cells matching{" "}
-                  <span className="font-mono text-foreground">
-                    {itemTags.join(", ")}
-                  </span>
+                <span className="inline-flex items-center rounded-md border border-border/60 bg-muted px-2 text-[10px] font-medium text-muted-foreground">
+                  {uomSymbol}
                 </span>
-              </label>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <div className="grid grid-cols-[1fr_140px_36px] gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              <span>Cell</span>
-              <span>Quantity</span>
-              <span></span>
-            </div>
-            {rows.map((row, idx) => (
-              <div
-                key={row.id}
-                className="grid grid-cols-[1fr_140px_36px] gap-2"
-              >
-                <CellPicker
-                  value={row.cellId}
-                  selected={row.cellRow}
-                  warehouseId={siteId ? Number(siteId) : null}
-                  itemId={itemId ? Number(itemId) : null}
-                  matchTags={matchTags}
-                  placeholder={`Pick cell #${idx + 1}…`}
-                  onChange={(cellId, cellRow) =>
-                    updateRow(row.id, { cellId, cellRow })
-                  }
-                />
-
-                <div className="flex items-stretch gap-1">
-                  <Input
-                    type="text"
-                    inputMode="decimal"
-                    value={row.qty}
-                    onChange={(e) =>
-                      updateRow(row.id, { qty: e.target.value })
-                    }
-                    placeholder="qty"
-                    className="h-9 font-mono"
-                  />
-                  <span className="inline-flex items-center rounded-md border border-border/60 bg-muted px-2 text-[10px] font-medium text-muted-foreground">
-                    {uomSymbol}
-                  </span>
-                </div>
-
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  disabled={rows.length === 1}
-                  onClick={() => removeRow(row.id)}
-                  className="size-9 text-muted-foreground hover:text-destructive"
-                  aria-label={`Remove placement ${idx + 1}`}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
               </div>
-            ))}
-
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={addRow}
-                className="h-8"
-              >
-                <Plus className="mr-1.5 size-3.5" />
-                Add another cell
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                Total:{" "}
-                <span className="font-mono font-semibold text-foreground">
-                  {totalQty || 0}
-                </span>{" "}
-                {uomSymbol}
-              </p>
-            </div>
+            </Field>
           </div>
         </section>
 
@@ -454,6 +357,22 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
                 onChange={(e) => setRevision(e.target.value)}
                 placeholder="e.g. V00"
                 className="h-9 font-mono"
+              />
+            </Field>
+            <Field label="Manufactured at">
+              <Input
+                type="date"
+                value={manufactured}
+                onChange={(e) => setManufactured(e.target.value)}
+                className="h-9"
+              />
+            </Field>
+            <Field label="Expires at">
+              <Input
+                type="date"
+                value={expiry}
+                onChange={(e) => setExpiry(e.target.value)}
+                className="h-9"
               />
             </Field>
           </div>
@@ -562,50 +481,21 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
           </div>
         </section>
 
-        {/* Dates */}
-        <section className="space-y-4 rounded-lg border border-border/60 bg-card p-4">
-          <header className="space-y-0.5">
-            <h2 className="text-sm font-semibold tracking-tight">Dates</h2>
-            <p className="text-xs text-muted-foreground">
-              Expiry drives the FEFO allocation order and the expiring-
-              soon queue. Manufactured / Available-from are optional.
-            </p>
-          </header>
-
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Manufactured at">
-              <Input
-                type="date"
-                value={manufactured}
-                onChange={(e) => setManufactured(e.target.value)}
-                className="h-9"
-              />
-            </Field>
-            <Field label="Expiry date">
-              <Input
-                type="date"
-                value={expiry}
-                onChange={(e) => setExpiry(e.target.value)}
-                className="h-9"
-              />
-            </Field>
-          </div>
-        </section>
-
         {/* Notes */}
-        <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
-          <Field label="Notes">
-            <Textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              placeholder="Anything worth recording about this batch — supplier hiccups, deviations, …"
-            />
-          </Field>
+        <section className="space-y-3 rounded-lg border border-border/60 bg-card p-4">
+          <header>
+            <h2 className="text-sm font-semibold tracking-tight">Notes</h2>
+          </header>
+          <Textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Anything that needs surfacing on the lot detail page"
+            className="min-h-20"
+          />
         </section>
       </fieldset>
 
-      <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-4">
+      <div className="flex items-center justify-end gap-2">
         <Button
           type="button"
           variant="ghost"
@@ -639,8 +529,8 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-1">
-      <Label className="text-xs">
+    <div className="space-y-1.5">
+      <Label className="text-xs font-medium text-muted-foreground">
         {label}
         {required && <span className="ml-0.5 text-destructive">*</span>}
       </Label>

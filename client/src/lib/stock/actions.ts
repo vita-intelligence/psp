@@ -14,17 +14,17 @@ export type CreateManualLotResult =
   | { ok: true; lot: StockLot }
   | ErrorResult;
 
-export interface ManualLotPlacementInput {
-  cell_id: number;
-  qty: string;
-}
-
 export interface ManualLotInput {
   item_id: number;
   unit_of_measurement_id: number;
-  /** One row per destination cell. The lot's qty_received is the
-   *  sum; each row also gets its own receive movement. */
-  placements: ManualLotPlacementInput[];
+  /** Destination warehouse. The lot lands in the warehouse's auto-
+   *  managed Unregistered cell — the operator scan-moves it later
+   *  once they know the actual shelf. We deliberately don't take a
+   *  cell id from the operator on receive: nobody knows the exact
+   *  shelf at the moment a pallet rolls in. */
+  warehouse_id: number;
+  /** Total quantity landed, as a decimal string. */
+  qty_received: string;
   // optional metadata. `source_kind` is forced to "manual" by the
   // backend — callers don't need to send it.
   unit_cost?: string | null;

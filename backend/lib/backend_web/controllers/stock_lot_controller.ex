@@ -88,6 +88,13 @@ defmodule BackendWeb.StockLotController do
           "Destination storage cell not found."
         )
 
+      {:error, :warehouse_not_found} ->
+        not_found_error(
+          conn,
+          "warehouse_not_found",
+          "Destination warehouse not found."
+        )
+
       {:error, :bad_qty} ->
         unprocessable(
           conn,

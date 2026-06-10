@@ -22,6 +22,10 @@ defmodule Backend.Warehouses.Floor do
     # Walls + rooms + viewport. Storage locations live in their own
     # table — keep this blob purely architectural.
     field :canvas_json, :map, default: %{}
+    # Marks system-managed slots (`"unregistered"` for now). Real
+    # operator-owned floors leave it `nil`; the plan editor + cell
+    # picker filter `IS NOT NULL` out of the visible lists.
+    field :system_kind, :string
 
     belongs_to :warehouse, Warehouse
     # Denormalised from `warehouse.company_id` so the audit_events

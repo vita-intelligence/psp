@@ -14,7 +14,7 @@ defmodule Backend.Warehouses do
   alias Backend.Repo
   alias Backend.Companies
   alias Backend.ListQueries
-  alias Backend.Warehouses.Warehouse
+  alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, Warehouse}
 
   # Surface the audit log treats as meaningful. Internal bookkeeping
   # (created_by_id, updated_by_id) is excluded so history rows only
@@ -213,6 +213,120 @@ defmodule Backend.Warehouses do
   def effective_working_hours(%Warehouse{} = w) do
     {value, _source} = effective_with_source(w, :working_hours)
     value
+  end
+
+  @doc """
+  Return the `(floor, location, cell)` tuple where this warehouse's
+  unregistered stock lives. Lazy-creates the hierarchy on first call
+  so brand-new warehouses don't need a special bootstrap step.
+
+  Manual lot creation routes every batch here; later scan-moves shift
+  stock to a real shelf.
+  """
+  def get_or_create_unregistered_cell!(%Warehouse{id: warehouse_id, company_id: company_id}) do
+    case find_unregistered_cell(warehouse_id) do
+      %StorageCell{} = cell ->
+        cell
+
+      nil ->
+        Repo.transaction(fn ->
+          floor = upsert_unregistered_floor(warehouse_id, company_id)
+          location = upsert_unregistered_location(warehouse_id, company_id, floor.id)
+          upsert_unregistered_cell(company_id, location.id)
+        end)
+        |> case do
+          {:ok, cell} -> cell
+          {:error, reason} -> raise "couldn't provision unregistered cell: #{inspect(reason)}"
+        end
+    end
+  end
+
+  defp find_unregistered_cell(warehouse_id) do
+    Repo.one(
+      from c in StorageCell,
+        join: l in StorageLocation,
+        on: l.id == c.storage_location_id,
+        where:
+          l.warehouse_id == ^warehouse_id and c.system_kind == "unregistered",
+        limit: 1
+    )
+  end
+
+  defp upsert_unregistered_floor(warehouse_id, company_id) do
+    case Repo.one(
+           from f in Floor,
+             where:
+               f.warehouse_id == ^warehouse_id and f.system_kind == "unregistered",
+             limit: 1
+           ) do
+      %Floor{} = f ->
+        f
+
+      nil ->
+        %Floor{}
+        |> Ecto.Changeset.change(%{
+          warehouse_id: warehouse_id,
+          company_id: company_id,
+          name: "(System)",
+          ordinal: -1,
+          canvas_json: %{},
+          system_kind: "unregistered"
+        })
+        |> Repo.insert!()
+    end
+  end
+
+  defp upsert_unregistered_location(warehouse_id, company_id, floor_id) do
+    case Repo.one(
+           from l in StorageLocation,
+             where:
+               l.warehouse_id == ^warehouse_id and l.system_kind == "unregistered",
+             limit: 1
+           ) do
+      %StorageLocation{} = l ->
+        l
+
+      nil ->
+        %StorageLocation{}
+        |> Ecto.Changeset.change(%{
+          warehouse_id: warehouse_id,
+          floor_id: floor_id,
+          company_id: company_id,
+          name: "Unregistered",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          tags: [],
+          system_kind: "unregistered"
+        })
+        |> Repo.insert!()
+    end
+  end
+
+  defp upsert_unregistered_cell(company_id, location_id) do
+    case Repo.one(
+           from c in StorageCell,
+             where:
+               c.storage_location_id == ^location_id and
+                 c.system_kind == "unregistered",
+             limit: 1
+           ) do
+      %StorageCell{} = c ->
+        c
+
+      nil ->
+        %StorageCell{}
+        |> Ecto.Changeset.change(%{
+          storage_location_id: location_id,
+          company_id: company_id,
+          name: "Unregistered",
+          ordinal: 0,
+          tags: [],
+          system_kind: "unregistered"
+        })
+        |> Repo.insert!()
+    end
   end
 
   def effective_holidays(%Warehouse{} = w) do

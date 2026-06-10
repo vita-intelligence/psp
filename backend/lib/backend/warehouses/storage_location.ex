@@ -50,6 +50,10 @@ defmodule Backend.Warehouses.StorageLocation do
     # `validate_tags/1` normalises (lowercase, trim, dedupe) on write.
     field :tags, {:array, :string}, default: []
 
+    # Marks system-managed slots (`"unregistered"` for now). Real
+    # operator-owned locations leave it `nil`.
+    field :system_kind, :string
+
     belongs_to :warehouse, Warehouse
     belongs_to :floor, Floor
     # Denormalised from `warehouse.company_id` for the same reason

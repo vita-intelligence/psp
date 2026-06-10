@@ -247,7 +247,7 @@ defmodule Backend.Stock do
 
       lot_attrs =
         attrs
-        |> Map.drop(["placements", "destination_cell_id"])
+        |> Map.drop(["placements", "destination_cell_id", "warehouse_id"])
         |> Map.put("company_id", company_id)
         |> Map.put("item_id", item.id)
         |> Map.put("qty_received", total_qty)
@@ -294,10 +294,30 @@ defmodule Backend.Stock do
     end
   end
 
-  # Normalise both old (destination_cell_id + qty_received) and new
-  # (placements: [...]) shapes into a list of `{cell, qty_decimal}`
-  # tuples. Validates every cell belongs to the company and every
-  # qty parses as a positive decimal.
+  # Resolve the destination into a list of `{cell, qty_decimal}`
+  # tuples. Accepted shapes, in priority order:
+  #
+  #   1. `warehouse_id` + `qty_received` (or `qty`) — current canonical
+  #      manual-lot shape. Stock lands in the warehouse's auto-managed
+  #      Unregistered cell; operators later scan-move it to a real
+  #      shelf. This is the only path the new receive form uses.
+  #   2. `placements: [{cell_id, qty}, …]` — legacy/multi-cell shape
+  #      kept around so the procurement module can target specific
+  #      cells when it ships.
+  #   3. `destination_cell_id` + `qty_received` — original single-cell
+  #      shape from before the multi-cell migration.
+  defp parse_placements(company_id, %{"warehouse_id" => raw} = attrs)
+       when raw not in [nil, ""] do
+    warehouse_id = parse_int(raw)
+    qty_raw = attrs["qty_received"] || attrs["qty"]
+
+    with {:ok, warehouse} <- fetch_warehouse(company_id, warehouse_id),
+         {:ok, qty} <- parse_positive_decimal(qty_raw) do
+      cell = Backend.Warehouses.get_or_create_unregistered_cell!(warehouse)
+      {:ok, [{cell, qty}]}
+    end
+  end
+
   defp parse_placements(company_id, %{"placements" => list}) when is_list(list) do
     if list == [] do
       {:error, :no_placements}
@@ -407,6 +427,15 @@ defmodule Backend.Stock do
 
   defp fetch_cell(_company_id, _), do: {:error, :cell_not_found}
 
+  defp fetch_warehouse(company_id, warehouse_id) when is_integer(warehouse_id) do
+    case Repo.get(Backend.Warehouses.Warehouse, warehouse_id) do
+      %Backend.Warehouses.Warehouse{company_id: ^company_id} = w -> {:ok, w}
+      _ -> {:error, :warehouse_not_found}
+    end
+  end
+
+  defp fetch_warehouse(_company_id, _), do: {:error, :warehouse_not_found}
+
   defp parse_positive_decimal(value) do
     with {:ok, d} <- parse_decimal(value),
          true <- Decimal.positive?(d) do
@@ -475,6 +504,13 @@ defmodule Backend.Stock do
         join: w in Warehouse,
         on: w.id == l.warehouse_id,
         where: c.company_id == ^company_id,
+        # System slots (the auto-managed Unregistered cell per
+        # warehouse) never appear in the picker — only real shelves
+        # the operator could choose. The receive endpoint resolves
+        # the unregistered cell server-side from `warehouse_id`.
+        where:
+          is_nil(c.system_kind) and is_nil(l.system_kind) and
+            is_nil(f.system_kind),
         # Order by cell id ascending — keeps keyset cursor cheap and
         # unambiguous. UX-wise the operator types a search term
         # almost immediately, so default ordering matters less than
