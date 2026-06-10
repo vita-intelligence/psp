@@ -48,6 +48,7 @@ defmodule Backend.Stock do
       |> maybe_status_filter(opts[:status])
       |> maybe_item_filter(opts[:item_id])
       |> maybe_cell_filter(opts[:cell_id])
+      |> maybe_warehouse_filter(opts[:warehouse_id])
       |> apply_lot_search(company_id, opts[:search])
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([
@@ -262,6 +263,25 @@ defmodule Backend.Stock do
       )
 
     where(query, [l], l.id in subquery(cell_lot_ids))
+  end
+
+  defp maybe_warehouse_filter(query, nil), do: query
+
+  defp maybe_warehouse_filter(query, warehouse_id) when is_integer(warehouse_id) do
+    # Match lots that have at least one non-zero placement whose
+    # cell rolls up to the requested warehouse. Includes the system
+    # Unregistered cell so freshly-received-but-not-put-away lots
+    # still show under their warehouse filter.
+    warehouse_lot_ids =
+      from(p in Placement,
+        join: c in Backend.Warehouses.StorageCell, on: c.id == p.storage_cell_id,
+        join: l in Backend.Warehouses.StorageLocation, on: l.id == c.storage_location_id,
+        join: f in Backend.Warehouses.Floor, on: f.id == l.floor_id,
+        where: f.warehouse_id == ^warehouse_id and p.qty > 0,
+        select: p.stock_lot_id
+      )
+
+    where(query, [l], l.id in subquery(warehouse_lot_ids))
   end
 
   # ----- write -----------------------------------------------------

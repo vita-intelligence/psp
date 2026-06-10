@@ -67,8 +67,10 @@ export interface FilterDef {
   field: string;
   /** Display name in the toolbar. */
   label: string;
-  /** Available choices. Use `null`/empty for "any". */
-  options: Array<{ label: string; value: string | boolean }>;
+  /** Available choices. Use `null`/empty for "any". Number values
+   *  (e.g. warehouse_id) get stringified for the URL and parsed back
+   *  by the controller. */
+  options: Array<{ label: string; value: string | number | boolean }>;
 }
 
 export interface DataTableProps<T> {

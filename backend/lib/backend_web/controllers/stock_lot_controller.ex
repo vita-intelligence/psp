@@ -37,7 +37,8 @@ defmodule BackendWeb.StockLotController do
       search: params["search"],
       status: params["status"],
       item_id: parse_int(params["item_id"]),
-      cell_id: parse_int(params["cell_id"])
+      cell_id: parse_int(params["cell_id"]),
+      warehouse_id: parse_int(params["warehouse_id"])
     ]
 
     {lots, cursor} = Stock.list_page(actor.company_id, opts)

@@ -15,7 +15,7 @@ import type {
 import { Badge } from "@/components/ui/badge-mini";
 import { Button } from "@/components/ui/button";
 import { auditColumns } from "@/components/audit/audit-table-columns";
-import type { StockLot, StockLotStatus } from "@/lib/types";
+import type { StockLot, StockLotStatus, Warehouse } from "@/lib/types";
 import {
   formatCompanyDate,
   formatCompanyMoney,
@@ -25,6 +25,7 @@ import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 
 interface LotsTableProps {
   initialPage: PageResult<StockLot>;
+  warehouses: Warehouse[];
   canReceive: boolean;
 }
 
@@ -101,10 +102,32 @@ async function fetchLotsPage(params: {
   return (await res.json()) as PageResult<StockLot>;
 }
 
-export function LotsTable({ initialPage, canReceive }: LotsTableProps) {
+export function LotsTable({
+  initialPage,
+  warehouses,
+  canReceive,
+}: LotsTableProps) {
   const router = useRouter();
   const prefs = useFormatPrefs();
   const [printLot, setPrintLot] = useState<StockLot | null>(null);
+
+  // Warehouses are dynamic per-company so the FilterDef is built at
+  // render time rather than statically. Stable identity via useMemo so
+  // the DataTable doesn't see a fresh `filters` array every render.
+  const filters = useMemo<FilterDef[]>(() => {
+    const out: FilterDef[] = [STATUS_FILTER];
+    if (warehouses.length > 0) {
+      out.push({
+        field: "warehouse_id",
+        label: "Warehouse",
+        options: warehouses.map((w) => ({
+          label: w.name,
+          value: w.id,
+        })),
+      });
+    }
+    return out;
+  }, [warehouses]);
 
   const formatQty = (qty: string | null | undefined, symbol?: string | null) => {
     const formatted = formatCompanyNumber(qty, prefs);
@@ -288,7 +311,7 @@ export function LotsTable({ initialPage, canReceive }: LotsTableProps) {
         fetchPage={fetchLotsPage}
         initialPage={initialPage}
         searchPlaceholder="Search supplier batch, source ref, notes…"
-        filters={[STATUS_FILTER]}
+        filters={filters}
         defaultSort={DEFAULT_SORT}
         onRowClick={(l) => router.push(`/stock/lots/${l.uuid}`)}
         toolbarActions={

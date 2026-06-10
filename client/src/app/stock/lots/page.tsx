@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { listStockLotsPage } from "@/lib/stock/server";
+import { listStockLotsPage, listWarehousesForReceive } from "@/lib/stock/server";
 import { StockSubnav } from "../stock-subnav";
 import { LotsTable } from "./lots-table";
 
@@ -16,10 +16,11 @@ export default async function StockLotsPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = (await listStockLotsPage()) ?? {
-    items: [],
-    next_cursor: null,
-  };
+  const [initialPage, warehouses] = await Promise.all([
+    listStockLotsPage(),
+    listWarehousesForReceive(),
+  ]);
+  const seededPage = initialPage ?? { items: [], next_cursor: null };
 
   return (
     <div className="flex flex-1 flex-col">
@@ -42,7 +43,8 @@ export default async function StockLotsPage() {
           </header>
 
           <LotsTable
-            initialPage={initialPage}
+            initialPage={seededPage}
+            warehouses={warehouses}
             canReceive={hasPermission(user, "stock.receive")}
           />
         </div>
