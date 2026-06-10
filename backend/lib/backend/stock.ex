@@ -265,6 +265,271 @@ defmodule Backend.Stock do
     where(query, [l], l.id in subquery(cell_lot_ids))
   end
 
+  # ----- inventory rollup -----------------------------------------
+
+  @inventory_sortable ~w(code name qty_on_hand total_cost lots_count earliest_expiry latest_received_at)a
+  @inventory_default_sort {:name, :asc}
+
+  @doc """
+  Item-level rollup for the /stock/inventory page. One row per item;
+  on-hand + cost value are summed across every non-zero placement of
+  every lot. Items with no lots still appear (their on-hand and cost
+  read as zero) so operators can see the full catalogue at a glance.
+
+  Filters:
+    * `:warehouse_id`   — restrict to items with stock at this warehouse
+    * `:item_type`      — `"raw_material"`, `"finished_product"`, `"packaging"`, …
+    * `:in_stock_only`  — drop the zero-on-hand rows
+    * `:search`         — ILIKE across item.name and item.external_sku
+
+  Returns `{rows, next_cursor}`. Cost is summed naively as
+  `placement.qty * lot.unit_cost` in the company's default currency.
+  """
+  def inventory_rollup(company_id, opts \\ []) when is_integer(company_id) do
+    sort = inventory_sort(opts[:sort])
+    limit = inventory_limit(opts[:limit])
+    cursor = inventory_decode_cursor(opts[:cursor])
+
+    search_needle = inventory_needle(opts[:search])
+    item_type = opts[:item_type]
+    warehouse_id = opts[:warehouse_id]
+    in_stock_only = opts[:in_stock_only] == true
+
+    base =
+      from i in Item,
+        as: :item,
+        left_join: l in Lot,
+        as: :lot,
+        on: l.item_id == i.id and l.company_id == ^company_id,
+        left_join: p in Placement,
+        as: :placement,
+        on: p.stock_lot_id == l.id and p.qty > 0,
+        where: i.company_id == ^company_id,
+        group_by: [i.id, i.name, i.uuid, i.external_sku, i.item_type, i.stock_uom_id],
+        select: %{
+          item_id: i.id,
+          item_uuid: i.uuid,
+          item_name: i.name,
+          item_external_sku: i.external_sku,
+          item_type: i.item_type,
+          stock_uom_id: i.stock_uom_id,
+          qty_on_hand: coalesce(sum(p.qty), 0),
+          total_cost:
+            coalesce(
+              sum(fragment("? * COALESCE(?, 0)", p.qty, l.unit_cost)),
+              0
+            ),
+          lots_count: count(l.id, :distinct),
+          earliest_expiry: min(l.expiry_at),
+          latest_received_at: max(l.received_at)
+        }
+
+    base =
+      if item_type do
+        from [item: i] in base, where: i.item_type == ^item_type
+      else
+        base
+      end
+
+    base =
+      if search_needle do
+        from [item: i] in base,
+          where: ilike(i.name, ^search_needle) or ilike(i.external_sku, ^search_needle)
+      else
+        base
+      end
+
+    base =
+      if warehouse_id do
+        wh_item_ids =
+          from p in Placement,
+            join: l in Lot, on: l.id == p.stock_lot_id and l.company_id == ^company_id,
+            join: c in Backend.Warehouses.StorageCell, on: c.id == p.storage_cell_id,
+            join: sl in Backend.Warehouses.StorageLocation, on: sl.id == c.storage_location_id,
+            join: f in Backend.Warehouses.Floor, on: f.id == sl.floor_id,
+            where: f.warehouse_id == ^warehouse_id and p.qty > 0,
+            select: l.item_id
+
+        from [item: i] in base, where: i.id in subquery(wh_item_ids)
+      else
+        base
+      end
+
+    base =
+      if in_stock_only do
+        from q in base,
+          having: coalesce(sum(as(:placement).qty), 0) > 0
+      else
+        base
+      end
+
+    base = inventory_apply_sort(base, sort)
+    base = inventory_apply_cursor(base, sort, cursor)
+
+    rows = Repo.all(from q in base, limit: ^(limit + 1))
+
+    inventory_take_page(rows, limit, sort)
+  end
+
+  defp inventory_sort(nil), do: @inventory_default_sort
+
+  defp inventory_sort({field, dir}) when is_atom(field) and dir in [:asc, :desc] do
+    if field in @inventory_sortable, do: {field, dir}, else: @inventory_default_sort
+  end
+
+  defp inventory_sort(other) when is_binary(other) do
+    case String.split(other, ":") do
+      [field, dir] ->
+        atom = String.to_existing_atom(field)
+        direction = if dir == "desc", do: :desc, else: :asc
+
+        if atom in @inventory_sortable do
+          {atom, direction}
+        else
+          @inventory_default_sort
+        end
+
+      _ ->
+        @inventory_default_sort
+    end
+  rescue
+    ArgumentError -> @inventory_default_sort
+  end
+
+  defp inventory_sort(_), do: @inventory_default_sort
+
+  defp inventory_limit(nil), do: 50
+  defp inventory_limit(n) when is_integer(n) and n > 0 and n <= 200, do: n
+  defp inventory_limit(_), do: 50
+
+  defp inventory_needle(nil), do: nil
+  defp inventory_needle(""), do: nil
+
+  defp inventory_needle(term) when is_binary(term) do
+    "%" <> escape_like(String.trim(term)) <> "%"
+  end
+
+  defp inventory_needle(_), do: nil
+
+  defp inventory_decode_cursor(nil), do: nil
+  defp inventory_decode_cursor(""), do: nil
+
+  defp inventory_decode_cursor(cursor) when is_binary(cursor) do
+    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false),
+         [field, value, id] <- String.split(decoded, "|", parts: 3) do
+      %{field: field, value: value, id: String.to_integer(id)}
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp inventory_decode_cursor(_), do: nil
+
+  defp inventory_apply_sort(query, {:code, :asc}),
+    do: from([item: i] in query, order_by: [asc: i.id])
+
+  defp inventory_apply_sort(query, {:code, :desc}),
+    do: from([item: i] in query, order_by: [desc: i.id])
+
+  defp inventory_apply_sort(query, {:name, :asc}),
+    do: from([item: i] in query, order_by: [asc: i.name, asc: i.id])
+
+  defp inventory_apply_sort(query, {:name, :desc}),
+    do: from([item: i] in query, order_by: [desc: i.name, desc: i.id])
+
+  defp inventory_apply_sort(query, {:qty_on_hand, dir}) do
+    from q in query,
+      order_by: [
+        {^dir, fragment("COALESCE(SUM(?), 0)", as(:placement).qty)},
+        asc: as(:item).id
+      ]
+  end
+
+  defp inventory_apply_sort(query, {:total_cost, dir}) do
+    from q in query,
+      order_by: [
+        {^dir,
+         fragment("COALESCE(SUM(? * COALESCE(?, 0)), 0)", as(:placement).qty, as(:lot).unit_cost)},
+        asc: as(:item).id
+      ]
+  end
+
+  defp inventory_apply_sort(query, {:lots_count, dir}) do
+    from q in query,
+      order_by: [
+        {^dir, fragment("COUNT(DISTINCT ?)", as(:lot).id)},
+        asc: as(:item).id
+      ]
+  end
+
+  defp inventory_apply_sort(query, {:earliest_expiry, dir}) do
+    # NULLs LAST so items without an expiry don't blot out the
+    # "what's about to go bad" view.
+    from q in query,
+      order_by: [
+        fragment("MIN(?) IS NULL", as(:lot).expiry_at),
+        {^dir, fragment("MIN(?)", as(:lot).expiry_at)},
+        asc: as(:item).id
+      ]
+  end
+
+  defp inventory_apply_sort(query, {:latest_received_at, dir}) do
+    from q in query,
+      order_by: [
+        fragment("MAX(?) IS NULL", as(:lot).received_at),
+        {^dir, fragment("MAX(?)", as(:lot).received_at)},
+        asc: as(:item).id
+      ]
+  end
+
+  defp inventory_apply_cursor(query, _sort, nil), do: query
+
+  defp inventory_apply_cursor(query, {:name, :asc}, %{value: name, id: id}) do
+    from [item: i] in query,
+      where: i.name > ^name or (i.name == ^name and i.id > ^id)
+  end
+
+  defp inventory_apply_cursor(query, {:name, :desc}, %{value: name, id: id}) do
+    from [item: i] in query,
+      where: i.name < ^name or (i.name == ^name and i.id < ^id)
+  end
+
+  # For aggregate sorts we keyset on item.id only — close enough; the
+  # SQL would otherwise need a window function. Two items with the
+  # identical aggregate land on the page boundary in id-order.
+  defp inventory_apply_cursor(query, {_field, :asc}, %{id: id}) do
+    from [item: i] in query, where: i.id > ^id
+  end
+
+  defp inventory_apply_cursor(query, {_field, :desc}, %{id: id}) do
+    from [item: i] in query, where: i.id < ^id
+  end
+
+  defp inventory_take_page(rows, limit, sort) do
+    if length(rows) > limit do
+      page = Enum.take(rows, limit)
+      next_cursor = inventory_encode_cursor(List.last(page), sort)
+      {page, next_cursor}
+    else
+      {rows, nil}
+    end
+  end
+
+  defp inventory_encode_cursor(nil, _), do: nil
+
+  defp inventory_encode_cursor(row, {field, _dir}) do
+    value =
+      case field do
+        :name -> to_string(row.item_name)
+        _ -> ""
+      end
+
+    encoded = "#{field}|#{value}|#{row.item_id}"
+    Base.url_encode64(encoded, padding: false)
+  end
+
   defp maybe_warehouse_filter(query, nil), do: query
 
   defp maybe_warehouse_filter(query, warehouse_id) when is_integer(warehouse_id) do

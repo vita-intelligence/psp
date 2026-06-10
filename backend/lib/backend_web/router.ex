@@ -179,6 +179,11 @@ defmodule BackendWeb.Router do
       # in the procurement module.
       post "/lots/manual", StockLotController, :create_manual
 
+      # Item-level inventory rollup — one row per item with on-hand
+      # qty + cost value summed across all its non-zero placements.
+      # Used by /stock/inventory.
+      get "/inventory", StockLotController, :inventory
+
       # Put-away queue + scanner lookups (mobile /m flow).
       get "/lots/pending-putaway", StockLotController, :pending_putaway
       get "/lots/scan/:uuid", StockLotController, :scan_lot

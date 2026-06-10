@@ -266,6 +266,29 @@ export type ItemType =
   | "finished_product"
   | "packaging";
 
+/** Row from `GET /api/stock/inventory` — one entry per item with
+ *  on-hand qty and cost value summed across all non-zero placements
+ *  of all lots. Drives the /stock/inventory list page. */
+export interface InventoryRow {
+  item_id: number;
+  item_uuid: string;
+  item_name: string;
+  item_code: string | null;
+  item_external_sku: string | null;
+  item_type: ItemType;
+  stock_uom_id: number | null;
+  /** Decimal string — sum of placement.qty across non-zero placements. */
+  qty_on_hand: string;
+  /** Decimal string — sum of placement.qty × lot.unit_cost in the
+   *  company's default currency. Mixed-currency mix is summed naively. */
+  total_cost: string;
+  lots_count: number;
+  /** ISO date — null when no lot has an expiry set. */
+  earliest_expiry: string | null;
+  /** ISO datetime — null when nothing has been received yet. */
+  latest_received_at: string | null;
+}
+
 export interface ItemUnitCompact {
   id: number;
   uuid: string;

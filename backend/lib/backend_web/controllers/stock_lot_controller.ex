@@ -19,7 +19,7 @@ defmodule BackendWeb.StockLotController do
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions]
+  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions, :inventory]
   plug RequirePermission, "stock.receive" when action in [:create_manual]
   plug RequirePermission, "stock.move" when action in [:move]
   plug RequirePermission, "stock.edit" when action in [:update]
@@ -47,6 +47,51 @@ defmodule BackendWeb.StockLotController do
       items: Enum.map(lots, &Payloads.stock_lot/1),
       next_cursor: cursor
     })
+  end
+
+  @doc """
+  Item-level inventory rollup. One row per item with `qty_on_hand`,
+  `total_cost`, `lots_count`, `earliest_expiry`, and
+  `latest_received_at` aggregated across every non-zero placement of
+  every lot. Items with no lots still appear with zeros so the
+  catalogue view stays complete.
+  """
+  def inventory(conn, params) do
+    actor = conn.assigns.current_user
+
+    opts = [
+      cursor: params["cursor"],
+      limit: parse_int(params["limit"]),
+      sort: params["sort"],
+      search: params["search"],
+      warehouse_id: parse_int(params["warehouse_id"]),
+      item_type: params["item_type"],
+      in_stock_only: params["in_stock_only"] in [true, "true", "1"]
+    ]
+
+    {rows, cursor} = Stock.inventory_rollup(actor.company_id, opts)
+
+    json(conn, %{
+      items: Enum.map(rows, &shape_inventory_row/1),
+      next_cursor: cursor
+    })
+  end
+
+  defp shape_inventory_row(r) do
+    %{
+      item_id: r.item_id,
+      item_uuid: r.item_uuid,
+      item_name: r.item_name,
+      item_code: Payloads.render_entity_code(%{id: r.item_id}, "item"),
+      item_external_sku: r.item_external_sku,
+      item_type: r.item_type,
+      stock_uom_id: r.stock_uom_id,
+      qty_on_hand: r.qty_on_hand,
+      total_cost: r.total_cost,
+      lots_count: r.lots_count,
+      earliest_expiry: r.earliest_expiry,
+      latest_received_at: r.latest_received_at
+    }
   end
 
   def show(conn, %{"id" => uuid}) do

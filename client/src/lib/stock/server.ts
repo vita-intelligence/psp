@@ -1,7 +1,13 @@
 import "server-only";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { Item, StockLot, StockMovement, Warehouse } from "../types";
+import type {
+  InventoryRow,
+  Item,
+  StockLot,
+  StockMovement,
+  Warehouse,
+} from "../types";
 
 /**
  * Fetch the first page of stock lots from the backend. Used by the
@@ -18,6 +24,25 @@ export async function listStockLotsPage(): Promise<{
   try {
     return await api<{ items: StockLot[]; next_cursor: string | null }>(
       "/api/stock/lots",
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** First page of the item-level inventory rollup — drives the
+ *  /stock/inventory page. Returns null on auth failure so the page
+ *  component can render the empty shell instead of a 500. */
+export async function listInventoryFirstPage(): Promise<{
+  items: InventoryRow[];
+  next_cursor: string | null;
+} | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    return await api<{ items: InventoryRow[]; next_cursor: string | null }>(
+      "/api/stock/inventory",
       { token, cache: "no-store" },
     );
   } catch {

@@ -29,7 +29,7 @@ interface SubnavItem {
 const ITEMS: SubnavItem[] = [
   { href: "/stock", label: "Overview", Icon: Home },
   { href: "/stock/lots", label: "Lots", Icon: Layers },
-  { href: "/stock/inventory", label: "Inventory", Icon: Boxes, comingSoon: true },
+  { href: "/stock/inventory", label: "Inventory", Icon: Boxes },
   {
     href: "/stock/movements",
     label: "Movements",

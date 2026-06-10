@@ -42,7 +42,6 @@ const SECTIONS: StockSection[] = [
     label: "Inventory",
     description: "What's on hand right now, grouped by item and cell.",
     Icon: Boxes,
-    comingSoon: true,
   },
   {
     href: "/stock/movements",
