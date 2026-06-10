@@ -25,8 +25,10 @@ defmodule Backend.Numbering do
   alias Backend.Items.Item
   alias Backend.RBAC.Role
   alias Backend.Repo
+  alias Backend.Purchasing.PurchaseOrder
   alias Backend.Stock.Lot, as: StockLot
   alias Backend.Units.UnitOfMeasurement
+  alias Backend.Vendors.Vendor
   alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, StorageTag, Warehouse}
 
   @entity_schemas %{
@@ -43,7 +45,9 @@ defmodule Backend.Numbering do
     "attribute_definition" => AttributeDefinition,
     "certificate" => Certificate,
     "stock_lot" => StockLot,
-    "linked_device" => LinkedDevice
+    "linked_device" => LinkedDevice,
+    "vendor" => Vendor,
+    "purchase_order" => PurchaseOrder
   }
 
   @default_padding 5

@@ -12,7 +12,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge-mini";
-import { AlertCircle, CalendarClock, ExternalLink } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  AlertCircle,
+  CalendarClock,
+  ChevronLeft,
+  ExternalLink,
+} from "lucide-react";
 import {
   listCertificatesExpiring,
   listReviewsDue,
@@ -42,6 +48,20 @@ export default async function QueuesPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-6xl space-y-6">
+          <div>
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+            >
+              <Link href="/settings">
+                <ChevronLeft className="mr-1 size-4" />
+                Back to Settings
+              </Link>
+            </Button>
+          </div>
+
           <header className="space-y-1.5">
             <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
               Queues

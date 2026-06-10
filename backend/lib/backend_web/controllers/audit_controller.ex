@@ -48,7 +48,16 @@ defmodule BackendWeb.AuditController do
     # the whole audit trail of a lot they can already see.
     "stock_lot" => "stock.view",
     "stock_lot_placement" => "stock.view",
-    "stock_movement" => "stock.view"
+    "stock_movement" => "stock.view",
+    # Vendor domain — the approved-supplier registry + per-item +
+    # certificate edges all ride the same view perm.
+    "vendor" => "vendors.view",
+    "vendor_approved_item" => "vendors.view",
+    "vendor_certificate" => "vendors.view",
+    # Procurement domain.
+    "purchase_order" => "procurement.po_view",
+    "purchase_order_line" => "procurement.po_view",
+    "purchase_order_approval" => "procurement.po_view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do

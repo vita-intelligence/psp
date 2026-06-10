@@ -146,7 +146,13 @@ export interface AuditEvent {
     | "item_image"
     | "stock_lot"
     | "stock_lot_placement"
-    | "stock_movement";
+    | "stock_movement"
+    | "vendor"
+    | "vendor_approved_item"
+    | "vendor_certificate"
+    | "purchase_order"
+    | "purchase_order_line"
+    | "purchase_order_approval";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";
@@ -265,6 +271,202 @@ export type ItemType =
   | "semi_finished"
   | "finished_product"
   | "packaging";
+
+export type VendorApprovalStatus =
+  | "pending"
+  | "approved"
+  | "suspended"
+  | "rejected";
+
+export type VendorSupplyChainType =
+  | "manufacturer"
+  | "co_manufacturer"
+  | "distributor"
+  | "broker"
+  | "agent"
+  | "grower";
+
+export type VendorRisk = "low" | "medium" | "high";
+
+export type VendorQuestionnaireStatus =
+  | "not_sent"
+  | "sent"
+  | "received"
+  | "approved"
+  | "overdue"
+  | "na";
+
+export type VendorTraceabilityStatus =
+  | "not_done"
+  | "in_progress"
+  | "verified"
+  | "failed"
+  | "na";
+
+export type VendorPaymentBasis = "invoice_date" | "month_end" | "delivery_date";
+
+export interface VendorApprovedItemRow {
+  uuid: string;
+  vendor_id: number;
+  item_id: number;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    item_type: ItemType;
+    external_sku: string | null;
+  } | null;
+  approved_at: string | null;
+  approved_by: AuditActor | null;
+  notes: string | null;
+}
+
+export interface VendorCertificateAttachment {
+  uuid: string;
+  vendor_id: number;
+  certificate_id: number;
+  certificate: {
+    id: number;
+    uuid: string;
+    name: string;
+    certificate_type: string;
+    issuing_body: string | null;
+  } | null;
+  certificate_number: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  document_url: string | null;
+  notes: string | null;
+  uploaded_at: string | null;
+  uploaded_by: AuditActor | null;
+}
+
+export interface Vendor {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  legal_name: string | null;
+  email: string | null;
+  phone: string | null;
+  website: string | null;
+  contact_name: string | null;
+  legal_address: string | null;
+  registration_number: string | null;
+  tax_number: string | null;
+  tax_rate: string | null;
+  currency_code: string;
+  default_lead_time_days: number;
+  payment_terms_days: number;
+  payment_basis: VendorPaymentBasis;
+  supply_chain_type: VendorSupplyChainType | null;
+  vendor_risk: VendorRisk | null;
+  product_types: string[];
+  questionnaire_status: VendorQuestionnaireStatus;
+  traceability_verification_status: VendorTraceabilityStatus;
+  review_frequency_months: number | null;
+  last_review_at: string | null;
+  next_review_at: string | null;
+  approval_status: VendorApprovalStatus;
+  approval_notes: string | null;
+  approved_at: string | null;
+  approved_by: AuditActor | null;
+  notes: string | null;
+  is_active: boolean;
+  approved_items: VendorApprovedItemRow[];
+  certificates: VendorCertificateAttachment[];
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
+
+/** Picker-shaped vendor for PO forms etc. */
+export interface VendorSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  currency_code: string;
+  default_lead_time_days: number;
+  approval_status: VendorApprovalStatus;
+  is_active: boolean;
+}
+
+export type PurchaseOrderStatus =
+  | "draft"
+  | "pending_approver"
+  | "pending_director"
+  | "approved"
+  | "ordered"
+  | "partially_received"
+  | "received"
+  | "cancelled";
+
+export type PurchaseOrderApprovalKind = "approver" | "director";
+
+export interface PurchaseOrderLine {
+  uuid: string;
+  purchase_order_id: number;
+  item_id: number;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    item_type: ItemType;
+    external_sku: string | null;
+  } | null;
+  qty_ordered: string;
+  qty_received: string;
+  unit_price: string;
+  line_subtotal: string;
+  expected_delivery_date: string | null;
+  notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface PurchaseOrderApproval {
+  uuid: string;
+  purchase_order_id: number;
+  kind: PurchaseOrderApprovalKind;
+  signed_at: string;
+  signed_by: AuditActor | null;
+  notes: string | null;
+  has_signature_image: boolean;
+}
+
+export interface PurchaseOrder {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: PurchaseOrderStatus;
+  vendor_id: number;
+  vendor: VendorSummary | null;
+  currency_code: string;
+  subtotal: string;
+  tax_amount: string;
+  total_amount: string;
+  expected_delivery_date: string | null;
+  delivery_address: string | null;
+  notes: string | null;
+  submitted_at: string | null;
+  submitted_by: AuditActor | null;
+  ordered_at: string | null;
+  ordered_by: AuditActor | null;
+  received_at: string | null;
+  cancelled_at: string | null;
+  cancelled_by: AuditActor | null;
+  cancellation_reason: string | null;
+  lines: PurchaseOrderLine[];
+  approvals: PurchaseOrderApproval[];
+  inserted_at: string;
+  updated_at: string;
+  created_by?: AuditActor | null;
+  updated_by?: AuditActor | null;
+}
 
 /** Row from `GET /api/stock/inventory` — one entry per item with
  *  on-hand qty and cost value summed across all non-zero placements

@@ -25,6 +25,7 @@ import {
   Award,
   Settings2,
   Smartphone,
+  ListChecks,
 } from "lucide-react";
 
 interface NavItem {
@@ -97,6 +98,12 @@ const ITEMS: NavItem[] = [
     label: "Templates",
     icon: ShieldCheck,
     permission: "roles.view",
+  },
+  {
+    href: "/queues",
+    label: "Queues",
+    icon: ListChecks,
+    permission: "items.view",
   },
 ];
 

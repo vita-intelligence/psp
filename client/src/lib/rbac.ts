@@ -39,7 +39,21 @@ export type PermissionCode =
   | "stock.move"
   | "stock.edit"
   | "stock.adjust"
-  | "stock.dispose";
+  | "stock.dispose"
+  | "vendors.view"
+  | "vendors.create"
+  | "vendors.edit"
+  | "vendors.delete"
+  | "vendors.approve"
+  | "procurement.po_view"
+  | "procurement.po_create"
+  | "procurement.po_submit"
+  | "procurement.po_approve"
+  | "procurement.po_director_approve"
+  | "procurement.po_receive"
+  | "procurement.invoice_view"
+  | "procurement.invoice_manage"
+  | "procurement.invoice_approve";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

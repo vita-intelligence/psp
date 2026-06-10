@@ -110,6 +110,34 @@ defmodule Backend.RBAC.Permissions do
     {"stock.dispose", "Dispose of stock"}
   ]
 
+  # Vendors (suppliers) — the registry POs draw from. View is the read
+  # baseline. Edit lets the buyer maintain identity + commercial terms.
+  # Approve is the GFSI/HARPC gate — only the vendor-qualification
+  # owner (typically QA / procurement lead) can move a vendor into
+  # "approved" status, which is what unblocks PO creation downstream.
+  @vendors [
+    {"vendors.view", "View vendor registry + per-vendor detail"},
+    {"vendors.create", "Add new vendors to the registry"},
+    {"vendors.edit", "Edit vendor identity, contacts, and commercial terms"},
+    {"vendors.delete", "Delete vendors"},
+    {"vendors.approve", "Approve / suspend / reject vendors (qualification gate)"}
+  ]
+
+  # Procurement — purchase orders, invoices. Two-tier approval split
+  # (po_approve = first signature, po_director_approve = second + ordered).
+  @procurement [
+    {"procurement.po_view", "View purchase orders"},
+    {"procurement.po_create", "Create + edit draft purchase orders"},
+    {"procurement.po_submit", "Submit a draft PO for approval"},
+    {"procurement.po_approve", "Sign off as approver tier"},
+    {"procurement.po_director_approve",
+     "Sign off as director tier + mark approved POs as ordered"},
+    {"procurement.po_receive", "Receive stock against an open PO"},
+    {"procurement.invoice_view", "View invoices"},
+    {"procurement.invoice_manage", "Create + edit + delete invoices"},
+    {"procurement.invoice_approve", "Approve invoices and mark them paid"}
+  ]
+
   def all do
     Enum.map(
       @company ++
@@ -122,7 +150,9 @@ defmodule Backend.RBAC.Permissions do
         @catalogues ++
         @risk_assessments ++
         @certificates ++
-        @stock,
+        @stock ++
+        @vendors ++
+        @procurement,
       &elem(&1, 0)
     )
   end
@@ -140,7 +170,9 @@ defmodule Backend.RBAC.Permissions do
       catalogues: @catalogues,
       risk_assessments: @risk_assessments,
       certificates: @certificates,
-      stock: @stock
+      stock: @stock,
+      vendors: @vendors,
+      procurement: @procurement
     }
   end
 
@@ -298,6 +330,71 @@ defmodule Backend.RBAC.Permissions do
             create: "stock.move",
             update: "stock.adjust",
             delete: "stock.dispose"
+          }
+        ]
+      },
+      %{
+        section: "Procurement",
+        resources: [
+          %{
+            key: "vendors",
+            label: "Vendors",
+            description:
+              "Approved-supplier registry. Carries supplier-qualification metadata (risk, SAQ, review cadence) + per-item approval list that PO line validation reads.",
+            read: "vendors.view",
+            create: "vendors.create",
+            update: "vendors.edit",
+            delete: "vendors.delete"
+          },
+          %{
+            key: "vendor_approval",
+            label: "Vendor approval",
+            description:
+              "Move a vendor through pending → approved → suspended / rejected. The qualification gate that unblocks PO creation.",
+            read: "vendors.view",
+            create: nil,
+            update: "vendors.approve",
+            delete: nil
+          },
+          %{
+            key: "purchase_orders",
+            label: "Purchase orders",
+            description:
+              "Draft + submit POs against approved vendors. Two-tier ESIGN sign-off is the regulatory baseline.",
+            read: "procurement.po_view",
+            create: "procurement.po_create",
+            update: "procurement.po_create",
+            delete: "procurement.po_create"
+          },
+          %{
+            key: "po_approval",
+            label: "PO approval",
+            description:
+              "First-tier (approver) and second-tier (director) signatures. Director also marks approved POs as sent to vendor.",
+            read: "procurement.po_view",
+            create: "procurement.po_approve",
+            update: "procurement.po_director_approve",
+            delete: nil
+          },
+          %{
+            key: "po_receive",
+            label: "PO receive",
+            description:
+              "Record stock receipts against an open PO. Pre-fills lot from the line item.",
+            read: "procurement.po_view",
+            create: "procurement.po_receive",
+            update: nil,
+            delete: nil
+          },
+          %{
+            key: "invoices",
+            label: "Invoices",
+            description:
+              "Vendor invoices, linked to POs for the three-way match.",
+            read: "procurement.invoice_view",
+            create: "procurement.invoice_manage",
+            update: "procurement.invoice_manage",
+            delete: "procurement.invoice_manage"
           }
         ]
       }

@@ -304,6 +304,195 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  @doc """
+  Full vendor — registry list + detail page. Includes preloaded
+  approved-items and certificate edges so the FE detail page renders
+  in one round-trip.
+  """
+  def vendor(v) do
+    %{
+      id: v.id,
+      uuid: v.uuid,
+      code: render_code(v, "vendor"),
+      name: v.name,
+      legal_name: v.legal_name,
+      email: v.email,
+      phone: v.phone,
+      website: v.website,
+      contact_name: v.contact_name,
+      legal_address: v.legal_address,
+      registration_number: v.registration_number,
+      tax_number: v.tax_number,
+      tax_rate: v.tax_rate,
+      currency_code: v.currency_code,
+      default_lead_time_days: v.default_lead_time_days,
+      payment_terms_days: v.payment_terms_days,
+      payment_basis: v.payment_basis,
+      supply_chain_type: v.supply_chain_type,
+      vendor_risk: v.vendor_risk,
+      product_types: v.product_types || [],
+      questionnaire_status: v.questionnaire_status,
+      traceability_verification_status: v.traceability_verification_status,
+      review_frequency_months: v.review_frequency_months,
+      last_review_at: v.last_review_at,
+      next_review_at: v.next_review_at,
+      approval_status: v.approval_status,
+      approval_notes: v.approval_notes,
+      approved_at: v.approved_at,
+      approved_by: actor(v, :approved_by),
+      notes: v.notes,
+      is_active: v.is_active,
+      approved_items: preloaded_list(v, :approved_items, &vendor_approved_item/1),
+      certificates: preloaded_list(v, :certificates, &vendor_certificate/1),
+      inserted_at: v.inserted_at,
+      updated_at: v.updated_at,
+      created_by: actor(v, :created_by),
+      updated_by: actor(v, :updated_by)
+    }
+  end
+
+  @doc """
+  Picker-shaped summary — id/uuid/name/code + the bits PO forms need
+  to surface the right vendor to the right line: currency, lead
+  time, approval status (greyed-out tile when not approved).
+  """
+  def vendor_summary(v) do
+    %{
+      id: v.id,
+      uuid: v.uuid,
+      code: render_code(v, "vendor"),
+      name: v.name,
+      currency_code: v.currency_code,
+      default_lead_time_days: v.default_lead_time_days,
+      approval_status: v.approval_status,
+      is_active: v.is_active
+    }
+  end
+
+  @doc """
+  Edge of vendor↔item approved-supplier graph. PO line validation
+  uses the matching presence of one of these rows.
+  """
+  def vendor_approved_item(row) do
+    %{
+      uuid: row.uuid,
+      vendor_id: row.vendor_id,
+      item_id: row.item_id,
+      item: maybe_item_summary(row.item),
+      approved_at: row.approved_at,
+      approved_by: actor(row, :approved_by),
+      notes: row.notes
+    }
+  end
+
+  @doc """
+  Per-vendor certificate attachment. Shape mirrors `item_certificate/1`
+  so the FE can reuse the validity-window UI between item certs and
+  vendor certs.
+  """
+  def vendor_certificate(row) do
+    %{
+      uuid: row.uuid,
+      vendor_id: row.vendor_id,
+      certificate_id: row.certificate_id,
+      certificate: maybe_certificate_compact(row.certificate),
+      certificate_number: row.certificate_number,
+      valid_from: row.valid_from,
+      valid_until: row.valid_until,
+      document_url: row.document_url,
+      notes: row.notes,
+      uploaded_at: row.uploaded_at,
+      uploaded_by: actor(row, :uploaded_by)
+    }
+  end
+
+  defp maybe_item_summary(%Backend.Items.Item{} = i) do
+    %{
+      id: i.id,
+      uuid: i.uuid,
+      code: render_code(i, "item"),
+      name: i.name,
+      item_type: i.item_type,
+      external_sku: i.external_sku
+    }
+  end
+
+  defp maybe_item_summary(_), do: nil
+
+  defp preloaded_list(record, field, shape_fn) do
+    case Map.get(record, field) do
+      %Ecto.Association.NotLoaded{} -> []
+      nil -> []
+      list when is_list(list) -> Enum.map(list, shape_fn)
+    end
+  end
+
+  # ----- purchase orders -------------------------------------------
+
+  def purchase_order(po) do
+    %{
+      id: po.id,
+      uuid: po.uuid,
+      code: render_code(po, "purchase_order"),
+      status: po.status,
+      vendor_id: po.vendor_id,
+      vendor: preloaded_or_nil(po, :vendor, &vendor_summary/1),
+      currency_code: po.currency_code,
+      subtotal: po.subtotal,
+      tax_amount: po.tax_amount,
+      total_amount: po.total_amount,
+      expected_delivery_date: po.expected_delivery_date,
+      delivery_address: po.delivery_address,
+      notes: po.notes,
+      submitted_at: po.submitted_at,
+      submitted_by: actor(po, :submitted_by),
+      ordered_at: po.ordered_at,
+      ordered_by: actor(po, :ordered_by),
+      received_at: po.received_at,
+      cancelled_at: po.cancelled_at,
+      cancelled_by: actor(po, :cancelled_by),
+      cancellation_reason: po.cancellation_reason,
+      lines: preloaded_list(po, :lines, &purchase_order_line/1),
+      approvals: preloaded_list(po, :approvals, &purchase_order_approval/1),
+      inserted_at: po.inserted_at,
+      updated_at: po.updated_at,
+      created_by: actor(po, :created_by),
+      updated_by: actor(po, :updated_by)
+    }
+  end
+
+  def purchase_order_line(l) do
+    %{
+      uuid: l.uuid,
+      purchase_order_id: l.purchase_order_id,
+      item_id: l.item_id,
+      item: maybe_item_summary(l.item),
+      qty_ordered: l.qty_ordered,
+      qty_received: l.qty_received,
+      unit_price: l.unit_price,
+      line_subtotal: l.line_subtotal,
+      expected_delivery_date: l.expected_delivery_date,
+      notes: l.notes,
+      inserted_at: l.inserted_at,
+      updated_at: l.updated_at
+    }
+  end
+
+  def purchase_order_approval(a) do
+    %{
+      uuid: a.uuid,
+      purchase_order_id: a.purchase_order_id,
+      kind: a.kind,
+      signed_at: a.signed_at,
+      signed_by: actor(a, :signed_by),
+      notes: a.notes,
+      # Don't ship the base64 signature image on list payloads — too
+      # large. Detail-page payload includes it via a dedicated
+      # `purchase_order_approval_detail/1` if/when needed.
+      has_signature_image: not is_nil(a.signature_image)
+    }
+  end
+
   defp maybe_certificate_compact(%Backend.Certificates.Certificate{} = c) do
     %{
       id: c.id,

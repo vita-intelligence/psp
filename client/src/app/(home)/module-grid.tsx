@@ -1,19 +1,14 @@
-import {
-  Boxes,
-  ListChecks,
-  Package,
-  Settings as SettingsIcon,
-  Warehouse,
-} from "lucide-react";
+import { Boxes, Settings as SettingsIcon, ShoppingCart } from "lucide-react";
 import type { User } from "@/lib/types";
 import { hasPermission } from "@/lib/rbac";
 import { ModuleTile } from "./module-tile";
 
 /**
- * Top-of-home launcher. Each tile gates on the same permission as
- * the module's index page so a user without access doesn't see a
- * dead link. Admins see everything (rbac.ts short-circuits on
- * `is_admin`).
+ * Top-of-home launcher. Reduced to operational top-level modules:
+ * Stock + Procurement + Settings. Catalogue concerns (Items,
+ * Warehouses, Storage tags, Units, etc.) and the review/expiry
+ * queues live under Settings — they're configuration, not
+ * day-to-day operations, so they don't earn home-grid real estate.
  */
 export function ModuleGrid({ user }: { user: User }) {
   const tiles = [
@@ -23,41 +18,22 @@ export function ModuleGrid({ user }: { user: User }) {
       label: "Stock",
       Icon: Boxes,
       caption: "Lots & movements",
-      // Gated on `stock.view`. Until the backend registers and
-      // grants the permission to operations roles, only admins
-      // (is_admin bypass) see the tile.
       gate: hasPermission(user, "stock.view"),
     },
     {
-      key: "items",
-      href: "/settings/items",
-      label: "Items",
-      Icon: Package,
-      caption: "Catalogue",
-      gate: hasPermission(user, "items.view"),
-    },
-    {
-      key: "warehouses",
-      href: "/settings/warehouses",
-      label: "Warehouses",
-      Icon: Warehouse,
-      caption: "Floor plans",
-      gate: hasPermission(user, "warehouses.view"),
-    },
-    {
-      key: "queues",
-      href: "/queues",
-      label: "Queues",
-      Icon: ListChecks,
-      caption: "Reviews & expiry",
-      gate: hasPermission(user, "items.view"),
+      key: "procurement",
+      href: "/procurement",
+      label: "Procurement",
+      Icon: ShoppingCart,
+      caption: "Vendors, POs, invoices",
+      gate: hasPermission(user, "vendors.view"),
     },
     {
       key: "settings",
       href: "/settings",
       label: "Settings",
       Icon: SettingsIcon,
-      caption: "Company & users",
+      caption: "Company, catalogue, queues",
       gate: true,
     },
   ].filter((t) => t.gate);

@@ -31,7 +31,13 @@ type EntityType =
   | "item_image"
   | "stock_lot"
   | "stock_lot_placement"
-  | "stock_movement";
+  | "stock_movement"
+  | "vendor"
+  | "vendor_approved_item"
+  | "vendor_certificate"
+  | "purchase_order"
+  | "purchase_order_line"
+  | "purchase_order_approval";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();

@@ -138,6 +138,50 @@ defmodule BackendWeb.Router do
     # attachments are nested under items above.
     resources "/certificates", CertificateController, except: [:new, :edit]
 
+    # Vendor registry. Holds the approved-supplier list + per-vendor
+    # certificate evidence the PO line validator + GFSI audits read.
+    resources "/vendors", VendorController, except: [:new, :edit] do
+      # Approval transition is its own action so admins can delegate
+      # the qualification gate separately from edit.
+      put "/approval", VendorController, :update_approval
+
+      # Per-item approved-supplier edges. Adding a row is the gate
+      # that lets a vendor appear on PO lines for the given item.
+      post "/approved-items", VendorController, :add_approved_item
+      delete "/approved-items/:id", VendorController, :remove_approved_item
+
+      # Per-vendor certificate attachments. Same shape as
+      # /api/items/:id/certificates — reuses the cert registry +
+      # the certificate-expiring queue downstream.
+      post "/certificates", VendorController, :add_certificate
+      put "/certificates/:id", VendorController, :update_certificate
+      delete "/certificates/:id", VendorController, :remove_certificate
+    end
+
+    # Purchase orders. Two-tier ESIGN approval + per-line state
+    # tracking. Lines are nested so the buyer maintains them under
+    # the parent PO's draft state.
+    resources "/purchase-orders", PurchaseOrderController,
+      except: [:new, :edit] do
+      post "/lines", PurchaseOrderController, :add_line
+      put "/lines/:id", PurchaseOrderController, :update_line
+      delete "/lines/:id", PurchaseOrderController, :delete_line
+
+      # State transitions live under their own paths so the audit
+      # log and FE event-handling stay readable.
+      post "/submit", PurchaseOrderController, :submit
+      post "/approve", PurchaseOrderController, :sign_approver
+      post "/director-approve", PurchaseOrderController, :sign_director
+      post "/mark-ordered", PurchaseOrderController, :mark_ordered
+      post "/cancel", PurchaseOrderController, :cancel
+
+      # Receive stock against an open PO. Creates lots tied back via
+      # source_kind=purchase_order + source_ref=PO code, bumps each
+      # line's qty_received, and flips status to partially_received
+      # or received accordingly.
+      post "/receive", PurchaseOrderController, :receive
+    end
+
     # Catalogue shape — product families + admin-extensible attribute
     # definitions. Read paths borrow `items.view`; write paths gated
     # by their dedicated `.manage` permission codes.
