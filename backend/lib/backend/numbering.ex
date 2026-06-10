@@ -21,6 +21,7 @@ defmodule Backend.Numbering do
   alias Backend.Catalogs.{AttributeDefinition, ProductFamily}
   alias Backend.Certificates.Certificate
   alias Backend.Companies.Company
+  alias Backend.Devices.LinkedDevice
   alias Backend.Items.Item
   alias Backend.RBAC.Role
   alias Backend.Repo
@@ -41,7 +42,8 @@ defmodule Backend.Numbering do
     "product_family" => ProductFamily,
     "attribute_definition" => AttributeDefinition,
     "certificate" => Certificate,
-    "stock_lot" => StockLot
+    "stock_lot" => StockLot,
+    "linked_device" => LinkedDevice
   }
 
   @default_padding 5

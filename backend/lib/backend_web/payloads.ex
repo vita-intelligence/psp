@@ -618,6 +618,43 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  @doc """
+  Linked device — phone/tablet/extra browser paired to a user. Never
+  includes the raw token (it's exposed exactly once at claim time);
+  the FE identifies devices by uuid.
+  """
+  def linked_device(d) do
+    %{
+      id: d.id,
+      uuid: d.uuid,
+      code: render_code(d, "linked_device"),
+      label: d.label,
+      platform: d.platform,
+      user_agent: d.user_agent,
+      paired_at: d.paired_at,
+      last_seen_at: d.last_seen_at,
+      revoked_at: d.revoked_at,
+      inserted_at: d.inserted_at,
+      updated_at: d.updated_at
+    }
+  end
+
+  @doc """
+  Device pairing code — short-lived bridge between the laptop's
+  "Pair new device" dialog and the phone's /pair page. `uuid` is the
+  channel topic suffix (`pairing:<uuid>`) the laptop subscribes to so
+  it can auto-close the modal when the phone claims.
+  """
+  def device_pairing_code(p) do
+    %{
+      uuid: p.uuid,
+      code: p.code,
+      expires_at: p.expires_at,
+      used_at: p.used_at,
+      inserted_at: p.inserted_at
+    }
+  end
+
   # Minimal item / uom / cell summaries — embedded inside stock_lot
   # so the list endpoint doesn't need a second fetch on the FE side.
   defp item_summary(i) do

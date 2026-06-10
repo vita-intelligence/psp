@@ -28,8 +28,12 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full bg-background text-foreground flex flex-col">
+      <body
+        className="min-h-full bg-background text-foreground flex flex-col"
+        suppressHydrationWarning
+      >
         <QueryProvider>{children}</QueryProvider>
         <Toaster richColors closeButton position="bottom-right" />
       </body>

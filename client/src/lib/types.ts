@@ -991,3 +991,34 @@ export interface AuthResponse {
   token: string;
   user: User;
 }
+
+// ---------- Linked devices -----------------------------------------
+
+export type DevicePlatform = "ios" | "android" | "web" | "other";
+
+export interface LinkedDevice {
+  id: number;
+  uuid: string;
+  code: string | null;
+  label: string;
+  platform: DevicePlatform | null;
+  user_agent: string | null;
+  paired_at: string;
+  last_seen_at: string | null;
+  revoked_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface DevicePairingCode {
+  uuid: string;
+  code: string;
+  expires_at: string;
+  used_at: string | null;
+  inserted_at: string;
+}
+
+export interface DeviceClaimResponse {
+  device: LinkedDevice;
+  token: string;
+}

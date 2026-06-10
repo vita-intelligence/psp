@@ -18,6 +18,13 @@ defmodule BackendWeb.Router do
     post "/auth/confirm", AuthController, :confirm
     post "/auth/forgot-password", PasswordResetController, :request
     post "/auth/reset-password", PasswordResetController, :confirm
+
+    # Device pairing — public endpoints. `/devices/pairing-codes/:code`
+    # is read-only "is this code still valid" the /pair page hits before
+    # showing the claim form. `/devices/claim` swaps a one-time code for
+    # a long-lived bearer token.
+    get "/devices/pairing-codes/:code", LinkedDeviceController, :lookup_pairing_code
+    post "/devices/claim", LinkedDeviceController, :claim
   end
 
   scope "/api", BackendWeb do
@@ -151,6 +158,14 @@ defmodule BackendWeb.Router do
       get "/reviews-due", QueueController, :reviews_due
       get "/certificates-expiring", QueueController, :certificates_expiring
     end
+
+    # Linked devices — phones/tablets/extra browsers a user has paired
+    # to their account. The user always acts on their own row (scoped
+    # in the context), so no separate RBAC perm is needed.
+    get "/devices", LinkedDeviceController, :index
+    post "/devices/pairing-codes", LinkedDeviceController, :create_pairing_code
+    delete "/devices/:uuid", LinkedDeviceController, :revoke
+    post "/devices/:uuid/ping", LinkedDeviceController, :ping
 
     # Stock — lots, placements, movements. Read-only in Slice 1;
     # receive/move/consume/dispose endpoints land in subsequent

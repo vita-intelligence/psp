@@ -24,6 +24,7 @@ import {
   Layers,
   Award,
   Settings2,
+  Smartphone,
 } from "lucide-react";
 
 interface NavItem {
@@ -36,6 +37,7 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   { href: "/settings/profile", label: "Profile", icon: UserIcon },
+  { href: "/settings/devices", label: "Devices", icon: Smartphone },
   {
     href: "/settings/company",
     label: "Company",

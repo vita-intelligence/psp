@@ -1,6 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Dev-only: allow the laptop's LAN IP so phones / tablets on the
+  // same Wi-Fi can hit `http://<lan-ip>:3000` for QR pairing without
+  // tripping Next 15+'s cross-origin protections (HMR + server-action
+  // Origin check). Production goes through a proper hostname so this
+  // is not needed there.
+  allowedDevOrigins: [
+    "192.168.0.116",
+    "192.168.0.0/24",
+    "maksyms-macbook-pro.local",
+  ],
   experimental: {
     serverActions: {
       // Multipart image uploads (item gallery) flow through server
@@ -8,6 +18,14 @@ const nextConfig: NextConfig = {
       // per-image limit so users see the proper "file too large" error
       // from the API rather than a confusing Next.js render crash.
       bodySizeLimit: "6mb",
+      // Server actions verify Origin matches the host. Phones land on
+      // the LAN URL, so list both the .local hostname (preferred —
+      // Safari persists cookies for it) and the raw IP fallback.
+      allowedOrigins: [
+        "maksyms-macbook-pro.local:3000",
+        "192.168.0.116:3000",
+        "localhost:3000",
+      ],
     },
   },
 };

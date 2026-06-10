@@ -10,4 +10,6 @@ export const env = {
 
 export const serverEnv = {
   authCookieName: process.env.AUTH_COOKIE_NAME || "psp_session",
+  deviceCookieName: process.env.DEVICE_COOKIE_NAME || "psp_device",
+  deviceUserCookieName: process.env.DEVICE_USER_COOKIE_NAME || "psp_device_user",
 } as const;
