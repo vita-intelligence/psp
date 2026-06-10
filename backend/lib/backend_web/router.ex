@@ -142,8 +142,20 @@ defmodule BackendWeb.Router do
     # certificate evidence the PO line validator + GFSI audits read.
     resources "/vendors", VendorController, except: [:new, :edit] do
       # Approval transition is its own action so admins can delegate
-      # the qualification gate separately from edit.
+      # the qualification gate separately from edit. Qualification
+      # write is also its own action so segregation-of-duties (the
+      # approver must differ from whoever last touched the
+      # qualification record) is enforceable.
       put "/approval", VendorController, :update_approval
+      put "/qualification", VendorController, :update_qualification
+
+      # Evidence file upload + serve. Files live independently in
+      # `Backend.Storage`; the qualification + cert writes carry an
+      # FK to the metadata row this returns. RBAC is the same as the
+      # parent vendor — if you can see the vendor you can fetch its
+      # evidence; only `vendors.edit` can upload.
+      post "/files", VendorController, :upload_file
+      get "/files/:id/serve", VendorController, :serve_file
 
       # Per-item approved-supplier edges. Adding a row is the gate
       # that lets a vendor appear on PO lines for the given item.

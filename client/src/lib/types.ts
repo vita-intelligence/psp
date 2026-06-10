@@ -322,6 +322,20 @@ export interface VendorApprovedItemRow {
   notes: string | null;
 }
 
+export interface VendorFile {
+  /** DB id — used by the qualification + cert PUT as `*_file_id`. */
+  id: number;
+  uuid: string;
+  kind: "saq" | "audit" | "coa" | "certificate" | "other";
+  filename: string;
+  mime: string;
+  byte_size: number;
+  /** Serve URL relative to the Phoenix API (or Next proxy). */
+  url: string;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
 export interface VendorCertificateAttachment {
   uuid: string;
   vendor_id: number;
@@ -336,7 +350,7 @@ export interface VendorCertificateAttachment {
   certificate_number: string | null;
   valid_from: string | null;
   valid_until: string | null;
-  document_url: string | null;
+  document_file: VendorFile | null;
   notes: string | null;
   uploaded_at: string | null;
   uploaded_by: AuditActor | null;
@@ -372,6 +386,25 @@ export interface Vendor {
   approval_notes: string | null;
   approved_at: string | null;
   approved_by: AuditActor | null;
+  approval_evidence_snapshot: VendorApprovalSnapshot | null;
+  // Qualification artifacts — BRCGS / FSSC 22000 / GFSI / 21 CFR 111
+  // audit checklist. `qualification` is server-computed.
+  saq_received_at: string | null;
+  saq_file: VendorFile | null;
+  risk_assessment_completed_at: string | null;
+  risk_assessment_notes: string | null;
+  audit_required: boolean;
+  audit_completed_at: string | null;
+  audit_kind: VendorAuditKind | null;
+  audit_outcome: VendorAuditOutcome | null;
+  audit_file: VendorFile | null;
+  audit_notes: string | null;
+  coa_received_at: string | null;
+  coa_file: VendorFile | null;
+  qualified_at: string | null;
+  qualified_by: AuditActor | null;
+  qualification: VendorQualificationStatus;
+  review_overdue: boolean;
   notes: string | null;
   is_active: boolean;
   approved_items: VendorApprovedItemRow[];
@@ -380,6 +413,35 @@ export interface Vendor {
   updated_at: string;
   created_by?: AuditActor | null;
   updated_by?: AuditActor | null;
+}
+
+export type VendorAuditKind = "desk" | "onsite" | "virtual";
+export type VendorAuditOutcome = "pass" | "pass_with_findings" | "fail";
+
+export interface VendorQualificationMissingItem {
+  key: string;
+  label: string;
+  reason: string;
+}
+
+export interface VendorQualificationStatus {
+  "complete?": boolean;
+  missing: VendorQualificationMissingItem[];
+}
+
+export interface VendorApprovalSnapshot {
+  approved_at: string;
+  saq_received_at: string | null;
+  audit_completed_at: string | null;
+  audit_outcome: string | null;
+  vendor_risk: string | null;
+  approved_items_count: number;
+  certificates: Array<{
+    certificate_id: number | null;
+    certificate_number: string | null;
+    valid_until: string | null;
+    document_url: string | null;
+  }>;
 }
 
 /** Picker-shaped vendor for PO forms etc. */

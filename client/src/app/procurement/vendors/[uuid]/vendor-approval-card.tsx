@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   CheckCircle2,
   CircleDashed,
   Loader2,
@@ -205,6 +206,41 @@ export function VendorApprovalCard({ vendor, canApprove }: Props) {
                 </SelectContent>
               </Select>
             </div>
+
+            {status === "approved" && !vendor.qualification["complete?"] && (
+              <div className="rounded-md border border-amber-300/60 bg-amber-50 p-3 dark:border-amber-500/30 dark:bg-amber-500/10">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+                      Qualification not yet complete
+                    </p>
+                    <ul className="space-y-0.5 text-[11px] text-amber-900/90 dark:text-amber-200/90">
+                      {vendor.qualification.missing.map((m) => (
+                        <li key={m.key}>• {m.label} — {m.reason}</li>
+                      ))}
+                    </ul>
+                    <p className="pt-1 text-[11px] text-amber-900/80 dark:text-amber-200/80">
+                      The server will reject the approval until these are
+                      recorded on the qualification card.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {status === "approved" &&
+              vendor.qualified_by &&
+              vendor.qualification["complete?"] && (
+                <div className="rounded-md border border-sky-300/60 bg-sky-50 p-3 dark:border-sky-500/30 dark:bg-sky-500/10">
+                  <p className="text-[11px] text-sky-900 dark:text-sky-200">
+                    <strong>Segregation of duties:</strong>{" "}
+                    {vendor.qualified_by.name} recorded the qualification
+                    evidence. Approval must be signed by a different
+                    reviewer.
+                  </p>
+                </div>
+              )}
 
             <div className="space-y-1.5">
               <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">

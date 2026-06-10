@@ -17,7 +17,7 @@ defmodule Backend.Vendors.VendorCertificate do
   alias Backend.Accounts.User
   alias Backend.Certificates.Certificate
   alias Backend.Companies.Company
-  alias Backend.Vendors.Vendor
+  alias Backend.Vendors.{Vendor, VendorFile}
 
   schema "vendor_certificates" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -25,7 +25,6 @@ defmodule Backend.Vendors.VendorCertificate do
     field :certificate_number, :string
     field :valid_from, :date
     field :valid_until, :date
-    field :document_url, :string
     field :notes, :string
 
     field :uploaded_at, :utc_datetime
@@ -34,6 +33,7 @@ defmodule Backend.Vendors.VendorCertificate do
     belongs_to :certificate, Certificate
     belongs_to :company, Company
     belongs_to :uploaded_by, User
+    belongs_to :document_file, VendorFile
 
     timestamps(type: :utc_datetime)
   end
@@ -49,12 +49,11 @@ defmodule Backend.Vendors.VendorCertificate do
       :certificate_number,
       :valid_from,
       :valid_until,
-      :document_url,
+      :document_file_id,
       :notes
     ])
     |> validate_required([:vendor_id, :certificate_id, :company_id])
     |> validate_length(:certificate_number, max: 120)
-    |> validate_length(:document_url, max: 500)
     |> validate_length(:notes, max: 2000)
     |> validate_validity_window()
     |> unique_constraint([:vendor_id, :certificate_id],

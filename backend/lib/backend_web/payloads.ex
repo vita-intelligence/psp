@@ -340,6 +340,26 @@ defmodule BackendWeb.Payloads do
       approval_notes: v.approval_notes,
       approved_at: v.approved_at,
       approved_by: actor(v, :approved_by),
+      approval_evidence_snapshot: v.approval_evidence_snapshot,
+      # Qualification artifacts (BRCGS / FSSC 22000 / GFSI / 21 CFR
+      # 111 audit checklist). `qualification` is computed — the
+      # FE renders it as a "what's blocking approval" panel.
+      saq_received_at: v.saq_received_at,
+      saq_file: maybe_vendor_file(v.saq_file, v),
+      risk_assessment_completed_at: v.risk_assessment_completed_at,
+      risk_assessment_notes: v.risk_assessment_notes,
+      audit_required: v.audit_required,
+      audit_completed_at: v.audit_completed_at,
+      audit_kind: v.audit_kind,
+      audit_outcome: v.audit_outcome,
+      audit_file: maybe_vendor_file(v.audit_file, v),
+      audit_notes: v.audit_notes,
+      coa_received_at: v.coa_received_at,
+      coa_file: maybe_vendor_file(v.coa_file, v),
+      qualified_at: v.qualified_at,
+      qualified_by: actor(v, :qualified_by),
+      qualification: Backend.Vendors.qualification_status(v),
+      review_overdue: Backend.Vendors.review_overdue?(v),
       notes: v.notes,
       is_active: v.is_active,
       approved_items: preloaded_list(v, :approved_items, &vendor_approved_item/1),
@@ -399,12 +419,43 @@ defmodule BackendWeb.Payloads do
       certificate_number: row.certificate_number,
       valid_from: row.valid_from,
       valid_until: row.valid_until,
-      document_url: row.document_url,
+      document_file: maybe_vendor_file(row.document_file, row),
       notes: row.notes,
       uploaded_at: row.uploaded_at,
       uploaded_by: actor(row, :uploaded_by)
     }
   end
+
+  @doc """
+  Public payload for a stored evidence file. Includes the serve URL
+  the FE can fetch the bytes from. `vendor` is the parent so the URL
+  can be scoped — files only resolve under their owning vendor.
+  """
+  def vendor_file(%Backend.Vendors.VendorFile{} = f, vendor) do
+    vendor_uuid = vendor && Map.get(vendor, :uuid)
+
+    %{
+      # `id` is emitted because the qualification + cert PUTs accept
+      # `*_file_id` (integer FK). Within the same tenant this is fine.
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        vendor_uuid &&
+          "/api/vendors/" <>
+            vendor_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
+  defp maybe_vendor_file(%Backend.Vendors.VendorFile{} = f, parent),
+    do: vendor_file(f, parent)
+
+  defp maybe_vendor_file(_, _), do: nil
 
   defp maybe_item_summary(%Backend.Items.Item{} = i) do
     %{

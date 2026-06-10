@@ -286,6 +286,62 @@ defmodule BackendWeb.AuditController do
     end
   end
 
+  defp check_entity_in_company(actor, "vendor", entity_id) do
+    case Backend.Repo.get(Backend.Vendors.Vendor, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "vendor_approved_item", entity_id) do
+    case Backend.Repo.get(Backend.Vendors.ApprovedItem, entity_id) do
+      %{vendor_id: vid} -> check_parent_vendor(actor, vid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "vendor_certificate", entity_id) do
+    case Backend.Repo.get(Backend.Vendors.VendorCertificate, entity_id) do
+      %{vendor_id: vid} -> check_parent_vendor(actor, vid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "purchase_order", entity_id) do
+    case Backend.Repo.get(Backend.Purchasing.PurchaseOrder, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "purchase_order_line", entity_id) do
+    case Backend.Repo.get(Backend.Purchasing.PurchaseOrderLine, entity_id) do
+      %{purchase_order_id: poid} -> check_parent_purchase_order(actor, poid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "purchase_order_approval", entity_id) do
+    case Backend.Repo.get(Backend.Purchasing.PurchaseOrderApproval, entity_id) do
+      %{purchase_order_id: poid} -> check_parent_purchase_order(actor, poid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_vendor(actor, vid) do
+    case Backend.Repo.get(Backend.Vendors.Vendor, vid) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_purchase_order(actor, poid) do
+    case Backend.Repo.get(Backend.Purchasing.PurchaseOrder, poid) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
   defp check_entity_in_company(_actor, _, _), do: {:error, :unknown_entity}
 
   defp check_via_warehouse_id(actor, schema, entity_id) do

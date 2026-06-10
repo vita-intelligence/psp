@@ -8,6 +8,7 @@ import type {
   VendorApprovalStatus,
   VendorApprovedItemRow,
   VendorCertificateAttachment,
+  VendorFile,
   VendorPaymentBasis,
   VendorQuestionnaireStatus,
   VendorRisk,
@@ -121,7 +122,18 @@ export async function deleteVendorAction(uuid: string): Promise<DeleteResult> {
 }
 
 /** Approval transition. Pass `approval_status` + optional notes; backend
- *  stamps `approved_by` + `approved_at` on the "approved" branch. */
+ *  stamps `approved_by` + `approved_at` on the "approved" branch.
+ *
+ *  Two regulatory guards on the server side that surface as specific
+ *  error results here so the UI can render a useful banner:
+ *
+ *    - 422 `qualification_incomplete` — the artifact checklist isn't
+ *      cleared. The error payload carries `missing[]` so the FE can
+ *      point at the gap.
+ *    - 409 `same_signer_as_qualifier` — segregation of duties. The
+ *      person who recorded the qualification evidence can't also sign
+ *      it off.
+ */
 export async function approveVendorAction(
   uuid: string,
   input: { approval_status: VendorApprovalStatus; approval_notes?: string | null },
@@ -141,6 +153,76 @@ export async function approveVendorAction(
     return toErrorResult(err, {
       source: "approveVendorAction",
       fallbackDetail: "Couldn't update the vendor approval.",
+    });
+  }
+}
+
+export interface VendorQualificationInput {
+  saq_received_at?: string | null;
+  saq_file_id?: number | null;
+  risk_assessment_completed_at?: string | null;
+  risk_assessment_notes?: string | null;
+  audit_required?: boolean;
+  audit_completed_at?: string | null;
+  audit_kind?: "desk" | "onsite" | "virtual" | null;
+  audit_outcome?: "pass" | "pass_with_findings" | "fail" | null;
+  audit_file_id?: number | null;
+  audit_notes?: string | null;
+  coa_received_at?: string | null;
+  coa_file_id?: number | null;
+}
+
+export type UploadFileResult = { ok: true; file: VendorFile } | ErrorResult;
+
+/** Multipart upload of a vendor evidence file (SAQ / audit / COA /
+ *  cert PDF). Bytes go to `Backend.Storage`; the returned `file.id`
+ *  + `file.uuid` are what the qualification + cert writes reference.
+ *
+ *  Called from a client component using `useTransition` + `FormData`. */
+export async function uploadVendorFileAction(
+  vendorUuid: string,
+  formData: FormData,
+): Promise<UploadFileResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("uploadVendorFileAction");
+
+  try {
+    const res = await api<{ file: VendorFile }>(
+      `/api/vendors/${encodeURIComponent(vendorUuid)}/files`,
+      { method: "POST", token, body: formData },
+    );
+    revalidatePath(`/procurement/vendors/${vendorUuid}`);
+    return { ok: true, file: res.file };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "uploadVendorFileAction",
+      fallbackDetail: "Couldn't upload the file.",
+    });
+  }
+}
+
+/** Record qualification artifacts (SAQ / risk-assessment / audit /
+ *  COA). Stamps `qualified_by` + `qualified_at` so the approve action
+ *  can enforce segregation-of-duties on the signer. */
+export async function updateVendorQualificationAction(
+  uuid: string,
+  input: VendorQualificationInput,
+): Promise<VendorResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("updateVendorQualificationAction");
+
+  try {
+    const res = await api<{ vendor: Vendor }>(
+      `/api/vendors/${encodeURIComponent(uuid)}/qualification`,
+      { method: "PUT", token, body: JSON.stringify(input) },
+    );
+    revalidatePath("/procurement/vendors");
+    revalidatePath(`/procurement/vendors/${uuid}`);
+    return { ok: true, vendor: res.vendor };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "updateVendorQualificationAction",
+      fallbackDetail: "Couldn't record the qualification artifact.",
     });
   }
 }
@@ -199,7 +281,7 @@ export interface VendorCertificateInput {
   certificate_number?: string | null;
   valid_from?: string | null;
   valid_until?: string | null;
-  document_url?: string | null;
+  document_file_id?: number | null;
   notes?: string | null;
 }
 

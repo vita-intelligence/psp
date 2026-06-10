@@ -13,6 +13,7 @@ import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { ProcurementSubnav } from "../../procurement-subnav";
 import { VendorForm } from "../vendor-form";
 import { VendorApprovalCard } from "./vendor-approval-card";
+import { VendorQualificationCard } from "./vendor-qualification-card";
 import { VendorApprovedItemsCard } from "./vendor-approved-items-card";
 import { VendorCertificatesCard } from "./vendor-certificates-card";
 import type { VendorApprovalStatus } from "@/lib/types";
@@ -106,6 +107,8 @@ export default async function VendorDetailPage({
           </header>
 
           <VendorApprovalCard vendor={vendor} canApprove={canApprove} />
+
+          <VendorQualificationCard vendor={vendor} canEdit={canEdit} />
 
           <VendorForm vendor={vendor} canEdit={canEdit} />
 

@@ -6,8 +6,9 @@ import { toast } from "sonner";
 import {
   Award,
   CalendarRange,
-  ExternalLink,
+  Download,
   Loader2,
+  Paperclip,
   Plus,
   X,
 } from "lucide-react";
@@ -31,12 +32,16 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
-import type { Certificate, Vendor } from "@/lib/types";
+import type { Certificate, Vendor, VendorFile } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import {
   attachVendorCertificateAction,
   removeVendorCertificateAction,
 } from "@/lib/vendors/actions";
+import {
+  FileUploadField,
+  truncateMiddle,
+} from "./vendor-qualification-card";
 
 interface Props {
   vendor: Vendor;
@@ -68,7 +73,7 @@ export function VendorCertificatesCard({
   const [certNumber, setCertNumber] = useState("");
   const [validFrom, setValidFrom] = useState("");
   const [validUntil, setValidUntil] = useState("");
-  const [docUrl, setDocUrl] = useState("");
+  const [docFile, setDocFile] = useState<VendorFile | null>(null);
   const [notes, setNotes] = useState("");
 
   const attachedCertIds = useMemo(
@@ -85,7 +90,7 @@ export function VendorCertificatesCard({
     setCertNumber("");
     setValidFrom("");
     setValidUntil("");
-    setDocUrl("");
+    setDocFile(null);
     setNotes("");
     setError(null);
   }
@@ -99,7 +104,7 @@ export function VendorCertificatesCard({
         certificate_number: certNumber.trim() || null,
         valid_from: validFrom || null,
         valid_until: validUntil || null,
-        document_url: docUrl.trim() || null,
+        document_file_id: docFile?.id ?? null,
         notes: notes.trim() || null,
       });
       if (res.ok) {
@@ -180,15 +185,19 @@ export function VendorCertificatesCard({
                         until {row.valid_until}
                       </span>
                     )}
-                    {row.document_url && (
+                    {row.document_file && (
                       <a
-                        href={row.document_url}
+                        href={row.document_file.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-foreground underline-offset-4 hover:underline"
+                        title={row.document_file.filename}
+                        className="inline-flex max-w-[200px] items-center gap-1 text-foreground underline-offset-4 hover:underline"
                       >
-                        <ExternalLink className="size-3" />
-                        Document
+                        <Paperclip className="size-3 shrink-0" />
+                        <span className="truncate">
+                          {truncateMiddle(row.document_file.filename, 24)}
+                        </span>
+                        <Download className="size-3 shrink-0 text-muted-foreground" />
                       </a>
                     )}
                   </div>
@@ -299,12 +308,13 @@ export function VendorCertificatesCard({
 
             <div className="space-y-1.5">
               <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                Document URL
+                Certificate file
               </Label>
-              <Input
-                value={docUrl}
-                onChange={(e) => setDocUrl(e.target.value)}
-                placeholder="https://…/cert.pdf"
+              <FileUploadField
+                vendorUuid={vendor.uuid}
+                kind="certificate"
+                file={docFile}
+                onChange={setDocFile}
               />
             </div>
 

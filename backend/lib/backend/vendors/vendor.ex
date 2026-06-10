@@ -18,7 +18,7 @@ defmodule Backend.Vendors.Vendor do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
-  alias Backend.Vendors.{ApprovedItem, VendorCertificate}
+  alias Backend.Vendors.{ApprovedItem, VendorCertificate, VendorFile}
 
   @approval_statuses ~w(pending approved suspended rejected)
   @supply_chain_types ~w(manufacturer co_manufacturer distributor broker agent grower)
@@ -26,6 +26,8 @@ defmodule Backend.Vendors.Vendor do
   @questionnaire_statuses ~w(not_sent sent received approved overdue na)
   @traceability_statuses ~w(not_done in_progress verified failed na)
   @payment_bases ~w(invoice_date month_end delivery_date)
+  @audit_kinds ~w(desk onsite virtual)
+  @audit_outcomes ~w(pass pass_with_findings fail)
 
   schema "vendors" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -65,16 +67,41 @@ defmodule Backend.Vendors.Vendor do
     field :approved_at, :utc_datetime
     field :approval_notes, :string
 
+    # Qualification artifacts (BRCGS / FSSC 22000 / GFSI checklist).
+    field :saq_received_at, :date
+    field :risk_assessment_completed_at, :date
+    field :risk_assessment_notes, :string
+    field :audit_required, :boolean, default: true
+    field :audit_completed_at, :date
+    field :audit_kind, :string
+    field :audit_outcome, :string
+    field :audit_notes, :string
+    field :coa_received_at, :date
+
+    # Segregation of duties. `qualified_by_id` is whoever last touched
+    # any qualification field; the approve transition refuses when
+    # the actor matches.
+    field :qualified_at, :utc_datetime
+    field :approval_evidence_snapshot, :map
+
     field :notes, :string
     field :is_active, :boolean, default: true
 
     belongs_to :company, Company
     belongs_to :approved_by, User
+    belongs_to :qualified_by, User
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
+    # Evidence files. Each artifact has its own FK so we can show
+    # the right filename + download link next to each checklist item.
+    belongs_to :saq_file, VendorFile
+    belongs_to :audit_file, VendorFile
+    belongs_to :coa_file, VendorFile
+
     has_many :approved_items, ApprovedItem, foreign_key: :vendor_id
     has_many :certificates, VendorCertificate, foreign_key: :vendor_id
+    has_many :files, VendorFile, foreign_key: :vendor_id
 
     timestamps(type: :utc_datetime)
   end
@@ -85,6 +112,8 @@ defmodule Backend.Vendors.Vendor do
   def questionnaire_statuses, do: @questionnaire_statuses
   def traceability_statuses, do: @traceability_statuses
   def payment_bases, do: @payment_bases
+  def audit_kinds, do: @audit_kinds
+  def audit_outcomes, do: @audit_outcomes
 
   @doc """
   Identity + contact + commercial terms + qualification metadata.
@@ -154,9 +183,9 @@ defmodule Backend.Vendors.Vendor do
   end
 
   @doc """
-  Approval transition. Only the status fields are cast — name +
-  contact details stay locked behind the standard changeset so an
-  approve action can't accidentally mutate identity.
+  Approval transition. Only the status + evidence snapshot fields
+  are cast — name + contact details stay locked behind the standard
+  changeset so an approve action can't accidentally mutate identity.
   """
   def approve_changeset(vendor, attrs) do
     vendor
@@ -165,10 +194,39 @@ defmodule Backend.Vendors.Vendor do
       :approval_notes,
       :approved_at,
       :approved_by_id,
+      :approval_evidence_snapshot,
       :updated_by_id
     ])
     |> validate_required([:approval_status])
     |> validate_inclusion(:approval_status, @approval_statuses)
+  end
+
+  @doc """
+  Qualification-artifact write. Touches the SAQ / risk-assessment /
+  audit / COA columns AND stamps `qualified_by_id` + `qualified_at`
+  so the approve transition can enforce segregation of duties.
+  """
+  def qualification_changeset(vendor, attrs) do
+    vendor
+    |> cast(attrs, [
+      :saq_received_at,
+      :saq_file_id,
+      :risk_assessment_completed_at,
+      :risk_assessment_notes,
+      :audit_required,
+      :audit_completed_at,
+      :audit_kind,
+      :audit_outcome,
+      :audit_file_id,
+      :audit_notes,
+      :coa_received_at,
+      :coa_file_id,
+      :qualified_by_id,
+      :qualified_at,
+      :updated_by_id
+    ])
+    |> maybe_validate_inclusion(:audit_kind, @audit_kinds)
+    |> maybe_validate_inclusion(:audit_outcome, @audit_outcomes)
   end
 
   # Inclusion only fires when the field has a value — these are
