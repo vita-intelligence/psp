@@ -118,6 +118,8 @@ defmodule Backend.Stock do
   def get_for_company(company_id, uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
       {:ok, cast} ->
+        cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
+
         Repo.one(
           from(l in Lot,
             where: l.company_id == ^company_id and l.uuid == ^cast,
@@ -126,11 +128,15 @@ defmodule Backend.Stock do
               :unit_of_measurement,
               :created_by,
               :updated_by,
-              placements: [:storage_cell],
+              placements: [storage_cell: ^cell_with_breadcrumb],
               movements:
                 ^from(m in Movement,
                   order_by: [desc: m.occurred_at, desc: m.id],
-                  preload: [:from_cell, :to_cell, :actor]
+                  preload: [
+                    :actor,
+                    from_cell: ^cell_with_breadcrumb,
+                    to_cell: ^cell_with_breadcrumb
+                  ]
                 )
             ]
           )
@@ -142,6 +148,75 @@ defmodule Backend.Stock do
   end
 
   def get_for_company(_company_id, _), do: nil
+
+  @doc """
+  Edit a lot's mutable fields. `qty_received`, the parent item, and
+  the UoM stay immutable — those changes happen through movements or
+  a delete-and-re-receive. Audit row captures the before/after diff
+  across `@lot_audit_fields`.
+
+  Returns the freshly-preloaded lot so the caller can hand it back to
+  the FE without a second round-trip.
+  """
+  def update_lot(%Backend.Accounts.User{} = actor, company_id, uuid, attrs)
+      when is_integer(company_id) and is_binary(uuid) and is_map(attrs) do
+    with %Lot{} = lot <- get_for_company(company_id, uuid) do
+      attrs_with_actor =
+        attrs
+        |> stringify_keys()
+        |> Map.put("updated_by_id", actor.id)
+
+      before_snapshot = lot_audit_snapshot(lot)
+
+      Repo.transaction(fn ->
+        case lot |> Lot.edit_changeset(attrs_with_actor) |> Repo.update() do
+          {:ok, updated} ->
+            Backend.Audit.record_updated(
+              actor,
+              "stock_lot",
+              updated,
+              before_snapshot,
+              lot_audit_snapshot(updated)
+            )
+
+            # Re-preload with the wider chain so the payload matches
+            # the show endpoint.
+            cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
+
+            Repo.preload(updated, [
+              :item,
+              :unit_of_measurement,
+              :created_by,
+              :updated_by,
+              placements: [storage_cell: cell_with_breadcrumb],
+              movements:
+                from(m in Movement,
+                  order_by: [desc: m.occurred_at, desc: m.id],
+                  preload: [
+                    :actor,
+                    from_cell: ^cell_with_breadcrumb,
+                    to_cell: ^cell_with_breadcrumb
+                  ]
+                )
+            ])
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            Repo.rollback(cs)
+        end
+      end)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def update_lot(_actor, _company_id, _uuid, _attrs), do: {:error, :bad_args}
+
+  defp stringify_keys(attrs) when is_map(attrs) do
+    Map.new(attrs, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      pair -> pair
+    end)
+  end
 
   @doc """
   Compute on-hand for a preloaded lot. `qty_on_hand = sum(placements.qty)`.
@@ -198,7 +273,9 @@ defmodule Backend.Stock do
   @lot_audit_fields ~w(status qty_received unit_cost currency source_kind source_ref
                        supplier_batch_no country_of_origin revision overall_risk
                        allergen_status coa_status quality_status manufactured_at
-                       expiry_at available_from received_at notes)a
+                       expiry_at available_from received_at notes
+                       package_length_mm package_width_mm package_height_mm
+                       package_weight_kg units_per_package stack_factor)a
 
   @doc """
   Receive a new lot — atomic create of lot + initial placement +
@@ -475,6 +552,127 @@ defmodule Backend.Stock do
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+    end
+  end
+
+  @doc """
+  Manually adjust a placement's qty up or down. Records an `adjust_up`
+  or `adjust_down` movement carrying the operator's reason. Used for
+  shrinkage / re-counts / damage write-offs where no physical move
+  happened — qty just diverged from the last known count.
+
+  `attrs` shape:
+
+      %{
+        "from_cell_uuid" => "…",          # optional when there's a single placement
+        "delta_qty"      => "5" | "-3",   # signed; positive = up, negative = down
+        "reason"         => "stock take"
+      }
+
+  Error tuples: `:lot_not_found | :placement_not_found |
+  :ambiguous_placement | :bad_qty | :insufficient_qty`.
+  """
+  def adjust_placement(%Backend.Accounts.User{} = actor, lot_uuid, attrs)
+      when is_binary(lot_uuid) and is_map(attrs) do
+    with {:ok, lot} <- fetch_lot_by_uuid(actor.company_id, lot_uuid),
+         {:ok, placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
+         {:ok, delta} <- parse_signed_decimal(attrs["delta_qty"]),
+         {:ok, kind} <- adjust_kind(delta),
+         :ok <- ensure_non_negative_after(placement, delta) do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      Repo.transaction(fn ->
+        new_qty = Decimal.add(placement.qty, delta)
+        before_qty = placement.qty
+
+        with {:ok, updated_placement} <-
+               placement
+               |> Placement.changeset(%{"qty" => new_qty})
+               |> Repo.update(),
+             {:ok, movement} <-
+               %Movement{}
+               |> Movement.changeset(%{
+                 "company_id" => lot.company_id,
+                 "stock_lot_id" => lot.id,
+                 "from_cell_id" =>
+                   if(Decimal.negative?(delta), do: placement.storage_cell_id),
+                 "to_cell_id" =>
+                   if(Decimal.negative?(delta), do: nil, else: placement.storage_cell_id),
+                 "delta_qty" => delta,
+                 "kind" => kind,
+                 "reason" => attrs["reason"],
+                 "actor_id" => actor.id,
+                 "occurred_at" => now
+               })
+               |> Repo.insert() do
+          Backend.Audit.record_updated(
+            actor,
+            "stock_lot_placement",
+            updated_placement,
+            %{qty: before_qty, storage_cell_id: placement.storage_cell_id},
+            %{qty: updated_placement.qty, storage_cell_id: updated_placement.storage_cell_id}
+          )
+
+          Backend.Audit.record_created(actor, "stock_movement", movement, %{
+            kind: movement.kind,
+            delta_qty: movement.delta_qty,
+            from_cell_id: movement.from_cell_id,
+            to_cell_id: movement.to_cell_id,
+            reason: movement.reason
+          })
+
+          cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
+
+          Repo.preload(lot, [
+            :item,
+            :unit_of_measurement,
+            placements: [storage_cell: cell_with_breadcrumb],
+            movements:
+              from(m in Movement,
+                order_by: [desc: m.occurred_at, desc: m.id],
+                preload: [
+                  :actor,
+                  from_cell: ^cell_with_breadcrumb,
+                  to_cell: ^cell_with_breadcrumb
+                ]
+              )
+          ])
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  def adjust_placement(_actor, _uuid, _attrs), do: {:error, :bad_args}
+
+  defp parse_signed_decimal(nil), do: {:error, :bad_qty}
+
+  defp parse_signed_decimal(raw) when is_binary(raw) do
+    case Decimal.parse(String.trim(raw)) do
+      {%Decimal{} = d, ""} ->
+        if Decimal.eq?(d, 0), do: {:error, :bad_qty}, else: {:ok, d}
+
+      _ ->
+        {:error, :bad_qty}
+    end
+  end
+
+  defp parse_signed_decimal(raw) when is_integer(raw) and raw != 0,
+    do: {:ok, Decimal.new(raw)}
+
+  defp parse_signed_decimal(_), do: {:error, :bad_qty}
+
+  defp adjust_kind(%Decimal{} = delta) do
+    if Decimal.negative?(delta), do: {:ok, "adjust_down"}, else: {:ok, "adjust_up"}
+  end
+
+  defp ensure_non_negative_after(%Placement{qty: current}, %Decimal{} = delta) do
+    if Decimal.lt?(Decimal.add(current, delta), 0) do
+      {:error, :insufficient_qty}
+    else
+      :ok
     end
   end
 

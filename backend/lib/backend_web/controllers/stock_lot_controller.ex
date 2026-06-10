@@ -22,6 +22,8 @@ defmodule BackendWeb.StockLotController do
   plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions]
   plug RequirePermission, "stock.receive" when action in [:create_manual]
   plug RequirePermission, "stock.move" when action in [:move]
+  plug RequirePermission, "stock.edit" when action in [:update]
+  plug RequirePermission, "stock.adjust" when action in [:adjust]
 
   action_fallback BackendWeb.FallbackController
 
@@ -58,6 +60,32 @@ defmodule BackendWeb.StockLotController do
           lot: Payloads.stock_lot(lot),
           movements: Enum.map(lot.movements, &Payloads.stock_movement/1)
         })
+    end
+  end
+
+  @doc """
+  Edit a lot's mutable fields (identity + packaging + status). The
+  parent item, the UoM, and `qty_received` are immutable — qty
+  changes always go through a movement. Returns the freshly preloaded
+  lot + movements so the FE can patch the page state without a
+  follow-up GET.
+  """
+  def update(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.drop(params, ["id", "_method"])
+
+    case Stock.update_lot(actor, actor.company_id, uuid, attrs) do
+      {:ok, lot} ->
+        json(conn, %{
+          lot: Payloads.stock_lot(lot),
+          movements: Enum.map(lot.movements, &Payloads.stock_movement/1)
+        })
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
     end
   end
 
@@ -172,6 +200,16 @@ defmodule BackendWeb.StockLotController do
             id: cell.id,
             uuid: cell.uuid,
             name: cell.name,
+            # Render via the company's `storage_cell` numbering format
+            # (e.g. CELL00010) so the label PDF + mobile flow show the
+            # same code admins configured under Settings → Numbering.
+            # System cells return nil — operator-facing surfaces fall
+            # back to generic_place_name there.
+            code:
+              if(cell.system_kind,
+                do: nil,
+                else: Payloads.render_entity_code(cell, "storage_cell")
+              ),
             ordinal: cell.ordinal,
             tags: cell.tags || [],
             system_kind: cell.system_kind,
@@ -181,7 +219,11 @@ defmodule BackendWeb.StockLotController do
                   id: loc.id,
                   uuid: loc.uuid,
                   name: loc.name,
-                  code: loc.code,
+                  # Same — prefer the rendered code over the raw DB
+                  # column so empty `code:` columns still produce
+                  # SL00004-style labels.
+                  code:
+                    Payloads.render_entity_code(loc, "storage_location"),
                   system_kind: loc.system_kind
                 },
             floor:
@@ -327,6 +369,53 @@ defmodule BackendWeb.StockLotController do
   skip-reason. Source defaults to the lot's only non-zero placement
   (the common put-away-from-Unregistered case).
   """
+  @doc """
+  Manual qty adjustment. Operator picks a signed delta and a reason
+  (stock-take, damage, shrinkage). Records an `adjust_up` or
+  `adjust_down` movement; the placement's qty moves accordingly.
+  """
+  def adjust(conn, %{"stock_lot_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Stock.adjust_placement(actor, uuid, params) do
+      {:ok, lot} ->
+        json(conn, %{
+          lot: Payloads.stock_lot(lot),
+          movements: Enum.map(lot.movements, &Payloads.stock_movement/1)
+        })
+
+      {:error, :lot_not_found} ->
+        not_found_error(conn, "lot_not_found", "Lot not found.")
+
+      {:error, :placement_not_found} ->
+        unprocessable(conn, "placement_not_found", "Lot has no stock to adjust.")
+
+      {:error, :ambiguous_placement} ->
+        unprocessable(
+          conn,
+          "ambiguous_placement",
+          "Lot is split across cells — pick which placement to adjust."
+        )
+
+      {:error, :insufficient_qty} ->
+        unprocessable(
+          conn,
+          "insufficient_qty",
+          "Can't go below zero — that placement only has the current qty available."
+        )
+
+      {:error, :bad_qty} ->
+        unprocessable(
+          conn,
+          "bad_qty",
+          "Delta must be a non-zero number."
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
   def move(conn, %{"stock_lot_id" => uuid} = params) do
     actor = conn.assigns.current_user
 

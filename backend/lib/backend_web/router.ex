@@ -191,12 +191,17 @@ defmodule BackendWeb.Router do
           StockLotController,
           :packaging_suggestions
 
-      resources "/lots", StockLotController, only: [:index, :show] do
+      resources "/lots", StockLotController, only: [:index, :show, :update] do
         # Move qty between cells — atomic, records a `move` movement
         # carrying the photo URL or skip-reason. Source defaults to
         # the lot's only non-zero placement (put-away-from-Unregistered
         # case).
         post "/move", StockLotController, :move
+
+        # Manual qty adjustment — stock-take corrections, damage,
+        # shrinkage. Records an adjust_up / adjust_down movement so
+        # the divergence shows up on the lot's history.
+        post "/adjust", StockLotController, :adjust
 
         # Ranked suggestions for the put-away destination: same-item
         # consolidation + matching storage tags. Mobile shows these as

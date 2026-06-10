@@ -28,7 +28,10 @@ type EntityType =
   | "packaging_compliance"
   | "certificate"
   | "item_certificate"
-  | "item_image";
+  | "item_image"
+  | "stock_lot"
+  | "stock_lot_placement"
+  | "stock_movement";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();

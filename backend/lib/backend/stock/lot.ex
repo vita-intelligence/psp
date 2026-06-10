@@ -147,6 +147,70 @@ defmodule Backend.Stock.Lot do
     |> validate_length(:source_ref, max: 80)
   end
 
+  @doc """
+  Post-creation edit. `qty_received`, the parent item, and the UoM are
+  immutable — qty changes go through `adjust` movements and FK swaps
+  would invalidate the lot's identity. Everything else is fair game,
+  including packaging (a supplier can change pack size mid-batch and
+  we want the updated footprint reflected on the fit-check).
+  """
+  def edit_changeset(lot, attrs) do
+    lot
+    |> cast(attrs, [
+      :status,
+      :unit_cost,
+      :currency,
+      :source_kind,
+      :source_ref,
+      :supplier_batch_no,
+      :country_of_origin,
+      :revision,
+      :overall_risk,
+      :allergen_status,
+      :coa_status,
+      :quality_status,
+      :manufactured_at,
+      :expiry_at,
+      :available_from,
+      :received_at,
+      :notes,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor,
+      :updated_by_id
+    ])
+    |> validate_required([
+      :status,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor
+    ])
+    |> validate_inclusion(:status, @statuses)
+    |> validate_number(:package_length_mm, greater_than: 0)
+    |> validate_number(:package_width_mm, greater_than: 0)
+    |> validate_number(:package_height_mm, greater_than: 0)
+    |> validate_number(:package_weight_kg, greater_than: 0)
+    |> validate_number(:units_per_package, greater_than: 0)
+    |> validate_number(:stack_factor, greater_than: 0, less_than_or_equal_to: 50)
+    |> maybe_validate_inclusion(:source_kind, @source_kinds)
+    |> maybe_validate_inclusion(:overall_risk, @risk_levels)
+    |> maybe_validate_inclusion(:allergen_status, @compliance_states)
+    |> maybe_validate_inclusion(:coa_status, @compliance_states)
+    |> maybe_validate_inclusion(:quality_status, @compliance_states)
+    |> validate_number(:unit_cost, greater_than_or_equal_to: 0)
+    |> validate_length(:currency, is: 3)
+    |> validate_length(:supplier_batch_no, max: 120)
+    |> validate_length(:country_of_origin, max: 80)
+    |> validate_length(:revision, max: 40)
+    |> validate_length(:source_ref, max: 80)
+  end
+
   # Inclusion only fires when the field has a value — these are
   # optional enums, so an unset value is valid.
   defp maybe_validate_inclusion(changeset, field, allowed) do

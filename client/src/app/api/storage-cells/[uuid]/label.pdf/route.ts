@@ -10,11 +10,13 @@ interface CellScanResponse {
   cell: {
     id: number;
     uuid: string;
-    name: string;
+    name: string | null;
+    /** Company-numbered code (CELL00010). Null for system cells. */
+    code: string | null;
     storage_location: {
       id: number;
       uuid: string;
-      name: string;
+      name: string | null;
       code: string | null;
     } | null;
     floor: { id: number; uuid: string; name: string } | null;
@@ -58,16 +60,20 @@ export async function GET(
   const host = hdrs.get("x-forwarded-host") || hdrs.get("host") || "";
   const cellUrl = `${proto}://${host}/stock/cells/${uuid}`;
 
-  // Cells often have empty `name` (operators rely on the ordinal +
-  // breadcrumb), so synthesise a fallback label that's never null —
-  // pdfkit's `info: { Title }` throws when it tries to coerce null.
+  // Operator-facing label: use the company-numbered code (CELL00010)
+  // as the canonical name. Falls back to the raw `name` column only
+  // when there's no code (shouldn't happen for non-system cells, but
+  // keeps the PDF from throwing on legacy rows). pdfkit's
+  // `info: { Title }` would throw on a null, so we always coerce.
   const cellLabel =
-    (data.cell.name && data.cell.name.trim()) || `Cell ${data.cell.id}`;
+    (data.cell.code && data.cell.code.trim()) ||
+    (data.cell.name && data.cell.name.trim()) ||
+    `Cell ${data.cell.id}`;
 
   const pdf = await renderCellLabelPdf({
-    cellName: cellLabel,
-    cellCode: null, // numbering format for cells could be added later
-    locationName: data.cell.storage_location?.name ?? "—",
+    cellName: data.cell.name ?? "",
+    cellCode: data.cell.code,
+    locationName: data.cell.storage_location?.name ?? "",
     locationCode: data.cell.storage_location?.code ?? null,
     floorName: data.cell.floor?.name ?? "—",
     warehouseName: data.cell.warehouse?.name ?? "—",

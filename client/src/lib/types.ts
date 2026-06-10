@@ -143,7 +143,10 @@ export interface AuditEvent {
     | "packaging_compliance"
     | "certificate"
     | "item_certificate"
-    | "item_image";
+    | "item_image"
+    | "stock_lot"
+    | "stock_lot_placement"
+    | "stock_movement";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";
@@ -889,7 +892,26 @@ export interface StockLotCellSummary {
   uuid: string;
   ordinal: number;
   name: string | null;
+  /** Display code rendered from the company numbering format
+   *  (e.g. `CELL00011`). `null` for system-managed cells where the
+   *  FE renders the operator-facing `generic_place_name` instead. */
+  code: string | null;
+  system_kind: string | null;
   storage_location_id: number;
+  storage_location: {
+    id: number;
+    uuid: string;
+    name: string;
+    code: string | null;
+    system_kind: string | null;
+  } | null;
+  floor: {
+    id: number;
+    uuid: string;
+    name: string;
+    system_kind: string | null;
+  } | null;
+  warehouse: { id: number; uuid: string; name: string } | null;
 }
 
 /** Tag-aware cell picker row — extends the basic cell with location
@@ -913,6 +935,8 @@ export interface StockMovement {
   stock_lot_id: number;
   from_cell_id: number | null;
   to_cell_id: number | null;
+  from_cell: StockLotCellSummary | null;
+  to_cell: StockLotCellSummary | null;
   delta_qty: string;
   kind: StockMovementKind;
   reason: string | null;
@@ -982,6 +1006,12 @@ export interface StockLot {
   unit_of_measurement_id: number;
   unit_of_measurement: StockLotUomSummary | null;
   placements: StockLotPlacement[];
+  package_length_mm: number | null;
+  package_width_mm: number | null;
+  package_height_mm: number | null;
+  package_weight_kg: string | null;
+  units_per_package: number | null;
+  stack_factor: number | null;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

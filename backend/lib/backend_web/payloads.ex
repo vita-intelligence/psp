@@ -580,6 +580,12 @@ defmodule BackendWeb.Payloads do
       unit_of_measurement_id: l.unit_of_measurement_id,
       unit_of_measurement: preloaded_or_nil(l, :unit_of_measurement, &uom_summary/1),
       placements: Enum.map(placements, &stock_lot_placement/1),
+      package_length_mm: l.package_length_mm,
+      package_width_mm: l.package_width_mm,
+      package_height_mm: l.package_height_mm,
+      package_weight_kg: l.package_weight_kg,
+      units_per_package: l.units_per_package,
+      stack_factor: l.stack_factor,
       inserted_at: l.inserted_at,
       updated_at: l.updated_at,
       created_by: actor(l, :created_by),
@@ -607,6 +613,8 @@ defmodule BackendWeb.Payloads do
       stock_lot_id: m.stock_lot_id,
       from_cell_id: m.from_cell_id,
       to_cell_id: m.to_cell_id,
+      from_cell: preloaded_or_nil(m, :from_cell, &storage_cell_summary/1),
+      to_cell: preloaded_or_nil(m, :to_cell, &storage_cell_summary/1),
       delta_qty: m.delta_qty,
       kind: m.kind,
       reason: m.reason,
@@ -681,12 +689,35 @@ defmodule BackendWeb.Payloads do
   end
 
   defp storage_cell_summary(c) do
+    loc = if Ecto.assoc_loaded?(c.storage_location), do: c.storage_location, else: nil
+    floor = if loc && Ecto.assoc_loaded?(loc.floor), do: loc.floor, else: nil
+    warehouse = if floor && Ecto.assoc_loaded?(floor.warehouse), do: floor.warehouse, else: nil
+
     %{
       id: c.id,
       uuid: c.uuid,
       ordinal: c.ordinal,
       name: c.name,
-      storage_location_id: c.storage_location_id
+      # Render the company's configured numbering format (e.g.
+      # CELL00011) so the FE can display the code instead of the
+      # often-empty `name` column. System cells get nil so the FE
+      # knows to render the operator-facing "Holding Room" label
+      # instead.
+      code:
+        if(c.system_kind, do: nil, else: render_code(c, "storage_cell")),
+      system_kind: c.system_kind,
+      storage_location_id: c.storage_location_id,
+      storage_location:
+        loc &&
+          %{
+            id: loc.id,
+            uuid: loc.uuid,
+            name: loc.name,
+            code: render_code(loc, "storage_location"),
+            system_kind: loc.system_kind
+          },
+      floor: floor && %{id: floor.id, uuid: floor.uuid, name: floor.name, system_kind: floor.system_kind},
+      warehouse: warehouse && %{id: warehouse.id, uuid: warehouse.uuid, name: warehouse.name}
     }
   end
 

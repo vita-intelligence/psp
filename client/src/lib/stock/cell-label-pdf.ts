@@ -88,27 +88,34 @@ function drawCellLabel(
     .text("CELL", dataX, cursorY, { width: dataWidth, characterSpacing: 0.4 });
   cursorY += 2.5 * MM;
 
-  // Cell code or name — hero
+  // Hero — company-numbered code (CELL00010). Falls back to the raw
+  // cell.name only when there's no code, which only happens on
+  // legacy / system cells.
+  const hero = input.cellCode ?? input.cellName ?? "";
   doc
     .font("Helvetica-Bold")
     .fontSize(18)
     .fillColor("#000")
-    .text(input.cellCode ?? input.cellName, dataX, cursorY, {
-      width: dataWidth,
-      ellipsis: true,
-    });
+    .text(hero, dataX, cursorY, { width: dataWidth, ellipsis: true });
   cursorY += 8 * MM;
 
-  // Breadcrumb
-  doc
-    .font("Helvetica")
-    .fontSize(7)
-    .fillColor("#374151")
-    .text(input.cellName, dataX, cursorY, {
-      width: dataWidth,
-      ellipsis: true,
-    });
-  cursorY += 4 * MM;
+  // Optional subtitle — only render when the cell carries an
+  // operator-meaningful name distinct from its code. Previously we
+  // always painted `cellName` here, which read as "Cell 10" right
+  // under the "Cell 10" hero. With the code/name dedupe, registered
+  // cells with empty names skip this entirely.
+  const subtitle = (input.cellName ?? "").trim();
+  if (subtitle && subtitle !== hero) {
+    doc
+      .font("Helvetica")
+      .fontSize(7)
+      .fillColor("#374151")
+      .text(subtitle, dataX, cursorY, {
+        width: dataWidth,
+        ellipsis: true,
+      });
+    cursorY += 4 * MM;
+  }
 
   doc
     .font("Helvetica-Bold")
@@ -120,21 +127,27 @@ function drawCellLabel(
     });
   cursorY += 2.5 * MM;
 
+  // Prefer the code (SL00004); use the name only when it adds info
+  // beyond the code. Painting "—" under LOCATION because the name
+  // column was empty was just visual noise.
+  const locationHero =
+    input.locationCode ?? input.locationName ?? "—";
   doc
-    .font("Helvetica")
+    .font(input.locationCode ? "Courier-Bold" : "Helvetica")
     .fontSize(9)
     .fillColor("#000")
-    .text(input.locationName, dataX, cursorY, {
+    .text(locationHero, dataX, cursorY, {
       width: dataWidth,
       ellipsis: true,
     });
-  if (input.locationCode) {
+  const locationSub = (input.locationName ?? "").trim();
+  if (locationSub && locationSub !== locationHero) {
     cursorY += 3.5 * MM;
     doc
-      .font("Courier")
+      .font("Helvetica")
       .fontSize(7)
       .fillColor("#374151")
-      .text(input.locationCode, dataX, cursorY, {
+      .text(locationSub, dataX, cursorY, {
         width: dataWidth,
         ellipsis: true,
       });

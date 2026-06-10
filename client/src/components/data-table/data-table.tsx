@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -53,9 +53,11 @@ import type {
  *   * Column order + visibility persist in `localStorage` per `tableId`
  *     so a user's preference survives reloads.
  *   * Pagination uses opaque cursors → constant-time per page no matter
- *     how deep you scroll. Infinite-query under the hood; the explicit
- *     "Load more" button keeps the user in control (no surprise data
- *     load while reading).
+ *     how deep you scroll. Infinite-query under the hood; an
+ *     IntersectionObserver on a sentinel at the bottom of the list
+ *     auto-fetches the next page as the user nears it. A button
+ *     fallback stays visible for keyboard users + when the observer
+ *     can't run (no JS, blocked by an extension).
  */
 export function DataTable<T>({
   tableId,
@@ -425,27 +427,89 @@ function Pagination({
   isFetchingMore: boolean;
   onLoadMore: () => void;
 }) {
+  // Sentinel that, when scrolled into view, fires onLoadMore. 200px of
+  // rootMargin means the next page starts fetching just before the
+  // operator hits the bottom — no perceptible pause.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the loader callback fresh inside the observer closure without
+  // recreating the observer on every render (which would cause it to
+  // refire immediately).
+  const loadRef = useRef(onLoadMore);
+  loadRef.current = onLoadMore;
+
+  useEffect(() => {
+    if (!hasMore || isFetchingMore) return;
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            loadRef.current();
+            // One trigger per page-fetch is enough; React state
+            // (`isFetchingMore` flipping) tears this observer down
+            // and the next render re-creates a fresh one for the
+            // following page.
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, isFetchingMore]);
+
   if (rowsLoaded === 0) return null;
+
   return (
-    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-      <span>
-        Showing <span className="font-medium text-foreground">{rowsLoaded}</span>{" "}
-        {rowsLoaded === 1 ? "row" : "rows"}
-        {hasMore ? "" : " — all loaded"}
-      </span>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span>
+          Showing{" "}
+          <span className="font-medium text-foreground">{rowsLoaded}</span>{" "}
+          {rowsLoaded === 1 ? "row" : "rows"}
+          {hasMore ? "" : " — all loaded"}
+        </span>
+        {/* Keyboard/no-JS fallback. Hidden once the observer has
+            tripped because `isFetchingMore` disables it anyway. */}
+        {hasMore && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onLoadMore}
+            disabled={isFetchingMore}
+            className="text-xs text-muted-foreground"
+          >
+            {isFetchingMore ? (
+              <>
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                Loading…
+              </>
+            ) : (
+              "Load more"
+            )}
+          </Button>
+        )}
+      </div>
+
       {hasMore && (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={onLoadMore}
-          disabled={isFetchingMore}
-        >
+        <>
+          {/* Invisible 1px sentinel observed by IntersectionObserver.
+              Sits below the visible footer text so by the time it
+              enters the viewport the next page is queued. */}
+          <div ref={sentinelRef} aria-hidden className="h-px" />
           {isFetchingMore && (
-            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+            <div className="flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Loading more…
+            </div>
           )}
-          Load more
-        </Button>
+        </>
       )}
     </div>
   );

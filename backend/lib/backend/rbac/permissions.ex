@@ -95,6 +95,21 @@ defmodule Backend.RBAC.Permissions do
     {"certificates.manage", "Create, edit, and delete certificates"}
   ]
 
+  # Stock operations — lots, placements, movements. View is the read
+  # baseline (lot list + detail + movement history). Receive lets the
+  # operator create manual lots; Move and Adjust each carry their own
+  # gate so an audit of "who moved what" stays distinct from "who
+  # adjusted a stock-take count". Edit (lot identity + packaging) and
+  # Dispose are separate seniority gates.
+  @stock [
+    {"stock.view", "View stock lots, placements, and movement history"},
+    {"stock.receive", "Receive new lots (manual create)"},
+    {"stock.edit", "Edit lot identity + packaging dimensions"},
+    {"stock.move", "Move stock between cells"},
+    {"stock.adjust", "Manually adjust qty (stock-take corrections, shrinkage)"},
+    {"stock.dispose", "Dispose of stock"}
+  ]
+
   def all do
     Enum.map(
       @company ++
@@ -106,7 +121,8 @@ defmodule Backend.RBAC.Permissions do
         @items ++
         @catalogues ++
         @risk_assessments ++
-        @certificates,
+        @certificates ++
+        @stock,
       &elem(&1, 0)
     )
   end
@@ -123,7 +139,8 @@ defmodule Backend.RBAC.Permissions do
       items: @items,
       catalogues: @catalogues,
       risk_assessments: @risk_assessments,
-      certificates: @certificates
+      certificates: @certificates,
+      stock: @stock
     }
   end
 
@@ -256,6 +273,31 @@ defmodule Backend.RBAC.Permissions do
             create: "certificates.manage",
             update: "certificates.manage",
             delete: "certificates.manage"
+          }
+        ]
+      },
+      %{
+        section: "Operations",
+        resources: [
+          %{
+            key: "stock_lots",
+            label: "Stock lots",
+            description:
+              "Received batches with placements, movements, and packaging dims.",
+            read: "stock.view",
+            create: "stock.receive",
+            update: "stock.edit",
+            delete: nil
+          },
+          %{
+            key: "stock_movements",
+            label: "Stock movements",
+            description:
+              "Between-cell moves and manual qty adjustments (stock-take, shrinkage).",
+            read: "stock.view",
+            create: "stock.move",
+            update: "stock.adjust",
+            delete: "stock.dispose"
           }
         ]
       }

@@ -37,6 +37,7 @@ export type PermissionCode =
   | "stock.view"
   | "stock.receive"
   | "stock.move"
+  | "stock.edit"
   | "stock.adjust"
   | "stock.dispose";
 
