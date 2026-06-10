@@ -178,11 +178,41 @@ defmodule BackendWeb.Router do
       # against a Purchase Order will land on a dedicated endpoint
       # in the procurement module.
       post "/lots/manual", StockLotController, :create_manual
-      resources "/lots", StockLotController, only: [:index, :show]
+
+      # Put-away queue + scanner lookups (mobile /m flow).
+      get "/lots/pending-putaway", StockLotController, :pending_putaway
+      get "/lots/scan/:uuid", StockLotController, :scan_lot
+      get "/cells/scan/:uuid", StockLotController, :scan_cell
+      get "/floors/:uuid/plan", StockLotController, :floor_plan
+
+      # Packaging dim suggestions for the receive form — item default
+      # + last lot + 10-lot median. Backs the auto-fill pills.
+      get "/items/:item_id/packaging-suggestions",
+          StockLotController,
+          :packaging_suggestions
+
+      resources "/lots", StockLotController, only: [:index, :show] do
+        # Move qty between cells — atomic, records a `move` movement
+        # carrying the photo URL or skip-reason. Source defaults to
+        # the lot's only non-zero placement (put-away-from-Unregistered
+        # case).
+        post "/move", StockLotController, :move
+
+        # Ranked suggestions for the put-away destination: same-item
+        # consolidation + matching storage tags. Mobile shows these as
+        # one-tap cards so the camera viewfinder is the fallback,
+        # not the default.
+        get "/move-recommendations", StockLotController, :move_recommendations
+      end
 
       # Flat cell picker for the create-manual-lot form — returns
       # every company cell with warehouse + location breadcrumbs.
       get "/cells", StockLotController, :cells
+
+      # Photo upload for the move flow. Two-step on purpose: photo
+      # lands first, URL gets stamped on the movement on confirm.
+      post "/movement-photos", MovementPhotoController, :create
+      get "/movement-photos/:uuid/file", MovementPhotoController, :serve_file
     end
   end
 

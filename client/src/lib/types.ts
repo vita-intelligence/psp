@@ -920,7 +920,33 @@ export interface StockMovement {
   reference_ref: string | null;
   occurred_at: string;
   actor: AuditActor | null;
+  photo_url: string | null;
+  skip_photo_reason: string | null;
   inserted_at: string;
+}
+
+/** Cell scan response shape — the move flow's destination breadcrumb. */
+export interface ScannedCell {
+  id: number;
+  uuid: string;
+  name: string;
+  ordinal: number;
+  tags: string[];
+  system_kind: string | null;
+  storage_location: {
+    id: number;
+    uuid: string;
+    name: string;
+    code: string | null;
+    system_kind: string | null;
+  } | null;
+  floor: {
+    id: number;
+    uuid: string;
+    name: string;
+    system_kind: string | null;
+  } | null;
+  warehouse: { id: number; uuid: string; name: string } | null;
 }
 
 /** A stock lot — one received (or produced) batch. `qty_received` is

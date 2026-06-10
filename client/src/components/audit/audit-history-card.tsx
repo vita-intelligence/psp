@@ -13,6 +13,8 @@ import { UserAvatar } from "@/components/users/user-avatar";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { cn } from "@/lib/utils";
+import { formatCompanyDate } from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { subscribeAudit, dispatchRestore } from "@/lib/audit/invalidator";
 import { toast } from "sonner";
 import {
@@ -377,6 +379,7 @@ function EventRow({
   entityId: number;
   canRestore: boolean;
 }) {
+  const prefs = useFormatPrefs();
   const [expanded, setExpanded] = useState(false);
   const { icon: Icon, tone } = eventStyle(event.event);
   const hasChanges = Object.keys(event.changes).length > 0;
@@ -460,7 +463,7 @@ function EventRow({
             className="text-muted-foreground/70"
             title={when.toLocaleString()}
           >
-            · {relativeTime(when)}
+            · {relativeTime(when, prefs.date_format)}
           </span>
           <div className="ml-auto flex items-center gap-1">
             {canRestoreThis && (
@@ -644,7 +647,7 @@ function synthesizeRequestId(): string {
 }
 
 /** "5m ago", "yesterday", "Jan 12" — readable relative time. */
-function relativeTime(d: Date): string {
+function relativeTime(d: Date, datePattern?: string | null): string {
   const diff = Date.now() - d.getTime();
   const sec = Math.round(diff / 1000);
   if (sec < 60) return "just now";
@@ -654,5 +657,5 @@ function relativeTime(d: Date): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.round(hr / 24);
   if (day < 7) return `${day}d ago`;
-  return d.toLocaleDateString();
+  return formatCompanyDate(d.toISOString(), { date_format: datePattern });
 }

@@ -31,6 +31,13 @@ defmodule Backend.Stock.Movement do
 
     field :occurred_at, :utc_datetime
 
+    # Optional photo of the placement / disposal site. URL points at
+    # the same Backend.Storage adapter that serves item images.
+    field :photo_url, :string
+    # When the operator skipped the photo at scan time, why. Trend-able
+    # so we can spot warehouses where discipline is slipping.
+    field :skip_photo_reason, :string
+
     belongs_to :company, Company
     belongs_to :stock_lot, Lot
     belongs_to :from_cell, StorageCell, foreign_key: :from_cell_id
@@ -54,7 +61,9 @@ defmodule Backend.Stock.Movement do
       :reference_kind,
       :reference_ref,
       :actor_id,
-      :occurred_at
+      :occurred_at,
+      :photo_url,
+      :skip_photo_reason
     ])
     |> validate_required([
       :company_id,

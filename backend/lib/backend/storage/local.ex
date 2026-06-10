@@ -32,14 +32,23 @@ defmodule Backend.Storage.Local do
 
   @impl true
   def public_url(path, _opts) do
-    # Items.Images sets the path to `items/<item_uuid>/<image_uuid>.<ext>`,
-    # so the served URL embeds the parent item uuid + image uuid for
-    # RBAC checks in the serving controller.
     case String.split(path, "/", parts: 3) do
       ["items", item_uuid, rest] ->
-        # Strip extension off the image uuid segment.
+        # Items.Images path: `items/<item_uuid>/<image_uuid>.<ext>` —
+        # served by ItemImageController with RBAC gates.
         image_uuid = rest |> Path.rootname()
         "/api/items/#{item_uuid}/images/#{image_uuid}/file"
+
+      ["movement_photos", filename, ""] ->
+        # Movement photos: `movement_photos/<photo_uuid>.<ext>` (path
+        # split with parts: 3 yields a trailing empty string). Served
+        # by MovementPhotoController.serve_file gated on stock.view.
+        uuid = filename |> Path.rootname()
+        "/api/stock/movement-photos/#{uuid}/file"
+
+      ["movement_photos", filename] ->
+        uuid = filename |> Path.rootname()
+        "/api/stock/movement-photos/#{uuid}/file"
 
       _ ->
         nil

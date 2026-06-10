@@ -25,6 +25,14 @@ export interface ManualLotInput {
   warehouse_id: number;
   /** Total quantity landed, as a decimal string. */
   qty_received: string;
+  // Per-lot packaging (mandatory). Lengths in millimetres so they're
+  // integer-safe; weight in kg as a decimal string.
+  package_length_mm: number;
+  package_width_mm: number;
+  package_height_mm: number;
+  package_weight_kg: string;
+  units_per_package: number;
+  stack_factor: number;
   // optional metadata. `source_kind` is forced to "manual" by the
   // backend — callers don't need to send it.
   unit_cost?: string | null;

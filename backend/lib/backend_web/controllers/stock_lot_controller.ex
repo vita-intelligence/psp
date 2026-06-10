@@ -19,8 +19,9 @@ defmodule BackendWeb.StockLotController do
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "stock.view" when action in [:index, :show, :cells]
+  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions]
   plug RequirePermission, "stock.receive" when action in [:create_manual]
+  plug RequirePermission, "stock.move" when action in [:move]
 
   action_fallback BackendWeb.FallbackController
 
@@ -119,6 +120,262 @@ defmodule BackendWeb.StockLotController do
   warehouse + location breadcrumbs. Used by the receive-form cell
   selector — the operator picks a destination cell in one click.
   """
+  @doc """
+  Lots that still have stock in a system Unregistered cell. The /m
+  shell pulls this on load so operators see what needs put-away.
+  """
+  def pending_putaway(conn, _params) do
+    actor = conn.assigns.current_user
+    lots = Stock.list_pending_putaway(actor.company_id)
+
+    json(conn, %{items: Enum.map(lots, &Payloads.stock_lot/1)})
+  end
+
+  @doc """
+  Look up a lot by uuid for the scanner. Returns the same shape as
+  `show/2` so the FE can reuse rendering helpers.
+  """
+  def scan_lot(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Stock.get_for_scan(actor.company_id, uuid) do
+      nil ->
+        not_found_error(conn, "lot_not_found", "Lot not found.")
+
+      lot ->
+        json(conn, %{
+          lot: Payloads.stock_lot(lot),
+          movements: Enum.map(lot.movements, &Payloads.stock_movement/1)
+        })
+    end
+  end
+
+  @doc """
+  Look up a cell by uuid for the move-flow destination scan. Returns
+  warehouse / floor / location breadcrumbs so the FE can confirm
+  "you're moving stock to: WH1 > Floor 2 > Rack A > Level 3".
+  """
+  def scan_cell(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Stock.get_cell_for_scan(actor.company_id, uuid) do
+      nil ->
+        not_found_error(conn, "cell_not_found", "Cell not found.")
+
+      cell ->
+        loc = cell.storage_location
+        floor = loc && loc.floor
+        warehouse = floor && floor.warehouse
+
+        json(conn, %{
+          cell: %{
+            id: cell.id,
+            uuid: cell.uuid,
+            name: cell.name,
+            ordinal: cell.ordinal,
+            tags: cell.tags || [],
+            system_kind: cell.system_kind,
+            storage_location:
+              loc &&
+                %{
+                  id: loc.id,
+                  uuid: loc.uuid,
+                  name: loc.name,
+                  code: loc.code,
+                  system_kind: loc.system_kind
+                },
+            floor:
+              floor &&
+                %{
+                  id: floor.id,
+                  uuid: floor.uuid,
+                  name: floor.name,
+                  system_kind: floor.system_kind
+                },
+            warehouse:
+              warehouse &&
+                %{id: warehouse.id, uuid: warehouse.uuid, name: warehouse.name}
+          }
+        })
+    end
+  end
+
+  @doc """
+  Floor plan for the mobile directions card. Renders into a mini SVG
+  on /m/lots/:uuid/move so the operator sees where to walk before the
+  camera opens.
+  """
+  def floor_plan(conn, %{"uuid" => floor_uuid}) do
+    actor = conn.assigns.current_user
+
+    case Stock.get_floor_plan(actor.company_id, floor_uuid) do
+      nil ->
+        not_found_error(conn, "floor_not_found", "Floor not found.")
+
+      %{floor: floor, locations: locations} ->
+        json(conn, %{
+          floor: %{
+            id: floor.id,
+            uuid: floor.uuid,
+            name: floor.name,
+            # Pass the editor's full canvas_json straight through —
+            # the mobile mini plan renders walls + outline from it so
+            # operators can see the floor structure, not just floating
+            # rack rectangles.
+            canvas_json: floor.canvas_json || %{},
+            warehouse:
+              floor.warehouse &&
+                %{
+                  id: floor.warehouse.id,
+                  uuid: floor.warehouse.uuid,
+                  name: floor.warehouse.name
+                }
+          },
+          locations:
+            Enum.map(locations, fn l ->
+              %{
+                id: l.id,
+                uuid: l.uuid,
+                name: l.name,
+                code: l.code,
+                x: l.x,
+                y: l.y,
+                width: l.width,
+                height: l.height,
+                color: l.color
+              }
+            end)
+        })
+    end
+  end
+
+  @doc """
+  Suggest cells for moving this lot, ranked by tag fit + consolidation.
+  The mobile UI shows these as one-tap cards so most put-away flows
+  never need to fire up the camera.
+  """
+  def move_recommendations(conn, %{"stock_lot_id" => uuid}) do
+    actor = conn.assigns.current_user
+    rows = Stock.list_move_recommendations(actor.company_id, uuid)
+
+    json(conn, %{
+      items:
+        Enum.map(rows, fn %{row: r, score: score} ->
+          %{
+            score: score,
+            reason: reason_from_score(score),
+            # Fit metrics — surfaced on the mobile recommendation card
+            # so the operator sees WHY one shelf beats another (more
+            # headroom, same item already there, etc).
+            fit: %{
+              free_pct: r.fit.free_pct,
+              percent_used: r.fit.percent_used
+            },
+            cell: %{
+              id: r.cell.id,
+              uuid: r.cell.uuid,
+              name: r.cell.name,
+              ordinal: r.cell.ordinal,
+              tags: r.cell.tags || [],
+              storage_location: %{
+                id: r.location.id,
+                uuid: r.location.uuid,
+                name: r.location.name,
+                code: r.location.code,
+                tags: r.location.tags || []
+              },
+              floor: %{id: r.floor.id, uuid: r.floor.uuid, name: r.floor.name},
+              warehouse: %{
+                id: r.warehouse.id,
+                uuid: r.warehouse.uuid,
+                name: r.warehouse.name
+              }
+            }
+          }
+        end)
+    })
+  end
+
+  @doc """
+  Packaging suggestions for an item — used by the receive form to
+  pre-fill the dimensions section. Three sources surface in the
+  payload (any may be nil): item-level default, last lot, average of
+  the last 10 lots.
+  """
+  def packaging_suggestions(conn, %{"item_id" => raw_id}) do
+    actor = conn.assigns.current_user
+
+    case Integer.parse(to_string(raw_id)) do
+      {item_id, _} ->
+        suggestions = Stock.packaging_suggestions(actor.company_id, item_id)
+        json(conn, %{suggestions: suggestions || nil})
+
+      :error ->
+        unprocessable(conn, "bad_item_id", "Invalid item id.")
+    end
+  end
+
+  defp reason_from_score(10), do: "Same item already here"
+  defp reason_from_score(8), do: "Matches all storage tags"
+  defp reason_from_score(4), do: "Matches some storage tags"
+  defp reason_from_score(1), do: "Available cell"
+  defp reason_from_score(_), do: "Available"
+
+  @doc """
+  Atomic move: pulls qty out of the source placement, lands it at the
+  destination, records a `move` movement carrying the photo URL or
+  skip-reason. Source defaults to the lot's only non-zero placement
+  (the common put-away-from-Unregistered case).
+  """
+  def move(conn, %{"stock_lot_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Stock.move_placement(actor, uuid, params) do
+      {:ok, lot} ->
+        json(conn, %{lot: Payloads.stock_lot(lot)})
+
+      {:error, :lot_not_found} ->
+        not_found_error(conn, "lot_not_found", "Lot not found.")
+
+      {:error, :cell_not_found} ->
+        not_found_error(conn, "cell_not_found", "Destination cell not found.")
+
+      {:error, :placement_not_found} ->
+        unprocessable(
+          conn,
+          "placement_not_found",
+          "Lot has no stock to move from."
+        )
+
+      {:error, :ambiguous_placement} ->
+        unprocessable(
+          conn,
+          "ambiguous_placement",
+          "Lot is split across cells — say which one to move from."
+        )
+
+      {:error, :insufficient_qty} ->
+        unprocessable(
+          conn,
+          "insufficient_qty",
+          "Not enough stock at the source cell."
+        )
+
+      {:error, :same_cell} ->
+        unprocessable(
+          conn,
+          "same_cell",
+          "Source and destination are the same cell."
+        )
+
+      {:error, :bad_qty} ->
+        unprocessable(conn, "bad_qty", "Quantity must be a positive number.")
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
   def cells(conn, params) do
     actor = conn.assigns.current_user
 

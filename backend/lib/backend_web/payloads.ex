@@ -614,6 +614,8 @@ defmodule BackendWeb.Payloads do
       reference_ref: m.reference_ref,
       occurred_at: m.occurred_at,
       actor: actor(m, :actor),
+      photo_url: m.photo_url,
+      skip_photo_reason: m.skip_photo_reason,
       inserted_at: m.inserted_at
     }
   end

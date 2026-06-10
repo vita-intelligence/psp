@@ -46,6 +46,18 @@ defmodule Backend.Items.Item do
     field :storage_tags, {:array, :string}, default: []
     field :is_active, :boolean, default: true
 
+    # Typical packaging template — when set, the receive form copies
+    # these values into the new lot. Operator can override per-lot if
+    # this particular batch ships differently. Shape mirrors the lot
+    # packaging columns:
+    #
+    #   %{
+    #     "length_mm" => 400, "width_mm" => 400, "height_mm" => 600,
+    #     "weight_kg" => "27.500",
+    #     "units_per_package" => 25, "stack_factor" => 2
+    #   }
+    field :default_packaging, :map
+
     belongs_to :company, Company
     belongs_to :stock_uom, UnitOfMeasurement
     belongs_to :product_family, ProductFamily
@@ -110,6 +122,7 @@ defmodule Backend.Items.Item do
       :product_family_id,
       :attributes,
       :storage_tags,
+      :default_packaging,
       :is_active,
       :created_by_id,
       :updated_by_id

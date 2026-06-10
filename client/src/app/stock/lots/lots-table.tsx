@@ -16,6 +16,12 @@ import { Badge } from "@/components/ui/badge-mini";
 import { Button } from "@/components/ui/button";
 import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { StockLot, StockLotStatus } from "@/lib/types";
+import {
+  formatCompanyDate,
+  formatCompanyMoney,
+  formatCompanyNumber,
+} from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 
 interface LotsTableProps {
   initialPage: PageResult<StockLot>;
@@ -95,42 +101,19 @@ async function fetchLotsPage(params: {
   return (await res.json()) as PageResult<StockLot>;
 }
 
-function formatQty(qty: string | null | undefined, symbol?: string | null) {
-  if (qty === null || qty === undefined || qty === "") return "—";
-  // Trim trailing zeros for prettier display ("25.0000" → "25").
-  const n = Number(qty);
-  const pretty = Number.isFinite(n) ? n.toLocaleString() : qty;
-  return symbol ? `${pretty} ${symbol}` : pretty;
-}
-
-function formatMoney(value: string | null, currency: string | null) {
-  if (!value) return "—";
-  const n = Number(value);
-  if (!Number.isFinite(n)) return value;
-  const ccy = currency ?? "GBP";
-  try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency: ccy,
-      maximumFractionDigits: 4,
-    }).format(n);
-  } catch {
-    return `${ccy} ${n.toFixed(2)}`;
-  }
-}
-
-function formatDate(value: string | null) {
-  if (!value) return "—";
-  try {
-    return new Date(value).toLocaleDateString();
-  } catch {
-    return value;
-  }
-}
-
 export function LotsTable({ initialPage, canReceive }: LotsTableProps) {
   const router = useRouter();
+  const prefs = useFormatPrefs();
   const [printLot, setPrintLot] = useState<StockLot | null>(null);
+
+  const formatQty = (qty: string | null | undefined, symbol?: string | null) => {
+    const formatted = formatCompanyNumber(qty, prefs);
+    if (formatted === "—") return formatted;
+    return symbol ? `${formatted} ${symbol}` : formatted;
+  };
+  const formatMoney = (value: string | null, currency: string | null) =>
+    formatCompanyMoney(value, prefs, { currency_code: currency });
+  const formatDate = (value: string | null) => formatCompanyDate(value, prefs);
 
   const columns = useMemo<DataTableColumn<StockLot>[]>(
     () => [
@@ -290,7 +273,10 @@ export function LotsTable({ initialPage, canReceive }: LotsTableProps) {
       },
       ...auditColumns<StockLot>(),
     ],
-    [],
+    // Recompute when prefs change so date/qty/money cells re-render
+    // against the latest company settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [prefs.date_format, prefs.decimal_separator, prefs.thousands_separator, prefs.currency_code, prefs.currency_format],
   );
 
   return (

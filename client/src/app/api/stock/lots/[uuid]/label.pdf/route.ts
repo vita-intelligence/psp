@@ -51,6 +51,7 @@ export async function GET(
     companyName: defaults?.name ?? "PSP",
     lotUrl,
     copies,
+    prefs: defaults ?? {},
   });
 
   const filename = `${data.lot.code ?? `lot-${data.lot.id}`}.pdf`;

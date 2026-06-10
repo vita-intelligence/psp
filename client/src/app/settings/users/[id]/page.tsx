@@ -3,7 +3,9 @@ import { notFound, redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { getUser } from "@/lib/users/server";
 import { getPermissionMatrix } from "@/lib/permissions/server";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { hasPermission } from "@/lib/rbac";
+import { formatCompanyDate } from "@/lib/format/company";
 import {
   Card,
   CardContent,
@@ -38,9 +40,10 @@ export default async function UserAdminPage({ params }: PageProps) {
   }
 
   const { id } = await params;
-  const [subject, availableMatrix] = await Promise.all([
+  const [subject, availableMatrix, defaults] = await Promise.all([
     getUser(id),
     getPermissionMatrix(),
+    getCompanyDefaults(),
   ]);
   if (!subject) notFound();
 
@@ -130,7 +133,7 @@ export default async function UserAdminPage({ params }: PageProps) {
             <DetailRow
               icon={Calendar}
               label="Joined"
-              value={new Date(subject.inserted_at).toLocaleDateString()}
+              value={formatCompanyDate(subject.inserted_at, defaults)}
             />
           </dl>
         </CardContent>

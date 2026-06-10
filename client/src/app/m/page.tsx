@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getDeviceDisplay, getDeviceToken } from "@/lib/devices/server";
-import { MobileShell } from "./mobile-shell";
+import { listPendingPutaway } from "@/lib/stock/mobile";
+import { MobileHomeShell } from "./mobile-home-shell";
 
 export const metadata = { title: "PSP Mobile" };
 
@@ -8,13 +9,13 @@ export default async function MobileHome() {
   const token = await getDeviceToken();
   if (!token) redirect("/pair");
 
-  // The display blob is set alongside the device bearer at claim time
-  // (`{user, device}`). If the cookie's been cleared but the bearer
-  // is still present, send the user back to /pair to re-establish a
-  // clean shell. Cheap escape hatch — the alternative is a backend
-  // call on every render.
   const display = await getDeviceDisplay();
   if (!display) redirect("/pair");
 
-  return <MobileShell display={display} />;
+  // Bulk SSR fetch — pending put-away is small (typically a handful
+  // of lots waiting on a shelf decision). Refreshes on every tap into
+  // the shell so operators see the latest the moment they reopen.
+  const pendingLots = await listPendingPutaway();
+
+  return <MobileHomeShell display={display} pendingLots={pendingLots} />;
 }

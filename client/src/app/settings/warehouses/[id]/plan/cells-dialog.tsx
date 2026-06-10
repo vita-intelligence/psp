@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Loader2, Plus, Split, Trash2 } from "lucide-react";
+import { AlertTriangle, Loader2, Plus, Printer, Split, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -373,16 +373,29 @@ function CellRow({
             </span>
           )}
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onDelete}
-          className="h-7 text-xs text-destructive hover:text-destructive"
-        >
-          <Trash2 className="mr-1 size-3" />
-          Remove
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <a
+            href={`/api/storage-cells/${cell.uuid}/label.pdf?copies=1`}
+            target="_blank"
+            rel="noopener"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Print QR label for this shelf"
+            aria-label="Print QR label"
+          >
+            <Printer className="size-3.5" />
+          </a>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+            aria-label="Remove level"
+            title="Remove this level"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </div>
       </div>
 
       <div className="mt-2 space-y-2">

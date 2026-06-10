@@ -1,6 +1,10 @@
+"use client";
+
 import { UserAvatar } from "@/components/users/user-avatar";
 import { Calendar, UserCircle2 } from "lucide-react";
 import type { AuditActor } from "@/lib/types";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
+import { formatCompanyDate } from "@/lib/format/company";
 
 interface AuditMetaSectionProps {
   inserted_at: string | null | undefined;
@@ -69,7 +73,7 @@ function MetaRow({
     <div className="flex flex-wrap items-center gap-1.5">
       <Icon className="size-3 shrink-0 text-muted-foreground/60" />
       <span className="font-medium text-foreground">{label}</span>
-      {at && <span>· {new Date(at).toLocaleString()}</span>}
+      {at && <DateAt iso={at} />}
       {by && (
         <span className="inline-flex items-center gap-1">
           <span>by</span>
@@ -86,4 +90,9 @@ function MetaRow({
       {!by && at && <span className="italic">· author unknown</span>}
     </div>
   );
+}
+
+function DateAt({ iso }: { iso: string }) {
+  const prefs = useFormatPrefs();
+  return <span>· {formatCompanyDate(iso, prefs)}</span>;
 }

@@ -1,6 +1,10 @@
+"use client";
+
 import { UserAvatar } from "@/components/users/user-avatar";
 import type { DataTableColumn } from "@/components/data-table";
 import type { AuditActor } from "@/lib/types";
+import { formatCompanyDate } from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 
 /** Records the audit fields must expose so the helper can read them. */
 interface Auditable {
@@ -56,10 +60,11 @@ export function auditColumns<T extends Auditable>(): DataTableColumn<T>[] {
 }
 
 function DateCell({ value }: { value: string | null | undefined }) {
+  const prefs = useFormatPrefs();
   if (!value) return <span className="text-xs text-muted-foreground/50">—</span>;
   return (
     <span className="text-xs text-muted-foreground">
-      {new Date(value).toLocaleDateString()}
+      {formatCompanyDate(value, prefs)}
     </span>
   );
 }

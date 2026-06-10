@@ -28,6 +28,8 @@ import {
   revokeDeviceAction,
   sendPingAction,
 } from "@/lib/devices/actions";
+import { formatCompanyDate } from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { PairDeviceDialog } from "./pair-device-dialog";
 
 interface Props {
@@ -35,6 +37,7 @@ interface Props {
 }
 
 export function DevicesPanel({ initial }: Props) {
+  const prefs = useFormatPrefs();
   const [devices, setDevices] = useState<LinkedDevice[]>(initial);
   const [pairOpen, setPairOpen] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState<LinkedDevice | null>(null);
@@ -123,9 +126,9 @@ export function DevicesPanel({ initial }: Props) {
                 <div className="text-xs text-muted-foreground" suppressHydrationWarning>
                   {d.code && <span className="font-mono">{d.code}</span>}
                   {d.code && " · "}
-                  Paired {mounted ? relative(d.paired_at) : formatDate(d.paired_at)}
+                  Paired {mounted ? relative(d.paired_at) : formatDate(d.paired_at, prefs.date_format)}
                   {d.last_seen_at &&
-                    ` · Last seen ${mounted ? relative(d.last_seen_at) : formatDate(d.last_seen_at)}`}
+                    ` · Last seen ${mounted ? relative(d.last_seen_at) : formatDate(d.last_seen_at, prefs.date_format)}`}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -238,7 +241,9 @@ function relative(iso: string): string {
   return `${d}d ago`;
 }
 
-/** Stable SSR-friendly date — same string on server and client. */
-function formatDate(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 16).replace("T", " ");
+/** Stable SSR-friendly date — same string on server and client.
+ *  Uses the company date pattern so it matches every other date the
+ *  operator sees in the app. */
+function formatDate(iso: string, datePattern?: string | null): string {
+  return formatCompanyDate(iso, { date_format: datePattern });
 }

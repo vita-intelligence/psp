@@ -1,6 +1,11 @@
 import "server-only";
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
+import {
+  formatCompanyDate,
+  formatCompanyNumber,
+  type FormatPrefs,
+} from "../format/company";
 import type { StockLot } from "../types";
 
 // 1 mm in PDF points (72 dpi / 25.4 mm).
@@ -13,6 +18,7 @@ interface LabelInput {
   companyName: string;
   lotUrl: string;
   copies: number;
+  prefs: FormatPrefs;
 }
 
 /**
@@ -29,7 +35,7 @@ interface LabelInput {
  * wraps it in a Response with `application/pdf`.
  */
 export async function renderLabelPdf(input: LabelInput): Promise<Buffer> {
-  const { lot, companyName, lotUrl, copies } = input;
+  const { lot, companyName, lotUrl, copies, prefs } = input;
 
   const qrPng = await QRCode.toBuffer(lotUrl, {
     errorCorrectionLevel: "M",
@@ -58,7 +64,7 @@ export async function renderLabelPdf(input: LabelInput): Promise<Buffer> {
       size: [LABEL_WIDTH_MM * MM, LABEL_HEIGHT_MM * MM],
       margin: 0,
     });
-    drawLabel(doc, lot, companyName, qrPng);
+    drawLabel(doc, lot, companyName, qrPng, prefs);
   }
 
   doc.end();
@@ -71,6 +77,7 @@ function drawLabel(
   lot: StockLot,
   companyName: string,
   qrPng: Buffer,
+  prefs: FormatPrefs,
 ) {
   // Internal padding from the label edge — 4mm leaves enough room for
   // printer kerning without wasting space.
@@ -115,11 +122,19 @@ function drawLabel(
 
   // Expiry + Quantity, two columns
   const halfW = (dataWidth - 2 * MM) / 2;
-  drawKeyValue(doc, "EXPIRY", formatDate(lot.expiry_at), dataX, cursorY, halfW, 12);
+  drawKeyValue(
+    doc,
+    "EXPIRY",
+    formatCompanyDate(lot.expiry_at, prefs),
+    dataX,
+    cursorY,
+    halfW,
+    12,
+  );
   drawKeyValue(
     doc,
     "QUANTITY",
-    formatQty(lot.qty_received, lot.unit_of_measurement?.symbol),
+    formatQty(lot.qty_received, lot.unit_of_measurement?.symbol, prefs),
     dataX + halfW + 2 * MM,
     cursorY,
     halfW,
@@ -198,26 +213,14 @@ function drawKeyValue(
     .text(value, x, y + 2.5 * MM, { width, ellipsis: true });
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
 function formatQty(
   qty: string | number | null,
   symbol: string | null | undefined,
+  prefs: FormatPrefs,
 ): string {
-  if (qty === null || qty === undefined) return "—";
-  const n = typeof qty === "string" ? Number(qty) : qty;
-  if (!Number.isFinite(n)) return String(qty);
-  const trimmed = Number(n.toFixed(4)).toString();
-  return symbol ? `${trimmed} ${symbol}` : trimmed;
+  const formatted = formatCompanyNumber(qty, prefs);
+  if (formatted === "—") return formatted;
+  return symbol ? `${formatted} ${symbol}` : formatted;
 }
 
 function formatSource(

@@ -139,6 +139,19 @@ const DEFAULT_LOCATION_CM = 100; // 1m × 1m default tile
 const MIN_MARQUEE_PX = 4;        // smaller than this = treat as a plain click
 const DEFAULT_TEXT_WIDTH_CM = 250; // 2.5m × 0.8m initial textbox size
 const DEFAULT_TEXT_HEIGHT_CM = 80;
+/** Tools that paint a new shape on the floor. Used to suppress the
+ *  floor-outline's onClick so it doesn't steal the click and select
+ *  itself when the operator is trying to drop a rack / wall / text on
+ *  top of it. */
+const DRAW_TOOLS = new Set<ToolMode>([
+  "wall",
+  "arrow",
+  "location",
+  "text",
+  "path",
+  "outline",
+  "hole",
+]);
 
 type Draft =
   | { kind: "wall"; x1: number; y1: number; x2: number; y2: number }
@@ -369,7 +382,14 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     const beginDraw = useCallback(
       (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
         if (readOnly) return;
-        const isBackground = e.target === e.target.getStage();
+        // The empty stage AND the floor outline both count as
+        // "background" for draw purposes: the operator's intent in
+        // any draw tool is to place a shape ON the floor, so clicking
+        // the floor itself should start the draw rather than select
+        // the outline.
+        const target = e.target;
+        const isBackground =
+          target === target.getStage() || target.name() === "floor-outline";
         const p = snappedPointer();
         if (!p) return;
         const additive = isAdditiveEvent(e);
@@ -845,6 +865,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   shapes below paint the visible border so each edge
                   can be hit-tested and selected independently. */}
               <Shape
+                name="floor-outline"
                 sceneFunc={(ctx, shape) => {
                   ctx.beginPath();
                   tracePolygonPath(ctx, outline.points, outline.edgeBows);
@@ -867,8 +888,19 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                     ? outline.color
                     : "rgba(241,245,249,1)"
                 }
-                onClick={(e) => selectItem({ kind: "outline" }, e)}
-                onTap={(e) => selectItem({ kind: "outline" }, e)}
+                onClick={(e) => {
+                  // When a draw tool is active, the operator is trying
+                  // to lay down a new shape ON TOP of the floor — the
+                  // outline must not steal the click. beginDraw handles
+                  // the actual draw start; this just suppresses the
+                  // selection side-effect.
+                  if (DRAW_TOOLS.has(tool)) return;
+                  selectItem({ kind: "outline" }, e);
+                }}
+                onTap={(e) => {
+                  if (DRAW_TOOLS.has(tool)) return;
+                  selectItem({ kind: "outline" }, e);
+                }}
                 draggable={
                   !readOnly &&
                   isSelected(selection, { kind: "outline" })

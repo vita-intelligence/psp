@@ -54,6 +54,17 @@ defmodule Backend.Stock.Lot do
 
     field :notes, :string
 
+    # Per-lot packaging (mandatory at receive). Lengths in millimetres,
+    # weight in kg with 3 decimals. Drives the volumetric + weight fit
+    # checks in `list_move_recommendations`. Nullable in DB so the one
+    # pre-migration lot doesn't break; the changeset enforces required.
+    field :package_length_mm, :integer
+    field :package_width_mm, :integer
+    field :package_height_mm, :integer
+    field :package_weight_kg, :decimal
+    field :units_per_package, :integer, default: 1
+    field :stack_factor, :integer, default: 1
+
     belongs_to :company, Company
     belongs_to :item, Item
     belongs_to :unit_of_measurement, UnitOfMeasurement
@@ -91,6 +102,12 @@ defmodule Backend.Stock.Lot do
       :available_from,
       :received_at,
       :notes,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor,
       :created_by_id,
       :updated_by_id
     ])
@@ -99,8 +116,22 @@ defmodule Backend.Stock.Lot do
       :item_id,
       :unit_of_measurement_id,
       :qty_received,
-      :status
+      :status,
+      # Packaging — every new lot must declare its physical footprint
+      # so the put-away fit-check can rank cells honestly.
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor
     ])
+    |> validate_number(:package_length_mm, greater_than: 0)
+    |> validate_number(:package_width_mm, greater_than: 0)
+    |> validate_number(:package_height_mm, greater_than: 0)
+    |> validate_number(:package_weight_kg, greater_than: 0)
+    |> validate_number(:units_per_package, greater_than: 0)
+    |> validate_number(:stack_factor, greater_than: 0, less_than_or_equal_to: 50)
     |> validate_inclusion(:status, @statuses)
     |> maybe_validate_inclusion(:source_kind, @source_kinds)
     |> maybe_validate_inclusion(:overall_risk, @risk_levels)

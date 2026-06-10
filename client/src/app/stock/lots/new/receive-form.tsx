@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Info, Loader2, MapPin, Save } from "lucide-react";
+import { Box, Info, Loader2, MapPin, Save, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,6 +25,15 @@ import type { ErrorResult } from "@/lib/errors/server";
 interface ReceiveFormProps {
   items: Item[];
   warehouses: Warehouse[];
+}
+
+interface PackagingValues {
+  length_mm?: number | null;
+  width_mm?: number | null;
+  height_mm?: number | null;
+  weight_kg?: string | number | null;
+  units_per_package?: number | null;
+  stack_factor?: number | null;
 }
 
 const COMPLIANCE_OPTIONS: { value: ComplianceState; label: string }[] = [
@@ -67,6 +76,25 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
   );
   const [qty, setQty] = useState<string>("");
 
+  // Packaging — mandatory. Stored as strings so the operator can
+  // backspace through them without React fighting; coerced on submit.
+  const [packageLengthMm, setPackageLengthMm] = useState<string>("");
+  const [packageWidthMm, setPackageWidthMm] = useState<string>("");
+  const [packageHeightMm, setPackageHeightMm] = useState<string>("");
+  const [packageWeightKg, setPackageWeightKg] = useState<string>("");
+  const [unitsPerPackage, setUnitsPerPackage] = useState<string>("1");
+  const [stackFactor, setStackFactor] = useState<string>("1");
+  // Track which suggestion (if any) was applied so we can show it as
+  // a chip and explain the source.
+  const [packagingSource, setPackagingSource] = useState<
+    null | "item_default" | "last_lot" | "average"
+  >(null);
+  const [suggestions, setSuggestions] = useState<{
+    item_default: PackagingValues | null;
+    last_lot: PackagingValues | null;
+    average: PackagingValues | null;
+  } | null>(null);
+
   // Optional
   const [unitCost, setUnitCost] = useState("");
   const [currency, setCurrency] = useState("GBP");
@@ -100,8 +128,81 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
   const itemTags = selectedItem?.storage_tags ?? [];
 
   const qtyValid = Number(qty) > 0;
+  const packagingValid =
+    Number(packageLengthMm) > 0 &&
+    Number(packageWidthMm) > 0 &&
+    Number(packageHeightMm) > 0 &&
+    Number(packageWeightKg) > 0 &&
+    Number(unitsPerPackage) > 0 &&
+    Number(stackFactor) > 0;
+
   const canSubmit =
-    !!itemId && !!uomId && !!warehouseId && qtyValid && !pending;
+    !!itemId && !!uomId && !!warehouseId && qtyValid && packagingValid && !pending;
+
+  // When the operator picks an item, fetch the three suggestion
+  // sources and pre-fill from whichever is available, in priority
+  // order: item default → last lot → average. Operator can re-tap
+  // any pill to switch source, or override individual fields.
+  useEffect(() => {
+    if (!itemId) {
+      setSuggestions(null);
+      setPackagingSource(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/items/${encodeURIComponent(itemId)}/packaging-suggestions`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          suggestions: {
+            item_default: PackagingValues | null;
+            last_lot: PackagingValues | null;
+            average: PackagingValues | null;
+          } | null;
+        };
+        if (cancelled) return;
+        const s = data.suggestions ?? {
+          item_default: null,
+          last_lot: null,
+          average: null,
+        };
+        setSuggestions(s);
+        // Auto-apply the highest-priority suggestion. Operator can
+        // still re-tap pills or edit fields.
+        if (s.item_default) {
+          applyPackaging(s.item_default);
+          setPackagingSource("item_default");
+        } else if (s.last_lot) {
+          applyPackaging(s.last_lot);
+          setPackagingSource("last_lot");
+        } else if (s.average) {
+          applyPackaging(s.average);
+          setPackagingSource("average");
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemId]);
+
+  function applyPackaging(p: PackagingValues) {
+    setPackageLengthMm(p.length_mm != null ? String(p.length_mm) : "");
+    setPackageWidthMm(p.width_mm != null ? String(p.width_mm) : "");
+    setPackageHeightMm(p.height_mm != null ? String(p.height_mm) : "");
+    setPackageWeightKg(p.weight_kg != null ? String(p.weight_kg) : "");
+    setUnitsPerPackage(
+      p.units_per_package != null ? String(p.units_per_package) : "1",
+    );
+    setStackFactor(p.stack_factor != null ? String(p.stack_factor) : "1");
+  }
 
   function clearFieldError(field: string) {
     setFieldErrors((prev) => {
@@ -123,6 +224,12 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
       unit_of_measurement_id: uomId!,
       warehouse_id: Number(warehouseId),
       qty_received: qty,
+      package_length_mm: Number(packageLengthMm),
+      package_width_mm: Number(packageWidthMm),
+      package_height_mm: Number(packageHeightMm),
+      package_weight_kg: packageWeightKg,
+      units_per_package: Number(unitsPerPackage),
+      stack_factor: Number(stackFactor),
       unit_cost: unitCost || null,
       currency: unitCost ? currency : null,
       supplier_batch_no: supplierBatch || null,
@@ -314,6 +421,180 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
                   {uomSymbol}
                 </span>
               </div>
+            </Field>
+          </div>
+        </section>
+
+        {/* Packaging — mandatory. Drives the put-away fit checks
+            (volumetric + weight). Pills above auto-fill from the
+            item's default template, the previous lot, or the 10-lot
+            average; operator can override per field. */}
+        <section className="space-y-4 rounded-lg border border-border/60 bg-card p-4">
+          <header className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <Box className="size-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold tracking-tight">Packaging</h2>
+              <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-semibold text-destructive">
+                Required
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              How this batch is packaged. The put-away module uses
+              this to check what fits on which shelf — same SKU from
+              a different supplier can ship in a totally different
+              footprint, so we ask per lot.
+            </p>
+          </header>
+
+          {selectedItem && suggestions && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Suggestions:
+              </span>
+              <SuggestionPill
+                label="Item default"
+                active={packagingSource === "item_default"}
+                disabled={!suggestions.item_default}
+                onClick={() => {
+                  if (suggestions.item_default) {
+                    applyPackaging(suggestions.item_default);
+                    setPackagingSource("item_default");
+                  }
+                }}
+              />
+              <SuggestionPill
+                label="Use last batch"
+                active={packagingSource === "last_lot"}
+                disabled={!suggestions.last_lot}
+                onClick={() => {
+                  if (suggestions.last_lot) {
+                    applyPackaging(suggestions.last_lot);
+                    setPackagingSource("last_lot");
+                  }
+                }}
+              />
+              <SuggestionPill
+                label="Average (last 10)"
+                active={packagingSource === "average"}
+                disabled={!suggestions.average}
+                onClick={() => {
+                  if (suggestions.average) {
+                    applyPackaging(suggestions.average);
+                    setPackagingSource("average");
+                  }
+                }}
+              />
+            </div>
+          )}
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field
+              label="Length (mm)"
+              required
+              error={fieldErrors.package_length_mm}
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={packageLengthMm}
+                onChange={(e) => {
+                  setPackageLengthMm(e.target.value.replace(/\D/g, ""));
+                  setPackagingSource(null);
+                }}
+                placeholder="e.g. 400"
+                className="h-9 font-mono"
+              />
+            </Field>
+            <Field
+              label="Width (mm)"
+              required
+              error={fieldErrors.package_width_mm}
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={packageWidthMm}
+                onChange={(e) => {
+                  setPackageWidthMm(e.target.value.replace(/\D/g, ""));
+                  setPackagingSource(null);
+                }}
+                placeholder="e.g. 400"
+                className="h-9 font-mono"
+              />
+            </Field>
+            <Field
+              label="Height (mm)"
+              required
+              error={fieldErrors.package_height_mm}
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={packageHeightMm}
+                onChange={(e) => {
+                  setPackageHeightMm(e.target.value.replace(/\D/g, ""));
+                  setPackagingSource(null);
+                }}
+                placeholder="e.g. 600"
+                className="h-9 font-mono"
+              />
+            </Field>
+            <Field
+              label="Net weight (kg)"
+              required
+              error={fieldErrors.package_weight_kg}
+            >
+              <Input
+                type="text"
+                inputMode="decimal"
+                value={packageWeightKg}
+                onChange={(e) => {
+                  setPackageWeightKg(e.target.value);
+                  setPackagingSource(null);
+                }}
+                placeholder="e.g. 25.000"
+                className="h-9 font-mono"
+              />
+            </Field>
+            <Field
+              label="Units / package"
+              required
+              error={fieldErrors.units_per_package}
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={unitsPerPackage}
+                onChange={(e) => {
+                  setUnitsPerPackage(e.target.value.replace(/\D/g, ""));
+                  setPackagingSource(null);
+                }}
+                placeholder="1"
+                className="h-9 font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                How many {uomSymbol} ride in one package.
+              </p>
+            </Field>
+            <Field
+              label="Stack factor"
+              required
+              error={fieldErrors.stack_factor}
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={stackFactor}
+                onChange={(e) => {
+                  setStackFactor(e.target.value.replace(/\D/g, ""));
+                  setPackagingSource(null);
+                }}
+                placeholder="1"
+                className="h-9 font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                How many packages stack safely vertically.
+              </p>
             </Field>
           </div>
         </section>
@@ -514,6 +795,36 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
         </Button>
       </div>
     </form>
+  );
+}
+
+function SuggestionPill({
+  label,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        active
+          ? "inline-flex items-center gap-1 rounded-full bg-brand/15 px-2.5 py-1 text-[11px] font-medium text-brand"
+          : disabled
+            ? "inline-flex items-center gap-1 rounded-full bg-muted/40 px-2.5 py-1 text-[11px] font-medium text-muted-foreground/50 cursor-not-allowed"
+            : "inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-muted/70"
+      }
+    >
+      <Sparkles className="size-3" />
+      {label}
+    </button>
   );
 }
 

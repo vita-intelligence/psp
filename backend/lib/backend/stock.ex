@@ -193,7 +193,7 @@ defmodule Backend.Stock do
 
   alias Backend.Accounts.User
   alias Backend.Audit
-  alias Backend.Warehouses.StorageCell
+  alias Backend.Warehouses.{Floor, StorageCell, StorageLocation, Warehouse}
 
   @lot_audit_fields ~w(status qty_received unit_cost currency source_kind source_ref
                        supplier_batch_no country_of_origin revision overall_risk
@@ -409,6 +409,663 @@ defmodule Backend.Stock do
     end)
   end
 
+  # ----- move ----------------------------------------------------------
+
+  @doc """
+  Move stock for `lot` from `from_cell` to `to_cell`, all-or-nothing.
+
+  Inputs:
+    * `actor`     — User performing the move (recorded on the movement)
+    * `lot_uuid`  — public uuid of the lot
+    * `attrs`     — `%{"to_cell_uuid", "qty", "photo_url" | "skip_photo_reason"}`
+
+  Behaviour:
+    * `from_cell` is the lot's only current placement when the operator
+      doesn't pass one explicitly (the common case from /m where stock
+      is sitting in the warehouse's Unregistered cell).
+    * Qty defaults to the full from-placement when omitted.
+    * Decrements the source placement, upserts the destination, inserts
+      a `move` movement carrying the photo URL or skip-reason. If the
+      source hits zero it stays at zero (kept for the history rollup).
+
+  Error tuples: `:lot_not_found | :cell_not_found | :bad_qty |
+  :placement_not_found | :insufficient_qty`.
+  """
+  def move_placement(%User{} = actor, lot_uuid, attrs) when is_binary(lot_uuid) do
+    with {:ok, lot} <- fetch_lot_by_uuid(actor.company_id, lot_uuid),
+         {:ok, to_cell} <-
+           fetch_cell_by_uuid(actor.company_id, attrs["to_cell_uuid"]),
+         {:ok, from_placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
+         {:ok, qty} <- resolve_move_qty(from_placement, attrs["qty"]),
+         :ok <- ensure_distinct_cells(from_placement.storage_cell_id, to_cell.id) do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      Repo.transaction(fn ->
+        with {:ok, new_from} <- decrement_placement(from_placement, qty),
+             {:ok, new_to} <- upsert_placement(lot, to_cell, qty),
+             {:ok, movement} <- insert_move_movement(actor, lot, from_placement, to_cell, qty, attrs, now) do
+          Audit.record_updated(
+            actor,
+            "stock_lot_placement",
+            new_from,
+            %{qty: from_placement.qty, storage_cell_id: from_placement.storage_cell_id},
+            %{qty: new_from.qty, storage_cell_id: new_from.storage_cell_id}
+          )
+
+          Audit.record_created(actor, "stock_lot_placement", new_to, %{
+            qty: new_to.qty,
+            storage_cell_id: new_to.storage_cell_id
+          })
+
+          Audit.record_created(actor, "stock_movement", movement, %{
+            kind: movement.kind,
+            delta_qty: movement.delta_qty,
+            from_cell_id: movement.from_cell_id,
+            to_cell_id: movement.to_cell_id
+          })
+
+          Repo.preload(lot, [
+            :item,
+            :unit_of_measurement,
+            placements: [storage_cell: [storage_location: [floor: [:warehouse]]]],
+            movements: [:from_cell, :to_cell, :actor]
+          ])
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  defp fetch_lot_by_uuid(company_id, uuid) when is_binary(uuid) do
+    case Repo.get_by(Lot, uuid: uuid) do
+      %Lot{company_id: ^company_id} = l ->
+        {:ok, Repo.preload(l, placements: [storage_cell: [storage_location: [floor: [:warehouse]]]])}
+
+      _ ->
+        {:error, :lot_not_found}
+    end
+  end
+
+  defp fetch_lot_by_uuid(_, _), do: {:error, :lot_not_found}
+
+  defp fetch_cell_by_uuid(company_id, uuid) when is_binary(uuid) and uuid != "" do
+    case Repo.get_by(StorageCell, uuid: uuid) do
+      %StorageCell{company_id: ^company_id} = c -> {:ok, c}
+      _ -> {:error, :cell_not_found}
+    end
+  end
+
+  defp fetch_cell_by_uuid(_, _), do: {:error, :cell_not_found}
+
+  # When the operator doesn't say which cell to move from (the common
+  # case — the lot only lives at the Unregistered cell), pick the
+  # single non-zero placement. If there's more than one we bail and ask
+  # them to disambiguate; better than picking arbitrarily.
+  defp resolve_from_placement(%Lot{placements: placements}, nil) do
+    case Enum.filter(placements, fn p -> Decimal.gt?(p.qty, 0) end) do
+      [single] -> {:ok, single}
+      [] -> {:error, :placement_not_found}
+      _ -> {:error, :ambiguous_placement}
+    end
+  end
+
+  defp resolve_from_placement(%Lot{placements: placements}, uuid)
+       when is_binary(uuid) do
+    case Enum.find(placements, fn p ->
+           p.storage_cell && p.storage_cell.uuid == uuid
+         end) do
+      %Placement{} = p -> {:ok, p}
+      _ -> {:error, :placement_not_found}
+    end
+  end
+
+  defp resolve_move_qty(%Placement{qty: available}, nil), do: {:ok, available}
+
+  defp resolve_move_qty(%Placement{qty: available}, qty_raw) do
+    with {:ok, qty} <- parse_positive_decimal(qty_raw),
+         true <- Decimal.lte?(qty, available) do
+      {:ok, qty}
+    else
+      false -> {:error, :insufficient_qty}
+      err -> err
+    end
+  end
+
+  defp ensure_distinct_cells(from_id, to_id) when from_id == to_id,
+    do: {:error, :same_cell}
+
+  defp ensure_distinct_cells(_, _), do: :ok
+
+  defp decrement_placement(%Placement{} = p, qty) do
+    new_qty = Decimal.sub(p.qty, qty)
+
+    p
+    |> Placement.changeset(%{"qty" => new_qty})
+    |> Repo.update()
+  end
+
+  defp upsert_placement(%Lot{} = lot, %StorageCell{} = cell, qty) do
+    case Repo.get_by(Placement, stock_lot_id: lot.id, storage_cell_id: cell.id) do
+      %Placement{} = existing ->
+        existing
+        |> Placement.changeset(%{"qty" => Decimal.add(existing.qty, qty)})
+        |> Repo.update()
+
+      nil ->
+        %Placement{}
+        |> Placement.changeset(%{
+          "company_id" => lot.company_id,
+          "stock_lot_id" => lot.id,
+          "storage_cell_id" => cell.id,
+          "qty" => qty
+        })
+        |> Repo.insert()
+    end
+  end
+
+  defp insert_move_movement(actor, lot, from_placement, to_cell, qty, attrs, now) do
+    %Movement{}
+    |> Movement.changeset(%{
+      "company_id" => lot.company_id,
+      "stock_lot_id" => lot.id,
+      "from_cell_id" => from_placement.storage_cell_id,
+      "to_cell_id" => to_cell.id,
+      "delta_qty" => qty,
+      "kind" => "move",
+      "reason" => attrs["reason"],
+      "actor_id" => actor.id,
+      "occurred_at" => now,
+      "photo_url" => attrs["photo_url"],
+      "skip_photo_reason" => attrs["skip_photo_reason"]
+    })
+    |> Repo.insert()
+  end
+
+  # ----- pending putaway / lookups -------------------------------------
+
+  @doc """
+  Lots that still have stock sitting in a system Unregistered cell.
+  Used by the mobile /m pending-putaway list.
+  """
+  def list_pending_putaway(company_id) when is_integer(company_id) do
+    from(l in Lot,
+      join: p in Placement,
+      on: p.stock_lot_id == l.id,
+      join: c in StorageCell,
+      on: c.id == p.storage_cell_id,
+      where:
+        l.company_id == ^company_id and
+          c.system_kind == "unregistered" and
+          p.qty > 0,
+      distinct: l.id,
+      preload: [
+        :item,
+        :unit_of_measurement,
+        placements:
+          ^from(p in Placement,
+            preload: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+          )
+      ],
+      order_by: [desc: l.received_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Look up a lot by uuid with full breadcrumb preloads. Mobile scanner
+  hits this after decoding the QR.
+  """
+  def get_for_scan(company_id, uuid) when is_integer(company_id) and is_binary(uuid) do
+    case Repo.get_by(Lot, uuid: uuid) do
+      %Lot{company_id: ^company_id} = lot ->
+        Repo.preload(lot, [
+          :item,
+          :unit_of_measurement,
+          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]],
+          movements: [:from_cell, :to_cell, :actor]
+        ])
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Recommend cells for moving `lot` out of its current placement, ranked
+  by usefulness:
+
+    1. Cells already holding any lot of the same item (consolidation —
+       same SKU shouldn't be split across shelves if avoidable).
+    2. Cells whose effective tag set ⊇ item.storage_tags (matches the
+       item's storage requirements). Higher rank when ALL tags match.
+    3. Other cells with at least one matching tag.
+
+  System (Unregistered) cells are excluded — those are where stock
+  *leaves from*, not where it lands. Caps at `limit` to keep the
+  mobile UI snappy.
+  """
+  def list_move_recommendations(company_id, lot_uuid, opts \\ [])
+      when is_integer(company_id) and is_binary(lot_uuid) do
+    limit = Keyword.get(opts, :limit, 6)
+
+    with %Lot{} = lot <-
+           Repo.get_by(Lot, uuid: lot_uuid, company_id: company_id) do
+      lot = Repo.preload(lot, [:item])
+      item_tags = (lot.item && lot.item.storage_tags) || []
+      lot_footprint = compute_lot_footprint(lot)
+
+      # 1. Cells that already hold ANY lot of the same item — used as
+      #    a MapSet for the consolidation scoring rule.
+      consolidation_cell_ids =
+        from(p in Placement,
+          join: other in Lot,
+          on: other.id == p.stock_lot_id,
+          where:
+            other.item_id == ^lot.item_id and
+              other.company_id == ^company_id and
+              p.qty > 0,
+          select: p.storage_cell_id,
+          distinct: true
+        )
+        |> Repo.all()
+        |> MapSet.new()
+
+      # 2. Committed footprint per cell — sum each placement's
+      #    (qty × packaging dims) so we know the *real* free space.
+      #    Joined to the lot for packaging dims; lots without dims are
+      #    treated as zero-footprint (legacy data won't lock cells).
+      committed_by_cell =
+        from(p in Placement,
+          join: pl in Lot,
+          on: pl.id == p.stock_lot_id,
+          where: p.qty > 0 and pl.company_id == ^company_id,
+          select: {p.storage_cell_id, p, pl}
+        )
+        |> Repo.all()
+        |> Enum.group_by(fn {cell_id, _, _} -> cell_id end, fn {_, p, l} ->
+          compute_lot_footprint(%{l | qty_received: p.qty})
+        end)
+        |> Map.new(fn {cell_id, footprints} ->
+          {cell_id, sum_footprints(footprints)}
+        end)
+
+      # 3. Candidate cells with breadcrumb.
+      query =
+        from c in StorageCell,
+          join: l in StorageLocation,
+          on: l.id == c.storage_location_id,
+          join: f in Floor,
+          on: f.id == l.floor_id,
+          join: w in Warehouse,
+          on: w.id == l.warehouse_id,
+          where:
+            c.company_id == ^company_id and
+              is_nil(c.system_kind) and
+              is_nil(l.system_kind) and
+              is_nil(f.system_kind),
+          select: %{cell: c, location: l, floor: f, warehouse: w}
+
+      query
+      |> Repo.all()
+      |> Enum.map(fn row ->
+        has_consolidation = MapSet.member?(consolidation_cell_ids, row.cell.id)
+        committed = Map.get(committed_by_cell, row.cell.id, empty_footprint())
+        capacity = compute_cell_capacity(row.cell, committed)
+        fit = check_fit(lot_footprint, capacity)
+
+        score_recommendation(
+          row
+          |> Map.put(:has_consolidation, has_consolidation)
+          |> Map.put(:fit, fit),
+          item_tags
+        )
+      end)
+      |> Enum.reject(fn r -> r.score == 0 or r.row.fit.disqualified? end)
+      |> Enum.sort_by(fn r -> {-r.score, r.row.fit.percent_used, r.row.cell.id} end)
+      |> Enum.take(limit)
+    else
+      _ -> []
+    end
+  end
+
+  defp score_recommendation(row, item_tags) do
+    cell_tags = (row.cell.tags || []) ++ (row.location.tags || [])
+    cell_tag_set = MapSet.new(cell_tags)
+    item_tag_set = MapSet.new(item_tags || [])
+
+    base =
+      cond do
+        row.has_consolidation -> 10
+        item_tag_set == MapSet.new() -> 1
+        MapSet.subset?(item_tag_set, cell_tag_set) -> 8
+        MapSet.size(MapSet.intersection(item_tag_set, cell_tag_set)) > 0 -> 4
+        true -> 0
+      end
+
+    # Fit nudges the score: lots of headroom is preferred over a tight
+    # fit. `percent_used` ranges 0..100; convert into a small bonus.
+    fit_bonus =
+      case row.fit do
+        %{disqualified?: true} -> 0
+        %{percent_used: pct} when pct < 50 -> 2
+        %{percent_used: pct} when pct < 80 -> 1
+        _ -> 0
+      end
+
+    %{row: row, score: base + fit_bonus}
+  end
+
+  # ----- fit math -------------------------------------------------------
+
+  defp empty_footprint do
+    %{
+      footprint_area_mm2: Decimal.new(0),
+      stack_height_mm: 0,
+      weight_kg: Decimal.new(0)
+    }
+  end
+
+  # Compute a lot's physical footprint from its packaging dims +
+  # qty_received. Returns `:unknown` when any packaging field is missing
+  # so callers can degrade gracefully (legacy lots don't lock cells).
+  defp compute_lot_footprint(%Lot{} = lot) do
+    cond do
+      is_nil(lot.package_length_mm) or is_nil(lot.package_width_mm) or
+        is_nil(lot.package_height_mm) or is_nil(lot.package_weight_kg) or
+          is_nil(lot.units_per_package) or is_nil(lot.stack_factor) ->
+        :unknown
+
+      true ->
+        units_per_package = Decimal.new(lot.units_per_package)
+        qty = lot.qty_received || Decimal.new(0)
+        packages = qty |> Decimal.div(units_per_package) |> Decimal.round(0, :up)
+        packages_int = Decimal.to_integer(packages)
+        stacks = ceil_div(packages_int, lot.stack_factor)
+
+        footprint_area_mm2 =
+          Decimal.new(stacks)
+          |> Decimal.mult(Decimal.new(lot.package_length_mm))
+          |> Decimal.mult(Decimal.new(lot.package_width_mm))
+
+        stack_height_mm = lot.stack_factor * lot.package_height_mm
+
+        total_weight_kg =
+          Decimal.mult(Decimal.new(packages_int), lot.package_weight_kg)
+
+        %{
+          footprint_area_mm2: footprint_area_mm2,
+          stack_height_mm: stack_height_mm,
+          weight_kg: total_weight_kg
+        }
+    end
+  end
+
+  defp compute_lot_footprint(_), do: :unknown
+
+  defp ceil_div(_, 0), do: 0
+  defp ceil_div(num, den) when num <= 0, do: 0
+  defp ceil_div(num, den), do: div(num + den - 1, den)
+
+  defp sum_footprints(list) when is_list(list) do
+    Enum.reduce(list, empty_footprint(), fn
+      :unknown, acc ->
+        acc
+
+      f, acc ->
+        %{
+          footprint_area_mm2:
+            Decimal.add(acc.footprint_area_mm2, f.footprint_area_mm2),
+          stack_height_mm: max(acc.stack_height_mm, f.stack_height_mm),
+          weight_kg: Decimal.add(acc.weight_kg, f.weight_kg)
+        }
+    end)
+  end
+
+  # Total cell capacity minus already-committed footprints.
+  defp compute_cell_capacity(%StorageCell{} = cell, committed) do
+    # Cell dims in metres → millimetres for the comparison. Missing
+    # dims = treat cell as "unbounded" (operator skipped dims, we
+    # don't want to block them).
+    length_mm = decimal_metres_to_mm(cell.width_m)
+    width_mm = decimal_metres_to_mm(cell.depth_m)
+    height_mm = decimal_metres_to_mm(cell.height_m)
+
+    total_area_mm2 =
+      if length_mm && width_mm,
+        do: Decimal.mult(Decimal.new(length_mm), Decimal.new(width_mm)),
+        else: nil
+
+    max_weight_kg = cell.max_weight_kg
+
+    %{
+      total_area_mm2: total_area_mm2,
+      committed_area_mm2: committed.footprint_area_mm2,
+      total_height_mm: height_mm,
+      committed_height_mm: committed.stack_height_mm,
+      total_weight_kg: max_weight_kg,
+      committed_weight_kg: committed.weight_kg
+    }
+  end
+
+  defp decimal_metres_to_mm(nil), do: nil
+
+  defp decimal_metres_to_mm(%Decimal{} = m) do
+    m
+    |> Decimal.mult(Decimal.new(1000))
+    |> Decimal.round(0)
+    |> Decimal.to_integer()
+  end
+
+  defp decimal_metres_to_mm(other) when is_number(other),
+    do: round(other * 1000)
+
+  # Decide whether the lot's footprint fits in the cell's remaining
+  # capacity. Returns a map the recommender uses for filtering + scoring
+  # + UI labels.
+  defp check_fit(:unknown, _capacity) do
+    # Legacy lot without packaging dims — don't block recommendations.
+    %{disqualified?: false, reason: nil, percent_used: 0, free_pct: 100}
+  end
+
+  defp check_fit(footprint, capacity) do
+    over_weight =
+      not is_nil(capacity.total_weight_kg) and
+        Decimal.gt?(
+          Decimal.add(capacity.committed_weight_kg, footprint.weight_kg),
+          capacity.total_weight_kg
+        )
+
+    over_area =
+      not is_nil(capacity.total_area_mm2) and
+        Decimal.gt?(
+          Decimal.add(capacity.committed_area_mm2, footprint.footprint_area_mm2),
+          capacity.total_area_mm2
+        )
+
+    over_height =
+      not is_nil(capacity.total_height_mm) and
+        footprint.stack_height_mm > capacity.total_height_mm
+
+    cond do
+      over_weight ->
+        %{disqualified?: true, reason: "weight_exceeded", percent_used: 100, free_pct: 0}
+
+      over_height ->
+        %{disqualified?: true, reason: "stack_too_tall", percent_used: 100, free_pct: 0}
+
+      over_area ->
+        %{disqualified?: true, reason: "no_room", percent_used: 100, free_pct: 0}
+
+      true ->
+        # Use area as the headline "% used" metric — it's the most
+        # operator-intuitive (shelves run out of floor space before
+        # they run out of weight in 90% of cases here).
+        percent_used =
+          case capacity.total_area_mm2 do
+            nil ->
+              0
+
+            total ->
+              Decimal.add(capacity.committed_area_mm2, footprint.footprint_area_mm2)
+              |> Decimal.mult(Decimal.new(100))
+              |> Decimal.div(total)
+              |> Decimal.round(0)
+              |> Decimal.to_integer()
+          end
+
+        %{
+          disqualified?: false,
+          reason: nil,
+          percent_used: percent_used,
+          free_pct: max(0, 100 - percent_used)
+        }
+    end
+  end
+
+  # ----- packaging suggestions ------------------------------------------
+
+  @doc """
+  Return packaging suggestions for an item — what the receive form
+  should pre-fill. Three sources in priority order:
+
+    * `item_default` — `items.default_packaging` (the canonical
+      template the admin set on the item card).
+    * `last_lot` — packaging dims from the most recent lot.
+    * `average` — mode/median of the last 10 lots; useful when the
+      most recent was an outlier.
+
+  Returns `nil` for any source that has no data.
+  """
+  def packaging_suggestions(company_id, item_id)
+      when is_integer(company_id) and is_integer(item_id) do
+    item = Repo.get(Item, item_id)
+    if is_nil(item) or item.company_id != company_id, do: nil
+
+    recent_lots =
+      from(l in Lot,
+        where:
+          l.item_id == ^item_id and l.company_id == ^company_id and
+            not is_nil(l.package_length_mm),
+        order_by: [desc: l.inserted_at],
+        limit: 10
+      )
+      |> Repo.all()
+
+    item_default = item && item.default_packaging
+    last_lot = recent_lots |> List.first() |> packaging_from_lot()
+    average = packaging_average(recent_lots)
+
+    %{
+      item_default: item_default,
+      last_lot: last_lot,
+      average: average
+    }
+  end
+
+  defp packaging_from_lot(nil), do: nil
+
+  defp packaging_from_lot(%Lot{} = l) do
+    %{
+      "length_mm" => l.package_length_mm,
+      "width_mm" => l.package_width_mm,
+      "height_mm" => l.package_height_mm,
+      "weight_kg" => l.package_weight_kg,
+      "units_per_package" => l.units_per_package,
+      "stack_factor" => l.stack_factor
+    }
+  end
+
+  defp packaging_average([]), do: nil
+
+  defp packaging_average(lots) when length(lots) < 2, do: nil
+
+  defp packaging_average(lots) do
+    %{
+      "length_mm" => integer_median(lots, & &1.package_length_mm),
+      "width_mm" => integer_median(lots, & &1.package_width_mm),
+      "height_mm" => integer_median(lots, & &1.package_height_mm),
+      "weight_kg" => decimal_median(lots, & &1.package_weight_kg),
+      "units_per_package" => integer_median(lots, & &1.units_per_package),
+      "stack_factor" => integer_median(lots, & &1.stack_factor)
+    }
+  end
+
+  defp integer_median(lots, get) do
+    values = lots |> Enum.map(get) |> Enum.reject(&is_nil/1) |> Enum.sort()
+    n = length(values)
+    cond do
+      n == 0 -> nil
+      rem(n, 2) == 1 -> Enum.at(values, div(n, 2))
+      true ->
+        a = Enum.at(values, div(n, 2) - 1)
+        b = Enum.at(values, div(n, 2))
+        div(a + b, 2)
+    end
+  end
+
+  defp decimal_median(lots, get) do
+    values =
+      lots
+      |> Enum.map(get)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort_by(&Decimal.to_float/1)
+
+    n = length(values)
+    cond do
+      n == 0 -> nil
+      rem(n, 2) == 1 -> Enum.at(values, div(n, 2))
+      true ->
+        a = Enum.at(values, div(n, 2) - 1)
+        b = Enum.at(values, div(n, 2))
+        Decimal.add(a, b) |> Decimal.div(Decimal.new(2)) |> Decimal.round(3)
+    end
+  end
+
+  @doc """
+  Return the floor's plan for the mobile directions screen: every
+  non-system location with its x/y/width/height + breadcrumb. The
+  caller (directions UI) renders this as a mini SVG with the target
+  location highlighted, so the operator can see where to walk before
+  pointing the camera.
+  """
+  def get_floor_plan(company_id, floor_uuid)
+      when is_integer(company_id) and is_binary(floor_uuid) do
+    case Repo.one(
+           from f in Floor,
+             where:
+               f.company_id == ^company_id and f.uuid == ^floor_uuid and
+                 is_nil(f.system_kind),
+             preload: [:warehouse]
+         ) do
+      nil ->
+        nil
+
+      %Floor{} = floor ->
+        locations =
+          Repo.all(
+            from l in StorageLocation,
+              where: l.floor_id == ^floor.id and is_nil(l.system_kind),
+              order_by: [asc: l.id]
+          )
+
+        %{floor: floor, locations: locations}
+    end
+  end
+
+  @doc "Look up a cell by uuid for the destination scan in the move flow."
+  def get_cell_for_scan(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    case Repo.get_by(StorageCell, uuid: uuid) do
+      %StorageCell{company_id: ^company_id} = c ->
+        Repo.preload(c, storage_location: [floor: [:warehouse]])
+
+      _ ->
+        nil
+    end
+  end
+
   defp fetch_item(company_id, item_id) when is_integer(item_id) do
     case Repo.get(Item, item_id) do
       %Item{company_id: ^company_id} = i -> {:ok, i}
@@ -463,7 +1120,8 @@ defmodule Backend.Stock do
 
   # ----- picker helpers --------------------------------------------
 
-  alias Backend.Warehouses.{Floor, StorageLocation, Warehouse}
+  # (Floor/StorageLocation/Warehouse aliases moved up to module top
+  # alongside StorageCell so list_move_recommendations can use them.)
 
   @picker_limit_default 50
   @picker_limit_max 200
