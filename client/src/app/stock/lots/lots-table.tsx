@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo } from "react";
-import { FilePlus } from "lucide-react";
+import { useMemo, useState } from "react";
+import { FilePlus, Printer } from "lucide-react";
+import { PrintLabelDialog } from "./print-label-dialog";
 import { DataTable } from "@/components/data-table";
 import type {
   DataTableColumn,
@@ -129,6 +130,7 @@ function formatDate(value: string | null) {
 
 export function LotsTable({ initialPage, canReceive }: LotsTableProps) {
   const router = useRouter();
+  const [printLot, setPrintLot] = useState<StockLot | null>(null);
 
   const columns = useMemo<DataTableColumn<StockLot>[]>(
     () => [
@@ -248,42 +250,88 @@ export function LotsTable({ initialPage, canReceive }: LotsTableProps) {
           </span>
         ),
       },
+      {
+        id: "print",
+        header: "",
+        widthClassName: "w-12",
+        hideable: false,
+        align: "right",
+        // Opens the "how many labels?" modal — MRPEasy parity. The
+        // modal then opens the PDF endpoint in a new tab so the
+        // browser's PDF viewer handles the preview + print dialog.
+        //
+        // Rendered as `<span role="button">` rather than `<button>`
+        // because the DataTable's mobile card layout wraps the whole
+        // row in a `<button>`, and nesting buttons is invalid HTML
+        // (hydration error). `onPointerDown` triggers the action and
+        // stops propagation so the outer row-click never fires.
+        cell: (l) => (
+          <span
+            role="button"
+            tabIndex={0}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              setPrintLot(l);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                setPrintLot(l);
+              }
+            }}
+            className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label={`Print label for ${l.code ?? l.id}`}
+            title="Print label"
+          >
+            <Printer className="size-3.5" />
+          </span>
+        ),
+      },
       ...auditColumns<StockLot>(),
     ],
     [],
   );
 
   return (
-    <DataTable
-      tableId="stock-lots"
-      columns={columns}
-      rowKey={(l) => String(l.id)}
-      fetchPage={fetchLotsPage}
-      initialPage={initialPage}
-      searchPlaceholder="Search supplier batch, source ref, notes…"
-      filters={[STATUS_FILTER]}
-      defaultSort={DEFAULT_SORT}
-      onRowClick={(l) => router.push(`/stock/lots/${l.uuid}`)}
-      toolbarActions={
-        canReceive ? (
-          <Button asChild size="sm">
-            <Link href="/stock/lots/new">
-              <FilePlus className="mr-1.5 size-4" />
-              Add manual lot
-            </Link>
-          </Button>
-        ) : undefined
-      }
-      emptyState={
-        <div className="space-y-1">
-          <p className="text-sm font-medium">No stock lots yet</p>
-          <p className="text-xs text-muted-foreground">
-            Add a manual lot for opening balances or adjustments. Real
-            receives will arrive here automatically from the Procurement
-            module once it ships.
-          </p>
-        </div>
-      }
-    />
+    <>
+      <DataTable
+        tableId="stock-lots"
+        columns={columns}
+        rowKey={(l) => String(l.id)}
+        fetchPage={fetchLotsPage}
+        initialPage={initialPage}
+        searchPlaceholder="Search supplier batch, source ref, notes…"
+        filters={[STATUS_FILTER]}
+        defaultSort={DEFAULT_SORT}
+        onRowClick={(l) => router.push(`/stock/lots/${l.uuid}`)}
+        toolbarActions={
+          canReceive ? (
+            <Button asChild size="sm">
+              <Link href="/stock/lots/new">
+                <FilePlus className="mr-1.5 size-4" />
+                Add manual lot
+              </Link>
+            </Button>
+          ) : undefined
+        }
+        emptyState={
+          <div className="space-y-1">
+            <p className="text-sm font-medium">No stock lots yet</p>
+            <p className="text-xs text-muted-foreground">
+              Add a manual lot for opening balances or adjustments. Real
+              receives will arrive here automatically from the Procurement
+              module once it ships.
+            </p>
+          </div>
+        }
+      />
+
+      <PrintLabelDialog
+        lot={printLot}
+        open={printLot !== null}
+        onOpenChange={(open) => !open && setPrintLot(null)}
+      />
+    </>
   );
 }

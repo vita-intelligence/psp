@@ -27,6 +27,7 @@ import type {
   Warehouse,
 } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
+import { clientId } from "@/lib/utils";
 
 interface ReceiveFormProps {
   items: Item[];
@@ -75,7 +76,7 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
       cellRow: StockCellPickerRow | null;
       qty: string;
     }>
-  >([{ id: crypto.randomUUID(), cellId: "", cellRow: null, qty: "" }]);
+  >([{ id: clientId(), cellId: "", cellRow: null, qty: "" }]);
 
   // Cell filters — passed through to the CellPicker so the server
   // narrows results before they ever hit the wire.
@@ -137,7 +138,7 @@ export function ReceiveForm({ items, warehouses }: ReceiveFormProps) {
   function addRow() {
     setRows((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), cellId: "", cellRow: null, qty: "" },
+      { id: clientId(), cellId: "", cellRow: null, qty: "" },
     ]);
   }
   function removeRow(id: string) {

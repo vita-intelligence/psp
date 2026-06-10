@@ -1,6 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // pdfkit ships its standard-font `.afm` files as data assets that
+  // Turbopack mis-bundles (it looks for them under `/ROOT/node_modules/…`
+  // at runtime). Marking the package external keeps it loading
+  // straight from node_modules so its data-file lookups resolve.
+  serverExternalPackages: ["pdfkit"],
+
   // Dev-only: allow the laptop's LAN IP so phones / tablets on the
   // same Wi-Fi can hit `http://<lan-ip>:3000` for QR pairing without
   // tripping Next 15+'s cross-origin protections (HMR + server-action

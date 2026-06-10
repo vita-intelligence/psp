@@ -1,7 +1,7 @@
 import "server-only";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { Item, StockLot, Warehouse } from "../types";
+import type { Item, StockLot, StockMovement, Warehouse } from "../types";
 
 /**
  * Fetch the first page of stock lots from the backend. Used by the
@@ -40,6 +40,27 @@ export async function listItemsForReceive(): Promise<Item[]> {
     return res.items;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Fetch a single lot by uuid for the label / detail pages.
+ * Returns null when not found or when the user has no session — both
+ * are "render the not-found shell" cases for the caller.
+ */
+export async function getStockLot(uuid: string): Promise<{
+  lot: StockLot;
+  movements: StockMovement[];
+} | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    return await api<{ lot: StockLot; movements: StockMovement[] }>(
+      `/api/stock/lots/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
   }
 }
 
