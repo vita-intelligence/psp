@@ -1,33 +1,39 @@
-import { test as setup, expect, request } from "@playwright/test";
+import { test as setup, expect } from "@playwright/test";
 
 /**
- * Logs in the seeded E2E admin user (created via
- * `backend/scripts/ensure_e2e_user.exs`) and persists the resulting
- * session cookie to `.auth/laptop.json`. Downstream specs reuse this
- * storage state — no UI login per spec.
+ * Logs in the seeded E2E admin users (created via
+ * `backend/scripts/ensure_e2e_{,alt_}user.exs`) and persists the
+ * resulting session cookies to `.auth/laptop.json` and `.auth/alt.json`.
  *
- * The user has `is_admin = true`, so every RBAC gate short-circuits.
+ * Two users are needed because the realtime-collab matrix specs open
+ * two browser contexts simultaneously and assert peers see each other's
+ * presence + cursors + field focus. Both users are admins so every RBAC
+ * gate short-circuits.
  */
-const E2E_EMAIL = process.env.E2E_EMAIL || "e2e@vitamanufacture.co.uk";
-const E2E_PASSWORD = process.env.E2E_PASSWORD || "e2e-playwright-pass";
-
-setup("laptop session", async ({ playwright, context, page }) => {
+async function login(
+  playwright: typeof import("@playwright/test").request extends never
+    ? never
+    : Parameters<Parameters<typeof setup>[1]>[0]["playwright"],
+  context: Parameters<Parameters<typeof setup>[1]>[0]["context"],
+  page: Parameters<Parameters<typeof setup>[1]>[0]["page"],
+  email: string,
+  password: string,
+  storageStatePath: string,
+) {
   const baseURL = process.env.PLAYWRIGHT_BASE_URL || "https://localhost:3000";
   const backendURL = process.env.E2E_BACKEND_URL || "http://localhost:4000";
 
-  // Login hits Phoenix directly — Next only proxies through a server
-  // action, which we'd have to drive via the UI. The token in the
-  // response body is the same Phoenix.Token the cookie carries.
   const apiCtx = await playwright.request.newContext({
     baseURL: backendURL,
     ignoreHTTPSErrors: true,
   });
   const res = await apiCtx.post("/api/auth/login", {
-    data: { email: E2E_EMAIL, password: E2E_PASSWORD },
+    data: { email, password },
   });
-  expect(res.status(), `login should succeed; body=${await res.text()}`).toBe(
-    200,
-  );
+  expect(
+    res.status(),
+    `login for ${email} should succeed; body=${await res.text()}`,
+  ).toBe(200);
   const body = (await res.json()) as { token?: string };
   const token = body.token;
   expect(token, "backend should return a session token").toBeTruthy();
@@ -48,6 +54,28 @@ setup("laptop session", async ({ playwright, context, page }) => {
   await page.goto("/settings/profile");
   await expect(page).not.toHaveURL(/\/login/);
 
-  await context.storageState({ path: ".auth/laptop.json" });
+  await context.storageState({ path: storageStatePath });
   await apiCtx.dispose();
+}
+
+setup("laptop session", async ({ playwright, context, page }) => {
+  await login(
+    playwright,
+    context,
+    page,
+    process.env.E2E_EMAIL || "e2e@vitamanufacture.co.uk",
+    process.env.E2E_PASSWORD || "e2e-playwright-pass",
+    ".auth/laptop.json",
+  );
+});
+
+setup("alt session", async ({ playwright, context, page }) => {
+  await login(
+    playwright,
+    context,
+    page,
+    process.env.E2E_ALT_EMAIL || "e2e-alt@vitamanufacture.co.uk",
+    process.env.E2E_ALT_PASSWORD || "e2e-playwright-pass-alt",
+    ".auth/alt.json",
+  );
 });

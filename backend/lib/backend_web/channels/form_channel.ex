@@ -254,6 +254,28 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "certificate"),
     do: RBAC.has_permission?(user, "certificates.manage")
 
+  # Procurement — vendors and purchase orders. Either create OR edit
+  # lets you join a draft; HTTP gates each save action itself.
+  defp can_edit_resource?(user, "vendor"),
+    do:
+      RBAC.has_permission?(user, "vendors.edit") or
+        RBAC.has_permission?(user, "vendors.create")
+
+  defp can_edit_resource?(user, "purchase-order"),
+    do: RBAC.has_permission?(user, "procurement.po_create")
+
+  # Stock — lot identity + packaging edit form. `stock.receive` covers
+  # the create flow (/stock/lots/new); `stock.edit` covers the per-lot
+  # edit page. Either lets you join the room.
+  defp can_edit_resource?(user, "stock-lot"),
+    do:
+      RBAC.has_permission?(user, "stock.edit") or
+        RBAC.has_permission?(user, "stock.receive")
+
+  # Storage tag vocabulary editor.
+  defp can_edit_resource?(user, "storage-tag"),
+    do: RBAC.has_permission?(user, "storage_tags.manage")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

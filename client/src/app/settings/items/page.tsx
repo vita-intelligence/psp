@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Plus } from "lucide-react";
 import { listItemsPage } from "@/lib/items/server";
+import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { ItemsTable } from "./items-table";
 
 export const metadata = { title: "Items · Settings · PSP" };
@@ -47,7 +48,14 @@ export default async function ItemsPage() {
           )}
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        <ActiveSessionsBanner
+          currentUserId={user.id}
+          resourcePrefix="item"
+          newRoute="/settings/items/new"
+          resourceLabel="item"
+          canCreate={canCreate}
+        />
         <ItemsTable
           initialPage={initialPage ?? { items: [], next_cursor: null }}
         />

@@ -176,10 +176,10 @@ async function transitionAction(
   }
 }
 
-export const submitPOAction = (uuid: string) =>
+export const submitPOAction = async (uuid: string) =>
   transitionAction(uuid, "submit", {}, "submitPOAction");
 
-export const signApproverAction = (uuid: string, notes?: string | null) =>
+export const signApproverAction = async (uuid: string, notes?: string | null) =>
   transitionAction(
     uuid,
     "approve",
@@ -187,7 +187,7 @@ export const signApproverAction = (uuid: string, notes?: string | null) =>
     "signApproverAction",
   );
 
-export const signDirectorAction = (uuid: string, notes?: string | null) =>
+export const signDirectorAction = async (uuid: string, notes?: string | null) =>
   transitionAction(
     uuid,
     "director-approve",
@@ -195,10 +195,10 @@ export const signDirectorAction = (uuid: string, notes?: string | null) =>
     "signDirectorAction",
   );
 
-export const markOrderedAction = (uuid: string) =>
+export const markOrderedAction = async (uuid: string) =>
   transitionAction(uuid, "mark-ordered", {}, "markOrderedAction");
 
-export const cancelPOAction = (uuid: string, reason: string) =>
+export const cancelPOAction = async (uuid: string, reason: string) =>
   transitionAction(uuid, "cancel", { reason }, "cancelPOAction");
 
 export interface ReceiveLineInput {

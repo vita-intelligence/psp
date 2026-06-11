@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,12 +15,23 @@ import {
 } from "@/components/ui/card";
 import { FieldError } from "@/components/forms/field-error";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
 import { updateCompanyIdentityAction } from "@/lib/company/actions";
 import type { Company } from "@/lib/types";
 import type { FieldErrors } from "@/lib/auth/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import { Loader2, LockKeyhole } from "lucide-react";
+import type { CollabPeer } from "@/lib/realtime/use-live-form";
+import {
+  CreatorLockBanner,
+  JoinErrorCard,
+  useFormCursorAnchor,
+} from "./_realtime";
 
 interface CompanyIdentityFormProps {
   company: Company;
@@ -54,22 +65,69 @@ function initialFrom(company: Company): FormState {
   };
 }
 
+// Field-name prefix so focused-field broadcasts don't collide with
+// the six sibling forms sharing `form:company:1`.
+const P = "identity_";
+
 export function CompanyIdentityForm({
   company,
   canEdit,
 }: CompanyIdentityFormProps) {
-  const [original, setOriginal] = useState<FormState>(initialFrom(company));
-  const [form, setForm] = useState<FormState>(initialFrom(company));
+  useFormPresenceBeacon("company:1");
+
+  const {
+    state: form,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<FormState>({
+    resource: "company:1",
+    disabled: !canEdit,
+    initialState: initialFrom(company),
+    onCommit: (raw) => {
+      const msg = raw as { kind: "identity:saved"; state: FormState } | null;
+      if (!msg || msg.kind !== "identity:saved") return;
+      toast.success("Saved", {
+        description: `${creator?.name ?? "The host"} just saved company details.`,
+      });
+      setOriginal(msg.state);
+      resetState(msg.state);
+    },
+  });
+
+  const [original, setOriginal] = useState<FormState>(() => initialFrom(company));
+  useEffect(() => {
+    setOriginal(initialFrom(company));
+  }, [company]);
+
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(form) !== JSON.stringify(original);
-  const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm((s) => ({ ...s, [key]: value }));
+  const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+    setField(key, value);
+    setFieldErrors((e) => {
+      if (!e[String(key)]) return e;
+      const { [String(key)]: _omit, ...rest } = e;
+      void _omit;
+      return rest;
+    });
+  };
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEdit || !isCreator) return;
     setFieldErrors({});
     setActionError(null);
 
@@ -81,6 +139,7 @@ export function CompanyIdentityForm({
       if (res.ok) {
         toast.success("Company details updated");
         setOriginal(form);
+        broadcastCommit({ kind: "identity:saved", state: form });
         return;
       }
       setFieldErrors(res.fields ?? {});
@@ -89,13 +148,37 @@ export function CompanyIdentityForm({
   }
 
   function onReset() {
-    setForm(original);
+    resetState(original);
     setFieldErrors({});
     setActionError(null);
   }
 
+  const {
+    attach: attachCursor,
+    size: cursorSize,
+    onMouseMove: onCursorMove,
+    onMouseLeave: onCursorLeave,
+  } = useFormCursorAnchor(setCursor, hideCursor);
+
+  if (joinError) return <JoinErrorCard error={joinError} />;
+
   return (
-    <Card className="border-border/60">
+    <Card
+      ref={attachCursor}
+      onMouseMove={onCursorMove}
+      onMouseLeave={onCursorLeave}
+      className="relative border-border/60"
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.entries(cursors).map(([id, cursor]) => (
+          <RemoteCursor
+            key={id}
+            cursor={cursor}
+            anchorWidth={cursorSize.w}
+            anchorHeight={cursorSize.h}
+          />
+        ))}
+      </div>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1.5">
@@ -104,78 +187,117 @@ export function CompanyIdentityForm({
               The legal and contact details shown on documents and emails.
             </CardDescription>
           </div>
-          {!canEdit && <ReadOnlyBadge />}
+          <div className="flex items-center gap-3">
+            <CollabAvatars peers={presence} />
+            {!canEdit && <ReadOnlyBadge />}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <fieldset disabled={!canEdit || pending} className="contents">
           <form onSubmit={onSubmit} noValidate className="space-y-5">
             <Row
-              id="name"
+              fieldKey="name"
+              id={`${P}name`}
               label="Company name"
               required
               value={form.name}
               onChange={(v) => update("name", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}name`]}
               errors={fieldErrors.name}
             />
             <RowTextarea
-              id="legal_address"
+              fieldKey="legal_address"
+              id={`${P}legal_address`}
               label="Legal address"
               value={form.legal_address ?? ""}
               onChange={(v) => update("legal_address", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}legal_address`]}
               errors={fieldErrors.legal_address}
             />
             <Row
-              id="email"
+              fieldKey="email"
+              id={`${P}email`}
               label="E-mail"
               type="email"
               value={form.email ?? ""}
               onChange={(v) => update("email", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}email`]}
               errors={fieldErrors.email}
             />
             <Row
-              id="website"
+              fieldKey="website"
+              id={`${P}website`}
               label="Website"
               type="url"
               value={form.website ?? ""}
               onChange={(v) => update("website", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}website`]}
               errors={fieldErrors.website}
             />
             <Row
-              id="phone"
+              fieldKey="phone"
+              id={`${P}phone`}
               label="Phone"
               value={form.phone ?? ""}
               onChange={(v) => update("phone", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}phone`]}
               errors={fieldErrors.phone}
             />
             <Row
-              id="registration_number"
+              fieldKey="registration_number"
+              id={`${P}registration_number`}
               label="Reg. no."
               value={form.registration_number ?? ""}
               onChange={(v) => update("registration_number", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}registration_number`]}
               errors={fieldErrors.registration_number}
             />
             <Row
-              id="tax_number"
+              fieldKey="tax_number"
+              id={`${P}tax_number`}
               label="Tax / VAT number"
               value={form.tax_number ?? ""}
               onChange={(v) => update("tax_number", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}tax_number`]}
               errors={fieldErrors.tax_number}
             />
             <Row
-              id="tax_rate"
+              fieldKey="tax_rate"
+              id={`${P}tax_rate`}
               label="Tax rate"
               type="number"
               suffix="%"
               value={form.tax_rate ?? ""}
               onChange={(v) => update("tax_rate", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}tax_rate`]}
               errors={fieldErrors.tax_rate}
             />
             <RowTextarea
-              id="payment_details"
+              fieldKey="payment_details"
+              id={`${P}payment_details`}
               label="Payment details"
               value={form.payment_details ?? ""}
               onChange={(v) => update("payment_details", v)}
+              onFocus={focusField}
+              onBlur={blurField}
+              editor={fieldEditors[`${P}payment_details`]}
               errors={fieldErrors.payment_details}
             />
 
@@ -190,17 +312,30 @@ export function CompanyIdentityForm({
               )}
 
             {canEdit && (
-              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-                {dirty && !pending && (
-                  <Button type="button" variant="ghost" onClick={onReset}>
-                    Discard
+              <>
+                {!isCreator && <CreatorLockBanner creator={creator} />}
+                <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                  {dirty && !pending && isCreator && (
+                    <Button type="button" variant="ghost" onClick={onReset}>
+                      Discard
+                    </Button>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={!dirty || pending || !isCreator}
+                    title={
+                      isCreator
+                        ? undefined
+                        : creator
+                          ? `Only ${creator.name} can save from this room.`
+                          : undefined
+                    }
+                  >
+                    {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                    Save changes
                   </Button>
-                )}
-                <Button type="submit" disabled={!dirty || pending}>
-                  {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                  Save changes
-                </Button>
-              </div>
+                </div>
+              </>
             )}
           </form>
         </fieldset>
@@ -219,11 +354,15 @@ function ReadOnlyBadge() {
 }
 
 interface RowProps {
-  id: keyof FormState;
+  fieldKey: keyof FormState;
+  id: string;
   label: string;
   type?: string;
   value: string;
   onChange: (v: string) => void;
+  onFocus: (field: string) => void;
+  onBlur: (field: string) => void;
+  editor: CollabPeer | null;
   errors?: string[];
   required?: boolean;
   suffix?: string;
@@ -235,6 +374,9 @@ function Row({
   type = "text",
   value,
   onChange,
+  onFocus,
+  onBlur,
+  editor,
   errors,
   required,
   suffix,
@@ -253,6 +395,8 @@ function Row({
             type={type}
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            onFocus={() => onFocus(id)}
+            onBlur={() => onBlur(id)}
             required={required}
             aria-invalid={hasError}
             className={cn(
@@ -267,6 +411,7 @@ function Row({
               {suffix}
             </span>
           )}
+          <FieldEditingIndicator peer={editor} />
         </div>
         <FieldError messages={errors} />
       </div>
@@ -279,6 +424,9 @@ function RowTextarea({
   label,
   value,
   onChange,
+  onFocus,
+  onBlur,
+  editor,
   errors,
 }: Omit<RowProps, "type" | "required" | "suffix">) {
   const hasError = Boolean(errors && errors.length > 0);
@@ -288,16 +436,21 @@ function RowTextarea({
         {label}
       </Label>
       <div className="space-y-1.5">
-        <Textarea
-          id={id}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={3}
-          aria-invalid={hasError}
-          className={cn(
-            hasError && "border-destructive focus-visible:ring-destructive/20",
-          )}
-        />
+        <div className="relative">
+          <Textarea
+            id={id}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onFocus={() => onFocus(id)}
+            onBlur={() => onBlur(id)}
+            rows={3}
+            aria-invalid={hasError}
+            className={cn(
+              hasError && "border-destructive focus-visible:ring-destructive/20",
+            )}
+          />
+          <FieldEditingIndicator peer={editor} />
+        </div>
         <FieldError messages={errors} />
       </div>
     </div>

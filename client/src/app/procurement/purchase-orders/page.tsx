@@ -6,6 +6,7 @@ import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { listPurchaseOrdersPage } from "@/lib/purchase-orders/server";
 import { ProcurementSubnav } from "../procurement-subnav";
 import { PurchaseOrdersTable } from "./purchase-orders-table";
@@ -54,6 +55,14 @@ export default async function PurchaseOrdersPage() {
               </Button>
             )}
           </header>
+
+          <ActiveSessionsBanner
+            currentUserId={user.id}
+            resourcePrefix="purchase-order"
+            newRoute="/procurement/purchase-orders/new"
+            resourceLabel="purchase order"
+            canCreate={canCreate}
+          />
 
           <PurchaseOrdersTable initialPage={initialPage} />
         </div>

@@ -495,15 +495,21 @@ interface PresenceState {
 function peersFromState(state: PresenceState): CollabPeer[] {
   return Object.entries(state).flatMap(([id, entry]) => {
     if (!entry?.metas?.length) return [];
-    const meta = entry.metas[0]!;
+    // Multi-form pages (e.g. /settings/company with 7 sub-forms all on
+    // `form:company:1`) create one meta per sub-form per user. Use the
+    // first meta for identity but scan all of them for the focused
+    // field — only one input is focused at a time, so the first meta
+    // that has it set wins.
+    const base = entry.metas[0]!;
+    const focusedMeta = entry.metas.find((m) => m.focus_field) ?? base;
     return [
       {
         id,
-        name: meta.name,
-        email: meta.email,
-        avatar: meta.avatar ?? null,
-        focusField: meta.focus_field ?? null,
-        joinedAt: meta.joined_at ?? Number.MAX_SAFE_INTEGER,
+        name: base.name,
+        email: base.email,
+        avatar: base.avatar ?? null,
+        focusField: focusedMeta.focus_field ?? null,
+        joinedAt: base.joined_at ?? Number.MAX_SAFE_INTEGER,
       },
     ];
   });

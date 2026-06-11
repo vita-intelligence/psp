@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { updateCompanyBagAction } from "@/lib/company/bag-actions";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { clientValidationError } from "@/lib/errors/client";
@@ -31,6 +36,11 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import {
+  CreatorLockBanner,
+  JoinErrorCard,
+  useFormCursorAnchor,
+} from "./_realtime";
 
 interface Props {
   company: Company;
@@ -38,6 +48,10 @@ interface Props {
 }
 
 const CURRENCY_OPTIONS = ["EUR", "USD", "JPY", "INR", "CHF", "CAD", "AUD", "GBP"];
+
+interface FormState {
+  items: CurrencyRate[];
+}
 
 function normalize(input: unknown): CurrencyRate[] {
   const bag = (input ?? {}) as { rates?: unknown };
@@ -55,41 +69,81 @@ function normalize(input: unknown): CurrencyRate[] {
     }));
 }
 
+const P = "currency_rates_";
+
 export function CurrencyRatesForm({ company, canEdit }: Props) {
+  useFormPresenceBeacon("company:1");
+
   const base = company.currency_code;
+
+  const {
+    state,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<FormState>({
+    resource: "company:1",
+    disabled: !canEdit,
+    initialState: { items: normalize(company.currency_rates) },
+    onCommit: (raw) => {
+      const msg = raw as
+        | { kind: "currency_rates:saved"; items: CurrencyRate[] }
+        | null;
+      if (!msg || msg.kind !== "currency_rates:saved") return;
+      toast.success("Saved", {
+        description: `${creator?.name ?? "The host"} just saved currency rates.`,
+      });
+      setOriginal(msg.items);
+      resetState({ items: msg.items });
+    },
+  });
+
+  const items = state.items;
+  const setItems = (next: CurrencyRate[]) => setField("items", next);
+
   const [original, setOriginal] = useState<CurrencyRate[]>(() =>
     normalize(company.currency_rates),
   );
-  const [items, setItems] = useState<CurrencyRate[]>(() =>
-    normalize(company.currency_rates),
-  );
+  useEffect(() => {
+    setOriginal(normalize(company.currency_rates));
+  }, [company]);
+
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(items) !== JSON.stringify(original);
 
   function addRow() {
-    setItems((s) => [
-      ...s,
+    setItems([
+      ...items,
       {
-        currency: firstUnused(s, base) ?? CURRENCY_OPTIONS[0]!,
+        currency: firstUnused(items, base) ?? CURRENCY_OPTIONS[0]!,
         rate: 0,
       },
     ]);
   }
 
   function remove(index: number) {
-    setItems((s) => s.filter((_, i) => i !== index));
+    setItems(items.filter((_, i) => i !== index));
   }
 
   function update(index: number, patch: Partial<CurrencyRate>) {
-    setItems((s) =>
-      s.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-    );
+    setItems(items.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   }
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEdit || !isCreator) return;
     setActionError(null);
 
     const cleaned = items
@@ -121,7 +175,8 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
       if (res.ok) {
         toast.success("Currency rates updated");
         setOriginal(cleaned);
-        setItems(cleaned);
+        setField("items", cleaned);
+        broadcastCommit({ kind: "currency_rates:saved", items: cleaned });
         return;
       }
       setActionError(res);
@@ -129,12 +184,36 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
   }
 
   function onReset() {
-    setItems(original);
+    resetState({ items: original });
     setActionError(null);
   }
 
+  const {
+    attach: attachCursor,
+    size: cursorSize,
+    onMouseMove: onCursorMove,
+    onMouseLeave: onCursorLeave,
+  } = useFormCursorAnchor(setCursor, hideCursor);
+
+  if (joinError) return <JoinErrorCard error={joinError} />;
+
   return (
-    <Card className="border-border/60">
+    <Card
+      ref={attachCursor}
+      onMouseMove={onCursorMove}
+      onMouseLeave={onCursorLeave}
+      className="relative border-border/60"
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.entries(cursors).map(([id, cursor]) => (
+          <RemoteCursor
+            key={id}
+            cursor={cursor}
+            anchorWidth={cursorSize.w}
+            anchorHeight={cursorSize.h}
+          />
+        ))}
+      </div>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1.5">
@@ -143,7 +222,10 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
               Manual exchange rates to <strong>{base}</strong> (your base currency).
             </CardDescription>
           </div>
-          {!canEdit && <ReadOnly />}
+          <div className="flex items-center gap-3">
+            <CollabAvatars peers={presence} />
+            {!canEdit && <ReadOnly />}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -166,57 +248,77 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
                   <span>Rate ({base})</span>
                   <span className="sr-only">Actions</span>
                 </li>
-                {items.map((row, i) => (
-                  <li
-                    key={i}
-                    className="grid grid-cols-[80px_minmax(0,1.5fr)_auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2"
-                  >
-                    <span className="text-sm font-medium text-muted-foreground">
-                      1
-                    </span>
-                    <Select
-                      value={row.currency}
-                      onValueChange={(v) => update(i, { currency: v })}
+                {items.map((row, i) => {
+                  const currencyId = `${P}${i}_currency`;
+                  const rateId = `${P}${i}_rate`;
+                  return (
+                    <li
+                      key={i}
+                      className="grid grid-cols-[80px_minmax(0,1.5fr)_auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2"
                     >
-                      <SelectTrigger className="h-10 w-full" aria-label="Currency">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {CURRENCY_OPTIONS.map((c) => (
-                          <SelectItem key={c} value={c}>
-                            {c}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <span aria-hidden className="text-sm text-muted-foreground">
-                      =
-                    </span>
-                    <Input
-                      type="number"
-                      step="any"
-                      min={0}
-                      value={row.rate}
-                      onChange={(e) =>
-                        update(i, { rate: Number(e.target.value) })
-                      }
-                      className="h-10"
-                      aria-label="Rate"
-                    />
-                    {canEdit && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => remove(i)}
-                        className="size-9 text-muted-foreground hover:text-destructive"
-                        aria-label="Remove rate"
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    )}
-                  </li>
-                ))}
+                      <span className="text-sm font-medium text-muted-foreground">
+                        1
+                      </span>
+                      <div className="relative">
+                        <Select
+                          value={row.currency}
+                          onValueChange={(v) => update(i, { currency: v })}
+                        >
+                          <SelectTrigger
+                            id={currencyId}
+                            onFocus={() => focusField(currencyId)}
+                            onBlur={() => blurField(currencyId)}
+                            className="h-10 w-full"
+                            aria-label="Currency"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CURRENCY_OPTIONS.map((c) => (
+                              <SelectItem key={c} value={c}>
+                                {c}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FieldEditingIndicator peer={fieldEditors[currencyId]} />
+                      </div>
+                      <span aria-hidden className="text-sm text-muted-foreground">
+                        =
+                      </span>
+                      <div className="relative">
+                        <Input
+                          id={rateId}
+                          type="number"
+                          step="any"
+                          min={0}
+                          value={row.rate}
+                          onChange={(e) =>
+                            update(i, { rate: Number(e.target.value) })
+                          }
+                          onFocus={() => focusField(rateId)}
+                          onBlur={() => blurField(rateId)}
+                          className="h-10"
+                          aria-label="Rate"
+                        />
+                        <FieldEditingIndicator peer={fieldEditors[rateId]} />
+                      </div>
+                      {canEdit && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => remove(i)}
+                          disabled={!isCreator}
+                          className="size-9 text-muted-foreground hover:text-destructive"
+                          aria-label="Remove rate"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
 
@@ -226,6 +328,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
                 variant="outline"
                 size="sm"
                 onClick={addRow}
+                disabled={!isCreator}
               >
                 <Plus className="mr-1.5 size-4" />
                 Add rate
@@ -241,17 +344,30 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
             )}
 
             {canEdit && (
-              <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
-                {dirty && !pending && (
-                  <Button type="button" variant="ghost" onClick={onReset}>
-                    Discard
+              <>
+                {!isCreator && <CreatorLockBanner creator={creator} />}
+                <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
+                  {dirty && !pending && isCreator && (
+                    <Button type="button" variant="ghost" onClick={onReset}>
+                      Discard
+                    </Button>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={!dirty || pending || !isCreator}
+                    title={
+                      isCreator
+                        ? undefined
+                        : creator
+                          ? `Only ${creator.name} can save from this room.`
+                          : undefined
+                    }
+                  >
+                    {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                    Save changes
                   </Button>
-                )}
-                <Button type="submit" disabled={!dirty || pending}>
-                  {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                  Save changes
-                </Button>
-              </div>
+                </div>
+              </>
             )}
           </form>
         </fieldset>

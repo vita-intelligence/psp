@@ -71,7 +71,7 @@ export default async function ReceiveLotPage() {
               </p>
             </div>
           ) : (
-            <ReceiveForm items={items} warehouses={warehouses} />
+            <ReceiveForm items={items} warehouses={warehouses} canEdit={true} />
           )}
         </div>
       </main>

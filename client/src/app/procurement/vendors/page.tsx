@@ -6,6 +6,7 @@ import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { listVendorsPage } from "@/lib/vendors/server";
 import { ProcurementSubnav } from "../procurement-subnav";
 import { VendorsTable } from "./vendors-table";
@@ -54,6 +55,14 @@ export default async function VendorsPage() {
               </Button>
             )}
           </header>
+
+          <ActiveSessionsBanner
+            currentUserId={user.id}
+            resourcePrefix="vendor"
+            newRoute="/procurement/vendors/new"
+            resourceLabel="vendor"
+            canCreate={canCreate}
+          />
 
           <VendorsTable
             initialPage={initialPage}

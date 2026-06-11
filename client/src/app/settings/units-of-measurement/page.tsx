@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Plus } from "lucide-react";
 import { listUnitsOfMeasurementPage } from "@/lib/units/server";
+import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { UnitsTable } from "./units-table";
 
 export const metadata = { title: "Units of measurement · Settings · PSP" };
@@ -49,7 +50,14 @@ export default async function UnitsPage() {
           )}
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        <ActiveSessionsBanner
+          currentUserId={user.id}
+          resourcePrefix="unit-of-measurement"
+          newRoute="/settings/units-of-measurement/new"
+          resourceLabel="unit"
+          canCreate={canEdit}
+        />
         <UnitsTable
           initialPage={initialPage ?? { items: [], next_cursor: null }}
         />

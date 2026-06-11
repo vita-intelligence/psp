@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { updateCompanyBagAction } from "@/lib/company/bag-actions";
 import {
   NUMBERING_ENTITIES,
@@ -22,6 +27,11 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import type { Company } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import { Loader2, LockKeyhole } from "lucide-react";
+import {
+  CreatorLockBanner,
+  JoinErrorCard,
+  useFormCursorAnchor,
+} from "./_realtime";
 
 interface Props {
   company: Company;
@@ -53,27 +63,62 @@ function preview(prefix: string, padding: number): string {
   return `${prefix}${String(1).padStart(safePad, "0")}`;
 }
 
+const P = "numbering_";
+
 export function NumberingFormatsForm({ company, canEdit }: Props) {
+  useFormPresenceBeacon("company:1");
+
+  const {
+    state,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<NumberingFormats>({
+    resource: "company:1",
+    disabled: !canEdit,
+    initialState: normalize(company.numbering_formats),
+    onCommit: (raw) => {
+      const msg = raw as
+        | { kind: "numbering:saved"; state: NumberingFormats }
+        | null;
+      if (!msg || msg.kind !== "numbering:saved") return;
+      toast.success("Saved", {
+        description: `${creator?.name ?? "The host"} just saved numbering formats.`,
+      });
+      setOriginal(msg.state);
+      resetState(msg.state);
+    },
+  });
+
   const [original, setOriginal] = useState<NumberingFormats>(() =>
     normalize(company.numbering_formats),
   );
-  const [state, setState] = useState<NumberingFormats>(() =>
-    normalize(company.numbering_formats),
-  );
+  useEffect(() => {
+    setOriginal(normalize(company.numbering_formats));
+  }, [company]);
+
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
 
   function update(key: string, patch: Partial<NumberingFormat>) {
-    setState((s) => ({
-      ...s,
-      [key]: { ...DEFAULT, ...s[key], ...patch },
-    }));
+    setField(key, { ...DEFAULT, ...(state[key] ?? DEFAULT), ...patch });
   }
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEdit || !isCreator) return;
     setActionError(null);
 
     const cleaned: NumberingFormats = {};
@@ -91,7 +136,8 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
       if (res.ok) {
         toast.success("Numbering formats updated");
         setOriginal(cleaned);
-        setState(cleaned);
+        resetState(cleaned);
+        broadcastCommit({ kind: "numbering:saved", state: cleaned });
         return;
       }
       setActionError(res);
@@ -99,12 +145,36 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
   }
 
   function onReset() {
-    setState(original);
+    resetState(original);
     setActionError(null);
   }
 
+  const {
+    attach: attachCursor,
+    size: cursorSize,
+    onMouseMove: onCursorMove,
+    onMouseLeave: onCursorLeave,
+  } = useFormCursorAnchor(setCursor, hideCursor);
+
+  if (joinError) return <JoinErrorCard error={joinError} />;
+
   return (
-    <Card className="border-border/60">
+    <Card
+      ref={attachCursor}
+      onMouseMove={onCursorMove}
+      onMouseLeave={onCursorLeave}
+      className="relative border-border/60"
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.entries(cursors).map(([id, cursor]) => (
+          <RemoteCursor
+            key={id}
+            cursor={cursor}
+            anchorWidth={cursorSize.w}
+            anchorHeight={cursorSize.h}
+          />
+        ))}
+      </div>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1.5">
@@ -114,7 +184,10 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
               next sequence number — existing IDs keep their format.
             </CardDescription>
           </div>
-          {!canEdit && <ReadOnly />}
+          <div className="flex items-center gap-3">
+            <CollabAvatars peers={presence} />
+            {!canEdit && <ReadOnly />}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -123,6 +196,8 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
             <ul className="space-y-3">
               {NUMBERING_ENTITIES.map((entity) => {
                 const v = state[entity.key] ?? DEFAULT;
+                const prefixId = `${P}${entity.key}_prefix`;
+                const paddingId = `${P}${entity.key}_padding`;
                 return (
                   <li
                     key={entity.key}
@@ -136,43 +211,53 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
                     </div>
                     <div className="space-y-1.5">
                       <Label
-                        htmlFor={`prefix-${entity.key}`}
+                        htmlFor={prefixId}
                         className="text-xs uppercase tracking-wide text-muted-foreground"
                       >
                         Prefix
                       </Label>
-                      <Input
-                        id={`prefix-${entity.key}`}
-                        type="text"
-                        value={v.prefix}
-                        onChange={(e) =>
-                          update(entity.key, { prefix: e.target.value })
-                        }
-                        maxLength={8}
-                        placeholder="U"
-                        className="h-10 font-mono"
-                      />
+                      <div className="relative">
+                        <Input
+                          id={prefixId}
+                          type="text"
+                          value={v.prefix}
+                          onChange={(e) =>
+                            update(entity.key, { prefix: e.target.value })
+                          }
+                          onFocus={() => focusField(prefixId)}
+                          onBlur={() => blurField(prefixId)}
+                          maxLength={8}
+                          placeholder="U"
+                          className="h-10 font-mono"
+                        />
+                        <FieldEditingIndicator peer={fieldEditors[prefixId]} />
+                      </div>
                     </div>
                     <div className="space-y-1.5">
                       <Label
-                        htmlFor={`padding-${entity.key}`}
+                        htmlFor={paddingId}
                         className="text-xs uppercase tracking-wide text-muted-foreground"
                       >
                         Padding
                       </Label>
-                      <Input
-                        id={`padding-${entity.key}`}
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={v.padding}
-                        onChange={(e) =>
-                          update(entity.key, {
-                            padding: Number(e.target.value),
-                          })
-                        }
-                        className="h-10"
-                      />
+                      <div className="relative">
+                        <Input
+                          id={paddingId}
+                          type="number"
+                          min={0}
+                          max={12}
+                          value={v.padding}
+                          onChange={(e) =>
+                            update(entity.key, {
+                              padding: Number(e.target.value),
+                            })
+                          }
+                          onFocus={() => focusField(paddingId)}
+                          onBlur={() => blurField(paddingId)}
+                          className="h-10"
+                        />
+                        <FieldEditingIndicator peer={fieldEditors[paddingId]} />
+                      </div>
                     </div>
                     <div className="space-y-1.5">
                       <span className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -196,17 +281,30 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
             )}
 
             {canEdit && (
-              <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
-                {dirty && !pending && (
-                  <Button type="button" variant="ghost" onClick={onReset}>
-                    Discard
+              <>
+                {!isCreator && <CreatorLockBanner creator={creator} />}
+                <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
+                  {dirty && !pending && isCreator && (
+                    <Button type="button" variant="ghost" onClick={onReset}>
+                      Discard
+                    </Button>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={!dirty || pending || !isCreator}
+                    title={
+                      isCreator
+                        ? undefined
+                        : creator
+                          ? `Only ${creator.name} can save from this room.`
+                          : undefined
+                    }
+                  >
+                    {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                    Save changes
                   </Button>
-                )}
-                <Button type="submit" disabled={!dirty || pending}>
-                  {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                  Save changes
-                </Button>
-              </div>
+                </div>
+              </>
             )}
           </form>
         </fieldset>

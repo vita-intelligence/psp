@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { updateCompanyBagAction } from "@/lib/company/bag-actions";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import type { ErrorResult } from "@/lib/errors/server";
@@ -24,6 +29,11 @@ import {
 } from "@/lib/company/bags";
 import type { Company } from "@/lib/types";
 import { Loader2, LockKeyhole } from "lucide-react";
+import {
+  CreatorLockBanner,
+  JoinErrorCard,
+  useFormCursorAnchor,
+} from "./_realtime";
 
 interface Props {
   company: Company;
@@ -32,45 +42,82 @@ interface Props {
 
 const EMPTY_DAY: DayHours = { opens_at: null, closes_at: null };
 
-function normalize(input: unknown): Record<Weekday, DayHours> {
+type FormState = Record<Weekday, DayHours>;
+
+function normalize(input: unknown): FormState {
   const safe = (input ?? {}) as Record<string, unknown>;
-  return WEEKDAYS.reduce(
-    (acc, day) => {
-      const v = safe[day];
-      if (v && typeof v === "object") {
-        const entry = v as Partial<DayHours>;
-        acc[day] = {
-          opens_at: entry.opens_at ?? null,
-          closes_at: entry.closes_at ?? null,
-        };
-      } else {
-        acc[day] = { ...EMPTY_DAY };
-      }
-      return acc;
-    },
-    {} as Record<Weekday, DayHours>,
-  );
+  return WEEKDAYS.reduce((acc, day) => {
+    const v = safe[day];
+    if (v && typeof v === "object") {
+      const entry = v as Partial<DayHours>;
+      acc[day] = {
+        opens_at: entry.opens_at ?? null,
+        closes_at: entry.closes_at ?? null,
+      };
+    } else {
+      acc[day] = { ...EMPTY_DAY };
+    }
+    return acc;
+  }, {} as FormState);
 }
 
+// Field prefix disambiguates focused-field broadcasts on the shared
+// `form:company:1` channel. Per-day inputs end up `working_hours_<day>_opens`
+// / `_closes` so peers know which cell you're typing in.
+const P = "working_hours_";
+
 export function WorkingHoursForm({ company, canEdit }: Props) {
-  const [original, setOriginal] = useState(() =>
+  useFormPresenceBeacon("company:1");
+
+  const {
+    state,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<FormState>({
+    resource: "company:1",
+    disabled: !canEdit,
+    initialState: normalize(company.working_hours),
+    onCommit: (raw) => {
+      const msg = raw as { kind: "working_hours:saved"; state: FormState } | null;
+      if (!msg || msg.kind !== "working_hours:saved") return;
+      toast.success("Saved", {
+        description: `${creator?.name ?? "The host"} just saved working hours.`,
+      });
+      setOriginal(msg.state);
+      resetState(msg.state);
+    },
+  });
+
+  const [original, setOriginal] = useState<FormState>(() =>
     normalize(company.working_hours),
   );
-  const [state, setState] = useState(() => normalize(company.working_hours));
+  useEffect(() => {
+    setOriginal(normalize(company.working_hours));
+  }, [company]);
+
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
 
   function updateDay(day: Weekday, field: keyof DayHours, value: string) {
-    setState((s) => ({
-      ...s,
-      [day]: { ...s[day], [field]: value || null },
-    }));
+    setField(day, { ...state[day], [field]: value || null });
   }
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEdit || !isCreator) return;
     setActionError(null);
 
     // Trim closed days to null, drop daily rows that are entirely empty
@@ -89,7 +136,9 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
       const res = await updateCompanyBagAction("working_hours", cleaned);
       if (res.ok) {
         toast.success("Working hours updated");
-        setOriginal(normalize(cleaned));
+        const next = normalize(cleaned);
+        setOriginal(next);
+        broadcastCommit({ kind: "working_hours:saved", state: next });
         return;
       }
       setActionError(res);
@@ -97,12 +146,36 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
   }
 
   function onReset() {
-    setState(original);
+    resetState(original);
     setActionError(null);
   }
 
+  const {
+    attach: attachCursor,
+    size: cursorSize,
+    onMouseMove: onCursorMove,
+    onMouseLeave: onCursorLeave,
+  } = useFormCursorAnchor(setCursor, hideCursor);
+
+  if (joinError) return <JoinErrorCard error={joinError} />;
+
   return (
-    <Card className="border-border/60">
+    <Card
+      ref={attachCursor}
+      onMouseMove={onCursorMove}
+      onMouseLeave={onCursorLeave}
+      className="relative border-border/60"
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.entries(cursors).map(([id, cursor]) => (
+          <RemoteCursor
+            key={id}
+            cursor={cursor}
+            anchorWidth={cursorSize.w}
+            anchorHeight={cursorSize.h}
+          />
+        ))}
+      </div>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1.5">
@@ -111,49 +184,64 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
               Days and hours your operations run. Leave a day blank to mark it as closed.
             </CardDescription>
           </div>
-          {!canEdit && <ReadOnly />}
+          <div className="flex items-center gap-3">
+            <CollabAvatars peers={presence} />
+            {!canEdit && <ReadOnly />}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <fieldset disabled={!canEdit || pending} className="contents">
           <form onSubmit={onSubmit} className="space-y-3">
-            {WEEKDAYS.map((day) => (
-              <div
-                key={day}
-                className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-3 sm:grid-cols-[140px_minmax(0,1fr)] sm:gap-4"
-              >
-                <Label
-                  htmlFor={`${day}-opens`}
-                  className="text-sm font-medium"
+            {WEEKDAYS.map((day) => {
+              const opensId = `${P}${day}_opens`;
+              const closesId = `${P}${day}_closes`;
+              return (
+                <div
+                  key={day}
+                  className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-3 sm:grid-cols-[140px_minmax(0,1fr)] sm:gap-4"
                 >
-                  {WEEKDAY_LABELS[day]}
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    id={`${day}-opens`}
-                    type="time"
-                    value={state[day].opens_at ?? ""}
-                    onChange={(e) =>
-                      updateDay(day, "opens_at", e.target.value)
-                    }
-                    className="h-10 max-w-[120px]"
-                    aria-label={`${WEEKDAY_LABELS[day]} opens at`}
-                  />
-                  <span aria-hidden className="text-muted-foreground">
-                    –
-                  </span>
-                  <Input
-                    type="time"
-                    value={state[day].closes_at ?? ""}
-                    onChange={(e) =>
-                      updateDay(day, "closes_at", e.target.value)
-                    }
-                    className="h-10 max-w-[120px]"
-                    aria-label={`${WEEKDAY_LABELS[day]} closes at`}
-                  />
+                  <Label htmlFor={opensId} className="text-sm font-medium">
+                    {WEEKDAY_LABELS[day]}
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative">
+                      <Input
+                        id={opensId}
+                        type="time"
+                        value={state[day].opens_at ?? ""}
+                        onChange={(e) =>
+                          updateDay(day, "opens_at", e.target.value)
+                        }
+                        onFocus={() => focusField(opensId)}
+                        onBlur={() => blurField(opensId)}
+                        className="h-10 max-w-[120px]"
+                        aria-label={`${WEEKDAY_LABELS[day]} opens at`}
+                      />
+                      <FieldEditingIndicator peer={fieldEditors[opensId]} />
+                    </div>
+                    <span aria-hidden className="text-muted-foreground">
+                      –
+                    </span>
+                    <div className="relative">
+                      <Input
+                        id={closesId}
+                        type="time"
+                        value={state[day].closes_at ?? ""}
+                        onChange={(e) =>
+                          updateDay(day, "closes_at", e.target.value)
+                        }
+                        onFocus={() => focusField(closesId)}
+                        onBlur={() => blurField(closesId)}
+                        className="h-10 max-w-[120px]"
+                        aria-label={`${WEEKDAY_LABELS[day]} closes at`}
+                      />
+                      <FieldEditingIndicator peer={fieldEditors[closesId]} />
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {actionError && (
               <ErrorBanner
@@ -164,17 +252,30 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
             )}
 
             {canEdit && (
-              <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
-                {dirty && !pending && (
-                  <Button type="button" variant="ghost" onClick={onReset}>
-                    Discard
+              <>
+                {!isCreator && <CreatorLockBanner creator={creator} />}
+                <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
+                  {dirty && !pending && isCreator && (
+                    <Button type="button" variant="ghost" onClick={onReset}>
+                      Discard
+                    </Button>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={!dirty || pending || !isCreator}
+                    title={
+                      isCreator
+                        ? undefined
+                        : creator
+                          ? `Only ${creator.name} can save from this room.`
+                          : undefined
+                    }
+                  >
+                    {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                    Save changes
                   </Button>
-                )}
-                <Button type="submit" disabled={!dirty || pending}>
-                  {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                  Save changes
-                </Button>
-              </div>
+                </div>
+              </>
             )}
           </form>
         </fieldset>

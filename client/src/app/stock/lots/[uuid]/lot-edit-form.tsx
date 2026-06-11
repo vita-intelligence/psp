@@ -1,10 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Box, FileText, Loader2, Lock, Pencil, Save, Undo2 } from "lucide-react";
+import {
+  AlertCircle,
+  Box,
+  FileText,
+  Loader2,
+  Lock,
+  LockKeyhole,
+  Pencil,
+  Save,
+  Undo2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,9 +34,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type { StockLot } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { updateLotAction, type UpdateLotInput } from "@/lib/stock/actions";
+import { cn } from "@/lib/utils";
 
 interface Props {
   lot: StockLot;
@@ -34,201 +58,7 @@ const STATUS_OPTIONS: StockLot["status"][] = [
   "rejected",
 ];
 
-/**
- * Identity + packaging edit form. One mega-form covering both
- * sections so a single Save persists everything atomically — same
- * pattern as the item edit page.
- *
- * Default state is read-only display; an explicit Edit button flips
- * the section into edit mode so the operator never accidentally
- * tabs into a field and changes a value. Save persists and drops
- * back to read-only; Cancel discards.
- *
- * Without `stock.edit` the Edit button stays hidden and the form
- * renders as a permanent read-only view.
- */
-export function LotEditForm({ lot, canEdit }: Props) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [editing, setEditing] = useState(false);
-  const [topError, setTopError] = useState<{
-    detail: string;
-    code?: string;
-    debug?: ErrorDebug;
-  } | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
-
-  const initial = useMemo(() => snapshot(lot), [lot]);
-  const [draft, setDraft] = useState(initial);
-
-  // When the upstream lot prop changes (router.refresh after save),
-  // reset the draft to the new baseline. Otherwise we'd keep the
-  // stale dirty diff against the pre-save snapshot.
-  useEffect(() => {
-    setDraft(initial);
-  }, [initial]);
-
-  const dirtyKeys = useMemo(
-    () =>
-      (Object.keys(initial) as Array<keyof typeof initial>).filter(
-        (k) => (initial[k] ?? "") !== (draft[k] ?? ""),
-      ),
-    [initial, draft],
-  );
-  const isDirty = dirtyKeys.length > 0;
-
-  function update<K extends keyof typeof draft>(
-    key: K,
-    value: (typeof draft)[K],
-  ) {
-    setDraft((d) => ({ ...d, [key]: value }));
-    setFieldErrors((e) => {
-      if (!e[String(key)]) return e;
-      const { [String(key)]: _, ...rest } = e;
-      void _;
-      return rest;
-    });
-  }
-
-  function onCancel() {
-    setDraft(initial);
-    setTopError(null);
-    setFieldErrors({});
-    setEditing(false);
-  }
-
-  function onSave() {
-    if (!canEdit || !isDirty) return;
-    const payload = buildPayload(initial, draft);
-
-    setTopError(null);
-    setFieldErrors({});
-
-    startTransition(async () => {
-      const res = await updateLotAction(lot.uuid, payload);
-      if (res.ok) {
-        toast.success(`Saved ${lot.code ?? `lot #${lot.id}`}`);
-        // Flip back to read-only — the next-render `useEffect` above
-        // will re-snapshot once the parent's revalidated lot prop
-        // lands.
-        setEditing(false);
-        router.refresh();
-      } else {
-        setTopError({
-          detail: res.detail,
-          code: res.code,
-          debug: res.debug,
-        });
-        setFieldErrors(res.fields ?? {});
-      }
-    });
-  }
-
-  // `editing` AND `canEdit` gate the inputs; the outer fieldset's
-  // `disabled` is the source of truth so we don't have to thread
-  // `disabled` into every Field.
-  const inputsDisabled = !canEdit || !editing || pending;
-
-  return (
-    <div className="space-y-4">
-      {/* Header sits outside the disabled fieldset so the Edit button
-          stays clickable in the default read-only state. */}
-      <header className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          {!canEdit && (
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
-              <Lock className="size-3" />
-              Read-only — needs <span className="font-mono">stock.edit</span>
-            </span>
-          )}
-          {canEdit && !editing && (
-            <span className="text-[11px] text-muted-foreground">
-              Read-only view — press Edit to change anything.
-            </span>
-          )}
-        </div>
-        {canEdit && !editing && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => setEditing(true)}
-          >
-            <Pencil className="mr-1.5 size-4" />
-            Edit
-          </Button>
-        )}
-      </header>
-
-      <fieldset disabled={inputsDisabled} className="space-y-4 border-0 p-0">
-
-      {topError && (
-        <ErrorBanner
-          detail={topError.detail}
-          code={topError.code}
-          debug={topError.debug}
-        />
-      )}
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <IdentitySection
-          draft={draft}
-          onChange={update}
-          fieldErrors={fieldErrors}
-        />
-        <PackagingSection
-          draft={draft}
-          onChange={update}
-          fieldErrors={fieldErrors}
-        />
-      </div>
-
-      {canEdit && editing && (
-        <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-card/95 px-4 py-3 shadow-md backdrop-blur">
-          <div className="text-xs text-muted-foreground">
-            {isDirty ? (
-              <>
-                <span className="font-semibold text-foreground">
-                  {dirtyKeys.length} change
-                  {dirtyKeys.length === 1 ? "" : "s"}
-                </span>{" "}
-                ready to save.
-              </>
-            ) : (
-              <>Editing — make a change then Save.</>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onCancel}
-              disabled={pending}
-            >
-              <Undo2 className="mr-1.5 size-4" />
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={onSave}
-              disabled={pending || !isDirty}
-            >
-              {pending ? (
-                <Loader2 className="mr-1.5 size-4 animate-spin" />
-              ) : (
-                <Save className="mr-1.5 size-4" />
-              )}
-              Save changes
-            </Button>
-          </div>
-        </div>
-      )}
-      </fieldset>
-    </div>
-  );
-}
+const UNSET = "__unset__";
 
 type DraftSnapshot = {
   status: string;
@@ -251,6 +81,324 @@ type DraftSnapshot = {
   stack_factor: string;
 };
 
+/**
+ * Identity + packaging edit form. One mega-form covering both
+ * sections so a single Save persists everything atomically — same
+ * pattern as the item edit page.
+ *
+ * Realtime collab per psp/CLAUDE.md: presence avatars, per-field
+ * editing indicators, remote cursors, creator gate on the Save button.
+ * The Edit toggle stays — until the creator presses Edit the form
+ * renders read-only; once editing, peers may join and co-edit live.
+ */
+export function LotEditForm({ lot, canEdit }: Props) {
+  const router = useRouter();
+  const resource = `stock-lot:${lot.uuid}`;
+  useFormPresenceBeacon(resource);
+
+  const initial = useMemo(() => snapshot(lot), [lot]);
+
+  type CommitPayload = { kind: "saved"; state: DraftSnapshot };
+
+  const {
+    state: draft,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<DraftSnapshot>({
+    resource,
+    disabled: !canEdit,
+    initialState: initial,
+    onCommit: (raw) => {
+      const msg = raw as CommitPayload | null;
+      if (!msg) return;
+      if (msg.kind === "saved") {
+        toast.success("Saved", {
+          description: `${creator?.name ?? "The host"} just saved the lot.`,
+        });
+        setOriginal(msg.state);
+        resetState(msg.state);
+        setEditing(false);
+        router.refresh();
+      }
+    },
+  });
+
+  const [original, setOriginal] = useState<DraftSnapshot>(() => snapshot(lot));
+  // Keep `original` in sync when the parent re-fetches the lot
+  // (e.g. after router.refresh). This is the "clean" baseline for
+  // dirty tracking — never tied to peer-broadcast state.
+  useEffect(() => {
+    setOriginal(snapshot(lot));
+    resetState(snapshot(lot));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lot]);
+
+  const [pending, startTransition] = useTransition();
+  const [editing, setEditing] = useState(false);
+  const [topError, setTopError] = useState<{
+    detail: string;
+    code?: string;
+    debug?: ErrorDebug;
+  } | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
+
+  const dirtyKeys = useMemo(
+    () =>
+      (Object.keys(original) as Array<keyof DraftSnapshot>).filter(
+        (k) => (original[k] ?? "") !== (draft[k] ?? ""),
+      ),
+    [original, draft],
+  );
+  const isDirty = dirtyKeys.length > 0;
+
+  function update<K extends keyof DraftSnapshot>(
+    key: K,
+    value: DraftSnapshot[K],
+  ) {
+    setField(key, value);
+    setFieldErrors((e) => {
+      if (!e[String(key)]) return e;
+      const next = { ...e };
+      delete next[String(key)];
+      return next;
+    });
+  }
+
+  function onCancel() {
+    resetState(original);
+    setTopError(null);
+    setFieldErrors({});
+    setEditing(false);
+  }
+
+  function onSave() {
+    if (!canEdit || !isCreator || !isDirty) return;
+    const payload = buildPayload(original, draft);
+
+    setTopError(null);
+    setFieldErrors({});
+
+    startTransition(async () => {
+      const res = await updateLotAction(lot.uuid, payload);
+      if (res.ok) {
+        toast.success(`Saved ${lot.code ?? `lot #${lot.id}`}`);
+        setOriginal(draft);
+        broadcastCommit({ kind: "saved", state: draft });
+        setEditing(false);
+        router.refresh();
+      } else {
+        setTopError({
+          detail: res.detail,
+          code: res.code,
+          debug: res.debug,
+        });
+        setFieldErrors(res.fields ?? {});
+      }
+    });
+  }
+
+  // Cursor anchor + size observer (mirrors the vendor pattern).
+  const cursorAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [anchorSize, setAnchorSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+  useEffect(() => {
+    const el = cursorAnchorRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      setAnchorSize({ w: rect.width, h: rect.height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => () => hideCursor(), [hideCursor]);
+
+  const onCursorMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const el = cursorAnchorRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      setCursor(x, y);
+    },
+    [setCursor],
+  );
+
+  if (joinError) {
+    return <JoinErrorCard error={joinError} />;
+  }
+
+  // `editing` AND `canEdit` gate the inputs; the outer fieldset's
+  // `disabled` is the source of truth so we don't have to thread
+  // `disabled` into every Field.
+  const inputsDisabled = !canEdit || !editing || pending;
+
+  return (
+    <div
+      ref={cursorAnchorRef}
+      onMouseMove={onCursorMove}
+      onMouseLeave={hideCursor}
+      className="relative space-y-4"
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.entries(cursors).map(([id, cursor]) => (
+          <RemoteCursor
+            key={id}
+            cursor={cursor}
+            anchorWidth={anchorSize.w}
+            anchorHeight={anchorSize.h}
+          />
+        ))}
+      </div>
+
+      {/* Header sits outside the disabled fieldset so the Edit button
+          stays clickable in the default read-only state. */}
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {!canEdit && (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+              <Lock className="size-3" />
+              Read-only — needs <span className="font-mono">stock.edit</span>
+            </span>
+          )}
+          {canEdit && !editing && (
+            <span className="text-[11px] text-muted-foreground">
+              Read-only view — press Edit to change anything.
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <CollabAvatars peers={presence} />
+          {canEdit && !editing && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="mr-1.5 size-4" />
+              Edit
+            </Button>
+          )}
+        </div>
+      </header>
+
+      <fieldset disabled={inputsDisabled} className="space-y-4 border-0 p-0">
+        {topError && (
+          <ErrorBanner
+            detail={topError.detail}
+            code={topError.code}
+            debug={topError.debug}
+          />
+        )}
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <IdentitySection
+            draft={draft}
+            onChange={update}
+            fieldErrors={fieldErrors}
+            fieldEditors={fieldEditors}
+            focusField={focusField}
+            blurField={blurField}
+          />
+          <PackagingSection
+            draft={draft}
+            onChange={update}
+            fieldErrors={fieldErrors}
+            fieldEditors={fieldEditors}
+            focusField={focusField}
+            blurField={blurField}
+          />
+        </div>
+
+        {canEdit && editing && (
+          <>
+            {!isCreator && creator && (
+              <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+                <Lock className="mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  Only{" "}
+                  <span className="font-medium text-foreground">
+                    {creator.name}
+                  </span>{" "}
+                  can save from this room. Your edits sync to them live.
+                </span>
+              </div>
+            )}
+            <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-card/95 px-4 py-3 shadow-md backdrop-blur">
+              <div className="text-xs text-muted-foreground">
+                {isDirty ? (
+                  <>
+                    <span className="font-semibold text-foreground">
+                      {dirtyKeys.length} change
+                      {dirtyKeys.length === 1 ? "" : "s"}
+                    </span>{" "}
+                    ready to save.
+                  </>
+                ) : (
+                  <>Editing — make a change then Save.</>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {isCreator && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={onCancel}
+                    disabled={pending}
+                  >
+                    <Undo2 className="mr-1.5 size-4" />
+                    Cancel
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={onSave}
+                  disabled={pending || !isCreator || !isDirty}
+                  title={
+                    isCreator
+                      ? undefined
+                      : creator
+                        ? `Only ${creator.name} can save from this room.`
+                        : undefined
+                  }
+                >
+                  {pending ? (
+                    <Loader2 className="mr-1.5 size-4 animate-spin" />
+                  ) : (
+                    <Save className="mr-1.5 size-4" />
+                  )}
+                  Save changes
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </fieldset>
+    </div>
+  );
+}
+
 function snapshot(lot: StockLot): DraftSnapshot {
   return {
     status: lot.status,
@@ -263,9 +411,7 @@ function snapshot(lot: StockLot): DraftSnapshot {
     currency: lot.currency ?? "",
     manufactured_at: lot.manufactured_at ?? "",
     expiry_at: lot.expiry_at ?? "",
-    available_from: lot.available_from
-      ? lot.available_from.slice(0, 16)
-      : "",
+    available_from: lot.available_from ? lot.available_from.slice(0, 16) : "",
     notes: lot.notes ?? "",
     package_length_mm: lot.package_length_mm?.toString() ?? "",
     package_width_mm: lot.package_width_mm?.toString() ?? "",
@@ -307,7 +453,6 @@ function buildPayload(
   diff("available_from", (v) => new Date(v).toISOString());
   diff("notes", (v) => v);
 
-  // Packaging — integers, weight is a decimal string.
   diff("package_length_mm", (v) => Number.parseInt(v, 10));
   diff("package_width_mm", (v) => Number.parseInt(v, 10));
   diff("package_height_mm", (v) => Number.parseInt(v, 10));
@@ -318,18 +463,29 @@ function buildPayload(
   return out;
 }
 
-function IdentitySection({
-  draft,
-  onChange,
-  fieldErrors,
-}: {
+interface SectionProps {
   draft: DraftSnapshot;
   onChange: <K extends keyof DraftSnapshot>(
     key: K,
     value: DraftSnapshot[K],
   ) => void;
   fieldErrors: Record<string, string[]>;
-}) {
+  fieldEditors: Record<
+    string,
+    import("@/lib/realtime/use-live-form").CollabPeer | null
+  >;
+  focusField: (field: string) => void;
+  blurField: (field: string) => void;
+}
+
+function IdentitySection({
+  draft,
+  onChange,
+  fieldErrors,
+  fieldEditors,
+  focusField,
+  blurField,
+}: SectionProps) {
   return (
     <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
       <header className="mb-4 flex items-center gap-2">
@@ -338,12 +494,22 @@ function IdentitySection({
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Status" error={fieldErrors.status?.[0]}>
+        <Field
+          id="status"
+          label="Status"
+          error={fieldErrors.status?.[0]}
+          editor={fieldEditors.status}
+        >
           <Select
             value={draft.status}
             onValueChange={(v) => onChange("status", v as DraftSnapshot["status"])}
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id="status"
+              className="h-9"
+              onFocus={() => focusField("status")}
+              onBlur={() => blurField("status")}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -357,50 +523,78 @@ function IdentitySection({
         </Field>
 
         <Field
+          id="supplier_batch_no"
           label="Supplier batch"
           error={fieldErrors.supplier_batch_no?.[0]}
+          editor={fieldEditors.supplier_batch_no}
         >
           <Input
+            id="supplier_batch_no"
             value={draft.supplier_batch_no}
             onChange={(e) => onChange("supplier_batch_no", e.target.value)}
+            onFocus={() => focusField("supplier_batch_no")}
+            onBlur={() => blurField("supplier_batch_no")}
             placeholder="BATCH-AA-42"
             className="h-9 font-mono"
           />
         </Field>
 
         <Field
+          id="country_of_origin"
           label="Country of origin"
           error={fieldErrors.country_of_origin?.[0]}
+          editor={fieldEditors.country_of_origin}
         >
           <Input
+            id="country_of_origin"
             value={draft.country_of_origin}
             onChange={(e) => onChange("country_of_origin", e.target.value)}
+            onFocus={() => focusField("country_of_origin")}
+            onBlur={() => blurField("country_of_origin")}
             placeholder="IT"
             className="h-9"
           />
         </Field>
 
-        <Field label="Revision" error={fieldErrors.revision?.[0]}>
+        <Field
+          id="revision"
+          label="Revision"
+          error={fieldErrors.revision?.[0]}
+          editor={fieldEditors.revision}
+        >
           <Input
+            id="revision"
             value={draft.revision}
             onChange={(e) => onChange("revision", e.target.value)}
+            onFocus={() => focusField("revision")}
+            onBlur={() => blurField("revision")}
             placeholder="V00"
             className="h-9 font-mono"
           />
         </Field>
 
-        <Field label="Source kind" error={fieldErrors.source_kind?.[0]}>
+        <Field
+          id="source_kind"
+          label="Source kind"
+          error={fieldErrors.source_kind?.[0]}
+          editor={fieldEditors.source_kind}
+        >
           <Select
-            value={draft.source_kind || "__unset__"}
+            value={draft.source_kind || UNSET}
             onValueChange={(v) =>
-              onChange("source_kind", v === "__unset__" ? "" : v)
+              onChange("source_kind", v === UNSET ? "" : v)
             }
           >
-            <SelectTrigger className="h-9">
+            <SelectTrigger
+              id="source_kind"
+              className="h-9"
+              onFocus={() => focusField("source_kind")}
+              onBlur={() => blurField("source_kind")}
+            >
               <SelectValue placeholder="—" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__unset__">—</SelectItem>
+              <SelectItem value={UNSET}>—</SelectItem>
               <SelectItem value="purchase_order">Purchase order</SelectItem>
               <SelectItem value="manufacturing_order">
                 Manufacturing order
@@ -413,56 +607,99 @@ function IdentitySection({
           </Select>
         </Field>
 
-        <Field label="Source reference" error={fieldErrors.source_ref?.[0]}>
+        <Field
+          id="source_ref"
+          label="Source reference"
+          error={fieldErrors.source_ref?.[0]}
+          editor={fieldEditors.source_ref}
+        >
           <Input
+            id="source_ref"
             value={draft.source_ref}
             onChange={(e) => onChange("source_ref", e.target.value)}
+            onFocus={() => focusField("source_ref")}
+            onBlur={() => blurField("source_ref")}
             placeholder="PO00438"
             className="h-9 font-mono"
           />
         </Field>
 
-        <Field label="Manufactured" error={fieldErrors.manufactured_at?.[0]}>
+        <Field
+          id="manufactured_at"
+          label="Manufactured"
+          error={fieldErrors.manufactured_at?.[0]}
+          editor={fieldEditors.manufactured_at}
+        >
           <Input
+            id="manufactured_at"
             type="date"
             value={draft.manufactured_at}
             onChange={(e) => onChange("manufactured_at", e.target.value)}
+            onFocus={() => focusField("manufactured_at")}
+            onBlur={() => blurField("manufactured_at")}
             className="h-9"
           />
         </Field>
 
-        <Field label="Expires" error={fieldErrors.expiry_at?.[0]}>
+        <Field
+          id="expiry_at"
+          label="Expires"
+          error={fieldErrors.expiry_at?.[0]}
+          editor={fieldEditors.expiry_at}
+        >
           <Input
+            id="expiry_at"
             type="date"
             value={draft.expiry_at}
             onChange={(e) => onChange("expiry_at", e.target.value)}
+            onFocus={() => focusField("expiry_at")}
+            onBlur={() => blurField("expiry_at")}
             className="h-9"
           />
         </Field>
 
-        <Field label="Available from" error={fieldErrors.available_from?.[0]}>
+        <Field
+          id="available_from"
+          label="Available from"
+          error={fieldErrors.available_from?.[0]}
+          editor={fieldEditors.available_from}
+        >
           <Input
+            id="available_from"
             type="datetime-local"
             value={draft.available_from}
             onChange={(e) => onChange("available_from", e.target.value)}
+            onFocus={() => focusField("available_from")}
+            onBlur={() => blurField("available_from")}
             className="h-9"
           />
         </Field>
 
-        <Field label="Unit cost" error={fieldErrors.unit_cost?.[0]}>
+        <Field
+          id="unit_cost"
+          label="Unit cost"
+          error={fieldErrors.unit_cost?.[0]}
+          editor={fieldEditors.unit_cost}
+        >
           <div className="flex gap-2">
             <Input
+              id="unit_cost"
               value={draft.unit_cost}
               onChange={(e) => onChange("unit_cost", e.target.value)}
+              onFocus={() => focusField("unit_cost")}
+              onBlur={() => blurField("unit_cost")}
               placeholder="5.15"
               className="h-9 font-mono"
               inputMode="decimal"
             />
             <Input
+              id="currency"
               value={draft.currency}
               onChange={(e) =>
                 onChange("currency", e.target.value.toUpperCase())
               }
+              onFocus={() => focusField("currency")}
+              onBlur={() => blurField("currency")}
               placeholder="GBP"
               className="h-9 w-20 font-mono"
               maxLength={3}
@@ -472,10 +709,18 @@ function IdentitySection({
       </div>
 
       <div className="mt-3">
-        <Field label="Notes" error={fieldErrors.notes?.[0]}>
+        <Field
+          id="notes"
+          label="Notes"
+          error={fieldErrors.notes?.[0]}
+          editor={fieldEditors.notes}
+        >
           <Textarea
+            id="notes"
             value={draft.notes}
             onChange={(e) => onChange("notes", e.target.value)}
+            onFocus={() => focusField("notes")}
+            onBlur={() => blurField("notes")}
             placeholder="Anything that needs surfacing on the lot detail page"
             rows={3}
           />
@@ -489,14 +734,10 @@ function PackagingSection({
   draft,
   onChange,
   fieldErrors,
-}: {
-  draft: DraftSnapshot;
-  onChange: <K extends keyof DraftSnapshot>(
-    key: K,
-    value: DraftSnapshot[K],
-  ) => void;
-  fieldErrors: Record<string, string[]>;
-}) {
+  fieldEditors,
+  focusField,
+  blurField,
+}: SectionProps) {
   return (
     <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
       <header className="mb-4 flex items-center gap-2">
@@ -514,76 +755,112 @@ function PackagingSection({
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Field
+          id="package_length_mm"
           label="Length (mm)"
           error={fieldErrors.package_length_mm?.[0]}
+          editor={fieldEditors.package_length_mm}
         >
           <Input
+            id="package_length_mm"
             value={draft.package_length_mm}
             onChange={(e) =>
               onChange("package_length_mm", e.target.value.replace(/\D/g, ""))
             }
-            placeholder="e.g. 400"
-            className="h-9 font-mono"
-            inputMode="numeric"
-          />
-        </Field>
-        <Field label="Width (mm)" error={fieldErrors.package_width_mm?.[0]}>
-          <Input
-            value={draft.package_width_mm}
-            onChange={(e) =>
-              onChange("package_width_mm", e.target.value.replace(/\D/g, ""))
-            }
+            onFocus={() => focusField("package_length_mm")}
+            onBlur={() => blurField("package_length_mm")}
             placeholder="e.g. 400"
             className="h-9 font-mono"
             inputMode="numeric"
           />
         </Field>
         <Field
-          label="Height (mm)"
-          error={fieldErrors.package_height_mm?.[0]}
+          id="package_width_mm"
+          label="Width (mm)"
+          error={fieldErrors.package_width_mm?.[0]}
+          editor={fieldEditors.package_width_mm}
         >
           <Input
+            id="package_width_mm"
+            value={draft.package_width_mm}
+            onChange={(e) =>
+              onChange("package_width_mm", e.target.value.replace(/\D/g, ""))
+            }
+            onFocus={() => focusField("package_width_mm")}
+            onBlur={() => blurField("package_width_mm")}
+            placeholder="e.g. 400"
+            className="h-9 font-mono"
+            inputMode="numeric"
+          />
+        </Field>
+        <Field
+          id="package_height_mm"
+          label="Height (mm)"
+          error={fieldErrors.package_height_mm?.[0]}
+          editor={fieldEditors.package_height_mm}
+        >
+          <Input
+            id="package_height_mm"
             value={draft.package_height_mm}
             onChange={(e) =>
               onChange("package_height_mm", e.target.value.replace(/\D/g, ""))
             }
+            onFocus={() => focusField("package_height_mm")}
+            onBlur={() => blurField("package_height_mm")}
             placeholder="e.g. 600"
             className="h-9 font-mono"
             inputMode="numeric"
           />
         </Field>
         <Field
+          id="package_weight_kg"
           label="Net weight (kg)"
           error={fieldErrors.package_weight_kg?.[0]}
+          editor={fieldEditors.package_weight_kg}
         >
           <Input
+            id="package_weight_kg"
             value={draft.package_weight_kg}
             onChange={(e) => onChange("package_weight_kg", e.target.value)}
+            onFocus={() => focusField("package_weight_kg")}
+            onBlur={() => blurField("package_weight_kg")}
             placeholder="e.g. 25.000"
             className="h-9 font-mono"
             inputMode="decimal"
           />
         </Field>
         <Field
+          id="units_per_package"
           label="Units / package"
           error={fieldErrors.units_per_package?.[0]}
+          editor={fieldEditors.units_per_package}
         >
           <Input
+            id="units_per_package"
             value={draft.units_per_package}
             onChange={(e) =>
               onChange("units_per_package", e.target.value.replace(/\D/g, ""))
             }
+            onFocus={() => focusField("units_per_package")}
+            onBlur={() => blurField("units_per_package")}
             placeholder="1"
             className="h-9 font-mono"
             inputMode="numeric"
           />
         </Field>
-        <Field label="Stack factor" error={fieldErrors.stack_factor?.[0]}>
+        <Field
+          id="stack_factor"
+          label="Stack factor"
+          error={fieldErrors.stack_factor?.[0]}
+          editor={fieldEditors.stack_factor}
+        >
           <Input
+            id="stack_factor"
             value={draft.stack_factor}
             onChange={(e) =>
               onChange("stack_factor", e.target.value.replace(/\D/g, ""))
             }
+            onFocus={() => focusField("stack_factor")}
+            onBlur={() => blurField("stack_factor")}
             placeholder="1"
             className="h-9 font-mono"
             inputMode="numeric"
@@ -594,21 +871,95 @@ function PackagingSection({
   );
 }
 
+function JoinErrorCard({
+  error,
+}: {
+  error: import("@/lib/realtime/use-live-form").JoinError;
+}) {
+  const config = {
+    form_full: {
+      icon: AlertCircle,
+      tone: "amber",
+      title: `Form is at capacity`,
+      detail: error.limit
+        ? `Up to ${error.limit} people can edit this lot at once. Wait for someone to leave, then refresh.`
+        : "Wait for someone to leave, then refresh.",
+    },
+    forbidden: {
+      icon: LockKeyhole,
+      tone: "muted",
+      title: "You can't edit here",
+      detail:
+        "Ask an admin for the `stock.edit` permission to join this form.",
+    },
+    bad_topic: {
+      icon: AlertCircle,
+      tone: "destructive",
+      title: "Unknown form",
+      detail: "We couldn't find this form. The link may have been malformed.",
+    },
+    unknown: {
+      icon: AlertCircle,
+      tone: "destructive",
+      title: "Couldn't open the form",
+      detail: "Something went wrong on our end. Please try again.",
+    },
+  }[error.reason];
+
+  const Icon = config.icon;
+  const toneClass =
+    config.tone === "amber"
+      ? "border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20"
+      : config.tone === "destructive"
+        ? "border-destructive/30 bg-destructive/[0.03]"
+        : "border-border/60 bg-muted/30";
+  const iconClass =
+    config.tone === "amber"
+      ? "text-amber-600 dark:text-amber-400"
+      : config.tone === "destructive"
+        ? "text-destructive"
+        : "text-muted-foreground";
+
+  return (
+    <Card className={cn("border", toneClass)}>
+      <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+        <div className="flex size-12 items-center justify-center rounded-full bg-background">
+          <Icon className={cn("size-6", iconClass)} />
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-semibold">{config.title}</p>
+          <p className="text-xs text-muted-foreground">{config.detail}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function Field({
+  id,
   label,
   error,
+  editor,
   children,
 }: {
+  id: string;
   label: string;
   error?: string;
+  editor: import("@/lib/realtime/use-live-form").CollabPeer | null;
   children: React.ReactNode;
 }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+      <Label
+        htmlFor={id}
+        className="text-[11px] uppercase tracking-wider text-muted-foreground"
+      >
         {label}
       </Label>
-      {children}
+      <div className="relative">
+        {children}
+        <FieldEditingIndicator peer={editor} />
+      </div>
       {error && (
         <p className="text-[11px] text-destructive" role="alert">
           {error}
