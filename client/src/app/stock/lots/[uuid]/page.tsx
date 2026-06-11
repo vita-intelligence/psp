@@ -10,6 +10,8 @@ import { getStockLot } from "@/lib/stock/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { CommentThread } from "@/components/comments/comment-thread";
+import { listCommentsForEntity } from "@/lib/comments/server";
 import { StockSubnav } from "../../stock-subnav";
 import { LotHeader } from "./lot-header";
 import { LotEditForm } from "./lot-edit-form";
@@ -29,12 +31,15 @@ export default async function StockLotDetailPage({
   }
 
   const { uuid } = await params;
-  const [data, prefs] = await Promise.all([
+  const [data, prefs, initialComments] = await Promise.all([
     getStockLot(uuid),
     getCompanyDefaults(),
+    listCommentsForEntity("stock_lot", uuid),
   ]);
   if (!data) notFound();
   const { lot, movements } = data;
+  const canCommentOnLot =
+    hasPermission(user, "stock.edit") || hasPermission(user, "stock.receive");
   const holdingName = prefs?.generic_place_name?.trim() || "Holding Room";
 
   return (
@@ -76,6 +81,14 @@ export default async function StockLotDetailPage({
             movements={movements}
             uomSymbol={lot.unit_of_measurement?.symbol ?? ""}
             holdingName={holdingName}
+          />
+
+          <CommentThread
+            entityType="stock_lot"
+            entityUuid={lot.uuid}
+            initial={initialComments ?? []}
+            canComment={canCommentOnLot}
+            currentUserId={user.id}
           />
 
           <AuditMetaSection

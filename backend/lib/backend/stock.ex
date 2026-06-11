@@ -151,6 +151,54 @@ defmodule Backend.Stock do
   def get_for_company(_company_id, _), do: nil
 
   @doc """
+  Record a lifecycle event against a lot identified by uuid. Top-level
+  boundary the controller calls — handles lot lookup + delegation into
+  `Backend.Stock.Lifecycle`. Lifecycle enforces the allowed-transition
+  matrix and updates the lot's projected status.
+
+  `attrs` shape:
+
+      %{
+        kind: "qc_passed" | "qc_failed" | "held" | "released" | "disposed" | …,
+        reason: nil | binary,
+        metadata: %{},
+        evidence_file_id: nil | integer
+      }
+  """
+  def record_lot_event(%Backend.Accounts.User{} = actor, company_id, uuid, attrs)
+      when is_integer(company_id) and is_binary(uuid) and is_map(attrs) do
+    with %Lot{} = lot <- get_for_company(company_id, uuid) do
+      kind = attrs["kind"] || attrs[:kind]
+
+      Backend.Stock.Lifecycle.record_event(
+        lot,
+        to_string(kind),
+        %{
+          actor: actor,
+          actor_kind: "user",
+          reason: attrs["reason"] || attrs[:reason],
+          metadata: attrs["metadata"] || attrs[:metadata] || %{},
+          evidence_file_id: attrs["evidence_file_id"] || attrs[:evidence_file_id]
+        }
+      )
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Paginated lifecycle event timeline for one lot. Newest-first.
+  """
+  def list_lot_events(company_id, uuid, opts \\ [])
+      when is_integer(company_id) and is_binary(uuid) do
+    with %Lot{} = lot <- get_for_company(company_id, uuid) do
+      {:ok, lot, Backend.Stock.Lifecycle.list_events(lot, opts)}
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Edit a lot's mutable fields. `qty_received`, the parent item, and
   the UoM stay immutable — those changes happen through movements or
   a delete-and-re-receive. Audit row captures the before/after diff
@@ -162,9 +210,15 @@ defmodule Backend.Stock do
   def update_lot(%Backend.Accounts.User{} = actor, company_id, uuid, attrs)
       when is_integer(company_id) and is_binary(uuid) and is_map(attrs) do
     with %Lot{} = lot <- get_for_company(company_id, uuid) do
+      # `source_kind` is derived from the create-flow and never editable
+      # from the form — strip it so a smuggled body field can't rewrite
+      # provenance. `status` is the projected lifecycle state — operators
+      # change it by recording an event through `Backend.Stock.Lifecycle`,
+      # never by patching the column directly.
       attrs_with_actor =
         attrs
         |> stringify_keys()
+        |> Map.drop(["source_kind", "status"])
         |> Map.put("updated_by_id", actor.id)
 
       before_snapshot = lot_audit_snapshot(lot)
@@ -607,22 +661,36 @@ defmodule Backend.Stock do
           Decimal.add(acc, qty)
         end)
 
+      # `source_kind` is derived from the calling flow, never operator-
+      # supplied. `__service_source_kind__` is the internal hand-off the
+      # PO-receive path uses to declare "this is a PO receipt"; absence
+      # means the manual receive form, which is always `"manual"`.
+      # Anything the operator might smuggle in their attrs is dropped.
+      service_source_kind = attrs["__service_source_kind__"] || "manual"
+
       lot_attrs =
         attrs
-        |> Map.drop(["placements", "destination_cell_id", "warehouse_id"])
+        |> Map.drop([
+          "placements",
+          "destination_cell_id",
+          "warehouse_id",
+          "source_kind",
+          "status",
+          "__service_source_kind__",
+          "__po_line_id__"
+        ])
         |> Map.put("company_id", company_id)
         |> Map.put("item_id", item.id)
         |> Map.put("qty_received", total_qty)
-        |> Map.put_new("status", "received")
-        |> Map.put_new_lazy("received_at", fn ->
-          if Map.get(attrs, "status") in [nil, "received"], do: now, else: nil
-        end)
+        # Land at `expected` so the lifecycle event we emit below
+        # (`received`) does the real status flip via the projection.
+        # The lot row is never in `expected` for more than a few
+        # microseconds inside the transaction — the projection update
+        # ships in the same `Repo.transaction/1`.
+        |> Map.put("status", "expected")
+        |> Map.put_new_lazy("received_at", fn -> now end)
         |> Map.put_new_lazy("available_from", fn -> now end)
-        # When no source was supplied this is an operator-created
-        # ad-hoc lot (opening balance, adjustment, etc.). Real
-        # receives against a Purchase Order will set source_kind
-        # explicitly from the procurement module later.
-        |> Map.put_new("source_kind", "manual")
+        |> Map.put("source_kind", service_source_kind)
         |> Map.put("created_by_id", actor.id)
         |> Map.put("updated_by_id", actor.id)
 
@@ -637,10 +705,12 @@ defmodule Backend.Stock do
                  placement_specs,
                  now,
                  attrs
-               ) do
-          Audit.record_created(actor, "stock_lot", lot, lot_audit_snapshot(lot))
+               ),
+             {:ok, %{lot: lot_after_event}} <-
+               emit_received_event(actor, lot, attrs, now) do
+          Audit.record_created(actor, "stock_lot", lot_after_event, lot_audit_snapshot(lot_after_event))
 
-          Repo.preload(lot, [
+          Repo.preload(lot_after_event, [
             :item,
             :unit_of_measurement,
             :created_by,
@@ -655,6 +725,37 @@ defmodule Backend.Stock do
       end)
     end
   end
+
+  # Emit the lifecycle `received` event so the lot lands with a
+  # non-empty event log. Metadata carries the source linkage (PO line
+  # id when the receipt is against a PO) so the timeline can trace
+  # back without a join. Runs inside the parent `Repo.transaction/1`
+  # so a failed event write rolls the lot row back too.
+  defp emit_received_event(%User{} = actor, %Lot{} = lot, attrs, _now) do
+    metadata =
+      %{}
+      |> maybe_put_metadata("source_ref", attrs["source_ref"])
+      |> maybe_put_metadata("po_line_id", attrs["__po_line_id__"])
+
+    case Backend.Stock.Lifecycle.record_event_in_transaction(
+           lot,
+           "received",
+           %{
+             actor: actor,
+             actor_kind: "user",
+             reason: attrs["receive_reason"],
+             metadata: metadata
+           }
+         ) do
+      {:ok, result} -> {:ok, result}
+      {:error, :illegal_transition, info} -> {:error, {:illegal_transition, info}}
+      {:error, other} -> {:error, other}
+    end
+  end
+
+  defp maybe_put_metadata(map, _key, nil), do: map
+  defp maybe_put_metadata(map, _key, ""), do: map
+  defp maybe_put_metadata(map, key, value), do: Map.put(map, key, value)
 
   # Resolve the destination into a list of `{cell, qty_decimal}`
   # tuples. Accepted shapes, in priority order:

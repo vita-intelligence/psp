@@ -23,6 +23,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { CurrencyPicker } from "@/components/forms/currency-picker";
+import {
+  DerivedDateField,
+  addDaysFromToday,
+} from "@/components/forms/derived-date-field";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -42,7 +47,6 @@ interface FormState {
   currency: string;
   deliveryDate: string;
   deliveryAddress: string;
-  notes: string;
 }
 
 const INITIAL: FormState = {
@@ -50,7 +54,6 @@ const INITIAL: FormState = {
   currency: "GBP",
   deliveryDate: "",
   deliveryAddress: "",
-  notes: "",
 };
 
 export function NewPOForm({ vendors }: Props) {
@@ -117,7 +120,6 @@ export function NewPOForm({ vendors }: Props) {
         currency_code: state.currency,
         expected_delivery_date: state.deliveryDate || null,
         delivery_address: state.deliveryAddress.trim() || null,
-        notes: state.notes.trim() || null,
       });
       if (res.ok) {
         broadcastCommit({ kind: "created", uuid: res.po.uuid });
@@ -250,16 +252,12 @@ export function NewPOForm({ vendors }: Props) {
             Currency
           </Label>
           <div className="relative">
-            <Input
+            <CurrencyPicker
               id="currency"
               value={state.currency}
-              onChange={(e) =>
-                setField("currency", e.target.value.toUpperCase())
-              }
+              onChange={(v) => setField("currency", v ?? "GBP")}
               onFocus={() => focusField("currency")}
               onBlur={() => blurField("currency")}
-              maxLength={3}
-              className="font-mono"
             />
             <FieldEditingIndicator peer={fieldEditors.currency} />
           </div>
@@ -272,13 +270,23 @@ export function NewPOForm({ vendors }: Props) {
             Expected delivery
           </Label>
           <div className="relative">
-            <Input
+            <DerivedDateField
               id="deliveryDate"
-              type="date"
+              computed={
+                selectedVendor
+                  ? addDaysFromToday(selectedVendor.default_lead_time_days)
+                  : ""
+              }
               value={state.deliveryDate}
-              onChange={(e) => setField("deliveryDate", e.target.value)}
+              onChange={(v) => setField("deliveryDate", v)}
               onFocus={() => focusField("deliveryDate")}
               onBlur={() => blurField("deliveryDate")}
+              derivationHint={
+                selectedVendor
+                  ? `Today + ${selectedVendor.default_lead_time_days}d lead time`
+                  : "Pick a vendor"
+              }
+              reasonComputedMissing="Pick an approved vendor above to compute."
             />
             <FieldEditingIndicator peer={fieldEditors.deliveryDate} />
           </div>
@@ -305,25 +313,13 @@ export function NewPOForm({ vendors }: Props) {
         </div>
       </div>
 
-      <div className="space-y-1.5">
-        <Label
-          htmlFor="notes"
-          className="text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
-          Notes
-        </Label>
-        <div className="relative">
-          <Textarea
-            id="notes"
-            rows={3}
-            value={state.notes}
-            onChange={(e) => setField("notes", e.target.value)}
-            onFocus={() => focusField("notes")}
-            onBlur={() => blurField("notes")}
-          />
-          <FieldEditingIndicator peer={fieldEditors.notes} />
-        </div>
-      </div>
+      {/*
+       * The old "Notes" textarea is gone — once the PO is created, the
+       * discussion happens in the polymorphic Comments thread on the
+       * detail page (timestamped, attributable, audit-trailed). The
+       * `purchase_orders.notes` DB column is left intact so historic
+       * data isn't lost.
+       */}
 
       {!isCreator && creator && (
         <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">

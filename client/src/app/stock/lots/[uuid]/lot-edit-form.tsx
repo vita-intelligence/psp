@@ -25,7 +25,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -34,6 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { CountryPicker } from "@/components/forms/country-picker";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -72,7 +72,6 @@ type DraftSnapshot = {
   manufactured_at: string;
   expiry_at: string;
   available_from: string;
-  notes: string;
   package_length_mm: string;
   package_width_mm: string;
   package_height_mm: string;
@@ -412,7 +411,6 @@ function snapshot(lot: StockLot): DraftSnapshot {
     manufactured_at: lot.manufactured_at ?? "",
     expiry_at: lot.expiry_at ?? "",
     available_from: lot.available_from ? lot.available_from.slice(0, 16) : "",
-    notes: lot.notes ?? "",
     package_length_mm: lot.package_length_mm?.toString() ?? "",
     package_width_mm: lot.package_width_mm?.toString() ?? "",
     package_height_mm: lot.package_height_mm?.toString() ?? "",
@@ -440,18 +438,19 @@ function buildPayload(
       value === "" ? null : convert(value);
   }
 
-  diff("status", (v) => v as StockLot["status"]);
+  // status is computed by the backend from the event stream — never
+  // sent in an edit payload. Workers trigger actions, the system records
+  // events, the projection updates status.
   diff("supplier_batch_no", (v) => v);
   diff("country_of_origin", (v) => v);
   diff("revision", (v) => v);
-  diff("source_kind", (v) => v as StockLot["source_kind"]);
-  diff("source_ref", (v) => v);
+  // source_kind + source_ref are system-set at create time and read-only
+  // in the UI — never send them in an edit payload.
   diff("unit_cost", (v) => v);
   diff("currency", (v) => v.toUpperCase());
   diff("manufactured_at", (v) => v);
   diff("expiry_at", (v) => v);
   diff("available_from", (v) => new Date(v).toISOString());
-  diff("notes", (v) => v);
 
   diff("package_length_mm", (v) => Number.parseInt(v, 10));
   diff("package_width_mm", (v) => Number.parseInt(v, 10));
@@ -478,6 +477,25 @@ interface SectionProps {
   blurField: (field: string) => void;
 }
 
+function labelSourceKind(value: string): string | null {
+  switch (value) {
+    case "purchase_order":
+      return "Purchase order";
+    case "manufacturing_order":
+      return "Manufacturing order";
+    case "opening_balance":
+      return "Opening balance";
+    case "return":
+      return "Return";
+    case "adjustment":
+      return "Adjustment";
+    case "manual":
+      return "Manual";
+    default:
+      return null;
+  }
+}
+
 function IdentitySection({
   draft,
   onChange,
@@ -494,32 +512,17 @@ function IdentitySection({
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2">
+        {/* Status is system-computed from the event stream (receive,
+            QC verdict, hold, dispose). Workers trigger action buttons
+            elsewhere on this page; the display here is read-only. */}
         <Field
-          id="status"
+          id="status_display"
           label="Status"
-          error={fieldErrors.status?.[0]}
           editor={fieldEditors.status}
         >
-          <Select
-            value={draft.status}
-            onValueChange={(v) => onChange("status", v as DraftSnapshot["status"])}
-          >
-            <SelectTrigger
-              id="status"
-              className="h-9"
-              onFocus={() => focusField("status")}
-              onBlur={() => blurField("status")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm font-medium capitalize text-muted-foreground">
+            {draft.status}
+          </div>
         </Field>
 
         <Field
@@ -545,14 +548,12 @@ function IdentitySection({
           error={fieldErrors.country_of_origin?.[0]}
           editor={fieldEditors.country_of_origin}
         >
-          <Input
+          <CountryPicker
             id="country_of_origin"
             value={draft.country_of_origin}
-            onChange={(e) => onChange("country_of_origin", e.target.value)}
+            onChange={(v) => onChange("country_of_origin", v ?? "")}
             onFocus={() => focusField("country_of_origin")}
             onBlur={() => blurField("country_of_origin")}
-            placeholder="IT"
-            className="h-9"
           />
         </Field>
 
@@ -573,55 +574,34 @@ function IdentitySection({
           />
         </Field>
 
+        {/* Source kind + ref are SYSTEM-set at create time by the flow
+            that produced this lot (PO receive vs manual vs MO finish).
+            Workers don't pick them — read-only display preserves the
+            traceability evidence. */}
         <Field
-          id="source_kind"
+          id="source_kind_display"
           label="Source kind"
-          error={fieldErrors.source_kind?.[0]}
           editor={fieldEditors.source_kind}
         >
-          <Select
-            value={draft.source_kind || UNSET}
-            onValueChange={(v) =>
-              onChange("source_kind", v === UNSET ? "" : v)
-            }
-          >
-            <SelectTrigger
-              id="source_kind"
-              className="h-9"
-              onFocus={() => focusField("source_kind")}
-              onBlur={() => blurField("source_kind")}
-            >
-              <SelectValue placeholder="—" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={UNSET}>—</SelectItem>
-              <SelectItem value="purchase_order">Purchase order</SelectItem>
-              <SelectItem value="manufacturing_order">
-                Manufacturing order
-              </SelectItem>
-              <SelectItem value="opening_balance">Opening balance</SelectItem>
-              <SelectItem value="return">Return</SelectItem>
-              <SelectItem value="adjustment">Adjustment</SelectItem>
-              <SelectItem value="manual">Manual</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm text-muted-foreground">
+            {labelSourceKind(draft.source_kind) ?? (
+              <span className="italic text-muted-foreground/70">
+                Not set
+              </span>
+            )}
+          </div>
         </Field>
 
         <Field
-          id="source_ref"
+          id="source_ref_display"
           label="Source reference"
-          error={fieldErrors.source_ref?.[0]}
           editor={fieldEditors.source_ref}
         >
-          <Input
-            id="source_ref"
-            value={draft.source_ref}
-            onChange={(e) => onChange("source_ref", e.target.value)}
-            onFocus={() => focusField("source_ref")}
-            onBlur={() => blurField("source_ref")}
-            placeholder="PO00438"
-            className="h-9 font-mono"
-          />
+          <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 font-mono text-sm text-muted-foreground">
+            {draft.source_ref || (
+              <span className="not-italic">—</span>
+            )}
+          </div>
         </Field>
 
         <Field
@@ -708,24 +688,12 @@ function IdentitySection({
         </Field>
       </div>
 
-      <div className="mt-3">
-        <Field
-          id="notes"
-          label="Notes"
-          error={fieldErrors.notes?.[0]}
-          editor={fieldEditors.notes}
-        >
-          <Textarea
-            id="notes"
-            value={draft.notes}
-            onChange={(e) => onChange("notes", e.target.value)}
-            onFocus={() => focusField("notes")}
-            onBlur={() => blurField("notes")}
-            placeholder="Anything that needs surfacing on the lot detail page"
-            rows={3}
-          />
-        </Field>
-      </div>
+      {/*
+       * The old "Notes" textarea is gone — the polymorphic Comments
+       * thread on the lot detail page handles discussion (timestamped,
+       * attributable, peer-visible). The `stock_lots.notes` DB column
+       * is left intact so historic data isn't lost.
+       */}
     </section>
   );
 }

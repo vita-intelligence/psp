@@ -57,3 +57,94 @@ The channel is generic. To enable a new resource:
 - Modals that close on save in <5s with a single field — too short-lived to justify a channel.
 
 Everything else: use the pattern.
+
+---
+
+## HARD RULE: compliance-first field design
+
+Workers using PSP are following procedures. The system enforces the procedure — workers can't take shortcuts that break traceability, food-safety, or financial integrity. Every form must pass this five-point check before it ships.
+
+### 1. Workers trigger ACTIONS, not states
+
+A status `<Select>` that lets a worker pick "received / quarantine / rejected" is a compliance bypass. Status is a **computed projection** of recorded events: receive action → received, QC pass → available, QC fail → rejected, hold action → on_hold. Workers click action buttons; the system writes the event with actor + timestamp + reason + evidence; the status follows.
+
+Same for: `source_kind` on a lot (derived from the flow that created it — manual form ⇒ `manual`, PO-receive ⇒ `purchase_order`), `approval_status` on a vendor, `traceability_verification_status`, `coa_status`, `allergen_status`, `quality_status`. **None of these are user-pickable dropdowns.** Workers trigger the action; the system records the verdict.
+
+If you find yourself rendering a `<Select>` for a status / state / verdict field, **stop and re-think**. The compliant pattern is action button → event row → projected status.
+
+### 2. If it can be computed, don't ask
+
+Every field that's a deterministic function of other fields is read-only and derived. Never ask a worker to type something the system already knows.
+
+Examples (apply this lens to every new field):
+- `vendor.next_review_at` = `last_review_at + review_frequency_months`
+- `vendor.review_frequency_months` default = `vendor_risk` driven (high=12 / med=24 / low=36)
+- `purchase_order.expected_delivery_date` default = `today + vendor.default_lead_time_days`
+- `purchase_order.currency_code` = `vendor.currency_code` (locked unless vendor flagged multi-currency)
+- `purchase_order_line.unit_price` default = vendor's last paid price for that item
+- `purchase_order.tax_amount` = `subtotal × tax_rate`
+- `purchase_order.total_amount` = `subtotal + tax_amount`
+- `stock_lot.expiry_at` default = `manufactured_at + item.default_shelf_life_months`
+- `stock_lot.unit_cost` (PO-receive) = PO line unit_price
+- `stock_lot.country_of_origin` (PO-receive) = vendor country
+- `item.code` = next NUMBERING_ENTITIES sequence per item_type (worker never sees the field on create)
+- `vendor_certificate.valid_until` = `valid_from + certificate.default_validity_months`
+- `nutrition.nrv_percent[nutrient]` = `value / nrv_reference[nutrient] × 100`
+- `working_hours.weekly_hours` summary = sum across days
+
+UI: show the computed value as **read-only with an explicit "override" toggle** when an override is legitimate. Default toggle = off. Toggling on logs an audit reason.
+
+### 3. Type your strings — no free-text where a constrained type fits
+
+Open text where a constrained type belongs is the leading cause of bad data.
+
+| Field | Type required |
+|---|---|
+| Any date | `<Input type="date">` (or `datetime-local`) — never `text` |
+| Country (2-char) | `<CountryPicker>` against ISO 3166-1 alpha-2 |
+| Currency (3-char) | `<CurrencyPicker>` against ISO 4217 |
+| Money / decimal | `Decimal` server-side with explicit precision; positive-only check at boundary |
+| Barcode | GTIN-8 / 13 / 14 checksum validator |
+| Email | RFC-5321 validator at submit |
+| URL | scheme + host validator |
+| Phone | E.164 normalised on save |
+| CIDR | network validator |
+| Vocabulary code (numbering prefix, attribute key) | regex-constrained at input, immutable after first use |
+
+If a field is "2 characters" or "3 characters" or "a number string", it's the wrong primitive. Pick the strict one.
+
+### 4. Notes → Comments, everywhere a discussion happens
+
+Single-author textareas drop context: who said it, when, did anyone reply, was it before or after the decision. Replace with a comment thread (timestamped, attributable, peer-visible, audit-trailed) wherever the content represents discussion: vendor / PO / stock lot / receipt verdict / QC review / dispute.
+
+Keep a plain note only when the field is **legally a single immutable line on a frozen record** — e.g. `risk_assessment_notes` on the artifact row itself. Anything that's collaborative drift over time → comments.
+
+The Comments module is one polymorphic table — `(entity_type, entity_id)` — reused everywhere. Don't reinvent per-entity.
+
+### 5. Files live on our server, not as URLs
+
+Any "document" / "certificate" / "evidence" / "spec" / "photo" field is an upload, not a URL field. Bytes land in `Backend.Storage` (filesystem in dev, swappable to Azure / blob in prod) with metadata: filename, mime, byte_size, uploaded_by, uploaded_at, file FK on the entity.
+
+External web links (a vendor's marketing website, a regulator's published guidance page) stay as URLs — that's content we link out to, not artefacts we ingest. Anything we'd be asked to produce in an audit is uploaded.
+
+If you're considering a `document_url`, `evidence_url`, `proof_url`, `image_url` field — make it a file FK to a `*_files` table instead. Mirror the `vendor_files` shape.
+
+### Bonus: immutability on traceability fields
+
+Once a record crosses the line into the audit trail, fields that identify it become append-only:
+
+- `stock_lot.supplier_batch_no`, `country_of_origin`, `manufactured_at`, `expiry_at` — immutable once `status ≥ received`. Edits require a dedicated capability + reason + creates an audit revision row, never a silent overwrite.
+- `vendor.legal_name`, `tax_number`, `registration_number` — immutable once `approval_status = approved`. Identity changes void the approval; vendor must re-qualify.
+- `purchase_order.lines` — immutable once `status ≠ draft`. Adding / removing lines after submission isn't an edit, it's a new amendment PO.
+
+### Field-design checklist (run before every new form ships)
+
+- [ ] Is any field on this form a status / state / verdict? → Replace with action button + event row.
+- [ ] Is any field computable from other fields? → Read-only with override toggle.
+- [ ] Is any "2-char" / "3-char" field a coded vocabulary? → Use the ISO picker.
+- [ ] Is any "date" field a `type="text"`? → `type="date"`.
+- [ ] Is any "notes" / "comments" / "remarks" textarea a discussion? → Comments module.
+- [ ] Is any field accepting a URL to a document? → File upload.
+- [ ] Is any traceability field editable after a state crossing? → Lock it.
+
+If any box is unchecked, the form isn't done.

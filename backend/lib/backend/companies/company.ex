@@ -46,6 +46,14 @@ defmodule Backend.Companies.Company do
     field :allowed_ips, :map, default: %{}
     field :numbering_formats, :map, default: %{}
 
+    # ECB auto-pull controls live alongside the rates bag rather than
+    # inside it: cron writes / reads these without round-tripping
+    # JSONB, and the FE can render "last pulled at HH:MM" without
+    # parsing the bag itself.
+    field :currency_rates_auto_pull, :boolean, default: true
+    field :currency_rates_pulled_at, :utc_datetime
+    field :currency_rates_source, :string, default: "manual"
+
     has_many :roles, Role
     has_many :users, User
 
@@ -122,6 +130,33 @@ defmodule Backend.Companies.Company do
     |> validate_inclusion(:currency_code, @currencies)
     |> validate_inclusion(:first_day_of_week, 0..6)
     |> validate_different_separators()
+  end
+
+  @currency_rates_sources ~w(manual ecb_auto)
+
+  @doc """
+  Toggle the auto-pull flag without touching the rates bag itself.
+  Cron writes the rates separately via `update_currency_rates/3` which
+  also stamps `currency_rates_pulled_at` + `currency_rates_source`.
+  """
+  def auto_pull_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:currency_rates_auto_pull])
+    |> validate_required([:currency_rates_auto_pull])
+  end
+
+  @doc """
+  Cron-write of the rates bag together with provenance. Used only by
+  `Backend.Companies.update_currency_rates/3`; not exposed to the FE.
+  """
+  def system_currency_rates_changeset(company, attrs) do
+    company
+    |> cast(attrs, [
+      :currency_rates,
+      :currency_rates_pulled_at,
+      :currency_rates_source
+    ])
+    |> validate_inclusion(:currency_rates_source, @currency_rates_sources)
   end
 
   defp validate_different_separators(changeset) do

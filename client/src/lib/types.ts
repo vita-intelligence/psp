@@ -99,6 +99,15 @@ export interface Company {
   working_hours: Record<string, unknown>;
   holidays: Record<string, unknown>;
   currency_rates: Record<string, unknown>;
+  /** ECB auto-pull controls. When `auto_pull = true`, the backend
+   *  cron overwrites `currency_rates` daily at 08:00 UTC from the
+   *  European Central Bank reference feed. Set false to manage
+   *  manually. `pulled_at` is `null` until the first successful pull
+   *  for this company. `source` is `"manual"` when admins last saved
+   *  via the form, `"ecb_auto"` when the cron last wrote. */
+  currency_rates_auto_pull: boolean;
+  currency_rates_pulled_at: string | null;
+  currency_rates_source: "manual" | "ecb_auto";
   allowed_ips: Record<string, unknown>;
   numbering_formats: Record<string, unknown>;
 }
@@ -528,6 +537,44 @@ export interface PurchaseOrder {
   updated_at: string;
   created_by?: AuditActor | null;
   updated_by?: AuditActor | null;
+}
+
+/** Response from
+ *  `GET /api/purchase-orders/:po_uuid/lines/suggest-price?item_id=N`.
+ *  Pre-fills `unit_price` in the add-line dialog from the cached last
+ *  paid price for this (vendor, item, currency). `last_paid` is null
+ *  when there's no history — the FE shows the input unprefilled. */
+export interface PurchaseOrderSuggestPrice {
+  last_paid: {
+    unit_price: string;
+    currency_code: string;
+    last_paid_at: string;
+    last_po_line_id: number | null;
+    qty_purchased: string;
+  } | null;
+}
+
+/** One row of a vendor's cached price history — surfaced on the
+ *  vendor detail page so reviewers can see what we've been paying
+ *  and trace each price point back to the PO that set it. */
+export interface VendorItemPrice {
+  uuid: string;
+  item_id: number;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    item_type: ItemType;
+    external_sku: string | null;
+  } | null;
+  currency_code: string;
+  unit_price: string;
+  qty_purchased: string;
+  last_paid_at: string;
+  last_po_line_id: number | null;
+  last_po_uuid: string | null;
+  updated_at: string;
 }
 
 /** Row from `GET /api/stock/inventory` — one entry per item with

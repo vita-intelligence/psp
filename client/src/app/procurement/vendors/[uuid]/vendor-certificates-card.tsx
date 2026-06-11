@@ -42,6 +42,10 @@ import {
   FileUploadField,
   truncateMiddle,
 } from "./vendor-qualification-card";
+import {
+  DerivedDateField,
+  addMonths,
+} from "@/components/forms/derived-date-field";
 
 interface Props {
   vendor: Vendor;
@@ -298,10 +302,24 @@ export function VendorCertificatesCard({
                 <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
                   Valid until
                 </Label>
-                <Input
-                  type="date"
+                <DerivedDateField
+                  computed={(() => {
+                    const cert = availableCerts.find(
+                      (c) => String(c.id) === certificateId,
+                    );
+                    return addMonths(validFrom, cert?.default_validity_months);
+                  })()}
                   value={validUntil}
-                  onChange={(e) => setValidUntil(e.target.value)}
+                  onChange={setValidUntil}
+                  derivationHint={(() => {
+                    const cert = availableCerts.find(
+                      (c) => String(c.id) === certificateId,
+                    );
+                    return cert?.default_validity_months
+                      ? `Valid from + ${cert.default_validity_months}mo`
+                      : "Pick a certificate type";
+                  })()}
+                  reasonComputedMissing="Pick cert type + set valid-from to auto-calculate."
                 />
               </div>
             </div>

@@ -99,14 +99,18 @@ defmodule Backend.RBAC.Permissions do
   # baseline (lot list + detail + movement history). Receive lets the
   # operator create manual lots; Move and Adjust each carry their own
   # gate so an audit of "who moved what" stays distinct from "who
-  # adjusted a stock-take count". Edit (lot identity + packaging) and
-  # Dispose are separate seniority gates.
+  # adjusted a stock-take count". Edit (lot identity + packaging),
+  # Hold (operator-initiated pause), QC (verdict-of-record), and
+  # Dispose are separate seniority gates because the regulator wants
+  # to see who pressed which button.
   @stock [
     {"stock.view", "View stock lots, placements, and movement history"},
     {"stock.receive", "Receive new lots (manual create)"},
     {"stock.edit", "Edit lot identity + packaging dimensions"},
     {"stock.move", "Move stock between cells"},
     {"stock.adjust", "Manually adjust qty (stock-take corrections, shrinkage)"},
+    {"stock.hold", "Put a lot on hold / release it back"},
+    {"stock.qc", "Record QC verdicts (pass / fail / route to quarantine)"},
     {"stock.dispose", "Dispose of stock"}
   ]
 
@@ -329,6 +333,16 @@ defmodule Backend.RBAC.Permissions do
             read: "stock.view",
             create: "stock.move",
             update: "stock.adjust",
+            delete: "stock.dispose"
+          },
+          %{
+            key: "stock_lifecycle",
+            label: "Stock lot lifecycle",
+            description:
+              "QC verdicts, hold / release, and disposal events on a stock lot. Each action writes an immutable event row; the lot's status is the projection.",
+            read: "stock.view",
+            create: "stock.qc",
+            update: "stock.hold",
             delete: "stock.dispose"
           }
         ]

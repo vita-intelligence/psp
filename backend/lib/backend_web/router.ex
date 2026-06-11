@@ -10,6 +10,26 @@ defmodule BackendWeb.Router do
     plug BackendWeb.Plugs.RequireAuth
   end
 
+  # One pipeline per polymorphic-comments mount. Stamps
+  # `conn.assigns.entity_type` so `CommentsController` knows which
+  # kind of row the URL uuid refers to without inventing a new path
+  # segment. Keeps `/api/vendors/:uuid/comments` URLs intuitive.
+  pipeline :comments_vendor do
+    plug :put_entity_type, "vendor"
+  end
+
+  pipeline :comments_purchase_order do
+    plug :put_entity_type, "purchase_order"
+  end
+
+  pipeline :comments_stock_lot do
+    plug :put_entity_type, "stock_lot"
+  end
+
+  defp put_entity_type(conn, type) do
+    Plug.Conn.assign(conn, :entity_type, type)
+  end
+
   scope "/api", BackendWeb do
     pipe_through :api
 
@@ -51,6 +71,10 @@ defmodule BackendWeb.Router do
     put "/company", CompanyController, :update
     put "/company/locale", CompanyController, :update_locale
     put "/company/bag", CompanyController, :update_bag
+
+    put "/company/currency-rates/auto-pull",
+        CompanyController,
+        :update_currency_rates_auto_pull
 
     resources "/warehouses", WarehouseController,
       only: [:index, :show, :create, :update, :delete] do
@@ -162,6 +186,11 @@ defmodule BackendWeb.Router do
       post "/approved-items", VendorController, :add_approved_item
       delete "/approved-items/:id", VendorController, :remove_approved_item
 
+      # Cached last-paid prices per (item, currency). Read-only —
+      # the rows are maintained by the PO receive flow, not by the
+      # vendor edit form.
+      get "/price-history", VendorController, :price_history
+
       # Per-vendor certificate attachments. Same shape as
       # /api/items/:id/certificates — reuses the cert registry +
       # the certificate-expiring queue downstream.
@@ -178,6 +207,11 @@ defmodule BackendWeb.Router do
       post "/lines", PurchaseOrderController, :add_line
       put "/lines/:id", PurchaseOrderController, :update_line
       delete "/lines/:id", PurchaseOrderController, :delete_line
+
+      # Last-paid lookup for the add-line dialog. Sits above the
+      # generic state-transition POSTs because it's a query, not a
+      # transition.
+      get "/lines/suggest-price", PurchaseOrderController, :suggest_price
 
       # State transitions live under their own paths so the audit
       # log and FE event-handling stay readable.
@@ -269,6 +303,13 @@ defmodule BackendWeb.Router do
         # one-tap cards so the camera viewfinder is the fallback,
         # not the default.
         get "/move-recommendations", StockLotController, :move_recommendations
+
+        # Lifecycle event timeline + recording. Per-kind permission
+        # dispatch lives inside the controller (qc_passed → stock.qc,
+        # held → stock.hold, disposed → stock.dispose). System-only
+        # kinds (received / expected) are rejected at the controller.
+        get "/events", StockLotController, :events_index
+        post "/events", StockLotController, :events_create
       end
 
       # Flat cell picker for the create-manual-lot form — returns
@@ -280,6 +321,38 @@ defmodule BackendWeb.Router do
       post "/movement-photos", MovementPhotoController, :create
       get "/movement-photos/:uuid/file", MovementPhotoController, :serve_file
     end
+  end
+
+  # Polymorphic comments mounted per-entity so the URLs stay
+  # intuitive. Each scope stamps the entity_type via its pipeline so
+  # the shared controller knows which kind of row the URL uuid is for.
+  # Read perm = entity's view perm; write perm = entity's edit perm.
+
+  scope "/api/vendors/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_vendor]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/purchase-orders/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_purchase_order]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/stock/lots/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_stock_lot]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

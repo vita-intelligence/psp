@@ -75,6 +75,9 @@ defmodule BackendWeb.Payloads do
       working_hours: company.working_hours,
       holidays: company.holidays,
       currency_rates: company.currency_rates,
+      currency_rates_auto_pull: company.currency_rates_auto_pull,
+      currency_rates_pulled_at: company.currency_rates_pulled_at,
+      currency_rates_source: company.currency_rates_source,
       allowed_ips: company.allowed_ips,
       numbering_formats: company.numbering_formats,
       inserted_at: company.inserted_at,
@@ -544,6 +547,77 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  @doc """
+  One row from a polymorphic comment thread. Shape mirrors what the
+  FE comment-thread component needs in one pass — avatar + name +
+  relative-time + body + edit/delete handles.
+
+  `parent_comment_id` is exposed so the v2 threaded UI can stitch
+  replies. `mentioned_user_ids` is the v2 notification fan-out target.
+  """
+  def comment(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      entity_type: c.entity_type,
+      entity_id: c.entity_id,
+      body: c.body,
+      visibility: c.visibility,
+      parent_comment_id: c.parent_comment_id,
+      mentioned_user_ids: c.mentioned_user_ids || [],
+      edited_at: c.edited_at,
+      created_at: c.inserted_at,
+      updated_at: c.updated_at,
+      author: actor(c, :author)
+    }
+  end
+
+  @doc """
+  Suggest-price endpoint payload. Returns `nil` when there's no
+  history so the FE can branch on `last_paid == null` without a
+  separate "missing" code.
+  """
+  def vendor_item_price_suggestion(nil), do: nil
+
+  def vendor_item_price_suggestion(%{
+        unit_price: unit_price,
+        currency_code: currency_code,
+        last_paid_at: last_paid_at,
+        last_po_line_id: last_po_line_id,
+        qty_purchased: qty_purchased
+      }) do
+    %{
+      unit_price: unit_price,
+      currency_code: currency_code,
+      last_paid_at: last_paid_at,
+      last_po_line_id: last_po_line_id,
+      qty_purchased: qty_purchased
+    }
+  end
+
+  @doc """
+  One row of the vendor-detail "Price history" card. Item is preloaded
+  so the FE can render the name + code without a second fetch; the
+  source PO is linked for receipts traceability.
+  """
+  def vendor_item_price(%Backend.Purchasing.VendorItemPrice{} = row) do
+    %{
+      uuid: row.uuid,
+      item_id: row.item_id,
+      item: maybe_item_summary(row.item),
+      currency_code: row.currency_code,
+      unit_price: row.unit_price,
+      qty_purchased: row.qty_purchased,
+      last_paid_at: row.last_paid_at,
+      last_po_line_id: row.last_po_line_id,
+      last_po_uuid: vendor_item_price_po_uuid(row),
+      updated_at: row.updated_at
+    }
+  end
+
+  defp vendor_item_price_po_uuid(%{last_po_line: %{purchase_order: %{uuid: uuid}}}), do: uuid
+  defp vendor_item_price_po_uuid(_), do: nil
+
   defp maybe_certificate_compact(%Backend.Certificates.Certificate{} = c) do
     %{
       id: c.id,
@@ -843,6 +917,34 @@ defmodule BackendWeb.Payloads do
       storage_cell: preloaded_or_nil(p, :storage_cell, &storage_cell_summary/1),
       inserted_at: p.inserted_at,
       updated_at: p.updated_at
+    }
+  end
+
+  @doc """
+  Lot lifecycle event. The lot detail timeline reads off these — actor
+  avatar + kind label + reason + optional evidence file. Metadata is
+  passed through verbatim so the FE can render kind-specific extras
+  (po_line_id on receive, qc_verdict on QC, etc.) without a per-kind
+  payload contract.
+  """
+  def lot_event(e) do
+    %{
+      id: e.id,
+      uuid: e.uuid,
+      stock_lot_id: e.stock_lot_id,
+      kind: e.kind,
+      actor_kind: e.actor_kind,
+      actor: actor(e, :actor),
+      reason: e.reason,
+      metadata: e.metadata || %{},
+      evidence_file:
+        case Map.get(e, :evidence_file) do
+          %Ecto.Association.NotLoaded{} -> nil
+          nil -> nil
+          file -> %{uuid: file.uuid, filename: file.filename, mime: file.mime, kind: file.kind}
+        end,
+      occurred_at: e.occurred_at,
+      inserted_at: e.inserted_at
     }
   end
 

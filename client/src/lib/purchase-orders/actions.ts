@@ -3,7 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { PurchaseOrder, PurchaseOrderLine } from "../types";
+import type {
+  PurchaseOrder,
+  PurchaseOrderLine,
+  PurchaseOrderSuggestPrice,
+} from "../types";
 import {
   toErrorResult,
   unauthorizedResult,
@@ -13,6 +17,9 @@ import {
 export type POResult = { ok: true; po: PurchaseOrder } | ErrorResult;
 export type LineResult = { ok: true; line: PurchaseOrderLine } | ErrorResult;
 export type DeleteResult = { ok: true } | ErrorResult;
+export type SuggestPriceResult =
+  | { ok: true; last_paid: PurchaseOrderSuggestPrice["last_paid"] }
+  | ErrorResult;
 
 export interface POHeaderInput {
   vendor_id?: number;
@@ -127,6 +134,33 @@ export async function updateLineAction(
     return toErrorResult(err, {
       source: "updateLineAction",
       fallbackDetail: "Couldn't update the line.",
+    });
+  }
+}
+
+/**
+ * Last-paid lookup for the add-line dialog. Fired the moment the
+ * worker picks an item so unit_price can pre-fill from history.
+ *
+ * Compliance rule: "if it can be computed, don't ask". Workers
+ * shouldn't be typing prices the system already knows.
+ */
+export async function suggestLinePriceAction(
+  poUuid: string,
+  itemId: number,
+): Promise<SuggestPriceResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("suggestLinePriceAction");
+  try {
+    const res = await api<PurchaseOrderSuggestPrice>(
+      `/api/purchase-orders/${encodeURIComponent(poUuid)}/lines/suggest-price?item_id=${encodeURIComponent(String(itemId))}`,
+      { token },
+    );
+    return { ok: true, last_paid: res.last_paid };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "suggestLinePriceAction",
+      fallbackDetail: "Couldn't load the last-paid price.",
     });
   }
 }

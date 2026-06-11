@@ -111,6 +111,14 @@ defmodule Backend.Audit do
             "avatar" => u.avatar
           }
 
+        # System actor for cron / background jobs. Caller supplies at
+        # least `:kind` (`"system"` / `"cron"`); we coerce all keys to
+        # strings so JSONB stays uniform with the user shape above.
+        %{kind: kind} = sys when is_binary(kind) ->
+          sys
+          |> Map.take([:kind, :name, :source])
+          |> Map.new(fn {k, v} -> {to_string(k), v} end)
+
         _ ->
           %{}
       end

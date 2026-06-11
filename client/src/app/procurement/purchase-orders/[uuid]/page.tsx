@@ -9,6 +9,8 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { CommentThread } from "@/components/comments/comment-thread";
+import { listCommentsForEntity } from "@/lib/comments/server";
 import { getPurchaseOrder } from "@/lib/purchase-orders/server";
 import {
   listItemsForReceive,
@@ -60,11 +62,12 @@ export default async function PODetailPage({
   }
 
   const { uuid } = await params;
-  const [po, items, warehouses, prefs] = await Promise.all([
+  const [po, items, warehouses, prefs, initialComments] = await Promise.all([
     getPurchaseOrder(uuid),
     listItemsForReceive(),
     listWarehousesForReceive(),
     getCompanyDefaults(),
+    listCommentsForEntity("purchase_order", uuid),
   ]);
   if (!po) notFound();
 
@@ -149,6 +152,14 @@ export default async function PODetailPage({
               canReceive={canReceive}
             />
           )}
+
+          <CommentThread
+            entityType="purchase_order"
+            entityUuid={po.uuid}
+            initial={initialComments ?? []}
+            canComment={canCreate}
+            currentUserId={user.id}
+          />
 
           <AuditMetaSection
             inserted_at={po.inserted_at}

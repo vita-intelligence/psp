@@ -13,6 +13,7 @@ defmodule BackendWeb.PurchaseOrderController do
   use BackendWeb, :controller
 
   alias Backend.Purchasing
+  alias Backend.Purchasing.VendorPrices
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
@@ -25,7 +26,8 @@ defmodule BackendWeb.PurchaseOrderController do
               :add_line,
               :update_line,
               :delete_line,
-              :cancel
+              :cancel,
+              :suggest_price
             ]
   plug RequirePermission, "procurement.po_submit" when action in [:submit]
   plug RequirePermission, "procurement.po_approve" when action in [:sign_approver]
@@ -155,6 +157,48 @@ defmodule BackendWeb.PurchaseOrderController do
       _ -> {:error, :not_found}
     end
   end
+
+  @doc """
+  Last-paid price lookup for the add-line dialog. The FE fires this
+  the moment the worker picks an item so unit_price can pre-fill —
+  pulling the (vendor, item, currency) tuple from the parent PO and
+  the chosen item.
+  """
+  def suggest_price(conn, %{"purchase_order_id" => po_uuid} = params) do
+    actor = conn.assigns.current_user
+
+    with %{} = po <- Purchasing.get_for_company(actor.company_id, po_uuid),
+         {:ok, item_id} <- parse_item_id(params["item_id"]) do
+      last_paid =
+        VendorPrices.last_paid_for(
+          po.company_id,
+          po.vendor_id,
+          item_id,
+          po.currency_code
+        )
+
+      json(conn, %{last_paid: Payloads.vendor_item_price_suggestion(last_paid)})
+    else
+      {:error, :bad_item_id} ->
+        unprocessable(conn, "bad_item_id", "item_id query parameter must be a positive integer.")
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp parse_item_id(nil), do: {:error, :bad_item_id}
+  defp parse_item_id(""), do: {:error, :bad_item_id}
+  defp parse_item_id(n) when is_integer(n) and n > 0, do: {:ok, n}
+
+  defp parse_item_id(raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> {:error, :bad_item_id}
+    end
+  end
+
+  defp parse_item_id(_), do: {:error, :bad_item_id}
 
   # ----- state transitions ----------------------------------------
 

@@ -12,7 +12,6 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   Building2,
-  ClipboardCheck,
   Loader2,
   Lock,
   LockKeyhole,
@@ -38,6 +37,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { CountryPicker } from "@/components/forms/country-picker";
+import { CurrencyPicker } from "@/components/forms/currency-picker";
+import {
+  DerivedDateField,
+  addMonths,
+} from "@/components/forms/derived-date-field";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -467,17 +472,12 @@ export function VendorForm({ vendor, canEdit }: Props) {
               error={fieldErrors.currency_code?.[0]}
               editor={fieldEditors.currency_code}
             >
-              <Input
+              <CurrencyPicker
                 id="currency_code"
                 value={draft.currency_code}
-                onChange={(e) =>
-                  update("currency_code", e.target.value.toUpperCase())
-                }
+                onChange={(v) => update("currency_code", v ?? "GBP")}
                 onFocus={() => focusField("currency_code")}
                 onBlur={() => blurField("currency_code")}
-                maxLength={3}
-                className="font-mono"
-                placeholder="GBP"
               />
             </Field>
             <Field
@@ -745,13 +745,20 @@ export function VendorForm({ vendor, canEdit }: Props) {
               error={fieldErrors.next_review_at?.[0]}
               editor={fieldEditors.next_review_at}
             >
-              <Input
+              <DerivedDateField
                 id="next_review_at"
-                type="date"
+                computed={addMonths(
+                  draft.last_review_at,
+                  draft.review_frequency_months
+                    ? Number(draft.review_frequency_months)
+                    : null,
+                )}
                 value={draft.next_review_at}
-                onChange={(e) => update("next_review_at", e.target.value)}
+                onChange={(v) => update("next_review_at", v)}
                 onFocus={() => focusField("next_review_at")}
                 onBlur={() => blurField("next_review_at")}
+                derivationHint={`Last review + ${draft.review_frequency_months || "?"}mo`}
+                reasonComputedMissing="Set last review + cadence to auto-calculate."
               />
             </Field>
           </Grid>
@@ -772,24 +779,14 @@ export function VendorForm({ vendor, canEdit }: Props) {
           </Field>
         </Section>
 
-        <Section icon={ClipboardCheck} title="Notes">
-          <Field
-            id="notes"
-            label="Internal notes"
-            error={fieldErrors.notes?.[0]}
-            editor={fieldEditors.notes}
-          >
-            <Textarea
-              id="notes"
-              rows={3}
-              value={draft.notes}
-              onChange={(e) => update("notes", e.target.value)}
-              onFocus={() => focusField("notes")}
-              onBlur={() => blurField("notes")}
-              placeholder="Anything procurement / QA should know about this supplier"
-            />
-          </Field>
-        </Section>
+        {/*
+         * The old "Internal notes" textarea has been replaced by the
+         * polymorphic Comments thread mounted on the vendor detail
+         * page. Single-author free-text drops context (no author, no
+         * time, no replies). Existing `vendor.notes` rows are left
+         * intact in the DB so historical data isn't lost — admins can
+         * migrate them into comments manually if desired.
+         */}
 
         {canEdit && (
           <>
@@ -881,7 +878,6 @@ type DraftSnapshot = {
   review_frequency_months: string;
   last_review_at: string;
   next_review_at: string;
-  notes: string;
 };
 
 function snapshot(v: Vendor | null): DraftSnapshot {
@@ -911,7 +907,6 @@ function snapshot(v: Vendor | null): DraftSnapshot {
       : "",
     last_review_at: v?.last_review_at ?? "",
     next_review_at: v?.next_review_at ?? "",
-    notes: v?.notes ?? "",
   };
 }
 
@@ -945,7 +940,6 @@ function buildPayload(draft: DraftSnapshot): VendorInput {
       : null,
     last_review_at: draft.last_review_at || null,
     next_review_at: draft.next_review_at || null,
-    notes: draft.notes.trim() || null,
   };
 }
 

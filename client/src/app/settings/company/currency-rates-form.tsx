@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Card,
   CardContent,
@@ -23,7 +24,10 @@ import { FieldEditingIndicator } from "@/components/realtime/field-editing-indic
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
-import { updateCompanyBagAction } from "@/lib/company/bag-actions";
+import {
+  setCurrencyRatesAutoPullAction,
+  updateCompanyBagAction,
+} from "@/lib/company/bag-actions";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { clientValidationError } from "@/lib/errors/client";
 import type { CurrencyRate } from "@/lib/company/bags";
@@ -31,6 +35,7 @@ import type { Company } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import {
   Coins,
+  Globe,
   Loader2,
   LockKeyhole,
   Plus,
@@ -76,6 +81,15 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
 
   const base = company.currency_code;
 
+  // Optimistic overlay over the server prop. While the toggle PUT is
+  // in flight we render the user's intent; when the server round-trip
+  // succeeds `revalidatePath` refreshes `company` and we drop back to
+  // the prop. A failure clears the override so the prop wins.
+  const [autoPullOverride, setAutoPullOverride] = useState<boolean | null>(null);
+  const autoPull = autoPullOverride ?? company.currency_rates_auto_pull;
+
+  const ratesLocked = autoPull;
+
   const {
     state,
     setField,
@@ -120,6 +134,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
 
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
+  const [togglePending, startToggleTransition] = useTransition();
 
   const dirty = JSON.stringify(items) !== JSON.stringify(original);
 
@@ -139,6 +154,29 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
 
   function update(index: number, patch: Partial<CurrencyRate>) {
     setItems(items.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  }
+
+  function onToggleAutoPull(next: boolean) {
+    if (!canEdit || !isCreator) return;
+    setActionError(null);
+    setAutoPullOverride(next);
+
+    startToggleTransition(async () => {
+      const res = await setCurrencyRatesAutoPullAction(next);
+      if (res.ok) {
+        toast.success(
+          next
+            ? "Auto-pull on. ECB rates will refresh daily at 08:00 UTC."
+            : "Auto-pull off. Manage rates manually below.",
+        );
+        // Server prop will arrive via revalidatePath — clear the
+        // override so it takes over.
+        setAutoPullOverride(null);
+        return;
+      }
+      setAutoPullOverride(null);
+      setActionError(res);
+    });
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -219,7 +257,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
           <div className="space-y-1.5">
             <CardTitle>Currency rates</CardTitle>
             <CardDescription>
-              Manual exchange rates to <strong>{base}</strong> (your base currency).
+              Exchange rates to <strong>{base}</strong> (your base currency).
             </CardDescription>
           </div>
           <div className="flex items-center gap-3">
@@ -231,6 +269,15 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
       <CardContent>
         <fieldset disabled={!canEdit || pending} className="contents">
           <form onSubmit={onSubmit} className="space-y-4">
+            <AutoPullBanner
+              enabled={autoPull}
+              pulledAt={company.currency_rates_pulled_at}
+              source={company.currency_rates_source}
+              canEdit={canEdit && isCreator}
+              pending={togglePending}
+              onToggle={onToggleAutoPull}
+            />
+
             {items.length === 0 ? (
               <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border/60 py-8 text-center">
                 <Coins className="size-6 text-muted-foreground" />
@@ -263,6 +310,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
                         <Select
                           value={row.currency}
                           onValueChange={(v) => update(i, { currency: v })}
+                          disabled={ratesLocked}
                         >
                           <SelectTrigger
                             id={currencyId}
@@ -293,6 +341,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
                           step="any"
                           min={0}
                           value={row.rate}
+                          readOnly={ratesLocked}
                           onChange={(e) =>
                             update(i, { rate: Number(e.target.value) })
                           }
@@ -303,7 +352,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
                         />
                         <FieldEditingIndicator peer={fieldEditors[rateId]} />
                       </div>
-                      {canEdit && (
+                      {canEdit && !ratesLocked && (
                         <Button
                           type="button"
                           variant="ghost"
@@ -322,7 +371,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
               </ul>
             )}
 
-            {canEdit && (
+            {canEdit && !ratesLocked && (
               <Button
                 type="button"
                 variant="outline"
@@ -343,7 +392,7 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
               />
             )}
 
-            {canEdit && (
+            {canEdit && !ratesLocked && (
               <>
                 {!isCreator && <CreatorLockBanner creator={creator} />}
                 <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:justify-end">
@@ -379,6 +428,76 @@ export function CurrencyRatesForm({ company, canEdit }: Props) {
 function firstUnused(items: CurrencyRate[], base: string) {
   const taken = new Set([base, ...items.map((i) => i.currency.toUpperCase())]);
   return CURRENCY_OPTIONS.find((c) => !taken.has(c));
+}
+
+interface AutoPullBannerProps {
+  enabled: boolean;
+  pulledAt: string | null;
+  source: "manual" | "ecb_auto";
+  canEdit: boolean;
+  pending: boolean;
+  onToggle: (next: boolean) => void;
+}
+
+function AutoPullBanner({
+  enabled,
+  pulledAt,
+  source,
+  canEdit,
+  pending,
+  onToggle,
+}: AutoPullBannerProps) {
+  const stamp = pulledAt ? formatUtcStamp(pulledAt) : null;
+
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/30 px-4 py-3">
+      <div className="flex items-start gap-3">
+        <Globe className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+        <div className="space-y-1">
+          <p className="text-sm font-medium">
+            European Central Bank auto-pull
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {enabled
+              ? stamp
+                ? source === "ecb_auto"
+                  ? `Pulled from the ECB feed at ${stamp}. Refreshes daily at 08:00 UTC.`
+                  : `On. Next pull at 08:00 UTC will overwrite manual values (last saved ${stamp}).`
+                : "On. First pull runs at the next 08:00 UTC tick — current values are whatever was last saved manually."
+              : "Off. Edit the rates below manually."}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        {pending && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+        <Switch
+          checked={enabled}
+          onCheckedChange={onToggle}
+          disabled={!canEdit || pending}
+          aria-label="Auto-pull ECB rates"
+        />
+      </div>
+    </div>
+  );
+}
+
+// Render a UTC-stamped time the operator can compare against their
+// watch. Date-fns isn't pulled in by this form, so we stay in vanilla
+// Intl and explicitly tag UTC so it's unambiguous regardless of the
+// browser timezone.
+function formatUtcStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+    hour12: false,
+  });
+  return `${fmt.format(date)} UTC`;
 }
 
 function ReadOnly() {

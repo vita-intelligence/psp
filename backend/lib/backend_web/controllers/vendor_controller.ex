@@ -18,6 +18,7 @@ defmodule BackendWeb.VendorController do
   use BackendWeb, :controller
 
   alias Backend.{Storage, Vendors}
+  alias Backend.Purchasing.VendorPrices
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
@@ -30,7 +31,7 @@ defmodule BackendWeb.VendorController do
   @max_evidence_bytes 20 * 1024 * 1024
 
   plug RequirePermission, "vendors.view"
-       when action in [:index, :show, :serve_file]
+       when action in [:index, :show, :serve_file, :price_history]
   plug RequirePermission, "vendors.create" when action in [:create]
   plug RequirePermission, "vendors.edit"
        when action in [
@@ -75,6 +76,22 @@ defmodule BackendWeb.VendorController do
     case Vendors.get_for_company(actor.company_id, uuid) do
       nil -> {:error, :not_found}
       vendor -> json(conn, %{vendor: Payloads.vendor(vendor)})
+    end
+  end
+
+  @doc """
+  Vendor-detail "Price history" card. Cached last-paid per (item,
+  currency) for the given vendor — read-only projection of received
+  PO lines, ordered by most-recent paid date.
+  """
+  def price_history(conn, %{"vendor_id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = vendor <- Vendors.get_for_company(actor.company_id, uuid) do
+      rows = VendorPrices.list_for_vendor(actor.company_id, vendor.id)
+      json(conn, %{items: Enum.map(rows, &Payloads.vendor_item_price/1)})
+    else
+      _ -> {:error, :not_found}
     end
   end
 

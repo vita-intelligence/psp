@@ -46,3 +46,34 @@ export async function updateCompanyBagAction(
     });
   }
 }
+
+/**
+ * Flip the ECB currency-rates auto-pull toggle. Distinct from a bag
+ * write because the rate values are owned by the cron when this is
+ * on — the FE form just exposes the gate that opens / closes that
+ * channel. Backend audits the flip under the user who toggled.
+ */
+export async function setCurrencyRatesAutoPullAction(
+  enabled: boolean,
+): Promise<BagResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("setCurrencyRatesAutoPullAction");
+
+  try {
+    const res = await api<{ company: Company }>(
+      "/api/company/currency-rates/auto-pull",
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify({ enabled }),
+      },
+    );
+    revalidatePath("/settings/company");
+    return { ok: true, company: res.company };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "setCurrencyRatesAutoPullAction",
+      fallbackDetail: "Couldn't toggle the auto-pull setting.",
+    });
+  }
+}

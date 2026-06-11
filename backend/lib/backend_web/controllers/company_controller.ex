@@ -30,7 +30,12 @@ defmodule BackendWeb.CompanyController do
 
   plug RequirePermission,
        "company.edit"
-       when action in [:update, :update_locale, :update_bag]
+       when action in [
+              :update,
+              :update_locale,
+              :update_bag,
+              :update_currency_rates_auto_pull
+            ]
 
   action_fallback BackendWeb.FallbackController
 
@@ -106,6 +111,46 @@ defmodule BackendWeb.CompanyController do
       Errors.payload(
         "bad_request",
         "Expected `field` (one of #{Enum.join(@bag_fields, ", ")}) and `value`."
+      )
+    )
+  end
+
+  # Toggle whether the ECB cron is allowed to overwrite the rates bag.
+  # When flipped to false, the FE's manual currency-rates form
+  # reactivates; when flipped back to true, the next 08:00 UTC tick
+  # repopulates from the ECB feed.
+  def update_currency_rates_auto_pull(conn, %{"enabled" => enabled})
+      when is_boolean(enabled) do
+    actor = conn.assigns[:current_user]
+
+    case Companies.update_auto_pull(
+           Companies.current(),
+           %{currency_rates_auto_pull: enabled},
+           actor
+         ) do
+      {:ok, company} ->
+        json(conn, %{company: Payloads.company(company)})
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Couldn't toggle the auto-pull setting.",
+            Errors.changeset_fields(cs)
+          )
+        )
+    end
+  end
+
+  def update_currency_rates_auto_pull(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(
+      Errors.payload(
+        "bad_request",
+        "Expected `enabled` (true | false)."
       )
     )
   end

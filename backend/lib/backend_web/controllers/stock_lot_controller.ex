@@ -19,11 +19,17 @@ defmodule BackendWeb.StockLotController do
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions, :inventory]
+  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions, :inventory, :events_index]
   plug RequirePermission, "stock.receive" when action in [:create_manual]
   plug RequirePermission, "stock.move" when action in [:move]
   plug RequirePermission, "stock.edit" when action in [:update]
   plug RequirePermission, "stock.adjust" when action in [:adjust]
+  # `events_create` carries multi-kind dispatch — the action plug only
+  # asserts "you can view this lot"; the event-kind → permission map
+  # in `events_create/2` enforces the per-action gate (qc, hold,
+  # dispose, …) so an operator with view but not qc can't smuggle a
+  # verdict through.
+  plug RequirePermission, "stock.view" when action in [:events_create]
 
   action_fallback BackendWeb.FallbackController
 
@@ -186,6 +192,129 @@ defmodule BackendWeb.StockLotController do
 
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
+    end
+  end
+
+  # Map each lifecycle event kind to the permission required to record
+  # it. Operator-initiated kinds only — `expected`, `requested`, and
+  # `received` are emitted by service code (PO approval / receive),
+  # never by the public events POST.
+  @event_kind_permissions %{
+    "routed_to_quarantine" => "stock.qc",
+    "qc_passed" => "stock.qc",
+    "qc_failed" => "stock.qc",
+    "held" => "stock.hold",
+    "released" => "stock.hold",
+    "disposed" => "stock.dispose",
+    "consumed_to_zero" => "stock.adjust",
+    "canceled" => "stock.dispose"
+  }
+
+  @doc """
+  Record a lifecycle event against a lot. Body shape:
+
+      { "kind": "qc_passed", "reason": "...", "metadata": {}, "evidence_file_id": null }
+
+  Permission is dispatched per kind — `qc_passed` needs `stock.qc`,
+  `held` needs `stock.hold`, `disposed` needs `stock.dispose`. Kinds
+  not in the map (or reserved system-only kinds like `received`) are
+  rejected before the lifecycle service even sees them.
+
+  Returns the updated lot (with projected status) + the inserted
+  event so the FE can patch the timeline without a follow-up GET.
+  """
+  def events_create(conn, %{"stock_lot_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+    kind = to_string(params["kind"] || "")
+
+    cond do
+      kind == "" ->
+        unprocessable(conn, "missing_kind", "Event `kind` is required.")
+
+      not Map.has_key?(@event_kind_permissions, kind) ->
+        unprocessable(
+          conn,
+          "event_kind_not_operator_initiated",
+          "`#{kind}` events are recorded by the system, not by operators."
+        )
+
+      true ->
+        required_perm = Map.fetch!(@event_kind_permissions, kind)
+
+        if Backend.RBAC.has_permission?(actor, required_perm) do
+          do_events_create(conn, actor, uuid, kind, params)
+        else
+          conn
+          |> put_status(:forbidden)
+          |> json(
+            BackendWeb.Errors.payload(
+              "forbidden",
+              "Recording a `#{kind}` event requires the `#{required_perm}` permission."
+            )
+          )
+        end
+    end
+  end
+
+  defp do_events_create(conn, actor, uuid, kind, params) do
+    attrs = %{
+      "kind" => kind,
+      "reason" => params["reason"],
+      "metadata" => params["metadata"] || %{},
+      "evidence_file_id" => parse_int(params["evidence_file_id"])
+    }
+
+    case Backend.Stock.record_lot_event(actor, actor.company_id, uuid, attrs) do
+      {:ok, %{lot: lot, event: event, status: _status}} ->
+        # Re-fetch with the full show-shape preloads so the FE can
+        # patch the page without a follow-up GET.
+        full_lot = Backend.Stock.get_for_company(actor.company_id, uuid) || lot
+
+        json(conn, %{
+          lot: Payloads.stock_lot(full_lot),
+          event: Payloads.lot_event(Backend.Repo.preload(event, [:actor, :evidence_file]))
+        })
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, :illegal_transition, info} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          BackendWeb.Errors.payload(
+            "illegal_lifecycle_transition",
+            "Can't record `#{info.kind}` while lot status is `#{info.from}`. " <>
+              allowed_hint(info.allowed),
+            %{from: info.from, kind: info.kind, allowed: info.allowed}
+          )
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
+  defp allowed_hint([]), do: "This is a terminal status — no further events are accepted."
+
+  defp allowed_hint(kinds) do
+    "Allowed from this status: #{Enum.join(kinds, ", ")}."
+  end
+
+  @doc """
+  Paginated timeline of lifecycle events for a lot — newest first.
+  Used by the lot detail page's "Activity" tab.
+  """
+  def events_index(conn, %{"stock_lot_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+    limit = parse_limit(params["limit"])
+
+    case Backend.Stock.list_lot_events(actor.company_id, uuid, limit: limit) do
+      {:ok, _lot, events} ->
+        json(conn, %{items: Enum.map(events, &Payloads.lot_event/1)})
+
+      {:error, :not_found} ->
+        {:error, :not_found}
     end
   end
 

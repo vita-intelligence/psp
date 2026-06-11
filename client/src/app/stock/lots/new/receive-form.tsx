@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { CountryPicker } from "@/components/forms/country-picker";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -340,10 +341,9 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
       available_from: draft.available_from
         ? new Date(draft.available_from).toISOString()
         : null,
-      overall_risk: (draft.overall_risk as "low" | "medium" | "high") || null,
-      allergen_status: (draft.allergen_status as ComplianceState) || null,
-      coa_status: (draft.coa_status as ComplianceState) || null,
-      quality_status: (draft.quality_status as ComplianceState) || null,
+      // QC verdicts default server-side to "pending"; overall_risk is
+      // derived from the item + vendor risk profile. Workers don't pick
+      // these — never send them in the create payload.
       notes: draft.notes || null,
     };
 
@@ -871,14 +871,12 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
                 error={fieldErrors.country_of_origin?.[0]}
                 editor={fieldEditors.country_of_origin}
               >
-                <Input
+                <CountryPicker
                   id="country_of_origin"
                   value={draft.country_of_origin}
-                  onChange={(e) => update("country_of_origin", e.target.value)}
+                  onChange={(v) => update("country_of_origin", v ?? "")}
                   onFocus={() => focusField("country_of_origin")}
                   onBlur={() => blurField("country_of_origin")}
-                  placeholder="e.g. IT"
-                  className="h-9"
                 />
               </Field>
               <Field
@@ -983,140 +981,22 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
             </div>
           </section>
 
-          {/* Compliance */}
-          <section className="space-y-4 rounded-lg border border-border/60 bg-card p-4">
+          {/* QC verdicts (allergen / CoA / quality) are NOT set at create.
+              Lot lands with all three = "pending"; a separate QC review
+              event flips them to accepted/rejected with actor + evidence.
+              `overall_risk` is also derived from the item + vendor risk
+              profile at receipt — workers don't pick it. */}
+          <section className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-4">
             <header className="space-y-0.5">
               <h2 className="text-sm font-semibold tracking-tight">
-                Compliance
+                Compliance state
               </h2>
               <p className="text-xs text-muted-foreground">
-                Initial QC state. Each is independent — you can have CoA
-                accepted but quality still pending.
+                New lots land with QC pending. Run an allergen / CoA /
+                quality review from the lot detail page to record a
+                verdict.
               </p>
             </header>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Field
-                id="overall_risk"
-                label="Overall risk"
-                error={fieldErrors.overall_risk?.[0]}
-                editor={fieldEditors.overall_risk}
-              >
-                <Select
-                  value={draft.overall_risk || UNSET}
-                  onValueChange={(v) =>
-                    update("overall_risk", v === UNSET ? "" : v)
-                  }
-                >
-                  <SelectTrigger
-                    id="overall_risk"
-                    className="h-9"
-                    onFocus={() => focusField("overall_risk")}
-                    onBlur={() => blurField("overall_risk")}
-                  >
-                    <SelectValue placeholder="—" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={UNSET}>—</SelectItem>
-                    {RISK_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field
-                id="allergen_status"
-                label="Allergen status"
-                error={fieldErrors.allergen_status?.[0]}
-                editor={fieldEditors.allergen_status}
-              >
-                <Select
-                  value={draft.allergen_status || UNSET}
-                  onValueChange={(v) =>
-                    update("allergen_status", v === UNSET ? "" : v)
-                  }
-                >
-                  <SelectTrigger
-                    id="allergen_status"
-                    className="h-9"
-                    onFocus={() => focusField("allergen_status")}
-                    onBlur={() => blurField("allergen_status")}
-                  >
-                    <SelectValue placeholder="—" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={UNSET}>—</SelectItem>
-                    {COMPLIANCE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field
-                id="coa_status"
-                label="CoA status"
-                error={fieldErrors.coa_status?.[0]}
-                editor={fieldEditors.coa_status}
-              >
-                <Select
-                  value={draft.coa_status || UNSET}
-                  onValueChange={(v) =>
-                    update("coa_status", v === UNSET ? "" : v)
-                  }
-                >
-                  <SelectTrigger
-                    id="coa_status"
-                    className="h-9"
-                    onFocus={() => focusField("coa_status")}
-                    onBlur={() => blurField("coa_status")}
-                  >
-                    <SelectValue placeholder="—" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={UNSET}>—</SelectItem>
-                    {COMPLIANCE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field
-                id="quality_status"
-                label="Quality status"
-                error={fieldErrors.quality_status?.[0]}
-                editor={fieldEditors.quality_status}
-              >
-                <Select
-                  value={draft.quality_status || UNSET}
-                  onValueChange={(v) =>
-                    update("quality_status", v === UNSET ? "" : v)
-                  }
-                >
-                  <SelectTrigger
-                    id="quality_status"
-                    className="h-9"
-                    onFocus={() => focusField("quality_status")}
-                    onBlur={() => blurField("quality_status")}
-                  >
-                    <SelectValue placeholder="—" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={UNSET}>—</SelectItem>
-                    {COMPLIANCE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            </div>
           </section>
 
           {/* Notes */}

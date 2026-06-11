@@ -21,6 +21,7 @@ defmodule BackendWeb.UserSocket do
   channel "plan:warehouse:*", BackendWeb.WarehousePlanChannel
   channel "device:*", BackendWeb.DeviceChannel
   channel "pairing:*", BackendWeb.PairingChannel
+  channel "comments:*", BackendWeb.CommentChannel
 
   @impl true
   def connect(%{"device_token" => token}, socket, _connect_info) when is_binary(token) do

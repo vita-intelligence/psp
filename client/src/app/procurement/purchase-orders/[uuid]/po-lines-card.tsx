@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Layers, Loader2, Plus, X } from "lucide-react";
+import { AlertTriangle, Layers, Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,14 +19,23 @@ import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
-import type { Item, PurchaseOrder } from "@/lib/types";
+import type {
+  Item,
+  PurchaseOrder,
+  PurchaseOrderSuggestPrice,
+} from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import {
   addLineAction,
   deleteLineAction,
+  suggestLinePriceAction,
 } from "@/lib/purchase-orders/actions";
-import { formatCompanyMoney } from "@/lib/format/company";
+import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
+
+// Mirrors the server-side `Backend.Purchasing.VendorPrices` threshold.
+// Symmetric — proposed prices outside ±20% surface the warning banner.
+const DEVIATION_THRESHOLD = 0.2;
 
 interface Props {
   po: PurchaseOrder;
@@ -52,6 +61,14 @@ export function POLinesCard({ po, items, canEdit }: Props) {
     debug?: ErrorDebug;
   } | null>(null);
 
+  // Cached last-paid for the currently-picked item. Refetched every
+  // time the worker swaps the item dropdown; cleared when the dropdown
+  // empties so a stale caption doesn't survive a reset.
+  const [lastPaid, setLastPaid] = useState<
+    PurchaseOrderSuggestPrice["last_paid"] | null
+  >(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+
   const resource = `purchase-order:${po.uuid}`;
   useFormPresenceBeacon(resource);
 
@@ -76,6 +93,57 @@ export function POLinesCard({ po, items, canEdit }: Props) {
     },
   });
 
+  // Refetch the last-paid lookup whenever the picked item changes —
+  // the parent PO already pins vendor + currency, so item is the only
+  // axis the FE has to vary.
+  useEffect(() => {
+    if (!state.pickItemId) return;
+
+    let cancelled = false;
+    // Spinner + cached row are externally-fed state — both flow from
+    // the suggest-price fetch, which is the canonical effect use case.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSuggestLoading(true);
+
+    (async () => {
+      const res = await suggestLinePriceAction(po.uuid, Number(state.pickItemId));
+      if (cancelled) return;
+
+      if (res.ok) {
+        setLastPaid(res.last_paid);
+        // Pre-fill unit_price ONLY when the worker hasn't typed yet.
+        // Once they've started entering a value (even by editing the
+        // suggested one), don't clobber their input.
+        if (res.last_paid && state.price === "") {
+          setField("price", res.last_paid.unit_price);
+        }
+      } else {
+        // Soft failure — the worker can still type the price by hand.
+        setLastPaid(null);
+      }
+
+      setSuggestLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.pickItemId, po.uuid]);
+
+  // Clearing the picker (resetState / X) wipes the cached suggestion
+  // synchronously — fielded here instead of in the effect so the lint
+  // rule against effect-driven setState stays happy.
+  function pickItem(itemId: string) {
+    setField("pickItemId", itemId);
+    if (!itemId) setLastPaid(null);
+  }
+
+  // ±20% deviation check against the cached last-paid price. Yellow
+  // warning only — does NOT block submission. Worker confirms or
+  // revises with eyes open.
+  const deviation = computeDeviation(state.price, lastPaid?.unit_price);
+
   function onAdd() {
     if (!state.pickItemId || !state.qty || !state.price) return;
     if (!isCreator) return;
@@ -89,6 +157,7 @@ export function POLinesCard({ po, items, canEdit }: Props) {
       if (res.ok) {
         toast.success("Line added");
         resetState(INITIAL);
+        setLastPaid(null);
         broadcastCommit({ kind: "line_added" });
         router.refresh();
       } else {
@@ -226,6 +295,26 @@ export function POLinesCard({ po, items, canEdit }: Props) {
               debug={error.debug}
             />
           )}
+          {deviation && lastPaid && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <p className="leading-snug">
+                This is{" "}
+                <span className="font-semibold">
+                  {formatPctChange(deviation.pctChange)}
+                </span>{" "}
+                {deviation.pctChange > 0 ? "higher" : "lower"} than the last
+                paid price of{" "}
+                <span className="font-mono font-semibold">
+                  {formatCompanyMoney(lastPaid.unit_price, prefs, {
+                    currency_code: lastPaid.currency_code,
+                  })}
+                </span>{" "}
+                on {formatCompanyDate(lastPaid.last_paid_at, prefs)} — confirm
+                or revise.
+              </p>
+            </div>
+          )}
           <div className="grid items-end gap-3 sm:grid-cols-[2fr_1fr_1fr_auto]">
             <div className="space-y-1.5">
               <Label
@@ -237,7 +326,7 @@ export function POLinesCard({ po, items, canEdit }: Props) {
               <div className="relative">
                 <Select
                   value={state.pickItemId}
-                  onValueChange={(v) => setField("pickItemId", v)}
+                  onValueChange={pickItem}
                 >
                   <SelectTrigger
                     id="line-pickItemId"
@@ -304,6 +393,15 @@ export function POLinesCard({ po, items, canEdit }: Props) {
                 />
                 <FieldEditingIndicator peer={fieldEditors.price} />
               </div>
+              <p className="text-[11px] text-muted-foreground">
+                {suggestLoading
+                  ? "Looking up last paid…"
+                  : lastPaid
+                    ? `Last paid ${formatCompanyMoney(lastPaid.unit_price, prefs, { currency_code: lastPaid.currency_code })} on ${formatCompanyDate(lastPaid.last_paid_at, prefs)}`
+                    : state.pickItemId
+                      ? "No prior purchases — first time buying this item from this vendor."
+                      : " "}
+              </p>
             </div>
             <Button
               size="sm"
@@ -335,4 +433,37 @@ export function POLinesCard({ po, items, canEdit }: Props) {
       )}
     </section>
   );
+}
+
+interface Deviation {
+  pctChange: number;
+  proposed: number;
+  last: number;
+}
+
+/**
+ * Mirrors `Backend.Purchasing.VendorPrices.deviation_check/5`. Returns
+ * a Deviation object only when the proposed price is strictly outside
+ * ±20% of the last paid value; otherwise returns null so the banner
+ * stays hidden.
+ */
+function computeDeviation(
+  proposedRaw: string,
+  lastRaw: string | undefined,
+): Deviation | null {
+  if (!proposedRaw || !lastRaw) return null;
+  const proposed = Number(proposedRaw);
+  const last = Number(lastRaw);
+  if (!Number.isFinite(proposed) || !Number.isFinite(last)) return null;
+  if (last <= 0) return null;
+
+  const pct = (proposed - last) / last;
+  if (Math.abs(pct) <= DEVIATION_THRESHOLD) return null;
+
+  return { pctChange: pct, proposed, last };
+}
+
+function formatPctChange(pct: number): string {
+  const sign = pct > 0 ? "+" : "−";
+  return `${sign}${Math.round(Math.abs(pct) * 100)}%`;
 }

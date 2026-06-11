@@ -38,7 +38,8 @@ defmodule Backend.Purchasing do
   alias Backend.Purchasing.{
     PurchaseOrder,
     PurchaseOrderApproval,
-    PurchaseOrderLine
+    PurchaseOrderLine,
+    VendorPrices
   }
   alias Backend.Repo
   alias Backend.Vendors
@@ -446,21 +447,137 @@ defmodule Backend.Purchasing do
   end
 
   @doc """
-  Operator stamps the PO as sent to the vendor.
+  Operator stamps the PO as sent to the vendor. As a side effect,
+  every PO line gets a planned `expected` stock lot — qty_received 0,
+  status `expected`, an `expected` lifecycle event recorded. The
+  "X arriving" dashboard reads off those rows so buyers see committed
+  arrivals before any physical receipt.
   """
   def mark_ordered(%User{} = actor, %PurchaseOrder{} = po) do
     if po.status != "approved" do
       {:error, :bad_status}
     else
       now = DateTime.utc_now() |> DateTime.truncate(:second)
+      po = preload(po)
 
-      transition(actor, po, %{
-        "status" => "ordered",
-        "ordered_at" => now,
-        "ordered_by_id" => actor.id,
-        "updated_by_id" => actor.id
-      })
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               transition_db(actor, po, %{
+                 "status" => "ordered",
+                 "ordered_at" => now,
+                 "ordered_by_id" => actor.id,
+                 "updated_by_id" => actor.id
+               }),
+             :ok <- create_expected_lots_for_po(actor, po) do
+          preload(updated)
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     end
+  end
+
+  # Walk every PO line and emit one `expected` lot + its lifecycle
+  # event. Best-effort with respect to compliance: if a line already
+  # has its expected lot (idempotency for re-runs after partial
+  # failure) we skip it.
+  defp create_expected_lots_for_po(actor, %PurchaseOrder{} = po) do
+    source_ref = render_po_code(po)
+
+    Enum.reduce_while(po.lines, :ok, fn line, :ok ->
+      case create_expected_lot_for_line(actor, po, line, source_ref) do
+        {:ok, _lot} -> {:cont, :ok}
+        :skip -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp create_expected_lot_for_line(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line, source_ref) do
+    item =
+      case line.item do
+        %Backend.Items.Item{} = i -> i
+        _ -> Repo.get(Backend.Items.Item, line.item_id)
+      end
+
+    cond do
+      is_nil(item) ->
+        {:error, {:item_not_found, line.item_id}}
+
+      expected_lot_exists?(po, line) ->
+        :skip
+
+      true ->
+        attrs = %{
+          "company_id" => po.company_id,
+          "item_id" => line.item_id,
+          "unit_of_measurement_id" => item.stock_uom_id,
+          "qty_received" => Decimal.new(0),
+          "status" => "expected",
+          "source_kind" => "purchase_order",
+          "source_ref" => source_ref,
+          "unit_cost" => line.unit_price,
+          "currency" => po.currency_code,
+          "created_by_id" => actor.id,
+          "updated_by_id" => actor.id
+        }
+
+        with {:ok, lot} <-
+               %Backend.Stock.Lot{}
+               |> Backend.Stock.Lot.expected_changeset(attrs)
+               |> Repo.insert(),
+             {:ok, _result} <-
+               Backend.Stock.Lifecycle.record_event_in_transaction(
+                 lot,
+                 "expected",
+                 %{
+                   actor: actor,
+                   actor_kind: "user",
+                   reason: "PO ordered",
+                   metadata: %{
+                     "po_line_id" => line.id,
+                     "po_id" => po.id,
+                     "source_ref" => source_ref
+                   }
+                 }
+               ) do
+          Backend.Audit.record_created(actor, "stock_lot", lot, %{
+            status: lot.status,
+            source_kind: lot.source_kind,
+            source_ref: lot.source_ref,
+            qty_received: lot.qty_received
+          })
+
+          {:ok, lot}
+        end
+    end
+  end
+
+  # An "expected" lot for this line is identified by source_kind =
+  # "purchase_order" + source_ref = PO.code + qty_received = 0 + the
+  # event log carrying our po_line_id. Cheap presence check via the
+  # event log avoids a duplicate when mark_ordered retries.
+  defp expected_lot_exists?(%PurchaseOrder{} = po, %PurchaseOrderLine{id: line_id}) do
+    Repo.exists?(
+      from e in Backend.Stock.LotEvent,
+        join: l in Backend.Stock.Lot,
+        on: l.id == e.stock_lot_id,
+        where:
+          e.kind == "expected" and
+            e.company_id == ^po.company_id and
+            fragment("?->>'po_line_id' = ?", e.metadata, ^Integer.to_string(line_id))
+    )
+  end
+
+  defp render_po_code(%PurchaseOrder{} = po) do
+    company =
+      case po.company do
+        %Backend.Companies.Company{} = c -> c
+        _ -> Repo.get(Backend.Companies.Company, po.company_id)
+      end
+
+    Backend.Numbering.render(po.id, company, "purchase_order") || "PO##{po.id}"
   end
 
   @doc """
@@ -586,9 +703,17 @@ defmodule Backend.Purchasing do
 
                 new_received = Decimal.add(line.qty_received || Decimal.new(0), input.qty)
 
-                line
-                |> PurchaseOrderLine.changeset(%{"qty_received" => new_received})
-                |> Repo.update!()
+                updated_line =
+                  line
+                  |> PurchaseOrderLine.changeset(%{"qty_received" => new_received})
+                  |> Repo.update!()
+
+                # Refresh the last-paid cache so the next PO line for
+                # this (vendor, item, currency) can pre-fill and warn
+                # on ±20% deviation. Cache failures don't roll back
+                # the receipt — the lot is already created and the
+                # cache is rebuildable from PO history.
+                _ = VendorPrices.upsert_from_receipt(po, updated_line)
               end)
 
               # Recompute PO status from line aggregates.
@@ -668,7 +793,12 @@ defmodule Backend.Purchasing do
       "currency" => po.currency_code,
       "supplier_batch_no" => header_attrs["supplier_batch_no"],
       "received_at" => header_attrs["received_at"],
-      "source_kind" => "purchase_order",
+      # The service-layer hand-off — `Stock.receive_lot/3` strips
+      # user-supplied `source_kind` and reads ours from here. Keeps the
+      # compliance rule honest (workers can't smuggle a kind) while
+      # still letting the procurement boundary declare provenance.
+      "__service_source_kind__" => "purchase_order",
+      "__po_line_id__" => line.id,
       "source_ref" => Backend.Numbering.render(po.id, Repo.preload(po, :company).company, "purchase_order") || "PO##{po.id}",
       "package_length_mm" => input["package_length_mm"],
       "package_width_mm" => input["package_width_mm"],

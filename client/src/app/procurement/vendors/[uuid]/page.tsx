@@ -7,15 +7,18 @@ import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { Badge } from "@/components/ui/badge-mini";
-import { getVendor } from "@/lib/vendors/server";
+import { getVendor, listVendorPriceHistory } from "@/lib/vendors/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { CommentThread } from "@/components/comments/comment-thread";
+import { listCommentsForEntity } from "@/lib/comments/server";
 import { ProcurementSubnav } from "../../procurement-subnav";
 import { VendorForm } from "../vendor-form";
 import { VendorApprovalCard } from "./vendor-approval-card";
 import { VendorQualificationCard } from "./vendor-qualification-card";
 import { VendorApprovedItemsCard } from "./vendor-approved-items-card";
 import { VendorCertificatesCard } from "./vendor-certificates-card";
+import { VendorPriceHistoryCard } from "./vendor-price-history-card";
 import type { VendorApprovalStatus } from "@/lib/types";
 import { listItemsForReceive } from "@/lib/stock/server";
 import { listCertificatesForPicker } from "@/lib/certificates/server";
@@ -50,10 +53,12 @@ export default async function VendorDetailPage({
   }
 
   const { uuid } = await params;
-  const [vendor, items, certs] = await Promise.all([
+  const [vendor, items, certs, initialComments, priceHistory] = await Promise.all([
     getVendor(uuid),
     listItemsForReceive(),
     listCertificatesForPicker(),
+    listCommentsForEntity("vendor", uuid),
+    listVendorPriceHistory(uuid),
   ]);
   if (!vendor) notFound();
 
@@ -112,6 +117,14 @@ export default async function VendorDetailPage({
 
           <VendorForm vendor={vendor} canEdit={canEdit} />
 
+          <CommentThread
+            entityType="vendor"
+            entityUuid={vendor.uuid}
+            initial={initialComments ?? []}
+            canComment={canEdit}
+            currentUserId={user.id}
+          />
+
           <VendorApprovedItemsCard
             vendor={vendor}
             items={items ?? []}
@@ -123,6 +136,8 @@ export default async function VendorDetailPage({
             certificates={certs ?? []}
             canEdit={canEdit}
           />
+
+          <VendorPriceHistoryCard rows={priceHistory} />
 
           <AuditMetaSection
             inserted_at={vendor.inserted_at}

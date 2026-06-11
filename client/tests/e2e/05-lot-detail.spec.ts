@@ -70,14 +70,16 @@ test.describe("Lot detail page (slice D.1.2)", () => {
     // input.
     await page.getByRole("button", { name: /^Edit$/ }).click();
 
+    // The legacy `notes` textarea was replaced by the polymorphic
+    // comments module per psp/CLAUDE.md ("notes → comments"). Edit
+    // `supplier_batch_no` instead — still a free-text field on the
+    // identity card.
     const note = `e2e-${Date.now()}`;
-    const notesInput = page.getByPlaceholder(/Anything that needs surfacing/i);
-    // Clear first — a previous test run leaves its note on the row and
-    // `fill()` was appending rather than replacing on this textarea.
-    await notesInput.click();
-    await notesInput.press("ControlOrMeta+a");
-    await notesInput.press("Delete");
-    await notesInput.fill(note);
+    const batchInput = page.locator("#supplier_batch_no");
+    await batchInput.click();
+    await batchInput.press("ControlOrMeta+a");
+    await batchInput.press("Delete");
+    await batchInput.fill(note);
 
     await expect(page.getByRole("button", { name: /Save changes/i })).toBeEnabled();
     await page.getByRole("button", { name: /Save changes/i }).click();
@@ -95,10 +97,10 @@ test.describe("Lot detail page (slice D.1.2)", () => {
     });
     const verifyRes = await verify.get(`/api/stock/lots/${uuid}`);
     const verifyJson = (await verifyRes.json()) as {
-      lot: { notes: string | null };
+      lot: { supplier_batch_no: string | null };
     };
     await verify.dispose();
-    expect(verifyJson.lot.notes).toBe(note);
+    expect(verifyJson.lot.supplier_batch_no).toBe(note);
   });
 
   test("Adjust qty dialog records an adjust_down movement (slice D.1.6)", async ({

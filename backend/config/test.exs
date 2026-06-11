@@ -6,10 +6,11 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :backend, Backend.Repo,
-  username: "postgres",
-  password: "postgres",
+  username: "psp",
+  password: "psp_dev",
   hostname: "localhost",
-  database: "backend_test#{System.get_env("MIX_TEST_PARTITION")}",
+  port: 5433,
+  database: "psp_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
@@ -35,3 +36,8 @@ config :phoenix, :plug_init_mode, :runtime
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# Don't start the daily ECB pull GenServer under the test supervisor —
+# tests call `Backend.Workers.CurrencyRatesPull.run_now/1` directly
+# with a `Req.Test` plug instead of waiting for the 08:00 UTC tick.
+config :backend, Backend.Workers.CurrencyRatesPull, start: false
