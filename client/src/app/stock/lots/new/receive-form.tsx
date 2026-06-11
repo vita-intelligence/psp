@@ -35,6 +35,10 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import {
+  SearchPicker,
+  type SearchPickerOption,
+} from "@/components/forms/search-picker";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -44,14 +48,27 @@ import {
   createManualLotAction,
   type ManualLotInput,
 } from "@/lib/stock/actions";
-import type { ComplianceState, Item, Warehouse } from "@/lib/types";
+import type { ComplianceState } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import { cn } from "@/lib/utils";
 
 interface ReceiveFormProps {
-  items: Item[];
-  warehouses: Warehouse[];
   canEdit: boolean;
+}
+
+/** Item the picker resolved. Carries the metadata the form derives
+ *  off — stock UoM, storage tags, uuid for the edit-page link — so we
+ *  don't need a second round-trip after a pick. */
+interface ItemOption extends SearchPickerOption {
+  uuid: string;
+  uomId: number | null;
+  uomSymbol: string | null;
+  storageTags: string[];
+  externalSku: string | null;
+}
+
+interface WarehouseOption extends SearchPickerOption {
+  uuid: string;
 }
 
 interface PackagingValues {
@@ -84,7 +101,12 @@ type FieldErrors = Record<string, string[]>;
 
 type DraftSnapshot = {
   item_id: string;
+  /** Carried alongside item_id so a collab peer joining mid-edit can
+   *  resync the picker's selected option via `/api/items/<uuid>`
+   *  without us having to add a `?id=` lookup on the list endpoint. */
+  item_uuid: string;
   warehouse_id: string;
+  warehouse_uuid: string;
   qty_received: string;
   package_length_mm: string;
   package_width_mm: string;
@@ -115,7 +137,7 @@ type DraftSnapshot = {
  * Realtime collab per psp/CLAUDE.md: presence avatars, per-field
  * editing indicators, remote cursors, creator gate on the Save button.
  */
-export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
+export function ReceiveForm({ canEdit }: ReceiveFormProps) {
   const router = useRouter();
   const resource = "stock-lot:new";
   useFormPresenceBeacon(resource);
@@ -123,7 +145,9 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
   const initial = useMemo<DraftSnapshot>(
     () => ({
       item_id: "",
-      warehouse_id: warehouses.length === 1 ? String(warehouses[0].id) : "",
+      item_uuid: "",
+      warehouse_id: "",
+      warehouse_uuid: "",
       qty_received: "",
       package_length_mm: "",
       package_width_mm: "",
@@ -145,7 +169,7 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
       quality_status: "",
       notes: "",
     }),
-    [warehouses],
+    [],
   );
 
   type CommitPayload = { kind: "created" };
@@ -197,24 +221,126 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
     average: PackagingValues | null;
   } | null>(null);
 
-  const itemById = useMemo(
-    () => new Map(items.map((i) => [String(i.id), i])),
-    [items],
-  );
-  const warehouseById = useMemo(
-    () => new Map(warehouses.map((w) => [String(w.id), w])),
-    [warehouses],
+  // Picker-resolved options. These ARE the source of truth for the
+  // selected-item / selected-warehouse metadata the form derives off;
+  // the draft snapshot mirrors their id + uuid for collab broadcast
+  // + submit-payload purposes only.
+  const [pickedItem, setPickedItem] = useState<ItemOption | null>(null);
+  const [pickedWarehouse, setPickedWarehouse] =
+    useState<WarehouseOption | null>(null);
+
+  // Server-side search hits the existing items/warehouses list
+  // endpoints with `search` + `limit=50`. AbortController, debounce,
+  // and result merging are all handled inside SearchPicker.
+  const fetchItemOptions = useCallback(
+    async (query: string, signal?: AbortSignal): Promise<ItemOption[]> => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/items?${params.toString()}`, { signal });
+      if (!res.ok) throw new Error(`Items search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          uuid: string;
+          name: string;
+          code?: string | null;
+          external_sku?: string | null;
+          stock_uom?: { id: number; symbol: string } | null;
+          stock_uom_id?: number | null;
+          storage_tags?: string[];
+        }>;
+      };
+      return (body.items ?? []).map(itemRowToOption);
+    },
+    [],
   );
 
-  const selectedItem = draft.item_id
-    ? itemById.get(draft.item_id)
-    : undefined;
-  const selectedWarehouse = draft.warehouse_id
-    ? warehouseById.get(draft.warehouse_id)
-    : undefined;
-  const uomSymbol = selectedItem?.stock_uom?.symbol ?? "—";
-  const uomId = selectedItem?.stock_uom?.id ?? null;
-  const itemTags = selectedItem?.storage_tags ?? [];
+  const fetchWarehouseOptions = useCallback(
+    async (
+      query: string,
+      signal?: AbortSignal,
+    ): Promise<WarehouseOption[]> => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/warehouses?${params.toString()}`, {
+        signal,
+      });
+      if (!res.ok)
+        throw new Error(`Warehouses search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          uuid: string;
+          name: string;
+          code?: string | null;
+        }>;
+      };
+      return (body.items ?? []).map((w) => ({
+        id: w.id,
+        uuid: w.uuid,
+        label: w.name,
+        code: w.code ?? null,
+      }));
+    },
+    [],
+  );
+
+  // Collab resync — a peer just picked something, so our `draft.*_uuid`
+  // updated via the form channel but our local pickedItem is stale.
+  // Refetch by uuid so the picker label + the derived metadata match.
+  useEffect(() => {
+    if (!draft.item_uuid) {
+      if (pickedItem !== null) setPickedItem(null);
+      return;
+    }
+    if (pickedItem?.uuid === draft.item_uuid) return;
+    const controller = new AbortController();
+    fetch(`/api/items/${encodeURIComponent(draft.item_uuid)}`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (body?.item) setPickedItem(itemRowToOption(body.item));
+      })
+      .catch(() => {
+        /* aborted or transient — picker stays at last-known state */
+      });
+    return () => controller.abort();
+  }, [draft.item_uuid, pickedItem?.uuid]);
+
+  useEffect(() => {
+    if (!draft.warehouse_uuid) {
+      if (pickedWarehouse !== null) setPickedWarehouse(null);
+      return;
+    }
+    if (pickedWarehouse?.uuid === draft.warehouse_uuid) return;
+    const controller = new AbortController();
+    fetch(`/api/warehouses/${encodeURIComponent(draft.warehouse_uuid)}`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        const w = body?.warehouse;
+        if (w) {
+          setPickedWarehouse({
+            id: w.id,
+            uuid: w.uuid,
+            label: w.name,
+            code: w.code ?? null,
+          });
+        }
+      })
+      .catch(() => {
+        /* aborted or transient */
+      });
+    return () => controller.abort();
+  }, [draft.warehouse_uuid, pickedWarehouse?.uuid]);
+
+  const selectedItem = pickedItem;
+  const selectedWarehouse = pickedWarehouse;
+  const uomSymbol = selectedItem?.uomSymbol ?? "—";
+  const uomId = selectedItem?.uomId ?? null;
+  const itemTags = selectedItem?.storageTags ?? [];
 
   const qtyValid = Number(draft.qty_received) > 0;
   const packagingValid =
@@ -461,32 +587,21 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
                 error={fieldErrors.item_id?.[0]}
                 editor={fieldEditors.item_id}
               >
-                <Select
-                  value={draft.item_id}
-                  onValueChange={(v) => update("item_id", v)}
-                >
-                  <SelectTrigger
-                    id="item_id"
-                    className="h-9"
-                    onFocus={() => focusField("item_id")}
-                    onBlur={() => blurField("item_id")}
-                  >
-                    <SelectValue placeholder="Pick an item…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {items.map((i) => (
-                      <SelectItem key={i.id} value={String(i.id)}>
-                        <span className="flex items-center gap-2">
-                          <span className="font-mono text-[11px] text-muted-foreground">
-                            {i.code ?? i.external_sku ?? `#${i.id}`}
-                          </span>
-                          <span className="font-medium">{i.name}</span>
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {selectedItem && !selectedItem.stock_uom && (
+                <SearchPicker<ItemOption>
+                  id="item_id"
+                  fetcher={fetchItemOptions}
+                  value={pickedItem}
+                  onChange={(opt) => {
+                    setPickedItem(opt);
+                    update("item_id", opt ? String(opt.id) : "");
+                    update("item_uuid", opt ? opt.uuid : "");
+                  }}
+                  onFocus={() => focusField("item_id")}
+                  onBlur={() => blurField("item_id")}
+                  placeholder="Search items by name, SKU, or barcode…"
+                  emptyHint="No items match. Add one at Settings → Items."
+                />
+                {selectedItem && selectedItem.uomId === null && (
                   <p className="text-[11px] text-destructive">
                     This item has no stock UoM set — go to{" "}
                     <a
@@ -562,34 +677,25 @@ export function ReceiveForm({ items, warehouses, canEdit }: ReceiveFormProps) {
                 error={fieldErrors.warehouse_id?.[0]}
                 editor={fieldEditors.warehouse_id}
               >
-                <Select
-                  value={draft.warehouse_id}
-                  onValueChange={(v) => update("warehouse_id", v)}
-                >
-                  <SelectTrigger
-                    id="warehouse_id"
-                    className="h-9"
-                    onFocus={() => focusField("warehouse_id")}
-                    onBlur={() => blurField("warehouse_id")}
-                  >
-                    <SelectValue placeholder="Pick a warehouse…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {warehouses.map((w) => (
-                      <SelectItem key={w.id} value={String(w.id)}>
-                        <span className="flex items-center gap-2">
-                          <MapPin className="size-3.5 text-muted-foreground" />
-                          <span>{w.name}</span>
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SearchPicker<WarehouseOption>
+                  id="warehouse_id"
+                  fetcher={fetchWarehouseOptions}
+                  value={pickedWarehouse}
+                  onChange={(opt) => {
+                    setPickedWarehouse(opt);
+                    update("warehouse_id", opt ? String(opt.id) : "");
+                    update("warehouse_uuid", opt ? opt.uuid : "");
+                  }}
+                  onFocus={() => focusField("warehouse_id")}
+                  onBlur={() => blurField("warehouse_id")}
+                  placeholder="Search warehouses…"
+                  emptyHint="No warehouses match."
+                />
                 {selectedWarehouse && (
                   <p className="text-[11px] text-muted-foreground">
-                    →{" "}
+                    <MapPin className="mr-1 inline size-3 text-muted-foreground" />
                     <span className="font-medium">
-                      {selectedWarehouse.name}
+                      {selectedWarehouse.label}
                     </span>{" "}
                     · Unregistered
                   </p>
@@ -1214,4 +1320,29 @@ function Field({
       )}
     </div>
   );
+}
+
+/** Shape one item row off `/api/items?...` into the picker option the
+ *  rest of the form reads off. Stock UoM gets unpacked from the compact
+ *  sub-object the list endpoint embeds. */
+function itemRowToOption(i: {
+  id: number;
+  uuid: string;
+  name: string;
+  code?: string | null;
+  external_sku?: string | null;
+  stock_uom?: { id: number; symbol: string } | null;
+  stock_uom_id?: number | null;
+  storage_tags?: string[];
+}): ItemOption {
+  return {
+    id: i.id,
+    uuid: i.uuid,
+    label: i.name,
+    code: i.code ?? i.external_sku ?? null,
+    uomId: i.stock_uom?.id ?? i.stock_uom_id ?? null,
+    uomSymbol: i.stock_uom?.symbol ?? null,
+    storageTags: i.storage_tags ?? [],
+    externalSku: i.external_sku ?? null,
+  };
 }

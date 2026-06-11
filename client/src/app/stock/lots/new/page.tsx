@@ -5,10 +5,6 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import {
-  listItemsForReceive,
-  listWarehousesForReceive,
-} from "@/lib/stock/server";
 import { StockSubnav } from "../../stock-subnav";
 import { ReceiveForm } from "./receive-form";
 
@@ -20,11 +16,11 @@ export default async function ReceiveLotPage() {
     redirect("/stock/lots");
   }
 
-  const [items, warehouses] = await Promise.all([
-    listItemsForReceive(),
-    listWarehousesForReceive(),
-  ]);
-
+  // Eager item + warehouse fetches dropped — the form's pickers hit
+  // `/api/items?search=…&limit=50` and `/api/warehouses?search=…&limit=50`
+  // on demand, so the page paints instantly regardless of catalogue
+  // size. Empty-catalogue UX surfaces via the picker's "no matches"
+  // hint, which links to /settings/items.
   return (
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />
@@ -56,23 +52,7 @@ export default async function ReceiveLotPage() {
             </p>
           </header>
 
-          {items.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border/60 bg-card p-6 text-center text-sm text-muted-foreground">
-              <p className="font-medium">No items in the catalogue yet.</p>
-              <p className="mt-1 text-xs">
-                Add at least one item at{" "}
-                <Link
-                  href="/settings/items"
-                  className="text-primary underline-offset-2 hover:underline"
-                >
-                  Settings → Items
-                </Link>{" "}
-                before you can receive a lot.
-              </p>
-            </div>
-          ) : (
-            <ReceiveForm items={items} warehouses={warehouses} canEdit={true} />
-          )}
+          <ReceiveForm canEdit={true} />
         </div>
       </main>
     </div>
