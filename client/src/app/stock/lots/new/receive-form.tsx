@@ -231,6 +231,14 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
   const [pending, startTransition] = useTransition();
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  // Per-pack validation failures from the bulk endpoint. The BE halts
+  // on the first failing pack and returns its index + the changeset
+  // field errors — we keep both so PackRow can highlight the correct
+  // row and render the rule under the offending field.
+  const [packErrors, setPackErrors] = useState<{
+    packIndex: number;
+    fields: FieldErrors;
+  } | null>(null);
 
   // Track which suggestion (if any) was applied so we can show it as
   // a chip and explain the source. Local-only — peers don't need to
@@ -265,6 +273,10 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
       prev.map((p) => (p.tempId === tempId ? { ...p, ...patch } : p)),
     );
     setPackagingSource(null);
+    // Any keystroke on the row clears the stale per-pack errors so
+    // the operator isn't left staring at red lines after they've
+    // fixed the field.
+    if (packErrors) setPackErrors(null);
   }
 
   function addPack() {
@@ -571,6 +583,7 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     if (!canSubmit || !isCreator) return;
     setActionError(null);
     setFieldErrors({});
+    setPackErrors(null);
 
     // Strip pack rows the operator added but never filled — the bulk
     // endpoint validates per-pack so a half-row would 422 the whole
@@ -621,9 +634,21 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
       const res = await createManualLotBulkAction(input);
       if (!res.ok) {
         setActionError(res);
-        const debug = (res.debug as { fields?: FieldErrors } | undefined)
-          ?.fields;
-        if (debug) setFieldErrors(debug);
+        // Lift top-level `fields` (set by `toErrorResult` from
+        // `ApiError.fields`) — the form had been reading
+        // `res.debug.fields` which never existed, so per-field
+        // errors silently dropped. Per-pack errors are scoped via
+        // `pack_index` so the offending row highlights specifically.
+        if (res.fields) {
+          if (typeof res.pack_index === "number") {
+            setPackErrors({
+              packIndex: res.pack_index,
+              fields: res.fields,
+            });
+          } else {
+            setFieldErrors(res.fields);
+          }
+        }
         return;
       }
       toast.success(
@@ -964,7 +989,7 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                     </th>
                     <th
                       className="w-16 px-2 py-1.5 text-right"
-                      title="How many of this pack can be safely stacked vertically on top of each other."
+                      title="How many of this pack can be safely stacked vertically on top of each other. Capped at 50 for warehouse safety."
                     >
                       Stack
                     </th>
@@ -978,6 +1003,9 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                       key={p.tempId}
                       index={i}
                       pack={p}
+                      errors={
+                        packErrors?.packIndex === i ? packErrors.fields : null
+                      }
                       onPatch={(patch) => patchPack(p.tempId, patch)}
                       onRemove={
                         packs.length === 1
@@ -1416,16 +1444,25 @@ function Field({
 function PackRow({
   index,
   pack,
+  errors,
   onPatch,
   onRemove,
 }: {
   index: number;
   pack: PackDraft;
+  /** Per-field validation messages scoped to this row, if any.
+   *  `null` ⇒ this row didn't fail. */
+  errors: FieldErrors | null;
   onPatch: (patch: Partial<PackDraft>) => void;
   onRemove?: () => void;
 }) {
+  const fieldErr = (key: string) => errors?.[key]?.[0] ?? null;
   return (
-    <tr>
+    <tr
+      className={
+        errors ? "bg-destructive/[0.04] outline outline-1 outline-destructive/30" : ""
+      }
+    >
       <td className="px-2 py-1.5 text-left font-mono text-[10px] text-muted-foreground">
         {index + 1}
       </td>
@@ -1434,6 +1471,7 @@ function PackRow({
         onChange={(v) => onPatch({ qty_received: v })}
         label={`Pack ${index + 1} qty`}
         placeholder="25"
+        error={fieldErr("qty_received")}
       />
       <PackCell
         value={pack.package_length_mm}
@@ -1443,6 +1481,7 @@ function PackRow({
         label={`Pack ${index + 1} length mm`}
         placeholder="400"
         integer
+        error={fieldErr("package_length_mm")}
       />
       <PackCell
         value={pack.package_width_mm}
@@ -1450,6 +1489,7 @@ function PackRow({
         label={`Pack ${index + 1} width mm`}
         placeholder="300"
         integer
+        error={fieldErr("package_width_mm")}
       />
       <PackCell
         value={pack.package_height_mm}
@@ -1459,12 +1499,14 @@ function PackRow({
         label={`Pack ${index + 1} height mm`}
         placeholder="250"
         integer
+        error={fieldErr("package_height_mm")}
       />
       <PackCell
         value={pack.package_weight_kg}
         onChange={(v) => onPatch({ package_weight_kg: v })}
         label={`Pack ${index + 1} weight kg`}
         placeholder="25.000"
+        error={fieldErr("package_weight_kg")}
       />
       <PackCell
         value={pack.stack_factor}
@@ -1472,6 +1514,7 @@ function PackRow({
         label={`Pack ${index + 1} stack factor`}
         placeholder="1"
         integer
+        error={fieldErr("stack_factor")}
       />
       <td className="px-2 py-1.5">
         <Input
@@ -1499,22 +1542,26 @@ function PackRow({
   );
 }
 
-/** Single mono input cell inside a {@link PackRow}. */
+/** Single mono input cell inside a {@link PackRow}. Renders a red
+ *  ring + the rule inline under the input when the BE rejected this
+ *  field on the last submit. */
 function PackCell({
   value,
   onChange,
   label,
   placeholder,
   integer,
+  error,
 }: {
   value: string;
   onChange: (v: string) => void;
   label: string;
   placeholder?: string;
   integer?: boolean;
+  error?: string | null;
 }) {
   return (
-    <td className="px-2 py-1.5">
+    <td className="px-2 py-1.5 align-top">
       <Input
         type="text"
         inputMode={integer ? "numeric" : "decimal"}
@@ -1522,8 +1569,21 @@ function PackCell({
         onChange={(e) => onChange(e.target.value)}
         aria-label={label}
         placeholder={placeholder}
-        className="h-8 text-right font-mono text-xs"
+        aria-invalid={error ? true : undefined}
+        className={
+          error
+            ? "h-8 text-right font-mono text-xs border-destructive ring-1 ring-destructive/40 focus-visible:ring-destructive"
+            : "h-8 text-right font-mono text-xs"
+        }
       />
+      {error && (
+        <p
+          className="mt-1 max-w-[140px] text-[10px] leading-tight text-destructive"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
     </td>
   );
 }
