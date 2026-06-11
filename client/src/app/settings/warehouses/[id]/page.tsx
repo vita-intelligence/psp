@@ -100,6 +100,7 @@ export default async function WarehouseEditPage({
           warehouseUuid={warehouse.uuid}
           warehouseId={warehouse.id}
           warehouseName={warehouse.name}
+          readiness={warehouse.readiness}
           canEdit={canEdit}
         />
       )}

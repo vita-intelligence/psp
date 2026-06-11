@@ -111,6 +111,8 @@ defmodule BackendWeb.Payloads do
   end
 
   def warehouse(w) do
+    readiness = Backend.Warehouses.Readiness.check(w.id)
+
     %{
       id: w.id,
       uuid: w.uuid,
@@ -125,6 +127,11 @@ defmodule BackendWeb.Payloads do
       holidays: w.holidays,
       contacts: w.contacts,
       plan: w.plan,
+      readiness: %{
+        ready: readiness.ready?,
+        cell_counts_by_purpose: readiness.counts,
+        missing_purposes: readiness.blockers
+      },
       inserted_at: w.inserted_at,
       updated_at: w.updated_at,
       created_by: actor(w, :created_by),

@@ -10,11 +10,13 @@ import { listStorageTags } from "@/lib/storage-tags/server";
 import { LayoutGrid } from "lucide-react";
 import { NewFloorButton } from "./new-floor-button";
 import { WarehousePlanEditor } from "./plan/warehouse-plan-editor";
+import type { WarehouseReadiness } from "@/lib/types";
 
 interface PlanTabProps {
   warehouseUuid: string;
   warehouseId: number;
   warehouseName: string;
+  readiness: WarehouseReadiness;
   canEdit: boolean;
 }
 
@@ -30,6 +32,7 @@ export async function PlanTab({
   warehouseUuid,
   warehouseId,
   warehouseName,
+  readiness,
   canEdit,
 }: PlanTabProps) {
   const [floors, storageTags] = await Promise.all([
@@ -80,6 +83,7 @@ export async function PlanTab({
       warehouseUuid={warehouseUuid}
       warehouseId={warehouseId}
       warehouseName={warehouseName}
+      readiness={readiness}
       floors={floors}
       storageTags={storageTags ?? []}
       canEdit={canEdit}

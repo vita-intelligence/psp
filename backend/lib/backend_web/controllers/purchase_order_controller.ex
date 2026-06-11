@@ -347,6 +347,16 @@ defmodule BackendWeb.PurchaseOrderController do
         {:error, :warehouse_required} ->
           unprocessable(conn, "warehouse_required", "warehouse_id is required on the receive payload.")
 
+        {:error, {:warehouse_not_ready, blockers}} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "warehouse_not_ready",
+            detail:
+              "Warehouse is missing #{length(blockers)} required segregation area(s). Add the cell(s) on the warehouse plan before receiving.",
+            blockers: blockers
+          })
+
         {:error, :legacy_shape_unsupported} ->
           unprocessable(
             conn,

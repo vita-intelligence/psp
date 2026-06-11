@@ -235,10 +235,26 @@ export interface Warehouse {
   holidays: Record<string, unknown> | null;
   contacts: { items: Contact[] };
   plan: Record<string, unknown> | null;
+  /** Goods-in readiness check. `ready: false` ⇒ the receive endpoint
+   *  will refuse this warehouse until every `missing_purposes` blocker
+   *  is closed by adding cells with the named purpose. */
+  readiness: WarehouseReadiness;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;
   updated_by?: AuditActor | null;
+}
+
+export interface WarehouseReadiness {
+  ready: boolean;
+  cell_counts_by_purpose: Record<StorageCellPurpose, number>;
+  missing_purposes: WarehouseReadinessBlocker[];
+}
+
+export interface WarehouseReadinessBlocker {
+  purpose: StorageCellPurpose;
+  label: string;
+  reason: string;
 }
 
 /** Storage location kinds — the picker on the location properties

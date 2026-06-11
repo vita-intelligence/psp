@@ -915,6 +915,7 @@ defmodule Backend.Purchasing do
 
         with :ok <- ensure_not_legacy_shape(line_inputs),
              :ok <- ensure_warehouse_id(warehouse_id),
+             :ok <- ensure_warehouse_ready_for_receive(warehouse_id),
              {:ok, normalised} <- validate_receive_lines(po, line_inputs) do
           Repo.transaction(fn ->
             Enum.each(normalised, fn {%PurchaseOrderLine{} = line, packs} ->
@@ -988,6 +989,17 @@ defmodule Backend.Purchasing do
 
   defp ensure_warehouse_id(nil), do: {:error, :warehouse_required}
   defp ensure_warehouse_id(_), do: :ok
+
+  # Refuse receive on warehouses missing the regulatory-mandated
+  # quarantine / hold / rejected segregation cells. Each blocker
+  # carries its own auditor-facing reason so the controller can
+  # surface a useful error instead of "warehouse_not_ready".
+  defp ensure_warehouse_ready_for_receive(warehouse_id) do
+    case Backend.Warehouses.Readiness.check(warehouse_id) do
+      %{ready?: true} -> :ok
+      %{blockers: blockers} -> {:error, {:warehouse_not_ready, blockers}}
+    end
+  end
 
   defp receive_packs_for_line(_actor, _po, _line, [], _batch_default, _source_ref, _warehouse_id, _gi_id), do: :ok
 

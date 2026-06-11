@@ -35,8 +35,9 @@ import {
 } from "@/lib/storage-locations/actions";
 import { updateFloorAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
-import type { Floor, StorageTag } from "@/lib/types";
+import type { Floor, StorageTag, WarehouseReadiness } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
+import { purposeMeta } from "@/lib/storage-cells/purpose";
 import type {
   ArrowAnnotation,
   CanvasJson,
@@ -53,10 +54,14 @@ import type {
 } from "./plan-types";
 import type { PlanCanvasHandle } from "./plan-canvas";
 import {
+  AlertTriangle,
   History,
   Loader2,
+  Maximize2,
+  Minimize2,
   Redo2,
   Save,
+  ShieldCheck,
   Undo2,
   X,
 } from "lucide-react";
@@ -78,6 +83,11 @@ interface WarehousePlanEditorProps {
   warehouseUuid: string;
   warehouseId: number;
   warehouseName: string;
+  /** Live coverage check from the server — counts per cell purpose +
+   *  blocker list for any required purpose with zero cells. Drives the
+   *  readiness banner above the editor; the receive endpoint refuses
+   *  the same warehouse until every blocker is closed. */
+  readiness: WarehouseReadiness;
   floors: Floor[];
   /** Company-wide storage tag registry. Used by the location and
    *  cell tag pickers — operators can only select from this list,
@@ -172,6 +182,7 @@ export function WarehousePlanEditor({
   warehouseUuid,
   warehouseId,
   warehouseName,
+  readiness,
   floors,
   storageTags,
   canEdit,
@@ -194,6 +205,35 @@ export function WarehousePlanEditor({
   const [redoStack, setRedoStack] = useState<Record<number, HistoryEntry[]>>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [saving, startSaving] = useTransition();
+
+  // Fullscreen plan editor — toggles to a `fixed inset-0` overlay that
+  // covers the app shell so the whole viewport is canvas. `F` from
+  // anywhere outside an input flips it; `Esc` exits. Critical for
+  // detailed plan work on small laptops where the sidebar shell eats
+  // half the canvas room.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const inField =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (e.key === "Escape" && isFullscreen) {
+        setIsFullscreen(false);
+        return;
+      }
+      if (e.key === "f" && !inField && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setIsFullscreen((v) => !v);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isFullscreen]);
 
   // Seed brand-new floors that arrived via the bottom switcher's
   // "Add floor" button. Preserve any local dirty edits on others.
@@ -1540,7 +1580,19 @@ export function WarehousePlanEditor({
     : 600;
 
   return (
-    <div className="space-y-3">
+    <div
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-50 flex flex-col gap-3 overflow-auto bg-background p-4"
+          : "space-y-3"
+      }
+    >
+
+      <ReadinessBanner
+        readiness={readiness}
+        warehouseName={warehouseName}
+        canEdit={canEdit}
+      />
 
       {/* Header row */}
       <div className="flex flex-wrap items-center gap-2">
@@ -1594,6 +1646,24 @@ export function WarehousePlanEditor({
               }
             />
           )}
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setIsFullscreen((v) => !v)}
+            title={
+              isFullscreen
+                ? "Exit fullscreen (F or Esc)"
+                : "Fullscreen editor (F)"
+            }
+            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen editor"}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="size-4" />
+            ) : (
+              <Maximize2 className="size-4" />
+            )}
+          </Button>
           {!readOnly && (
             <>
               <Button
@@ -2082,5 +2152,100 @@ function MobileLayout({
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * Required-segregation-areas banner. The warehouse needs at least
+ * one cell of each `required_purposes` (quarantine / hold / rejected)
+ * before goods-in receive will accept it. Each missing purpose lists
+ * the auditor-facing reason so workers know which BRCGS / FSSC clause
+ * they're meeting.
+ *
+ * Layout: chip strip across the top showing every purpose with its
+ * current cell count (green when present, red when missing), then a
+ * compact reason list under any reds.
+ */
+function ReadinessBanner({
+  readiness,
+  warehouseName,
+  canEdit,
+}: {
+  readiness: WarehouseReadiness;
+  warehouseName: string;
+  canEdit: boolean;
+}) {
+  const ready = readiness.ready;
+  const counts = readiness.cell_counts_by_purpose;
+  const purposes: Array<"regular" | "quarantine" | "hold" | "rejected" | "dispatch"> =
+    ["regular", "quarantine", "hold", "rejected", "dispatch"];
+
+  return (
+    <section
+      className={
+        ready
+          ? "rounded-md border border-emerald-300/60 bg-emerald-50 px-3 py-2 dark:bg-emerald-950/30"
+          : "rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2"
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        {ready ? (
+          <ShieldCheck className="size-4 text-emerald-600" />
+        ) : (
+          <AlertTriangle className="size-4 text-destructive" />
+        )}
+        <span className="font-semibold">
+          {ready
+            ? `${warehouseName} is ready for goods-in`
+            : `${warehouseName} can't accept goods-in yet`}
+        </span>
+        <span className="ml-auto inline-flex flex-wrap items-center gap-1">
+          {purposes.map((p) => {
+            const meta = purposeMeta(p);
+            const count = counts[p] ?? 0;
+            const isMissingRequired =
+              count === 0 && (p === "quarantine" || p === "hold" || p === "rejected");
+            return (
+              <span
+                key={p}
+                title={`${meta.label}: ${count} cell${count === 1 ? "" : "s"}`}
+                className={
+                  isMissingRequired
+                    ? "inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-background px-1.5 py-0.5 text-[10px] font-semibold text-destructive"
+                    : count > 0
+                      ? `inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${meta.chipClassName}`
+                      : "inline-flex items-center gap-1 rounded-full border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                }
+              >
+                {meta.label} · {count}
+              </span>
+            );
+          })}
+        </span>
+      </div>
+
+      {!ready && (
+        <ul className="mt-2 space-y-1 text-[11px]">
+          {readiness.missing_purposes.map((b) => (
+            <li
+              key={b.purpose}
+              className="flex items-start gap-2 rounded-sm border border-destructive/20 bg-background/60 px-2 py-1.5"
+            >
+              <span className="mt-1 size-1.5 shrink-0 rounded-full bg-destructive" />
+              <div className="min-w-0 flex-1">
+                <span className="font-medium">{b.label}</span>
+                <p className="text-muted-foreground">{b.reason}</p>
+              </div>
+            </li>
+          ))}
+          {canEdit && (
+            <li className="px-2 text-[10px] text-muted-foreground">
+              Open any cell on the canvas and set its <em>Purpose</em> to fix
+              this — the dialog walks you through it.
+            </li>
+          )}
+        </ul>
+      )}
+    </section>
   );
 }
