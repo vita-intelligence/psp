@@ -29,9 +29,10 @@ import { moveLotAction } from "@/lib/stock/mobile-actions";
 import type { MoveRecommendation } from "@/lib/stock/mobile";
 import type { ScannedCell, StockLot } from "@/lib/types";
 import { CellScanStep } from "./cell-scan-step";
+import { LotScanStep } from "./lot-scan-step";
 import { FloorPlanMini } from "./floor-plan-mini";
 
-type Step = "pick" | "directions" | "verify-scan" | "confirm";
+type Step = "verify-lot" | "pick" | "directions" | "verify-scan" | "confirm";
 
 interface Props {
   lot: StockLot;
@@ -48,25 +49,33 @@ const SKIP_REASONS = [
 /**
  * Put-away flow with verification baked in:
  *
- *   1. **pick** — system shows ranked recommendations or "Scan to
+ *   1. **verify-lot** — camera. The operator scans the lot's QR off
+ *      the physical drum/sack so we know they're holding the right
+ *      thing before any move is committed. Tapping a card on the
+ *      pending-list is just navigation; without this gate the worker
+ *      could easily grab the wrong drum from a receiving dock.
+ *      Mismatches flash red inline; an explicit override button
+ *      handles damaged labels.
+ *   2. **pick** — system shows ranked recommendations or "Scan to
  *      override". Operator taps a recommended shelf OR taps Scan.
- *   2. **directions** — when a recommendation is picked, show a
+ *   3. **directions** — when a recommendation is picked, show a
  *      "Walk to this shelf" card with the full breadcrumb so the
  *      operator knows where to go before opening the camera.
  *      Skipped on the override (Scan a different shelf) path.
- *   3. **verify-scan** — camera viewfinder. The scanner rejects wrong
+ *   4. **verify-scan** — camera viewfinder. The scanner rejects wrong
  *      QRs inline (red flash, stays open), so anything reaching the
  *      next step has been physically verified. Override is an
  *      explicit button on the camera screen.
- *   4. **confirm** — qty (default = full) + photo OR skip-reason +
+ *   5. **confirm** — qty (default = full) + photo OR skip-reason +
  *      submit. The move endpoint stamps the photo URL / skip-reason
  *      on the movement so audits show why.
  */
 export function MoveFlow({ lot, recommendations }: Props) {
   const router = useRouter();
-  const [step, setStep] = useState<Step>("pick");
+  const [step, setStep] = useState<Step>("verify-lot");
   const [expected, setExpected] = useState<ScannedCell | null>(null);
   const [scanned, setScanned] = useState<ScannedCell | null>(null);
+  const [lotVerified, setLotVerified] = useState(false);
   const [qty, setQty] = useState<string>(String(lot.qty_on_hand ?? ""));
   const [skipReason, setSkipReason] = useState<string>("");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
@@ -187,6 +196,11 @@ export function MoveFlow({ lot, recommendations }: Props) {
       setStep("pick");
       setExpected(null);
       setScanned(null);
+    } else if (step === "pick") {
+      // Back from pick re-opens the lot-verify camera so the operator
+      // can re-confirm if they're actually holding a different lot.
+      setStep("verify-lot");
+      setLotVerified(false);
     }
   }
 
@@ -194,9 +208,9 @@ export function MoveFlow({ lot, recommendations }: Props) {
     <div className="flex min-h-dvh flex-col">
       <header className="flex items-center gap-2 border-b border-border/60 px-3 py-3">
         <Link
-          href={step === "pick" ? `/m/lots/${lot.uuid}` : "#"}
+          href={step === "verify-lot" ? `/m/lots/${lot.uuid}` : "#"}
           onClick={(e) => {
-            if (step !== "pick") {
+            if (step !== "verify-lot") {
               e.preventDefault();
               backFromCurrentStep();
             }
@@ -216,11 +230,30 @@ export function MoveFlow({ lot, recommendations }: Props) {
         </div>
       </header>
 
+      {step === "verify-lot" && (
+        <LotScanStep
+          expected={lot}
+          onResult={() => {
+            setLotVerified(true);
+            setStep("pick");
+          }}
+          onOverride={() => {
+            // Override goes through but flags the downstream movement
+            // for audit. Worker either has a damaged label or has
+            // chosen to bypass — we record either way.
+            setLotVerified(false);
+            setStep("pick");
+          }}
+          onError={setError}
+        />
+      )}
+
       {step === "pick" && (
         <PickStep
           recommendations={recommendations}
           onChoose={chooseRecommendation}
           onScan={scanOverride}
+          lotVerified={lotVerified}
         />
       )}
 
@@ -371,14 +404,25 @@ function PickStep({
   recommendations,
   onChoose,
   onScan,
+  lotVerified,
 }: {
   recommendations: MoveRecommendation[];
   onChoose: (r: MoveRecommendation) => void;
   onScan: () => void;
+  lotVerified: boolean;
 }) {
   return (
     <>
       <main className="flex-1 space-y-4 px-4 py-4">
+        {!lotVerified && (
+          <p
+            role="status"
+            className="rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300"
+          >
+            Lot identity wasn&apos;t scanned — proceeding under override.
+            The audit log will flag this movement.
+          </p>
+        )}
         {recommendations.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border/60 px-4 py-6 text-center">
             <Sparkles className="mx-auto size-6 text-muted-foreground/60" />
