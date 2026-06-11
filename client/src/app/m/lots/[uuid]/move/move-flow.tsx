@@ -522,24 +522,47 @@ function DirectionsStep({
   );
 }
 
-function FitBadge({ fit }: { fit: { free_pct: number; percent_used: number } }) {
+function FitBadge({
+  fit,
+}: {
+  fit: {
+    free_pct: number;
+    percent_used: number;
+    current_percent_used?: number;
+    projected_percent_used?: number;
+  };
+}) {
   const tone =
     fit.free_pct >= 50
       ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
       : fit.free_pct >= 20
         ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
         : "bg-red-500/15 text-red-700 dark:text-red-400";
-  const label =
+
+  // Headline chip shows what the operator cares about — projected
+  // free space after this lot lands. The hover/title spells out the
+  // current → projected transition so the number doesn't look weird
+  // ("why does it say 98% when nothing's there?").
+  const headline =
     fit.free_pct >= 50
       ? `${fit.free_pct}% free`
       : fit.free_pct >= 20
         ? `Tight — ${fit.free_pct}% free`
         : `Almost full — ${fit.free_pct}% free`;
+
+  const current = fit.current_percent_used;
+  const projected = fit.projected_percent_used;
+  const title =
+    typeof current === "number" && typeof projected === "number"
+      ? `Currently ${100 - current}% free → ${100 - projected}% free after this lot.`
+      : undefined;
+
   return (
     <span
       className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${tone}`}
+      title={title}
     >
-      {label}
+      {headline}
     </span>
   );
 }

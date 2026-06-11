@@ -593,16 +593,26 @@ defmodule BackendWeb.StockLotController do
 
     json(conn, %{
       items:
-        Enum.map(rows, fn %{row: r, score: score} ->
+        Enum.map(rows, fn %{row: r, score: score, base_score: base_score} ->
           %{
             score: score,
-            reason: reason_from_score(score),
+            # Reason is derived from the BASE score (the actual rule
+            # that matched) — using the total score conflated tag-fit
+            # cells with same-item consolidation because both can land
+            # at 10 once the fit bonus is added.
+            reason: reason_from_base(base_score),
             # Fit metrics — surfaced on the mobile recommendation card
             # so the operator sees WHY one shelf beats another (more
             # headroom, same item already there, etc).
             fit: %{
               free_pct: r.fit.free_pct,
-              percent_used: r.fit.percent_used
+              percent_used: r.fit.percent_used,
+              # Show what the cell holds RIGHT NOW vs what it would
+              # hold AFTER this lot lands, so the UI can read
+              # "Currently 100% free → 98% free after this lot".
+              current_percent_used: Map.get(r.fit, :current_percent_used, 0),
+              projected_percent_used:
+                Map.get(r.fit, :projected_percent_used, r.fit.percent_used)
             },
             cell: %{
               id: r.cell.id,
@@ -648,11 +658,11 @@ defmodule BackendWeb.StockLotController do
     end
   end
 
-  defp reason_from_score(10), do: "Same item already here"
-  defp reason_from_score(8), do: "Matches all storage tags"
-  defp reason_from_score(4), do: "Matches some storage tags"
-  defp reason_from_score(1), do: "Available cell"
-  defp reason_from_score(_), do: "Available"
+  defp reason_from_base(10), do: "Same item already here"
+  defp reason_from_base(8), do: "Matches all storage tags"
+  defp reason_from_base(4), do: "Matches some storage tags"
+  defp reason_from_base(1), do: "Untagged item — any cell works"
+  defp reason_from_base(_), do: "Available"
 
   @doc """
   Atomic move: pulls qty out of the source placement, lands it at the

@@ -41,11 +41,21 @@ export async function getLotForScan(
 export interface MoveRecommendation {
   score: number;
   reason: string;
-  /** Volumetric fit info from the backend. `free_pct` is the
-   *  percentage of the cell's footprint left unused after this lot
-   *  would land — the higher the better. `percent_used` is the
-   *  inverse and is what the UI shows as a chip. */
-  fit?: { free_pct: number; percent_used: number };
+  /** Volumetric fit info from the backend. All percentages are
+   *  area-based (the most operator-intuitive metric — shelves run
+   *  out of floor space before they run out of weight 90% of the
+   *  time). */
+  fit?: {
+    /** Free area *after* this lot lands. Higher = more headroom. */
+    free_pct: number;
+    /** Legacy alias for `projected_percent_used` — kept for the
+     *  existing mobile chip. New code should read the explicit fields. */
+    percent_used: number;
+    /** What the cell holds RIGHT NOW. 0 = empty, 100 = full. */
+    current_percent_used: number;
+    /** What the cell would hold AFTER this lot lands. */
+    projected_percent_used: number;
+  };
   cell: ScannedCell;
 }
 

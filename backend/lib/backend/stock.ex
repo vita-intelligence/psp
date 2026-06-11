@@ -1448,7 +1448,11 @@ defmodule Backend.Stock do
         _ -> 0
       end
 
-    %{row: row, score: base + fit_bonus}
+    # `base` carries the actual reason category (consolidation /
+    # tag-fit / fallback) — surfaced separately so the controller can
+    # render the right label. `score` (base + fit) is the ordering
+    # metric.
+    %{row: row, score: base + fit_bonus, base_score: base}
   end
 
   # ----- fit math -------------------------------------------------------
@@ -1588,40 +1592,71 @@ defmodule Backend.Stock do
       not is_nil(capacity.total_height_mm) and
         footprint.stack_height_mm > capacity.total_height_mm
 
+    current_percent_used = area_percent(capacity.committed_area_mm2, capacity.total_area_mm2)
+
     cond do
       over_weight ->
-        %{disqualified?: true, reason: "weight_exceeded", percent_used: 100, free_pct: 0}
+        %{
+          disqualified?: true,
+          reason: "weight_exceeded",
+          current_percent_used: current_percent_used,
+          projected_percent_used: 100,
+          # Legacy alias for older mobile clients (mirrors projected).
+          percent_used: 100,
+          free_pct: 0
+        }
 
       over_height ->
-        %{disqualified?: true, reason: "stack_too_tall", percent_used: 100, free_pct: 0}
+        %{
+          disqualified?: true,
+          reason: "stack_too_tall",
+          current_percent_used: current_percent_used,
+          projected_percent_used: 100,
+          percent_used: 100,
+          free_pct: 0
+        }
 
       over_area ->
-        %{disqualified?: true, reason: "no_room", percent_used: 100, free_pct: 0}
+        %{
+          disqualified?: true,
+          reason: "no_room",
+          current_percent_used: current_percent_used,
+          projected_percent_used: 100,
+          percent_used: 100,
+          free_pct: 0
+        }
 
       true ->
-        # Use area as the headline "% used" metric — it's the most
-        # operator-intuitive (shelves run out of floor space before
-        # they run out of weight in 90% of cases here).
-        percent_used =
-          case capacity.total_area_mm2 do
-            nil ->
-              0
-
-            total ->
-              Decimal.add(capacity.committed_area_mm2, footprint.footprint_area_mm2)
-              |> Decimal.mult(Decimal.new(100))
-              |> Decimal.div(total)
-              |> Decimal.round(0)
-              |> Decimal.to_integer()
-          end
+        # `projected_percent_used` is the headline metric — it's what
+        # the cell would read AFTER this lot lands, which is the
+        # number put-away workers actually care about.
+        # `current_percent_used` is what the cell holds right now, so
+        # the UI can render "Currently X% → Y% after this lot".
+        projected =
+          area_percent(
+            Decimal.add(capacity.committed_area_mm2, footprint.footprint_area_mm2),
+            capacity.total_area_mm2
+          )
 
         %{
           disqualified?: false,
           reason: nil,
-          percent_used: percent_used,
-          free_pct: max(0, 100 - percent_used)
+          current_percent_used: current_percent_used,
+          projected_percent_used: projected,
+          # Legacy alias kept stable for the mobile client.
+          percent_used: projected,
+          free_pct: max(0, 100 - projected)
         }
     end
+  end
+
+  defp area_percent(_committed, nil), do: 0
+
+  defp area_percent(committed, total) do
+    Decimal.mult(committed, Decimal.new(100))
+    |> Decimal.div(total)
+    |> Decimal.round(0)
+    |> Decimal.to_integer()
   end
 
   # ----- packaging suggestions ------------------------------------------
