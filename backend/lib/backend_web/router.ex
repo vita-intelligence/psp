@@ -127,6 +127,13 @@ defmodule BackendWeb.Router do
       # one transaction. Used by the unified item-edit form.
       put "/full", ItemController, :update_full
 
+      # Two-state compliance gate: `draft` → `ready_for_use` (runs
+      # the per-type required-fields validator) and back to `draft`
+      # with a mandatory justification. Items in `draft` are refused
+      # by PO lines + BOMs so non-compliant items can't reach prod.
+      post "/mark-ready", ItemController, :mark_ready
+      post "/revert-to-draft", ItemController, :revert_to_draft
+
       # Per-item image gallery. Bytes are stored via the configured
       # `Backend.Storage` adapter (filesystem in dev, swap to Azure /
       # S3 in prod). The serving route is RBAC-gated so reads still
@@ -156,6 +163,13 @@ defmodule BackendWeb.Router do
       # a sibling resource below.
       resources "/certificates", ItemCertificateController,
         only: [:create, :update, :delete]
+
+      # Compliance evidence files (spec sheet, food-contact DoC,
+      # migration test report, …). Same shape as the vendor / lot /
+      # PO / goods-in attachments — bytes live in Backend.Storage,
+      # the per-type subtable carries an FK to the metadata row.
+      post "/files", ItemFileController, :upload_file
+      get "/files/:id/serve", ItemFileController, :serve_file
     end
 
     # Company-scoped certificate registry (definitions). Per-item

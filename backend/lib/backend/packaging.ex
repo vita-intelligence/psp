@@ -8,10 +8,14 @@ defmodule Backend.Packaging do
   alias Backend.Items.{Item, PackagingCompliance}
   alias Backend.Repo
 
-  @audit_fields ~w(material food_contact_compliant food_contact_declaration_url recyclability_code migration_test_url migration_test_expires_at)a
+  @audit_fields ~w(material food_contact_compliant food_contact_declaration_file_id recyclability_code migration_test_file_id migration_test_expires_at)a
 
   def get(item_id) when is_integer(item_id) do
     Repo.get(PackagingCompliance, item_id)
+    |> case do
+      nil -> nil
+      row -> Repo.preload(row, [:food_contact_declaration_file, :migration_test_file])
+    end
   end
 
   def upsert(%User{} = actor, %Item{} = item, attrs) do
@@ -42,7 +46,7 @@ defmodule Backend.Packaging do
           Audit.record_created(actor, "packaging_compliance", row, after_state)
         end
 
-        {:ok, row}
+        {:ok, Repo.preload(row, [:food_contact_declaration_file, :migration_test_file])}
 
       other ->
         other

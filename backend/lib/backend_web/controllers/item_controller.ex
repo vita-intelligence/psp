@@ -23,7 +23,8 @@ defmodule BackendWeb.ItemController do
 
   plug RequirePermission, "items.view" when action in [:index, :show]
   plug RequirePermission, "items.create" when action in [:create]
-  plug RequirePermission, "items.edit" when action in [:update, :update_full]
+  plug RequirePermission, "items.edit"
+       when action in [:update, :update_full, :mark_ready, :revert_to_draft]
   plug RequirePermission, "items.delete" when action in [:delete]
 
   action_fallback BackendWeb.FallbackController
@@ -139,6 +140,67 @@ defmodule BackendWeb.ItemController do
     with %{} = item <- Items.get_for_company(actor.company_id, uuid),
          {:ok, _} <- Items.delete(actor, item) do
       send_resp(conn, :no_content, "")
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Transition `draft` → `ready_for_use`. Runs the per-type compliance
+  validator; on failure returns the field-keyed blocker list so the
+  FE can highlight every missing required field in one go.
+  """
+  def mark_ready(conn, %{"item_id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = item <- Items.get_for_company(actor.company_id, uuid) do
+      case Items.mark_ready(actor, item) do
+        {:ok, updated} ->
+          json(conn, %{item: Payloads.item(updated)})
+
+        {:error, {:compliance_blocked, blockers}} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "compliance_blocked",
+            detail:
+              "#{length(blockers)} field(s) still need to be filled before this item is ready for use.",
+            blockers: blockers
+          })
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Transition `ready_for_use` → `draft`. Justification is mandatory —
+  auditors ask why something stopped being ready.
+  """
+  def revert_to_draft(conn, %{"item_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+    reason = params["reason"] || ""
+
+    with %{} = item <- Items.get_for_company(actor.company_id, uuid) do
+      case Items.revert_to_draft(actor, item, reason) do
+        {:ok, updated} ->
+          json(conn, %{item: Payloads.item(updated)})
+
+        {:error, :reason_required} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "reason_required",
+            detail:
+              "A justification is required to revert a ready item to draft."
+          })
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
     else
       _ -> {:error, :not_found}
     end

@@ -13,7 +13,7 @@ defmodule Backend.Items.RawMaterialCompliance do
   import Ecto.Changeset
 
   alias Backend.Accounts.User
-  alias Backend.Items.Item
+  alias Backend.Items.{Item, ItemFile}
 
   @primary_key {:item_id, :id, autogenerate: false}
   @foreign_key_type :id
@@ -43,13 +43,13 @@ defmodule Backend.Items.RawMaterialCompliance do
     field :powder_water_dose_mg_per_ml, :decimal
     field :shelf_life_months, :integer
     field :storage_conditions, :string
-    field :spec_document_url, :string
     field :last_reviewed_at, :utc_datetime
     field :review_frequency_months, :integer
     field :review_due_at, :date
 
     belongs_to :item, Item, primary_key: true, define_field: false
     belongs_to :last_reviewed_by, User
+    belongs_to :spec_document_file, ItemFile
 
     timestamps(type: :utc_datetime)
   end
@@ -82,7 +82,7 @@ defmodule Backend.Items.RawMaterialCompliance do
       :powder_water_dose_mg_per_ml,
       :shelf_life_months,
       :storage_conditions,
-      :spec_document_url,
+      :spec_document_file_id,
       :last_reviewed_at,
       :last_reviewed_by_id,
       :review_frequency_months,

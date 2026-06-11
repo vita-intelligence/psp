@@ -15,18 +15,23 @@ export class ApiError extends Error {
   readonly code: ApiErrorCode | string;
   readonly detail: string;
   readonly fields?: Record<string, string[]>;
+  /** Carrier for endpoint-specific structured payloads we don't want
+   *  to model in this class (compliance blockers, signer info, …). */
+  readonly extras: Record<string, unknown>;
 
   constructor(opts: {
     status: number;
     code: string;
     detail: string;
     fields?: Record<string, string[]>;
+    extras?: Record<string, unknown>;
   }) {
     super(opts.detail || opts.code);
     this.status = opts.status;
     this.code = opts.code;
     this.detail = opts.detail;
     this.fields = opts.fields;
+    this.extras = opts.extras ?? {};
   }
 }
 
@@ -86,11 +91,22 @@ export async function api<T = unknown>(
     const code = body.error || synthesiseCode(res.status);
     const detail = body.detail || synthesiseDetail(res.status);
 
+    // Pull anything past the canonical {error,detail,fields} envelope
+    // into `extras` so endpoint-specific payloads survive (e.g. the
+    // compliance-gate `blockers` array). Callers that care about a
+    // specific key cast through `extras`.
+    const knownKeys = new Set(["error", "detail", "fields"]);
+    const extras: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) {
+      if (!knownKeys.has(k)) extras[k] = v;
+    }
+
     throw new ApiError({
       status: res.status,
       code,
       detail,
       fields: body.fields,
+      extras,
     });
   }
 

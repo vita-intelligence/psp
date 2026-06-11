@@ -730,7 +730,8 @@ export interface RawMaterialCompliance {
   powder_water_dose_mg_per_ml: string | null;
   shelf_life_months: number | null;
   storage_conditions: string | null;
-  spec_document_url: string | null;
+  spec_document_file_id: number | null;
+  spec_document_file: ItemFile | null;
   last_reviewed_at: string | null;
   last_reviewed_by: AuditActor | null;
   review_frequency_months: number | null;
@@ -830,7 +831,8 @@ export interface FinishedProductSpec {
   general_claims: string[];
   nutrition_table: NutritionTable;
   target_markets: string[];
-  spec_document_url: string | null;
+  spec_document_file_id: number | null;
+  spec_document_file: ItemFile | null;
   /** Array of allergen UUIDs flagged for "may contain" warning. */
   may_contain_allergens: string[];
   may_contain_justification: string | null;
@@ -963,13 +965,38 @@ export type PackagingMaterial =
 export interface PackagingCompliance {
   material: PackagingMaterial | null;
   food_contact_compliant: boolean | null;
-  food_contact_declaration_url: string | null;
+  food_contact_declaration_file_id: number | null;
+  food_contact_declaration_file: ItemFile | null;
   recyclability_code: string | null;
-  migration_test_url: string | null;
+  migration_test_file_id: number | null;
+  migration_test_file: ItemFile | null;
   migration_test_expires_at: string | null;
   inserted_at: string;
   updated_at: string;
 }
+
+/** Per-item evidence file (spec sheet, food-contact DoC, …). Same
+ *  shape as `VendorFile`. */
+export interface ItemFile {
+  id: number;
+  uuid: string;
+  kind: ItemFileKind;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  url: string;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
+export type ItemFileKind =
+  | "spec_sheet"
+  | "food_contact_declaration"
+  | "migration_test"
+  | "safety_data_sheet"
+  | "allergen_declaration"
+  | "nutritional_analysis"
+  | "other";
 
 /** Per-item raw-material risk scorecard. Computed level comes from
  *  the 7 scores; override is opt-in and requires justification. */
@@ -1014,6 +1041,17 @@ export interface Item {
    *  superset of this list. */
   storage_tags: string[];
   is_active: boolean;
+  /** Two-state regulatory gate. PO lines + BOMs refuse `draft` items.
+   *  Promote via `markItemReadyAction`; revert needs a justification. */
+  compliance_status: ItemComplianceStatus;
+  compliance_readied_at: string | null;
+  compliance_readied_by: AuditActor | null;
+  compliance_revert_reason: string | null;
+  /** Live blocker list. Present only on show endpoints (where the
+   *  subtables are preloaded). `[]` ⇒ ready, list ⇒ field-keyed
+   *  reasons the FE can route to specific form fields. `null` ⇒ list
+   *  endpoint, blockers not computed. */
+  compliance_blockers: ItemComplianceBlocker[] | null;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;
@@ -1026,6 +1064,16 @@ export interface Item {
   certificate_attachments?: ItemCertificate[];
   images?: ItemImage[];
   allergens?: Allergen[];
+}
+
+export type ItemComplianceStatus = "draft" | "ready_for_use";
+
+/** One blocker the regulatory validator emitted. `field` is the dotted
+ *  path matching the FE form's field-error map keys so we can scroll
+ *  to the field; `reason` is the auditor-facing explanation we show. */
+export interface ItemComplianceBlocker {
+  field: string;
+  reason: string;
 }
 
 export interface ProductFamily {

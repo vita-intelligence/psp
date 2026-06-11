@@ -1,9 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { Item, ItemType } from "../types";
+import type {
+  Item,
+  ItemComplianceBlocker,
+  ItemFile,
+  ItemType,
+} from "../types";
 import {
   toErrorResult,
   unauthorizedResult,
@@ -116,6 +121,96 @@ export async function deleteItemAction(uuid: string): Promise<DeleteResult> {
     return toErrorResult(err, {
       source: "deleteItemAction",
       fallbackDetail: "Couldn't delete the item.",
+    });
+  }
+}
+
+/** When `mark-ready` fails the validator, the backend returns the
+ *  exact list of fields that still need filling. We surface those to
+ *  the FE so the form can highlight every blocker in one render
+ *  instead of asking the user to fix-and-retry one at a time. */
+export type MarkReadyResult =
+  | { ok: true; item: Item }
+  | (ErrorResult & { blockers?: ItemComplianceBlocker[] });
+
+export async function markItemReadyAction(
+  uuid: string,
+): Promise<MarkReadyResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("markItemReadyAction");
+
+  try {
+    const res = await api<{ item: Item }>(
+      `/api/items/${encodeURIComponent(uuid)}/mark-ready`,
+      { method: "POST", token },
+    );
+    revalidatePath(`/settings/items`);
+    revalidatePath(`/settings/items/${uuid}`);
+    return { ok: true, item: res.item };
+  } catch (err) {
+    const base = toErrorResult(err, {
+      source: "markItemReadyAction",
+      fallbackDetail: "Couldn't mark this item ready for use.",
+    });
+    // `extras.blockers` is set by the `api()` helper when the backend
+    // returns the validator's missing-field list.
+    const blockers =
+      err instanceof ApiError
+        ? (err.extras.blockers as ItemComplianceBlocker[] | undefined)
+        : undefined;
+    return { ...base, ...(blockers ? { blockers } : {}) };
+  }
+}
+
+export async function revertItemToDraftAction(
+  uuid: string,
+  reason: string,
+): Promise<ItemResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("revertItemToDraftAction");
+
+  try {
+    const res = await api<{ item: Item }>(
+      `/api/items/${encodeURIComponent(uuid)}/revert-to-draft`,
+      { method: "POST", token, body: JSON.stringify({ reason }) },
+    );
+    revalidatePath(`/settings/items`);
+    revalidatePath(`/settings/items/${uuid}`);
+    return { ok: true, item: res.item };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "revertItemToDraftAction",
+      fallbackDetail: "Couldn't revert this item to draft.",
+    });
+  }
+}
+
+export type UploadItemFileResult = { ok: true; file: ItemFile } | ErrorResult;
+
+/** Multipart upload of an item compliance file (spec sheet, food-
+ *  contact DoC, migration test report, …). Bytes go to `Backend.Storage`
+ *  via the items file controller; the returned `file.id` is what the
+ *  per-type compliance subtable's `*_file_id` references.
+ *
+ *  Called from a client component using `useTransition` + `FormData`. */
+export async function uploadItemFileAction(
+  itemUuid: string,
+  formData: FormData,
+): Promise<UploadItemFileResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("uploadItemFileAction");
+
+  try {
+    const res = await api<{ file: ItemFile }>(
+      `/api/items/${encodeURIComponent(itemUuid)}/files`,
+      { method: "POST", token, body: formData },
+    );
+    revalidatePath(`/settings/items/${itemUuid}`);
+    return { ok: true, file: res.file };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "uploadItemFileAction",
+      fallbackDetail: "Couldn't upload the file.",
     });
   }
 }

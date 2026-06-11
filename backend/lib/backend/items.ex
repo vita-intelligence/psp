@@ -17,7 +17,7 @@ defmodule Backend.Items do
   alias Backend.Audit
   alias Backend.Catalogs
   alias Backend.Catalogs.AttributeDefinition
-  alias Backend.Items.Item
+  alias Backend.Items.{Item, ItemFile}
   alias Backend.ListQueries
   alias Backend.Repo
 
@@ -97,17 +97,26 @@ defmodule Backend.Items do
               :product_family,
               :created_by,
               :updated_by,
-              raw_material_compliance: [:last_reviewed_by],
+              :compliance_readied_by,
+              raw_material_compliance: [:last_reviewed_by, :spec_document_file],
               raw_material_risk: [:assessed_by],
               finished_product_spec: [
                 :serving_size_uom,
                 :net_quantity_uom,
-                :may_contain_assessed_by
+                :may_contain_assessed_by,
+                :spec_document_file
               ],
-              packaging_compliance: [],
+              packaging_compliance: [
+                :food_contact_declaration_file,
+                :migration_test_file
+              ],
               certificate_attachments: [:certificate, :uploaded_by],
               images: ^from(im in Backend.Items.ItemImage,
                 order_by: [desc: im.is_primary, asc: im.sort_order, asc: im.inserted_at],
+                preload: [:uploaded_by]
+              ),
+              files: ^from(f in ItemFile,
+                order_by: [desc: f.inserted_at],
                 preload: [:uploaded_by]
               ),
               allergens: ^from(a in Backend.Allergens.Allergen, order_by: [asc: a.sort_order])
@@ -401,6 +410,136 @@ defmodule Backend.Items do
     do: {:error, "must be one of the configured choices"}
 
   defp coerce_value(_def, v), do: {:ok, v}
+
+  # ----- compliance transitions ------------------------------------
+
+  alias Backend.Items.Compliance
+
+  @doc """
+  Live readiness check for an item — runs the per-type validator
+  against the fully-preloaded row. Used by the payload renderer so the
+  FE can show the live "what's missing" panel without round-tripping.
+  """
+  def compliance_check(%Item{} = item), do: Compliance.check(item)
+
+  @doc """
+  Mark an item ready for use. Validates the per-type required field
+  set; if anything is missing, refuses the transition and returns the
+  exact blocker list so the FE can route each error to its field.
+  """
+  def mark_ready(%User{} = actor, %Item{} = item) do
+    full = get_for_company_full(item.company_id, item.uuid)
+
+    case Compliance.check(full) do
+      {:ok, []} ->
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+        before = snapshot(full)
+
+        attrs = %{
+          "compliance_status" => "ready_for_use",
+          "compliance_readied_at" => now,
+          "compliance_readied_by_id" => actor.id,
+          "compliance_revert_reason" => nil,
+          "updated_by_id" => actor.id
+        }
+
+        full
+        |> Item.changeset(attrs)
+        |> Repo.update()
+        |> case do
+          {:ok, updated} ->
+            Audit.record_updated(actor, "item", updated, before, snapshot(updated))
+            {:ok, get_for_company_full(updated.company_id, updated.uuid)}
+
+          other ->
+            other
+        end
+
+      {:missing, blockers} ->
+        {:error, {:compliance_blocked, blockers}}
+    end
+  end
+
+  @doc """
+  Revert an item to `draft`. Requires a justification text — auditors
+  ask "why did this stop being ready?" so we capture the reason on the
+  same row + leave the timestamped readied_at as historical context
+  (last successful readiness).
+  """
+  def revert_to_draft(%User{} = actor, %Item{} = item, reason)
+      when is_binary(reason) do
+    if String.trim(reason) == "" do
+      {:error, :reason_required}
+    else
+      before = snapshot(item)
+
+      attrs = %{
+        "compliance_status" => "draft",
+        "compliance_revert_reason" => reason,
+        "updated_by_id" => actor.id
+      }
+
+      item
+      |> Item.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          Audit.record_updated(actor, "item", updated, before, snapshot(updated))
+          {:ok, updated}
+
+        other ->
+          other
+      end
+    end
+  end
+
+  def revert_to_draft(_actor, _item, _), do: {:error, :reason_required}
+
+  # ----- file attachments ------------------------------------------
+
+  @doc """
+  Persist the metadata row backing an uploaded compliance file. Bytes
+  are already in `Backend.Storage` by the time we get here — the
+  controller calls `Storage.put/3` first, then asks us to record the
+  resulting `blob_path` so the FE can resolve a serve URL.
+
+  Compliance subtable writes (raw-material spec, packaging DoC, …)
+  carry an FK back to the row this creates.
+  """
+  def record_file(%User{} = actor, %Item{} = item, attrs) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.put("company_id", item.company_id)
+      |> Map.put("item_id", item.id)
+      |> Map.put("uploaded_by_id", actor.id)
+
+    %ItemFile{}
+    |> ItemFile.changeset(attrs)
+    |> Repo.insert()
+    |> case do
+      {:ok, file} -> {:ok, Repo.preload(file, :uploaded_by)}
+      other -> other
+    end
+  end
+
+  @doc "Look up a file row scoped to the given item."
+  def get_file(item_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(f in ItemFile,
+            where: f.item_id == ^item_id and f.uuid == ^cast,
+            preload: [:uploaded_by]
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  def get_file(_, _), do: nil
 
   # ----- helpers ---------------------------------------------------
 

@@ -8,7 +8,7 @@ defmodule Backend.Items.PackagingCompliance do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Backend.Items.Item
+  alias Backend.Items.{Item, ItemFile}
 
   @primary_key {:item_id, :id, autogenerate: false}
   @foreign_key_type :id
@@ -18,12 +18,12 @@ defmodule Backend.Items.PackagingCompliance do
   schema "item_packaging_compliance" do
     field :material, :string
     field :food_contact_compliant, :boolean
-    field :food_contact_declaration_url, :string
     field :recyclability_code, :string
-    field :migration_test_url, :string
     field :migration_test_expires_at, :date
 
     belongs_to :item, Item, primary_key: true, define_field: false
+    belongs_to :food_contact_declaration_file, ItemFile
+    belongs_to :migration_test_file, ItemFile
 
     timestamps(type: :utc_datetime)
   end
@@ -36,9 +36,9 @@ defmodule Backend.Items.PackagingCompliance do
       :item_id,
       :material,
       :food_contact_compliant,
-      :food_contact_declaration_url,
+      :food_contact_declaration_file_id,
       :recyclability_code,
-      :migration_test_url,
+      :migration_test_file_id,
       :migration_test_expires_at
     ])
     |> validate_required([:item_id])

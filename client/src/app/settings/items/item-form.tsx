@@ -15,9 +15,11 @@ import {
   Loader2,
   Lock,
   LockKeyhole,
+  Paperclip,
   Save,
   ShieldAlert,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { TagPicker } from "@/components/forms/tag-picker";
 import { Button } from "@/components/ui/button";
@@ -48,7 +50,10 @@ import { invalidateAudit, subscribeRestore } from "@/lib/audit/invalidator";
 import {
   createItemAction,
   deleteItemAction,
+  markItemReadyAction,
+  revertItemToDraftAction,
   updateItemFullAction,
+  uploadItemFileAction,
 } from "@/lib/items/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import type {
@@ -60,6 +65,8 @@ import type {
   GmoStatus,
   HalalStatus,
   Item,
+  ItemFile,
+  ItemFileKind,
   ItemType,
   KosherStatus,
   NovelFoodStatus,
@@ -248,7 +255,7 @@ interface FormState {
   rm_powder_water_dose_mg_per_ml: string;
   rm_shelf_life_months: string;
   rm_storage_conditions: string;
-  rm_spec_document_url: string;
+  rm_spec_document_file: ItemFile | null;
   rm_last_reviewed_at: string;
   rm_review_frequency_months: string;
   /** Allergen UUIDs this raw material contains / carries traces of.
@@ -288,7 +295,7 @@ interface FormState {
   fp_shelf_life_months: string;
   fp_storage_conditions: string;
   fp_food_contact_status: string;
-  fp_spec_document_url: string;
+  fp_spec_document_file: ItemFile | null;
   fp_target_markets: string;
   fp_may_contain_allergen_uuids: string[];
   fp_may_contain_justification: string;
@@ -296,9 +303,9 @@ interface FormState {
   // Packaging
   pkg_material: string;
   pkg_food_contact_compliant: "" | "true" | "false";
-  pkg_food_contact_declaration_url: string;
+  pkg_food_contact_declaration_file: ItemFile | null;
   pkg_recyclability_code: string;
-  pkg_migration_test_url: string;
+  pkg_migration_test_file: ItemFile | null;
   pkg_migration_test_expires_at: string;
 }
 
@@ -349,7 +356,7 @@ function initialFrom(item: Item | null): FormState {
     rm_powder_water_dose_mg_per_ml: compliance?.powder_water_dose_mg_per_ml ?? "",
     rm_shelf_life_months: compliance?.shelf_life_months?.toString() ?? "",
     rm_storage_conditions: compliance?.storage_conditions ?? "",
-    rm_spec_document_url: compliance?.spec_document_url ?? "",
+    rm_spec_document_file: compliance?.spec_document_file ?? null,
     rm_last_reviewed_at: compliance?.last_reviewed_at
       ? compliance.last_reviewed_at.slice(0, 16)
       : "",
@@ -387,7 +394,7 @@ function initialFrom(item: Item | null): FormState {
     fp_shelf_life_months: spec?.shelf_life_months?.toString() ?? "",
     fp_storage_conditions: spec?.storage_conditions ?? "",
     fp_food_contact_status: spec?.food_contact_status ?? "",
-    fp_spec_document_url: spec?.spec_document_url ?? "",
+    fp_spec_document_file: spec?.spec_document_file ?? null,
     fp_target_markets: (spec?.target_markets ?? []).join(", "),
     fp_may_contain_allergen_uuids: spec?.may_contain_allergens ?? [],
     fp_may_contain_justification: spec?.may_contain_justification ?? "",
@@ -399,9 +406,9 @@ function initialFrom(item: Item | null): FormState {
         : pkg.food_contact_compliant
           ? "true"
           : "false",
-    pkg_food_contact_declaration_url: pkg?.food_contact_declaration_url ?? "",
+    pkg_food_contact_declaration_file: pkg?.food_contact_declaration_file ?? null,
     pkg_recyclability_code: pkg?.recyclability_code ?? "",
-    pkg_migration_test_url: pkg?.migration_test_url ?? "",
+    pkg_migration_test_file: pkg?.migration_test_file ?? null,
     pkg_migration_test_expires_at: pkg?.migration_test_expires_at ?? "",
   };
 }
@@ -529,6 +536,18 @@ export function ItemForm({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [pending, startTransition] = useTransition();
 
+  // Compliance gate state — live blockers + the transition buttons.
+  // The list comes from the server payload (computed fresh each show),
+  // and we shadow it with `freshBlockers` after a failed mark-ready
+  // attempt so the FE shows the just-returned list immediately without
+  // waiting for a refetch.
+  const [complianceTransition, startComplianceTransition] = useTransition();
+  const [freshBlockers, setFreshBlockers] = useState<
+    import("@/lib/types").ItemComplianceBlocker[] | null
+  >(null);
+  const [revertOpen, setRevertOpen] = useState(false);
+  const [revertReason, setRevertReason] = useState("");
+
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
 
   const visibleAttributeDefinitions = useMemo(
@@ -616,7 +635,7 @@ export function ItemForm({
                 ? Number(s("rm_shelf_life_months"))
                 : null,
               storage_conditions: s("rm_storage_conditions").trim() || null,
-              spec_document_url: s("rm_spec_document_url").trim() || null,
+              spec_document_file_id: state.rm_spec_document_file?.id ?? null,
               last_reviewed_at: s("rm_last_reviewed_at")
                 ? new Date(s("rm_last_reviewed_at")).toISOString()
                 : null,
@@ -690,7 +709,7 @@ export function ItemForm({
                 : null,
               storage_conditions: s("fp_storage_conditions").trim() || null,
               food_contact_status: s("fp_food_contact_status").trim() || null,
-              spec_document_url: s("fp_spec_document_url").trim() || null,
+              spec_document_file_id: state.fp_spec_document_file?.id ?? null,
               target_markets: s("fp_target_markets")
                 .split(/[,\s]+/)
                 .map((x) => x.trim().toUpperCase())
@@ -714,10 +733,11 @@ export function ItemForm({
                 state.pkg_food_contact_compliant == null
                   ? null
                   : state.pkg_food_contact_compliant === "true",
-              food_contact_declaration_url:
-                s("pkg_food_contact_declaration_url").trim() || null,
+              food_contact_declaration_file_id:
+                state.pkg_food_contact_declaration_file?.id ?? null,
               recyclability_code: s("pkg_recyclability_code").trim() || null,
-              migration_test_url: s("pkg_migration_test_url").trim() || null,
+              migration_test_file_id:
+                state.pkg_migration_test_file?.id ?? null,
               migration_test_expires_at:
                 s("pkg_migration_test_expires_at") || null,
             }
@@ -849,6 +869,57 @@ export function ItemForm({
             )}
           </div>
         </div>
+
+        {isEdit && item && (
+          <ComplianceGateBanner
+            item={item}
+            canEdit={canEdit}
+            freshBlockers={freshBlockers}
+            pending={complianceTransition}
+            revertOpen={revertOpen}
+            revertReason={revertReason}
+            onMarkReady={() => {
+              setActionError(null);
+              startComplianceTransition(async () => {
+                const res = await markItemReadyAction(item.uuid);
+                if (res.ok) {
+                  setFreshBlockers([]);
+                  toast.success("Marked ready for use");
+                  router.refresh();
+                } else {
+                  if (res.blockers) setFreshBlockers(res.blockers);
+                  setActionError(res);
+                  toast.error(res.detail);
+                }
+              });
+            }}
+            onOpenRevert={() => {
+              setRevertReason("");
+              setRevertOpen(true);
+            }}
+            onCloseRevert={() => setRevertOpen(false)}
+            onChangeRevertReason={setRevertReason}
+            onConfirmRevert={() => {
+              if (!revertReason.trim()) return;
+              setActionError(null);
+              startComplianceTransition(async () => {
+                const res = await revertItemToDraftAction(
+                  item.uuid,
+                  revertReason.trim(),
+                );
+                if (res.ok) {
+                  setRevertOpen(false);
+                  setRevertReason("");
+                  toast.success("Reverted to draft");
+                  router.refresh();
+                } else {
+                  setActionError(res);
+                  toast.error(res.detail);
+                }
+              });
+            }}
+          />
+        )}
 
         <fieldset disabled={!canEdit || pending} className="space-y-8">
           {/* Identity */}
@@ -1074,10 +1145,19 @@ export function ItemForm({
                 <FieldEditingIndicator peer={fieldEditors["rm_storage_conditions"]} />
                 <FieldError messages={fieldErrors["raw_material_compliance.storage_conditions"]} />
               </FieldRow>
-              <FieldRow label="Spec document URL">
-                <Input type="url" value={state.rm_spec_document_url} onChange={(e) => setField("rm_spec_document_url", e.target.value)} onFocus={() => focusField("rm_spec_document_url")} onBlur={() => blurField("rm_spec_document_url")} placeholder="https://…" />
-                <FieldEditingIndicator peer={fieldEditors["rm_spec_document_url"]} />
-                <FieldError messages={fieldErrors["raw_material_compliance.spec_document_url"]} />
+              <FieldRow label="Spec document">
+                <ItemFileUploadField
+                  itemUuid={item?.uuid ?? null}
+                  kind="spec_sheet"
+                  file={state.rm_spec_document_file}
+                  onChange={(f) => setField("rm_spec_document_file", f)}
+                  disabled={!canEdit}
+                  fieldKey="rm_spec_document_file"
+                  focusField={focusField}
+                  blurField={blurField}
+                  editor={fieldEditors["rm_spec_document_file"]}
+                />
+                <FieldError messages={fieldErrors["raw_material_compliance.spec_document_file_id"]} />
               </FieldRow>
               <Grid>
                 <FieldRow label="Last reviewed at">
@@ -1275,10 +1355,19 @@ export function ItemForm({
                   <FieldEditingIndicator peer={fieldEditors["fp_target_markets"]} />
                   <FieldError messages={fieldErrors["finished_product_spec.target_markets"]} />
                 </FieldRow>
-                <FieldRow label="Spec document URL">
-                  <Input type="url" value={state.fp_spec_document_url} onChange={(e) => setField("fp_spec_document_url", e.target.value)} onFocus={() => focusField("fp_spec_document_url")} onBlur={() => blurField("fp_spec_document_url")} placeholder="https://…" />
-                  <FieldEditingIndicator peer={fieldEditors["fp_spec_document_url"]} />
-                  <FieldError messages={fieldErrors["finished_product_spec.spec_document_url"]} />
+                <FieldRow label="Spec document">
+                  <ItemFileUploadField
+                    itemUuid={item?.uuid ?? null}
+                    kind="spec_sheet"
+                    file={state.fp_spec_document_file}
+                    onChange={(f) => setField("fp_spec_document_file", f)}
+                    disabled={!canEdit}
+                    fieldKey="fp_spec_document_file"
+                    focusField={focusField}
+                    blurField={blurField}
+                    editor={fieldEditors["fp_spec_document_file"]}
+                  />
+                  <FieldError messages={fieldErrors["finished_product_spec.spec_document_file_id"]} />
                 </FieldRow>
               </Grid>
 
@@ -1322,16 +1411,34 @@ export function ItemForm({
                 </span>
                 <FieldEditingIndicator peer={fieldEditors["pkg_food_contact_compliant"]} />
               </label>
-              <FieldRow label="Food-contact declaration URL">
-                <Input type="url" value={state.pkg_food_contact_declaration_url} onChange={(e) => setField("pkg_food_contact_declaration_url", e.target.value)} onFocus={() => focusField("pkg_food_contact_declaration_url")} onBlur={() => blurField("pkg_food_contact_declaration_url")} placeholder="https://…" />
-                <FieldEditingIndicator peer={fieldEditors["pkg_food_contact_declaration_url"]} />
-                <FieldError messages={fieldErrors["packaging_compliance.food_contact_declaration_url"]} />
+              <FieldRow label="Food-contact declaration">
+                <ItemFileUploadField
+                  itemUuid={item?.uuid ?? null}
+                  kind="food_contact_declaration"
+                  file={state.pkg_food_contact_declaration_file}
+                  onChange={(f) => setField("pkg_food_contact_declaration_file", f)}
+                  disabled={!canEdit}
+                  fieldKey="pkg_food_contact_declaration_file"
+                  focusField={focusField}
+                  blurField={blurField}
+                  editor={fieldEditors["pkg_food_contact_declaration_file"]}
+                />
+                <FieldError messages={fieldErrors["packaging_compliance.food_contact_declaration_file_id"]} />
               </FieldRow>
               <Grid>
-                <FieldRow label="Migration test URL">
-                  <Input type="url" value={state.pkg_migration_test_url} onChange={(e) => setField("pkg_migration_test_url", e.target.value)} onFocus={() => focusField("pkg_migration_test_url")} onBlur={() => blurField("pkg_migration_test_url")} placeholder="https://…" />
-                  <FieldEditingIndicator peer={fieldEditors["pkg_migration_test_url"]} />
-                  <FieldError messages={fieldErrors["packaging_compliance.migration_test_url"]} />
+                <FieldRow label="Migration test report">
+                  <ItemFileUploadField
+                    itemUuid={item?.uuid ?? null}
+                    kind="migration_test"
+                    file={state.pkg_migration_test_file}
+                    onChange={(f) => setField("pkg_migration_test_file", f)}
+                    disabled={!canEdit}
+                    fieldKey="pkg_migration_test_file"
+                    focusField={focusField}
+                    blurField={blurField}
+                    editor={fieldEditors["pkg_migration_test_file"]}
+                  />
+                  <FieldError messages={fieldErrors["packaging_compliance.migration_test_file_id"]} />
                 </FieldRow>
                 <FieldRow label="Migration test expires" hint="Feeds the expiring-soon queue.">
                   <Input type="date" value={state.pkg_migration_test_expires_at} onChange={(e) => setField("pkg_migration_test_expires_at", e.target.value)} onFocus={() => focusField("pkg_migration_test_expires_at")} onBlur={() => blurField("pkg_migration_test_expires_at")} />
@@ -1633,5 +1740,332 @@ function JoinErrorCard({ error, isEdit }: { error: JoinError; isEdit: boolean })
         {isEdit ? "This item's edit form is shared in real time." : "The new-item draft form is shared in real time."}
       </p>
     </div>
+  );
+}
+
+/**
+ * Compliance evidence upload widget. Mirrors the vendor file pattern
+ * — pick → POST multipart → render filename + serve link + remove
+ * affordance. Disabled when the parent item doesn't exist yet
+ * (uploads need a UUID to scope under), in which case we explain
+ * why and ask the user to save first.
+ */
+function ItemFileUploadField({
+  itemUuid,
+  kind,
+  file,
+  onChange,
+  disabled,
+  fieldKey,
+  focusField,
+  blurField,
+  editor,
+}: {
+  itemUuid: string | null;
+  kind: ItemFileKind;
+  file: ItemFile | null;
+  onChange: (f: ItemFile | null) => void;
+  disabled?: boolean;
+  fieldKey: string;
+  focusField: (key: string) => void;
+  blurField: (key: string) => void;
+  editor: CollabPeer | null;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, startUpload] = useTransition();
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  function handlePick(picked: File | undefined) {
+    if (!picked || !itemUuid) return;
+    const fd = new FormData();
+    fd.append("kind", kind);
+    fd.append("file", picked);
+
+    setUploadError(null);
+    startUpload(async () => {
+      const res = await uploadItemFileAction(itemUuid, fd);
+      if (res.ok) {
+        onChange(res.file);
+        toast.success(`Uploaded ${res.file.filename}`);
+      } else {
+        setUploadError(res.detail);
+      }
+    });
+  }
+
+  if (!itemUuid) {
+    return (
+      <p className="rounded-md border border-dashed border-border/60 px-3 py-2 text-[11px] text-muted-foreground">
+        Save the item first, then come back to attach the file.
+      </p>
+    );
+  }
+
+  if (file) {
+    return (
+      <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5">
+        <Paperclip className="size-3 shrink-0 text-muted-foreground" />
+        <a
+          href={file.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`${file.filename} · ${formatItemFileBytes(file.byte_size)}`}
+          className="min-w-0 flex-1 truncate text-[11px] hover:underline"
+        >
+          {file.filename}
+        </a>
+        {!disabled && (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            aria-label="Remove file"
+            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+          >
+            <Trash2 className="size-3" />
+          </button>
+        )}
+        <FieldEditingIndicator peer={editor} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <input
+        ref={inputRef}
+        type="file"
+        accept="application/pdf,image/jpeg,image/png,image/webp,.doc,.docx,.xls,.xlsx,.txt"
+        className="hidden"
+        onChange={(e) => handlePick(e.target.files?.[0])}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          focusField(fieldKey);
+          inputRef.current?.click();
+        }}
+        onBlur={() => blurField(fieldKey)}
+        disabled={uploading || disabled}
+        className="h-8 w-full text-xs"
+      >
+        {uploading ? (
+          <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+        ) : (
+          <Upload className="mr-1.5 size-3.5" />
+        )}
+        {uploading ? "Uploading…" : "Upload file"}
+      </Button>
+      {uploadError && (
+        <p className="text-[10px] text-destructive">{uploadError}</p>
+      )}
+      <p className="text-[10px] text-muted-foreground">
+        PDF, image, Word, Excel, or text · max 20 MB
+      </p>
+      <FieldEditingIndicator peer={editor} />
+    </div>
+  );
+}
+
+function formatItemFileBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Compliance gate banner — sits above the form fieldsets and is the
+ * primary surface for the `draft` ↔ `ready_for_use` transition.
+ *
+ * Behaviour:
+ *   * `ready_for_use` → green banner + readied-by stamp + "Revert"
+ *     button (opens the justification dialog)
+ *   * `draft` with no blockers → amber "Ready to promote" + CTA
+ *   * `draft` with blockers → red banner listing every missing field
+ *     with a click-to-scroll affordance so workers fix them in order
+ *
+ * Blocker source: `freshBlockers` if the user just tried mark-ready
+ * and we have a server-emitted list; otherwise `item.compliance_blockers`
+ * computed by the payload renderer.
+ */
+function ComplianceGateBanner({
+  item,
+  canEdit,
+  freshBlockers,
+  pending,
+  revertOpen,
+  revertReason,
+  onMarkReady,
+  onOpenRevert,
+  onCloseRevert,
+  onChangeRevertReason,
+  onConfirmRevert,
+}: {
+  item: Item;
+  canEdit: boolean;
+  freshBlockers: import("@/lib/types").ItemComplianceBlocker[] | null;
+  pending: boolean;
+  revertOpen: boolean;
+  revertReason: string;
+  onMarkReady: () => void;
+  onOpenRevert: () => void;
+  onCloseRevert: () => void;
+  onChangeRevertReason: (s: string) => void;
+  onConfirmRevert: () => void;
+}) {
+  const blockers = freshBlockers ?? item.compliance_blockers ?? [];
+  const isReady = item.compliance_status === "ready_for_use";
+
+  return (
+    <>
+      <section
+        className={
+          isReady
+            ? "rounded-md border border-emerald-300/60 bg-emerald-50 p-4 dark:bg-emerald-950/30"
+            : blockers.length === 0
+              ? "rounded-md border border-amber-300/60 bg-amber-50 p-4 dark:bg-amber-950/30"
+              : "rounded-md border border-destructive/40 bg-destructive/5 p-4"
+        }
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              {isReady ? (
+                <>
+                  <span className="inline-flex size-2 rounded-full bg-emerald-500" />
+                  Ready for use
+                </>
+              ) : blockers.length === 0 ? (
+                <>
+                  <span className="inline-flex size-2 rounded-full bg-amber-500" />
+                  Draft — all checks pass, ready to promote
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="size-4 text-destructive" />
+                  Draft — {blockers.length} field{blockers.length === 1 ? "" : "s"} blocking ready-for-use
+                </>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {isReady && item.compliance_readied_by ? (
+                <>
+                  Signed off by {item.compliance_readied_by.name}
+                  {item.compliance_readied_at
+                    ? ` on ${new Date(item.compliance_readied_at).toLocaleString()}`
+                    : ""}
+                  . Items in draft are refused by PO lines + BOMs.
+                </>
+              ) : isReady ? (
+                <>This item passes the regulatory check and can be put on PO lines.</>
+              ) : (
+                <>
+                  Items in draft can't be added to PO lines or BOMs. Fill in the
+                  missing fields below to promote.
+                </>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {canEdit && !isReady && (
+              <Button
+                size="sm"
+                onClick={onMarkReady}
+                disabled={pending || blockers.length > 0}
+              >
+                {pending ? (
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                ) : null}
+                Mark ready for use
+              </Button>
+            )}
+            {canEdit && isReady && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onOpenRevert}
+                disabled={pending}
+              >
+                Revert to draft…
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {!isReady && blockers.length > 0 && (
+          <ul className="mt-3 space-y-1.5 text-[12px]">
+            {blockers.map((b) => (
+              <li
+                key={b.field}
+                className="flex items-start gap-2 rounded-sm border border-destructive/20 bg-background/60 px-2 py-1.5"
+              >
+                <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-destructive" />
+                <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = document.querySelector(
+                        `[data-field-key="${b.field}"]`,
+                      );
+                      if (el && "scrollIntoView" in el) {
+                        (el as HTMLElement).scrollIntoView({
+                          behavior: "smooth",
+                          block: "center",
+                        });
+                      }
+                    }}
+                    className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+                  >
+                    {b.field}
+                  </button>
+                  <p className="text-foreground">{b.reason}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {item.compliance_revert_reason && !isReady && (
+          <p className="mt-3 rounded-sm border border-border/60 bg-background px-2 py-1.5 text-[11px] italic text-muted-foreground">
+            Reverted: {item.compliance_revert_reason}
+          </p>
+        )}
+      </section>
+
+      {revertOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-lg">
+            <h3 className="text-sm font-semibold">Revert to draft</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Auditors ask why a ready item went back to draft. Give the
+              reason — it lands on the audit log + on this item until the
+              next mark-ready.
+            </p>
+            <Textarea
+              autoFocus
+              value={revertReason}
+              onChange={(e) => onChangeRevertReason(e.target.value)}
+              rows={3}
+              placeholder="e.g. supplier swapped to non-organic source — need new SAQ + cert"
+              className="mt-3"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={onCloseRevert}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={onConfirmRevert}
+                disabled={!revertReason.trim() || pending}
+              >
+                Revert
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

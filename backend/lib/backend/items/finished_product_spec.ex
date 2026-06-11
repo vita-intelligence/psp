@@ -8,7 +8,7 @@ defmodule Backend.Items.FinishedProductSpec do
   import Ecto.Changeset
 
   alias Backend.Accounts.User
-  alias Backend.Items.Item
+  alias Backend.Items.{Item, ItemFile}
   alias Backend.Units.UnitOfMeasurement
 
   @primary_key {:item_id, :id, autogenerate: false}
@@ -41,7 +41,6 @@ defmodule Backend.Items.FinishedProductSpec do
     field :general_claims, {:array, :map}, default: []
     field :nutrition_table, :map, default: %{}
     field :target_markets, {:array, :string}, default: []
-    field :spec_document_url, :string
     field :may_contain_allergens, {:array, :string}, default: []
     field :may_contain_justification, :string
     field :may_contain_assessed_at, :utc_datetime
@@ -51,6 +50,7 @@ defmodule Backend.Items.FinishedProductSpec do
     belongs_to :serving_size_uom, UnitOfMeasurement
     belongs_to :net_quantity_uom, UnitOfMeasurement
     belongs_to :may_contain_assessed_by, User
+    belongs_to :spec_document_file, ItemFile
 
     timestamps(type: :utc_datetime)
   end
@@ -87,7 +87,7 @@ defmodule Backend.Items.FinishedProductSpec do
       :general_claims,
       :nutrition_table,
       :target_markets,
-      :spec_document_url,
+      :spec_document_file_id,
       :may_contain_allergens,
       :may_contain_justification,
       :may_contain_assessed_at,

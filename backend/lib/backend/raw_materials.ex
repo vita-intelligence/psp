@@ -21,7 +21,7 @@ defmodule Backend.RawMaterials do
   alias Backend.Items.RawMaterialRiskAssessment
   alias Backend.Repo
 
-  @compliance_audit_fields ~w(use_as allergen_status vegan_status halal_status kosher_status organic_status novel_food_status gmo_status country_of_origin purity_pct extract_ratio overage_pct powder_water_dose_mg_per_ml shelf_life_months storage_conditions spec_document_url last_reviewed_at review_frequency_months review_due_at)a
+  @compliance_audit_fields ~w(use_as allergen_status vegan_status halal_status kosher_status organic_status novel_food_status gmo_status country_of_origin purity_pct extract_ratio overage_pct powder_water_dose_mg_per_ml shelf_life_months storage_conditions spec_document_file_id last_reviewed_at review_frequency_months review_due_at)a
 
   @risk_audit_fields ~w(physical_risk_score chemical_risk_score biological_risk_score allergen_risk_score radiological_risk_score fraud_vulnerability_score malicious_risk_score computed_overall_level overridden_overall_level override_justification justification required_controls assessed_at)a
 
@@ -31,7 +31,7 @@ defmodule Backend.RawMaterials do
     Repo.get(RawMaterialCompliance, item_id)
     |> case do
       nil -> nil
-      row -> Repo.preload(row, [:last_reviewed_by])
+      row -> Repo.preload(row, [:last_reviewed_by, :spec_document_file])
     end
   end
 
@@ -89,7 +89,7 @@ defmodule Backend.RawMaterials do
           Audit.record_created(actor, "raw_material_compliance", row, after_state)
         end
 
-        {:ok, Repo.preload(row, [:last_reviewed_by])}
+        {:ok, Repo.preload(row, [:last_reviewed_by, :spec_document_file])}
 
       other ->
         other

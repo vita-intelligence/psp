@@ -260,6 +260,13 @@ defmodule BackendWeb.PurchaseOrderController do
             "Item ##{item_id} is not on the vendor's approved-supplier list."
           )
 
+        {:error, {:item_not_ready, item_id}} ->
+          unprocessable(
+            conn,
+            "item_not_ready",
+            "Item ##{item_id} is still in draft. Mark it ready for use before putting it on a PO line."
+          )
+
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)
       end

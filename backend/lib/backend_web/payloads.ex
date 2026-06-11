@@ -210,6 +210,28 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  # Returns the live blocker list ONLY when the per-type subtables are
+  # loaded (show endpoint). On list endpoints the row's
+  # `compliance_status` column is authoritative — we don't run the
+  # validator per row, that'd cost a preload per item.
+  defp compliance_blockers(%Backend.Items.Item{} = i) do
+    has_subtables? =
+      match?(%Backend.Items.RawMaterialCompliance{}, i.raw_material_compliance) or
+        match?(%Backend.Items.RawMaterialRiskAssessment{}, i.raw_material_risk) or
+        match?(%Backend.Items.FinishedProductSpec{}, i.finished_product_spec) or
+        match?(%Backend.Items.PackagingCompliance{}, i.packaging_compliance) or
+        i.item_type == "semi_finished"
+
+    if has_subtables? do
+      case Backend.Items.Compliance.check(i) do
+        {:ok, []} -> []
+        {:missing, list} -> list
+      end
+    else
+      nil
+    end
+  end
+
   @doc """
   Item — name + type + identity + audit. Per-type compliance subtable
   data (raw-material, finished-product, packaging) is preloaded
@@ -232,6 +254,11 @@ defmodule BackendWeb.Payloads do
       attributes: i.attributes || %{},
       storage_tags: i.storage_tags || [],
       is_active: i.is_active,
+      compliance_status: i.compliance_status,
+      compliance_readied_at: i.compliance_readied_at,
+      compliance_readied_by: actor(i, :compliance_readied_by),
+      compliance_revert_reason: i.compliance_revert_reason,
+      compliance_blockers: compliance_blockers(i),
       inserted_at: i.inserted_at,
       updated_at: i.updated_at,
       created_by: actor(i, :created_by),
@@ -241,14 +268,18 @@ defmodule BackendWeb.Payloads do
     # Sub-tables are only included when preloaded — list endpoints
     # never load them (saves a join per row), show endpoints do.
     base
-    |> add_optional(:raw_material_compliance, i.raw_material_compliance, &raw_material_compliance/1)
+    |> add_optional(:raw_material_compliance, i.raw_material_compliance,
+      &raw_material_compliance(&1, i))
     |> add_optional(:raw_material_risk, i.raw_material_risk, &raw_material_risk/1)
-    |> add_optional(:finished_product_spec, i.finished_product_spec, &finished_product_spec/1)
-    |> add_optional(:packaging_compliance, i.packaging_compliance, &packaging_compliance/1)
+    |> add_optional(:finished_product_spec, i.finished_product_spec,
+      &finished_product_spec(&1, i))
+    |> add_optional(:packaging_compliance, i.packaging_compliance,
+      &packaging_compliance(&1, i))
     |> add_optional(:certificate_attachments, i.certificate_attachments, fn list ->
       Enum.map(list, &item_certificate/1)
     end)
     |> add_optional(:images, i.images, fn list -> Enum.map(list, &item_image/1) end)
+    |> add_optional(:files, i.files, fn list -> Enum.map(list, &item_file(&1, i)) end)
     |> add_optional(:allergens, i.allergens, fn list -> Enum.map(list, &allergen/1) end)
   end
 
@@ -459,6 +490,39 @@ defmodule BackendWeb.Payloads do
     do: vendor_file(f, parent)
 
   defp maybe_vendor_file(_, _), do: nil
+
+  @doc """
+  Public payload for an item-scoped compliance file. Same shape as
+  `vendor_file/2` so the FE upload widget can be re-used. `parent`
+  is the owning item — its uuid is what the serve URL is scoped to.
+  """
+  def item_file(%Backend.Items.ItemFile{} = f, parent) do
+    parent_uuid = parent && Map.get(parent, :uuid)
+
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        parent_uuid &&
+          "/api/items/" <> parent_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
+  # Renders a preloaded ItemFile belongs_to assoc if present.
+  # Compliance-subtable renderers below pass the owning Item so the
+  # serve URL is scoped correctly.
+  defp maybe_item_file(parent, assoc, item) when is_atom(assoc) do
+    case Map.get(parent, assoc) do
+      %Backend.Items.ItemFile{} = f -> item_file(f, item)
+      _ -> nil
+    end
+  end
 
   defp maybe_item_summary(%Backend.Items.Item{} = i) do
     %{
@@ -767,20 +831,23 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_certificate_compact(_), do: nil
 
-  def packaging_compliance(p) do
+  def packaging_compliance(p, item \\ nil) do
     %{
       material: p.material,
       food_contact_compliant: p.food_contact_compliant,
-      food_contact_declaration_url: p.food_contact_declaration_url,
+      food_contact_declaration_file:
+        maybe_item_file(p, :food_contact_declaration_file, item),
+      food_contact_declaration_file_id: p.food_contact_declaration_file_id,
       recyclability_code: p.recyclability_code,
-      migration_test_url: p.migration_test_url,
+      migration_test_file: maybe_item_file(p, :migration_test_file, item),
+      migration_test_file_id: p.migration_test_file_id,
       migration_test_expires_at: p.migration_test_expires_at,
       inserted_at: p.inserted_at,
       updated_at: p.updated_at
     }
   end
 
-  def finished_product_spec(s) do
+  def finished_product_spec(s, item \\ nil) do
     %{
       regulatory_category: s.regulatory_category,
       dosage_form: s.dosage_form,
@@ -807,7 +874,8 @@ defmodule BackendWeb.Payloads do
       general_claims: s.general_claims || [],
       nutrition_table: s.nutrition_table || %{},
       target_markets: s.target_markets || [],
-      spec_document_url: s.spec_document_url,
+      spec_document_file: maybe_item_file(s, :spec_document_file, item),
+      spec_document_file_id: s.spec_document_file_id,
       may_contain_allergens: s.may_contain_allergens || [],
       may_contain_justification: s.may_contain_justification,
       may_contain_assessed_at: s.may_contain_assessed_at,
@@ -822,7 +890,7 @@ defmodule BackendWeb.Payloads do
   defp add_optional(map, key, nil, _shaper), do: Map.put(map, key, nil)
   defp add_optional(map, key, value, shaper), do: Map.put(map, key, shaper.(value))
 
-  def raw_material_compliance(c) do
+  def raw_material_compliance(c, item \\ nil) do
     %{
       use_as: c.use_as,
       allergen_status: c.allergen_status,
@@ -839,7 +907,8 @@ defmodule BackendWeb.Payloads do
       powder_water_dose_mg_per_ml: decimal_to_string(c.powder_water_dose_mg_per_ml),
       shelf_life_months: c.shelf_life_months,
       storage_conditions: c.storage_conditions,
-      spec_document_url: c.spec_document_url,
+      spec_document_file: maybe_item_file(c, :spec_document_file, item),
+      spec_document_file_id: c.spec_document_file_id,
       last_reviewed_at: c.last_reviewed_at,
       last_reviewed_by: actor(c, :last_reviewed_by),
       review_frequency_months: c.review_frequency_months,

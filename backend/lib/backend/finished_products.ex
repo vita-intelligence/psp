@@ -8,7 +8,7 @@ defmodule Backend.FinishedProducts do
   alias Backend.Items.{FinishedProductSpec, Item}
   alias Backend.Repo
 
-  @audit_fields ~w(regulatory_category dosage_form capsule_size tablet_size_mm powder_type serving_size serving_size_uom_id servings_per_pack net_quantity net_quantity_uom_id directions_of_use suggested_dosage warnings_text appearance disintegration_spec weight_uniformity_pct shelf_life_months storage_conditions food_contact_status active_claims general_claims nutrition_table target_markets spec_document_url may_contain_allergens may_contain_justification may_contain_assessed_at contaminant_limits_overrides)a
+  @audit_fields ~w(regulatory_category dosage_form capsule_size tablet_size_mm powder_type serving_size serving_size_uom_id servings_per_pack net_quantity net_quantity_uom_id directions_of_use suggested_dosage warnings_text appearance disintegration_spec weight_uniformity_pct shelf_life_months storage_conditions food_contact_status active_claims general_claims nutrition_table target_markets spec_document_file_id may_contain_allergens may_contain_justification may_contain_assessed_at contaminant_limits_overrides)a
 
   def get(item_id) when is_integer(item_id) do
     Repo.get(FinishedProductSpec, item_id)
@@ -20,7 +20,8 @@ defmodule Backend.FinishedProducts do
         Repo.preload(row, [
           :serving_size_uom,
           :net_quantity_uom,
-          :may_contain_assessed_by
+          :may_contain_assessed_by,
+          :spec_document_file
         ])
     end
   end
@@ -63,7 +64,8 @@ defmodule Backend.FinishedProducts do
          Repo.preload(row, [
            :serving_size_uom,
            :net_quantity_uom,
-           :may_contain_assessed_by
+           :may_contain_assessed_by,
+           :spec_document_file
          ])}
 
       other ->

@@ -23,6 +23,7 @@ defmodule Backend.Items.Item do
   alias Backend.Items.{
     FinishedProductSpec,
     ItemAllergen,
+    ItemFile,
     PackagingCompliance,
     RawMaterialCompliance,
     RawMaterialRiskAssessment
@@ -30,6 +31,7 @@ defmodule Backend.Items.Item do
   alias Backend.Units.UnitOfMeasurement
 
   @valid_item_types ~w(raw_material semi_finished finished_product packaging)
+  @compliance_statuses ~w(draft ready_for_use)
 
   schema "items" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -45,6 +47,14 @@ defmodule Backend.Items.Item do
     # company-scoped storage_tags registry.
     field :storage_tags, {:array, :string}, default: []
     field :is_active, :boolean, default: true
+
+    # Two-state regulatory gate. New items start `draft`; PO lines,
+    # BOM assembly, and finished-product release refuse `draft` items
+    # so the form is enforced as a hard structural rule, not a UX nag.
+    # Transition is validated by `Backend.Items.Compliance.check/1`.
+    field :compliance_status, :string, default: "draft"
+    field :compliance_readied_at, :utc_datetime
+    field :compliance_revert_reason, :string
 
     # Typical packaging template — when set, the receive form copies
     # these values into the new lot. Operator can override per-lot if
@@ -63,6 +73,7 @@ defmodule Backend.Items.Item do
     belongs_to :product_family, ProductFamily
     belongs_to :created_by, User
     belongs_to :updated_by, User
+    belongs_to :compliance_readied_by, User
 
     # Per-type compliance subtables — only one is meaningfully
     # populated per item, depending on `item_type`. The controller
@@ -96,6 +107,13 @@ defmodule Backend.Items.Item do
       foreign_key: :item_id,
       on_delete: :delete_all
 
+    # Compliance file attachments (spec sheet, food-contact DoC,
+    # migration test report, …). The per-type subtables carry FKs to
+    # specific rows; this `has_many` is for the file-management surface.
+    has_many :files, ItemFile,
+      foreign_key: :item_id,
+      on_delete: :delete_all
+
     # Allergen M:N via item_allergens, joined through the global
     # allergen lookup. Populated only on raw-material items today;
     # the FE form gates the section on item_type.
@@ -108,6 +126,7 @@ defmodule Backend.Items.Item do
   end
 
   def valid_item_types, do: @valid_item_types
+  def compliance_statuses, do: @compliance_statuses
 
   def changeset(item, attrs) do
     item
@@ -124,6 +143,10 @@ defmodule Backend.Items.Item do
       :storage_tags,
       :default_packaging,
       :is_active,
+      :compliance_status,
+      :compliance_readied_at,
+      :compliance_readied_by_id,
+      :compliance_revert_reason,
       :created_by_id,
       :updated_by_id
     ])
@@ -134,6 +157,9 @@ defmodule Backend.Items.Item do
     |> validate_length(:barcode, max: 24)
     |> validate_inclusion(:item_type, @valid_item_types,
       message: "must be one of: #{Enum.join(@valid_item_types, ", ")}"
+    )
+    |> validate_inclusion(:compliance_status, @compliance_statuses,
+      message: "must be one of: #{Enum.join(@compliance_statuses, ", ")}"
     )
     |> normalise_storage_tags()
     |> validate_storage_tag_membership()

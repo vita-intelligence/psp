@@ -524,7 +524,8 @@ defmodule Backend.Purchasing do
 
         with :ok <- ensure_lines_present(po),
              :ok <- ensure_vendor_approved(po),
-             :ok <- ensure_lines_approved_by_vendor(po) do
+             :ok <- ensure_lines_approved_by_vendor(po),
+             :ok <- ensure_lines_items_ready(po) do
           now = DateTime.utc_now() |> DateTime.truncate(:second)
 
           attrs = %{
@@ -808,6 +809,27 @@ defmodule Backend.Purchasing do
     case not_approved do
       [] -> :ok
       [first | _] -> {:error, {:item_not_approved, first.item_id}}
+    end
+  end
+
+  # PO lines can only reference items whose compliance file has been
+  # signed off (`compliance_status = "ready_for_use"`). Items still in
+  # `draft` are missing fields that auditors will score against — they
+  # don't get a PO line. Surfaced as a `:item_not_ready` error with the
+  # offending item_id so the FE can name the SKU in the message.
+  defp ensure_lines_items_ready(%PurchaseOrder{lines: lines}) do
+    item_ids = Enum.map(lines, & &1.item_id) |> Enum.uniq()
+
+    draft_ids =
+      from(i in Backend.Items.Item,
+        where: i.id in ^item_ids and i.compliance_status != "ready_for_use",
+        select: i.id
+      )
+      |> Repo.all()
+
+    case draft_ids do
+      [] -> :ok
+      [first | _] -> {:error, {:item_not_ready, first}}
     end
   end
 
