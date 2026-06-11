@@ -142,6 +142,18 @@ defmodule Backend.RBAC.Permissions do
     {"procurement.invoice_approve", "Approve invoices and mark them paid"}
   ]
 
+  # Goods-In Inspection — BRCGS / FSSC 22000 incoming-inspection
+  # workflow. Two-signature split (segregation of duties):
+  # `inspect` fills the form + signs as the goods-in operator;
+  # `approve` reviews + signs as the quality approver.
+  @goods_in [
+    {"goods_in.view", "View Goods-In Inspections"},
+    {"goods_in.inspect",
+     "Create + fill + sign as goods-in operator on an inspection"},
+    {"goods_in.approve",
+     "Sign as quality approver and record the QC verdict on an inspection"}
+  ]
+
   def all do
     Enum.map(
       @company ++
@@ -156,7 +168,8 @@ defmodule Backend.RBAC.Permissions do
         @certificates ++
         @stock ++
         @vendors ++
-        @procurement,
+        @procurement ++
+        @goods_in,
       &elem(&1, 0)
     )
   end

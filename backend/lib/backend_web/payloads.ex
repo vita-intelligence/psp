@@ -627,6 +627,56 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Goods-In Inspection — BRCGS / FSSC 22000 incoming-inspection record.
+  Eight sections + dual ESIGN. Per-line decisions live on `items`.
+  """
+  def goods_in_inspection(i) do
+    %{
+      id: i.id,
+      uuid: i.uuid,
+      status: i.status,
+      delivery_date: i.delivery_date,
+      delivery_time: i.delivery_time,
+      transport_company: i.transport_company,
+      vehicle_registration: i.vehicle_registration,
+      seal_number: i.seal_number,
+      vehicle_inspection: i.vehicle_inspection || %{},
+      documentation_verification: i.documentation_verification || %{},
+      physical_inspection: i.physical_inspection || %{},
+      food_safety_checks: i.food_safety_checks || %{},
+      storage_verification: i.storage_verification || %{},
+      quality_decision: i.quality_decision,
+      quality_decision_reason: i.quality_decision_reason,
+      goods_in_operator: actor(i, :goods_in_operator),
+      goods_in_operator_signed_at: i.goods_in_operator_signed_at,
+      quality_approver: actor(i, :quality_approver),
+      quality_approver_signed_at: i.quality_approver_signed_at,
+      purchase_order_id: i.purchase_order_id,
+      items: maybe_list(i.items, &goods_in_inspection_item/1),
+      inserted_at: i.inserted_at,
+      updated_at: i.updated_at
+    }
+  end
+
+  def goods_in_inspection_item(item) do
+    %{
+      id: item.id,
+      uuid: item.uuid,
+      purchase_order_line_id: item.purchase_order_line_id,
+      qty_received: item.qty_received,
+      packaging_condition: item.packaging_condition,
+      packaging_condition_notes: item.packaging_condition_notes,
+      material_decision: item.material_decision,
+      material_decision_reason: item.material_decision_reason,
+      inserted_at: item.inserted_at,
+      updated_at: item.updated_at
+    }
+  end
+
+  defp maybe_list(items, fun) when is_list(items), do: Enum.map(items, fun)
+  defp maybe_list(_, _), do: []
+
+  @doc """
   Suggest-price endpoint payload. Returns `nil` when there's no
   history so the FE can branch on `last_paid == null` without a
   separate "missing" code.

@@ -235,6 +235,28 @@ defmodule BackendWeb.Router do
       post "/files", PurchaseOrderController, :upload_file
       delete "/files/:id", PurchaseOrderController, :delete_file
       get "/files/:id/serve", PurchaseOrderController, :serve_file
+
+      # Goods-In Inspections — BRCGS / FSSC 22000 incoming-inspection
+      # records against one delivery on this PO. Multi-delivery POs
+      # have multiple inspections; each carries section checklists +
+      # per-line decisions + dual ESIGN sign-off.
+      post "/goods-in-inspections", GoodsInInspectionController, :create
+      get "/goods-in-inspections", GoodsInInspectionController, :index
+    end
+
+    # Goods-In Inspection — show / update / item / sign actions sit
+    # outside the PO scope because the inspection has its own uuid
+    # and the operator may move between inspections without first
+    # opening the parent PO.
+    scope "/goods-in-inspections" do
+      get "/:id", GoodsInInspectionController, :show
+      patch "/:id", GoodsInInspectionController, :update
+    end
+
+    scope "/goods-in-inspections/:goods_in_inspection_id" do
+      post "/items/:line_uuid", GoodsInInspectionController, :upsert_item
+      post "/sign-operator", GoodsInInspectionController, :sign_operator
+      post "/sign-quality", GoodsInInspectionController, :sign_quality
     end
 
     # Catalogue shape — product families + admin-extensible attribute

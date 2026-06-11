@@ -881,12 +881,31 @@ defmodule Backend.Purchasing do
 
         warehouse_id = parse_warehouse_id(attrs["warehouse_id"])
 
+        # Optional: the FE starts a draft goods-in inspection FIRST,
+        # then includes its integer id on the receive call. Every lot
+        # this call creates gets stamped with that id, so the
+        # approver's sign transaction can find all of them with a
+        # single FK lookup. Absence = legacy / manual path; lots stay
+        # null and route through the existing quarantine-by-default
+        # → expedite-release flow.
+        goods_in_inspection_id =
+          parse_inspection_id(attrs["goods_in_inspection_id"])
+
         with :ok <- ensure_not_legacy_shape(line_inputs),
              :ok <- ensure_warehouse_id(warehouse_id),
              {:ok, normalised} <- validate_receive_lines(po, line_inputs) do
           Repo.transaction(fn ->
             Enum.each(normalised, fn {%PurchaseOrderLine{} = line, packs} ->
-              receive_packs_for_line(actor, po, line, packs, batch_default, source_ref, warehouse_id)
+              receive_packs_for_line(
+                actor,
+                po,
+                line,
+                packs,
+                batch_default,
+                source_ref,
+                warehouse_id,
+                goods_in_inspection_id
+              )
             end)
 
             # Recompute PO status from line aggregates after every line
@@ -948,12 +967,21 @@ defmodule Backend.Purchasing do
   defp ensure_warehouse_id(nil), do: {:error, :warehouse_required}
   defp ensure_warehouse_id(_), do: :ok
 
-  defp receive_packs_for_line(_actor, _po, _line, [], _batch_default, _source_ref, _warehouse_id), do: :ok
+  defp receive_packs_for_line(_actor, _po, _line, [], _batch_default, _source_ref, _warehouse_id, _gi_id), do: :ok
 
-  defp receive_packs_for_line(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line, packs, batch_default, source_ref, warehouse_id) do
+  defp receive_packs_for_line(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line, packs, batch_default, source_ref, warehouse_id, goods_in_inspection_id) do
     {final_line, _} =
       Enum.reduce(packs, {line, 0}, fn pack, {acc_line, idx} ->
-        lot_attrs = build_lot_attrs(po, acc_line, pack, batch_default, source_ref, warehouse_id)
+        lot_attrs =
+          build_lot_attrs(
+            po,
+            acc_line,
+            pack,
+            batch_default,
+            source_ref,
+            warehouse_id,
+            goods_in_inspection_id
+          )
 
         lot =
           case Backend.Stock.receive_lot(actor, po.company_id, lot_attrs) do
@@ -1180,7 +1208,15 @@ defmodule Backend.Purchasing do
     end
   end
 
-  defp build_lot_attrs(%PurchaseOrder{} = po, %PurchaseOrderLine{} = line, pack, batch_default, source_ref, warehouse_id) do
+  defp build_lot_attrs(
+         %PurchaseOrder{} = po,
+         %PurchaseOrderLine{} = line,
+         pack,
+         batch_default,
+         source_ref,
+         warehouse_id,
+         goods_in_inspection_id
+       ) do
     item = fetch_line_item(line)
     batch_no = pack[:supplier_batch_no] || batch_default
 
@@ -1202,6 +1238,10 @@ defmodule Backend.Purchasing do
       # still letting the procurement boundary declare provenance.
       "__service_source_kind__" => "purchase_order",
       "__po_line_id__" => line.id,
+      # Optional FK to the draft Goods-In Inspection that owns this
+      # delivery. Stock.receive_lot/3 reads the `__...__` key (the
+      # service-layer hand-off convention) and stamps the lot.
+      "__goods_in_inspection_id__" => goods_in_inspection_id,
       "source_ref" => source_ref,
       "package_length_mm" => pack[:package_length_mm],
       "package_width_mm" => pack[:package_width_mm],
@@ -1212,6 +1252,22 @@ defmodule Backend.Purchasing do
       "status" => "received"
     }
   end
+
+  # The receive payload may carry a `goods_in_inspection_id` (integer
+  # or numeric string). Returns the parsed integer or nil — absence
+  # means the legacy / manual path where the lot routes through the
+  # quarantine-by-default → expedite-release flow.
+  defp parse_inspection_id(nil), do: nil
+  defp parse_inspection_id(id) when is_integer(id) and id > 0, do: id
+
+  defp parse_inspection_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_inspection_id(_), do: nil
 
   defp fetch_line_item(%PurchaseOrderLine{item: %Backend.Items.Item{} = i}), do: i
   defp fetch_line_item(%PurchaseOrderLine{item_id: id}), do: Repo.get(Backend.Items.Item, id)

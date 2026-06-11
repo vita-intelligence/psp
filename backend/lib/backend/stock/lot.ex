@@ -13,6 +13,7 @@ defmodule Backend.Stock.Lot do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
+  alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
   alias Backend.Stock.{LotEvent, Movement, Placement}
   alias Backend.Units.UnitOfMeasurement
@@ -78,6 +79,10 @@ defmodule Backend.Stock.Lot do
     belongs_to :unit_of_measurement, UnitOfMeasurement
     belongs_to :created_by, User
     belongs_to :updated_by, User
+    # Back-pointer to the goods-in inspection that governs this lot's
+    # QC verdict. Nullable: manual receives and legacy lots stay null
+    # and route through the existing quarantine-by-default flow.
+    belongs_to :goods_in_inspection, GoodsInInspection
 
     has_many :placements, Placement, foreign_key: :stock_lot_id
     has_many :movements, Movement, foreign_key: :stock_lot_id
@@ -118,7 +123,8 @@ defmodule Backend.Stock.Lot do
       :units_per_package,
       :stack_factor,
       :created_by_id,
-      :updated_by_id
+      :updated_by_id,
+      :goods_in_inspection_id
     ])
     |> validate_required([
       :company_id,
@@ -272,7 +278,8 @@ defmodule Backend.Stock.Lot do
       :created_by_id,
       :updated_by_id,
       :units_per_package,
-      :stack_factor
+      :stack_factor,
+      :goods_in_inspection_id
     ])
     |> validate_required([
       :company_id,

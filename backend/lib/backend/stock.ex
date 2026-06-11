@@ -668,6 +668,13 @@ defmodule Backend.Stock do
       # Anything the operator might smuggle in their attrs is dropped.
       service_source_kind = attrs["__service_source_kind__"] || "manual"
 
+      # `__goods_in_inspection_id__` is the PO-receive hand-off that
+      # wires every lot from one delivery back to its governing
+      # inspection. Surfaces as a real FK on the lot row so the
+      # approver-sign transaction can look up "every lot from this
+      # inspection" without walking the event log.
+      goods_in_inspection_id = attrs["__goods_in_inspection_id__"]
+
       lot_attrs =
         attrs
         |> Map.drop([
@@ -677,11 +684,13 @@ defmodule Backend.Stock do
           "source_kind",
           "status",
           "__service_source_kind__",
-          "__po_line_id__"
+          "__po_line_id__",
+          "__goods_in_inspection_id__"
         ])
         |> Map.put("company_id", company_id)
         |> Map.put("item_id", item.id)
         |> Map.put("qty_received", total_qty)
+        |> maybe_put("goods_in_inspection_id", goods_in_inspection_id)
         # Land at `expected` so the lifecycle event we emit below
         # (`received`) does the real status flip via the projection.
         # The lot row is never in `expected` for more than a few
@@ -756,6 +765,36 @@ defmodule Backend.Stock do
   defp maybe_put_metadata(map, _key, nil), do: map
   defp maybe_put_metadata(map, _key, ""), do: map
   defp maybe_put_metadata(map, key, value), do: Map.put(map, key, value)
+
+  # Same shape but for the outer attrs map — only set the key when
+  # the caller actually supplied a value. Used by the PO-receive lot
+  # hand-off so a manual receive (no inspection) doesn't NULL the
+  # column with an explicit nil cast.
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  @doc """
+  Every lot stamped with the given inspection id. The goods-in
+  quality-approver transaction walks this list and emits one
+  lifecycle event per lot based on the (inspection-level decision,
+  per-line decision) tuple.
+
+  Returns a plain list of `%Lot{}` structs with no preloads — the
+  caller is the goods-in boundary, which already holds the inspection
+  + per-line decisions and only needs the lot rows to drive the
+  lifecycle calls.
+  """
+  def list_lots_for_inspection(inspection_id) when is_integer(inspection_id) do
+    Repo.all(
+      from(l in Lot,
+        where: l.goods_in_inspection_id == ^inspection_id,
+        order_by: [asc: l.id]
+      )
+    )
+  end
+
+  def list_lots_for_inspection(_), do: []
 
   # Resolve the destination into a list of `{cell, qty_decimal}`
   # tuples. Accepted shapes, in priority order:
