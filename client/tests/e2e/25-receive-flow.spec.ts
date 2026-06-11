@@ -326,9 +326,12 @@ test.describe("Per-pack PO receive matrix", () => {
     await api.dispose();
   });
 
-  test("8. per-pack quarantine — lifecycle emits routed_to_quarantine", async ({
+  test("8. quarantine-by-default — every pack emits routed_to_quarantine even without the flag", async ({
     playwright,
   }) => {
+    // BRCGS / FSSC 22000 / GFSI: incoming inspection is mandatory.
+    // The legacy `route_to_quarantine` toggle is ignored server-side —
+    // every received lot lands in quarantine regardless of payload.
     const { uuid, lineUuid } = await buildOrderedPo(playwright, 25);
     const warehouseId = await getWarehouseId(playwright);
     const api = await apiCtx(playwright);
@@ -339,13 +342,9 @@ test.describe("Per-pack PO receive matrix", () => {
         lines: [
           {
             line_uuid: lineUuid,
-            packs: [
-              {
-                ...DEFAULT_PKG,
-                qty: "25",
-                route_to_quarantine: true,
-              },
-            ],
+            // No `route_to_quarantine` flag set — quarantine should
+            // still happen because the rule is mandatory.
+            packs: [{ ...DEFAULT_PKG, qty: "25" }],
           },
         ],
       },
@@ -355,12 +354,19 @@ test.describe("Per-pack PO receive matrix", () => {
     const lotsRes = await api.get(
       `/api/stock/lots?source_kind=purchase_order&limit=1&sort=-inserted_at`,
     );
-    const lot = ((await lotsRes.json()) as { items: Array<{ uuid: string }> })
-      .items[0]!;
+    const lot = ((await lotsRes.json()) as {
+      items: Array<{ uuid: string; status: string }>;
+    }).items[0]!;
+    expect(lot.status, "quarantine status projected from event").toBe(
+      "quarantine",
+    );
     const events = await getLotEvents(playwright, lot.uuid);
     const kinds = events.map((e) => e.kind);
     expect(kinds).toContain("received");
-    expect(kinds).toContain("routed_to_quarantine");
+    expect(
+      kinds,
+      "compliance: every receipt emits routed_to_quarantine automatically",
+    ).toContain("routed_to_quarantine");
     await api.dispose();
   });
 
@@ -417,6 +423,55 @@ test.describe("Per-pack PO receive matrix", () => {
       },
     });
     expect(res.status(), "zero dim should 422").toBe(422);
+    await api.dispose();
+  });
+
+  test("12. expedite release — qc_passed event flips quarantine → available", async ({
+    playwright,
+  }) => {
+    // Compliance escape valve: lots are quarantined by default; the
+    // only way out without a full Goods-In Inspection (D.3b) is an
+    // expedite-release action — a POST qc_passed event by a
+    // stock.qc holder with an audit-defensible reason.
+    const { uuid, lineUuid } = await buildOrderedPo(playwright, 10);
+    const warehouseId = await getWarehouseId(playwright);
+    const api = await apiCtx(playwright);
+
+    // Receive (auto-quarantines)
+    const recvRes = await api.post(`/api/purchase-orders/${uuid}/receive`, {
+      data: {
+        warehouse_id: warehouseId,
+        lines: [{ line_uuid: lineUuid, packs: [{ ...DEFAULT_PKG, qty: "10" }] }],
+      },
+    });
+    expect(recvRes.status()).toBe(200);
+
+    // Find the new lot
+    const lotsRes = await api.get(
+      `/api/stock/lots?source_kind=purchase_order&limit=1&sort=-inserted_at`,
+    );
+    const lot = ((await lotsRes.json()) as {
+      items: Array<{ uuid: string; status: string }>;
+    }).items[0]!;
+    expect(lot.status).toBe("quarantine");
+
+    // Expedite release via the generic events endpoint
+    const releaseRes = await api.post(`/api/stock/lots/${lot.uuid}/events`, {
+      data: {
+        kind: "qc_passed",
+        reason:
+          "Expedited release — low-risk vendor + COA on file (E2E test)",
+      },
+    });
+    expect([200, 201]).toContain(releaseRes.status());
+
+    // Verify the lot is now available
+    const verifyRes = await api.get(`/api/stock/lots?limit=50&sort=-inserted_at`);
+    const verify = ((await verifyRes.json()) as {
+      items: Array<{ uuid: string; status: string }>;
+    }).items.find((l) => l.uuid === lot.uuid)!;
+    expect(verify.status).toBe("available");
+
     await api.dispose();
   });
 

@@ -129,6 +129,29 @@ External web links (a vendor's marketing website, a regulator's published guidan
 
 If you're considering a `document_url`, `evidence_url`, `proof_url`, `image_url` field — make it a file FK to a `*_files` table instead. Mirror the `vendor_files` shape.
 
+### Bonus: incoming inspection is the default
+
+Every lot created from a PO receipt or a manual receive **routes to quarantine** automatically, without exception. The receiver doesn't get a skip switch — `route_to_quarantine` is server-side, ignored from the request payload.
+
+The only paths from `quarantine` → `available` are:
+
+1. A **Goods-In Inspection** (`Backend.GoodsIn`) where the quality approver (different user from the operator) signs off with `decision = approved`. The approver's sign flips per-lot `qc_passed` lifecycle events.
+2. An **expedited release** action (`POST /api/stock/lots/:uuid/expedite-release`) gated by `stock.qc`. Allowed only when the vendor is `vendor_risk = low` AND the item isn't on the "QC always required" list. Records an audit-defensible reason + the QC actor.
+
+Receivers never set status. Per-pack toggles for "skip quarantine" don't exist. The compliance rule is BRCGS 3.5.1 / FSSC 22000 / GFSI: incoming goods are presumed non-conforming until QC clears them.
+
+### Storage cells carry a purpose
+
+The warehouse plan is split by intent. Cells / locations tag a `purpose`:
+
+- `regular` — general storage
+- `quarantine` — receipt awaiting QC verdict
+- `hold` — QC-flagged for investigation but not rejected yet
+- `rejected` — QC failed; awaiting return-to-supplier / disposal
+- `dispatch` — picked + staged for outgoing
+
+When a lot's status changes (`quarantine → available`, `available → rejected`, etc.), the system **auto-routes** it to a cell whose `purpose` matches. Operators can move a lot manually too, but the default lands on the right shelf without thinking.
+
 ### Bonus: immutability on traceability fields
 
 Once a record crosses the line into the audit trail, fields that identify it become append-only:

@@ -961,32 +961,34 @@ defmodule Backend.Purchasing do
             {:error, reason} -> Repo.rollback({:lot_create_failed, acc_line.uuid, idx, reason})
           end
 
-        # Emit the optional quarantine routing event in the same
-        # transaction so the lot lands at `quarantine` rather than
-        # `received` — QC needs to find it on the quarantine queue
-        # immediately, not after a follow-up call.
-        if pack[:route_to_quarantine] == true do
-          case Backend.Stock.Lifecycle.record_event_in_transaction(
-                 lot,
-                 "routed_to_quarantine",
-                 %{
-                   actor: actor,
-                   actor_kind: "user",
-                   reason: "Routed to quarantine on receipt",
-                   metadata: %{
-                     "po_line_id" => acc_line.id,
-                     "po_id" => po.id,
-                     "source_ref" => source_ref
-                   }
+        # COMPLIANCE: every received lot routes to quarantine. The
+        # Goods-In Inspection (D.3b) is the only path to `qc_passed`;
+        # receivers don't get a skip switch. Per BRCGS 3.5.1 / FSSC
+        # 22000 / GFSI standards + psp/CLAUDE.md ("incoming inspection
+        # is the default"). The legacy `route_to_quarantine` payload
+        # flag is now ignored — quarantine is unconditional.
+        case Backend.Stock.Lifecycle.record_event_in_transaction(
+               lot,
+               "routed_to_quarantine",
+               %{
+                 actor: actor,
+                 actor_kind: "system",
+                 reason: "Incoming inspection — quarantine by default",
+                 metadata: %{
+                   "po_line_id" => acc_line.id,
+                   "po_id" => po.id,
+                   "source_ref" => source_ref
                  }
-               ) do
-            {:ok, _} -> :ok
-            {:error, :illegal_transition, info} ->
-              Repo.rollback({:lot_create_failed, acc_line.uuid, idx, {:illegal_transition, info}})
+               }
+             ) do
+          {:ok, _} ->
+            :ok
 
-            {:error, reason} ->
-              Repo.rollback({:lot_create_failed, acc_line.uuid, idx, reason})
-          end
+          {:error, :illegal_transition, info} ->
+            Repo.rollback({:lot_create_failed, acc_line.uuid, idx, {:illegal_transition, info}})
+
+          {:error, reason} ->
+            Repo.rollback({:lot_create_failed, acc_line.uuid, idx, reason})
         end
 
         new_received = Decimal.add(acc_line.qty_received || Decimal.new(0), pack[:qty])

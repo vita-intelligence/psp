@@ -260,6 +260,20 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
             />
           )}
 
+          {/* Compliance banner — quarantine is the default per
+              psp/CLAUDE.md. Operators trigger the Goods-In Inspection
+              to clear lots out of quarantine; there is no skip. */}
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+            <p>
+              <strong>All packs land in quarantine.</strong> A goods-in
+              inspection on the lot detail page (QC approver signs)
+              clears the lot to available. For trusted low-risk vendors
+              a stock.qc holder can expedite release with an audited
+              reason — never the receiver.
+            </p>
+          </div>
+
           {/* Top-level fields — warehouse + default batch */}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
@@ -643,22 +657,10 @@ function PackRows({
                   className="h-8 text-xs"
                 />
               </FieldLabel>
-              <FieldLabel label="Route to quarantine">
-                <div className="flex h-8 items-center gap-2">
-                  <Switch
-                    checked={pack.route_to_quarantine ?? false}
-                    onCheckedChange={(v) =>
-                      onPatch({ route_to_quarantine: v })
-                    }
-                  />
-                  {pack.route_to_quarantine && (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700">
-                      <ShieldAlert className="size-3" />
-                      QC review required
-                    </span>
-                  )}
-                </div>
-              </FieldLabel>
+              {/* Quarantine routing is server-side mandatory per
+                  psp/CLAUDE.md — receivers don't get a skip switch.
+                  Slot intentionally left blank to keep the 3-col grid. */}
+              <div className="hidden sm:block" />
             </div>
           </td>
         </tr>
