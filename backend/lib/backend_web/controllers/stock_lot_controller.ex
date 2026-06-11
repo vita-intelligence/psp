@@ -618,13 +618,24 @@ defmodule BackendWeb.StockLotController do
               id: r.cell.id,
               uuid: r.cell.uuid,
               name: r.cell.name,
+              # Auto-rendered code (e.g. CELL00040) — same format the
+              # printed QR label carries, so the operator can match
+              # the on-screen breadcrumb against the physical tag.
+              code:
+                if(r.cell.system_kind,
+                  do: nil,
+                  else: Payloads.render_entity_code(r.cell, "storage_cell")
+                ),
               ordinal: r.cell.ordinal,
               tags: r.cell.tags || [],
               storage_location: %{
                 id: r.location.id,
                 uuid: r.location.uuid,
                 name: r.location.name,
-                code: r.location.code,
+                # Use the rendered code instead of the raw DB column
+                # so locations with a null code still produce the
+                # SL00022-style identifier the label PDF uses.
+                code: Payloads.render_entity_code(r.location, "storage_location"),
                 tags: r.location.tags || []
               },
               floor: %{id: r.floor.id, uuid: r.floor.uuid, name: r.floor.name},

@@ -406,12 +406,19 @@ function PickStep({
                     className="flex w-full items-center gap-3 rounded-lg border border-border/60 bg-card px-3 py-3 text-left active:bg-muted"
                   >
                     <Sparkles className="size-4 shrink-0 text-amber-500" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      {/* Lead with the codes — these match what's
+                          printed on the physical QR labels, so the
+                          worker scans for them first. */}
+                      <p className="truncate font-mono text-[11px] font-semibold text-foreground">
+                        {rec.cell.storage_location?.code ?? "—"} ·{" "}
+                        {rec.cell.code ?? `CELL #${rec.cell.id}`}
+                      </p>
+                      <p className="truncate text-sm">
                         {formatLocation(rec.cell.storage_location)} ·{" "}
                         {rec.cell.name}
                       </p>
-                      <p className="truncate text-xs text-muted-foreground">
+                      <p className="truncate text-[11px] text-muted-foreground">
                         {rec.cell.warehouse?.name ?? "—"} ·{" "}
                         {rec.cell.floor?.name ?? "—"}
                       </p>
@@ -461,9 +468,18 @@ function DirectionsStep({
 }) {
   const rackCode = cell.storage_location?.code?.trim() || null;
   const rackName = cell.storage_location?.name?.trim() || null;
+  const cellCode = cell.code?.trim() || null;
   const shelfLabel =
     cell.name?.trim() ||
     (cell.ordinal !== undefined ? `Level ${cell.ordinal + 1}` : `Cell ${cell.id}`);
+
+  // Lead with the code (matches the QR label) and put the human-
+  // readable name in the suffix slot. That way the worker is reading
+  // the same identifier off the screen and off the shelf.
+  const rackPrimary = rackCode ?? rackName ?? "—";
+  const rackSuffix = rackCode && rackName ? rackName : null;
+  const cellPrimary = cellCode ?? shelfLabel;
+  const cellSuffix = cellCode ? shelfLabel : null;
 
   return (
     <>
@@ -473,9 +489,10 @@ function DirectionsStep({
             Walk to
           </p>
           <p className="text-sm text-muted-foreground">
-            Find the highlighted rack on the floor plan. Tap Scan now
-            when you&apos;re there and point the camera at the QR on
-            the shelf.
+            Find the highlighted rack on the floor plan. The label on
+            the shelf will read the same code below. Tap Scan now when
+            you&apos;re there and point the camera at the QR on the
+            shelf.
           </p>
         </div>
 
@@ -499,12 +516,18 @@ function DirectionsStep({
           />
           <DirectionsRow
             icon={MapPin}
-            label="Rack"
-            value={rackName ?? rackCode ?? "—"}
-            suffix={rackName && rackCode ? rackCode : null}
+            label="Location"
+            value={rackPrimary}
+            suffix={rackSuffix}
             hero
           />
-          <DirectionsRow icon={Package} label="Shelf" value={shelfLabel} hero />
+          <DirectionsRow
+            icon={Package}
+            label="Cell"
+            value={cellPrimary}
+            suffix={cellSuffix}
+            hero
+          />
         </ol>
       </main>
 

@@ -1424,21 +1424,26 @@ export interface ScannedCell {
   id: number;
   uuid: string;
   name: string;
+  /** Auto-numbered identifier (e.g. `CELL00040`). Same string the
+   *  printed QR label carries, so the operator can match the on-
+   *  screen breadcrumb against the physical tag. `null` for system
+   *  cells. */
+  code?: string | null;
   ordinal: number;
   tags: string[];
-  system_kind: string | null;
+  system_kind?: string | null;
   storage_location: {
     id: number;
     uuid: string;
     name: string;
     code: string | null;
-    system_kind: string | null;
+    system_kind?: string | null;
   } | null;
   floor: {
     id: number;
     uuid: string;
     name: string;
-    system_kind: string | null;
+    system_kind?: string | null;
   } | null;
   warehouse: { id: number; uuid: string; name: string } | null;
 }
