@@ -326,16 +326,42 @@ export interface ReceiveLineInput {
   qty: string;
 }
 
-export interface ReceivePOInput {
-  warehouse_id: number;
-  supplier_batch_no?: string | null;
+/** One pack per row in the receive dialog. Each pack becomes its own
+ *  stock_lot. Packaging is per-pack (not per-line) so a single PO line
+ *  arriving as "4 × 25kg drums + 1 × 100kg sack" creates 2 lots —
+ *  identical drums roll up via `units_per_package=4`. */
+export interface ReceivePOPack {
+  qty: string;
   package_length_mm: number;
   package_width_mm: number;
   package_height_mm: number;
   package_weight_kg: string;
   units_per_package: number;
   stack_factor: number;
-  lines: ReceiveLineInput[];
+  /** When null the pack inherits `supplier_batch_no_default` from the
+   *  top-level payload. Distinct batches are kept on distinct packs so
+   *  traceability isn't lost when the supplier ships mixed batches. */
+  supplier_batch_no?: string | null;
+  manufactured_at?: string | null;
+  expiry_at?: string | null;
+  country_of_origin?: string | null;
+  revision?: string | null;
+  /** When true, the lifecycle service emits a `routed_to_quarantine`
+   *  event right after the `received` event — for visibly-damaged
+   *  packs or vendors flagged high-risk. */
+  route_to_quarantine?: boolean;
+}
+
+export interface ReceivePOLine {
+  line_uuid: string;
+  packs: ReceivePOPack[];
+}
+
+export interface ReceivePOInput {
+  warehouse_id: number;
+  /** Top-level default — packs without their own batch inherit this. */
+  supplier_batch_no_default?: string | null;
+  lines: ReceivePOLine[];
 }
 
 export async function receivePOAction(

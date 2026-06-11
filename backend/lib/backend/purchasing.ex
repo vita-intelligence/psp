@@ -814,33 +814,58 @@ defmodule Backend.Purchasing do
   # ----- receive against PO ---------------------------------------
 
   @doc """
-  Record a receipt against an open PO. Creates a lot per line via
-  `Stock.receive_lot/3`, bumps the PO line `qty_received`, and flips
-  the PO status to `partially_received` or `received` accordingly.
+  Record a receipt against an open PO with heterogeneous packaging.
+  One PO line can land as N independent packs (e.g. 4×25kg drums + 1
+  dented drum on a different batch); each pack becomes its own
+  `stock_lot` row so QC, traceability and put-away can act on them
+  independently.
 
-  `attrs` shape:
+  Wire format (string keys, mirrors the controller body):
 
       %{
-        "warehouse_id" => 2,                    # required — lot lands at this site
-        "supplier_batch_no" => "BATCH-AA-42",   # optional, applied to every lot
-        "received_at"      => "2026-06-11T09:00:00Z",   # optional
+        "warehouse_id" => 2,                      # required — every lot lands here
+        "supplier_batch_no_default" => "BA-...",  # optional fallback for packs that don't override
+        "received_at" => "2026-06-11T09:00:00Z",  # optional
         "lines" => [
           %{
-            "line_uuid"          => "…",        # which PO line
-            "qty"                => "25",       # how much arrived
-            "package_length_mm"  => 400,
-            "package_width_mm"   => 400,
-            "package_height_mm"  => 600,
-            "package_weight_kg"  => "25",
-            "units_per_package"  => 1,
-            "stack_factor"       => 1
+            "line_uuid" => "...",
+            "packs" => [
+              %{
+                # Required per-pack
+                "qty" => "100",
+                "package_length_mm" => 400,
+                "package_width_mm" => 300,
+                "package_height_mm" => 250,
+                "package_weight_kg" => "25.000",
+                "units_per_package" => 4,
+                "stack_factor" => 1,
+                # Optional per-pack overrides
+                "supplier_batch_no" => "BA-...",
+                "manufactured_at" => "2026-05-15",
+                "expiry_at" => "2027-05-15",
+                "country_of_origin" => "IT",
+                "revision" => "V01",
+                "route_to_quarantine" => false
+              },
+              ...
+            ]
           },
-          …
+          ...
         ]
       }
 
-  Each lot is stamped with `source_kind: "purchase_order"` and
-  `source_ref: <PO.code>` so the lot detail page can trace back.
+  Rules:
+    * A line entry with `packs: []` is a no-op (worker is skipping it).
+    * `sum(pack.qty)` across a single line must be ≤ the line's
+      remaining qty — over-receipt rolls back the whole transaction.
+    * Every pack creates one `stock_lot` via `Stock.receive_lot/3`.
+    * `route_to_quarantine: true` emits a follow-up
+      `routed_to_quarantine` lifecycle event after the `received` event.
+
+  The legacy `lines: [{line_uuid, qty}]` shape is **rejected** with
+  `{:error, :legacy_shape_unsupported}` — the FE rewrite is happening
+  in parallel and we want a clean break rather than a silent
+  translation that hides drift.
   """
   def receive_against_po(%Backend.Accounts.User{} = actor, %PurchaseOrder{} = po, attrs) do
     cond do
@@ -851,53 +876,137 @@ defmodule Backend.Purchasing do
         po = preload(po)
         attrs = stringify_keys(attrs)
         line_inputs = Map.get(attrs, "lines") || []
+        batch_default = attrs["supplier_batch_no_default"]
+        source_ref = render_po_code(po)
 
-        case validate_receive_lines(po, line_inputs) do
-          {:error, reason} ->
-            {:error, reason}
+        warehouse_id = parse_warehouse_id(attrs["warehouse_id"])
 
-          {:ok, normalised} ->
-            Repo.transaction(fn ->
-              Enum.each(normalised, fn {%PurchaseOrderLine{} = line, input} ->
-                lot_attrs = build_lot_attrs(po, line, attrs, input)
+        with :ok <- ensure_not_legacy_shape(line_inputs),
+             :ok <- ensure_warehouse_id(warehouse_id),
+             {:ok, normalised} <- validate_receive_lines(po, line_inputs) do
+          Repo.transaction(fn ->
+            Enum.each(normalised, fn {%PurchaseOrderLine{} = line, packs} ->
+              receive_packs_for_line(actor, po, line, packs, batch_default, source_ref, warehouse_id)
+            end)
 
-                case Backend.Stock.receive_lot(actor, po.company_id, lot_attrs) do
-                  {:ok, _lot} -> :ok
-                  {:error, reason} -> Repo.rollback({:lot_failed, line.uuid, reason})
-                end
+            # Recompute PO status from line aggregates after every line
+            # has been touched. A zero-pack line is a no-op — the
+            # status only flips when at least one pack landed somewhere.
+            refreshed = Repo.get!(PurchaseOrder, po.id) |> Repo.preload(:lines)
+            new_status = compute_po_status_from_lines(refreshed)
 
-                new_received = Decimal.add(line.qty_received || Decimal.new(0), input.qty)
-
-                updated_line =
-                  line
-                  |> PurchaseOrderLine.changeset(%{"qty_received" => new_received})
-                  |> Repo.update!()
-
-                # Refresh the last-paid cache so the next PO line for
-                # this (vendor, item, currency) can pre-fill and warn
-                # on ±20% deviation. Cache failures don't roll back
-                # the receipt — the lot is already created and the
-                # cache is rebuildable from PO history.
-                _ = VendorPrices.upsert_from_receipt(po, updated_line)
-              end)
-
-              # Recompute PO status from line aggregates.
-              refreshed = Repo.get!(PurchaseOrder, po.id) |> Repo.preload(:lines)
-              new_status = compute_po_status_from_lines(refreshed)
-
+            settled =
               if new_status != po.status do
-                {:ok, _} =
+                {:ok, transitioned} =
                   transition_db(actor, refreshed, %{
                     "status" => new_status,
-                    "received_at" => if(new_status == "received", do: DateTime.utc_now() |> DateTime.truncate(:second)),
+                    "received_at" =>
+                      if(new_status == "received",
+                        do: DateTime.utc_now() |> DateTime.truncate(:second)
+                      ),
                     "updated_by_id" => actor.id
                   })
+
+                transitioned
+              else
+                refreshed
               end
 
-              preload(refreshed)
-            end)
+            preload(settled)
+          end)
         end
     end
+  end
+
+  # The old wire format keyed each line by a single `qty`. We refuse
+  # to translate silently — heterogeneous packaging needs explicit
+  # packs from the caller, and accepting both shapes hides FE drift.
+  defp ensure_not_legacy_shape(inputs) when is_list(inputs) do
+    legacy? =
+      Enum.any?(inputs, fn raw ->
+        m = stringify_keys(raw)
+        Map.has_key?(m, "qty") and not Map.has_key?(m, "packs")
+      end)
+
+    if legacy?, do: {:error, :legacy_shape_unsupported}, else: :ok
+  end
+
+  defp ensure_not_legacy_shape(_), do: :ok
+
+  defp parse_warehouse_id(nil), do: nil
+  defp parse_warehouse_id(n) when is_integer(n) and n > 0, do: n
+
+  defp parse_warehouse_id(raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_warehouse_id(_), do: nil
+
+  defp ensure_warehouse_id(nil), do: {:error, :warehouse_required}
+  defp ensure_warehouse_id(_), do: :ok
+
+  defp receive_packs_for_line(_actor, _po, _line, [], _batch_default, _source_ref, _warehouse_id), do: :ok
+
+  defp receive_packs_for_line(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line, packs, batch_default, source_ref, warehouse_id) do
+    {final_line, _} =
+      Enum.reduce(packs, {line, 0}, fn pack, {acc_line, idx} ->
+        lot_attrs = build_lot_attrs(po, acc_line, pack, batch_default, source_ref, warehouse_id)
+
+        lot =
+          case Backend.Stock.receive_lot(actor, po.company_id, lot_attrs) do
+            {:ok, lot} -> lot
+            {:error, reason} -> Repo.rollback({:lot_create_failed, acc_line.uuid, idx, reason})
+          end
+
+        # Emit the optional quarantine routing event in the same
+        # transaction so the lot lands at `quarantine` rather than
+        # `received` — QC needs to find it on the quarantine queue
+        # immediately, not after a follow-up call.
+        if pack[:route_to_quarantine] == true do
+          case Backend.Stock.Lifecycle.record_event_in_transaction(
+                 lot,
+                 "routed_to_quarantine",
+                 %{
+                   actor: actor,
+                   actor_kind: "user",
+                   reason: "Routed to quarantine on receipt",
+                   metadata: %{
+                     "po_line_id" => acc_line.id,
+                     "po_id" => po.id,
+                     "source_ref" => source_ref
+                   }
+                 }
+               ) do
+            {:ok, _} -> :ok
+            {:error, :illegal_transition, info} ->
+              Repo.rollback({:lot_create_failed, acc_line.uuid, idx, {:illegal_transition, info}})
+
+            {:error, reason} ->
+              Repo.rollback({:lot_create_failed, acc_line.uuid, idx, reason})
+          end
+        end
+
+        new_received = Decimal.add(acc_line.qty_received || Decimal.new(0), pack[:qty])
+
+        updated_line =
+          acc_line
+          |> PurchaseOrderLine.changeset(%{"qty_received" => new_received})
+          |> Repo.update!()
+
+        # Refresh the last-paid cache so the next PO line for this
+        # (vendor, item, currency) can pre-fill and warn on ±20%
+        # deviation. Cache failures don't roll back the receipt — the
+        # lot is already created and the cache is rebuildable from PO
+        # history.
+        _ = VendorPrices.upsert_from_receipt(po, updated_line)
+
+        {updated_line, idx + 1}
+      end)
+
+    final_line
   end
 
   defp validate_receive_lines(_po, []), do: {:error, :no_lines}
@@ -906,14 +1015,16 @@ defmodule Backend.Purchasing do
     Enum.reduce_while(inputs, {:ok, []}, fn raw, {:ok, acc} ->
       input = stringify_keys(raw)
       line_uuid = input["line_uuid"]
-      qty_raw = input["qty"]
+      packs_raw = input["packs"] || []
 
-      with %PurchaseOrderLine{} = line <- Enum.find(po.lines, fn l -> l.uuid == line_uuid end),
-           {:ok, qty} <- parse_positive(qty_raw),
-           :ok <- ensure_within_remaining(line, qty) do
-        {:cont, {:ok, [{line, Map.put(input, :qty, qty)} | acc]}}
+      with %PurchaseOrderLine{} = line <- find_open_line(po, line_uuid),
+           :ok <- ensure_line_open(line),
+           {:ok, packs} <- validate_packs(packs_raw),
+           :ok <- ensure_sum_within_remaining(line, packs) do
+        {:cont, {:ok, [{line, packs} | acc]}}
       else
-        nil -> {:halt, {:error, {:line_not_found, line_uuid}}}
+        :line_not_found -> {:halt, {:error, {:bad_line_uuid, line_uuid}}}
+        :line_locked -> {:halt, {:error, {:line_locked, line_uuid}}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -923,57 +1034,185 @@ defmodule Backend.Purchasing do
     end
   end
 
-  defp parse_positive(nil), do: {:error, :bad_qty}
-  defp parse_positive(""), do: {:error, :bad_qty}
+  defp validate_receive_lines(_po, _), do: {:error, :no_lines}
 
-  defp parse_positive(raw) when is_binary(raw) do
-    case Decimal.parse(String.trim(raw)) do
-      {%Decimal{} = d, ""} ->
-        if Decimal.gt?(d, 0), do: {:ok, d}, else: {:error, :bad_qty}
-
-      _ ->
-        {:error, :bad_qty}
+  defp find_open_line(%PurchaseOrder{lines: lines}, line_uuid) when is_binary(line_uuid) do
+    case Enum.find(lines, fn l -> l.uuid == line_uuid end) do
+      nil -> :line_not_found
+      %PurchaseOrderLine{} = line -> line
     end
   end
 
-  defp parse_positive(n) when is_number(n) and n > 0, do: {:ok, Decimal.new(to_string(n))}
-  defp parse_positive(_), do: {:error, :bad_qty}
+  defp find_open_line(_, _), do: :line_not_found
 
-  defp ensure_within_remaining(%PurchaseOrderLine{qty_ordered: ordered, qty_received: received}, qty) do
-    remaining = Decimal.sub(ordered || Decimal.new(0), received || Decimal.new(0))
+  # PO lines have no per-row lifecycle column today — "locked" really
+  # means the parent PO is in a terminal state. We've already gated
+  # that at the entry point; this hook is here so a future per-line
+  # cancel flag can plug in without changing the validation skeleton.
+  defp ensure_line_open(%PurchaseOrderLine{}), do: :ok
 
-    if Decimal.gt?(qty, remaining) do
-      {:error, :over_receipt}
+  defp validate_packs(packs) when is_list(packs) do
+    packs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {raw, idx}, {:ok, acc} ->
+      case validate_pack(stringify_keys(raw), idx) do
+        {:ok, pack} -> {:cont, {:ok, [pack | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      other -> other
+    end
+  end
+
+  defp validate_packs(_), do: {:error, :bad_packs}
+
+  defp validate_pack(pack, idx) when is_map(pack) do
+    # Qty failures stay surfaced as `:non_positive_qty` because that's
+    # the worker-facing axis; the rest of the dim fields collapse to a
+    # single `:non_positive_dim` so the FE just highlights the
+    # packaging block. Weight is a dim — not a qty — despite using a
+    # Decimal parser.
+    with {:ok, qty} <- parse_positive_decimal(pack["qty"]) |> remap_err(:non_positive_qty),
+         {:ok, length_mm} <- parse_positive_integer(pack["package_length_mm"]) |> remap_err(:non_positive_dim),
+         {:ok, width_mm} <- parse_positive_integer(pack["package_width_mm"]) |> remap_err(:non_positive_dim),
+         {:ok, height_mm} <- parse_positive_integer(pack["package_height_mm"]) |> remap_err(:non_positive_dim),
+         {:ok, weight_kg} <- parse_positive_decimal(pack["package_weight_kg"]) |> remap_err(:non_positive_dim),
+         {:ok, units_per} <- parse_positive_integer(pack["units_per_package"]) |> remap_err(:non_positive_dim),
+         {:ok, stack} <- parse_positive_integer(pack["stack_factor"]) |> remap_err(:non_positive_dim) do
+      {:ok,
+       %{
+         index: idx,
+         qty: qty,
+         package_length_mm: length_mm,
+         package_width_mm: width_mm,
+         package_height_mm: height_mm,
+         package_weight_kg: weight_kg,
+         units_per_package: units_per,
+         stack_factor: stack,
+         supplier_batch_no: trim_or_nil(pack["supplier_batch_no"]),
+         manufactured_at: trim_or_nil(pack["manufactured_at"]),
+         expiry_at: trim_or_nil(pack["expiry_at"]),
+         country_of_origin: trim_or_nil(pack["country_of_origin"]),
+         revision: trim_or_nil(pack["revision"]),
+         route_to_quarantine: pack["route_to_quarantine"] == true
+       }}
+    else
+      {:error, code} -> {:error, {code, idx}}
+    end
+  end
+
+  defp validate_pack(_, idx), do: {:error, {:non_positive_dim, idx}}
+
+  defp remap_err({:ok, _} = ok, _code), do: ok
+  defp remap_err({:error, _}, code), do: {:error, code}
+
+  defp parse_positive_decimal(nil), do: {:error, :non_positive_qty}
+  defp parse_positive_decimal(""), do: {:error, :non_positive_qty}
+
+  defp parse_positive_decimal(%Decimal{} = d) do
+    if Decimal.gt?(d, 0), do: {:ok, d}, else: {:error, :non_positive_qty}
+  end
+
+  defp parse_positive_decimal(raw) when is_binary(raw) do
+    case Decimal.parse(String.trim(raw)) do
+      {%Decimal{} = d, ""} ->
+        if Decimal.gt?(d, 0), do: {:ok, d}, else: {:error, :non_positive_qty}
+
+      _ ->
+        {:error, :non_positive_qty}
+    end
+  end
+
+  defp parse_positive_decimal(n) when is_integer(n) or is_float(n) do
+    parse_positive_decimal(to_string(n))
+  end
+
+  defp parse_positive_decimal(_), do: {:error, :non_positive_qty}
+
+  defp parse_positive_integer(nil), do: {:error, :non_positive_dim}
+  defp parse_positive_integer(""), do: {:error, :non_positive_dim}
+
+  defp parse_positive_integer(n) when is_integer(n) do
+    if n > 0, do: {:ok, n}, else: {:error, :non_positive_dim}
+  end
+
+  defp parse_positive_integer(raw) when is_binary(raw) do
+    case Integer.parse(String.trim(raw)) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> {:error, :non_positive_dim}
+    end
+  end
+
+  defp parse_positive_integer(_), do: {:error, :non_positive_dim}
+
+  defp trim_or_nil(nil), do: nil
+  defp trim_or_nil(""), do: nil
+
+  defp trim_or_nil(raw) when is_binary(raw) do
+    case String.trim(raw) do
+      "" -> nil
+      s -> s
+    end
+  end
+
+  defp trim_or_nil(v), do: v
+
+  defp ensure_sum_within_remaining(%PurchaseOrderLine{} = line, packs) do
+    total =
+      Enum.reduce(packs, Decimal.new(0), fn pack, acc ->
+        Decimal.add(acc, pack[:qty])
+      end)
+
+    remaining =
+      Decimal.sub(
+        line.qty_ordered || Decimal.new(0),
+        line.qty_received || Decimal.new(0)
+      )
+
+    if Decimal.gt?(total, remaining) do
+      {:error, {:over_receipt, line.uuid}}
     else
       :ok
     end
   end
 
-  defp build_lot_attrs(%PurchaseOrder{} = po, %PurchaseOrderLine{} = line, header_attrs, input) do
+  defp build_lot_attrs(%PurchaseOrder{} = po, %PurchaseOrderLine{} = line, pack, batch_default, source_ref, warehouse_id) do
+    item = fetch_line_item(line)
+    batch_no = pack[:supplier_batch_no] || batch_default
+
     %{
       "item_id" => line.item_id,
-      "warehouse_id" => header_attrs["warehouse_id"],
-      "qty_received" => Decimal.to_string(input.qty),
+      "unit_of_measurement_id" => item && item.stock_uom_id,
+      "warehouse_id" => warehouse_id,
+      "qty_received" => Decimal.to_string(pack[:qty]),
       "unit_cost" => line.unit_price && Decimal.to_string(line.unit_price),
       "currency" => po.currency_code,
-      "supplier_batch_no" => header_attrs["supplier_batch_no"],
-      "received_at" => header_attrs["received_at"],
+      "supplier_batch_no" => batch_no,
+      "country_of_origin" => pack[:country_of_origin],
+      "manufactured_at" => pack[:manufactured_at],
+      "expiry_at" => pack[:expiry_at],
+      "revision" => pack[:revision],
       # The service-layer hand-off — `Stock.receive_lot/3` strips
       # user-supplied `source_kind` and reads ours from here. Keeps the
       # compliance rule honest (workers can't smuggle a kind) while
       # still letting the procurement boundary declare provenance.
       "__service_source_kind__" => "purchase_order",
       "__po_line_id__" => line.id,
-      "source_ref" => Backend.Numbering.render(po.id, Repo.preload(po, :company).company, "purchase_order") || "PO##{po.id}",
-      "package_length_mm" => input["package_length_mm"],
-      "package_width_mm" => input["package_width_mm"],
-      "package_height_mm" => input["package_height_mm"],
-      "package_weight_kg" => input["package_weight_kg"],
-      "units_per_package" => input["units_per_package"] || 1,
-      "stack_factor" => input["stack_factor"] || 1,
+      "source_ref" => source_ref,
+      "package_length_mm" => pack[:package_length_mm],
+      "package_width_mm" => pack[:package_width_mm],
+      "package_height_mm" => pack[:package_height_mm],
+      "package_weight_kg" => pack[:package_weight_kg],
+      "units_per_package" => pack[:units_per_package],
+      "stack_factor" => pack[:stack_factor],
       "status" => "received"
     }
   end
+
+  defp fetch_line_item(%PurchaseOrderLine{item: %Backend.Items.Item{} = i}), do: i
+  defp fetch_line_item(%PurchaseOrderLine{item_id: id}), do: Repo.get(Backend.Items.Item, id)
 
   defp compute_po_status_from_lines(%PurchaseOrder{lines: lines}) do
     cond do

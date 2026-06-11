@@ -335,22 +335,50 @@ defmodule BackendWeb.PurchaseOrderController do
           conflict(conn, "bad_status", "Only ordered POs can receive stock.")
 
         {:error, :no_lines} ->
-          unprocessable(conn, "no_lines", "Add at least one receipt line.")
+          unprocessable(conn, "no_lines", "Send at least one line entry (even if its packs list is empty).")
 
-        {:error, {:line_not_found, uuid}} ->
-          unprocessable(conn, "line_not_found", "Receipt line #{uuid} doesn't match the PO.")
+        {:error, :warehouse_required} ->
+          unprocessable(conn, "warehouse_required", "warehouse_id is required on the receive payload.")
 
-        {:error, :bad_qty} ->
-          unprocessable(conn, "bad_qty", "Each receipt qty must be a positive number.")
-
-        {:error, :over_receipt} ->
-          unprocessable(conn, "over_receipt", "Receipt qty exceeds remaining on the line.")
-
-        {:error, {:lot_failed, line_uuid, reason}} ->
+        {:error, :legacy_shape_unsupported} ->
           unprocessable(
             conn,
-            "lot_failed",
-            "Couldn't create lot for line #{line_uuid}: #{inspect(reason)}"
+            "legacy_shape_unsupported",
+            "Receive payload must use the per-pack shape: lines: [{line_uuid, packs: [...]}]."
+          )
+
+        {:error, {:bad_line_uuid, line_uuid}} ->
+          unprocessable(conn, "bad_line_uuid", "Line #{line_uuid || "(unknown)"} doesn't belong to this PO.")
+
+        {:error, {:line_locked, line_uuid}} ->
+          unprocessable(conn, "line_locked", "Line #{line_uuid} is already received or cancelled.")
+
+        {:error, {:over_receipt, line_uuid}} ->
+          unprocessable(
+            conn,
+            "over_receipt",
+            "Sum of pack qtys for line #{line_uuid} exceeds the line's remaining qty."
+          )
+
+        {:error, {:non_positive_qty, idx}} ->
+          unprocessable(
+            conn,
+            "non_positive_qty",
+            "Pack ##{idx + 1} has a non-positive qty — qty must be > 0."
+          )
+
+        {:error, {:non_positive_dim, idx}} ->
+          unprocessable(
+            conn,
+            "non_positive_dim",
+            "Pack ##{idx + 1} has a non-positive packaging dimension — length, width, height, weight, units_per_package, stack_factor must all be > 0."
+          )
+
+        {:error, {:lot_create_failed, line_uuid, idx, reason}} ->
+          unprocessable(
+            conn,
+            "lot_create_failed",
+            "Couldn't create lot for line #{line_uuid} pack ##{idx + 1}: #{inspect(reason)}"
           )
 
         {:error, %Ecto.Changeset{} = cs} ->
