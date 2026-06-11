@@ -793,145 +793,101 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
               </div>
             )}
 
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Field
+            {/* Single pack row — same column order as the PO receive
+                dialog so an operator switching between the two surfaces
+                doesn't have to relearn the layout. Stack factor sits at
+                the end where the PO receive table also keeps it. */}
+            <div className="grid gap-2 sm:grid-cols-[repeat(6,minmax(0,1fr))]">
+              <PackField
                 id="package_length_mm"
                 label="Length (mm)"
-                required
-                error={fieldErrors.package_length_mm?.[0]}
+                value={draft.package_length_mm}
+                onChange={(v) => {
+                  update("package_length_mm", v);
+                  setPackagingSource(null);
+                }}
+                onFocus={() => focusField("package_length_mm")}
+                onBlur={() => blurField("package_length_mm")}
                 editor={fieldEditors.package_length_mm}
-              >
-                <Input
-                  id="package_length_mm"
-                  type="text"
-                  inputMode="numeric"
-                  value={draft.package_length_mm}
-                  onChange={(e) => {
-                    update("package_length_mm", e.target.value.replace(/\D/g, ""));
-                    setPackagingSource(null);
-                  }}
-                  onFocus={() => focusField("package_length_mm")}
-                  onBlur={() => blurField("package_length_mm")}
-                  placeholder="e.g. 400"
-                  className="h-9 font-mono"
-                />
-              </Field>
-              <Field
+                error={fieldErrors.package_length_mm?.[0]}
+                placeholder="400"
+                integer
+              />
+              <PackField
                 id="package_width_mm"
                 label="Width (mm)"
-                required
-                error={fieldErrors.package_width_mm?.[0]}
+                value={draft.package_width_mm}
+                onChange={(v) => {
+                  update("package_width_mm", v);
+                  setPackagingSource(null);
+                }}
+                onFocus={() => focusField("package_width_mm")}
+                onBlur={() => blurField("package_width_mm")}
                 editor={fieldEditors.package_width_mm}
-              >
-                <Input
-                  id="package_width_mm"
-                  type="text"
-                  inputMode="numeric"
-                  value={draft.package_width_mm}
-                  onChange={(e) => {
-                    update("package_width_mm", e.target.value.replace(/\D/g, ""));
-                    setPackagingSource(null);
-                  }}
-                  onFocus={() => focusField("package_width_mm")}
-                  onBlur={() => blurField("package_width_mm")}
-                  placeholder="e.g. 400"
-                  className="h-9 font-mono"
-                />
-              </Field>
-              <Field
+                error={fieldErrors.package_width_mm?.[0]}
+                placeholder="300"
+                integer
+              />
+              <PackField
                 id="package_height_mm"
                 label="Height (mm)"
-                required
-                error={fieldErrors.package_height_mm?.[0]}
+                value={draft.package_height_mm}
+                onChange={(v) => {
+                  update("package_height_mm", v);
+                  setPackagingSource(null);
+                }}
+                onFocus={() => focusField("package_height_mm")}
+                onBlur={() => blurField("package_height_mm")}
                 editor={fieldEditors.package_height_mm}
-              >
-                <Input
-                  id="package_height_mm"
-                  type="text"
-                  inputMode="numeric"
-                  value={draft.package_height_mm}
-                  onChange={(e) => {
-                    update("package_height_mm", e.target.value.replace(/\D/g, ""));
-                    setPackagingSource(null);
-                  }}
-                  onFocus={() => focusField("package_height_mm")}
-                  onBlur={() => blurField("package_height_mm")}
-                  placeholder="e.g. 600"
-                  className="h-9 font-mono"
-                />
-              </Field>
-              <Field
+                error={fieldErrors.package_height_mm?.[0]}
+                placeholder="250"
+                integer
+              />
+              <PackField
                 id="package_weight_kg"
                 label="Net weight (kg)"
-                required
-                error={fieldErrors.package_weight_kg?.[0]}
+                value={draft.package_weight_kg}
+                onChange={(v) => {
+                  update("package_weight_kg", v);
+                  setPackagingSource(null);
+                }}
+                onFocus={() => focusField("package_weight_kg")}
+                onBlur={() => blurField("package_weight_kg")}
                 editor={fieldEditors.package_weight_kg}
-              >
-                <Input
-                  id="package_weight_kg"
-                  type="text"
-                  inputMode="decimal"
-                  value={draft.package_weight_kg}
-                  onChange={(e) => {
-                    update("package_weight_kg", e.target.value);
-                    setPackagingSource(null);
-                  }}
-                  onFocus={() => focusField("package_weight_kg")}
-                  onBlur={() => blurField("package_weight_kg")}
-                  placeholder="e.g. 25.000"
-                  className="h-9 font-mono"
-                />
-              </Field>
-              <Field
+                error={fieldErrors.package_weight_kg?.[0]}
+                placeholder="25.000"
+              />
+              <PackField
                 id="units_per_package"
-                label="Units / package"
-                required
-                error={fieldErrors.units_per_package?.[0]}
+                label={`Units / pack (${uomSymbol})`}
+                value={draft.units_per_package}
+                onChange={(v) => {
+                  update("units_per_package", v);
+                  setPackagingSource(null);
+                }}
+                onFocus={() => focusField("units_per_package")}
+                onBlur={() => blurField("units_per_package")}
                 editor={fieldEditors.units_per_package}
-              >
-                <Input
-                  id="units_per_package"
-                  type="text"
-                  inputMode="numeric"
-                  value={draft.units_per_package}
-                  onChange={(e) => {
-                    update("units_per_package", e.target.value.replace(/\D/g, ""));
-                    setPackagingSource(null);
-                  }}
-                  onFocus={() => focusField("units_per_package")}
-                  onBlur={() => blurField("units_per_package")}
-                  placeholder="1"
-                  className="h-9 font-mono"
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  How many {uomSymbol} ride in one package.
-                </p>
-              </Field>
-              <Field
+                error={fieldErrors.units_per_package?.[0]}
+                placeholder="1"
+                integer
+              />
+              <PackField
                 id="stack_factor"
                 label="Stack factor"
-                required
-                error={fieldErrors.stack_factor?.[0]}
+                value={draft.stack_factor}
+                onChange={(v) => {
+                  update("stack_factor", v);
+                  setPackagingSource(null);
+                }}
+                onFocus={() => focusField("stack_factor")}
+                onBlur={() => blurField("stack_factor")}
                 editor={fieldEditors.stack_factor}
-              >
-                <Input
-                  id="stack_factor"
-                  type="text"
-                  inputMode="numeric"
-                  value={draft.stack_factor}
-                  onChange={(e) => {
-                    update("stack_factor", e.target.value.replace(/\D/g, ""));
-                    setPackagingSource(null);
-                  }}
-                  onFocus={() => focusField("stack_factor")}
-                  onBlur={() => blurField("stack_factor")}
-                  placeholder="1"
-                  className="h-9 font-mono"
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  How many packages stack safely vertically.
-                </p>
-              </Field>
+                error={fieldErrors.stack_factor?.[0]}
+                placeholder="1"
+                integer
+                hint="Packages safely stacked vertically."
+              />
             </div>
           </section>
 
@@ -1315,6 +1271,72 @@ function Field({
       </div>
       {error && (
         <p className="text-[11px] text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Compact pack-row field — mirrors the per-pack inputs on the PO
+ *  receive dialog (font-mono, right-aligned, h-8) so the visual model
+ *  is the same across both surfaces. Integer fields strip non-digits;
+ *  decimal fields (weight) pass the value through. */
+function PackField({
+  id,
+  label,
+  value,
+  onChange,
+  onFocus,
+  onBlur,
+  editor,
+  error,
+  placeholder,
+  hint,
+  integer,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+  editor: import("@/lib/realtime/use-live-form").CollabPeer | null;
+  error?: string;
+  placeholder?: string;
+  hint?: string;
+  integer?: boolean;
+}) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <Label
+        htmlFor={id}
+        className="text-[10px] uppercase tracking-wider text-muted-foreground"
+      >
+        {label}
+        <span className="ml-0.5 text-destructive">*</span>
+      </Label>
+      <div className="relative">
+        <Input
+          id={id}
+          type="text"
+          inputMode={integer ? "numeric" : "decimal"}
+          value={value}
+          onChange={(e) =>
+            onChange(integer ? e.target.value.replace(/\D/g, "") : e.target.value)
+          }
+          onFocus={onFocus}
+          onBlur={onBlur}
+          placeholder={placeholder}
+          className="h-8 text-right font-mono text-xs"
+        />
+        <FieldEditingIndicator peer={editor} />
+      </div>
+      {hint && !error && (
+        <p className="text-[10px] text-muted-foreground">{hint}</p>
+      )}
+      {error && (
+        <p className="text-[10px] text-destructive" role="alert">
           {error}
         </p>
       )}
