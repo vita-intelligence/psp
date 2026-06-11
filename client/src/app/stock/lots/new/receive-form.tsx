@@ -125,9 +125,12 @@ type DraftSnapshot = {
   notes: string;
 };
 
-/** One pack within the bulk receive — the same row the PO receive
- *  dialog renders. Strings on the input fields so empty / partial
- *  values don't fight react; converted to numbers at submit time. */
+/** One pack within the bulk receive. Each row IS one physical pack
+ *  and becomes one stock_lot on submit — for N identical drums the
+ *  operator clicks `+ Add pack` N times. There's no per-row "pack
+ *  size" because the row already is the pack; the BE's
+ *  `units_per_package` field is set to qty on submit so the
+ *  computed `packages = qty / units_per_package` stays at 1. */
 interface PackDraft {
   tempId: string;
   qty_received: string;
@@ -135,7 +138,6 @@ interface PackDraft {
   package_width_mm: string;
   package_height_mm: string;
   package_weight_kg: string;
-  units_per_package: string;
   stack_factor: string;
   /** Optional per-pack override of the shared supplier batch no. */
   supplier_batch_no: string;
@@ -152,7 +154,6 @@ function makeDefaultPack(): PackDraft {
     package_width_mm: "",
     package_height_mm: "",
     package_weight_kg: "",
-    units_per_package: "1",
     stack_factor: "1",
     supplier_batch_no: "",
   };
@@ -399,7 +400,6 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
       Number(p.package_width_mm) > 0 &&
       Number(p.package_height_mm) > 0 &&
       Number(p.package_weight_kg) > 0 &&
-      Number(p.units_per_package) > 0 &&
       Number(p.stack_factor) > 0
     );
   }
@@ -407,18 +407,16 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
   const qtyValid = completePacks.length > 0;
   const packagingValid = qtyValid;
 
-  // Derived calculator — sums across every complete pack. Each pack
-  // contributes its own packages count (qty ÷ units_per_package),
-  // total weight, total volume, and stack count; the readout under
-  // the pack table shows the consolidated values so the operator can
-  // sanity-check against a destination cell's footprint.
+  // Derived calculator — sums across every complete pack. One row =
+  // one physical pack, so packages count is just the row count; per-
+  // pack values feed total volume and weight. Surfaced under the
+  // pack table so the operator can sanity-check against a
+  // destination cell's footprint before submitting.
   const packCalc = useMemo(() => {
     let totalQty = 0;
-    let packagesTotal = 0;
     let totalWeightKg = 0;
     let totalLitres = 0;
     let stacksTotal = 0;
-    let anyExactMismatch = false;
     let anyWeight = false;
     let anyVolume = false;
     let anyStack = false;
@@ -426,21 +424,15 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
 
     for (const p of packs) {
       const qty = Number(p.qty_received);
-      const upp = Number(p.units_per_package);
-      if (!(qty > 0 && upp > 0)) continue;
+      if (!(qty > 0)) continue;
 
       anyComplete = true;
       totalQty += qty;
 
-      const packagesRaw = qty / upp;
-      const packages = Math.ceil(packagesRaw - 1e-9);
-      if (Math.abs(packagesRaw - packages) > 1e-9) anyExactMismatch = true;
-      packagesTotal += packages;
-
       const weight = Number(p.package_weight_kg);
       if (weight > 0) {
         anyWeight = true;
-        totalWeightKg += packages * weight;
+        totalWeightKg += weight;
       }
 
       const lenMm = Number(p.package_length_mm);
@@ -448,24 +440,26 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
       const hgtMm = Number(p.package_height_mm);
       if (lenMm > 0 && widMm > 0 && hgtMm > 0) {
         anyVolume = true;
-        totalLitres += packages * ((lenMm * widMm * hgtMm) / 1_000_000);
+        totalLitres += (lenMm * widMm * hgtMm) / 1_000_000;
       }
 
       const stack = Number(p.stack_factor);
       if (stack > 0) {
         anyStack = true;
-        stacksTotal += Math.ceil(packages / stack);
+        // Each row is one pack; how many stacks it makes depends on the
+        // stack factor (1 stack of size N or N stacks of 1).
+        stacksTotal += Math.ceil(1 / stack);
       }
     }
 
     if (!anyComplete) return null;
     return {
       totalQty,
-      packagesTotal,
+      packagesTotal: completePacks.length,
       totalWeightKg: anyWeight ? totalWeightKg : null,
       totalLitres: anyVolume ? totalLitres : null,
       stacksTotal: anyStack ? stacksTotal : null,
-      anyExactMismatch,
+      anyExactMismatch: false,
       packCount: completePacks.length,
     };
   }, [packs, completePacks.length]);
@@ -496,6 +490,8 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
   // dims are already filled is left alone — operators tweak rows
   // individually after the first pre-fill. The "Suggestions" pills
   // re-fire this on each click so the operator can switch sources.
+  // units_per_package isn't surfaced on the row anymore (one row =
+  // one pack), so we don't pull it from the suggestion bag either.
   function applyPackaging(p: PackagingValues) {
     setPacks((prev) =>
       prev.map((pack) => {
@@ -511,8 +507,6 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
           package_width_mm: p.width_mm != null ? String(p.width_mm) : "",
           package_height_mm: p.height_mm != null ? String(p.height_mm) : "",
           package_weight_kg: p.weight_kg != null ? String(p.weight_kg) : "",
-          units_per_package:
-            p.units_per_package != null ? String(p.units_per_package) : "1",
           stack_factor:
             p.stack_factor != null ? String(p.stack_factor) : "1",
         };
@@ -582,16 +576,25 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     // endpoint validates per-pack so a half-row would 422 the whole
     // transaction. `completePacks` is the same predicate used for the
     // qtyValid gate above, so what we send is exactly what we counted.
-    const submitPacks: ManualLotPack[] = completePacks.map((p) => ({
-      qty_received: p.qty_received,
-      package_length_mm: Number(p.package_length_mm),
-      package_width_mm: Number(p.package_width_mm),
-      package_height_mm: Number(p.package_height_mm),
-      package_weight_kg: p.package_weight_kg,
-      units_per_package: Number(p.units_per_package),
-      stack_factor: Number(p.stack_factor),
-      supplier_batch_no: p.supplier_batch_no.trim() || null,
-    }));
+    // One row = one pack = one lot, so `units_per_package` is set to
+    // the qty itself (ceiled to integer) — the BE computes
+    // `packages = qty / units_per_package` and we want that to be 1
+    // per lot. The footprint stays correct because the per-pack
+    // dimensions describe this one physical pack.
+    const submitPacks: ManualLotPack[] = completePacks.map((p) => {
+      const qtyNum = Number(p.qty_received);
+      const upp = Math.max(1, Math.ceil(qtyNum));
+      return {
+        qty_received: p.qty_received,
+        package_length_mm: Number(p.package_length_mm),
+        package_width_mm: Number(p.package_width_mm),
+        package_height_mm: Number(p.package_height_mm),
+        package_weight_kg: p.package_weight_kg,
+        units_per_package: upp,
+        stack_factor: Number(p.stack_factor),
+        supplier_batch_no: p.supplier_batch_no.trim() || null,
+      };
+    });
 
     const input: BulkManualLotInput = {
       item_id: Number(draft.item_id),
@@ -940,34 +943,28 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                 row becomes its own stock_lot on submit; the bulk
                 endpoint wraps them in one transaction. */}
             <div className="overflow-x-auto rounded-md border border-border/60">
-              <table className="min-w-[860px] text-xs">
+              <table className="min-w-[760px] text-xs">
                 <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
                   <tr>
                     <th className="w-8 px-2 py-1.5 text-left">#</th>
                     <th
                       className="w-28 px-2 py-1.5 text-right"
-                      title={`Total quantity of this pack row, in ${uomSymbol}. Divided by Pack size to give the number of physical packs.`}
+                      title={`How much ${uomSymbol} this one pack holds. One row = one physical pack — for 4 identical drums, click + Add pack three more times.`}
                     >
-                      Total qty ({uomSymbol})
+                      Qty ({uomSymbol})
                     </th>
                     <th className="w-16 px-2 py-1.5 text-right" title="Pack length in millimetres.">L (mm)</th>
                     <th className="w-16 px-2 py-1.5 text-right" title="Pack width in millimetres.">W (mm)</th>
                     <th className="w-16 px-2 py-1.5 text-right" title="Pack height in millimetres.">H (mm)</th>
                     <th
                       className="w-24 px-2 py-1.5 text-right"
-                      title="Weight of one filled pack in kilograms. Multiplied by the derived pack count for the floor-loading check."
+                      title="Weight of this pack in kilograms. Used for the floor-loading check on put-away."
                     >
-                      Wt / pack (kg)
-                    </th>
-                    <th
-                      className="w-28 px-2 py-1.5 text-right"
-                      title={`How much ${uomSymbol} each physical pack contains. For one 25-kg drum holding the whole lot: Total qty = 25, Pack size = 25 → 1 pack.`}
-                    >
-                      Pack size ({uomSymbol})
+                      Weight (kg)
                     </th>
                     <th
                       className="w-16 px-2 py-1.5 text-right"
-                      title="How many packs can be safely stacked vertically on top of each other."
+                      title="How many of this pack can be safely stacked vertically on top of each other."
                     >
                       Stack
                     </th>
@@ -981,7 +978,6 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                       key={p.tempId}
                       index={i}
                       pack={p}
-                      uomSymbol={uomSymbol}
                       onPatch={(patch) => patchPack(p.tempId, patch)}
                       onRemove={
                         packs.length === 1
@@ -995,12 +991,9 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
             </div>
 
             <p className="text-[11px] text-muted-foreground">
-              <span className="font-medium">Pack size</span> = how much
-              {" "}{uomSymbol}{" "}
-              each physical pack contains. The derived <em>packs</em> count
-              shows live next to the row — 25 {uomSymbol} ÷ pack size of 25{" "}
-              {uomSymbol} = 1 pack; 100 {uomSymbol} ÷ pack size of 25{" "}
-              {uomSymbol} = 4 packs.
+              One row = one physical pack = one stock lot. 4 identical
+              drums → 4 rows. Mixed (4 drums + 1 sack) → 5 rows, each with
+              its own dimensions and weight.
             </p>
 
             <div className="flex items-center justify-between gap-2">
@@ -1414,88 +1407,34 @@ function Field({
   );
 }
 
-/** One pack row in the bulk receive table. Mirrors the PO receive
- *  dialog's per-pack row — same column order, same compact mono
- *  inputs, optional supplier batch override at the end. The trash
- *  button is hidden when only one row remains so the form can't end
- *  up empty (the bulk endpoint requires ≥1 pack).
- *
- *  When the operator types Total qty first and Pack size is still
- *  empty/default we auto-fill Pack size = qty (1 pack) so the most
- *  common case (one drum holds the whole lot) doesn't require an
- *  extra field. Once Pack size has a non-default value the auto-fill
- *  stops fighting their input. */
+/** One pack row in the bulk receive table — describes ONE physical
+ *  pack (drum, sack, pallet) that becomes ONE stock lot on submit.
+ *  For N identical packs the operator clicks `+ Add pack` N times;
+ *  there's no per-row "pack size" because the row already is the
+ *  pack. Trash hidden on the last remaining row so the form can't
+ *  end up empty. */
 function PackRow({
   index,
   pack,
-  uomSymbol,
   onPatch,
   onRemove,
 }: {
   index: number;
   pack: PackDraft;
-  uomSymbol: string;
   onPatch: (patch: Partial<PackDraft>) => void;
   onRemove?: () => void;
 }) {
-  // Derived pack count — qty / pack_size, ceil'd because partial
-  // packs round up. Surfaced as a tiny caption under the Total qty
-  // cell so the user sees the implied count without reading the
-  // calculator at the bottom of the page.
-  const qtyNum = Number(pack.qty_received);
-  const packSizeNum = Number(pack.units_per_package);
-  const packsImplied =
-    qtyNum > 0 && packSizeNum > 0
-      ? Math.ceil(qtyNum / packSizeNum - 1e-9)
-      : null;
-  const packsExact =
-    packsImplied !== null
-      ? Math.abs(qtyNum / packSizeNum - packsImplied) < 1e-9
-      : false;
-
-  const onQtyChange = (v: string) => {
-    const patch: Partial<PackDraft> = { qty_received: v };
-    // Auto-fill Pack size = qty when Pack size is still at its initial
-    // default ("1") or empty. Saves a keystroke for the single-pack
-    // case (one drum = one lot = qty kg).
-    if (pack.units_per_package === "" || pack.units_per_package === "1") {
-      patch.units_per_package = v;
-    }
-    onPatch(patch);
-  };
-
   return (
     <tr>
-      <td className="px-2 py-1.5 text-left align-top font-mono text-[10px] text-muted-foreground">
+      <td className="px-2 py-1.5 text-left font-mono text-[10px] text-muted-foreground">
         {index + 1}
       </td>
-      <td className="px-2 py-1.5 align-top">
-        <Input
-          type="text"
-          inputMode="decimal"
-          value={pack.qty_received}
-          onChange={(e) => onQtyChange(e.target.value)}
-          aria-label={`Pack ${index + 1} total qty`}
-          placeholder="0.00"
-          className="h-8 text-right font-mono text-xs"
-        />
-        {packsImplied !== null && (
-          <p
-            className={
-              packsExact
-                ? "mt-0.5 text-right font-mono text-[10px] text-muted-foreground"
-                : "mt-0.5 text-right font-mono text-[10px] font-semibold text-destructive"
-            }
-            title={
-              packsExact
-                ? "Computed from Total qty ÷ Pack size."
-                : "Total qty doesn't divide evenly by Pack size — partial pack rounded up."
-            }
-          >
-            = {packsImplied} pack{packsImplied === 1 ? "" : "s"}
-          </p>
-        )}
-      </td>
+      <PackCell
+        value={pack.qty_received}
+        onChange={(v) => onPatch({ qty_received: v })}
+        label={`Pack ${index + 1} qty`}
+        placeholder="25"
+      />
       <PackCell
         value={pack.package_length_mm}
         onChange={(v) =>
@@ -1528,20 +1467,13 @@ function PackRow({
         placeholder="25.000"
       />
       <PackCell
-        value={pack.units_per_package}
-        onChange={(v) => onPatch({ units_per_package: v.replace(/\D/g, "") })}
-        label={`Pack ${index + 1} pack size in ${uomSymbol}`}
-        placeholder={qtyNum > 0 ? String(qtyNum) : `e.g. 25`}
-        integer
-      />
-      <PackCell
         value={pack.stack_factor}
         onChange={(v) => onPatch({ stack_factor: v.replace(/\D/g, "") })}
         label={`Pack ${index + 1} stack factor`}
         placeholder="1"
         integer
       />
-      <td className="px-2 py-1.5 align-top">
+      <td className="px-2 py-1.5">
         <Input
           type="text"
           value={pack.supplier_batch_no}
@@ -1551,7 +1483,7 @@ function PackRow({
           className="h-8 font-mono text-xs"
         />
       </td>
-      <td className="px-1 py-1.5 text-center align-top">
+      <td className="px-1 py-1.5 text-center">
         {onRemove && (
           <button
             type="button"
@@ -1582,7 +1514,7 @@ function PackCell({
   integer?: boolean;
 }) {
   return (
-    <td className="px-2 py-1.5 align-top">
+    <td className="px-2 py-1.5">
       <Input
         type="text"
         inputMode={integer ? "numeric" : "decimal"}
