@@ -1142,6 +1142,17 @@ export interface UnitOfMeasurement {
   updated_by?: AuditActor | null;
 }
 
+/** Decision-driven cell intent. The auto-router moves stock between
+ *  cells whose purpose matches the lot's new status — a quarantine
+ *  lot ends up in a `quarantine` cell, a rejected lot in a `rejected`
+ *  cell, etc. Default `regular` = normal pick face. */
+export type StorageCellPurpose =
+  | "regular"
+  | "quarantine"
+  | "hold"
+  | "rejected"
+  | "dispatch";
+
 /** One physical level / subdivision of a storage location. A shelf
  *  with five usable levels has five cells, ordered bottom-to-top
  *  via `ordinal`. Tags are freeform classification labels for the
@@ -1161,6 +1172,8 @@ export interface StorageCell {
   /** Optional weight cap — null = "no enforced limit". */
   max_weight_kg: string | null;
   tags: string[];
+  /** Drives auto-routing on lifecycle events (status → purpose match). */
+  purpose: StorageCellPurpose;
   notes: string | null;
   inserted_at: string;
   updated_at: string;
@@ -1281,6 +1294,10 @@ export interface StockLotCellSummary {
   uuid: string;
   ordinal: number;
   name: string | null;
+  /** Cell intent — drives auto-routing. Surfaces as a chip next to
+   *  the placement so QC can spot a quarantine lot in a regular
+   *  cell at a glance. */
+  purpose: StorageCellPurpose;
   /** Display code rendered from the company numbering format
    *  (e.g. `CELL00011`). `null` for system-managed cells where the
    *  FE renders the operator-facing `generic_place_name` instead. */

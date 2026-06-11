@@ -18,6 +18,13 @@ defmodule Backend.Warehouses.StorageCell do
   alias Backend.Companies.Company
   alias Backend.Warehouses.StorageLocation
 
+  # Compliance-driven cell intent. The auto-router maps lot statuses
+  # onto these so a quarantine lot physically sits in a quarantine
+  # cell, a rejected lot in a rejected cell, etc. — closing the gap
+  # between the database status and the warehouse floor.
+  @purposes ~w(regular quarantine hold rejected dispatch)
+  def purposes, do: @purposes
+
   schema "storage_cells" do
     field :uuid, Ecto.UUID, autogenerate: true
     field :ordinal, :integer, default: 0
@@ -33,6 +40,9 @@ defmodule Backend.Warehouses.StorageCell do
     # whatever labels their domain needs. Segregation rules are data,
     # not code, so any new tag becomes addressable without a deploy.
     field :tags, {:array, :string}, default: []
+
+    # Intent of this cell — drives auto-routing. See `@purposes`.
+    field :purpose, :string, default: "regular"
 
     field :notes, :string
 
@@ -61,6 +71,7 @@ defmodule Backend.Warehouses.StorageCell do
       :height_m,
       :max_weight_kg,
       :tags,
+      :purpose,
       :notes,
       :created_by_id,
       :updated_by_id
@@ -72,6 +83,7 @@ defmodule Backend.Warehouses.StorageCell do
     |> validate_number(:depth_m, greater_than: 0)
     |> validate_number(:height_m, greater_than: 0)
     |> validate_number(:max_weight_kg, greater_than: 0)
+    |> validate_inclusion(:purpose, @purposes)
     |> validate_tags()
     |> validate_tag_membership()
     |> unique_constraint([:storage_location_id, :ordinal],

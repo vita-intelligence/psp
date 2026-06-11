@@ -13,8 +13,8 @@ defmodule Backend.Stock.Movement do
   alias Backend.Stock.Lot
   alias Backend.Warehouses.StorageCell
 
-  @kinds ~w(receive move consume adjust_up adjust_down dispose return)
-  @reference_kinds ~w(purchase_order manufacturing_order sales_order transfer_order stock_take adjustment)
+  @kinds ~w(receive move consume adjust_up adjust_down dispose return auto_route)
+  @reference_kinds ~w(purchase_order manufacturing_order sales_order transfer_order stock_take adjustment lifecycle_event)
 
   def kinds, do: @kinds
   def reference_kinds, do: @reference_kinds
@@ -104,6 +104,16 @@ defmodule Backend.Stock.Movement do
 
       "move" when is_nil(from_id) or is_nil(to_id) ->
         add_error(changeset, :kind, "move movements need both from + to cells")
+
+      # System-initiated re-route fired by the auto-router when a
+      # lot's status changes. Same shape requirements as a manual
+      # move — both ends must be set so the audit trail is honest.
+      "auto_route" when is_nil(from_id) or is_nil(to_id) ->
+        add_error(
+          changeset,
+          :kind,
+          "auto_route movements need both from + to cells"
+        )
 
       _ ->
         changeset

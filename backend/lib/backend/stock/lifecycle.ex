@@ -155,13 +155,34 @@ defmodule Backend.Stock.Lifecycle do
         with {:ok, event} <- insert_event(lot, kind, attrs),
              events = list_events_raw(lot.id),
              next_status = project_status(events),
-             {:ok, updated_lot} <- update_lot_status(lot, next_status) do
+             {:ok, updated_lot} <- update_lot_status(lot, next_status),
+             # Auto-route the placement(s) to a cell whose `purpose`
+             # matches the new status — quarantine to quarantine,
+             # rejected to rejected, etc. The router is idempotent
+             # and tolerates "no matching cell" by leaving the
+             # placement alone (it logs a warning instead of
+             # failing the lifecycle event). Runs in the same
+             # transaction so a failed routing insert rolls
+             # everything back atomically.
+             {:ok, _movements} <-
+               Backend.Stock.AutoRouter.maybe_reroute(
+                 actor_for_router(attrs),
+                 updated_lot
+               ) do
           {:ok, %{lot: updated_lot, event: event, status: next_status}}
         end
 
       other ->
         other
     end
+  end
+
+  # The auto-router records audit rows for actor-initiated moves and
+  # leaves them out for system-initiated lifecycle events. We pull
+  # the actor straight off the same attrs map the event handler
+  # used so the audit trail attribution stays consistent.
+  defp actor_for_router(attrs) do
+    Map.get(attrs, :actor) || Map.get(attrs, "actor")
   end
 
   @doc """

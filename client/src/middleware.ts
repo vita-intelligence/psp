@@ -49,9 +49,13 @@ export function middleware(req: NextRequest) {
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
 
-  // Device routes only need the device cookie (not a session).
+  // Device routes accept either the device cookie OR a normal session
+  // cookie. Goods-in operators use the paired tablet; QC + admins use
+  // their desk laptop to approve from /m/inspections/... — the page
+  // server-components verify the active actor and the BE still gates
+  // every action by RBAC. With neither token, send them to /pair.
   if (isDeviceRoute) {
-    if (!hasDevice) {
+    if (!hasDevice && !hasSession) {
       const url = req.nextUrl.clone();
       url.pathname = "/pair";
       url.search = "";

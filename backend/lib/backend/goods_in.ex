@@ -28,13 +28,18 @@ defmodule Backend.GoodsIn do
 
   alias Backend.Accounts.User
   alias Backend.Audit
-  alias Backend.GoodsIn.{Inspection, InspectionItem}
+  alias Backend.GoodsIn.{Inspection, InspectionFile, InspectionItem}
   alias Backend.Purchasing.{PurchaseOrder, PurchaseOrderLine}
   alias Backend.Repo
   alias Backend.Stock
   alias Backend.Stock.Lifecycle
+  alias Backend.Storage
 
   @section_keys ~w(vehicle_inspection documentation_verification physical_inspection food_safety_checks storage_verification)a
+
+  @file_uploadable_statuses ~w(draft submitted)
+  @allowed_file_mimes ~w(application/pdf image/jpeg image/png image/webp image/heic)
+  @max_file_bytes 20 * 1024 * 1024
 
   # ----- list / get ------------------------------------------------
 
@@ -50,7 +55,8 @@ defmodule Backend.GoodsIn do
               :quality_approver,
               :created_by,
               :updated_by,
-              items: [:purchase_order_line]
+              items: [:purchase_order_line],
+              files: [:uploaded_by]
             ]
           )
         )
@@ -445,11 +451,182 @@ defmodule Backend.GoodsIn do
         :quality_approver,
         :created_by,
         :updated_by,
-        items: [:purchase_order_line]
+        items: [:purchase_order_line],
+        files: [:uploaded_by]
       ],
       force: true
     )
   end
+
+  # ----- file attachments -----------------------------------------
+
+  @doc "Allowed file MIME types for inspection attachments (photos + COA PDFs)."
+  def allowed_file_mimes, do: @allowed_file_mimes
+
+  @doc "Max byte size for an inspection file attachment."
+  def max_file_bytes, do: @max_file_bytes
+
+  @doc """
+  Persist a file attachment on an inspection. Operator photos /
+  supplier COAs / other supporting evidence. Allowed only while the
+  inspection is still mutable (status ∈ draft | submitted) so the
+  approver can attach more evidence at sign-off time before the
+  record is locked.
+  """
+  def upload_file(%User{} = actor, %Inspection{} = inspection, kind, %Plug.Upload{} = upload) do
+    cond do
+      inspection.status not in @file_uploadable_statuses ->
+        {:error, :not_editable}
+
+      true ->
+        with :ok <- validate_mime(upload.content_type),
+             {:ok, bytes} <- read_upload(upload),
+             :ok <- validate_size(bytes) do
+          attrs = %{
+            "company_id" => inspection.company_id,
+            "goods_in_inspection_id" => inspection.id,
+            "kind" => kind || "photo",
+            "filename" => upload.filename || "upload",
+            "mime" => upload.content_type || "application/octet-stream",
+            "byte_size" => byte_size(bytes),
+            "uploaded_by_id" => actor.id
+          }
+
+          key = build_file_storage_key(inspection, attrs)
+
+          case Storage.put(key, bytes, content_type: attrs["mime"]) do
+            {:ok, blob_path} ->
+              attrs = Map.put(attrs, "blob_path", blob_path)
+
+              %InspectionFile{}
+              |> InspectionFile.changeset(attrs)
+              |> Repo.insert()
+              |> case do
+                {:ok, file} ->
+                  Audit.record_created(actor, "goods_in_inspection_file", file, %{
+                    goods_in_inspection_id: file.goods_in_inspection_id,
+                    kind: file.kind,
+                    filename: file.filename
+                  })
+
+                  {:ok, Repo.preload(file, :uploaded_by)}
+
+                {:error, cs} ->
+                  _ = Storage.delete(blob_path)
+                  {:error, cs}
+              end
+
+            {:error, reason} ->
+              {:error, {:storage_failed, reason}}
+          end
+        end
+    end
+  end
+
+  @doc """
+  Remove an inspection file. Hard-delete: row + blob. Allowed only
+  while the inspection is mutable.
+  """
+  def delete_file(%User{} = actor, %Inspection{} = inspection, file_uuid) do
+    cond do
+      inspection.status not in @file_uploadable_statuses ->
+        {:error, :not_editable}
+
+      true ->
+        case get_file(inspection.company_id, inspection.uuid, file_uuid) do
+          nil ->
+            {:error, :not_found}
+
+          %InspectionFile{} = file ->
+            Repo.transaction(fn ->
+              case Repo.delete(file) do
+                {:ok, deleted} ->
+                  _ = Storage.delete(file.blob_path)
+
+                  Audit.record_deleted(actor, "goods_in_inspection_file", file, %{
+                    goods_in_inspection_id: file.goods_in_inspection_id,
+                    kind: file.kind,
+                    filename: file.filename
+                  })
+
+                  deleted
+
+                {:error, reason} ->
+                  Repo.rollback(reason)
+              end
+            end)
+        end
+    end
+  end
+
+  @doc """
+  Look up a file row scoped to the inspection uuid + file uuid, all
+  inside the given company. Returns `nil` on miss / bad uuid.
+  """
+  def get_file(company_id, inspection_uuid, file_uuid)
+      when is_binary(inspection_uuid) and is_binary(file_uuid) do
+    with {:ok, insp_cast} <- Ecto.UUID.cast(inspection_uuid),
+         {:ok, file_cast} <- Ecto.UUID.cast(file_uuid) do
+      Repo.one(
+        from(f in InspectionFile,
+          join: i in Inspection,
+          on: i.id == f.goods_in_inspection_id,
+          where:
+            f.company_id == ^company_id and
+              f.uuid == ^file_cast and
+              i.uuid == ^insp_cast,
+          preload: [:uploaded_by]
+        )
+      )
+    else
+      _ -> nil
+    end
+  end
+
+  def get_file(_, _, _), do: nil
+
+  defp validate_mime(mime) when mime in @allowed_file_mimes, do: :ok
+
+  defp validate_mime(mime) do
+    {:error,
+     {:invalid_mime,
+      "Unsupported file type (#{mime || "unknown"}). Allowed: PDF, JPEG, PNG, WebP, HEIC."}}
+  end
+
+  defp validate_size(bytes) when byte_size(bytes) > @max_file_bytes do
+    {:error, {:too_large, byte_size(bytes)}}
+  end
+
+  defp validate_size(_), do: :ok
+
+  defp read_upload(%Plug.Upload{path: path}) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, reason} -> {:error, {:read_failed, reason}}
+    end
+  end
+
+  defp build_file_storage_key(%Inspection{} = inspection, attrs) do
+    kind = attrs["kind"] || "photo"
+    filename = attrs["filename"] || "upload"
+
+    "goods_in_files/" <>
+      inspection.uuid <>
+      "/" <>
+      kind <>
+      "_" <>
+      Ecto.UUID.generate() <>
+      file_extension(filename)
+  end
+
+  defp file_extension(filename) when is_binary(filename) do
+    case Path.extname(filename) do
+      "" -> ""
+      ext -> String.downcase(ext)
+    end
+  end
+
+  defp file_extension(_), do: ""
 
   defp snapshot(%Inspection{} = i) do
     Map.take(i, [

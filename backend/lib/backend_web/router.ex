@@ -257,6 +257,15 @@ defmodule BackendWeb.Router do
       post "/items/:line_uuid", GoodsInInspectionController, :upsert_item
       post "/sign-operator", GoodsInInspectionController, :sign_operator
       post "/sign-quality", GoodsInInspectionController, :sign_quality
+
+      # Operator-captured photos + supporting paperwork. Bytes live in
+      # `Backend.Storage`; metadata scopes by `goods_in_inspection_id`
+      # so files only resolve under their owning inspection. Allowed
+      # while the inspection is mutable (draft | submitted); locked
+      # once the approver signs.
+      post "/files", GoodsInInspectionController, :upload_file
+      delete "/files/:id", GoodsInInspectionController, :delete_file
+      get "/files/:id/serve", GoodsInInspectionController, :serve_file
     end
 
     # Catalogue shape — product families + admin-extensible attribute
@@ -278,6 +287,14 @@ defmodule BackendWeb.Router do
     scope "/queues" do
       get "/reviews-due", QueueController, :reviews_due
       get "/certificates-expiring", QueueController, :certificates_expiring
+    end
+
+    # Mobile shell endpoints — slim, denormalised projections the
+    # tablet UI in /m/* consumes. Lives under /api/m so the wire path
+    # mirrors the FE route. Same RequireAuth pipeline as the rest of
+    # /api — device tokens fall through transparently.
+    scope "/m" do
+      get "/incoming", MobileIncomingController, :index
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

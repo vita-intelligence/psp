@@ -3,6 +3,7 @@
 
 import { api, ApiError } from "../api";
 import { getSessionToken } from "../auth/server";
+import { getDeviceToken } from "../devices/server";
 import type { PageResult } from "@/components/data-table";
 import type { Warehouse } from "../types";
 
@@ -43,6 +44,26 @@ export async function getWarehouse(uuid: string): Promise<Warehouse | null> {
     return warehouse;
   } catch (err) {
     if (err instanceof ApiError) return null;
+    throw err;
+  }
+}
+
+/** Slim active-warehouse list for the mobile picker. Tries the device
+ *  bearer first so the tablet hits the endpoint without a laptop
+ *  session, then falls back to the session token. Returns an empty
+ *  list on any error — the picker just hides itself in that case. */
+export async function listActiveWarehousesForMobile(): Promise<Warehouse[]> {
+  const token = (await getDeviceToken()) ?? (await getSessionToken());
+  if (!token) return [];
+
+  try {
+    const { items } = await api<{ items: Warehouse[] }>(
+      "/api/warehouses?limit=50&filter[is_active]=true",
+      { token },
+    );
+    return items;
+  } catch (err) {
+    if (err instanceof ApiError) return [];
     throw err;
   }
 }

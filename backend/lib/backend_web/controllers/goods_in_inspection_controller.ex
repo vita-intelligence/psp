@@ -24,14 +24,16 @@ defmodule BackendWeb.GoodsInInspectionController do
   alias BackendWeb.Plugs.RequirePermission
 
   plug RequirePermission, "goods_in.view"
-       when action in [:index, :show]
+       when action in [:index, :show, :serve_file]
 
   plug RequirePermission, "goods_in.inspect"
        when action in [
               :create,
               :update,
               :upsert_item,
-              :sign_operator
+              :sign_operator,
+              :upload_file,
+              :delete_file
             ]
 
   plug RequirePermission, "goods_in.approve"
@@ -238,6 +240,121 @@ defmodule BackendWeb.GoodsInInspectionController do
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
+  end
+
+  # ----- file attachments ------------------------------------------
+
+  @doc """
+  Multipart upload for an inspection attachment (operator photo, COA
+  PDF, other supporting evidence). Bytes go through `Backend.Storage`;
+  the metadata row scopes by inspection so files only resolve under
+  their owning record.
+
+  Allowed only while the inspection is mutable (draft | submitted).
+  """
+  def upload_file(conn, %{"goods_in_inspection_id" => uuid, "file" => %Plug.Upload{} = upload} = params) do
+    actor = conn.assigns.current_user
+    kind = params["kind"] || "photo"
+
+    with %{} = inspection <- GoodsIn.get(actor.company_id, uuid),
+         {:ok, file} <- GoodsIn.upload_file(actor, inspection, kind, upload) do
+      conn
+      |> put_status(:created)
+      |> json(%{file: Payloads.goods_in_inspection_file(file, inspection)})
+    else
+      nil ->
+        {:error, :not_found}
+
+      {:error, :not_editable} ->
+        conflict(
+          conn,
+          "not_editable",
+          "Inspection is locked — can't attach more files."
+        )
+
+      {:error, {:invalid_mime, detail}} ->
+        unprocessable(conn, "invalid_mime_type", detail)
+
+      {:error, {:too_large, bytes}} ->
+        file_too_large(conn, bytes)
+
+      {:error, {:read_failed, reason}} ->
+        unprocessable(
+          conn,
+          "read_failed",
+          "Couldn't read the upload: #{inspect(reason)}."
+        )
+
+      {:error, {:storage_failed, reason}} ->
+        unprocessable(
+          conn,
+          "storage_failed",
+          "Couldn't store the file (#{inspect(reason)})."
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
+  def upload_file(conn, _params) do
+    unprocessable(conn, "missing_file", "Send the file under `file` (multipart).")
+  end
+
+  def delete_file(conn, %{"goods_in_inspection_id" => uuid, "id" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = inspection <- GoodsIn.get(actor.company_id, uuid),
+         {:ok, _} <- GoodsIn.delete_file(actor, inspection, file_uuid) do
+      send_resp(conn, :no_content, "")
+    else
+      nil ->
+        {:error, :not_found}
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, :not_editable} ->
+        conflict(
+          conn,
+          "not_editable",
+          "Inspection is locked — can't remove files."
+        )
+    end
+  end
+
+  @doc """
+  Stream an inspection file back. Same path-resolver as the PO file
+  serve — local adapter reads from disk, cloud adapters short-circuit
+  to a signed URL upstream.
+  """
+  def serve_file(conn, %{"goods_in_inspection_id" => uuid, "id" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = file <- GoodsIn.get_file(actor.company_id, uuid, file_uuid),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_content_type(file.mime || "application/octet-stream")
+      |> put_resp_header(
+        "content-disposition",
+        ~s|inline; filename="#{file.filename}"|
+      )
+      |> send_file(200, abs_path)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp file_too_large(conn, bytes) do
+    mb = Float.round(bytes / 1024 / 1024, 1)
+    max_mb = Float.round(GoodsIn.max_file_bytes() / 1024 / 1024, 1)
+
+    unprocessable(
+      conn,
+      "file_too_large",
+      "File is #{mb} MB; max allowed is #{max_mb} MB."
+    )
   end
 
   # ----- helpers ---------------------------------------------------

@@ -652,17 +652,47 @@ defmodule BackendWeb.Payloads do
       quality_approver: actor(i, :quality_approver),
       quality_approver_signed_at: i.quality_approver_signed_at,
       purchase_order_id: i.purchase_order_id,
+      purchase_order_uuid: maybe_po_uuid(i),
       items: maybe_list(i.items, &goods_in_inspection_item/1),
+      files: preloaded_list(i, :files, fn f -> goods_in_inspection_file(f, i) end),
       inserted_at: i.inserted_at,
       updated_at: i.updated_at
     }
   end
+
+  @doc """
+  Public payload for a stored goods-in file. Mirrors `po_file/2` — URL
+  points back at the serve endpoint scoped under the parent
+  inspection uuid so files only resolve under their owner.
+  """
+  def goods_in_inspection_file(%Backend.GoodsIn.InspectionFile{} = f, inspection) do
+    insp_uuid = inspection && Map.get(inspection, :uuid)
+
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        insp_uuid &&
+          "/api/goods-in-inspections/" <>
+            insp_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
+  defp maybe_po_uuid(%{purchase_order: %{uuid: uuid}}) when is_binary(uuid), do: uuid
+  defp maybe_po_uuid(_), do: nil
 
   def goods_in_inspection_item(item) do
     %{
       id: item.id,
       uuid: item.uuid,
       purchase_order_line_id: item.purchase_order_line_id,
+      purchase_order_line_uuid: maybe_po_line_uuid(item),
       qty_received: item.qty_received,
       packaging_condition: item.packaging_condition,
       packaging_condition_notes: item.packaging_condition_notes,
@@ -672,6 +702,9 @@ defmodule BackendWeb.Payloads do
       updated_at: item.updated_at
     }
   end
+
+  defp maybe_po_line_uuid(%{purchase_order_line: %{uuid: uuid}}) when is_binary(uuid), do: uuid
+  defp maybe_po_line_uuid(_), do: nil
 
   defp maybe_list(items, fun) when is_list(items), do: Enum.map(items, fun)
   defp maybe_list(_, _), do: []
@@ -951,6 +984,11 @@ defmodule BackendWeb.Payloads do
       height_m: c.height_m,
       max_weight_kg: c.max_weight_kg,
       tags: c.tags || [],
+      # Cell intent — drives the auto-router. Surfaces on the plan
+      # editor as a chip + select, and on the lot detail placement
+      # card so QC can spot a quarantine lot in a regular cell at a
+      # glance.
+      purpose: c.purpose || "regular",
       notes: c.notes,
       inserted_at: c.inserted_at,
       updated_at: c.updated_at,
@@ -1144,6 +1182,11 @@ defmodule BackendWeb.Payloads do
       uuid: c.uuid,
       ordinal: c.ordinal,
       name: c.name,
+      # Cell intent — drives the auto-router. Defaults to "regular"
+      # for pre-purpose-migration rows. QC reads this on the lot
+      # placement card to confirm a quarantine lot really is sitting
+      # in a quarantine cell.
+      purpose: c.purpose || "regular",
       # Render the company's configured numbering format (e.g.
       # CELL00011) so the FE can display the code instead of the
       # often-empty `name` column. System cells get nil so the FE

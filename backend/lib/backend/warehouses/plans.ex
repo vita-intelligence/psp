@@ -30,7 +30,7 @@ defmodule Backend.Warehouses.Plans do
   # columns (created_by_id, updated_by_id) are excluded.
   @floor_audit_fields ~w(name ordinal canvas_json)a
   @location_audit_fields ~w(name code x y width height width_m height_m depth_m notes color tags floor_id)a
-  @cell_audit_fields ~w(name ordinal width_m depth_m height_m max_weight_kg tags notes storage_location_id)a
+  @cell_audit_fields ~w(name ordinal width_m depth_m height_m max_weight_kg tags purpose notes storage_location_id)a
 
   ## Floors — read --------------------------------------------------
 

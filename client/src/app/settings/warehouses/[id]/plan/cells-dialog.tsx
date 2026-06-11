@@ -22,7 +22,13 @@ import {
   updateCellAction,
 } from "@/lib/storage-cells/actions";
 import type { ErrorResult } from "@/lib/errors/server";
-import type { StorageCell, StorageLocation, StorageTag } from "@/lib/types";
+import type {
+  StorageCell,
+  StorageCellPurpose,
+  StorageLocation,
+  StorageTag,
+} from "@/lib/types";
+import { CELL_PURPOSES, purposeMeta } from "@/lib/storage-cells/purpose";
 import { RackElevationSvg } from "./rack-elevation-svg";
 import { TagPicker } from "./tag-picker";
 
@@ -334,6 +340,7 @@ interface CellPatch {
   height_m: string | number | null;
   max_weight_kg: string | number | null;
   tags: string[];
+  purpose: StorageCellPurpose;
   notes: string | null;
 }
 
@@ -360,13 +367,24 @@ function CellRow({
   const [h, setH] = useState(cell.height_m ?? "");
   const [maxW, setMaxW] = useState(cell.max_weight_kg ?? "");
 
+  const purpose = purposeMeta(cell.purpose);
+
   return (
     <fieldset disabled={disabled} className="contents">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="flex items-baseline gap-2">
+        <div className="flex flex-wrap items-baseline gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Level {cell.ordinal + 1}
           </p>
+          {/* Decision-driven cell intent. Drives the auto-router — a
+              lot that flips to `quarantine` lands in a quarantine
+              cell, not whichever shelf happened to be free. */}
+          <span
+            className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${purpose.chipClassName}`}
+            title={purpose.description}
+          >
+            {purpose.label}
+          </span>
           {elevation && (
             <span className="font-mono text-[10px] text-muted-foreground">
               {elevation.base_m.toFixed(2)} m → {elevation.top_m.toFixed(2)} m
@@ -426,6 +444,33 @@ function CellRow({
           onChange={setMaxW}
           onCommit={(v) => onPatch({ max_weight_kg: v })}
         />
+
+        {/* Purpose select — every cell carries an intent. The
+            auto-router reads this column when a lot's lifecycle
+            event flips its status: quarantine lots route here,
+            rejected lots to a `rejected` cell, etc. */}
+        <div className="space-y-1">
+          <Label className="text-[11px]">Purpose</Label>
+          <select
+            value={cell.purpose ?? "regular"}
+            disabled={disabled}
+            onChange={(e) =>
+              onPatch({
+                purpose: e.target.value as StorageCellPurpose,
+              })
+            }
+            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {CELL_PURPOSES.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            {purpose.description}
+          </p>
+        </div>
 
         <TagPicker
           value={cell.tags ?? []}

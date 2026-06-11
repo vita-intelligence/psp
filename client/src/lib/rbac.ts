@@ -53,7 +53,10 @@ export type PermissionCode =
   | "procurement.po_receive"
   | "procurement.invoice_view"
   | "procurement.invoice_manage"
-  | "procurement.invoice_approve";
+  | "procurement.invoice_approve"
+  | "goods_in.view"
+  | "goods_in.inspect"
+  | "goods_in.approve";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

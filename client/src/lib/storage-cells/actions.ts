@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { StorageCell } from "../types";
+import type { StorageCell, StorageCellPurpose } from "../types";
 import {
   toErrorResult,
   unauthorizedResult,
@@ -24,6 +24,8 @@ interface CellInput {
   height_m?: string | number | null;
   max_weight_kg?: string | number | null;
   tags?: string[];
+  /** Cell intent — drives the auto-router. */
+  purpose?: StorageCellPurpose;
   notes?: string | null;
 }
 

@@ -2,6 +2,7 @@ import { Building2, Layers, MapPin, Sparkles } from "lucide-react";
 import type { StockLot, StockLotPlacement } from "@/lib/types";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { formatCompanyNumber } from "@/lib/format/company";
+import { purposeMeta } from "@/lib/storage-cells/purpose";
 
 /**
  * Placements list — where this lot's stock currently lives, broken
@@ -118,6 +119,11 @@ function PlacementRow({
                   · {cell.code}
                 </span>
               )}
+              {/* Cell purpose chip — proves the placement matches the
+                  lot's compliance status. A quarantine lot should be
+                  in a quarantine cell; if it isn't, the chip flags it
+                  at a glance. */}
+              <PurposeChip purpose={cell?.purpose} />
             </>
           )}
         </div>
@@ -142,5 +148,28 @@ function isSystemPlacement(
     cell.system_kind === "unregistered" ||
     cell.storage_location?.system_kind === "unregistered" ||
     cell.floor?.system_kind === "unregistered"
+  );
+}
+
+function PurposeChip({
+  purpose,
+}: {
+  purpose: string | null | undefined;
+}) {
+  // Hide the chip on plain `regular` cells — every cell defaults to
+  // regular and showing it everywhere is visual noise. The chip
+  // earns its space when the cell is intentionally segregated
+  // (quarantine / hold / rejected / dispatch).
+  if (!purpose || purpose === "regular") return null;
+  const meta = purposeMeta(purpose);
+  return (
+    <span
+      data-testid="placement-purpose-chip"
+      data-purpose={meta.value}
+      className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${meta.chipClassName}`}
+      title={meta.description}
+    >
+      {meta.label}
+    </span>
   );
 }
