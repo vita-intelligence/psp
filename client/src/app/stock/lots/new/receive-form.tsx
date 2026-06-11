@@ -351,6 +351,55 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     Number(draft.units_per_package) > 0 &&
     Number(draft.stack_factor) > 0;
 
+  // Derived calculator — qty / units_per_package gives package count,
+  // which we multiply through to get total weight, total volume, and
+  // stack count. Null if either source is empty so the readout simply
+  // doesn't render. The "exact" flag warns when packages doesn't
+  // divide evenly — usually a typo or a partial-pack situation the
+  // operator should confirm.
+  const packCalc = useMemo(() => {
+    const qty = Number(draft.qty_received);
+    const upp = Number(draft.units_per_package);
+    const weight = Number(draft.package_weight_kg);
+    const lenMm = Number(draft.package_length_mm);
+    const widMm = Number(draft.package_width_mm);
+    const hgtMm = Number(draft.package_height_mm);
+    const stack = Number(draft.stack_factor);
+
+    if (!(qty > 0 && upp > 0)) return null;
+
+    const packagesRaw = qty / upp;
+    const packages = Math.ceil(packagesRaw - 1e-9);
+    const exact = Math.abs(packagesRaw - packages) < 1e-9;
+
+    const totalWeightKg = weight > 0 ? packages * weight : null;
+    const litresPerPack =
+      lenMm > 0 && widMm > 0 && hgtMm > 0
+        ? (lenMm * widMm * hgtMm) / 1_000_000
+        : null;
+    const totalLitres =
+      litresPerPack !== null ? packages * litresPerPack : null;
+    const stacks = stack > 0 ? Math.ceil(packages / stack) : null;
+
+    return {
+      packagesRaw,
+      packages,
+      exact,
+      totalWeightKg,
+      litresPerPack,
+      totalLitres,
+      stacks,
+    };
+  }, [
+    draft.qty_received,
+    draft.units_per_package,
+    draft.package_weight_kg,
+    draft.package_length_mm,
+    draft.package_width_mm,
+    draft.package_height_mm,
+    draft.stack_factor,
+  ]);
+
   const canSubmit =
     !!draft.item_id &&
     !!uomId &&
@@ -889,6 +938,14 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                 hint="Packages safely stacked vertically."
               />
             </div>
+
+            {packCalc && (
+              <PackagingCalculator
+                calc={packCalc}
+                qty={draft.qty_received}
+                uomSymbol={uomSymbol}
+              />
+            )}
           </section>
 
           {/* Provenance — supplier batch + origin + revision. Source
@@ -1367,4 +1424,97 @@ function itemRowToOption(i: {
     storageTags: i.storage_tags ?? [],
     externalSku: i.external_sku ?? null,
   };
+}
+
+/**
+ * Derived readout under the packaging row. Same units the warehouse
+ * cells store (metres + m³ + kg) so an operator can compare the lot
+ * directly against a cell's `width_m × depth_m × height_m` and
+ * `max_weight_kg` without doing the mm→m conversion in their head.
+ *
+ * Shows: packages implied by qty ÷ units-per-pack; per-pack and total
+ * volume; per-pack and total weight; and the number of stacks the
+ * stack factor implies. A red "Doesn't divide evenly" badge surfaces
+ * when qty / units_per_package isn't whole — usually a typo, or a
+ * partial pack the operator should consciously round up for.
+ */
+function PackagingCalculator({
+  calc,
+  qty,
+  uomSymbol,
+}: {
+  calc: {
+    packagesRaw: number;
+    packages: number;
+    exact: boolean;
+    totalWeightKg: number | null;
+    litresPerPack: number | null;
+    totalLitres: number | null;
+    stacks: number | null;
+  };
+  qty: string;
+  uomSymbol: string;
+}) {
+  // m³ is the only volume unit cells store, so we emit it. Lengths in
+  // mm aren't useful for cell comparison so we don't print them here;
+  // the user has the inputs above for that.
+  const m3PerPack =
+    calc.litresPerPack !== null ? calc.litresPerPack / 1000 : null;
+  const totalM3 = calc.totalLitres !== null ? calc.totalLitres / 1000 : null;
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px]">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5 font-mono">
+        <span className="text-muted-foreground">Calc</span>
+        <span>
+          <strong>{calc.packages}</strong> package{calc.packages === 1 ? "" : "s"}
+          <span className="text-muted-foreground">
+            {" "}
+            ({qty} {uomSymbol} ÷ pack)
+          </span>
+        </span>
+        {m3PerPack !== null && (
+          <span className="text-muted-foreground">
+            {formatM3(m3PerPack)} m³ / pack
+          </span>
+        )}
+        {totalM3 !== null && (
+          <span>
+            <strong>{formatM3(totalM3)} m³</strong>
+            <span className="text-muted-foreground"> total volume</span>
+          </span>
+        )}
+        {calc.totalWeightKg !== null && (
+          <span>
+            <strong>{calc.totalWeightKg.toFixed(3).replace(/\.?0+$/, "")} kg</strong>
+            <span className="text-muted-foreground"> total weight</span>
+          </span>
+        )}
+        {calc.stacks !== null && (
+          <span>
+            <strong>{calc.stacks}</strong> stack{calc.stacks === 1 ? "" : "s"}
+            <span className="text-muted-foreground">
+              {" "}
+              high (÷ stack factor)
+            </span>
+          </span>
+        )}
+        {!calc.exact && (
+          <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-destructive">
+            Doesn't divide evenly · {calc.packagesRaw.toFixed(3).replace(/\.?0+$/, "")}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        Compare against a destination cell's width × depth × height (m)
+        and max weight (kg) before put-away.
+      </p>
+    </div>
+  );
+}
+
+function formatM3(v: number): string {
+  // Cell volumes are usually in single-digit or tens of m³, so 3 dp
+  // is plenty. Strip trailing zeros so 0.025 doesn't read as 0.025000.
+  return v.toFixed(3).replace(/\.?0+$/, "");
 }
