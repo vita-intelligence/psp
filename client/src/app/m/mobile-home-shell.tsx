@@ -6,9 +6,11 @@ import { useRouter } from "next/navigation";
 import {
   Bell,
   Camera,
-  ChevronRight,
+  ClipboardCheck,
   LogOut,
-  PackageOpen,
+  Package,
+  ShieldCheck,
+  Truck,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -19,14 +21,20 @@ import {
   getDeviceSocket,
   disconnectDeviceSocket,
 } from "@/lib/realtime/device-socket";
-import { useFormatPrefs } from "@/lib/format/company-prefs-context";
-import { formatCompanyNumber } from "@/lib/format/company";
 import type { DeviceDisplay } from "@/lib/devices/server";
-import type { StockLot } from "@/lib/types";
 
 interface Props {
   display: DeviceDisplay;
-  pendingLots: StockLot[];
+  /** Permission strings the viewer holds (e.g. `["stock.move",
+   *  "goods_in.inspect"]`). Source of truth for which tiles render —
+   *  not present = tile hidden, per the project-wide RBAC rule. */
+  viewerPermissions: string[];
+  /** Admins bypass per-tile permission gates (mirrors the server-side
+   *  `hasPermission` short-circuit). */
+  isAdmin: boolean;
+  pendingPutawayCount: number;
+  incomingTodayCount: number;
+  submittedInspectionCount: number;
 }
 
 interface PingPayload {
@@ -35,25 +43,113 @@ interface PingPayload {
 }
 
 /**
- * Mobile shell home. Lists "Pending put-away" — lots whose stock
- * still sits in the warehouse's Unregistered cell — so operators
- * walk in and see "5 things waiting for a shelf decision". Tapping
- * a card opens the lot's mobile detail (`/m/lots/[uuid]`); the big
- * camera button below opens the scanner for the more common case of
- * "I already have the box in hand, scan its QR".
+ * Tile registry — the single source of truth for what lives on the
+ * mobile home menu. Each tile gets:
+ *
+ *   * `permission`: the RBAC key the viewer must hold (or admin). The
+ *     null tile (Scan) is unconditional because scanning a QR just
+ *     navigates — the downstream page enforces its own permission.
+ *   * `badgeKey`: which prop on the home shell carries the count
+ *     (drives the small chip in the corner; `null` ⇒ no badge).
+ *
+ * Exported so a smoke-test can assert the matrix without rendering
+ * a single React tree.
  */
-export function MobileHomeShell({ display, pendingLots }: Props) {
+export const MOBILE_HOME_TILES = [
+  {
+    key: "putaway",
+    href: "/m/putaway",
+    label: "Pending put-away",
+    description: "Move incoming lots to a shelf",
+    icon: Package,
+    permission: "stock.move",
+    badgeKey: "pendingPutawayCount",
+  },
+  {
+    key: "incoming",
+    href: "/m/incoming",
+    label: "Goods-in",
+    description: "Inspect today's deliveries",
+    icon: Truck,
+    permission: "goods_in.inspect",
+    badgeKey: "incomingTodayCount",
+  },
+  {
+    key: "qc",
+    href: "/m/incoming?filter=needs-approval",
+    label: "QC sign-off",
+    description: "Approve submitted inspections",
+    icon: ShieldCheck,
+    permission: "goods_in.approve",
+    badgeKey: "submittedInspectionCount",
+  },
+  {
+    key: "inspections",
+    href: "/m/incoming",
+    label: "My inspections",
+    description: "View only — no submit / approve",
+    icon: ClipboardCheck,
+    permission: "goods_in.view",
+    badgeKey: null,
+  },
+  {
+    key: "scan",
+    href: "/m/scan",
+    label: "Scan QR",
+    description: "Cell, lot, or label",
+    icon: Camera,
+    permission: null,
+    badgeKey: null,
+  },
+] as const;
+
+export type MobileHomeTile = (typeof MOBILE_HOME_TILES)[number];
+
+/**
+ * Returns the tiles this user should see on the mobile home. Same
+ * predicate used by the home shell + the rendering of any direct-
+ * link guards on the destination pages. Pulled into a helper so the
+ * RBAC smoke test can assert it without simulating React.
+ *
+ * Rule:
+ *   * Tile.permission = null ⇒ always shown.
+ *   * Admin user ⇒ everything shown.
+ *   * Otherwise the permission string must be in the viewer's set.
+ *
+ * The "permission stack on top of view" check (e.g. don't show
+ * "QC sign-off" if the user already has `goods_in.approve` — which
+ * implies they can also `inspect` and `view`) is intentional
+ * duplication: the four tiles each route to a different default
+ * filter on /m/incoming, not the same screen.
+ */
+export function visibleMobileTiles(
+  permissions: readonly string[],
+  isAdmin: boolean,
+): MobileHomeTile[] {
+  return MOBILE_HOME_TILES.filter((tile) => {
+    if (tile.permission === null) return true;
+    if (isAdmin) return true;
+    return permissions.includes(tile.permission);
+  });
+}
+
+export function MobileHomeShell({
+  display,
+  viewerPermissions,
+  isAdmin,
+  pendingPutawayCount,
+  incomingTodayCount,
+  submittedInspectionCount,
+}: Props) {
   const router = useRouter();
-  const prefs = useFormatPrefs();
   const [connected, setConnected] = useState(false);
   const [revoked, setRevoked] = useState(false);
   const channelRef = useRef<{ leave: () => void } | null>(null);
 
-  // Same channel + revoked handling as the previous shell — pings
-  // toast in, revoke kicks us out to the "device revoked" screen.
+  // Real-time device channel — same wiring as before. Pings toast in,
+  // revoke kicks us out.
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       const socket = await getDeviceSocket();
       if (!socket || cancelled) return;
@@ -96,6 +192,17 @@ export function MobileHomeShell({ display, pendingLots }: Props) {
     return <RevokedScreen onPairAgain={() => signOutAndPair(router)} />;
   }
 
+  const badgeFor = (
+    key: MobileHomeTile["badgeKey"],
+  ): number | null => {
+    if (key === "pendingPutawayCount") return pendingPutawayCount;
+    if (key === "incomingTodayCount") return incomingTodayCount;
+    if (key === "submittedInspectionCount") return submittedInspectionCount;
+    return null;
+  };
+
+  const tiles = visibleMobileTiles(viewerPermissions, isAdmin);
+
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="flex items-center justify-between border-b border-border/60 px-4 py-3">
@@ -109,7 +216,7 @@ export function MobileHomeShell({ display, pendingLots }: Props) {
         </div>
       </header>
 
-      <main className="flex-1 space-y-5 px-4 py-5">
+      <main className="flex-1 space-y-4 px-4 py-5">
         <div>
           <p className="text-xs uppercase tracking-wider text-muted-foreground">
             {display.user_name}
@@ -117,41 +224,60 @@ export function MobileHomeShell({ display, pendingLots }: Props) {
           <p className="text-sm font-medium">{display.device_label}</p>
         </div>
 
-        <section className="space-y-2">
-          <header className="flex items-baseline justify-between">
-            <h2 className="text-sm font-semibold tracking-tight">
-              Pending put-away
-            </h2>
-            <span className="text-xs text-muted-foreground">
-              {pendingLots.length}
-            </span>
-          </header>
-
-          {pendingLots.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border/60 px-4 py-8 text-center">
-              <PackageOpen className="size-6 text-muted-foreground/60" />
-              <p className="text-sm font-medium">All clear</p>
-              <p className="text-xs text-muted-foreground">
-                Nothing waiting on a shelf decision right now.
-              </p>
-            </div>
-          ) : (
-            <ul className="space-y-2">
-              {pendingLots.map((lot) => (
-                <PendingCard key={lot.uuid} lot={lot} prefs={prefs} />
-              ))}
-            </ul>
-          )}
-        </section>
+        {tiles.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border/60 px-4 py-12 text-center">
+            <p className="text-sm font-medium">No actions available</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Your role doesn&apos;t include any mobile actions yet. Ask
+              an admin to grant `stock.move`, `goods_in.inspect`, or a
+              related permission.
+            </p>
+          </div>
+        ) : (
+          <ul
+            className="grid grid-cols-2 gap-3"
+            data-testid="mobile-home-tiles"
+          >
+            {tiles.map((tile) => {
+              const Icon = tile.icon;
+              const badge = badgeFor(tile.badgeKey);
+              return (
+                <li key={tile.key}>
+                  <Link
+                    href={tile.href}
+                    data-tile-key={tile.key}
+                    className="flex aspect-square flex-col items-start justify-between rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+                  >
+                    <div className="flex w-full items-start justify-between">
+                      <span className="grid size-9 place-items-center rounded-full bg-brand/15 text-brand">
+                        <Icon className="size-5" />
+                      </span>
+                      {badge !== null && badge > 0 && (
+                        <span
+                          data-testid={`badge-${tile.key}`}
+                          className="inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground"
+                        >
+                          {badge}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold leading-tight">
+                        {tile.label}
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
+                        {tile.description}
+                      </p>
+                    </div>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </main>
 
-      <footer className="space-y-2 border-t border-border/60 px-4 py-3">
-        <Button asChild size="lg" className="h-14 w-full text-base">
-          <Link href="/m/scan">
-            <Camera className="mr-2 size-5" />
-            Scan a QR code
-          </Link>
-        </Button>
+      <footer className="border-t border-border/60 px-4 py-3">
         <Button
           variant="ghost"
           size="sm"
@@ -163,45 +289,6 @@ export function MobileHomeShell({ display, pendingLots }: Props) {
         </Button>
       </footer>
     </div>
-  );
-}
-
-function PendingCard({
-  lot,
-  prefs,
-}: {
-  lot: StockLot;
-  prefs: ReturnType<typeof useFormatPrefs>;
-}) {
-  const qty = formatCompanyNumber(lot.qty_on_hand, prefs);
-  const symbol = lot.unit_of_measurement?.symbol ?? "";
-  const warehouseName =
-    lot.placements?.find((p) => p.storage_cell)?.storage_cell?.name ?? "—";
-  void warehouseName;
-
-  return (
-    <li>
-      <Link
-        href={`/m/lots/${lot.uuid}`}
-        className="flex items-center gap-3 rounded-lg border border-border/60 bg-card px-3 py-3 active:bg-muted"
-      >
-        <div className="flex-1 space-y-0.5 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-xs font-semibold">
-              {lot.code ?? `#${lot.id}`}
-            </span>
-            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-              Unregistered
-            </span>
-          </div>
-          <p className="truncate text-sm font-medium">{lot.item?.name ?? "—"}</p>
-          <p className="text-[11px] text-muted-foreground">
-            {qty} {symbol}
-          </p>
-        </div>
-        <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-      </Link>
-    </li>
   );
 }
 
