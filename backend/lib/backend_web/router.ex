@@ -331,6 +331,11 @@ defmodule BackendWeb.Router do
       # in the procurement module.
       post "/lots/manual", StockLotController, :create_manual
 
+      # Bulk manual receive — one delivery, mixed packaging (4 drums +
+      # 1 sack). Each pack becomes its own stock_lot inside one
+      # transaction so the operator gets all-or-nothing semantics.
+      post "/lots/manual-bulk", StockLotController, :create_manual_bulk
+
       # Item-level inventory rollup — one row per item with on-hand
       # qty + cost value summed across all its non-zero placements.
       # Used by /stock/inventory.

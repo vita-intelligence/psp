@@ -775,6 +775,77 @@ defmodule Backend.Stock do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc """
+  Receive several lots in one shot, sharing item + destination + most
+  identity fields but each with its own packaging + qty + (optionally)
+  supplier batch number. This is the manual-side equivalent of the
+  PO receive flow's per-pack split, used when a single delivery
+  arrives as mixed packaging — e.g. 100kg of an ingredient as 4×25kg
+  drums + 1×50kg sack, or 50kg as 2×25kg bags.
+
+  Atomic: every pack creates one lot inside a single `Repo.transaction`,
+  so partial-success is impossible. If any pack fails the whole bulk
+  rolls back and the caller gets the failing pack's index + reason
+  via `{:error, {pack_index, reason}}`.
+
+  `common_attrs` shape (string keys): item_id, warehouse_id, currency,
+  unit_cost, country_of_origin, revision, manufactured_at, expiry_at,
+  available_from, overall_risk, allergen_status, coa_status,
+  quality_status, notes.
+
+  `pack_attrs_list` is a list of per-pack attribute maps. Each must
+  carry `qty_received` + the six packaging dims + optionally a
+  `supplier_batch_no` override (falls back to `common_attrs["supplier_batch_no"]`).
+  """
+  def receive_lots_bulk(%User{} = actor, company_id, common_attrs, pack_attrs_list)
+      when is_integer(company_id) and is_list(pack_attrs_list) do
+    cond do
+      pack_attrs_list == [] ->
+        {:error, :no_packs}
+
+      true ->
+        Repo.transaction(fn ->
+          pack_attrs_list
+          |> Enum.with_index()
+          |> Enum.reduce_while([], fn {pack_attrs, idx}, acc ->
+            attrs = merge_pack_attrs(common_attrs, pack_attrs)
+
+            case receive_lot(actor, company_id, attrs) do
+              {:ok, lot} -> {:cont, [lot | acc]}
+              {:error, reason} -> {:halt, {:error, {idx, reason}}}
+            end
+          end)
+          |> case do
+            {:error, _} = err -> Repo.rollback(err)
+            lots when is_list(lots) -> Enum.reverse(lots)
+          end
+        end)
+        |> case do
+          {:ok, lots} -> {:ok, lots}
+          {:error, {:error, payload}} -> {:error, payload}
+          {:error, payload} -> {:error, payload}
+        end
+    end
+  end
+
+  # Compose the final receive_lot/3 attrs by overlaying the per-pack
+  # bag on top of the shared bag, then handling the per-pack
+  # supplier_batch_no override explicitly (the empty-string fallback
+  # protects against the FE sending blank inputs).
+  defp merge_pack_attrs(common, pack) do
+    common
+    |> Map.merge(pack)
+    |> maybe_carry_supplier_batch(common, pack)
+  end
+
+  defp maybe_carry_supplier_batch(merged, common, pack) do
+    case pack["supplier_batch_no"] do
+      nil -> Map.put(merged, "supplier_batch_no", common["supplier_batch_no"])
+      "" -> Map.put(merged, "supplier_batch_no", common["supplier_batch_no"])
+      _ -> merged
+    end
+  end
+
+  @doc """
   Every lot stamped with the given inspection id. The goods-in
   quality-approver transaction walks this list and emits one
   lifecycle event per lot based on the (inspection-level decision,

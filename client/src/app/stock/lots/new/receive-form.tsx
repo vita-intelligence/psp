@@ -20,6 +20,7 @@ import {
   MapPin,
   Save,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,8 +46,9 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import {
-  createManualLotAction,
-  type ManualLotInput,
+  createManualLotBulkAction,
+  type BulkManualLotInput,
+  type ManualLotPack,
 } from "@/lib/stock/actions";
 import type { ComplianceState } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
@@ -107,15 +109,9 @@ type DraftSnapshot = {
   item_uuid: string;
   warehouse_id: string;
   warehouse_uuid: string;
-  qty_received: string;
-  package_length_mm: string;
-  package_width_mm: string;
-  package_height_mm: string;
-  package_weight_kg: string;
-  units_per_package: string;
-  stack_factor: string;
   unit_cost: string;
   currency: string;
+  /** Default batch number — each pack row can override it. */
   supplier_batch_no: string;
   country_of_origin: string;
   revision: string;
@@ -128,6 +124,39 @@ type DraftSnapshot = {
   quality_status: string;
   notes: string;
 };
+
+/** One pack within the bulk receive — the same row the PO receive
+ *  dialog renders. Strings on the input fields so empty / partial
+ *  values don't fight react; converted to numbers at submit time. */
+interface PackDraft {
+  tempId: string;
+  qty_received: string;
+  package_length_mm: string;
+  package_width_mm: string;
+  package_height_mm: string;
+  package_weight_kg: string;
+  units_per_package: string;
+  stack_factor: string;
+  /** Optional per-pack override of the shared supplier batch no. */
+  supplier_batch_no: string;
+}
+
+function makeDefaultPack(): PackDraft {
+  return {
+    tempId:
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : String(Math.random()),
+    qty_received: "",
+    package_length_mm: "",
+    package_width_mm: "",
+    package_height_mm: "",
+    package_weight_kg: "",
+    units_per_package: "1",
+    stack_factor: "1",
+    supplier_batch_no: "",
+  };
+}
 
 /**
  * Manual lot create — simplified to "what landed, how much, in which
@@ -148,13 +177,6 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
       item_uuid: "",
       warehouse_id: "",
       warehouse_uuid: "",
-      qty_received: "",
-      package_length_mm: "",
-      package_width_mm: "",
-      package_height_mm: "",
-      package_weight_kg: "",
-      units_per_package: "1",
-      stack_factor: "1",
       unit_cost: "",
       currency: "GBP",
       supplier_batch_no: "",
@@ -228,6 +250,31 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
   const [pickedItem, setPickedItem] = useState<ItemOption | null>(null);
   const [pickedWarehouse, setPickedWarehouse] =
     useState<WarehouseOption | null>(null);
+
+  // Pack rows — one stock_lot per pack on submit. Local React state
+  // (not collab-broadcast) because the array would need a JSON
+  // adapter on top of the field-level live form. Header-level fields
+  // still broadcast; the operator multi-editing pack rows is the rare
+  // case anyway. Starts with one empty pack so the operator has a row
+  // to fill in immediately.
+  const [packs, setPacks] = useState<PackDraft[]>(() => [makeDefaultPack()]);
+
+  function patchPack(tempId: string, patch: Partial<PackDraft>) {
+    setPacks((prev) =>
+      prev.map((p) => (p.tempId === tempId ? { ...p, ...patch } : p)),
+    );
+    setPackagingSource(null);
+  }
+
+  function addPack() {
+    setPacks((prev) => [...prev, makeDefaultPack()]);
+  }
+
+  function removePack(tempId: string) {
+    setPacks((prev) =>
+      prev.length === 1 ? prev : prev.filter((p) => p.tempId !== tempId),
+    );
+  }
 
   // Server-side search hits the existing items/warehouses list
   // endpoints with `search` + `limit=50`. AbortController, debounce,
@@ -342,63 +389,86 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
   const uomId = selectedItem?.uomId ?? null;
   const itemTags = selectedItem?.storageTags ?? [];
 
-  const qtyValid = Number(draft.qty_received) > 0;
-  const packagingValid =
-    Number(draft.package_length_mm) > 0 &&
-    Number(draft.package_width_mm) > 0 &&
-    Number(draft.package_height_mm) > 0 &&
-    Number(draft.package_weight_kg) > 0 &&
-    Number(draft.units_per_package) > 0 &&
-    Number(draft.stack_factor) > 0;
+  // A pack counts as "valid" once every required field is positive.
+  // Empty rows are dropped at submit time, so the operator can add a
+  // pack and walk away without it blocking the save.
+  function isPackComplete(p: PackDraft): boolean {
+    return (
+      Number(p.qty_received) > 0 &&
+      Number(p.package_length_mm) > 0 &&
+      Number(p.package_width_mm) > 0 &&
+      Number(p.package_height_mm) > 0 &&
+      Number(p.package_weight_kg) > 0 &&
+      Number(p.units_per_package) > 0 &&
+      Number(p.stack_factor) > 0
+    );
+  }
+  const completePacks = packs.filter(isPackComplete);
+  const qtyValid = completePacks.length > 0;
+  const packagingValid = qtyValid;
 
-  // Derived calculator — qty / units_per_package gives package count,
-  // which we multiply through to get total weight, total volume, and
-  // stack count. Null if either source is empty so the readout simply
-  // doesn't render. The "exact" flag warns when packages doesn't
-  // divide evenly — usually a typo or a partial-pack situation the
-  // operator should confirm.
+  // Derived calculator — sums across every complete pack. Each pack
+  // contributes its own packages count (qty ÷ units_per_package),
+  // total weight, total volume, and stack count; the readout under
+  // the pack table shows the consolidated values so the operator can
+  // sanity-check against a destination cell's footprint.
   const packCalc = useMemo(() => {
-    const qty = Number(draft.qty_received);
-    const upp = Number(draft.units_per_package);
-    const weight = Number(draft.package_weight_kg);
-    const lenMm = Number(draft.package_length_mm);
-    const widMm = Number(draft.package_width_mm);
-    const hgtMm = Number(draft.package_height_mm);
-    const stack = Number(draft.stack_factor);
+    let totalQty = 0;
+    let packagesTotal = 0;
+    let totalWeightKg = 0;
+    let totalLitres = 0;
+    let stacksTotal = 0;
+    let anyExactMismatch = false;
+    let anyWeight = false;
+    let anyVolume = false;
+    let anyStack = false;
+    let anyComplete = false;
 
-    if (!(qty > 0 && upp > 0)) return null;
+    for (const p of packs) {
+      const qty = Number(p.qty_received);
+      const upp = Number(p.units_per_package);
+      if (!(qty > 0 && upp > 0)) continue;
 
-    const packagesRaw = qty / upp;
-    const packages = Math.ceil(packagesRaw - 1e-9);
-    const exact = Math.abs(packagesRaw - packages) < 1e-9;
+      anyComplete = true;
+      totalQty += qty;
 
-    const totalWeightKg = weight > 0 ? packages * weight : null;
-    const litresPerPack =
-      lenMm > 0 && widMm > 0 && hgtMm > 0
-        ? (lenMm * widMm * hgtMm) / 1_000_000
-        : null;
-    const totalLitres =
-      litresPerPack !== null ? packages * litresPerPack : null;
-    const stacks = stack > 0 ? Math.ceil(packages / stack) : null;
+      const packagesRaw = qty / upp;
+      const packages = Math.ceil(packagesRaw - 1e-9);
+      if (Math.abs(packagesRaw - packages) > 1e-9) anyExactMismatch = true;
+      packagesTotal += packages;
 
+      const weight = Number(p.package_weight_kg);
+      if (weight > 0) {
+        anyWeight = true;
+        totalWeightKg += packages * weight;
+      }
+
+      const lenMm = Number(p.package_length_mm);
+      const widMm = Number(p.package_width_mm);
+      const hgtMm = Number(p.package_height_mm);
+      if (lenMm > 0 && widMm > 0 && hgtMm > 0) {
+        anyVolume = true;
+        totalLitres += packages * ((lenMm * widMm * hgtMm) / 1_000_000);
+      }
+
+      const stack = Number(p.stack_factor);
+      if (stack > 0) {
+        anyStack = true;
+        stacksTotal += Math.ceil(packages / stack);
+      }
+    }
+
+    if (!anyComplete) return null;
     return {
-      packagesRaw,
-      packages,
-      exact,
-      totalWeightKg,
-      litresPerPack,
-      totalLitres,
-      stacks,
+      totalQty,
+      packagesTotal,
+      totalWeightKg: anyWeight ? totalWeightKg : null,
+      totalLitres: anyVolume ? totalLitres : null,
+      stacksTotal: anyStack ? stacksTotal : null,
+      anyExactMismatch,
+      packCount: completePacks.length,
     };
-  }, [
-    draft.qty_received,
-    draft.units_per_package,
-    draft.package_weight_kg,
-    draft.package_length_mm,
-    draft.package_width_mm,
-    draft.package_height_mm,
-    draft.stack_factor,
-  ]);
+  }, [packs, completePacks.length]);
 
   const canSubmit =
     !!draft.item_id &&
@@ -422,18 +492,31 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     });
   }
 
+  // Apply a packaging suggestion to every empty pack row. A row whose
+  // dims are already filled is left alone — operators tweak rows
+  // individually after the first pre-fill. The "Suggestions" pills
+  // re-fire this on each click so the operator can switch sources.
   function applyPackaging(p: PackagingValues) {
-    setField("package_length_mm", p.length_mm != null ? String(p.length_mm) : "");
-    setField("package_width_mm", p.width_mm != null ? String(p.width_mm) : "");
-    setField("package_height_mm", p.height_mm != null ? String(p.height_mm) : "");
-    setField("package_weight_kg", p.weight_kg != null ? String(p.weight_kg) : "");
-    setField(
-      "units_per_package",
-      p.units_per_package != null ? String(p.units_per_package) : "1",
-    );
-    setField(
-      "stack_factor",
-      p.stack_factor != null ? String(p.stack_factor) : "1",
+    setPacks((prev) =>
+      prev.map((pack) => {
+        const empty =
+          !pack.package_length_mm &&
+          !pack.package_width_mm &&
+          !pack.package_height_mm &&
+          !pack.package_weight_kg;
+        if (!empty) return pack;
+        return {
+          ...pack,
+          package_length_mm: p.length_mm != null ? String(p.length_mm) : "",
+          package_width_mm: p.width_mm != null ? String(p.width_mm) : "",
+          package_height_mm: p.height_mm != null ? String(p.height_mm) : "",
+          package_weight_kg: p.weight_kg != null ? String(p.weight_kg) : "",
+          units_per_package:
+            p.units_per_package != null ? String(p.units_per_package) : "1",
+          stack_factor:
+            p.stack_factor != null ? String(p.stack_factor) : "1",
+        };
+      }),
     );
   }
 
@@ -495,17 +578,26 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     setActionError(null);
     setFieldErrors({});
 
-    const input: ManualLotInput = {
+    // Strip pack rows the operator added but never filled — the bulk
+    // endpoint validates per-pack so a half-row would 422 the whole
+    // transaction. `completePacks` is the same predicate used for the
+    // qtyValid gate above, so what we send is exactly what we counted.
+    const submitPacks: ManualLotPack[] = completePacks.map((p) => ({
+      qty_received: p.qty_received,
+      package_length_mm: Number(p.package_length_mm),
+      package_width_mm: Number(p.package_width_mm),
+      package_height_mm: Number(p.package_height_mm),
+      package_weight_kg: p.package_weight_kg,
+      units_per_package: Number(p.units_per_package),
+      stack_factor: Number(p.stack_factor),
+      supplier_batch_no: p.supplier_batch_no.trim() || null,
+    }));
+
+    const input: BulkManualLotInput = {
       item_id: Number(draft.item_id),
       unit_of_measurement_id: uomId!,
       warehouse_id: Number(draft.warehouse_id),
-      qty_received: draft.qty_received,
-      package_length_mm: Number(draft.package_length_mm),
-      package_width_mm: Number(draft.package_width_mm),
-      package_height_mm: Number(draft.package_height_mm),
-      package_weight_kg: draft.package_weight_kg,
-      units_per_package: Number(draft.units_per_package),
-      stack_factor: Number(draft.stack_factor),
+      packs: submitPacks,
       unit_cost: draft.unit_cost || null,
       currency: draft.unit_cost ? draft.currency : null,
       supplier_batch_no: draft.supplier_batch_no || null,
@@ -523,7 +615,7 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     };
 
     startTransition(async () => {
-      const res = await createManualLotAction(input);
+      const res = await createManualLotBulkAction(input);
       if (!res.ok) {
         setActionError(res);
         const debug = (res.debug as { fields?: FieldErrors } | undefined)
@@ -531,7 +623,11 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
         if (debug) setFieldErrors(debug);
         return;
       }
-      toast.success("Lot created");
+      toast.success(
+        res.lots.length === 1
+          ? "Lot created"
+          : `${res.lots.length} lots created`,
+      );
       broadcastCommit({ kind: "created" });
       router.push("/stock/lots");
       router.refresh();
@@ -718,7 +814,7 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
               </div>
             </header>
 
-            <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
+            <div className="grid gap-3 sm:grid-cols-[1fr_220px]">
               <Field
                 id="warehouse_id"
                 label="Site"
@@ -751,30 +847,26 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                 )}
               </Field>
 
-              <Field
-                id="qty_received"
-                label="Quantity"
-                required
-                error={fieldErrors.qty_received?.[0]}
-                editor={fieldEditors.qty_received}
-              >
-                <div className="flex items-stretch gap-1">
-                  <Input
-                    id="qty_received"
-                    type="text"
-                    inputMode="decimal"
-                    value={draft.qty_received}
-                    onChange={(e) => update("qty_received", e.target.value)}
-                    onFocus={() => focusField("qty_received")}
-                    onBlur={() => blurField("qty_received")}
-                    placeholder="0.00"
-                    className="h-9 font-mono"
-                  />
-                  <span className="inline-flex items-center rounded-md border border-border/60 bg-muted px-2 text-[10px] font-medium text-muted-foreground">
+              {/* Total qty derives from the sum of pack rows below — a
+                  single read-only readout instead of an input so there's
+                  exactly one source of truth (mirrors the PO receive
+                  dialog where qty is per-pack). */}
+              <div className="space-y-1.5">
+                <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                  Total qty
+                </Label>
+                <div className="flex h-9 items-center gap-1 rounded-md border border-border/60 bg-muted/30 px-3 font-mono text-sm">
+                  <span className={packCalc ? "font-semibold" : "text-muted-foreground"}>
+                    {packCalc ? formatTrimmed(packCalc.totalQty) : "0"}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">
                     {uomSymbol}
                   </span>
                 </div>
-              </Field>
+                <p className="text-[10px] text-muted-foreground">
+                  Sum of pack rows below.
+                </p>
+              </div>
             </div>
           </section>
 
@@ -842,107 +934,70 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
               </div>
             )}
 
-            {/* Single pack row — same column order as the PO receive
-                dialog so an operator switching between the two surfaces
-                doesn't have to relearn the layout. Stack factor sits at
-                the end where the PO receive table also keeps it. */}
-            <div className="grid gap-2 sm:grid-cols-[repeat(6,minmax(0,1fr))]">
-              <PackField
-                id="package_length_mm"
-                label="Length (mm)"
-                value={draft.package_length_mm}
-                onChange={(v) => {
-                  update("package_length_mm", v);
-                  setPackagingSource(null);
-                }}
-                onFocus={() => focusField("package_length_mm")}
-                onBlur={() => blurField("package_length_mm")}
-                editor={fieldEditors.package_length_mm}
-                error={fieldErrors.package_length_mm?.[0]}
-                placeholder="400"
-                integer
-              />
-              <PackField
-                id="package_width_mm"
-                label="Width (mm)"
-                value={draft.package_width_mm}
-                onChange={(v) => {
-                  update("package_width_mm", v);
-                  setPackagingSource(null);
-                }}
-                onFocus={() => focusField("package_width_mm")}
-                onBlur={() => blurField("package_width_mm")}
-                editor={fieldEditors.package_width_mm}
-                error={fieldErrors.package_width_mm?.[0]}
-                placeholder="300"
-                integer
-              />
-              <PackField
-                id="package_height_mm"
-                label="Height (mm)"
-                value={draft.package_height_mm}
-                onChange={(v) => {
-                  update("package_height_mm", v);
-                  setPackagingSource(null);
-                }}
-                onFocus={() => focusField("package_height_mm")}
-                onBlur={() => blurField("package_height_mm")}
-                editor={fieldEditors.package_height_mm}
-                error={fieldErrors.package_height_mm?.[0]}
-                placeholder="250"
-                integer
-              />
-              <PackField
-                id="package_weight_kg"
-                label="Net weight (kg)"
-                value={draft.package_weight_kg}
-                onChange={(v) => {
-                  update("package_weight_kg", v);
-                  setPackagingSource(null);
-                }}
-                onFocus={() => focusField("package_weight_kg")}
-                onBlur={() => blurField("package_weight_kg")}
-                editor={fieldEditors.package_weight_kg}
-                error={fieldErrors.package_weight_kg?.[0]}
-                placeholder="25.000"
-              />
-              <PackField
-                id="units_per_package"
-                label={`Units / pack (${uomSymbol})`}
-                value={draft.units_per_package}
-                onChange={(v) => {
-                  update("units_per_package", v);
-                  setPackagingSource(null);
-                }}
-                onFocus={() => focusField("units_per_package")}
-                onBlur={() => blurField("units_per_package")}
-                editor={fieldEditors.units_per_package}
-                error={fieldErrors.units_per_package?.[0]}
-                placeholder="1"
-                integer
-              />
-              <PackField
-                id="stack_factor"
-                label="Stack factor"
-                value={draft.stack_factor}
-                onChange={(v) => {
-                  update("stack_factor", v);
-                  setPackagingSource(null);
-                }}
-                onFocus={() => focusField("stack_factor")}
-                onBlur={() => blurField("stack_factor")}
-                editor={fieldEditors.stack_factor}
-                error={fieldErrors.stack_factor?.[0]}
-                placeholder="1"
-                integer
-                hint="Packages safely stacked vertically."
-              />
+            {/* Pack table — one row per pack, mirrors the PO receive
+                dialog so a single delivery can be split into mixed
+                packaging (4×25 kg drums + 1×50 kg sack, etc.). Each
+                row becomes its own stock_lot on submit; the bulk
+                endpoint wraps them in one transaction. */}
+            <div className="overflow-x-auto rounded-md border border-border/60">
+              <table className="min-w-[820px] text-xs">
+                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="w-8 px-2 py-1.5 text-left">#</th>
+                    <th className="w-24 px-2 py-1.5 text-right">
+                      Qty ({uomSymbol})
+                    </th>
+                    <th className="w-16 px-2 py-1.5 text-right">L (mm)</th>
+                    <th className="w-16 px-2 py-1.5 text-right">W (mm)</th>
+                    <th className="w-16 px-2 py-1.5 text-right">H (mm)</th>
+                    <th className="w-24 px-2 py-1.5 text-right">
+                      Wt / pack (kg)
+                    </th>
+                    <th className="w-20 px-2 py-1.5 text-right">
+                      Units / pack
+                    </th>
+                    <th className="w-16 px-2 py-1.5 text-right">Stack</th>
+                    <th className="w-32 px-2 py-1.5 text-left">Batch (opt)</th>
+                    <th className="w-8 px-2 py-1.5" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {packs.map((p, i) => (
+                    <PackRow
+                      key={p.tempId}
+                      index={i}
+                      pack={p}
+                      onPatch={(patch) => patchPack(p.tempId, patch)}
+                      onRemove={
+                        packs.length === 1
+                          ? undefined
+                          : () => removePack(p.tempId)
+                      }
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={addPack}
+              >
+                + Add pack
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                {completePacks.length} of {packs.length} pack
+                {packs.length === 1 ? "" : "s"} complete · each pack becomes
+                its own stock lot.
+              </p>
             </div>
 
             {packCalc && (
               <PackagingCalculator
                 calc={packCalc}
-                qty={draft.qty_received}
                 uomSymbol={uomSymbol}
               />
             )}
@@ -1335,69 +1390,130 @@ function Field({
   );
 }
 
-/** Compact pack-row field — mirrors the per-pack inputs on the PO
- *  receive dialog (font-mono, right-aligned, h-8) so the visual model
- *  is the same across both surfaces. Integer fields strip non-digits;
- *  decimal fields (weight) pass the value through. */
-function PackField({
-  id,
-  label,
+/** One pack row in the bulk receive table. Mirrors the PO receive
+ *  dialog's per-pack row — same column order, same compact mono
+ *  inputs, optional supplier batch override at the end. The trash
+ *  button is hidden when only one row remains so the form can't end
+ *  up empty (the bulk endpoint requires ≥1 pack). */
+function PackRow({
+  index,
+  pack,
+  onPatch,
+  onRemove,
+}: {
+  index: number;
+  pack: PackDraft;
+  onPatch: (patch: Partial<PackDraft>) => void;
+  onRemove?: () => void;
+}) {
+  return (
+    <tr>
+      <td className="px-2 py-1.5 text-left font-mono text-[10px] text-muted-foreground">
+        {index + 1}
+      </td>
+      <PackCell
+        value={pack.qty_received}
+        onChange={(v) => onPatch({ qty_received: v })}
+        label={`Pack ${index + 1} qty`}
+        placeholder="0.00"
+      />
+      <PackCell
+        value={pack.package_length_mm}
+        onChange={(v) =>
+          onPatch({ package_length_mm: v.replace(/\D/g, "") })
+        }
+        label={`Pack ${index + 1} length mm`}
+        placeholder="400"
+        integer
+      />
+      <PackCell
+        value={pack.package_width_mm}
+        onChange={(v) => onPatch({ package_width_mm: v.replace(/\D/g, "") })}
+        label={`Pack ${index + 1} width mm`}
+        placeholder="300"
+        integer
+      />
+      <PackCell
+        value={pack.package_height_mm}
+        onChange={(v) =>
+          onPatch({ package_height_mm: v.replace(/\D/g, "") })
+        }
+        label={`Pack ${index + 1} height mm`}
+        placeholder="250"
+        integer
+      />
+      <PackCell
+        value={pack.package_weight_kg}
+        onChange={(v) => onPatch({ package_weight_kg: v })}
+        label={`Pack ${index + 1} weight kg`}
+        placeholder="25.000"
+      />
+      <PackCell
+        value={pack.units_per_package}
+        onChange={(v) => onPatch({ units_per_package: v.replace(/\D/g, "") })}
+        label={`Pack ${index + 1} units per pack`}
+        placeholder="1"
+        integer
+      />
+      <PackCell
+        value={pack.stack_factor}
+        onChange={(v) => onPatch({ stack_factor: v.replace(/\D/g, "") })}
+        label={`Pack ${index + 1} stack factor`}
+        placeholder="1"
+        integer
+      />
+      <td className="px-2 py-1.5">
+        <Input
+          type="text"
+          value={pack.supplier_batch_no}
+          onChange={(e) => onPatch({ supplier_batch_no: e.target.value })}
+          placeholder="BA-..."
+          aria-label={`Pack ${index + 1} batch number`}
+          className="h-8 font-mono text-xs"
+        />
+      </td>
+      <td className="px-1 py-1.5 text-center">
+        {onRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove pack ${index + 1}`}
+            className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** Single mono input cell inside a {@link PackRow}. */
+function PackCell({
   value,
   onChange,
-  onFocus,
-  onBlur,
-  editor,
-  error,
+  label,
   placeholder,
-  hint,
   integer,
 }: {
-  id: string;
-  label: string;
   value: string;
   onChange: (v: string) => void;
-  onFocus: () => void;
-  onBlur: () => void;
-  editor: import("@/lib/realtime/use-live-form").CollabPeer | null;
-  error?: string;
+  label: string;
   placeholder?: string;
-  hint?: string;
   integer?: boolean;
 }) {
   return (
-    <div className="min-w-0 space-y-1">
-      <Label
-        htmlFor={id}
-        className="text-[10px] uppercase tracking-wider text-muted-foreground"
-      >
-        {label}
-        <span className="ml-0.5 text-destructive">*</span>
-      </Label>
-      <div className="relative">
-        <Input
-          id={id}
-          type="text"
-          inputMode={integer ? "numeric" : "decimal"}
-          value={value}
-          onChange={(e) =>
-            onChange(integer ? e.target.value.replace(/\D/g, "") : e.target.value)
-          }
-          onFocus={onFocus}
-          onBlur={onBlur}
-          placeholder={placeholder}
-          className="h-8 text-right font-mono text-xs"
-        />
-        <FieldEditingIndicator peer={editor} />
-      </div>
-      {hint && !error && (
-        <p className="text-[10px] text-muted-foreground">{hint}</p>
-      )}
-      {error && (
-        <p className="text-[10px] text-destructive" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
+    <td className="px-2 py-1.5">
+      <Input
+        type="text"
+        inputMode={integer ? "numeric" : "decimal"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+        placeholder={placeholder}
+        className="h-8 text-right font-mono text-xs"
+      />
+    </td>
   );
 }
 
@@ -1440,26 +1556,22 @@ function itemRowToOption(i: {
  */
 function PackagingCalculator({
   calc,
-  qty,
   uomSymbol,
 }: {
   calc: {
-    packagesRaw: number;
-    packages: number;
-    exact: boolean;
+    totalQty: number;
+    packagesTotal: number;
     totalWeightKg: number | null;
-    litresPerPack: number | null;
     totalLitres: number | null;
-    stacks: number | null;
+    stacksTotal: number | null;
+    anyExactMismatch: boolean;
+    packCount: number;
   };
-  qty: string;
   uomSymbol: string;
 }) {
-  // m³ is the only volume unit cells store, so we emit it. Lengths in
-  // mm aren't useful for cell comparison so we don't print them here;
-  // the user has the inputs above for that.
-  const m3PerPack =
-    calc.litresPerPack !== null ? calc.litresPerPack / 1000 : null;
+  // m³ is the only volume unit cells store, so we emit it. Per-pack
+  // numbers are dropped now that the form supports mixed packaging —
+  // a single "0.030 m³ / pack" wouldn't be meaningful when packs vary.
   const totalM3 = calc.totalLitres !== null ? calc.totalLitres / 1000 : null;
 
   return (
@@ -1467,17 +1579,17 @@ function PackagingCalculator({
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5 font-mono">
         <span className="text-muted-foreground">Calc</span>
         <span>
-          <strong>{calc.packages}</strong> package{calc.packages === 1 ? "" : "s"}
+          <strong>{formatTrimmed(calc.totalQty)} {uomSymbol}</strong>
+          <span className="text-muted-foreground"> total qty</span>
+        </span>
+        <span>
+          <strong>{calc.packagesTotal}</strong> package
+          {calc.packagesTotal === 1 ? "" : "s"}
           <span className="text-muted-foreground">
             {" "}
-            ({qty} {uomSymbol} ÷ pack)
+            across {calc.packCount} pack row{calc.packCount === 1 ? "" : "s"}
           </span>
         </span>
-        {m3PerPack !== null && (
-          <span className="text-muted-foreground">
-            {formatM3(m3PerPack)} m³ / pack
-          </span>
-        )}
         {totalM3 !== null && (
           <span>
             <strong>{formatM3(totalM3)} m³</strong>
@@ -1490,18 +1602,19 @@ function PackagingCalculator({
             <span className="text-muted-foreground"> total weight</span>
           </span>
         )}
-        {calc.stacks !== null && (
+        {calc.stacksTotal !== null && (
           <span>
-            <strong>{calc.stacks}</strong> stack{calc.stacks === 1 ? "" : "s"}
+            <strong>{calc.stacksTotal}</strong> stack
+            {calc.stacksTotal === 1 ? "" : "s"}
             <span className="text-muted-foreground">
               {" "}
-              high (÷ stack factor)
+              (sum ÷ stack factor)
             </span>
           </span>
         )}
-        {!calc.exact && (
+        {calc.anyExactMismatch && (
           <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-destructive">
-            Doesn't divide evenly · {calc.packagesRaw.toFixed(3).replace(/\.?0+$/, "")}
+            One pack doesn't divide evenly
           </span>
         )}
       </div>
@@ -1516,5 +1629,12 @@ function PackagingCalculator({
 function formatM3(v: number): string {
   // Cell volumes are usually in single-digit or tens of m³, so 3 dp
   // is plenty. Strip trailing zeros so 0.025 doesn't read as 0.025000.
+  return v.toFixed(3).replace(/\.?0+$/, "");
+}
+
+function formatTrimmed(v: number): string {
+  // Decimal readout for the totals — drops trailing zeros so 100 reads
+  // as "100" not "100.000". Falls back to 3 dp for fractional totals.
+  if (Number.isInteger(v)) return String(v);
   return v.toFixed(3).replace(/\.?0+$/, "");
 }

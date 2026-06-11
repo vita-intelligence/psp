@@ -20,7 +20,8 @@ defmodule BackendWeb.StockLotController do
   alias BackendWeb.Plugs.RequirePermission
 
   plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions, :inventory, :events_index]
-  plug RequirePermission, "stock.receive" when action in [:create_manual]
+  plug RequirePermission, "stock.receive"
+       when action in [:create_manual, :create_manual_bulk]
   plug RequirePermission, "stock.move" when action in [:move]
   plug RequirePermission, "stock.edit" when action in [:update]
   plug RequirePermission, "stock.adjust" when action in [:adjust]
@@ -192,6 +193,121 @@ defmodule BackendWeb.StockLotController do
 
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
+    end
+  end
+
+  @doc """
+  Bulk manual receive — one delivery, mixed packaging. The FE pack
+  table in `/stock/lots/new` posts here when the operator splits one
+  arrival into N packs of different sizes (e.g. 100 kg as 4×25 kg
+  drums + 1×50 kg sack).
+
+  Body shape:
+
+      {
+        "item_id": 12,
+        "warehouse_id": 2,
+        "currency": "GBP",
+        "unit_cost": "5.15",
+        "country_of_origin": "IT",
+        ...                         # any other shared identity fields
+        "packs": [
+          {
+            "qty_received": "100",  # required per pack
+            "package_length_mm": 400,
+            "package_width_mm": 300,
+            "package_height_mm": 250,
+            "package_weight_kg": "25.000",
+            "units_per_package": 4,
+            "stack_factor": 1,
+            "supplier_batch_no": "BA-..."   # optional per-pack override
+          },
+          ...
+        ]
+      }
+
+  Returns `{"lots": [...]}` with one entry per pack. Atomic — any
+  single-pack failure rolls back every other lot that was about to
+  land and surfaces the failing pack's index.
+  """
+  def create_manual_bulk(conn, params) do
+    actor = conn.assigns.current_user
+    packs = List.wrap(params["packs"])
+    common = Map.drop(params, ["packs"])
+
+    case Stock.receive_lots_bulk(actor, actor.company_id, common, packs) do
+      {:ok, lots} ->
+        conn
+        |> put_status(:created)
+        |> json(%{lots: Enum.map(lots, &Payloads.stock_lot/1)})
+
+      {:error, :no_packs} ->
+        unprocessable(
+          conn,
+          "no_packs",
+          "Send at least one pack — `packs: [...]` is required."
+        )
+
+      {:error, {idx, reason}} when is_integer(idx) ->
+        bulk_pack_error(conn, idx, reason)
+
+      {:error, reason} ->
+        bulk_pack_error(conn, 0, reason)
+    end
+  end
+
+  defp bulk_pack_error(conn, idx, reason) do
+    case reason do
+      :item_not_found ->
+        not_found_error(conn, "item_not_found", "Item not found in this company.")
+
+      :cell_not_found ->
+        not_found_error(
+          conn,
+          "cell_not_found",
+          "Destination storage cell not found."
+        )
+
+      :warehouse_not_found ->
+        not_found_error(
+          conn,
+          "warehouse_not_found",
+          "Destination warehouse not found."
+        )
+
+      :bad_qty ->
+        unprocessable(
+          conn,
+          "bad_qty",
+          "Pack ##{idx + 1}: each pack's qty must be a positive number."
+        )
+
+      :no_placements ->
+        unprocessable(
+          conn,
+          "no_placements",
+          "Pack ##{idx + 1}: pick a destination cell with a qty."
+        )
+
+      %Ecto.Changeset{} = cs ->
+        # Per-pack validation failures (e.g. negative dim, missing
+        # package_weight_kg) — surface the failing pack's index so the
+        # FE can highlight the right row.
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "validation_failed",
+          detail: "Pack ##{idx + 1} couldn't be saved — fix the highlighted fields.",
+          pack_index: idx,
+          fields: BackendWeb.Errors.changeset_fields(cs)
+        })
+
+      other ->
+        unprocessable(
+          conn,
+          "bulk_failed",
+          "Pack ##{idx + 1}: #{inspect(other)}."
+        )
     end
   end
 

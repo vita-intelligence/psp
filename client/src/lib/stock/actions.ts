@@ -81,6 +81,84 @@ export async function createManualLotAction(
   }
 }
 
+/** One pack within a bulk manual receive. Carries its own qty +
+ *  packaging dims + supplier batch override; everything else
+ *  (item, warehouse, identity, currency, …) comes from the
+ *  `BulkManualLotInput` it sits inside. */
+export interface ManualLotPack {
+  qty_received: string;
+  package_length_mm: number;
+  package_width_mm: number;
+  package_height_mm: number;
+  package_weight_kg: string;
+  units_per_package: number;
+  stack_factor: number;
+  supplier_batch_no?: string | null;
+}
+
+/** Bulk manual receive shape. Mirrors {@link ManualLotInput} but the
+ *  packaging fields move into a `packs: [...]` array so one delivery
+ *  can land as N stock lots of different sizes — same model as the
+ *  PO receive flow's per-pack split. */
+export interface BulkManualLotInput {
+  item_id: number;
+  unit_of_measurement_id: number;
+  warehouse_id: number;
+  packs: ManualLotPack[];
+  unit_cost?: string | null;
+  currency?: string | null;
+  supplier_batch_no?: string | null;
+  country_of_origin?: string | null;
+  revision?: string | null;
+  manufactured_at?: string | null;
+  expiry_at?: string | null;
+  available_from?: string | null;
+  overall_risk?: "low" | "medium" | "high" | null;
+  allergen_status?: ComplianceState | null;
+  coa_status?: ComplianceState | null;
+  quality_status?: ComplianceState | null;
+  notes?: string | null;
+}
+
+export type BulkManualLotResult =
+  | { ok: true; lots: StockLot[] }
+  | (ErrorResult & { pack_index?: number });
+
+/**
+ * Bulk variant of {@link createManualLotAction} — one delivery, mixed
+ * packaging, all-or-nothing. Each `packs[i]` becomes one stock_lot;
+ * on validation failure the response carries the failing pack's
+ * `pack_index` so the FE can scroll/highlight the right row.
+ */
+export async function createManualLotBulkAction(
+  input: BulkManualLotInput,
+): Promise<BulkManualLotResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("createManualLotBulkAction");
+
+  try {
+    const res = await api<{ lots: StockLot[] }>(
+      "/api/stock/lots/manual-bulk",
+      { method: "POST", token, body: JSON.stringify(input) },
+    );
+    revalidatePath("/stock/lots");
+    return { ok: true, lots: res.lots };
+  } catch (err) {
+    const base = toErrorResult(err, {
+      source: "createManualLotBulkAction",
+      fallbackDetail: "Couldn't create the lots.",
+    });
+    // `extras.pack_index` is set by the BE on per-pack validation
+    // failures so the FE can route the error to the right row.
+    const packIndex =
+      typeof (err as { extras?: { pack_index?: unknown } })?.extras
+        ?.pack_index === "number"
+        ? ((err as { extras: { pack_index: number } }).extras.pack_index)
+        : undefined;
+    return { ...base, ...(packIndex !== undefined ? { pack_index: packIndex } : {}) };
+  }
+}
+
 /** Subset of `StockLot` fields the edit form is allowed to send.
  *  The backend changeset re-validates everything; the type just
  *  documents the contract so the form can't ship a typo'd key. */
