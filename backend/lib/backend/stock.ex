@@ -1483,7 +1483,13 @@ defmodule Backend.Stock do
           |> Decimal.mult(Decimal.new(lot.package_length_mm))
           |> Decimal.mult(Decimal.new(lot.package_width_mm))
 
-        stack_height_mm = lot.stack_factor * lot.package_height_mm
+        # Actual stack height = how tall the TALLEST column ends up.
+        # `stack_factor` is the operator's safety cap, not the size of
+        # the lot — a 1-package lot with stack_factor=50 occupies one
+        # 250mm slot, not 12,500mm. We take `min(packages, stack_factor)`
+        # so a partial column counts as its actual height.
+        tallest_column = min(packages_int, lot.stack_factor)
+        stack_height_mm = tallest_column * lot.package_height_mm
 
         total_weight_kg =
           Decimal.mult(Decimal.new(packages_int), lot.package_weight_kg)
