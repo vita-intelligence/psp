@@ -166,8 +166,12 @@ export function CellPicker({
           latestSelected.storage_location.name}
       </span>
       <span className="truncate text-[11px] text-muted-foreground">
-        {latestSelected.floor.name} · Level {latestSelected.ordinal + 1}
-        {latestSelected.name ? ` — ${latestSelected.name}` : ""}
+        {latestSelected.floor.name} ·{" "}
+        {/* Cell.name is what the printed QR label shows. Only fall
+            back to a 1-indexed synthetic when the operator hasn't
+            named the cell. Synthesising on top of a real name made
+            cells called "Level 0" display as "Level 1". */}
+        {latestSelected.name?.trim() || `Level ${latestSelected.ordinal + 1}`}
       </span>
     </span>
   ) : (
@@ -267,8 +271,8 @@ export function CellPicker({
                             row.storage_location.name}
                         </span>
                         <span className="block truncate text-[11px] text-muted-foreground">
-                          {row.floor.name} · Level {row.ordinal + 1}
-                          {row.name ? ` — ${row.name}` : ""}
+                          {row.floor.name} ·{" "}
+                          {row.name?.trim() || `Level ${row.ordinal + 1}`}
                         </span>
                         {row.effective_tags.length > 0 && (
                           <span className="mt-0.5 flex flex-wrap gap-0.5">

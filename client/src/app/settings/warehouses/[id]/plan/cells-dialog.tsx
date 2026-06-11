@@ -247,7 +247,10 @@ export function CellsDialog({
                 totalHeight_m={totalHeight_m}
                 levels={cellsBottomUp.map((c) => ({
                   uuid: c.uuid,
-                  ordinalDisplay: c.ordinal + 1,
+                  // Always lead with the cell's own name (what the
+                  // physical label shows). Falls back to a 1-indexed
+                  // synthetic only when the operator hasn't named it.
+                  ordinalDisplay: levelDisplayLabel(c),
                   height_m: numberOrNull(c.height_m),
                   max_weight_kg: numberOrNull(c.max_weight_kg),
                   width_m: numberOrNull(c.width_m),
@@ -373,8 +376,13 @@ function CellRow({
     <fieldset disabled={disabled} className="contents">
       <div className="flex items-baseline justify-between gap-2">
         <div className="flex flex-wrap items-baseline gap-2">
+          {/* Source of truth = cell.name, which IS the label that gets
+              printed on the QR sticker. Synthesised "Level N" was
+              1-indexed for humans but collided with operators who
+              named cells "Level 0" (0-indexed) — two numbers for the
+              same physical shelf. */}
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Level {cell.ordinal + 1}
+            {levelDisplayLabel(cell)}
           </p>
           {/* Decision-driven cell intent. Drives the auto-router — a
               lot that flips to `quarantine` lands in a quarantine
@@ -570,6 +578,21 @@ function numberOrNull(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Headline label for a level — what we render in the level list, on
+ * the rack-elevation SVG, and anywhere else the operator sees a
+ * level reference. Rule: use the cell's `name` (which IS what the
+ * printed QR label shows) verbatim; only when the operator hasn't
+ * named it fall back to a 1-indexed synthetic `Level N`. Never
+ * synthesise on top of a real name — that's the bug that made cells
+ * named `Level 0` show up as `Level 1`.
+ */
+function levelDisplayLabel(cell: { name?: string | null; ordinal: number }): string {
+  const trimmed = (cell.name ?? "").trim();
+  if (trimmed) return trimmed;
+  return `Level ${cell.ordinal + 1}`;
 }
 
 function Field({

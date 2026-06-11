@@ -5,8 +5,11 @@ import { cn } from "@/lib/utils";
 interface LevelInput {
   /** UUID for stable React keys + tooltip identity. */
   uuid: string;
-  /** 1-based label shown beside the level ("L1", "L2", …). */
-  ordinalDisplay: number;
+  /** Operator-visible label — either the cell's own `name`
+   *  (matches the printed QR label) or, when unnamed, a 1-indexed
+   *  synthetic "Level N". The caller decides; this component just
+   *  renders whatever string lands here. */
+  ordinalDisplay: string | number;
   /** Physical height in metres. `null` = unset, drawn as a dashed
    *  outline so the operator sees it's not finalised yet. */
   height_m: number | null;
@@ -168,7 +171,10 @@ export function RackElevationSvg({
               rx={2}
             >
               <title>
-                {`Level ${seg.level.ordinalDisplay} — ${seg.h_m.toFixed(2)} m tall`}
+                {/* `ordinalDisplay` now carries the cell's real name
+                    (which may already start with "Level"), so we
+                    don't prefix it again. */}
+                {`${seg.level.ordinalDisplay} — ${seg.h_m.toFixed(2)} m tall`}
                 {seg.level.width_m && seg.level.depth_m
                   ? `\n${seg.level.width_m} × ${seg.level.depth_m} m footprint`
                   : ""}
@@ -186,7 +192,7 @@ export function RackElevationSvg({
                 textAnchor="middle"
                 className="fill-foreground text-[10px] font-medium"
               >
-                {`L${seg.level.ordinalDisplay} · ${seg.h_m.toFixed(2)} m`}
+                {`${seg.level.ordinalDisplay} · ${seg.h_m.toFixed(2)} m`}
               </text>
             )}
           </g>
@@ -202,7 +208,7 @@ export function RackElevationSvg({
             strokeWidth={1}
             rx={2}
           >
-            <title>{`Level ${seg.level.ordinalDisplay} — height not set`}</title>
+            <title>{`${seg.level.ordinalDisplay} — height not set`}</title>
           </rect>
         ),
       )}
