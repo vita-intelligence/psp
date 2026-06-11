@@ -940,23 +940,37 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                 row becomes its own stock_lot on submit; the bulk
                 endpoint wraps them in one transaction. */}
             <div className="overflow-x-auto rounded-md border border-border/60">
-              <table className="min-w-[820px] text-xs">
+              <table className="min-w-[860px] text-xs">
                 <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
                   <tr>
                     <th className="w-8 px-2 py-1.5 text-left">#</th>
-                    <th className="w-24 px-2 py-1.5 text-right">
-                      Qty ({uomSymbol})
+                    <th
+                      className="w-28 px-2 py-1.5 text-right"
+                      title={`Total quantity of this pack row, in ${uomSymbol}. Divided by Pack size to give the number of physical packs.`}
+                    >
+                      Total qty ({uomSymbol})
                     </th>
-                    <th className="w-16 px-2 py-1.5 text-right">L (mm)</th>
-                    <th className="w-16 px-2 py-1.5 text-right">W (mm)</th>
-                    <th className="w-16 px-2 py-1.5 text-right">H (mm)</th>
-                    <th className="w-24 px-2 py-1.5 text-right">
+                    <th className="w-16 px-2 py-1.5 text-right" title="Pack length in millimetres.">L (mm)</th>
+                    <th className="w-16 px-2 py-1.5 text-right" title="Pack width in millimetres.">W (mm)</th>
+                    <th className="w-16 px-2 py-1.5 text-right" title="Pack height in millimetres.">H (mm)</th>
+                    <th
+                      className="w-24 px-2 py-1.5 text-right"
+                      title="Weight of one filled pack in kilograms. Multiplied by the derived pack count for the floor-loading check."
+                    >
                       Wt / pack (kg)
                     </th>
-                    <th className="w-20 px-2 py-1.5 text-right">
-                      Units / pack
+                    <th
+                      className="w-28 px-2 py-1.5 text-right"
+                      title={`How much ${uomSymbol} each physical pack contains. For one 25-kg drum holding the whole lot: Total qty = 25, Pack size = 25 → 1 pack.`}
+                    >
+                      Pack size ({uomSymbol})
                     </th>
-                    <th className="w-16 px-2 py-1.5 text-right">Stack</th>
+                    <th
+                      className="w-16 px-2 py-1.5 text-right"
+                      title="How many packs can be safely stacked vertically on top of each other."
+                    >
+                      Stack
+                    </th>
                     <th className="w-32 px-2 py-1.5 text-left">Batch (opt)</th>
                     <th className="w-8 px-2 py-1.5" />
                   </tr>
@@ -967,6 +981,7 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                       key={p.tempId}
                       index={i}
                       pack={p}
+                      uomSymbol={uomSymbol}
                       onPatch={(patch) => patchPack(p.tempId, patch)}
                       onRemove={
                         packs.length === 1
@@ -978,6 +993,15 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                 </tbody>
               </table>
             </div>
+
+            <p className="text-[11px] text-muted-foreground">
+              <span className="font-medium">Pack size</span> = how much
+              {" "}{uomSymbol}{" "}
+              each physical pack contains. The derived <em>packs</em> count
+              shows live next to the row — 25 {uomSymbol} ÷ pack size of 25{" "}
+              {uomSymbol} = 1 pack; 100 {uomSymbol} ÷ pack size of 25{" "}
+              {uomSymbol} = 4 packs.
+            </p>
 
             <div className="flex items-center justify-between gap-2">
               <Button
@@ -1394,29 +1418,84 @@ function Field({
  *  dialog's per-pack row — same column order, same compact mono
  *  inputs, optional supplier batch override at the end. The trash
  *  button is hidden when only one row remains so the form can't end
- *  up empty (the bulk endpoint requires ≥1 pack). */
+ *  up empty (the bulk endpoint requires ≥1 pack).
+ *
+ *  When the operator types Total qty first and Pack size is still
+ *  empty/default we auto-fill Pack size = qty (1 pack) so the most
+ *  common case (one drum holds the whole lot) doesn't require an
+ *  extra field. Once Pack size has a non-default value the auto-fill
+ *  stops fighting their input. */
 function PackRow({
   index,
   pack,
+  uomSymbol,
   onPatch,
   onRemove,
 }: {
   index: number;
   pack: PackDraft;
+  uomSymbol: string;
   onPatch: (patch: Partial<PackDraft>) => void;
   onRemove?: () => void;
 }) {
+  // Derived pack count — qty / pack_size, ceil'd because partial
+  // packs round up. Surfaced as a tiny caption under the Total qty
+  // cell so the user sees the implied count without reading the
+  // calculator at the bottom of the page.
+  const qtyNum = Number(pack.qty_received);
+  const packSizeNum = Number(pack.units_per_package);
+  const packsImplied =
+    qtyNum > 0 && packSizeNum > 0
+      ? Math.ceil(qtyNum / packSizeNum - 1e-9)
+      : null;
+  const packsExact =
+    packsImplied !== null
+      ? Math.abs(qtyNum / packSizeNum - packsImplied) < 1e-9
+      : false;
+
+  const onQtyChange = (v: string) => {
+    const patch: Partial<PackDraft> = { qty_received: v };
+    // Auto-fill Pack size = qty when Pack size is still at its initial
+    // default ("1") or empty. Saves a keystroke for the single-pack
+    // case (one drum = one lot = qty kg).
+    if (pack.units_per_package === "" || pack.units_per_package === "1") {
+      patch.units_per_package = v;
+    }
+    onPatch(patch);
+  };
+
   return (
     <tr>
-      <td className="px-2 py-1.5 text-left font-mono text-[10px] text-muted-foreground">
+      <td className="px-2 py-1.5 text-left align-top font-mono text-[10px] text-muted-foreground">
         {index + 1}
       </td>
-      <PackCell
-        value={pack.qty_received}
-        onChange={(v) => onPatch({ qty_received: v })}
-        label={`Pack ${index + 1} qty`}
-        placeholder="0.00"
-      />
+      <td className="px-2 py-1.5 align-top">
+        <Input
+          type="text"
+          inputMode="decimal"
+          value={pack.qty_received}
+          onChange={(e) => onQtyChange(e.target.value)}
+          aria-label={`Pack ${index + 1} total qty`}
+          placeholder="0.00"
+          className="h-8 text-right font-mono text-xs"
+        />
+        {packsImplied !== null && (
+          <p
+            className={
+              packsExact
+                ? "mt-0.5 text-right font-mono text-[10px] text-muted-foreground"
+                : "mt-0.5 text-right font-mono text-[10px] font-semibold text-destructive"
+            }
+            title={
+              packsExact
+                ? "Computed from Total qty ÷ Pack size."
+                : "Total qty doesn't divide evenly by Pack size — partial pack rounded up."
+            }
+          >
+            = {packsImplied} pack{packsImplied === 1 ? "" : "s"}
+          </p>
+        )}
+      </td>
       <PackCell
         value={pack.package_length_mm}
         onChange={(v) =>
@@ -1451,8 +1530,8 @@ function PackRow({
       <PackCell
         value={pack.units_per_package}
         onChange={(v) => onPatch({ units_per_package: v.replace(/\D/g, "") })}
-        label={`Pack ${index + 1} units per pack`}
-        placeholder="1"
+        label={`Pack ${index + 1} pack size in ${uomSymbol}`}
+        placeholder={qtyNum > 0 ? String(qtyNum) : `e.g. 25`}
         integer
       />
       <PackCell
@@ -1462,7 +1541,7 @@ function PackRow({
         placeholder="1"
         integer
       />
-      <td className="px-2 py-1.5">
+      <td className="px-2 py-1.5 align-top">
         <Input
           type="text"
           value={pack.supplier_batch_no}
@@ -1472,7 +1551,7 @@ function PackRow({
           className="h-8 font-mono text-xs"
         />
       </td>
-      <td className="px-1 py-1.5 text-center">
+      <td className="px-1 py-1.5 text-center align-top">
         {onRemove && (
           <button
             type="button"
@@ -1503,7 +1582,7 @@ function PackCell({
   integer?: boolean;
 }) {
   return (
-    <td className="px-2 py-1.5">
+    <td className="px-2 py-1.5 align-top">
       <Input
         type="text"
         inputMode={integer ? "numeric" : "decimal"}
