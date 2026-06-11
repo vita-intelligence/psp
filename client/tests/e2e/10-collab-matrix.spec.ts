@@ -70,10 +70,10 @@ test.describe("Realtime collab matrix", () => {
     await assertCollab(browser, {
       url: "/procurement/purchase-orders/new",
       readyHeading: /New purchase order/i,
-      saveButtonName: /Create draft PO/i,
-      // Delivery address is an unconstrained textarea — currency has
-      // maxLength={3} so a long sample wouldn't replicate verbatim.
-      primaryFieldId: "deliveryAddress",
+      // D.1 renamed the action: "Save as draft" (always available with
+      // just a vendor) + "Submit for approval" (needs valid lines).
+      saveButtonName: /Save as draft/i,
+      primaryFieldId: "delivery_address",
     });
   });
 

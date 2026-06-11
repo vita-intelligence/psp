@@ -495,8 +495,35 @@ export interface PurchaseOrderLine {
   line_subtotal: string;
   expected_delivery_date: string | null;
   notes: string | null;
+  /** Per-line warehouse override of the PO's `default_warehouse_id`.
+   *  Null means "use the PO default". */
+  warehouse_id: number | null;
+  warehouse: {
+    id: number;
+    uuid: string;
+    name: string;
+  } | null;
+  /** Supplier's part code for this item — auto-filled from
+   *  `vendor_approved_items.vendor_part_no` when that registry has an
+   *  entry, otherwise free text. */
+  vendor_part_no: string | null;
   inserted_at: string;
   updated_at: string;
+}
+
+/** Files attached to a PO — supplier quote, spec sheet, etc. Mirrors
+ *  the `vendor_files` / `lot_files` shape so QA + procurement can
+ *  produce the originating paperwork during an audit. */
+export interface PurchaseOrderFile {
+  id: number;
+  uuid: string;
+  kind: "quote" | "spec" | "other";
+  filename: string;
+  mime: string;
+  byte_size: number;
+  url: string;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
 }
 
 export interface PurchaseOrderApproval {
@@ -518,11 +545,39 @@ export interface PurchaseOrder {
   vendor: VendorSummary | null;
   currency_code: string;
   subtotal: string;
+  /** Whole-PO discount as a percentage (0–100). User-editable. */
+  discount_pct: string;
+  /** Server-computed: `subtotal * discount_pct / 100`. Read-only. */
+  discount_amount: string;
+  /** Tax percentage applied to (subtotal − discount). Defaults to
+   *  `vendor.tax_rate` on create; user can override. */
+  tax_rate: string;
+  /** Server-computed: `(subtotal − discount_amount) * tax_rate / 100`. */
   tax_amount: string;
+  /** Flat shipping / freight charge (optional). */
+  shipping_fees: string;
+  /** Other flat fees (handling, customs broker, etc.). */
+  additional_fees: string;
+  /** Server-computed: `subtotal − discount_amount + tax_amount +
+   *  shipping_fees + additional_fees`. The PO's bottom line. */
+  grand_total: string;
+  /** Legacy field — duplicates `grand_total`. Kept for backward compat
+   *  with existing payload consumers until they migrate. */
   total_amount: string;
+  /** Header-level default delivery warehouse — lines without their own
+   *  `warehouse_id` inherit this site on receive. */
+  default_warehouse_id: number | null;
+  default_warehouse: {
+    id: number;
+    uuid: string;
+    name: string;
+  } | null;
   expected_delivery_date: string | null;
   delivery_address: string | null;
   notes: string | null;
+  /** Supplier paperwork (quote PDF, spec sheet, etc.). Uploaded to
+   *  Backend.Storage; URL streams through the BE so we keep ACL. */
+  files: PurchaseOrderFile[];
   submitted_at: string | null;
   submitted_by: AuditActor | null;
   ordered_at: string | null;

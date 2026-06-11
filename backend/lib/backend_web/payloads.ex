@@ -493,8 +493,18 @@ defmodule BackendWeb.Payloads do
       vendor: preloaded_or_nil(po, :vendor, &vendor_summary/1),
       currency_code: po.currency_code,
       subtotal: po.subtotal,
+      discount_pct: po.discount_pct,
+      discount_amount: po.discount_amount,
+      tax_rate: po.tax_rate,
       tax_amount: po.tax_amount,
+      shipping_fees: po.shipping_fees,
+      additional_fees: po.additional_fees,
+      grand_total: po.grand_total,
+      # Legacy field — `grand_total` is the new source of truth. Kept
+      # so v1 FE callers don't blow up mid-deploy.
       total_amount: po.total_amount,
+      default_warehouse_id: po.default_warehouse_id,
+      default_warehouse: preloaded_or_nil(po, :default_warehouse, &warehouse_compact/1),
       expected_delivery_date: po.expected_delivery_date,
       delivery_address: po.delivery_address,
       notes: po.notes,
@@ -508,6 +518,7 @@ defmodule BackendWeb.Payloads do
       cancellation_reason: po.cancellation_reason,
       lines: preloaded_list(po, :lines, &purchase_order_line/1),
       approvals: preloaded_list(po, :approvals, &purchase_order_approval/1),
+      files: preloaded_list(po, :files, fn f -> po_file(f, po) end),
       inserted_at: po.inserted_at,
       updated_at: po.updated_at,
       created_by: actor(po, :created_by),
@@ -521,6 +532,9 @@ defmodule BackendWeb.Payloads do
       purchase_order_id: l.purchase_order_id,
       item_id: l.item_id,
       item: maybe_item_summary(l.item),
+      warehouse_id: Map.get(l, :warehouse_id),
+      warehouse: preloaded_or_nil(l, :warehouse, &warehouse_compact/1),
+      vendor_part_no: Map.get(l, :vendor_part_no),
       qty_ordered: l.qty_ordered,
       qty_received: l.qty_received,
       unit_price: l.unit_price,
@@ -529,6 +543,46 @@ defmodule BackendWeb.Payloads do
       notes: l.notes,
       inserted_at: l.inserted_at,
       updated_at: l.updated_at
+    }
+  end
+
+  @doc """
+  Compact warehouse representation embedded in PO header (default
+  delivery site) and per PO line. The FE shows the name + code; full
+  warehouse detail is one click away via the warehouse uuid.
+  """
+  def warehouse_compact(%Backend.Warehouses.Warehouse{} = w) do
+    %{
+      id: w.id,
+      uuid: w.uuid,
+      code: render_code(w, "warehouse"),
+      name: w.name
+    }
+  end
+
+  def warehouse_compact(_), do: nil
+
+  @doc """
+  Public payload for a stored PO file. Includes a serve URL scoped
+  under the parent PO uuid so files only resolve under their owning
+  record — mirrors `vendor_file/2`.
+  """
+  def po_file(%Backend.Purchasing.PurchaseOrderFile{} = f, po) do
+    po_uuid = po && Map.get(po, :uuid)
+
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        po_uuid &&
+          "/api/purchase-orders/" <>
+            po_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
     }
   end
 

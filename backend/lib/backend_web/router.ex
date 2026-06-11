@@ -226,6 +226,15 @@ defmodule BackendWeb.Router do
       # line's qty_received, and flips status to partially_received
       # or received accordingly.
       post "/receive", PurchaseOrderController, :receive
+
+      # Quote / spec / other file attachments. Bytes live in
+      # `Backend.Storage`; metadata rows scope by `purchase_order_id`
+      # so files only resolve under their owning PO. Same RBAC as
+      # the parent PO — `po_view` for read/serve, `po_create` for
+      # write.
+      post "/files", PurchaseOrderController, :upload_file
+      delete "/files/:id", PurchaseOrderController, :delete_file
+      get "/files/:id/serve", PurchaseOrderController, :serve_file
     end
 
     # Catalogue shape — product families + admin-extensible attribute

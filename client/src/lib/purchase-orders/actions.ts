@@ -27,6 +27,13 @@ export interface POHeaderInput {
   expected_delivery_date?: string | null;
   delivery_address?: string | null;
   notes?: string | null;
+  // D.1 financial + delivery extensions — server computes discount_amount /
+  // tax_amount / grand_total from these. NEVER send computed fields.
+  discount_pct?: string | null;
+  tax_rate?: string | null;
+  shipping_fees?: string | null;
+  additional_fees?: string | null;
+  default_warehouse_id?: number | null;
 }
 
 export interface POLineInput {
@@ -35,6 +42,85 @@ export interface POLineInput {
   unit_price?: string;
   expected_delivery_date?: string | null;
   notes?: string | null;
+  /** Per-line site override; null falls back to PO `default_warehouse_id`. */
+  warehouse_id?: number | null;
+  vendor_part_no?: string | null;
+}
+
+/** Single-transaction create. Sends the header plus the lines array;
+ *  the backend opens one Repo.transaction so a bad line rolls back the
+ *  PO insert too. Use this from the new single-page PO create form. */
+export async function createPOWithLinesAction(
+  header: POHeaderInput,
+  lines: POLineInput[],
+): Promise<POResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("createPOWithLinesAction");
+  try {
+    const res = await api<{ purchase_order: PurchaseOrder }>(
+      "/api/purchase-orders",
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ ...header, lines }),
+      },
+    );
+    revalidatePath("/procurement/purchase-orders");
+    return { ok: true, po: res.purchase_order };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "createPOWithLinesAction",
+      fallbackDetail: "Couldn't create the PO with lines.",
+    });
+  }
+}
+
+/** Multipart upload of a supplier paperwork file (quote PDF, spec
+ *  sheet, etc.). Streams via Backend.Storage; the returned `file.uuid`
+ *  is how the BE references it. */
+export async function uploadPOFileAction(
+  poUuid: string,
+  formData: FormData,
+): Promise<
+  | { ok: true; file: import("../types").PurchaseOrderFile }
+  | ErrorResult
+> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("uploadPOFileAction");
+  try {
+    const res = await api<{ file: import("../types").PurchaseOrderFile }>(
+      `/api/purchase-orders/${encodeURIComponent(poUuid)}/files`,
+      { method: "POST", token, body: formData },
+    );
+    revalidatePath(`/procurement/purchase-orders/${poUuid}`);
+    return { ok: true, file: res.file };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "uploadPOFileAction",
+      fallbackDetail: "Couldn't upload the file.",
+    });
+  }
+}
+
+export async function deletePOFileAction(
+  poUuid: string,
+  fileUuid: string,
+): Promise<DeleteResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("deletePOFileAction");
+  try {
+    await api<void>(
+      `/api/purchase-orders/${encodeURIComponent(poUuid)}/files/${encodeURIComponent(fileUuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath(`/procurement/purchase-orders/${poUuid}`);
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "deletePOFileAction",
+      fallbackDetail: "Couldn't delete the file.",
+    });
+  }
 }
 
 export async function createPOAction(input: POHeaderInput): Promise<POResult> {

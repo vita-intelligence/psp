@@ -3,6 +3,16 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
   One line on a purchase order. `qty_received` is denormalised — bumped
   on every receipt action so the PO detail page can render
   "ordered vs received" without per-render aggregation.
+
+  `warehouse_id` is a per-line override of `po.default_warehouse_id`;
+  null means "ship this line to the PO's default warehouse". Lets a
+  single PO split delivery across two sites without forking into two
+  POs.
+
+  `vendor_part_no` is the supplier's free-text part code for the item
+  on this line. Free text today — a later slice will auto-fill from
+  the vendor's approved-item registry once `vendor_approved_items.vendor_part_no`
+  lands.
   """
 
   use Ecto.Schema
@@ -11,6 +21,7 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
   alias Backend.Companies.Company
   alias Backend.Items.Item
   alias Backend.Purchasing.PurchaseOrder
+  alias Backend.Warehouses.Warehouse
 
   schema "purchase_order_lines" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -22,10 +33,12 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
 
     field :expected_delivery_date, :date
     field :notes, :string
+    field :vendor_part_no, :string
 
     belongs_to :purchase_order, PurchaseOrder
     belongs_to :item, Item
     belongs_to :company, Company
+    belongs_to :warehouse, Warehouse
 
     timestamps(type: :utc_datetime)
   end
@@ -36,12 +49,14 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
       :purchase_order_id,
       :company_id,
       :item_id,
+      :warehouse_id,
       :qty_ordered,
       :qty_received,
       :unit_price,
       :line_subtotal,
       :expected_delivery_date,
-      :notes
+      :notes,
+      :vendor_part_no
     ])
     |> validate_required([
       :purchase_order_id,
@@ -54,5 +69,6 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
     |> validate_number(:qty_received, greater_than_or_equal_to: 0)
     |> validate_number(:unit_price, greater_than_or_equal_to: 0)
     |> validate_length(:notes, max: 2000)
+    |> validate_length(:vendor_part_no, max: 120)
   end
 end

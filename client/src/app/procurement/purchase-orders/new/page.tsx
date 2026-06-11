@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listVendorsForPicker } from "@/lib/vendors/server";
+import { listItemsForPicker } from "@/lib/items/server";
+import { listWarehousesForReceive } from "@/lib/stock/server";
 import { ProcurementSubnav } from "../../procurement-subnav";
 import { NewPOForm } from "./new-po-form";
 
@@ -18,7 +20,11 @@ export default async function NewPOPage() {
     redirect("/procurement/purchase-orders");
   }
 
-  const vendors = (await listVendorsForPicker()) ?? [];
+  const [vendors, items, warehouses] = await Promise.all([
+    listVendorsForPicker().then((v) => v ?? []),
+    listItemsForPicker(),
+    listWarehousesForReceive(),
+  ]);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -26,8 +32,8 @@ export default async function NewPOPage() {
       <PresenceMount />
       <ProcurementSubnav />
 
-      <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-4xl space-y-6">
+      <main className="flex-1 px-4 py-8 sm:px-8 sm:py-10">
+        <div className="mx-auto max-w-6xl space-y-6">
           <div>
             <Button
               asChild
@@ -47,13 +53,19 @@ export default async function NewPOPage() {
               <ShoppingCart className="size-6 text-brand sm:size-7" />
               New purchase order
             </h1>
-            <p className="text-sm text-muted-foreground">
-              Pick an approved vendor. The PO lands as draft — you can
-              add line items + submit from the detail page.
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              Pick a vendor + items, add the supplier paperwork, save as
+              a draft. Submit it for approval when ready — two-tier ESIGN
+              signs it off, then the PO transitions to ordered and the
+              system reserves the expected stock automatically.
             </p>
           </header>
 
-          <NewPOForm vendors={vendors} />
+          <NewPOForm
+            vendors={vendors}
+            items={items}
+            warehouses={warehouses}
+          />
         </div>
       </main>
     </div>

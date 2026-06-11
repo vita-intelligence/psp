@@ -6,6 +6,18 @@ defmodule Backend.Purchasing.PurchaseOrder do
 
   Display code (`PO00001`) is rendered from `id` + the company's
   numbering format — no stored `code` column.
+
+  Money columns split into two groups:
+
+    * **Castable from the form** — `discount_pct`, `tax_rate`,
+      `shipping_fees`, `additional_fees`. These are what the buyer
+      types.
+
+    * **Server-computed only** — `subtotal`, `discount_amount`,
+      `tax_amount`, `grand_total`. These are derived in
+      `Backend.Purchasing.recompute_totals/1` after any line / rate
+      change. They live on `totals_changeset/2` so the user-facing
+      changeset can never smuggle a hand-typed total in.
   """
 
   use Ecto.Schema
@@ -13,8 +25,9 @@ defmodule Backend.Purchasing.PurchaseOrder do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
-  alias Backend.Purchasing.{PurchaseOrderApproval, PurchaseOrderLine}
+  alias Backend.Purchasing.{PurchaseOrderApproval, PurchaseOrderFile, PurchaseOrderLine}
   alias Backend.Vendors.Vendor
+  alias Backend.Warehouses.Warehouse
 
   @statuses ~w(draft pending_approver pending_director approved ordered partially_received received cancelled)
 
@@ -24,8 +37,17 @@ defmodule Backend.Purchasing.PurchaseOrder do
     field :status, :string, default: "draft"
 
     field :currency_code, :string, default: "GBP"
+
     field :subtotal, :decimal, default: Decimal.new(0)
+    field :discount_pct, :decimal, default: Decimal.new(0)
+    field :discount_amount, :decimal, default: Decimal.new(0)
+    field :tax_rate, :decimal, default: Decimal.new(0)
     field :tax_amount, :decimal, default: Decimal.new(0)
+    field :shipping_fees, :decimal, default: Decimal.new(0)
+    field :additional_fees, :decimal, default: Decimal.new(0)
+    field :grand_total, :decimal, default: Decimal.new(0)
+    # Kept around for backwards compatibility with the v1 API — totals
+    # logic now writes `grand_total`. Treat as deprecated.
     field :total_amount, :decimal, default: Decimal.new(0)
 
     field :expected_delivery_date, :date
@@ -45,9 +67,11 @@ defmodule Backend.Purchasing.PurchaseOrder do
     belongs_to :submitted_by, User
     belongs_to :ordered_by, User
     belongs_to :cancelled_by, User
+    belongs_to :default_warehouse, Warehouse
 
     has_many :lines, PurchaseOrderLine, foreign_key: :purchase_order_id
     has_many :approvals, PurchaseOrderApproval, foreign_key: :purchase_order_id
+    has_many :files, PurchaseOrderFile, foreign_key: :purchase_order_id
 
     timestamps(type: :utc_datetime)
   end
@@ -55,9 +79,10 @@ defmodule Backend.Purchasing.PurchaseOrder do
   def statuses, do: @statuses
 
   @doc """
-  Header changeset. Only the editable identity fields; status moves
-  through `transition_status_changeset/2`, totals through
-  `recompute_totals/1`.
+  Header changeset. Only the editable identity fields + the rate-style
+  money inputs (`discount_pct`, `tax_rate`, `shipping_fees`,
+  `additional_fees`). Status moves through `transition_status_changeset/2`,
+  computed totals through `totals_changeset/2`.
   """
   def changeset(po, attrs) do
     po
@@ -65,6 +90,11 @@ defmodule Backend.Purchasing.PurchaseOrder do
       :company_id,
       :vendor_id,
       :currency_code,
+      :discount_pct,
+      :tax_rate,
+      :shipping_fees,
+      :additional_fees,
+      :default_warehouse_id,
       :expected_delivery_date,
       :delivery_address,
       :notes,
@@ -75,6 +105,10 @@ defmodule Backend.Purchasing.PurchaseOrder do
     |> validate_length(:currency_code, is: 3)
     |> validate_length(:delivery_address, max: 1000)
     |> validate_length(:notes, max: 4000)
+    |> validate_number(:discount_pct, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
+    |> validate_number(:tax_rate, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
+    |> validate_number(:shipping_fees, greater_than_or_equal_to: 0)
+    |> validate_number(:additional_fees, greater_than_or_equal_to: 0)
   end
 
   @doc """
@@ -102,12 +136,24 @@ defmodule Backend.Purchasing.PurchaseOrder do
   end
 
   @doc """
-  Totals refresh from cast values. Used after a line save so totals
-  stay denormalised on the header.
+  Totals refresh from cast values. Used by `Backend.Purchasing.recompute_totals/1`
+  after a line save or a rate change — totals are denormalised on the
+  header so the FE renders the footer without a per-render aggregation.
+
+  All four computed columns (`subtotal`, `discount_amount`,
+  `tax_amount`, `grand_total`) live here exclusively. The user-facing
+  `changeset/2` does not cast them.
   """
   def totals_changeset(po, attrs) do
     po
-    |> cast(attrs, [:subtotal, :tax_amount, :total_amount, :updated_by_id])
-    |> validate_required([:subtotal, :total_amount])
+    |> cast(attrs, [
+      :subtotal,
+      :discount_amount,
+      :tax_amount,
+      :grand_total,
+      :total_amount,
+      :updated_by_id
+    ])
+    |> validate_required([:subtotal, :grand_total])
   end
 end

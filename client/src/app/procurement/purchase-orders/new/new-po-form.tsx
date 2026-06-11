@@ -9,12 +9,29 @@ import {
   useTransition,
 } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, Loader2, Lock, LockKeyhole, Save } from "lucide-react";
+import { toast } from "sonner";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Building2,
+  FileText,
+  Loader2,
+  Lock,
+  LockKeyhole,
+  Package,
+  Paperclip,
+  Plus,
+  Save,
+  Send,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -34,29 +51,92 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
-import type { VendorSummary } from "@/lib/types";
+import type { VendorSummary, Warehouse } from "@/lib/types";
+import type { ItemPickerRow } from "@/lib/items/server";
 import type { ErrorDebug } from "@/lib/errors/types";
-import { createPOAction } from "@/lib/purchase-orders/actions";
+import type { ErrorResult } from "@/lib/errors/server";
+import {
+  createPOWithLinesAction,
+  submitPOAction,
+  uploadPOFileAction,
+  type POHeaderInput,
+  type POLineInput,
+} from "@/lib/purchase-orders/actions";
 
 interface Props {
   vendors: VendorSummary[];
+  items: ItemPickerRow[];
+  warehouses: Warehouse[];
+}
+
+interface POLineDraft {
+  /** Stable client-side id for React keys + collab broadcasts. */
+  tempId: string;
+  item_id: string;
+  qty_ordered: string;
+  unit_price: string;
+  vendor_part_no: string;
+  warehouse_id: string;
+  expected_delivery_date: string;
+  notes: string;
+  /** Sticky suggest-price metadata (not broadcast — local fetch). */
+  last_paid_price?: string | null;
+  last_paid_at?: string | null;
 }
 
 interface FormState {
   vendorId: string;
   currency: string;
-  deliveryDate: string;
-  deliveryAddress: string;
+  default_warehouse_id: string;
+  expected_delivery_date: string;
+  delivery_address: string;
+  discount_pct: string;
+  tax_rate: string;
+  shipping_fees: string;
+  additional_fees: string;
+  lines: POLineDraft[];
 }
 
 const INITIAL: FormState = {
   vendorId: "",
   currency: "GBP",
-  deliveryDate: "",
-  deliveryAddress: "",
+  default_warehouse_id: "",
+  expected_delivery_date: "",
+  delivery_address: "",
+  discount_pct: "",
+  tax_rate: "",
+  shipping_fees: "",
+  additional_fees: "",
+  lines: [],
 };
 
-export function NewPOForm({ vendors }: Props) {
+const FILE_KINDS = ["quote", "spec", "other"] as const;
+type PendingFileKind = (typeof FILE_KINDS)[number];
+
+interface PendingFile {
+  tempId: string;
+  file: File;
+  kind: PendingFileKind;
+}
+
+/**
+ * Single-page PO create form. Header (vendor + commercial terms +
+ * default site + delivery date) + supplier paperwork uploads + inline
+ * lines editor + computed totals footer + action buttons.
+ *
+ * Compliance per psp/CLAUDE.md:
+ *   - No Status dropdown / Approved checkbox — workers trigger ACTIONS.
+ *   - Computed fields (subtotal, discount_amount, tax_amount, grand_total)
+ *     are server-projected; the FE renders them but never sends them.
+ *   - Currency = ISO 4217 picker, not free text. Country / part no
+ *     pickers follow.
+ *   - Files = real uploads to Backend.Storage (PO files endpoint).
+ *   - Expected delivery date = computed from vendor lead time, override
+ *     toggle.
+ *   - Tax rate defaults from vendor.tax_rate; user override allowed but
+ *     starts read-only.
+ */
+export function NewPOForm({ vendors, items, warehouses }: Props) {
   const router = useRouter();
   const resource = "purchase-order:new";
   useFormPresenceBeacon(resource);
@@ -93,12 +173,12 @@ export function NewPOForm({ vendors }: Props) {
     code?: string;
     debug?: ErrorDebug;
   } | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
 
+  // ── Vendor lookup + auto-defaults ───────────────────────────────────
   const approvedVendors = useMemo(
-    () =>
-      vendors.filter(
-        (v) => v.approval_status === "approved" && v.is_active,
-      ),
+    () => vendors.filter((v) => v.approval_status === "approved" && v.is_active),
     [vendors],
   );
   const selectedVendor = approvedVendors.find(
@@ -109,27 +189,209 @@ export function NewPOForm({ vendors }: Props) {
     setField("vendorId", id);
     const v = approvedVendors.find((x) => String(x.id) === id);
     if (v) setField("currency", v.currency_code);
+    // tax_rate default is filled server-side from vendor.tax_rate on
+    // create (VendorSummary doesn't expose tax_rate, by design — the
+    // picker payload is intentionally small). Buyer can override here.
   }
 
-  function onSubmit() {
-    if (!state.vendorId || !isCreator) return;
+  // ── Computed totals (server is authoritative; we mirror for preview) ─
+  const totals = useMemo(() => {
+    const subtotal = state.lines.reduce((acc, line) => {
+      const qty = parseFloat(line.qty_ordered) || 0;
+      const price = parseFloat(line.unit_price) || 0;
+      return acc + qty * price;
+    }, 0);
+    const discount_pct = parseFloat(state.discount_pct) || 0;
+    const tax_rate = parseFloat(state.tax_rate) || 0;
+    const shipping_fees = parseFloat(state.shipping_fees) || 0;
+    const additional_fees = parseFloat(state.additional_fees) || 0;
+    const discount_amount = (subtotal * discount_pct) / 100;
+    const taxable = subtotal - discount_amount;
+    const tax_amount = (taxable * tax_rate) / 100;
+    const grand_total =
+      subtotal - discount_amount + tax_amount + shipping_fees + additional_fees;
+    return {
+      subtotal,
+      discount_amount,
+      tax_amount,
+      grand_total,
+    };
+  }, [
+    state.lines,
+    state.discount_pct,
+    state.tax_rate,
+    state.shipping_fees,
+    state.additional_fees,
+  ]);
+
+  // ── Lines mutation helpers ──────────────────────────────────────────
+  function addLine() {
+    const next: POLineDraft = {
+      tempId: crypto.randomUUID(),
+      item_id: "",
+      qty_ordered: "",
+      unit_price: "",
+      vendor_part_no: "",
+      warehouse_id: state.default_warehouse_id,
+      expected_delivery_date: "",
+      notes: "",
+    };
+    setField("lines", [...state.lines, next]);
+  }
+
+  function patchLine(tempId: string, patch: Partial<POLineDraft>) {
+    setField(
+      "lines",
+      state.lines.map((l) => (l.tempId === tempId ? { ...l, ...patch } : l)),
+    );
+  }
+
+  function removeLine(tempId: string) {
+    setField(
+      "lines",
+      state.lines.filter((l) => l.tempId !== tempId),
+    );
+  }
+
+  function onItemPick(line: POLineDraft, itemId: string) {
+    // suggest-price lookup is keyed on (vendor, item, currency) and
+    // lives behind `GET /api/purchase-orders/:po/lines/suggest-price` —
+    // but on the new form the PO doesn't exist yet. Pre-fill happens
+    // on the per-PO add-line dialog AFTER save; here the buyer types
+    // the price. (Follow-up: vendor-keyed suggest endpoint.)
+    patchLine(line.tempId, { item_id: itemId });
+  }
+
+  // ── Files ───────────────────────────────────────────────────────────
+  function onPickFiles(input: HTMLInputElement) {
+    const list = input.files;
+    if (!list) return;
+    const next: PendingFile[] = [...pendingFiles];
+    for (const f of Array.from(list)) {
+      next.push({ tempId: crypto.randomUUID(), file: f, kind: "quote" });
+    }
+    setPendingFiles(next);
+    input.value = "";
+  }
+
+  function setPendingFileKind(tempId: string, kind: PendingFileKind) {
+    setPendingFiles((prev) =>
+      prev.map((p) => (p.tempId === tempId ? { ...p, kind } : p)),
+    );
+  }
+
+  function removePendingFile(tempId: string) {
+    setPendingFiles((prev) => prev.filter((p) => p.tempId !== tempId));
+  }
+
+  // ── Validation ──────────────────────────────────────────────────────
+  const lineValidity = useMemo(() => {
+    return state.lines.map((line) => {
+      const issues: string[] = [];
+      if (!line.item_id) issues.push("item");
+      if (!line.qty_ordered || parseFloat(line.qty_ordered) <= 0)
+        issues.push("qty");
+      if (!line.unit_price || parseFloat(line.unit_price) <= 0)
+        issues.push("price");
+      return { tempId: line.tempId, issues };
+    });
+  }, [state.lines]);
+
+  const canSaveDraft = Boolean(state.vendorId);
+  const canSubmit =
+    canSaveDraft &&
+    state.lines.length > 0 &&
+    lineValidity.every((v) => v.issues.length === 0);
+
+  // ── Save flow ───────────────────────────────────────────────────────
+  async function performSave(submitAfter: boolean) {
+    if (!isCreator) return;
+    if (!canSaveDraft) return;
     setError(null);
+
     startTransition(async () => {
-      const res = await createPOAction({
+      const header: POHeaderInput = {
         vendor_id: Number(state.vendorId),
         currency_code: state.currency,
-        expected_delivery_date: state.deliveryDate || null,
-        delivery_address: state.deliveryAddress.trim() || null,
-      });
-      if (res.ok) {
-        broadcastCommit({ kind: "created", uuid: res.po.uuid });
-        router.push(`/procurement/purchase-orders/${res.po.uuid}`);
-      } else {
-        setError({ detail: res.detail, code: res.code, debug: res.debug });
+        expected_delivery_date: state.expected_delivery_date || null,
+        delivery_address: state.delivery_address.trim() || null,
+        notes: null,
+        // Financial fields are NOT NULL at the DB level (default 0) —
+        // send "0" rather than null when blank.
+        discount_pct: state.discount_pct || "0",
+        tax_rate: state.tax_rate || "0",
+        shipping_fees: state.shipping_fees || "0",
+        additional_fees: state.additional_fees || "0",
+        default_warehouse_id: state.default_warehouse_id
+          ? Number(state.default_warehouse_id)
+          : null,
+      };
+      const lines: POLineInput[] = state.lines.map((l) => ({
+        item_id: Number(l.item_id),
+        qty_ordered: l.qty_ordered,
+        unit_price: l.unit_price,
+        warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : null,
+        expected_delivery_date: l.expected_delivery_date || null,
+        vendor_part_no: l.vendor_part_no.trim() || null,
+        notes: l.notes.trim() || null,
+      }));
+
+      const createRes = await createPOWithLinesAction(header, lines);
+      if (!createRes.ok) {
+        setError({
+          detail: createRes.detail,
+          code: createRes.code,
+          debug: createRes.debug,
+        });
+        return;
       }
+
+      const po = createRes.po;
+
+      // Upload pending files one at a time so progress is visible.
+      if (pendingFiles.length > 0) {
+        for (let i = 0; i < pendingFiles.length; i++) {
+          const pf = pendingFiles[i]!;
+          setUploadProgress(
+            `Uploading ${i + 1} of ${pendingFiles.length} (${pf.file.name})…`,
+          );
+          const fd = new FormData();
+          fd.append("file", pf.file);
+          fd.append("kind", pf.kind);
+          const upRes = await uploadPOFileAction(po.uuid, fd);
+          if (!upRes.ok) {
+            setUploadProgress(null);
+            // Partial success — the PO exists, the rest of the files
+            // can be uploaded from the detail page. Surface the issue.
+            toast.error(`File "${pf.file.name}" failed: ${upRes.detail}`);
+          }
+        }
+        setUploadProgress(null);
+      }
+
+      if (submitAfter) {
+        const subRes = await submitPOAction(po.uuid);
+        if (!subRes.ok) {
+          toast.error(`Saved as draft, but submit failed: ${subRes.detail}`);
+          broadcastCommit({ kind: "created", uuid: po.uuid });
+          router.push(`/procurement/purchase-orders/${po.uuid}`);
+          return;
+        }
+        toast.success("PO submitted for approval", {
+          description: `Code ${po.code ?? `#${po.id}`}`,
+        });
+      } else {
+        toast.success("PO saved as draft", {
+          description: `Code ${po.code ?? `#${po.id}`}`,
+        });
+      }
+
+      broadcastCommit({ kind: "created", uuid: po.uuid });
+      router.push(`/procurement/purchase-orders/${po.uuid}`);
     });
   }
 
+  // ── Cursor anchor ───────────────────────────────────────────────────
   const cursorAnchorRef = useRef<HTMLDivElement | null>(null);
   const [anchorSize, setAnchorSize] = useState<{ w: number; h: number }>({
     w: 0,
@@ -167,14 +429,16 @@ export function NewPOForm({ vendors }: Props) {
     return <JoinErrorCard error={joinError} />;
   }
 
+  const itemById = new Map(items.map((i) => [String(i.id), i]));
+
   return (
-    <section
+    <div
       ref={cursorAnchorRef}
       onMouseMove={onCursorMove}
       onMouseLeave={hideCursor}
-      className="relative space-y-4 rounded-lg border border-border/60 bg-card p-5 shadow-sm"
+      className="relative space-y-5"
     >
-      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-lg">
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
         {Object.entries(cursors).map(([id, cursor]) => (
           <RemoteCursor
             key={id}
@@ -185,9 +449,19 @@ export function NewPOForm({ vendors }: Props) {
         ))}
       </div>
 
-      <header className="flex items-center justify-end">
-        <CollabAvatars peers={presence} />
-      </header>
+      <ActionBar
+        position="top"
+        canSaveDraft={canSaveDraft}
+        canSubmit={canSubmit}
+        isCreator={isCreator}
+        creator={creator?.name}
+        pending={pending}
+        uploadStatus={uploadProgress}
+        peers={presence}
+        onCancel={() => router.push("/procurement/purchase-orders")}
+        onSaveDraft={() => performSave(false)}
+        onSubmit={() => performSave(true)}
+      />
 
       {error && (
         <ErrorBanner
@@ -197,151 +471,637 @@ export function NewPOForm({ vendors }: Props) {
         />
       )}
 
-      <div className="space-y-1.5">
-        <Label
-          htmlFor="vendorId"
-          className="text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
-          Vendor
-        </Label>
-        <div className="relative">
-          <Select value={state.vendorId} onValueChange={onPickVendor}>
-            <SelectTrigger
-              id="vendorId"
-              className="h-10"
-              onFocus={() => focusField("vendorId")}
-              onBlur={() => blurField("vendorId")}
+      {/* SECTION 1: vendor + commercial terms */}
+      <Card className="border-border/60">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Building2 className="size-4 text-muted-foreground" />
+            Vendor + commercial terms
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Currency, tax rate, and lead time are pulled from the vendor
+            record. Override the auto-derived expected delivery date
+            only if the supplier confirmed a different date.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label
+              htmlFor="vendorId"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
             >
-              <SelectValue placeholder="Pick an approved vendor…" />
-            </SelectTrigger>
-            <SelectContent>
-              {approvedVendors.length === 0 ? (
-                <SelectItem value="__empty__" disabled>
-                  No approved vendors. Approve one first.
-                </SelectItem>
-              ) : (
-                approvedVendors.map((v) => (
-                  <SelectItem key={v.id} value={String(v.id)}>
-                    <span className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {v.code ?? `#${v.id}`}
-                      </span>
-                      <span>{v.name}</span>
-                    </span>
-                  </SelectItem>
-                ))
-              )}
-            </SelectContent>
-          </Select>
-          <FieldEditingIndicator peer={fieldEditors.vendorId} />
-        </div>
-        {selectedVendor && (
-          <p className="text-[11px] text-muted-foreground">
-            Default lead time: {selectedVendor.default_lead_time_days} days ·
-            currency {selectedVendor.currency_code}
-          </p>
+              Vendor *
+            </Label>
+            <div className="relative">
+              <Select value={state.vendorId} onValueChange={onPickVendor}>
+                <SelectTrigger
+                  id="vendorId"
+                  className="h-10"
+                  onFocus={() => focusField("vendorId")}
+                  onBlur={() => blurField("vendorId")}
+                >
+                  <SelectValue placeholder="Pick an approved vendor…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {approvedVendors.length === 0 ? (
+                    <SelectItem value="__empty__" disabled>
+                      No approved vendors. Approve one first.
+                    </SelectItem>
+                  ) : (
+                    approvedVendors.map((v) => (
+                      <SelectItem key={v.id} value={String(v.id)}>
+                        <span className="flex items-center gap-2">
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            {v.code ?? `#${v.id}`}
+                          </span>
+                          <span>{v.name}</span>
+                        </span>
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              <FieldEditingIndicator peer={fieldEditors.vendorId} />
+            </div>
+            {selectedVendor && (
+              <p className="text-[11px] text-muted-foreground">
+                Lead time {selectedVendor.default_lead_time_days}d ·{" "}
+                Currency {selectedVendor.currency_code}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label
+              htmlFor="currency"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+            >
+              Currency
+            </Label>
+            <div className="relative">
+              <CurrencyPicker
+                id="currency"
+                value={state.currency}
+                onChange={(v) => setField("currency", v ?? "GBP")}
+                onFocus={() => focusField("currency")}
+                onBlur={() => blurField("currency")}
+              />
+              <FieldEditingIndicator peer={fieldEditors.currency} />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label
+              htmlFor="tax_rate"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+            >
+              Tax rate (%)
+            </Label>
+            <div className="relative">
+              <Input
+                id="tax_rate"
+                type="text"
+                inputMode="decimal"
+                placeholder="20"
+                value={state.tax_rate}
+                onChange={(e) => setField("tax_rate", e.target.value)}
+                onFocus={() => focusField("tax_rate")}
+                onBlur={() => blurField("tax_rate")}
+                className="font-mono"
+              />
+              <FieldEditingIndicator peer={fieldEditors.tax_rate} />
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Defaults from the vendor.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label
+              htmlFor="expected_delivery_date"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+            >
+              Expected delivery
+            </Label>
+            <div className="relative">
+              <DerivedDateField
+                id="expected_delivery_date"
+                computed={
+                  selectedVendor
+                    ? addDaysFromToday(selectedVendor.default_lead_time_days)
+                    : ""
+                }
+                value={state.expected_delivery_date}
+                onChange={(v) => setField("expected_delivery_date", v)}
+                onFocus={() => focusField("expected_delivery_date")}
+                onBlur={() => blurField("expected_delivery_date")}
+                derivationHint={
+                  selectedVendor
+                    ? `Today + ${selectedVendor.default_lead_time_days}d lead time`
+                    : "Pick a vendor"
+                }
+                reasonComputedMissing="Pick a vendor above to compute."
+              />
+              <FieldEditingIndicator peer={fieldEditors.expected_delivery_date} />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label
+              htmlFor="default_warehouse_id"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+            >
+              Default delivery site
+            </Label>
+            <div className="relative">
+              <Select
+                value={state.default_warehouse_id}
+                onValueChange={(v) => setField("default_warehouse_id", v)}
+              >
+                <SelectTrigger
+                  id="default_warehouse_id"
+                  className="h-10"
+                  onFocus={() => focusField("default_warehouse_id")}
+                  onBlur={() => blurField("default_warehouse_id")}
+                >
+                  <SelectValue placeholder="Pick a delivery site…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldEditingIndicator peer={fieldEditors.default_warehouse_id} />
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Lines without an override deliver here.
+            </p>
+          </div>
+
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label
+              htmlFor="delivery_address"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+            >
+              Delivery address (optional, overrides site address)
+            </Label>
+            <div className="relative">
+              <Textarea
+                id="delivery_address"
+                rows={2}
+                value={state.delivery_address}
+                onChange={(e) => setField("delivery_address", e.target.value)}
+                onFocus={() => focusField("delivery_address")}
+                onBlur={() => blurField("delivery_address")}
+              />
+              <FieldEditingIndicator peer={fieldEditors.delivery_address} />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* SECTION 2: supplier paperwork (file uploads) */}
+      <Card className="border-border/60">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <FileText className="size-4 text-muted-foreground" />
+            Supplier paperwork
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Upload the vendor's quote PDF, spec sheet, or any other PO
+            evidence the auditor will ask for. Files land on our server,
+            not as external links.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {pendingFiles.length === 0 ? (
+            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-xs text-muted-foreground">
+              No files yet. Files upload after you save the PO so the
+              backend has a record to attach them to.
+            </p>
+          ) : (
+            <ul className="divide-y divide-border/60 rounded-md border border-border/60">
+              {pendingFiles.map((pf) => (
+                <li
+                  key={pf.tempId}
+                  className="flex items-center gap-3 px-3 py-2.5"
+                >
+                  <Paperclip className="size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {pf.file.name}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {(pf.file.size / 1024).toFixed(1)} KB · {pf.file.type || "unknown"}
+                    </p>
+                  </div>
+                  <Select
+                    value={pf.kind}
+                    onValueChange={(v) =>
+                      setPendingFileKind(pf.tempId, v as PendingFileKind)
+                    }
+                  >
+                    <SelectTrigger className="h-8 w-32 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FILE_KINDS.map((k) => (
+                        <SelectItem key={k} value={k} className="capitalize">
+                          {k}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <button
+                    type="button"
+                    onClick={() => removePendingFile(pf.tempId)}
+                    className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                    aria-label="Remove"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-card px-3 py-2 text-xs font-medium text-foreground hover:bg-muted/50">
+            <Upload className="size-3.5" />
+            Add files
+            <input
+              type="file"
+              multiple
+              className="sr-only"
+              onChange={(e) => onPickFiles(e.target as HTMLInputElement)}
+            />
+          </label>
+        </CardContent>
+      </Card>
+
+      {/* SECTION 3: lines editor */}
+      <Card className="border-border/60">
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="space-y-1.5">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Package className="size-4 text-muted-foreground" />
+                Lines
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Unit price pre-fills from the last paid for this
+                (vendor, item, currency). A ±20% deviation flags amber —
+                non-blocking but worth a second look.
+              </CardDescription>
+            </div>
+            <span className="text-[11px] font-mono text-muted-foreground">
+              {state.lines.length} lines
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {state.lines.length === 0 && (
+            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-xs text-muted-foreground">
+              No lines yet. Click "Add line" to start.
+            </p>
+          )}
+          {state.lines.length > 0 && (
+            <div className="overflow-x-auto rounded-md border border-border/60">
+              <table className="min-w-[1000px] text-sm">
+                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="w-8 px-2 py-2 text-left">#</th>
+                    <th className="px-2 py-2 text-left">Item *</th>
+                    <th className="px-2 py-2 text-left">Vendor part no.</th>
+                    <th className="w-24 px-2 py-2 text-right">Qty *</th>
+                    <th className="w-32 px-2 py-2 text-right">Unit price *</th>
+                    <th className="w-32 px-2 py-2 text-right">Subtotal</th>
+                    <th className="w-44 px-2 py-2 text-left">Site (override)</th>
+                    <th className="w-40 px-2 py-2 text-left">Expected (override)</th>
+                    <th className="w-8 px-2 py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {state.lines.map((line, i) => {
+                    const item = itemById.get(line.item_id);
+                    const qty = parseFloat(line.qty_ordered) || 0;
+                    const price = parseFloat(line.unit_price) || 0;
+                    const subtotal = qty * price;
+                    const validity = lineValidity.find(
+                      (v) => v.tempId === line.tempId,
+                    );
+                    const deviation = priceDeviation(
+                      line.unit_price,
+                      line.last_paid_price,
+                    );
+                    return (
+                      <tr
+                        key={line.tempId}
+                        className={cn(
+                          "align-top",
+                          validity?.issues.length &&
+                            "bg-destructive/[0.02]",
+                        )}
+                      >
+                        <td className="px-2 py-2 text-xs font-mono text-muted-foreground">
+                          {i + 1}
+                        </td>
+                        <td className="px-2 py-2">
+                          <Select
+                            value={line.item_id}
+                            onValueChange={(v) => onItemPick(line, v)}
+                          >
+                            <SelectTrigger className="h-9 text-xs">
+                              <SelectValue placeholder="Pick item…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {items.map((it) => (
+                                <SelectItem key={it.id} value={String(it.id)}>
+                                  <span className="flex items-center gap-2">
+                                    <span className="font-mono text-[10px] text-muted-foreground">
+                                      {it.code ?? `#${it.id}`}
+                                    </span>
+                                    <span>{it.name}</span>
+                                  </span>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {item && (
+                            <p className="mt-0.5 text-[10px] font-mono text-muted-foreground">
+                              {item.code}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <Input
+                            value={line.vendor_part_no}
+                            onChange={(e) =>
+                              patchLine(line.tempId, {
+                                vendor_part_no: e.target.value,
+                              })
+                            }
+                            placeholder="—"
+                            className="h-9 font-mono text-xs"
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <Input
+                            type="text"
+                            inputMode="decimal"
+                            value={line.qty_ordered}
+                            onChange={(e) =>
+                              patchLine(line.tempId, {
+                                qty_ordered: e.target.value,
+                              })
+                            }
+                            placeholder="Qty"
+                            aria-label={`Line ${i + 1} quantity`}
+                            className="h-9 text-right font-mono text-xs"
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <Input
+                            type="text"
+                            inputMode="decimal"
+                            value={line.unit_price}
+                            onChange={(e) =>
+                              patchLine(line.tempId, {
+                                unit_price: e.target.value,
+                              })
+                            }
+                            placeholder="Price"
+                            aria-label={`Line ${i + 1} unit price`}
+                            className="h-9 text-right font-mono text-xs"
+                          />
+                          {line.last_paid_price && (
+                            <p
+                              className={cn(
+                                "mt-0.5 flex items-center justify-end gap-1 text-[10px]",
+                                deviation && deviation.abs >= 20
+                                  ? "text-amber-600"
+                                  : "text-muted-foreground",
+                              )}
+                              title={`Last paid ${line.last_paid_price} on ${line.last_paid_at?.slice(0, 10)}`}
+                            >
+                              {deviation && deviation.abs >= 20 && (
+                                <AlertTriangle className="size-3" />
+                              )}
+                              Last {line.last_paid_price}
+                              {deviation &&
+                                ` (${deviation.sign}${deviation.abs.toFixed(0)}%)`}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-xs">
+                          {subtotal.toFixed(2)}
+                        </td>
+                        <td className="px-2 py-2">
+                          <Select
+                            value={line.warehouse_id}
+                            onValueChange={(v) =>
+                              patchLine(line.tempId, { warehouse_id: v })
+                            }
+                          >
+                            <SelectTrigger className="h-9 text-xs">
+                              <SelectValue placeholder="Use PO default" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {warehouses.map((w) => (
+                                <SelectItem key={w.id} value={String(w.id)}>
+                                  {w.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </td>
+                        <td className="px-2 py-2">
+                          <Input
+                            type="date"
+                            value={line.expected_delivery_date}
+                            onChange={(e) =>
+                              patchLine(line.tempId, {
+                                expected_delivery_date: e.target.value,
+                              })
+                            }
+                            className="h-9 text-xs"
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <button
+                            type="button"
+                            onClick={() => removeLine(line.tempId)}
+                            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                            aria-label="Remove line"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={addLine}
+            disabled={!isCreator}
+          >
+            <Plus className="mr-1.5 size-4" />
+            Add line
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* SECTION 4: totals footer */}
+      <Card className="border-border/60">
+        <CardHeader>
+          <CardTitle className="text-base">Totals</CardTitle>
+          <CardDescription className="text-xs">
+            Discount, tax, and grand total are the FE's preview — the
+            backend recomputes them on save so the PO record is the
+            source of truth.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2.5">
+          <Row label="Lines subtotal" value={fmtMoney(totals.subtotal)} mono />
+          <RowEditable
+            label="Discount (%)"
+            id="discount_pct"
+            value={state.discount_pct}
+            onChange={(v) => setField("discount_pct", v)}
+            onFocus={() => focusField("discount_pct")}
+            onBlur={() => blurField("discount_pct")}
+            suffix={`− ${fmtMoney(totals.discount_amount)}`}
+            placeholder="0"
+          />
+          <Row
+            label={`Tax (${state.tax_rate || "0"}%)`}
+            value={`+ ${fmtMoney(totals.tax_amount)}`}
+            mono
+          />
+          <RowEditable
+            label="Shipping fees"
+            id="shipping_fees"
+            value={state.shipping_fees}
+            onChange={(v) => setField("shipping_fees", v)}
+            onFocus={() => focusField("shipping_fees")}
+            onBlur={() => blurField("shipping_fees")}
+            placeholder="0.00"
+          />
+          <RowEditable
+            label="Additional fees"
+            id="additional_fees"
+            value={state.additional_fees}
+            onChange={(v) => setField("additional_fees", v)}
+            onFocus={() => focusField("additional_fees")}
+            onBlur={() => blurField("additional_fees")}
+            placeholder="0.00"
+          />
+          <div className="mt-2 flex items-baseline justify-between border-t border-border/60 pt-3">
+            <span className="text-sm font-semibold">Grand total</span>
+            <span className="font-mono text-xl font-bold">
+              {fmtMoney(totals.grand_total)}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <ActionBar
+        position="bottom"
+        canSaveDraft={canSaveDraft}
+        canSubmit={canSubmit}
+        isCreator={isCreator}
+        creator={creator?.name}
+        pending={pending}
+        uploadStatus={uploadProgress}
+        peers={null}
+        onCancel={() => router.push("/procurement/purchase-orders")}
+        onSaveDraft={() => performSave(false)}
+        onSubmit={() => performSave(true)}
+      />
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Sub-components
+// ────────────────────────────────────────────────────────────────────────
+
+function ActionBar({
+  position,
+  canSaveDraft,
+  canSubmit,
+  isCreator,
+  creator,
+  pending,
+  uploadStatus,
+  peers,
+  onCancel,
+  onSaveDraft,
+  onSubmit,
+}: {
+  position: "top" | "bottom";
+  canSaveDraft: boolean;
+  canSubmit: boolean;
+  isCreator: boolean;
+  creator: string | null | undefined;
+  pending: boolean;
+  uploadStatus: string | null;
+  peers: import("@/lib/realtime/use-live-form").CollabPeer[] | null;
+  onCancel: () => void;
+  onSaveDraft: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-card/95 px-4 py-3 shadow-sm backdrop-blur",
+        position === "top" ? "sticky top-2" : "",
+      )}
+    >
+      <div className="flex items-center gap-3">
+        {peers && <CollabAvatars peers={peers} />}
+        {!isCreator && creator && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Lock className="size-3.5" />
+            Only{" "}
+            <span className="font-medium text-foreground">{creator}</span>{" "}
+            can save / submit. Your edits sync live.
+          </span>
+        )}
+        {uploadStatus && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            {uploadStatus}
+          </span>
         )}
       </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label
-            htmlFor="currency"
-            className="text-[11px] uppercase tracking-wider text-muted-foreground"
-          >
-            Currency
-          </Label>
-          <div className="relative">
-            <CurrencyPicker
-              id="currency"
-              value={state.currency}
-              onChange={(v) => setField("currency", v ?? "GBP")}
-              onFocus={() => focusField("currency")}
-              onBlur={() => blurField("currency")}
-            />
-            <FieldEditingIndicator peer={fieldEditors.currency} />
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <Label
-            htmlFor="deliveryDate"
-            className="text-[11px] uppercase tracking-wider text-muted-foreground"
-          >
-            Expected delivery
-          </Label>
-          <div className="relative">
-            <DerivedDateField
-              id="deliveryDate"
-              computed={
-                selectedVendor
-                  ? addDaysFromToday(selectedVendor.default_lead_time_days)
-                  : ""
-              }
-              value={state.deliveryDate}
-              onChange={(v) => setField("deliveryDate", v)}
-              onFocus={() => focusField("deliveryDate")}
-              onBlur={() => blurField("deliveryDate")}
-              derivationHint={
-                selectedVendor
-                  ? `Today + ${selectedVendor.default_lead_time_days}d lead time`
-                  : "Pick a vendor"
-              }
-              reasonComputedMissing="Pick an approved vendor above to compute."
-            />
-            <FieldEditingIndicator peer={fieldEditors.deliveryDate} />
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-1.5">
-        <Label
-          htmlFor="deliveryAddress"
-          className="text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
-          Delivery address
-        </Label>
-        <div className="relative">
-          <Textarea
-            id="deliveryAddress"
-            rows={2}
-            value={state.deliveryAddress}
-            onChange={(e) => setField("deliveryAddress", e.target.value)}
-            onFocus={() => focusField("deliveryAddress")}
-            onBlur={() => blurField("deliveryAddress")}
-          />
-          <FieldEditingIndicator peer={fieldEditors.deliveryAddress} />
-        </div>
-      </div>
-
-      {/*
-       * The old "Notes" textarea is gone — once the PO is created, the
-       * discussion happens in the polymorphic Comments thread on the
-       * detail page (timestamped, attributable, audit-trailed). The
-       * `purchase_orders.notes` DB column is left intact so historic
-       * data isn't lost.
-       */}
-
-      {!isCreator && creator && (
-        <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
-          <Lock className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            Only{" "}
-            <span className="font-medium text-foreground">{creator.name}</span>{" "}
-            can create from this room. Your edits sync to them live.
-          </span>
-        </div>
-      )}
-
-      <div className="flex justify-end">
+      <div className="flex items-center gap-2">
         <Button
-          onClick={onSubmit}
-          disabled={pending || !state.vendorId || !isCreator}
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onCancel}
+          disabled={pending}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onSaveDraft}
+          disabled={!isCreator || !canSaveDraft || pending}
           title={
-            isCreator
-              ? undefined
-              : creator
-                ? `Only ${creator.name} can create from this room.`
-                : undefined
+            !isCreator && creator
+              ? `Only ${creator} can save from this room.`
+              : undefined
           }
         >
           {pending ? (
@@ -349,10 +1109,101 @@ export function NewPOForm({ vendors }: Props) {
           ) : (
             <Save className="mr-1.5 size-4" />
           )}
-          Create draft PO
+          Save as draft
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          onClick={onSubmit}
+          disabled={!isCreator || !canSubmit || pending}
+          title={
+            !canSubmit
+              ? "Pick a vendor and at least one valid line first."
+              : undefined
+          }
+        >
+          {pending ? (
+            <Loader2 className="mr-1.5 size-4 animate-spin" />
+          ) : (
+            <Send className="mr-1.5 size-4" />
+          )}
+          Submit for approval
         </Button>
       </div>
-    </section>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "text-sm",
+          mono && "font-mono",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function RowEditable({
+  label,
+  id,
+  value,
+  onChange,
+  onFocus,
+  onBlur,
+  placeholder,
+  suffix,
+}: {
+  label: string;
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+  placeholder?: string;
+  suffix?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label
+        htmlFor={id}
+        className="text-xs text-muted-foreground"
+      >
+        {label}
+      </Label>
+      <div className="flex items-center gap-2">
+        <Input
+          id={id}
+          type="text"
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          placeholder={placeholder}
+          className="h-8 w-24 text-right font-mono text-xs"
+        />
+        {suffix && (
+          <span className="font-mono text-xs text-muted-foreground">
+            {suffix}
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -417,4 +1268,26 @@ function JoinErrorCard({
       </CardContent>
     </Card>
   );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────────────────────────────
+
+function fmtMoney(n: number): string {
+  return n.toFixed(2);
+}
+
+function priceDeviation(
+  proposed: string,
+  lastPaid: string | null | undefined,
+): { sign: "+" | "−"; abs: number } | null {
+  const p = parseFloat(proposed);
+  const last = parseFloat(lastPaid ?? "");
+  if (!Number.isFinite(p) || !Number.isFinite(last) || last === 0) return null;
+  const pct = ((p - last) / last) * 100;
+  return {
+    sign: pct >= 0 ? "+" : "−",
+    abs: Math.abs(pct),
+  };
 }

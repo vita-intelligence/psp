@@ -38,17 +38,21 @@ defmodule Backend.Purchasing do
   alias Backend.Purchasing.{
     PurchaseOrder,
     PurchaseOrderApproval,
+    PurchaseOrderFile,
     PurchaseOrderLine,
     VendorPrices
   }
   alias Backend.Repo
+  alias Backend.Storage
   alias Backend.Vendors
 
-  @po_audit_fields ~w(status vendor_id currency_code subtotal tax_amount
-                      total_amount expected_delivery_date delivery_address
-                      notes submitted_at ordered_at received_at cancelled_at
-                      cancellation_reason)a
-  @po_sortable ~w(id status total_amount expected_delivery_date inserted_at submitted_at ordered_at)a
+  @po_audit_fields ~w(status vendor_id currency_code subtotal discount_pct
+                      discount_amount tax_rate tax_amount shipping_fees
+                      additional_fees grand_total total_amount
+                      default_warehouse_id expected_delivery_date
+                      delivery_address notes submitted_at ordered_at
+                      received_at cancelled_at cancellation_reason)a
+  @po_sortable ~w(id status grand_total total_amount expected_delivery_date inserted_at submitted_at ordered_at)a
   @po_search ~w(delivery_address notes cancellation_reason)a
   @po_default_sort {:id, :desc}
 
@@ -64,7 +68,7 @@ defmodule Backend.Purchasing do
       |> maybe_status_filter(opts[:status])
       |> maybe_vendor_filter(opts[:vendor_id])
       |> ListQueries.apply_sort(sort, @po_sortable, @po_default_sort)
-      |> preload([:vendor, :created_by, :submitted_by])
+      |> preload([:vendor, :created_by, :submitted_by, :default_warehouse])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
@@ -105,8 +109,10 @@ defmodule Backend.Purchasing do
               :submitted_by,
               :ordered_by,
               :cancelled_by,
-              lines: [:item],
-              approvals: [:signed_by]
+              :default_warehouse,
+              lines: [:item, :warehouse],
+              approvals: [:signed_by],
+              files: [:uploaded_by]
             ]
           )
         )
@@ -120,6 +126,12 @@ defmodule Backend.Purchasing do
 
   # ----- create / update header ------------------------------------
 
+  @doc """
+  Create a draft PO. If `attrs` omits `tax_rate` or `currency_code` and
+  the vendor has a standing value, we pre-fill from the vendor — buyers
+  shouldn't have to retype something already on the supplier record,
+  and a stray omission shouldn't silently zero out the VAT.
+  """
   def create(%User{} = actor, company_id, attrs) do
     attrs =
       attrs
@@ -129,6 +141,7 @@ defmodule Backend.Purchasing do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
+      |> apply_vendor_defaults()
 
     %PurchaseOrder{}
     |> PurchaseOrder.changeset(attrs)
@@ -144,6 +157,109 @@ defmodule Backend.Purchasing do
   end
 
   @doc """
+  Create a draft PO + its initial lines in one transaction, then run
+  totals once at the end. Used by the single-page create form so the
+  buyer presses Save once and gets a fully-shaped PO back instead of
+  juggling three round-trips.
+
+  Rolls back the whole thing if any line fails to validate — a half-
+  inserted PO with no lines is worse than a fresh attempt.
+  """
+  def create_with_lines(%User{} = actor, attrs, lines_attrs)
+      when is_list(lines_attrs) do
+    company_id = attrs[:company_id] || attrs["company_id"] || actor.company_id
+
+    Repo.transaction(fn ->
+      with {:ok, po} <- create(actor, company_id, attrs),
+           {:ok, _lines} <- insert_lines_for(actor, po, lines_attrs),
+           {:ok, recomputed} <- recompute_totals(po) do
+        preload(recomputed)
+      else
+        {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp insert_lines_for(_actor, _po, []), do: {:ok, []}
+
+  defp insert_lines_for(%User{} = actor, %PurchaseOrder{} = po, lines_attrs) do
+    Enum.reduce_while(lines_attrs, {:ok, []}, fn line_attrs, {:ok, acc} ->
+      # We're already inside a Repo.transaction; insert directly so a
+      # bad line bubbles a real changeset back up the with-chain rather
+      # than nesting a transaction-in-transaction.
+      attrs =
+        line_attrs
+        |> stringify_keys()
+        |> Map.merge(%{
+          "purchase_order_id" => po.id,
+          "company_id" => po.company_id
+        })
+        |> compute_line_subtotal()
+
+      case %PurchaseOrderLine{}
+           |> PurchaseOrderLine.changeset(attrs)
+           |> Repo.insert() do
+        {:ok, line} ->
+          Audit.record_created(actor, "purchase_order_line", line, %{
+            item_id: line.item_id,
+            qty_ordered: line.qty_ordered,
+            unit_price: line.unit_price
+          })
+
+          {:cont, {:ok, [line | acc]}}
+
+        {:error, cs} ->
+          {:halt, {:error, cs}}
+      end
+    end)
+    |> case do
+      {:ok, lines} -> {:ok, Enum.reverse(lines)}
+      other -> other
+    end
+  end
+
+  # Pull vendor's standing tax_rate + currency onto the create attrs
+  # when the caller didn't supply them. Worker-typed values win.
+  defp apply_vendor_defaults(attrs) do
+    vendor_id = attrs["vendor_id"] || attrs[:vendor_id]
+
+    case fetch_vendor(vendor_id) do
+      nil ->
+        attrs
+
+      vendor ->
+        attrs
+        |> default_attr("tax_rate", vendor.tax_rate)
+        |> default_attr("currency_code", vendor.currency_code)
+    end
+  end
+
+  defp fetch_vendor(nil), do: nil
+  defp fetch_vendor(""), do: nil
+
+  defp fetch_vendor(id) when is_integer(id), do: Repo.get(Backend.Vendors.Vendor, id)
+
+  defp fetch_vendor(raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> Repo.get(Backend.Vendors.Vendor, n)
+      _ -> nil
+    end
+  end
+
+  defp fetch_vendor(_), do: nil
+
+  defp default_attr(attrs, _key, nil), do: attrs
+
+  defp default_attr(attrs, key, value) do
+    case Map.get(attrs, key) do
+      nil -> Map.put(attrs, key, value)
+      "" -> Map.put(attrs, key, value)
+      _ -> attrs
+    end
+  end
+
+  @doc """
   Edit identity columns. Only allowed in `draft` — once submitted the
   header is locked behind the approval workflow.
   """
@@ -152,20 +268,23 @@ defmodule Backend.Purchasing do
       {:error, :not_editable}
     else
       before_state = snapshot(po)
+      cast_attrs = attrs |> stringify_keys() |> Map.put("updated_by_id", actor.id)
 
-      po
-      |> PurchaseOrder.changeset(
-        attrs |> stringify_keys() |> Map.put("updated_by_id", actor.id)
-      )
-      |> Repo.update()
-      |> case do
-        {:ok, updated} ->
-          Audit.record_updated(actor, "purchase_order", updated, before_state, snapshot(updated))
-          {:ok, preload(updated)}
-
-        other ->
-          other
-      end
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               po |> PurchaseOrder.changeset(cast_attrs) |> Repo.update(),
+             # Any change to discount_pct / tax_rate / shipping_fees /
+             # additional_fees needs to flow back into the denormalised
+             # totals — easier to just recompute every header update than
+             # to diff which money column moved.
+             {:ok, recomputed} <- recompute_totals(updated) do
+          Audit.record_updated(actor, "purchase_order", recomputed, before_state, snapshot(recomputed))
+          preload(recomputed)
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     end
   end
 
@@ -206,14 +325,14 @@ defmodule Backend.Purchasing do
                %PurchaseOrderLine{}
                |> PurchaseOrderLine.changeset(attrs)
                |> Repo.insert(),
-             {:ok, _po} <- refresh_totals(po) do
+             {:ok, _po} <- recompute_totals(po) do
           Audit.record_created(actor, "purchase_order_line", line, %{
             item_id: line.item_id,
             qty_ordered: line.qty_ordered,
             unit_price: line.unit_price
           })
 
-          Repo.preload(line, :item)
+          Repo.preload(line, [:item, :warehouse])
         else
           {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
           {:error, reason} -> Repo.rollback(reason)
@@ -239,14 +358,14 @@ defmodule Backend.Purchasing do
       Repo.transaction(fn ->
         with {:ok, updated} <-
                line |> PurchaseOrderLine.changeset(attrs) |> Repo.update(),
-             {:ok, _po} <- refresh_totals(po) do
+             {:ok, _po} <- recompute_totals(po) do
           Audit.record_updated(actor, "purchase_order_line", updated, before_state, %{
             qty_ordered: updated.qty_ordered,
             unit_price: updated.unit_price,
             item_id: updated.item_id
           })
 
-          Repo.preload(updated, :item)
+          Repo.preload(updated, [:item, :warehouse])
         else
           {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
           {:error, reason} -> Repo.rollback(reason)
@@ -264,7 +383,7 @@ defmodule Backend.Purchasing do
       Repo.transaction(fn ->
         case Repo.delete(line) do
           {:ok, deleted} ->
-            {:ok, _} = refresh_totals(po)
+            {:ok, _} = recompute_totals(po)
 
             Audit.record_deleted(actor, "purchase_order_line", line, %{
               item_id: line.item_id,
@@ -315,28 +434,74 @@ defmodule Backend.Purchasing do
 
   defp to_decimal(_), do: nil
 
-  defp refresh_totals(%PurchaseOrder{} = po) do
-    sums =
-      Repo.one(
-        from(l in PurchaseOrderLine,
-          where: l.purchase_order_id == ^po.id,
-          select: %{subtotal: coalesce(sum(l.line_subtotal), 0)}
-        )
-      )
+  @doc """
+  Re-derive the four computed money columns on a PO from the lines
+  + the user-typed rates / fees on the header. The contract:
 
-    subtotal = sums.subtotal || Decimal.new(0)
-    # Tax is left as a manual header field for v1 — operators can
-    # override under "Notes" or set it via a follow-up endpoint. The
-    # `total = subtotal + tax_amount` math runs here so total stays
-    # in step with whatever tax is on the header.
-    tax = po.tax_amount || Decimal.new(0)
-    total = Decimal.add(subtotal, tax)
+      subtotal        = Σ line.line_subtotal
+      discount_amount = subtotal × discount_pct / 100
+      tax_amount      = (subtotal − discount_amount) × tax_rate / 100
+      grand_total     = subtotal − discount_amount
+                        + tax_amount
+                        + shipping_fees
+                        + additional_fees
+
+  Every component is rounded to 2dp because that's how money renders
+  in the UI and what the supplier sees on the printed PO. We round
+  each leg (discount_amount, tax_amount) before folding into
+  grand_total so the displayed footer always re-adds to grand_total
+  exactly — no off-by-one-penny mismatch between the row and the
+  total.
+
+  The legacy `total_amount` column is kept in step with `grand_total`
+  for backwards compatibility with any v1 caller that hasn't migrated.
+  """
+  def recompute_totals(%PurchaseOrder{} = po) do
+    # Reload from DB so the latest line_subtotals are summed — callers
+    # often hold a stale `po` struct from before they mutated lines.
+    po = Repo.get!(PurchaseOrder, po.id)
+    lines = Repo.all(from l in PurchaseOrderLine, where: l.purchase_order_id == ^po.id)
+
+    subtotal =
+      Enum.reduce(lines, Decimal.new(0), fn line, acc ->
+        Decimal.add(acc, line.line_subtotal || Decimal.new(0))
+      end)
+      |> Decimal.round(2)
+
+    discount_pct = po.discount_pct || Decimal.new(0)
+    tax_rate = po.tax_rate || Decimal.new(0)
+    shipping = po.shipping_fees || Decimal.new(0)
+    additional = po.additional_fees || Decimal.new(0)
+
+    discount_amount =
+      subtotal
+      |> Decimal.mult(discount_pct)
+      |> Decimal.div(100)
+      |> Decimal.round(2)
+
+    taxable = Decimal.sub(subtotal, discount_amount)
+
+    tax_amount =
+      taxable
+      |> Decimal.mult(tax_rate)
+      |> Decimal.div(100)
+      |> Decimal.round(2)
+
+    grand_total =
+      subtotal
+      |> Decimal.sub(discount_amount)
+      |> Decimal.add(tax_amount)
+      |> Decimal.add(shipping)
+      |> Decimal.add(additional)
+      |> Decimal.round(2)
 
     po
     |> PurchaseOrder.totals_changeset(%{
       "subtotal" => subtotal,
-      "tax_amount" => tax,
-      "total_amount" => total
+      "discount_amount" => discount_amount,
+      "tax_amount" => tax_amount,
+      "grand_total" => grand_total,
+      "total_amount" => grand_total
     })
     |> Repo.update()
   end
@@ -839,8 +1004,10 @@ defmodule Backend.Purchasing do
         :submitted_by,
         :ordered_by,
         :cancelled_by,
-        lines: [:item],
-        approvals: [:signed_by]
+        :default_warehouse,
+        lines: [:item, :warehouse],
+        approvals: [:signed_by],
+        files: [:uploaded_by]
       ],
       force: true
     )
@@ -855,4 +1022,120 @@ defmodule Backend.Purchasing do
       pair -> pair
     end)
   end
+
+  # ----- file attachments ------------------------------------------
+
+  @doc """
+  Persist the metadata for an uploaded PO file. Bytes are already on
+  disk via `Backend.Storage`; this records the row + uploader so the
+  file can be served back with provenance later.
+
+  Mirrors `Backend.Vendors.record_file/3` so the FE upload component
+  works the same way against either parent.
+  """
+  def upload_file(%User{} = actor, %PurchaseOrder{} = po, attrs, bytes)
+      when is_binary(bytes) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.put("company_id", po.company_id)
+      |> Map.put("purchase_order_id", po.id)
+      |> Map.put("uploaded_by_id", actor.id)
+
+    key = build_file_storage_key(po, attrs)
+
+    case Storage.put(key, bytes, content_type: attrs["mime"]) do
+      {:ok, blob_path} ->
+        attrs = Map.put(attrs, "blob_path", blob_path)
+
+        %PurchaseOrderFile{}
+        |> PurchaseOrderFile.changeset(attrs)
+        |> Repo.insert()
+        |> case do
+          {:ok, file} ->
+            Audit.record_created(actor, "purchase_order_file", file, %{
+              purchase_order_id: file.purchase_order_id,
+              kind: file.kind,
+              filename: file.filename
+            })
+
+            {:ok, Repo.preload(file, :uploaded_by)}
+
+          {:error, cs} ->
+            # Insert lost — strand the blob? Drop it so we don't leak.
+            # Storage delete failure is best-effort; the row didn't
+            # land so an orphan blob is harmless.
+            _ = Storage.delete(blob_path)
+            {:error, cs}
+        end
+
+      {:error, reason} ->
+        {:error, {:storage_failed, reason}}
+    end
+  end
+
+  @doc """
+  Remove a PO file — wipes both the blob and the metadata row. Best-
+  effort on the storage side: a stuck blob is harmless once the FK
+  is gone, but a row pointing at missing bytes would 404 every fetch.
+  """
+  def delete_file(%User{} = actor, %PurchaseOrder{} = _po, %PurchaseOrderFile{} = file) do
+    Repo.transaction(fn ->
+      case Repo.delete(file) do
+        {:ok, deleted} ->
+          _ = Storage.delete(file.blob_path)
+
+          Audit.record_deleted(actor, "purchase_order_file", file, %{
+            purchase_order_id: file.purchase_order_id,
+            kind: file.kind,
+            filename: file.filename
+          })
+
+          deleted
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Look up a file row scoped to the given PO."
+  def get_file(po_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(f in PurchaseOrderFile,
+            where: f.purchase_order_id == ^po_id and f.uuid == ^cast,
+            preload: [:uploaded_by]
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  def get_file(_, _), do: nil
+
+  defp build_file_storage_key(%PurchaseOrder{} = po, attrs) do
+    kind = attrs["kind"] || "other"
+    filename = attrs["filename"] || "upload"
+
+    "po_files/" <>
+      po.uuid <>
+      "/" <>
+      kind <>
+      "_" <>
+      Ecto.UUID.generate() <>
+      file_extension(filename)
+  end
+
+  defp file_extension(filename) when is_binary(filename) do
+    case Path.extname(filename) do
+      "" -> ""
+      ext -> String.downcase(ext)
+    end
+  end
+
+  defp file_extension(_), do: ""
 end

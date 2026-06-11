@@ -17,7 +17,19 @@ defmodule BackendWeb.PurchaseOrderController do
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "procurement.po_view" when action in [:index, :show]
+  # Same allow list as the vendor evidence upload — PDF, images,
+  # Word, Excel, plain text. PO quotes are usually PDFs from the
+  # supplier; spec sheets sometimes ship as Word / Excel.
+  @allowed_evidence_mimes ~w(application/pdf image/jpeg image/png image/webp
+                             application/msword
+                             application/vnd.openxmlformats-officedocument.wordprocessingml.document
+                             application/vnd.ms-excel
+                             application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+                             text/plain)
+  @max_evidence_bytes 20 * 1024 * 1024
+
+  plug RequirePermission, "procurement.po_view"
+       when action in [:index, :show, :serve_file]
   plug RequirePermission, "procurement.po_create"
        when action in [
               :create,
@@ -27,7 +39,9 @@ defmodule BackendWeb.PurchaseOrderController do
               :update_line,
               :delete_line,
               :cancel,
-              :suggest_price
+              :suggest_price,
+              :upload_file,
+              :delete_file
             ]
   plug RequirePermission, "procurement.po_submit" when action in [:submit]
   plug RequirePermission, "procurement.po_approve" when action in [:sign_approver]
@@ -70,10 +84,18 @@ defmodule BackendWeb.PurchaseOrderController do
 
   # ----- create / update / delete ----------------------------------
 
+  @doc """
+  Create a PO. The single-page create form posts the header + an
+  optional `lines: [...]` array in one shot — we route through
+  `Purchasing.create_with_lines/3` so the whole thing lands atomically
+  and totals get recomputed at the end. Without `lines` (or an empty
+  list) we fall back to the v1 behaviour: an empty draft.
+  """
   def create(conn, params) do
     actor = conn.assigns.current_user
+    {lines_attrs, header_attrs} = Map.pop(Map.drop(params, ["id"]), "lines")
 
-    case Purchasing.create(actor, actor.company_id, Map.drop(params, ["id"])) do
+    case create_dispatch(actor, header_attrs, lines_attrs) do
       {:ok, po} ->
         conn
         |> put_status(:created)
@@ -83,6 +105,20 @@ defmodule BackendWeb.PurchaseOrderController do
         changeset_error(conn, cs)
     end
   end
+
+  defp create_dispatch(actor, header_attrs, nil),
+    do: Purchasing.create(actor, actor.company_id, header_attrs)
+
+  defp create_dispatch(actor, header_attrs, []),
+    do: Purchasing.create(actor, actor.company_id, header_attrs)
+
+  defp create_dispatch(actor, header_attrs, lines_attrs) when is_list(lines_attrs) do
+    attrs = Map.put(header_attrs, "company_id", actor.company_id)
+    Purchasing.create_with_lines(actor, attrs, lines_attrs)
+  end
+
+  defp create_dispatch(actor, header_attrs, _),
+    do: Purchasing.create(actor, actor.company_id, header_attrs)
 
   def update(conn, %{"id" => uuid} = params) do
     actor = conn.assigns.current_user
@@ -347,6 +383,125 @@ defmodule BackendWeb.PurchaseOrderController do
           _ -> {:error, :not_found}
         end
     end
+  end
+
+  # ----- file attachments ------------------------------------------
+
+  @doc """
+  Multipart upload for a PO evidence file (vendor quote, spec sheet).
+  Bytes go to `Backend.Storage`; we record a metadata row + return
+  the file shape the FE renders in the attachments card.
+  """
+  def upload_file(conn, %{"purchase_order_id" => uuid, "file" => %Plug.Upload{} = upload} = params) do
+    actor = conn.assigns.current_user
+    kind = params["kind"] || "other"
+
+    with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid),
+         :ok <- validate_evidence_mime(upload.content_type),
+         {:ok, bytes} <- read_upload(upload),
+         :ok <- validate_evidence_size(bytes) do
+      attrs = %{
+        "kind" => kind,
+        "filename" => upload.filename || "upload",
+        "mime" => upload.content_type || "application/octet-stream",
+        "byte_size" => byte_size(bytes)
+      }
+
+      case Purchasing.upload_file(actor, po, attrs, bytes) do
+        {:ok, file} ->
+          conn
+          |> put_status(:created)
+          |> json(%{file: Payloads.po_file(file, po)})
+
+        {:error, {:storage_failed, reason}} ->
+          unprocessable(
+            conn,
+            "storage_failed",
+            "Couldn't store the file (#{inspect(reason)})."
+          )
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, {:invalid_mime, detail}} -> unprocessable(conn, "invalid_mime_type", detail)
+      {:error, {:too_large, bytes}} -> file_too_large(conn, bytes)
+      {:error, {:read_failed, reason}} ->
+        unprocessable(conn, "read_failed", "Couldn't read the upload: #{inspect(reason)}.")
+    end
+  end
+
+  def upload_file(conn, _params) do
+    unprocessable(conn, "missing_file", "Send the file under `file` (multipart).")
+  end
+
+  def delete_file(conn, %{"purchase_order_id" => po_uuid, "id" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = po <- Purchasing.get_for_company(actor.company_id, po_uuid),
+         %{} = file <- Purchasing.get_file(po.id, file_uuid),
+         {:ok, _} <- Purchasing.delete_file(actor, po, file) do
+      send_resp(conn, :no_content, "")
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Stream a PO file back. Same path-resolver as the vendor evidence
+  serve — local adapter reads from disk, cloud adapters would
+  short-circuit to a signed URL upstream.
+  """
+  def serve_file(conn, %{"purchase_order_id" => po_uuid, "id" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = po <- Purchasing.get_for_company(actor.company_id, po_uuid),
+         %{} = file <- Purchasing.get_file(po.id, file_uuid),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_content_type(file.mime || "application/octet-stream")
+      |> put_resp_header(
+        "content-disposition",
+        ~s|inline; filename="#{file.filename}"|
+      )
+      |> send_file(200, abs_path)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp validate_evidence_mime(mime) when mime in @allowed_evidence_mimes, do: :ok
+
+  defp validate_evidence_mime(mime) do
+    {:error,
+     {:invalid_mime,
+      "Unsupported file type (#{mime || "unknown"}). Allowed: PDF, images, Word, Excel, plain text."}}
+  end
+
+  defp validate_evidence_size(bytes) when byte_size(bytes) > @max_evidence_bytes do
+    {:error, {:too_large, byte_size(bytes)}}
+  end
+
+  defp validate_evidence_size(_), do: :ok
+
+  defp read_upload(%Plug.Upload{path: path}) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, reason} -> {:error, {:read_failed, reason}}
+    end
+  end
+
+  defp file_too_large(conn, bytes) do
+    mb = Float.round(bytes / 1024 / 1024, 1)
+    max_mb = Float.round(@max_evidence_bytes / 1024 / 1024, 1)
+
+    unprocessable(
+      conn,
+      "file_too_large",
+      "File is #{mb} MB; max allowed is #{max_mb} MB."
+    )
   end
 
   # ----- helpers ---------------------------------------------------
