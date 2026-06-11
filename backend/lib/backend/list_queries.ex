@@ -42,10 +42,17 @@ defmodule Backend.ListQueries do
       when is_binary(term) and is_list(fields) and fields != [] do
     needle = "%" <> escape_like(String.trim(term)) <> "%"
 
-    Enum.reduce(fields, query, fn field, acc ->
-      from row in acc,
-        or_where: ilike(field(row, ^field), ^needle)
-    end)
+    # Build the OR-chain as a single `dynamic` and apply it inside one
+    # `where`. Folding `or_where: ilike(...)` across the field list
+    # instead would OR each ilike with the upstream `where`s (the
+    # company-scope clause + any filter), which makes the search a
+    # no-op as soon as the upstream clause matches every row.
+    or_clause =
+      Enum.reduce(fields, false, fn field, dyn ->
+        dynamic([row], ilike(field(row, ^field), ^needle) or ^dyn)
+      end)
+
+    from row in query, where: ^or_clause
   end
 
   ## Filter ---------------------------------------------------------
