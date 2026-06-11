@@ -92,4 +92,11 @@ export const NUMBERING_ENTITIES: Array<{ key: string; label: string }> = [
   { key: "product_family", label: "Product families" },
   { key: "attribute_definition", label: "Attribute definitions" },
   { key: "certificate", label: "Certificates" },
+  // Procurement + stock + device entities — registered server-side in
+  // Backend.Numbering @entity_schemas; surface them here so admins can
+  // configure VN / P0 / LOT prefixes from /settings/company.
+  { key: "vendor", label: "Vendors" },
+  { key: "purchase_order", label: "Purchase orders" },
+  { key: "stock_lot", label: "Stock lots" },
+  { key: "linked_device", label: "Linked devices" },
 ];

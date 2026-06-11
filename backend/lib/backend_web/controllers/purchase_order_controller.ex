@@ -238,7 +238,7 @@ defmodule BackendWeb.PurchaseOrderController do
 
   # ----- state transitions ----------------------------------------
 
-  def submit(conn, %{"id" => uuid}) do
+  def submit(conn, %{"purchase_order_id" => uuid}) do
     actor = conn.assigns.current_user
 
     with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid) do
@@ -268,7 +268,7 @@ defmodule BackendWeb.PurchaseOrderController do
     end
   end
 
-  def sign_approver(conn, %{"id" => uuid} = params) do
+  def sign_approver(conn, %{"purchase_order_id" => uuid} = params) do
     actor = conn.assigns.current_user
     opts = Map.take(params, ["notes", "signature_image"])
 
@@ -283,7 +283,7 @@ defmodule BackendWeb.PurchaseOrderController do
     end
   end
 
-  def sign_director(conn, %{"id" => uuid} = params) do
+  def sign_director(conn, %{"purchase_order_id" => uuid} = params) do
     actor = conn.assigns.current_user
     opts = Map.take(params, ["notes", "signature_image"])
 
@@ -306,7 +306,7 @@ defmodule BackendWeb.PurchaseOrderController do
     end
   end
 
-  def mark_ordered(conn, %{"id" => uuid}) do
+  def mark_ordered(conn, %{"purchase_order_id" => uuid}) do
     actor = conn.assigns.current_user
 
     with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid) do
@@ -323,11 +323,11 @@ defmodule BackendWeb.PurchaseOrderController do
     end
   end
 
-  def receive(conn, %{"id" => uuid} = params) do
+  def receive(conn, %{"purchase_order_id" => uuid} = params) do
     actor = conn.assigns.current_user
 
     with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid) do
-      case Purchasing.receive_against_po(actor, po, Map.drop(params, ["id"])) do
+      case Purchasing.receive_against_po(actor, po, Map.drop(params, ["purchase_order_id"])) do
         {:ok, updated} ->
           json(conn, %{purchase_order: Payloads.purchase_order(updated)})
 
@@ -361,7 +361,7 @@ defmodule BackendWeb.PurchaseOrderController do
     end
   end
 
-  def cancel(conn, %{"id" => uuid} = params) do
+  def cancel(conn, %{"purchase_order_id" => uuid} = params) do
     actor = conn.assigns.current_user
     reason = params["reason"] || ""
 

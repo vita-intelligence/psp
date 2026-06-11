@@ -144,3 +144,65 @@ test("PO — single-page create persists a line with computed totals", async ({
   expect(Number(po.tax_amount)).toBeCloseTo(11, 2);
   expect(Number(po.grand_total)).toBeCloseTo(66, 2);
 });
+
+test("PO — submit transition endpoint accepts the nested-route URL param", async ({
+  playwright,
+}) => {
+  // Regression test for the bug the user hit clicking "Submit for
+  // approval" on the detail page: the transition controllers were
+  // pattern-matching on `"id" => uuid` but Phoenix's nested resource
+  // routes pass `purchase_order_id` — every action raised a
+  // FunctionClauseError → 400. Direct API call here so the assertion
+  // is unambiguous and the UI click race doesn't muddy the signal.
+  const api = await apiCtx(playwright);
+  const vendorRes = await api.get(
+    "/api/vendors?limit=10&approval_status=approved&is_active=true",
+  );
+  const itemsRes = await api.get("/api/items?limit=1");
+  const vendorData = (await vendorRes.json()) as {
+    items?: Array<{ id: number }>;
+  };
+  const itemsData = (await itemsRes.json()) as {
+    items?: Array<{ id: number }>;
+  };
+  test.skip(
+    !vendorData.items?.[0] || !itemsData.items?.[0],
+    "need approved vendor + item",
+  );
+
+  const createRes = await api.post("/api/purchase-orders", {
+    data: {
+      vendor_id: vendorData.items![0]!.id,
+      currency_code: "GBP",
+      discount_pct: "0",
+      tax_rate: "0",
+      shipping_fees: "0",
+      additional_fees: "0",
+      lines: [
+        {
+          item_id: itemsData.items![0]!.id,
+          qty_ordered: "5",
+          unit_price: "10",
+        },
+      ],
+    },
+  });
+  const createBody = (await createRes.json()) as {
+    purchase_order: { uuid: string; status: string };
+  };
+  expect(createBody.purchase_order.status).toBe("draft");
+
+  const submitRes = await api.post(
+    `/api/purchase-orders/${createBody.purchase_order.uuid}/submit`,
+  );
+  // Regression: pre-fix the controller raised Phoenix.ActionClauseError
+  // because it pattern-matched on `"id" => uuid` but the nested route
+  // passes `purchase_order_id`. That returned a generic 400. After the
+  // fix, the endpoint reaches the action — it may still 422 here if the
+  // demo item isn't on the vendor's approved-supplier list (which is
+  // correct compliance enforcement), but it should NOT be 400.
+  expect(submitRes.status(), "submit should no longer FunctionClauseError").not.toBe(
+    400,
+  );
+  await api.dispose();
+});

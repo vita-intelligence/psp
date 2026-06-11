@@ -220,10 +220,10 @@ export function POLinesCard({ po, items, canEdit }: Props) {
                     </p>
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm">
-                    {l.qty_ordered}
+                    {fmtQty(l.qty_ordered)}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm text-muted-foreground">
-                    {l.qty_received}
+                    {fmtQty(l.qty_received)}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm">
                     {formatCompanyMoney(l.unit_price, prefs, {
@@ -466,4 +466,19 @@ function computeDeviation(
 function formatPctChange(pct: number): string {
   const sign = pct > 0 ? "+" : "−";
   return `${sign}${Math.round(Math.abs(pct) * 100)}%`;
+}
+
+/**
+ * Format a Decimal string (e.g. "500.0000") for display in the lines
+ * table — strip trailing zeros after the decimal so `500.0000` reads
+ * as `500` and `12.3450` reads as `12.345`. Falls back to the raw
+ * input for non-numeric values.
+ */
+function fmtQty(value: string | null | undefined): string {
+  if (!value) return "0";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  // toFixed-then-parseFloat trims trailing zeros while keeping the
+  // significant decimals (10.0000 → "10", 10.5000 → "10.5").
+  return parseFloat(n.toFixed(4)).toString();
 }
