@@ -32,7 +32,6 @@ const SECTIONS: ProcSection[] = [
     description:
       "Raise + approve POs against approved vendors. Two-tier ESIGN sign-off; receive against PO from the detail page.",
     Icon: ShoppingCart,
-    comingSoon: true,
   },
   {
     href: "/procurement/invoices",

@@ -30,7 +30,6 @@ const ITEMS: SubnavItem[] = [
     href: "/procurement/purchase-orders",
     label: "Purchase orders",
     Icon: ShoppingCart,
-    comingSoon: true,
   },
   {
     href: "/procurement/invoices",
