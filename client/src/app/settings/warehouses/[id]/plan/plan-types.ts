@@ -203,3 +203,8 @@ export interface LocalLocation extends Omit<StorageLocation, "id"> {
 }
 
 export type { StorageLocation, StorageLocationKind };
+
+/** What text gets stamped on each location rectangle on the canvas.
+ *  Operator chooses via the editor toolbar; the choice is persisted
+ *  per-browser in localStorage. */
+export type LocationLabelMode = "code" | "name" | "tags";

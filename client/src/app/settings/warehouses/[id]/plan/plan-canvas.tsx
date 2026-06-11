@@ -52,6 +52,7 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
+  LocationLabelMode,
   PathAnnotation,
   Point,
   SelectionItem,
@@ -72,6 +73,9 @@ interface PlanCanvasProps {
   selection: SelectionSet;
   tool: ToolMode;
   viewport: Viewport;
+  /** What text to stamp on each location rectangle. Operator-picked
+   *  via the editor toolbar; defaults to `code`. */
+  labelMode: LocationLabelMode;
   /** Whether the canvas is in read-only mode (viewer permissions). */
   readOnly: boolean;
   /** Canvas height in CSS pixels — the parent picks this so the
@@ -212,6 +216,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       selection,
       tool,
       viewport,
+      labelMode,
       readOnly,
       heightPx,
       onSelectionChange,
@@ -1009,6 +1014,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 <LocationShape
                   key={id ?? loc.id}
                   location={loc}
+                  labelMode={labelMode}
                   selected={isSelected(selection, { kind: "location", id })}
                   readOnly={readOnly}
                   onSelect={(e) => selectItem({ kind: "location", id }, e)}
@@ -1805,12 +1811,14 @@ function HoleOutline({
 
 function LocationShape({
   location,
+  labelMode,
   selected,
   readOnly,
   onSelect,
   onGroupMove,
 }: {
   location: LocalLocation;
+  labelMode: LocationLabelMode;
   selected: boolean;
   readOnly: boolean;
   onSelect: SelectHandler;
@@ -1858,21 +1866,41 @@ function LocationShape({
         cornerRadius={6}
       />
       <Text
-        text={
-          location.code
-            ? location.code
-            : location.tempId
-              ? "(unsaved)"
-              : location.name || "—"
-        }
+        text={locationLabel(location, labelMode)}
         x={8}
         y={8}
+        width={Math.max(location.width - 16, 40)}
         fontSize={14}
         fontStyle="bold"
         fill="rgba(15,23,42,0.85)"
         listening={false}
+        ellipsis
+        wrap="none"
       />
     </Group>
+  );
+}
+
+// Picks the on-canvas label string for one location. Falls back through
+// code → name → "(unsaved)" / "—" if the chosen mode comes up empty so
+// the rectangle is never wordless.
+function locationLabel(
+  location: LocalLocation,
+  mode: LocationLabelMode,
+): string {
+  if (mode === "name") {
+    return location.name || location.code || (location.tempId ? "(unsaved)" : "—");
+  }
+  if (mode === "tags") {
+    const tags = location.tags ?? [];
+    if (tags.length > 0) return tags.slice(0, 3).join(" · ");
+    return location.code || location.name || (location.tempId ? "(unsaved)" : "—");
+  }
+  // Default: code.
+  return (
+    location.code ||
+    (location.tempId ? "(unsaved)" : location.name) ||
+    "—"
   );
 }
 

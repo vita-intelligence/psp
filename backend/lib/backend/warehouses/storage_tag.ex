@@ -23,6 +23,16 @@ defmodule Backend.Warehouses.StorageTag do
 
   @valid_kinds ~w(location cell both)
 
+  # Keys reserved for the typed cell-purpose enum
+  # (`Backend.Warehouses.StorageCell.@purposes`). Allowing a tag with
+  # one of these keys is misleading: an operator tagging a regular cell
+  # `quarantine` would expect the auto-router to send incoming lots
+  # there, but the router only consumes `cell.purpose`. Blocking the
+  # key here keeps the two systems disjoint and obvious.
+  @reserved_keys ~w(regular quarantine hold rejected dispatch)
+
+  def reserved_keys, do: @reserved_keys
+
   schema "storage_tags" do
     field :uuid, Ecto.UUID, autogenerate: true
     field :key, :string
@@ -59,6 +69,10 @@ defmodule Backend.Warehouses.StorageTag do
     )
     |> validate_inclusion(:kind, @valid_kinds,
       message: "must be one of: #{Enum.join(@valid_kinds, ", ")}"
+    )
+    |> validate_exclusion(:key, @reserved_keys,
+      message:
+        "is reserved for the cell-purpose enum — set the cell's Purpose instead of using a tag"
     )
     |> unique_constraint([:company_id, :key],
       name: :storage_tags_company_id_key_index,

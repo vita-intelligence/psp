@@ -44,6 +44,7 @@ import type {
   FloorOutline,
   Hole,
   LocalLocation,
+  LocationLabelMode,
   PathAnnotation,
   Point,
   SelectionSet,
@@ -212,6 +213,23 @@ export function WarehousePlanEditor({
   // detailed plan work on small laptops where the sidebar shell eats
   // half the canvas room.
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // What text to put on each location rectangle on the canvas. `code`
+  // (the auto-numbered identifier) is the default because it's stable
+  // and short, but operators often can't read intent off a code at a
+  // glance — `name` and `tags` are the human-friendly alternatives.
+  // Persisted per-user in localStorage so the choice survives reloads.
+  const [labelMode, setLabelMode] = useState<LocationLabelMode>("code");
+  useEffect(() => {
+    const stored = window.localStorage.getItem("psp.warehouse-plan.label-mode");
+    if (stored === "code" || stored === "name" || stored === "tags") {
+      setLabelMode(stored);
+    }
+  }, []);
+  const onLabelModeChange = useCallback((next: LocationLabelMode) => {
+    setLabelMode(next);
+    window.localStorage.setItem("psp.warehouse-plan.label-mode", next);
+  }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1646,6 +1664,10 @@ export function WarehousePlanEditor({
               }
             />
           )}
+          <LabelModeSelect
+            value={labelMode}
+            onChange={onLabelModeChange}
+          />
           <Button
             type="button"
             size="sm"
@@ -1740,6 +1762,7 @@ export function WarehousePlanEditor({
           selection={selection}
           setSelection={setSelection}
           canvasHeight={canvasHeight}
+          labelMode={labelMode}
           readOnly={readOnly}
           warehouseUuid={warehouseUuid}
           storageTags={storageTags}
@@ -1802,6 +1825,7 @@ export function WarehousePlanEditor({
                 selection={selection}
                 tool={tool}
                 viewport={activeFloor.viewport}
+                labelMode={labelMode}
                 readOnly={readOnly}
                 heightPx={canvasHeight}
                 onSelectionChange={setSelection}
@@ -1897,6 +1921,7 @@ interface MobileLayoutProps {
   selection: SelectionSet;
   setSelection: (s: SelectionSet) => void;
   canvasHeight: number;
+  labelMode: LocationLabelMode;
   readOnly: boolean;
   warehouseUuid: string;
   storageTags: StorageTag[];
@@ -1959,6 +1984,7 @@ function MobileLayout({
   selection,
   setSelection,
   canvasHeight,
+  labelMode,
   readOnly,
   warehouseUuid,
   storageTags,
@@ -2029,6 +2055,7 @@ function MobileLayout({
             selection={selection}
             tool={tool}
             viewport={activeFloor.viewport}
+            labelMode={labelMode}
             readOnly={readOnly}
             heightPx={canvasHeight}
             onSelectionChange={setSelection}
@@ -2152,6 +2179,47 @@ function MobileLayout({
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * Display-mode picker for the location labels on the canvas. The
+ * default `code` is short + stable but doesn't convey intent; `name`
+ * and `tags` let operators flip between the three depending on what
+ * they're doing at the moment (designing vs. labelling vs. compliance
+ * walk-through). Persisted in localStorage by the parent so the
+ * choice survives reloads.
+ */
+function LabelModeSelect({
+  value,
+  onChange,
+}: {
+  value: LocationLabelMode;
+  onChange: (next: LocationLabelMode) => void;
+}) {
+  const OPTIONS: Array<{ value: LocationLabelMode; label: string }> = [
+    { value: "code", label: "Code" },
+    { value: "name", label: "Name" },
+    { value: "tags", label: "Tags" },
+  ];
+  return (
+    <label
+      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-1.5 py-0.5 text-[11px]"
+      title="What text to show on each storage area"
+    >
+      <span className="text-muted-foreground">Label:</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as LocationLabelMode)}
+        className="rounded-sm bg-background px-1 py-0.5 text-xs font-medium outline-none focus-visible:ring-1"
+      >
+        {OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
