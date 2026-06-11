@@ -439,7 +439,7 @@ defmodule Backend.Vendors do
             "certificate_id" => c.certificate_id,
             "certificate_number" => c.certificate_number,
             "valid_until" => c.valid_until && Date.to_iso8601(c.valid_until),
-            "document_url" => c.document_url
+            "document_file_id" => c.document_file_id
           }
         end)
     }

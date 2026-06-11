@@ -1,18 +1,15 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Plus, Package, X } from "lucide-react";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import type { Item, Vendor } from "@/lib/types";
+import {
+  SearchPicker,
+  type SearchPickerOption,
+} from "@/components/forms/search-picker";
+import type { Vendor } from "@/lib/types";
 import {
   addApprovedItemAction,
   removeApprovedItemAction,
@@ -20,8 +17,12 @@ import {
 
 interface Props {
   vendor: Vendor;
-  items: Item[];
   canEdit: boolean;
+}
+
+interface ItemOption extends SearchPickerOption {
+  /** Item type carried through for the sublabel chip. */
+  itemType: string;
 }
 
 /**
@@ -32,26 +33,53 @@ interface Props {
  * on each chip. No edit UI for the row's notes here — operators who
  * need a long-form record can fall back to the audit log.
  */
-export function VendorApprovedItemsCard({ vendor, items, canEdit }: Props) {
+export function VendorApprovedItemsCard({ vendor, canEdit }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [pickItemId, setPickItemId] = useState<string>("");
+  const [picked, setPicked] = useState<ItemOption | null>(null);
 
   const approvedItemIds = useMemo(
     () => new Set(vendor.approved_items.map((r) => r.item_id)),
     [vendor.approved_items],
   );
 
-  const availableItems = items.filter((i) => !approvedItemIds.has(i.id));
+  // Server-side search. Returns up to 50 matches per query so the
+  // dropdown stays fast at any catalogue size — the old in-memory
+  // filter against a fully-loaded `items` prop was the ceiling.
+  const fetchItems = useCallback(
+    async (query: string, signal?: AbortSignal): Promise<ItemOption[]> => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/items?${params.toString()}`, {
+        signal,
+      });
+      if (!res.ok) throw new Error(`Items search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          code?: string | null;
+          name: string;
+          item_type?: string | null;
+        }>;
+      };
+      return (body.items ?? []).map((i) => ({
+        id: i.id,
+        label: i.name,
+        code: i.code ?? null,
+        sublabel: i.item_type ?? null,
+        itemType: i.item_type ?? "",
+      }));
+    },
+    [],
+  );
 
   function onAdd() {
-    if (!pickItemId) return;
-    const itemId = Number(pickItemId);
+    if (!picked) return;
     startTransition(async () => {
-      const res = await addApprovedItemAction(vendor.uuid, itemId);
+      const res = await addApprovedItemAction(vendor.uuid, picked.id);
       if (res.ok) {
         toast.success("Item added");
-        setPickItemId("");
+        setPicked(null);
         router.refresh();
       } else {
         toast.error(res.detail);
@@ -116,35 +144,22 @@ export function VendorApprovedItemsCard({ vendor, items, canEdit }: Props) {
         </ul>
       )}
 
-      {canEdit && availableItems.length > 0 && (
+      {canEdit && (
         <div className="mt-4 flex items-end gap-2">
           <div className="flex-1 space-y-1.5">
             <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
               Add an item
             </label>
-            <Select value={pickItemId} onValueChange={setPickItemId}>
-              <SelectTrigger className="h-9">
-                <SelectValue placeholder="Pick an item…" />
-              </SelectTrigger>
-              <SelectContent>
-                {availableItems.map((i) => (
-                  <SelectItem key={i.id} value={String(i.id)}>
-                    <span className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {i.code ?? `#${i.id}`}
-                      </span>
-                      <span>{i.name}</span>
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchPicker<ItemOption>
+              fetcher={fetchItems}
+              value={picked}
+              onChange={setPicked}
+              placeholder="Search items by name, SKU, or barcode…"
+              emptyHint="No active items match — adjust the search."
+              excludeIds={approvedItemIds}
+            />
           </div>
-          <Button
-            size="sm"
-            onClick={onAdd}
-            disabled={pending || !pickItemId}
-          >
+          <Button size="sm" onClick={onAdd} disabled={pending || !picked}>
             <Plus className="mr-1.5 size-4" />
             Add
           </Button>

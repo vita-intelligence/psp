@@ -20,8 +20,6 @@ import { VendorApprovedItemsCard } from "./vendor-approved-items-card";
 import { VendorCertificatesCard } from "./vendor-certificates-card";
 import { VendorPriceHistoryCard } from "./vendor-price-history-card";
 import type { VendorApprovalStatus } from "@/lib/types";
-import { listItemsForReceive } from "@/lib/stock/server";
-import { listCertificatesForPicker } from "@/lib/certificates/server";
 
 export const metadata = { title: "Vendor · Procurement · PSP" };
 
@@ -53,10 +51,10 @@ export default async function VendorDetailPage({
   }
 
   const { uuid } = await params;
-  const [vendor, items, certs, initialComments, priceHistory] = await Promise.all([
+  // Items + certificate registries are fetched on-demand by the
+  // SearchPicker inside each card, so we skip the bulk lists here.
+  const [vendor, initialComments, priceHistory] = await Promise.all([
     getVendor(uuid),
-    listItemsForReceive(),
-    listCertificatesForPicker(),
     listCommentsForEntity("vendor", uuid),
     listVendorPriceHistory(uuid),
   ]);
@@ -125,17 +123,9 @@ export default async function VendorDetailPage({
             currentUserId={user.id}
           />
 
-          <VendorApprovedItemsCard
-            vendor={vendor}
-            items={items ?? []}
-            canEdit={canEdit}
-          />
+          <VendorApprovedItemsCard vendor={vendor} canEdit={canEdit} />
 
-          <VendorCertificatesCard
-            vendor={vendor}
-            certificates={certs ?? []}
-            canEdit={canEdit}
-          />
+          <VendorCertificatesCard vendor={vendor} canEdit={canEdit} />
 
           <VendorPriceHistoryCard rows={priceHistory} />
 

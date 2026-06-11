@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -23,16 +23,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
-import type { Certificate, Vendor, VendorFile } from "@/lib/types";
+import {
+  SearchPicker,
+  type SearchPickerOption,
+} from "@/components/forms/search-picker";
+import type { Vendor, VendorFile } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import {
   attachVendorCertificateAction,
@@ -49,8 +46,13 @@ import {
 
 interface Props {
   vendor: Vendor;
-  certificates: Certificate[];
   canEdit: boolean;
+}
+
+interface CertOption extends SearchPickerOption {
+  /** Carried through so the "valid until" field can auto-derive from
+   *  the certificate's default validity window. */
+  defaultValidityMonths: number | null;
 }
 
 /**
@@ -59,11 +61,7 @@ interface Props {
  * FSSC / halal / kosher / organic there once, the same way we do
  * for items.
  */
-export function VendorCertificatesCard({
-  vendor,
-  certificates,
-  canEdit,
-}: Props) {
+export function VendorCertificatesCard({ vendor, canEdit }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -73,7 +71,7 @@ export function VendorCertificatesCard({
     debug?: ErrorDebug;
   } | null>(null);
 
-  const [certificateId, setCertificateId] = useState<string>("");
+  const [pickedCert, setPickedCert] = useState<CertOption | null>(null);
   const [certNumber, setCertNumber] = useState("");
   const [validFrom, setValidFrom] = useState("");
   const [validUntil, setValidUntil] = useState("");
@@ -85,12 +83,37 @@ export function VendorCertificatesCard({
     [vendor.certificates],
   );
 
-  const availableCerts = certificates.filter(
-    (c) => !attachedCertIds.has(c.id),
+  // Server-side cert search. Drops the eager `certificates` prop so
+  // the page stays light when the registry grows.
+  const fetchCertificates = useCallback(
+    async (query: string, signal?: AbortSignal): Promise<CertOption[]> => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/certificates?${params.toString()}`, {
+        signal,
+      });
+      if (!res.ok)
+        throw new Error(`Certificates search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          name: string;
+          issuing_body?: string | null;
+          default_validity_months?: number | null;
+        }>;
+      };
+      return (body.items ?? []).map((c) => ({
+        id: c.id,
+        label: c.name,
+        sublabel: c.issuing_body ?? null,
+        defaultValidityMonths: c.default_validity_months ?? null,
+      }));
+    },
+    [],
   );
 
   function resetForm() {
-    setCertificateId("");
+    setPickedCert(null);
     setCertNumber("");
     setValidFrom("");
     setValidUntil("");
@@ -100,11 +123,11 @@ export function VendorCertificatesCard({
   }
 
   function onAttach() {
-    if (!certificateId) return;
+    if (!pickedCert) return;
     setError(null);
     startTransition(async () => {
       const res = await attachVendorCertificateAction(vendor.uuid, {
-        certificate_id: Number(certificateId),
+        certificate_id: pickedCert.id,
         certificate_number: certNumber.trim() || null,
         valid_from: validFrom || null,
         valid_until: validUntil || null,
@@ -232,7 +255,7 @@ export function VendorCertificatesCard({
         </ul>
       )}
 
-      {canEdit && availableCerts.length > 0 && (
+      {canEdit && (
         <div className="mt-4">
           <Button
             size="sm"
@@ -259,21 +282,14 @@ export function VendorCertificatesCard({
               <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Certificate type
               </Label>
-              <Select
-                value={certificateId}
-                onValueChange={setCertificateId}
-              >
-                <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Pick a certificate…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableCerts.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchPicker<CertOption>
+                fetcher={fetchCertificates}
+                value={pickedCert}
+                onChange={setPickedCert}
+                placeholder="Search certificates by name or issuing body…"
+                emptyHint="No certificates match — adjust the search."
+                excludeIds={attachedCertIds}
+              />
             </div>
 
             <div className="space-y-1.5">
@@ -303,22 +319,17 @@ export function VendorCertificatesCard({
                   Valid until
                 </Label>
                 <DerivedDateField
-                  computed={(() => {
-                    const cert = availableCerts.find(
-                      (c) => String(c.id) === certificateId,
-                    );
-                    return addMonths(validFrom, cert?.default_validity_months);
-                  })()}
+                  computed={addMonths(
+                    validFrom,
+                    pickedCert?.defaultValidityMonths ?? null,
+                  )}
                   value={validUntil}
                   onChange={setValidUntil}
-                  derivationHint={(() => {
-                    const cert = availableCerts.find(
-                      (c) => String(c.id) === certificateId,
-                    );
-                    return cert?.default_validity_months
-                      ? `Valid from + ${cert.default_validity_months}mo`
-                      : "Pick a certificate type";
-                  })()}
+                  derivationHint={
+                    pickedCert?.defaultValidityMonths
+                      ? `Valid from + ${pickedCert.defaultValidityMonths}mo`
+                      : "Pick a certificate type"
+                  }
                   reasonComputedMissing="Pick cert type + set valid-from to auto-calculate."
                 />
               </div>
@@ -360,10 +371,7 @@ export function VendorCertificatesCard({
             <Button variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button
-              onClick={onAttach}
-              disabled={pending || !certificateId}
-            >
+            <Button onClick={onAttach} disabled={pending || !pickedCert}>
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
               Attach
             </Button>
