@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Camera, ImagePlus, Keyboard, X } from "lucide-react";
 import QrScanner from "qr-scanner";
@@ -23,6 +23,12 @@ type Mode = "camera" | "file" | "manual";
  */
 export function ScannerView() {
   const router = useRouter();
+  const params = useSearchParams();
+  // `?to=<cell_uuid>` is set when the worker arrived via the
+  // scan-cell-first flow ("Scan a lot to move here" on the cell
+  // page). Carries through so the lot scan jumps straight into the
+  // move flow with that cell pre-set as the destination.
+  const destinationCellUuid = params.get("to");
   const [mode, setMode] = useState<Mode>("camera");
   const [error, setError] = useState<string | null>(null);
   const [manualValue, setManualValue] = useState("");
@@ -31,7 +37,7 @@ export function ScannerView() {
 
   const handleResult = useCallback(
     (value: string) => {
-      const dest = routeFromUrl(value);
+      const dest = routeFromUrl(value, destinationCellUuid);
       if (!dest) {
         setError("Unrecognised QR. Expecting a stock lot or storage cell URL.");
         return;
@@ -39,7 +45,7 @@ export function ScannerView() {
       scannerRef.current?.stop();
       router.replace(dest);
     },
-    [router],
+    [router, destinationCellUuid],
   );
 
   // Start live camera scanner on mount; if it throws (HTTP LAN dev,
@@ -208,8 +214,15 @@ export function ScannerView() {
 
 /** Map a QR payload to a mobile route. Accepts full URLs or path-only
  *  shapes so we tolerate both the "real URL" QRs and any future
- *  shorter encodings. Returns null if the shape isn't recognised. */
-function routeFromUrl(raw: string): string | null {
+ *  shorter encodings. Returns null if the shape isn't recognised.
+ *
+ *  When `destinationCellUuid` is supplied, a lot scan routes straight
+ *  into the move flow with that cell pre-set as the destination —
+ *  this is the scan-cell-first put-away path. */
+function routeFromUrl(
+  raw: string,
+  destinationCellUuid: string | null,
+): string | null {
   if (!raw) return null;
   let path: string;
   try {
@@ -218,7 +231,13 @@ function routeFromUrl(raw: string): string | null {
     path = raw.startsWith("/") ? raw : `/${raw}`;
   }
   const lotMatch = path.match(/\/stock\/lots\/([^/]+)/);
-  if (lotMatch?.[1]) return `/m/lots/${encodeURIComponent(lotMatch[1])}`;
+  if (lotMatch?.[1]) {
+    const uuid = encodeURIComponent(lotMatch[1]);
+    if (destinationCellUuid) {
+      return `/m/lots/${uuid}/move?to=${encodeURIComponent(destinationCellUuid)}`;
+    }
+    return `/m/lots/${uuid}`;
+  }
   const cellMatch = path.match(/\/stock\/cells\/([^/]+)/);
   if (cellMatch?.[1]) return `/m/scan/cell/${encodeURIComponent(cellMatch[1])}`;
   return null;

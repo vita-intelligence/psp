@@ -133,13 +133,13 @@ export default async function MobileCellScanPage({ params }: Props) {
       </main>
 
       <footer className="space-y-2 border-t border-border/60 px-4 py-3">
-        {/* No lot context here yet — scan-cell first / scan-lot second
-            isn't wired through the move flow. For now the action sends
-            the worker back to the camera so they can scan the lot QR.
-            Wiring this cell as the pre-set destination on the lot
-            scanner is a follow-up slice. */}
+        {/* `?to=<cell_uuid>` carries this cell through to the lot
+            scanner. The scanner reads `to`, and on a successful lot
+            scan routes the operator into the move flow with this
+            cell pre-set as the destination — skipping the
+            recommendation step entirely. */}
         <Button asChild size="lg" className="h-12 w-full">
-          <Link href="/m/scan">
+          <Link href={`/m/scan?to=${encodeURIComponent(cell.uuid)}`}>
             <Camera className="mr-2 size-4" />
             Scan a lot to move here
           </Link>

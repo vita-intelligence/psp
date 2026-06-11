@@ -122,50 +122,34 @@ export default async function MobileLotPage({ params }: Props) {
           />
         </section>
 
-        {/* Action — gated on lot state. When the lot isn't pending
-            put-away the card renders inert + explains why. */}
+        {/* Action — the same move flow works whether the lot is on
+            the Unregistered cell (first put-away) or on a real shelf
+            (relocate). Wording changes based on current state. The
+            BE recommender excludes the lot's current cell from
+            suggestions so "move to where I already am" never appears. */}
         <section className="space-y-2">
           <h2 className="text-xs uppercase tracking-wider text-muted-foreground">
             What do you want to do?
           </h2>
 
-          {isPendingPutaway ? (
-            <Link
-              href={`/m/lots/${lot.uuid}/move`}
-              className="flex items-center gap-3 rounded-lg border border-border/60 bg-card px-4 py-4 active:bg-muted"
-            >
-              <span className="grid size-9 place-items-center rounded-full bg-brand/15 text-brand">
-                <MoveRight className="size-5" />
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold">Move to a shelf</p>
-                <p className="text-xs text-muted-foreground">
-                  Scan the lot to confirm, walk to the suggested cell,
-                  scan to land + photo.
-                </p>
-              </div>
-            </Link>
-          ) : (
-            <div
-              aria-disabled
-              className="flex items-center gap-3 rounded-lg border border-dashed border-border/60 bg-muted/40 px-4 py-4 opacity-70"
-            >
-              <span className="grid size-9 place-items-center rounded-full bg-muted text-muted-foreground">
-                <MoveRight className="size-5" />
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold">Move to a shelf</p>
-                <p className="text-xs text-muted-foreground">
-                  Already on{" "}
-                  <span className="font-medium">
-                    {location?.name ?? "a shelf"}
-                  </span>
-                  . Move actions for already-shelved lots ship in the
-                  next slice.
-                </p>
-              </div>
+          <Link
+            href={`/m/lots/${lot.uuid}/move`}
+            className="flex items-center gap-3 rounded-lg border border-border/60 bg-card px-4 py-4 active:bg-muted"
+          >
+            <span className="grid size-9 place-items-center rounded-full bg-brand/15 text-brand">
+              <MoveRight className="size-5" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">
+                {isPendingPutaway ? "Move to a shelf" : "Move to another shelf"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {isPendingPutaway
+                  ? "Scan the lot to confirm, walk to the suggested cell, scan to land + photo."
+                  : `Currently on ${location?.name ?? "a shelf"}. Pick a new cell, scan, photo, done.`}
+              </p>
             </div>
-          )}
+          </Link>
 
           {/* Consume / Dispose actions land in follow-up slices. */}
         </section>

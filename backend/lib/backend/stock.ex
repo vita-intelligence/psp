@@ -1366,6 +1366,19 @@ defmodule Backend.Stock do
         |> Repo.all()
         |> MapSet.new()
 
+      # 1b. Cells the lot is CURRENTLY in. Excluded from candidates
+      #     below — "move to the cell you're already in" isn't a
+      #     useful suggestion. Stored separately from consolidation
+      #     because for same-item consolidation we still want the
+      #     hint to surface (just on neighbouring cells).
+      source_cell_ids =
+        from(p in Placement,
+          where: p.stock_lot_id == ^lot.id and p.qty > 0,
+          select: p.storage_cell_id,
+          distinct: true
+        )
+        |> Repo.all()
+
       # 2. Committed footprint per cell — sum each placement's
       #    (qty × packaging dims) so we know the *real* free space.
       #    Joined to the lot for packaging dims; lots without dims are
@@ -1385,7 +1398,9 @@ defmodule Backend.Stock do
           {cell_id, sum_footprints(footprints)}
         end)
 
-      # 3. Candidate cells with breadcrumb.
+      # 3. Candidate cells with breadcrumb. Source cells are excluded
+      #    so the recommender never suggests "move here" for the cell
+      #    the lot is already in.
       query =
         from c in StorageCell,
           join: l in StorageLocation,
@@ -1398,7 +1413,8 @@ defmodule Backend.Stock do
             c.company_id == ^company_id and
               is_nil(c.system_kind) and
               is_nil(l.system_kind) and
-              is_nil(f.system_kind),
+              is_nil(f.system_kind) and
+              c.id not in ^source_cell_ids,
           select: %{cell: c, location: l, floor: f, warehouse: w}
 
       query

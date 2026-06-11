@@ -37,6 +37,14 @@ type Step = "verify-lot" | "pick" | "directions" | "verify-scan" | "confirm";
 interface Props {
   lot: StockLot;
   recommendations: MoveRecommendation[];
+  /** Set when the worker arrived via the scan-cell-first path
+   *  (`/m/scan/cell/<uuid>` → "Scan a lot to move here" →
+   *  `/m/scan?to=<cell>` → `/m/lots/<lot>/move?to=<cell>`). The lot
+   *  was just scanned so verify-lot is skipped, and the destination
+   *  is locked so PickStep + DirectionsStep are skipped too — flow
+   *  drops straight into verify-cell-scan to confirm the worker is
+   *  physically at the cell, then confirm + photo. */
+  preSetDestination?: ScannedCell | null;
 }
 
 const SKIP_REASONS = [
@@ -70,12 +78,31 @@ const SKIP_REASONS = [
  *      submit. The move endpoint stamps the photo URL / skip-reason
  *      on the movement so audits show why.
  */
-export function MoveFlow({ lot, recommendations }: Props) {
+export function MoveFlow({
+  lot,
+  recommendations,
+  preSetDestination,
+}: Props) {
   const router = useRouter();
-  const [step, setStep] = useState<Step>("verify-lot");
-  const [expected, setExpected] = useState<ScannedCell | null>(null);
+  // When we arrived from the scan-cell-first path, both
+  // verifications are already done implicitly:
+  //   * Lot identity — the scanner only routes here on a
+  //     successful lot scan, so we treat verify-lot as already
+  //     passed.
+  //   * Destination — the cell QR was scanned BEFORE the lot, so
+  //     we expect it and lock the flow to it.
+  // We still gate on physical re-confirmation at the destination
+  // (the worker may have walked away between the two scans), so the
+  // initial step is `verify-scan` with `expected` locked.
+  const arrivedFromCellScan = !!preSetDestination;
+  const [step, setStep] = useState<Step>(
+    arrivedFromCellScan ? "verify-scan" : "verify-lot",
+  );
+  const [expected, setExpected] = useState<ScannedCell | null>(
+    preSetDestination ?? null,
+  );
   const [scanned, setScanned] = useState<ScannedCell | null>(null);
-  const [lotVerified, setLotVerified] = useState(false);
+  const [lotVerified, setLotVerified] = useState(arrivedFromCellScan);
   const [qty, setQty] = useState<string>(String(lot.qty_on_hand ?? ""));
   const [skipReason, setSkipReason] = useState<string>("");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
