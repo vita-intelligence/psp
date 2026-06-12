@@ -42,6 +42,10 @@ import {
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CurrencyPicker } from "@/components/forms/currency-picker";
 import {
+  SearchPicker,
+  type SearchPickerOption,
+} from "@/components/forms/search-picker";
+import {
   DerivedDateField,
   addDaysFromToday,
 } from "@/components/forms/derived-date-field";
@@ -51,8 +55,6 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
-import type { VendorSummary, Warehouse } from "@/lib/types";
-import type { ItemPickerRow } from "@/lib/items/server";
 import type { ErrorDebug } from "@/lib/errors/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import {
@@ -63,10 +65,26 @@ import {
   type POLineInput,
 } from "@/lib/purchase-orders/actions";
 
-interface Props {
-  vendors: VendorSummary[];
-  items: ItemPickerRow[];
-  warehouses: Warehouse[];
+/** Vendor option — carries the picker label + the metadata the form
+ *  derives off (currency_code, lead time) so we don't need a second
+ *  round-trip after a pick. */
+interface VendorOption extends SearchPickerOption {
+  uuid: string;
+  currencyCode: string;
+  defaultLeadTimeDays: number;
+  isApproved: boolean;
+  isActive: boolean;
+}
+
+/** Item option — carries item.code so the line row can render the
+ *  hint underneath the picker without a parallel lookup. */
+interface ItemOption extends SearchPickerOption {
+  uuid: string;
+  externalSku: string | null;
+}
+
+interface WarehouseOption extends SearchPickerOption {
+  uuid: string;
 }
 
 interface POLineDraft {
@@ -136,7 +154,7 @@ interface PendingFile {
  *   - Tax rate defaults from vendor.tax_rate; user override allowed but
  *     starts read-only.
  */
-export function NewPOForm({ vendors, items, warehouses }: Props) {
+export function NewPOForm() {
   const router = useRouter();
   const resource = "purchase-order:new";
   useFormPresenceBeacon(resource);
@@ -176,22 +194,170 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
 
-  // ── Vendor lookup + auto-defaults ───────────────────────────────────
-  const approvedVendors = useMemo(
-    () => vendors.filter((v) => v.approval_status === "approved" && v.is_active),
-    [vendors],
+  // ── Picker state ────────────────────────────────────────────────────
+  // The pickers ARE the source of truth for header + per-row metadata
+  // (vendor's currency + lead time, item's code, warehouse name). The
+  // FormState mirrors only the integer id + uuid for the submit
+  // payload + collab broadcast — peers reload by uuid when they join.
+  const [selectedVendor, setSelectedVendor] = useState<VendorOption | null>(
+    null,
   );
-  const selectedVendor = approvedVendors.find(
-    (v) => String(v.id) === state.vendorId,
+  const [selectedDefaultWarehouse, setSelectedDefaultWarehouse] =
+    useState<WarehouseOption | null>(null);
+
+  // Per-line picker caches keyed by line.tempId. Local React state so
+  // they survive line edits without round-tripping the (potentially
+  // heavy) option objects through the collab channel.
+  const [pickedItems, setPickedItems] = useState<Record<string, ItemOption | null>>(
+    {},
+  );
+  const [pickedLineWarehouses, setPickedLineWarehouses] = useState<
+    Record<string, WarehouseOption | null>
+  >({});
+
+  const fetchVendorOptions = useCallback(
+    async (query: string, signal?: AbortSignal): Promise<VendorOption[]> => {
+      // Server-side filter: only approved + active vendors are eligible
+      // for a new PO line. Pagination via limit=50.
+      const params = new URLSearchParams({
+        limit: "50",
+        approval_status: "approved",
+        is_active: "true",
+      });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/vendors?${params.toString()}`, { signal });
+      if (!res.ok) throw new Error(`Vendor search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          uuid: string;
+          name: string;
+          code?: string | null;
+          currency_code?: string;
+          default_lead_time_days?: number;
+          approval_status?: string;
+          is_active?: boolean;
+        }>;
+      };
+      return (body.items ?? []).map(vendorRowToOption);
+    },
+    [],
   );
 
-  function onPickVendor(id: string) {
-    setField("vendorId", id);
-    const v = approvedVendors.find((x) => String(x.id) === id);
-    if (v) setField("currency", v.currency_code);
+  const fetchItemOptions = useCallback(
+    async (query: string, signal?: AbortSignal): Promise<ItemOption[]> => {
+      const params = new URLSearchParams({ limit: "50", is_active: "true" });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/items?${params.toString()}`, { signal });
+      if (!res.ok) throw new Error(`Item search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          uuid: string;
+          name: string;
+          code?: string | null;
+          external_sku?: string | null;
+        }>;
+      };
+      return (body.items ?? []).map(itemRowToOption);
+    },
+    [],
+  );
+
+  const fetchWarehouseOptions = useCallback(
+    async (
+      query: string,
+      signal?: AbortSignal,
+    ): Promise<WarehouseOption[]> => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (query) params.set("search", query);
+      const res = await fetch(`/api/warehouses?${params.toString()}`, {
+        signal,
+      });
+      if (!res.ok)
+        throw new Error(`Warehouse search failed (${res.status})`);
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: number;
+          uuid: string;
+          name: string;
+          code?: string | null;
+        }>;
+      };
+      return (body.items ?? []).map((w) => ({
+        id: w.id,
+        uuid: w.uuid,
+        label: w.name,
+        code: w.code ?? null,
+      }));
+    },
+    [],
+  );
+
+  // Collab resync — a peer just picked a vendor, so `state.vendorId`
+  // updated via the form channel but our local `selectedVendor` is
+  // stale. Refetch by id so the derived UI (currency / lead time /
+  // expected-delivery hint) matches.
+  useEffect(() => {
+    if (!state.vendorId) {
+      if (selectedVendor !== null) setSelectedVendor(null);
+      return;
+    }
+    if (selectedVendor?.id === Number(state.vendorId)) return;
+    const controller = new AbortController();
+    fetch(`/api/vendors/${encodeURIComponent(state.vendorId)}`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { vendor?: Parameters<typeof vendorRowToOption>[0] } | null) => {
+        if (body?.vendor) setSelectedVendor(vendorRowToOption(body.vendor));
+      })
+      .catch(() => {
+        /* aborted or transient */
+      });
+    return () => controller.abort();
+    // Refetch on id change OR when picker option is stale relative to
+    // the broadcasted vendorId.
+  }, [state.vendorId, selectedVendor?.id]);
+
+  useEffect(() => {
+    if (!state.default_warehouse_id) {
+      if (selectedDefaultWarehouse !== null) setSelectedDefaultWarehouse(null);
+      return;
+    }
+    if (
+      selectedDefaultWarehouse?.id === Number(state.default_warehouse_id)
+    )
+      return;
+    const controller = new AbortController();
+    fetch(`/api/warehouses/${encodeURIComponent(state.default_warehouse_id)}`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(
+        (body: { warehouse?: { id: number; uuid: string; name: string; code?: string | null } } | null) => {
+          if (body?.warehouse) {
+            setSelectedDefaultWarehouse({
+              id: body.warehouse.id,
+              uuid: body.warehouse.uuid,
+              label: body.warehouse.name,
+              code: body.warehouse.code ?? null,
+            });
+          }
+        },
+      )
+      .catch(() => {
+        /* aborted or transient */
+      });
+    return () => controller.abort();
+  }, [state.default_warehouse_id, selectedDefaultWarehouse?.id]);
+
+  function onPickVendor(opt: VendorOption | null) {
+    setSelectedVendor(opt);
+    setField("vendorId", opt ? String(opt.id) : "");
+    if (opt) setField("currency", opt.currencyCode);
     // tax_rate default is filled server-side from vendor.tax_rate on
-    // create (VendorSummary doesn't expose tax_rate, by design — the
-    // picker payload is intentionally small). Buyer can override here.
+    // create. Buyer can override here.
   }
 
   // ── Computed totals (server is authoritative; we mirror for preview) ─
@@ -251,15 +417,38 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
       "lines",
       state.lines.filter((l) => l.tempId !== tempId),
     );
+    // Drop the per-line picker option caches too so we don't hold a
+    // reference to a deleted line.
+    setPickedItems((prev) => {
+      if (!(tempId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tempId];
+      return next;
+    });
+    setPickedLineWarehouses((prev) => {
+      if (!(tempId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tempId];
+      return next;
+    });
   }
 
-  function onItemPick(line: POLineDraft, itemId: string) {
+  function onItemPick(line: POLineDraft, opt: ItemOption | null) {
     // suggest-price lookup is keyed on (vendor, item, currency) and
     // lives behind `GET /api/purchase-orders/:po/lines/suggest-price` —
     // but on the new form the PO doesn't exist yet. Pre-fill happens
     // on the per-PO add-line dialog AFTER save; here the buyer types
     // the price. (Follow-up: vendor-keyed suggest endpoint.)
-    patchLine(line.tempId, { item_id: itemId });
+    setPickedItems((prev) => ({ ...prev, [line.tempId]: opt }));
+    patchLine(line.tempId, { item_id: opt ? String(opt.id) : "" });
+  }
+
+  function onLineWarehousePick(
+    line: POLineDraft,
+    opt: WarehouseOption | null,
+  ) {
+    setPickedLineWarehouses((prev) => ({ ...prev, [line.tempId]: opt }));
+    patchLine(line.tempId, { warehouse_id: opt ? String(opt.id) : "" });
   }
 
   // ── Files ───────────────────────────────────────────────────────────
@@ -429,8 +618,6 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
     return <JoinErrorCard error={joinError} />;
   }
 
-  const itemById = new Map(items.map((i) => [String(i.id), i]));
-
   return (
     <div
       ref={cursorAnchorRef}
@@ -493,40 +680,22 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
               Vendor *
             </Label>
             <div className="relative">
-              <Select value={state.vendorId} onValueChange={onPickVendor}>
-                <SelectTrigger
-                  id="vendorId"
-                  className="h-10"
-                  onFocus={() => focusField("vendorId")}
-                  onBlur={() => blurField("vendorId")}
-                >
-                  <SelectValue placeholder="Pick an approved vendor…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {approvedVendors.length === 0 ? (
-                    <SelectItem value="__empty__" disabled>
-                      No approved vendors. Approve one first.
-                    </SelectItem>
-                  ) : (
-                    approvedVendors.map((v) => (
-                      <SelectItem key={v.id} value={String(v.id)}>
-                        <span className="flex items-center gap-2">
-                          <span className="font-mono text-[10px] text-muted-foreground">
-                            {v.code ?? `#${v.id}`}
-                          </span>
-                          <span>{v.name}</span>
-                        </span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
+              <SearchPicker<VendorOption>
+                id="vendorId"
+                fetcher={fetchVendorOptions}
+                value={selectedVendor}
+                onChange={onPickVendor}
+                onFocus={() => focusField("vendorId")}
+                onBlur={() => blurField("vendorId")}
+                placeholder="Search approved vendors by name or code…"
+                emptyHint="No approved vendors match. Approve one first."
+              />
               <FieldEditingIndicator peer={fieldEditors.vendorId} />
             </div>
             {selectedVendor && (
               <p className="text-[11px] text-muted-foreground">
-                Lead time {selectedVendor.default_lead_time_days}d ·{" "}
-                Currency {selectedVendor.currency_code}
+                Lead time {selectedVendor.defaultLeadTimeDays}d · Currency{" "}
+                {selectedVendor.currencyCode}
               </p>
             )}
           </div>
@@ -588,7 +757,7 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
                 id="expected_delivery_date"
                 computed={
                   selectedVendor
-                    ? addDaysFromToday(selectedVendor.default_lead_time_days)
+                    ? addDaysFromToday(selectedVendor.defaultLeadTimeDays)
                     : ""
                 }
                 value={state.expected_delivery_date}
@@ -597,7 +766,7 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
                 onBlur={() => blurField("expected_delivery_date")}
                 derivationHint={
                   selectedVendor
-                    ? `Today + ${selectedVendor.default_lead_time_days}d lead time`
+                    ? `Today + ${selectedVendor.defaultLeadTimeDays}d lead time`
                     : "Pick a vendor"
                 }
                 reasonComputedMissing="Pick a vendor above to compute."
@@ -614,26 +783,19 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
               Default delivery site
             </Label>
             <div className="relative">
-              <Select
-                value={state.default_warehouse_id}
-                onValueChange={(v) => setField("default_warehouse_id", v)}
-              >
-                <SelectTrigger
-                  id="default_warehouse_id"
-                  className="h-10"
-                  onFocus={() => focusField("default_warehouse_id")}
-                  onBlur={() => blurField("default_warehouse_id")}
-                >
-                  <SelectValue placeholder="Pick a delivery site…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={String(w.id)}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchPicker<WarehouseOption>
+                id="default_warehouse_id"
+                fetcher={fetchWarehouseOptions}
+                value={selectedDefaultWarehouse}
+                onChange={(opt) => {
+                  setSelectedDefaultWarehouse(opt);
+                  setField("default_warehouse_id", opt ? String(opt.id) : "");
+                }}
+                onFocus={() => focusField("default_warehouse_id")}
+                onBlur={() => blurField("default_warehouse_id")}
+                placeholder="Search warehouses…"
+                emptyHint="No warehouses match."
+              />
               <FieldEditingIndicator peer={fieldEditors.default_warehouse_id} />
             </div>
             <p className="text-[10px] text-muted-foreground">
@@ -784,7 +946,9 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
                 </thead>
                 <tbody className="divide-y divide-border/60">
                   {state.lines.map((line, i) => {
-                    const item = itemById.get(line.item_id);
+                    const item = pickedItems[line.tempId] ?? null;
+                    const lineWarehouse =
+                      pickedLineWarehouses[line.tempId] ?? null;
                     const qty = parseFloat(line.qty_ordered) || 0;
                     const price = parseFloat(line.unit_price) || 0;
                     const subtotal = qty * price;
@@ -808,29 +972,17 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
                           {i + 1}
                         </td>
                         <td className="px-2 py-2">
-                          <Select
-                            value={line.item_id}
-                            onValueChange={(v) => onItemPick(line, v)}
-                          >
-                            <SelectTrigger className="h-9 text-xs">
-                              <SelectValue placeholder="Pick item…" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {items.map((it) => (
-                                <SelectItem key={it.id} value={String(it.id)}>
-                                  <span className="flex items-center gap-2">
-                                    <span className="font-mono text-[10px] text-muted-foreground">
-                                      {it.code ?? `#${it.id}`}
-                                    </span>
-                                    <span>{it.name}</span>
-                                  </span>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <SearchPicker<ItemOption>
+                            fetcher={fetchItemOptions}
+                            value={item}
+                            onChange={(opt) => onItemPick(line, opt)}
+                            placeholder="Search items…"
+                            emptyHint="No active items match."
+                            compact
+                          />
                           {item && (
                             <p className="mt-0.5 text-[10px] font-mono text-muted-foreground">
-                              {item.code}
+                              {item.code ?? item.externalSku ?? `#${item.id}`}
                             </p>
                           )}
                         </td>
@@ -898,23 +1050,14 @@ export function NewPOForm({ vendors, items, warehouses }: Props) {
                           {subtotal.toFixed(2)}
                         </td>
                         <td className="px-2 py-2">
-                          <Select
-                            value={line.warehouse_id}
-                            onValueChange={(v) =>
-                              patchLine(line.tempId, { warehouse_id: v })
-                            }
-                          >
-                            <SelectTrigger className="h-9 text-xs">
-                              <SelectValue placeholder="Use PO default" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {warehouses.map((w) => (
-                                <SelectItem key={w.id} value={String(w.id)}>
-                                  {w.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <SearchPicker<WarehouseOption>
+                            fetcher={fetchWarehouseOptions}
+                            value={lineWarehouse}
+                            onChange={(opt) => onLineWarehousePick(line, opt)}
+                            placeholder="Use PO default"
+                            emptyHint="No warehouses match."
+                            compact
+                          />
                         </td>
                         <td className="px-2 py-2">
                           <Input
@@ -1289,5 +1432,47 @@ function priceDeviation(
   return {
     sign: pct >= 0 ? "+" : "−",
     abs: Math.abs(pct),
+  };
+}
+
+/** Shape one vendor row off `/api/vendors?...` into the picker option
+ *  the form reads metadata off (lead time, currency_code). */
+function vendorRowToOption(v: {
+  id: number;
+  uuid: string;
+  name: string;
+  code?: string | null;
+  currency_code?: string;
+  default_lead_time_days?: number;
+  approval_status?: string;
+  is_active?: boolean;
+}): VendorOption {
+  return {
+    id: v.id,
+    uuid: v.uuid,
+    label: v.name,
+    code: v.code ?? null,
+    currencyCode: v.currency_code ?? "GBP",
+    defaultLeadTimeDays: v.default_lead_time_days ?? 0,
+    isApproved: v.approval_status === "approved",
+    isActive: v.is_active !== false,
+  };
+}
+
+/** Shape one item row off `/api/items?...` into the picker option the
+ *  per-line row reads off (item code / external SKU). */
+function itemRowToOption(i: {
+  id: number;
+  uuid: string;
+  name: string;
+  code?: string | null;
+  external_sku?: string | null;
+}): ItemOption {
+  return {
+    id: i.id,
+    uuid: i.uuid,
+    label: i.name,
+    code: i.code ?? i.external_sku ?? null,
+    externalSku: i.external_sku ?? null,
   };
 }

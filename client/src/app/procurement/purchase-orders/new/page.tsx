@@ -6,9 +6,6 @@ import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { listVendorsForPicker } from "@/lib/vendors/server";
-import { listItemsForPicker } from "@/lib/items/server";
-import { listWarehousesForReceive } from "@/lib/stock/server";
 import { ProcurementSubnav } from "../../procurement-subnav";
 import { NewPOForm } from "./new-po-form";
 
@@ -20,11 +17,10 @@ export default async function NewPOPage() {
     redirect("/procurement/purchase-orders");
   }
 
-  const [vendors, items, warehouses] = await Promise.all([
-    listVendorsForPicker().then((v) => v ?? []),
-    listItemsForPicker(),
-    listWarehousesForReceive(),
-  ]);
+  // Eager vendor + item + warehouse fetches dropped — the form's
+  // pickers hit /api/vendors?search&limit=50 etc. on demand, so the
+  // page paints instantly regardless of catalogue size and we don't
+  // ship a megabyte of vendor rows on every PO open.
 
   return (
     <div className="flex flex-1 flex-col">
@@ -61,11 +57,7 @@ export default async function NewPOPage() {
             </p>
           </header>
 
-          <NewPOForm
-            vendors={vendors}
-            items={items}
-            warehouses={warehouses}
-          />
+          <NewPOForm />
         </div>
       </main>
     </div>
