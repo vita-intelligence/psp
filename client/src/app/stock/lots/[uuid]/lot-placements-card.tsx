@@ -3,11 +3,18 @@ import type { StockLot, StockLotPlacement } from "@/lib/types";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { formatCompanyNumber } from "@/lib/format/company";
 import { purposeMeta } from "@/lib/storage-cells/purpose";
+import { PlacementMapToggle } from "./placement-map-toggle";
 
 /**
  * Placements list — where this lot's stock currently lives, broken
  * down by cell. The mobile put-away flow reads from this same data:
  * any row sitting in a system-managed cell shows up there.
+ *
+ * Each non-system row gets a "Show on plan" toggle that drops the
+ * shared `FloorPlanMini` widget inline, matching what the mobile
+ * directions card already shows. System placements (Unregistered /
+ * Holding Room) skip the toggle because there's nothing to pin on a
+ * physical map for them.
  *
  * System cells are rendered with the company-configured
  * `generic_place_name` (default "Holding Room") so operators never see
@@ -77,65 +84,84 @@ function PlacementRow({
 }) {
   const cell = placement.storage_cell;
   const isSystem = isSystemPlacement(cell);
+  // The floor plan only makes sense for real, mapped placements.
+  // System cells (Unregistered / Holding Room) live outside the
+  // drawn floor + don't have a sensible pin target.
+  const canShowMap =
+    !isSystem && !!cell?.floor?.uuid && !!cell?.storage_location?.uuid;
 
   return (
-    <li className="flex flex-wrap items-center gap-3 py-3">
-      <div className="min-w-0 flex-1 space-y-0.5">
-        {/* Top breadcrumb: warehouse → floor. System floors get
-            collapsed because "(System)" reads as a leak. */}
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Building2 className="size-3" />
-          <span>{cell?.warehouse?.name ?? "—"}</span>
-          {!isSystem && cell?.floor?.name && (
-            <>
-              <span>/</span>
-              <span>{cell.floor.name}</span>
-            </>
-          )}
-        </div>
+    <li className="space-y-2 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          {/* Top breadcrumb: warehouse → floor. System floors get
+              collapsed because "(System)" reads as a leak. */}
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+            <Building2 className="size-3" />
+            <span>{cell?.warehouse?.name ?? "—"}</span>
+            {!isSystem && cell?.floor?.name && (
+              <>
+                <span>/</span>
+                <span>{cell.floor.name}</span>
+              </>
+            )}
+          </div>
 
-        {/* Headline: location + cell, using the company-numbered codes
-            (SL00004 / CELL00011) so display matches the rules admins
-            set under Settings → Numbering. For system placements
-            that's just the operator-facing "Holding Room" + a small
-            Auto pill. */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Layers className="size-3.5 text-muted-foreground" />
-          {isSystem ? (
-            <>
-              <span className="text-sm font-medium">{holdingName}</span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
-                <Sparkles className="size-2.5" />
-                Auto
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="font-mono text-sm font-medium">
-                {cell?.storage_location?.code ?? "—"}
-              </span>
-              {cell?.code && (
-                <span className="font-mono text-sm text-muted-foreground">
-                  · {cell.code}
+          {/* Headline: location + cell, using the company-numbered codes
+              (SL00004 / CELL00011) so display matches the rules admins
+              set under Settings → Numbering. For system placements
+              that's just the operator-facing "Holding Room" + a small
+              Auto pill. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Layers className="size-3.5 text-muted-foreground" />
+            {isSystem ? (
+              <>
+                <span className="text-sm font-medium">{holdingName}</span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                  <Sparkles className="size-2.5" />
+                  Auto
                 </span>
-              )}
-              {/* Cell purpose chip — proves the placement matches the
-                  lot's compliance status. A quarantine lot should be
-                  in a quarantine cell; if it isn't, the chip flags it
-                  at a glance. */}
-              <PurposeChip purpose={cell?.purpose} />
-            </>
-          )}
+              </>
+            ) : (
+              <>
+                <span className="font-mono text-sm font-medium">
+                  {cell?.storage_location?.code ?? "—"}
+                </span>
+                {cell?.code && (
+                  <span className="font-mono text-sm text-muted-foreground">
+                    · {cell.code}
+                  </span>
+                )}
+                {/* Cell purpose chip — proves the placement matches the
+                    lot's compliance status. A quarantine lot should be
+                    in a quarantine cell; if it isn't, the chip flags it
+                    at a glance. */}
+                <PurposeChip purpose={cell?.purpose} />
+              </>
+            )}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="font-mono text-base font-semibold tracking-tight">
+            {qty}
+          </div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            {symbol || "qty"}
+          </div>
         </div>
       </div>
-      <div className="shrink-0 text-right">
-        <div className="font-mono text-base font-semibold tracking-tight">
-          {qty}
-        </div>
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          {symbol || "qty"}
-        </div>
-      </div>
+
+      {canShowMap && (
+        <PlacementMapToggle
+          floorUuid={cell!.floor!.uuid}
+          locationUuid={cell!.storage_location!.uuid}
+          locationLabel={
+            cell?.storage_location?.code ??
+            cell?.storage_location?.name ??
+            "this rack"
+          }
+        />
+      )}
     </li>
   );
 }
