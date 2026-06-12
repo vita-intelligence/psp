@@ -423,8 +423,16 @@ defmodule BackendWeb.Payloads do
       uuid: v.uuid,
       code: render_code(v, "vendor"),
       name: v.name,
+      # Email surfaces on PO detail so the FE can gate the Send PO /
+      # Send RFQ / Send note buttons on the presence of a primary
+      # contact email without a second round-trip.
+      email: v.email,
       currency_code: v.currency_code,
       default_lead_time_days: v.default_lead_time_days,
+      # Surfaced so the FE quick-add-invoice flow can default the
+      # invoice due date to `today + payment_terms_days` without a
+      # second vendor fetch.
+      payment_terms_days: v.payment_terms_days,
       approval_status: v.approval_status,
       is_active: v.is_active
     }
@@ -538,11 +546,31 @@ defmodule BackendWeb.Payloads do
       code: render_code(i, "item"),
       name: i.name,
       item_type: i.item_type,
-      external_sku: i.external_sku
+      external_sku: i.external_sku,
+      # Compliance + storage hints surfaced for the mobile pre-receive
+      # checklist (and any other "what should we expect on this PO" view).
+      # Defensive defaults so legacy / draft items don't break the
+      # payload.
+      compliance_status: Map.get(i, :compliance_status) || "draft",
+      storage_tags: Map.get(i, :storage_tags) || [],
+      attributes: Map.get(i, :attributes) || %{},
+      stock_uom: maybe_uom_compact(Map.get(i, :stock_uom))
     }
   end
 
   defp maybe_item_summary(_), do: nil
+
+  defp maybe_uom_compact(%Backend.Units.UnitOfMeasurement{} = u) do
+    %{
+      id: u.id,
+      uuid: u.uuid,
+      code: render_code(u, "unit_of_measurement"),
+      symbol: u.symbol,
+      name: u.name
+    }
+  end
+
+  defp maybe_uom_compact(_), do: nil
 
   defp preloaded_list(record, field, shape_fn) do
     case Map.get(record, field) do
@@ -657,6 +685,56 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  @doc """
+  AP-ledger row shape. Surfaces the totals + payment state + the PDF
+  link if attached, plus a slim PO/vendor reference for the global
+  invoices page.
+  """
+  def procurement_invoice(i) do
+    po = i.purchase_order
+
+    %{
+      id: i.id,
+      uuid: i.uuid,
+      purchase_order_id: i.purchase_order_id,
+      purchase_order:
+        po &&
+          %{
+            uuid: po.uuid,
+            code: render_code(po, "purchase_order"),
+            status: po.status,
+            vendor: po && po.vendor && vendor_summary(po.vendor)
+          },
+      invoice_number: i.invoice_number,
+      invoice_date: i.invoice_date,
+      due_date: i.due_date,
+      currency_code: i.currency_code,
+      subtotal: i.subtotal,
+      tax_amount: i.tax_amount,
+      total_inc_tax: i.total_inc_tax,
+      paid_amount: i.paid_amount,
+      status: i.status,
+      derived_overdue:
+        i.status == "received" and not is_nil(i.due_date) and
+          Date.compare(i.due_date, Date.utc_today()) == :lt,
+      notes: i.notes,
+      file:
+        i.file_blob_path &&
+          %{
+            filename: i.file_filename,
+            mime: i.file_mime,
+            byte_size: i.file_byte_size,
+            url: "/api/procurement/invoices/" <> i.uuid <> "/file/serve"
+          },
+      paid_at: i.paid_at,
+      paid_by: actor(i, :paid_by),
+      created_by: actor(i, :created_by),
+      updated_by: actor(i, :updated_by),
+      inserted_at: i.inserted_at,
+      updated_at: i.updated_at
+    }
+  end
+
   def purchase_order_approval(a) do
     %{
       uuid: a.uuid,
@@ -757,6 +835,41 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_po_uuid(%{purchase_order: %{uuid: uuid}}) when is_binary(uuid), do: uuid
   defp maybe_po_uuid(_), do: nil
+
+  @doc """
+  Slim "inspections ledger" row — fields the global desktop ledger
+  needs without loading the full 8-section payload. Mirrors the
+  `procurement_invoice` shape so the desktop tables feel the same.
+  """
+  def goods_in_inspection_summary(%Backend.GoodsIn.Inspection{} = i) do
+    %{
+      id: i.id,
+      uuid: i.uuid,
+      code: render_code(i, "goods_in_inspection"),
+      status: i.status,
+      delivery_date: i.delivery_date,
+      quality_decision: i.quality_decision,
+      goods_in_operator: actor(i, :goods_in_operator),
+      goods_in_operator_signed_at: i.goods_in_operator_signed_at,
+      quality_approver: actor(i, :quality_approver),
+      quality_approver_signed_at: i.quality_approver_signed_at,
+      purchase_order: maybe_po_summary(i.purchase_order),
+      inserted_at: i.inserted_at,
+      updated_at: i.updated_at
+    }
+  end
+
+  defp maybe_po_summary(%Backend.Purchasing.PurchaseOrder{} = po) do
+    %{
+      id: po.id,
+      uuid: po.uuid,
+      code: render_code(po, "purchase_order"),
+      status: po.status,
+      vendor: preloaded_or_nil(po, :vendor, &vendor_summary/1)
+    }
+  end
+
+  defp maybe_po_summary(_), do: nil
 
   def goods_in_inspection_item(item) do
     %{

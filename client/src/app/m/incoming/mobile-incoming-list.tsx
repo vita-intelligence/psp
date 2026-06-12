@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -22,7 +21,6 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
-import { createDraftAction } from "@/lib/goods-in/actions";
 import type {
   MobileIncomingResponse,
   MobileIncomingRow,
@@ -74,7 +72,6 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [, startTransition] = useTransition();
 
   // Re-fetch when the warehouse filter changes by reading the same
   // page through a client fetch. The server-action route hits the
@@ -270,27 +267,15 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
                 todayIso={todayIso}
                 tomorrowIso={tomorrowIso}
                 onTap={(uuid) => {
-                  // If there's already an open inspection, navigate
-                  // straight there. Otherwise spin up a draft and
-                  // jump into it. We use a transition so the button
-                  // stays disabled while we wait without blocking
-                  // other taps in the list.
-                  const existing = row.open_inspection;
-                  if (existing) {
-                    router.push(`/m/inspections/${existing.uuid}`);
-                    return;
-                  }
-                  startTransition(async () => {
-                    const result = await createDraftAction(uuid, {
-                      delivery_date: todayIso,
-                    });
-                    if (result.ok) {
-                      router.push(`/m/inspections/${result.inspection.uuid}`);
-                    } else {
-                      setErrorDetail(result.detail);
-                      setErrorCode(result.code);
-                    }
-                  });
+                  // Insert the "what to expect" pre-receive checklist
+                  // before the operator dives into the inspection
+                  // wizard. The pre-receive screen cross-checks vendor
+                  // paperwork against the PO + surfaces compliance
+                  // flags so the worker spots an unfinalised item
+                  // before the truck pulls away. The Start receiving
+                  // CTA on that screen handles the open-vs-create
+                  // inspection branching.
+                  router.push(`/m/incoming/${uuid}`);
                 }}
               />
             ))}

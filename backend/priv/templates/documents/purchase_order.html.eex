@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Purchase Order <%= @po_code %></title>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font: 11pt/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #111; margin: 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 12px; }
+  .from { max-width: 55%; }
+  .from h1 { font-size: 13pt; margin: 0 0 4px 0; }
+  .from .meta { font-size: 9.5pt; color: #444; white-space: pre-line; }
+  .doc-block { text-align: right; }
+  .doc-block h2 { font-size: 17pt; margin: 0; letter-spacing: 1px; text-transform: uppercase; }
+  .doc-block .code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12pt; color: #111; }
+  .doc-block .status { display: inline-block; margin-top: 6px; padding: 2px 8px; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 3px; background: #eef; color: #336; }
+  .audience-banner { background: #fff7e6; border: 1px solid #f5c97a; color: #6b4a00; font-size: 9.5pt; padding: 6px 10px; margin-top: 14px; border-radius: 3px; }
+
+  section.parties { display: flex; gap: 24px; margin-top: 18px; }
+  section.parties .col { flex: 1; }
+  section.parties h3 { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin: 0 0 6px 0; }
+  section.parties .name { font-weight: 600; }
+  section.parties .body { font-size: 10pt; color: #222; white-space: pre-line; }
+
+  section.summary { margin-top: 16px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-size: 9.5pt; }
+  section.summary .cell { border: 1px solid #ddd; padding: 6px 8px; border-radius: 3px; }
+  section.summary .label { color: #666; text-transform: uppercase; font-size: 8pt; letter-spacing: 0.6px; }
+  section.summary .value { font-weight: 600; margin-top: 2px; }
+
+  table.lines { width: 100%; margin-top: 18px; border-collapse: collapse; font-size: 10pt; }
+  table.lines th, table.lines td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+  table.lines thead th { background: #f4f4f4; text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.5px; color: #555; border-bottom: 1px solid #ccc; }
+  table.lines td.num, table.lines th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.lines tfoot td { border-bottom: none; font-weight: 600; }
+  table.lines tfoot tr.grand td { border-top: 2px solid #111; font-size: 11pt; }
+  .item-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9.5pt; color: #555; }
+
+  section.notes { margin-top: 18px; font-size: 10pt; }
+  section.notes h3 { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin: 0 0 6px 0; }
+  section.notes .body { white-space: pre-line; }
+
+  footer { margin-top: 26px; border-top: 1px solid #ddd; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8.5pt; color: #777; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="from">
+    <h1><%= @company.name || "Company" %></h1>
+    <div class="meta"><%= @company.legal_address || "" %><%= if @company.tax_number, do: "\nVAT " <> @company.tax_number, else: "" %><%= if @company.registration_number, do: "\nReg " <> @company.registration_number, else: "" %><%= if @company.email, do: "\n" <> @company.email, else: "" %><%= if @company.phone, do: " · " <> @company.phone, else: "" %></div>
+  </div>
+  <div class="doc-block">
+    <h2>Purchase Order</h2>
+    <div class="code"><%= @po_code %></div>
+    <div class="status"><%= @po.status %></div>
+  </div>
+</header>
+
+<%= if @audience_label != "" do %>
+<div class="audience-banner"><%= @audience_label %> — not for distribution outside the company.</div>
+<% end %>
+
+<section class="parties">
+  <div class="col">
+    <h3>Vendor</h3>
+    <div class="name"><%= (@vendor && @vendor.name) || "—" %></div>
+    <div class="body"><%= (@vendor && @vendor.legal_address) || "" %><%= if @vendor && @vendor.email, do: "\n" <> @vendor.email, else: "" %><%= if @vendor && @vendor.phone, do: "\n" <> @vendor.phone, else: "" %><%= if @vendor && @vendor.contact_name, do: "\nAttn: " <> @vendor.contact_name, else: "" %></div>
+  </div>
+  <div class="col">
+    <h3>Deliver to</h3>
+    <div class="name"><%= @company.name || "" %></div>
+    <div class="body"><%= @po.delivery_address || @company.legal_address || "" %></div>
+  </div>
+</section>
+
+<section class="summary">
+  <div class="cell"><div class="label">Issued</div><div class="value"><%= @now %></div></div>
+  <div class="cell"><div class="label">Expected delivery</div><div class="value"><%= @format_date.(@po.expected_delivery_date) %></div></div>
+  <div class="cell"><div class="label">Currency</div><div class="value"><%= @currency %></div></div>
+  <div class="cell"><div class="label">Payment terms</div><div class="value"><%= (@vendor && @vendor.payment_terms_days && "#{@vendor.payment_terms_days} days") || "—" %></div></div>
+</section>
+
+<table class="lines">
+  <thead>
+    <tr>
+      <th class="num" style="width: 24px;">#</th>
+      <th style="width: 22%;">Item</th>
+      <th>Description</th>
+      <th class="num" style="width: 64px;">Qty</th>
+      <th class="num" style="width: 90px;">Unit price</th>
+      <th class="num" style="width: 96px;">Subtotal</th>
+    </tr>
+  </thead>
+  <tbody>
+    <%= for {l, idx} <- Enum.with_index(@lines, 1) do %>
+      <tr>
+        <td class="num"><%= idx %></td>
+        <td>
+          <div><%= (l.item && l.item.name) || "—" %></div>
+          <div class="item-code"><%= @item_code.(l.item) %><%= if l.vendor_part_no, do: " · " <> l.vendor_part_no, else: "" %></div>
+        </td>
+        <td><%= (l.item && l.item.description) || "" %><%= if l.notes && @audience == :internal, do: "\n— " <> l.notes, else: "" %></td>
+        <td class="num"><%= @format_qty.(l.qty_ordered) %></td>
+        <td class="num"><%= @format_money.(l.unit_price) %></td>
+        <td class="num"><%= @format_money.(l.line_subtotal) %></td>
+      </tr>
+    <% end %>
+    <%= if @lines == [] do %>
+      <tr><td colspan="6" style="color: #999; text-align: center; padding: 18px;">No lines on this PO.</td></tr>
+    <% end %>
+  </tbody>
+  <tfoot>
+    <tr><td colspan="5" style="text-align: right;">Subtotal</td><td class="num"><%= @format_money.(@po.subtotal) %></td></tr>
+    <%= if @po.discount_amount && Decimal.compare(@po.discount_amount, 0) == :gt do %>
+      <tr><td colspan="5" style="text-align: right;">Discount</td><td class="num">−<%= @format_money.(@po.discount_amount) %></td></tr>
+    <% end %>
+    <%= if @po.shipping_fees && Decimal.compare(@po.shipping_fees, 0) == :gt do %>
+      <tr><td colspan="5" style="text-align: right;">Shipping</td><td class="num"><%= @format_money.(@po.shipping_fees) %></td></tr>
+    <% end %>
+    <%= if @po.additional_fees && Decimal.compare(@po.additional_fees, 0) == :gt do %>
+      <tr><td colspan="5" style="text-align: right;">Additional</td><td class="num"><%= @format_money.(@po.additional_fees) %></td></tr>
+    <% end %>
+    <%= if @po.tax_amount && Decimal.compare(@po.tax_amount, 0) == :gt do %>
+      <tr><td colspan="5" style="text-align: right;">Tax</td><td class="num"><%= @format_money.(@po.tax_amount) %></td></tr>
+    <% end %>
+    <tr class="grand"><td colspan="5" style="text-align: right;">Grand total</td><td class="num"><%= @format_money.(@po.grand_total) %></td></tr>
+  </tfoot>
+</table>
+
+<%= if @po.notes && @po.notes != "" do %>
+<section class="notes">
+  <h3>Notes</h3>
+  <div class="body"><%= @po.notes %></div>
+</section>
+<% end %>
+
+<%= if @audience == :vendor && @company.payment_details && @company.payment_details != "" do %>
+<section class="notes">
+  <h3>Payment details</h3>
+  <div class="body"><%= @company.payment_details %></div>
+</section>
+<% end %>
+
+<footer>
+  <div><%= @company.name || "" %><%= if @company.tax_number, do: " · VAT " <> @company.tax_number, else: "" %></div>
+  <div>Generated <%= @now %></div>
+</footer>
+
+</body>
+</html>

@@ -30,4 +30,15 @@ defmodule BackendWeb.FallbackController do
       )
     )
   end
+
+  def call(conn, {:error, :document_not_available}) do
+    conn
+    |> put_status(:conflict)
+    |> json(
+      Errors.payload(
+        "document_not_available",
+        "Documents are available once the director has signed this purchase order."
+      )
+    )
+  end
 end

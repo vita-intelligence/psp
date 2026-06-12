@@ -77,3 +77,32 @@ export async function setCurrencyRatesAutoPullAction(
     });
   }
 }
+
+/**
+ * Trigger the ECB pull synchronously and surface the refreshed
+ * company on success. Only callable when auto-pull is on; backend
+ * 409s otherwise.
+ */
+export async function refreshCurrencyRatesNowAction(): Promise<BagResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("refreshCurrencyRatesNowAction");
+
+  try {
+    const res = await api<{ company: Company }>(
+      "/api/company/currency-rates/refresh-now",
+      {
+        method: "POST",
+        token,
+        body: "{}",
+      },
+    );
+    revalidatePath("/settings/company");
+    return { ok: true, company: res.company };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "refreshCurrencyRatesNowAction",
+      fallbackDetail:
+        "Couldn't reach the ECB feed. Try again in a moment — the daily 08:00 UTC tick will still run on schedule.",
+    });
+  }
+}

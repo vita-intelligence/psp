@@ -1,14 +1,23 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
+  AlertCircle,
   AlertTriangle,
-  Box,
   ChevronDown,
   ChevronRight,
   Loader2,
+  Lock,
+  LockKeyhole,
   Plus,
   ShieldAlert,
   Trash2,
@@ -23,6 +32,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -32,9 +42,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
 import type { PurchaseOrder, Warehouse } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
@@ -48,6 +62,11 @@ interface Props {
   warehouses: Warehouse[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Optional — defaults to `true`. When false, the dialog renders
+   *  read-only (no channel join, no presence chips, no inputs). The
+   *  caller usually gates on `procurement.po_receive` upstream and
+   *  doesn't render this dialog at all without permission. */
+  canEdit?: boolean;
 }
 
 /** Stable client-side id keys the React list + lets the dialog refer
@@ -66,6 +85,20 @@ interface LineState {
   packs: PackDraft[];
 }
 
+/** The portion of the dialog state we sync via the live form. Pack
+ *  rows themselves are local React state (an array doesn't fit cleanly
+ *  into per-field broadcast), but the top-level fields + per-pack
+ *  individual values get individual `setField` keys so peers see
+ *  the typing in flight. */
+interface LiveState {
+  warehouse_id: string;
+  supplier_batch_no_default: string;
+  /** Mirror of each pack's editable values, keyed by `pack:<tempId>:<field>`.
+   *  Kept inside the live form state so the snapshot:request handshake
+   *  catches up late joiners with the in-flight pack edits too. */
+  [packField: string]: string;
+}
+
 /**
  * Per-pack receive dialog. Each pack row becomes its own stock_lot
  * with its own packaging, so a PO line for 100kg arriving as
@@ -80,8 +113,19 @@ interface LineState {
  * Advanced fields (manufactured / expiry / country / revision /
  * quarantine route) live behind a per-pack expand toggle so the
  * common case stays compact.
+ *
+ * Realtime collab per psp/CLAUDE.md: two operators commonly receive
+ * the same shipment together (one with the BOL, one keying packs).
+ * Presence avatars, per-field editing indicators, live cursors, and
+ * the head-of-room gate on Submit stop them from racing each other.
  */
-export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
+export function PoReceiveDialog({
+  po,
+  warehouses,
+  open,
+  onOpenChange,
+  canEdit = true,
+}: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<{
@@ -89,9 +133,6 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
     code?: string;
     debug?: ErrorDebug;
   } | null>(null);
-
-  const [warehouseId, setWarehouseId] = useState("");
-  const [batchDefault, setBatchDefault] = useState("");
 
   const eligibleLines = useMemo(
     () =>
@@ -113,6 +154,77 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
     [eligibleLines],
   );
   const [lines, setLines] = useState<LineState[]>(initialLines);
+
+  // One channel per PO. Operators receiving the same PO simultaneously
+  // share this room. PO id (uuid) is stable for the life of the PO,
+  // so the room is too.
+  const resource = `po-receive:${po.uuid}`;
+  useFormPresenceBeacon(resource);
+
+  const liveInitial = useMemo<LiveState>(
+    () => ({ warehouse_id: "", supplier_batch_no_default: "" }),
+    [],
+  );
+
+  const {
+    state: live,
+    setField,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<LiveState>({
+    resource,
+    // Closed dialog or viewer (no perm) ⇒ skip the channel.
+    disabled: !canEdit || !open,
+    initialState: liveInitial,
+    onCommit: (raw) => {
+      // Creator just hit Record receipt. Close everyone's dialog and
+      // refresh the page so the new lots show up.
+      const msg = raw as { kind?: string } | null;
+      if (!msg) return;
+      if (msg.kind === "received") {
+        toast.success("Receipt recorded", {
+          description: `${creator?.name ?? "The host"} just recorded the receipt.`,
+        });
+        onOpenChange(false);
+        router.refresh();
+      }
+    },
+  });
+
+  // Local mirrors of the two top-level live fields. Keeps the existing
+  // computed-state code untouched; reads go through `live.*`.
+  const warehouseId = live.warehouse_id ?? "";
+  const batchDefault = live.supplier_batch_no_default ?? "";
+
+  function setWarehouseId(v: string) {
+    setField("warehouse_id", v);
+  }
+  function setBatchDefault(v: string) {
+    setField("supplier_batch_no_default", v);
+  }
+
+  // Per-pack helpers — broadcast each keystroke under a stable
+  // `pack:<tempId>:<field>` key so late joiners + peers see the
+  // edits as they happen. The authoritative array stays in local
+  // React state because the submit payload reads it directly.
+  function patchPackLive(tempId: string, patch: Partial<PackDraft>) {
+    for (const [k, v] of Object.entries(patch)) {
+      const key = `pack:${tempId}:${k}`;
+      // Only string-able primitives go through the live form. Booleans
+      // (expanded), nulls, and numerics get coerced to strings for
+      // transport; the local React state keeps the typed value.
+      setField(key, v == null ? "" : String(v));
+    }
+  }
 
   function updateLine(line_uuid: string, mut: (ls: LineState) => LineState) {
     setLines((prev) =>
@@ -143,6 +255,7 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
       ...ls,
       packs: ls.packs.map((p) => (p.tempId === tempId ? { ...p, ...patch } : p)),
     }));
+    patchPackLive(tempId, patch);
   }
 
   function togglePack(line_uuid: string, tempId: string) {
@@ -152,6 +265,40 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
         ?.packs.find((p) => p.tempId === tempId)?.expanded,
     });
   }
+
+  // ── Cursor anchor ─────────────────────────────────────────────────
+  const cursorAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [anchorSize, setAnchorSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+  useEffect(() => {
+    const el = cursorAnchorRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setAnchorSize({ w: rect.width, h: rect.height });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [open]);
+
+  useEffect(() => () => hideCursor(), [hideCursor]);
+
+  const onCursorMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const el = cursorAnchorRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      setCursor(x, y);
+    },
+    [setCursor],
+  );
 
   // ── Validation ─────────────────────────────────────────────────────
   const validity = useMemo(() => {
@@ -186,7 +333,12 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
   const anyIssues = validity.some((v) => v.issues.length > 0);
 
   const canSubmit =
-    warehouseId !== "" && totalReceiving > 0 && !anyIssues && !pending;
+    canEdit &&
+    isCreator &&
+    warehouseId !== "" &&
+    totalReceiving > 0 &&
+    !anyIssues &&
+    !pending;
 
   // ── Submit ─────────────────────────────────────────────────────────
   function onSubmit() {
@@ -227,6 +379,11 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
             countTotalPacks(payload.lines) === 1 ? "" : "s"
           } created.`,
         });
+        // Tell peers in the same room that we just persisted — they
+        // close their dialog and refresh too. Without this both
+        // operators would still see the open dialog after one of
+        // them submitted.
+        broadcastCommit({ kind: "received" });
         onOpenChange(false);
         router.refresh();
       } else {
@@ -235,155 +392,256 @@ export function PoReceiveDialog({ po, warehouses, open, onOpenChange }: Props) {
     });
   }
 
+  if (canEdit && joinError) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Truck className="size-4 text-muted-foreground" />
+              Receive against PO {po.code ?? `#${po.id}`}
+            </DialogTitle>
+          </DialogHeader>
+          <JoinErrorCard error={joinError} />
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Truck className="size-4 text-muted-foreground" />
-            Receive against PO {po.code ?? `#${po.id}`}
-          </DialogTitle>
-          <DialogDescription>
-            Each pack row becomes its own lot. Split a line when the
-            supplier ships in mixed packaging — e.g. 4 drums + 1 sack.
-            The system creates one lot per row, each with its own
-            packaging and (optionally) its own supplier batch.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4">
-          {error && (
-            <ErrorBanner
-              detail={error.detail}
-              code={error.code}
-              debug={error.debug}
-            />
-          )}
-
-          {/* Compliance banner — quarantine is the default per
-              psp/CLAUDE.md. Operators trigger the Goods-In Inspection
-              to clear lots out of quarantine; there is no skip. */}
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-            <ShieldAlert className="mt-0.5 size-4 shrink-0" />
-            <p>
-              <strong>All packs land in quarantine.</strong> A goods-in
-              inspection on the lot detail page (QC approver signs)
-              clears the lot to available. For trusted low-risk vendors
-              a stock.qc holder can expedite release with an audited
-              reason — never the receiver.
-            </p>
-          </div>
-
-          {/* Top-level fields — warehouse + default batch */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                Warehouse *
-              </Label>
-              <Select value={warehouseId} onValueChange={setWarehouseId}>
-                <SelectTrigger id="warehouseId" className="h-9">
-                  <SelectValue placeholder="Pick a warehouse…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={String(w.id)}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                Supplier batch (default)
-              </Label>
-              <Input
-                value={batchDefault}
-                onChange={(e) => setBatchDefault(e.target.value)}
-                placeholder="BA25123521 — applies to packs that don't override"
-                className="h-9 font-mono"
+        <div
+          ref={cursorAnchorRef}
+          onMouseMove={onCursorMove}
+          onMouseLeave={hideCursor}
+          className="relative"
+        >
+          {/* Remote cursors layer */}
+          <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+            {Object.entries(cursors).map(([id, cursor]) => (
+              <RemoteCursor
+                key={id}
+                cursor={cursor}
+                anchorWidth={anchorSize.w}
+                anchorHeight={anchorSize.h}
               />
-              <p className="text-[10px] text-muted-foreground">
-                Packs inherit this unless they set their own batch in
-                "More fields". Keeps mixed-batch receipts traceable.
-              </p>
-            </div>
+            ))}
           </div>
 
-          {/* Per-line sections with packs */}
-          {eligibleLines.length === 0 ? (
-            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-xs text-muted-foreground">
-              Nothing left to receive on this PO.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {eligibleLines.map((l) => {
-                const ls = lines.find((x) => x.line_uuid === l.uuid)!;
-                const v = validity.find((x) => x.line_uuid === l.uuid)!;
-                return (
-                  <LineSection
-                    key={l.uuid}
-                    poLine={l}
-                    state={ls}
-                    validity={v}
-                    onAddPack={() => addPack(l.uuid)}
-                    onRemovePack={(tempId) => removePack(l.uuid, tempId)}
-                    onPatchPack={(tempId, patch) =>
-                      patchPack(l.uuid, tempId, patch)
-                    }
-                    onTogglePack={(tempId) => togglePack(l.uuid, tempId)}
-                  />
-                );
-              })}
+          <DialogHeader>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="space-y-1.5">
+                <DialogTitle className="flex items-center gap-2">
+                  <Truck className="size-4 text-muted-foreground" />
+                  Receive against PO {po.code ?? `#${po.id}`}
+                </DialogTitle>
+                <DialogDescription>
+                  Each pack row becomes its own lot. Split a line when the
+                  supplier ships in mixed packaging — e.g. 4 drums + 1 sack.
+                  The system creates one lot per row, each with its own
+                  packaging and (optionally) its own supplier batch.
+                </DialogDescription>
+              </div>
+              <CollabAvatars peers={presence} />
             </div>
-          )}
+          </DialogHeader>
+
+          <fieldset
+            disabled={!canEdit || !isCreator || pending}
+            className="contents"
+          >
+            <div className="space-y-4">
+              {error && (
+                <ErrorBanner
+                  detail={error.detail}
+                  code={error.code}
+                  debug={error.debug}
+                />
+              )}
+
+              {canEdit && !isCreator && creator && (
+                <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+                  <Lock className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    Only{" "}
+                    <span className="font-medium text-foreground">
+                      {creator.name}
+                    </span>{" "}
+                    can record this receipt. Your edits sync to them live.
+                  </span>
+                </div>
+              )}
+
+              {/* Compliance banner — quarantine is the default per
+                  psp/CLAUDE.md. Operators trigger the Goods-In Inspection
+                  to clear lots out of quarantine; there is no skip. */}
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+                <p>
+                  <strong>All packs land in quarantine.</strong> A goods-in
+                  inspection on the lot detail page (QC approver signs)
+                  clears the lot to available. For trusted low-risk vendors
+                  a stock.qc holder can expedite release with an audited
+                  reason — never the receiver.
+                </p>
+              </div>
+
+              {/* Top-level fields — warehouse + default batch */}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label
+                    htmlFor="warehouseId"
+                    className="text-[11px] uppercase tracking-wider text-muted-foreground"
+                  >
+                    Warehouse *
+                  </Label>
+                  <div className="relative">
+                    <Select value={warehouseId} onValueChange={setWarehouseId}>
+                      <SelectTrigger
+                        id="warehouseId"
+                        className="h-9"
+                        onFocus={() => focusField("warehouse_id")}
+                        onBlur={() => blurField("warehouse_id")}
+                      >
+                        <SelectValue placeholder="Pick a warehouse…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {warehouses.map((w) => (
+                          <SelectItem key={w.id} value={String(w.id)}>
+                            {w.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FieldEditingIndicator
+                      peer={fieldEditors.warehouse_id}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label
+                    htmlFor="batchDefault"
+                    className="text-[11px] uppercase tracking-wider text-muted-foreground"
+                  >
+                    Supplier batch (default)
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="batchDefault"
+                      value={batchDefault}
+                      onChange={(e) => setBatchDefault(e.target.value)}
+                      onFocus={() => focusField("supplier_batch_no_default")}
+                      onBlur={() => blurField("supplier_batch_no_default")}
+                      placeholder="BA25123521 — applies to packs that don't override"
+                      className="h-9 font-mono"
+                    />
+                    <FieldEditingIndicator
+                      peer={fieldEditors.supplier_batch_no_default}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Packs inherit this unless they set their own batch in
+                    &quot;More fields&quot;. Keeps mixed-batch receipts traceable.
+                  </p>
+                </div>
+              </div>
+
+              {/* Per-line sections with packs */}
+              {eligibleLines.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-xs text-muted-foreground">
+                  Nothing left to receive on this PO.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {eligibleLines.map((l) => {
+                    const ls = lines.find((x) => x.line_uuid === l.uuid)!;
+                    const v = validity.find((x) => x.line_uuid === l.uuid)!;
+                    return (
+                      <LineSection
+                        key={l.uuid}
+                        poLine={l}
+                        state={ls}
+                        validity={v}
+                        focusField={focusField}
+                        blurField={blurField}
+                        fieldEditors={fieldEditors}
+                        onAddPack={() => addPack(l.uuid)}
+                        onRemovePack={(tempId) => removePack(l.uuid, tempId)}
+                        onPatchPack={(tempId, patch) =>
+                          patchPack(l.uuid, tempId, patch)
+                        }
+                        onTogglePack={(tempId) => togglePack(l.uuid, tempId)}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <DialogFooter className="flex-col gap-2 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-xs text-muted-foreground">
+                {totalReceiving > 0 && (
+                  <>
+                    Recording {totalReceiving} unit
+                    {totalReceiving === 1 ? "" : "s"} across{" "}
+                    {validity.reduce(
+                      (acc, v) =>
+                        acc +
+                        (lines
+                          .find((l) => l.line_uuid === v.line_uuid)
+                          ?.packs.filter((p) => parseFloat(p.qty || "0") > 0)
+                          .length ?? 0),
+                      0,
+                    )}{" "}
+                    lot
+                    {validity.reduce(
+                      (acc, v) =>
+                        acc +
+                        (lines
+                          .find((l) => l.line_uuid === v.line_uuid)
+                          ?.packs.filter((p) => parseFloat(p.qty || "0") > 0)
+                          .length ?? 0),
+                      0,
+                    ) === 1
+                      ? ""
+                      : "s"}
+                    .
+                  </>
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                  disabled={pending}
+                  // Cancel is always available — leaving the dialog isn't
+                  // a destructive action, it just closes our own view.
+                  type="button"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={onSubmit}
+                  disabled={!canSubmit}
+                  type="button"
+                  title={
+                    isCreator
+                      ? undefined
+                      : creator
+                        ? `Only ${creator.name} can record this receipt.`
+                        : undefined
+                  }
+                >
+                  {pending && (
+                    <Loader2 className="mr-1.5 size-4 animate-spin" />
+                  )}
+                  Record receipt
+                </Button>
+              </div>
+            </DialogFooter>
+          </fieldset>
         </div>
-
-        <DialogFooter className="flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-xs text-muted-foreground">
-            {totalReceiving > 0 && (
-              <>
-                Recording {totalReceiving} unit{totalReceiving === 1 ? "" : "s"}{" "}
-                across{" "}
-                {validity.reduce(
-                  (acc, v) =>
-                    acc +
-                    (lines
-                      .find((l) => l.line_uuid === v.line_uuid)
-                      ?.packs.filter((p) => parseFloat(p.qty || "0") > 0)
-                      .length ?? 0),
-                  0,
-                )}{" "}
-                lot
-                {validity.reduce(
-                  (acc, v) =>
-                    acc +
-                    (lines
-                      .find((l) => l.line_uuid === v.line_uuid)
-                      ?.packs.filter((p) => parseFloat(p.qty || "0") > 0)
-                      .length ?? 0),
-                  0,
-                ) === 1
-                  ? ""
-                  : "s"}
-                .
-              </>
-            )}
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={pending}
-            >
-              Cancel
-            </Button>
-            <Button onClick={onSubmit} disabled={!canSubmit}>
-              {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-              Record receipt
-            </Button>
-          </div>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -397,6 +655,9 @@ function LineSection({
   poLine,
   state,
   validity,
+  focusField,
+  blurField,
+  fieldEditors,
   onAddPack,
   onRemovePack,
   onPatchPack,
@@ -404,7 +665,13 @@ function LineSection({
 }: {
   poLine: PurchaseOrder["lines"][number];
   state: LineState;
-  validity: { sum: number; remaining: number; issues: string[] };
+  validity: { sum: number; remaining: string; issues: string[] };
+  focusField: (field: string) => void;
+  blurField: (field: string) => void;
+  fieldEditors: Record<
+    string,
+    import("@/lib/realtime/use-live-form").CollabPeer | null
+  >;
   onAddPack: () => void;
   onRemovePack: (tempId: string) => void;
   onPatchPack: (tempId: string, patch: Partial<PackDraft>) => void;
@@ -475,6 +742,9 @@ function LineSection({
                   key={p.tempId}
                   index={i}
                   pack={p}
+                  focusField={focusField}
+                  blurField={blurField}
+                  fieldEditors={fieldEditors}
                   onPatch={(patch) => onPatchPack(p.tempId, patch)}
                   onRemove={() => onRemovePack(p.tempId)}
                   onToggle={() => onTogglePack(p.tempId)}
@@ -507,16 +777,26 @@ function LineSection({
 function PackRows({
   index,
   pack,
+  focusField,
+  blurField,
+  fieldEditors,
   onPatch,
   onRemove,
   onToggle,
 }: {
   index: number;
   pack: PackDraft;
+  focusField: (field: string) => void;
+  blurField: (field: string) => void;
+  fieldEditors: Record<
+    string,
+    import("@/lib/realtime/use-live-form").CollabPeer | null
+  >;
   onPatch: (patch: Partial<PackDraft>) => void;
   onRemove: () => void;
   onToggle: () => void;
 }) {
+  const keyFor = (field: string) => `pack:${pack.tempId}:${field}`;
   return (
     <>
       <tr>
@@ -524,19 +804,27 @@ function PackRows({
           {index + 1}
         </td>
         <td className="px-2 py-1.5">
-          <Input
-            type="text"
-            inputMode="decimal"
-            value={pack.qty}
-            onChange={(e) => onPatch({ qty: e.target.value })}
-            aria-label={`Pack ${index + 1} quantity`}
-            className="h-8 text-right font-mono text-xs"
-          />
+          <div className="relative">
+            <Input
+              type="text"
+              inputMode="decimal"
+              value={pack.qty}
+              onChange={(e) => onPatch({ qty: e.target.value })}
+              onFocus={() => focusField(keyFor("qty"))}
+              onBlur={() => blurField(keyFor("qty"))}
+              aria-label={`Pack ${index + 1} quantity`}
+              className="h-8 text-right font-mono text-xs"
+            />
+            <FieldEditingIndicator peer={fieldEditors[keyFor("qty")]} />
+          </div>
         </td>
         <td className="px-2 py-1.5">
           <NumberInput
             value={pack.package_length_mm}
             onChange={(v) => onPatch({ package_length_mm: v })}
+            onFocus={() => focusField(keyFor("package_length_mm"))}
+            onBlur={() => blurField(keyFor("package_length_mm"))}
+            editor={fieldEditors[keyFor("package_length_mm")]}
             label={`Pack ${index + 1} length mm`}
           />
         </td>
@@ -544,6 +832,9 @@ function PackRows({
           <NumberInput
             value={pack.package_width_mm}
             onChange={(v) => onPatch({ package_width_mm: v })}
+            onFocus={() => focusField(keyFor("package_width_mm"))}
+            onBlur={() => blurField(keyFor("package_width_mm"))}
+            editor={fieldEditors[keyFor("package_width_mm")]}
             label={`Pack ${index + 1} width mm`}
           />
         </td>
@@ -551,23 +842,36 @@ function PackRows({
           <NumberInput
             value={pack.package_height_mm}
             onChange={(v) => onPatch({ package_height_mm: v })}
+            onFocus={() => focusField(keyFor("package_height_mm"))}
+            onBlur={() => blurField(keyFor("package_height_mm"))}
+            editor={fieldEditors[keyFor("package_height_mm")]}
             label={`Pack ${index + 1} height mm`}
           />
         </td>
         <td className="px-2 py-1.5">
-          <Input
-            type="text"
-            inputMode="decimal"
-            value={pack.package_weight_kg}
-            onChange={(e) => onPatch({ package_weight_kg: e.target.value })}
-            aria-label={`Pack ${index + 1} weight kg`}
-            className="h-8 text-right font-mono text-xs"
-          />
+          <div className="relative">
+            <Input
+              type="text"
+              inputMode="decimal"
+              value={pack.package_weight_kg}
+              onChange={(e) => onPatch({ package_weight_kg: e.target.value })}
+              onFocus={() => focusField(keyFor("package_weight_kg"))}
+              onBlur={() => blurField(keyFor("package_weight_kg"))}
+              aria-label={`Pack ${index + 1} weight kg`}
+              className="h-8 text-right font-mono text-xs"
+            />
+            <FieldEditingIndicator
+              peer={fieldEditors[keyFor("package_weight_kg")]}
+            />
+          </div>
         </td>
         <td className="px-2 py-1.5">
           <NumberInput
             value={pack.units_per_package}
             onChange={(v) => onPatch({ units_per_package: v })}
+            onFocus={() => focusField(keyFor("units_per_package"))}
+            onBlur={() => blurField(keyFor("units_per_package"))}
+            editor={fieldEditors[keyFor("units_per_package")]}
             label={`Pack ${index + 1} units per package`}
           />
         </td>
@@ -575,6 +879,9 @@ function PackRows({
           <NumberInput
             value={pack.stack_factor}
             onChange={(v) => onPatch({ stack_factor: v })}
+            onFocus={() => focusField(keyFor("stack_factor"))}
+            onBlur={() => blurField(keyFor("stack_factor"))}
+            editor={fieldEditors[keyFor("stack_factor")]}
             label={`Pack ${index + 1} stack factor`}
           />
         </td>
@@ -613,49 +920,86 @@ function PackRows({
           <td colSpan={9} className="border-t border-dashed border-border/60 bg-muted/20 px-3 py-2">
             <div className="grid gap-2.5 sm:grid-cols-3">
               <FieldLabel label="Supplier batch (override)">
-                <Input
-                  value={pack.supplier_batch_no ?? ""}
-                  onChange={(e) =>
-                    onPatch({ supplier_batch_no: e.target.value })
-                  }
-                  placeholder="Inherit default"
-                  className="h-8 font-mono text-xs"
-                />
+                <div className="relative">
+                  <Input
+                    value={pack.supplier_batch_no ?? ""}
+                    onChange={(e) =>
+                      onPatch({ supplier_batch_no: e.target.value })
+                    }
+                    onFocus={() => focusField(keyFor("supplier_batch_no"))}
+                    onBlur={() => blurField(keyFor("supplier_batch_no"))}
+                    placeholder="Inherit default"
+                    className="h-8 font-mono text-xs"
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors[keyFor("supplier_batch_no")]}
+                  />
+                </div>
               </FieldLabel>
               <FieldLabel label="Country of origin">
-                <CountryPicker
-                  value={pack.country_of_origin ?? ""}
-                  onChange={(v) =>
-                    onPatch({ country_of_origin: v ?? "" })
-                  }
-                  compact
-                />
+                <div
+                  className="relative"
+                  onFocus={() => focusField(keyFor("country_of_origin"))}
+                  onBlur={() => blurField(keyFor("country_of_origin"))}
+                >
+                  <CountryPicker
+                    value={pack.country_of_origin ?? ""}
+                    onChange={(v) =>
+                      onPatch({ country_of_origin: v ?? "" })
+                    }
+                    compact
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors[keyFor("country_of_origin")]}
+                  />
+                </div>
               </FieldLabel>
               <FieldLabel label="Revision">
-                <Input
-                  value={pack.revision ?? ""}
-                  onChange={(e) => onPatch({ revision: e.target.value })}
-                  placeholder="V01"
-                  className="h-8 font-mono text-xs"
-                />
+                <div className="relative">
+                  <Input
+                    value={pack.revision ?? ""}
+                    onChange={(e) => onPatch({ revision: e.target.value })}
+                    onFocus={() => focusField(keyFor("revision"))}
+                    onBlur={() => blurField(keyFor("revision"))}
+                    placeholder="V01"
+                    className="h-8 font-mono text-xs"
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors[keyFor("revision")]}
+                  />
+                </div>
               </FieldLabel>
               <FieldLabel label="Manufactured">
-                <Input
-                  type="date"
-                  value={pack.manufactured_at ?? ""}
-                  onChange={(e) =>
-                    onPatch({ manufactured_at: e.target.value })
-                  }
-                  className="h-8 text-xs"
-                />
+                <div className="relative">
+                  <Input
+                    type="date"
+                    value={pack.manufactured_at ?? ""}
+                    onChange={(e) =>
+                      onPatch({ manufactured_at: e.target.value })
+                    }
+                    onFocus={() => focusField(keyFor("manufactured_at"))}
+                    onBlur={() => blurField(keyFor("manufactured_at"))}
+                    className="h-8 text-xs"
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors[keyFor("manufactured_at")]}
+                  />
+                </div>
               </FieldLabel>
               <FieldLabel label="Expiry">
-                <Input
-                  type="date"
-                  value={pack.expiry_at ?? ""}
-                  onChange={(e) => onPatch({ expiry_at: e.target.value })}
-                  className="h-8 text-xs"
-                />
+                <div className="relative">
+                  <Input
+                    type="date"
+                    value={pack.expiry_at ?? ""}
+                    onChange={(e) => onPatch({ expiry_at: e.target.value })}
+                    onFocus={() => focusField(keyFor("expiry_at"))}
+                    onBlur={() => blurField(keyFor("expiry_at"))}
+                    className="h-8 text-xs"
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors[keyFor("expiry_at")]}
+                  />
+                </div>
               </FieldLabel>
               {/* Quarantine routing is server-side mandatory per
                   psp/CLAUDE.md — receivers don't get a skip switch.
@@ -676,24 +1020,37 @@ function PackRows({
 function NumberInput({
   value,
   onChange,
+  onFocus,
+  onBlur,
+  editor,
   label,
 }: {
   value: number;
   onChange: (v: number) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  editor?: import("@/lib/realtime/use-live-form").CollabPeer | null;
   label: string;
 }) {
   return (
-    <Input
-      type="text"
-      inputMode="numeric"
-      value={String(value || "")}
-      onChange={(e) => {
-        const n = Number(e.target.value);
-        onChange(Number.isFinite(n) ? n : 0);
-      }}
-      aria-label={label}
-      className="h-8 text-right font-mono text-xs"
-    />
+    <div className="relative">
+      <Input
+        type="text"
+        inputMode="numeric"
+        value={String(value || "")}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          onChange(Number.isFinite(n) ? n : 0);
+        }}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        aria-label={label}
+        className="h-8 text-right font-mono text-xs"
+      />
+      {editor !== undefined && (
+        <FieldEditingIndicator peer={editor ?? null} />
+      )}
+    </div>
   );
 }
 
@@ -748,4 +1105,69 @@ function countTotalPacks(
   lines: Array<{ packs: ReceivePOPack[] }>,
 ): number {
   return lines.reduce((acc, l) => acc + l.packs.length, 0);
+}
+
+function JoinErrorCard({
+  error,
+}: {
+  error: import("@/lib/realtime/use-live-form").JoinError;
+}) {
+  const config = {
+    form_full: {
+      icon: AlertCircle,
+      tone: "amber" as const,
+      title: `Receive room at capacity`,
+      detail: error.limit
+        ? `Up to ${error.limit} people can record this receipt at once. Wait for someone to leave, then refresh.`
+        : "Wait for someone to leave, then refresh.",
+    },
+    forbidden: {
+      icon: LockKeyhole,
+      tone: "muted" as const,
+      title: "You can't record receipts here",
+      detail:
+        "Ask an admin for the `procurement.po_receive` permission to join this receive flow.",
+    },
+    bad_topic: {
+      icon: AlertCircle,
+      tone: "destructive" as const,
+      title: "Unknown receive",
+      detail:
+        "We couldn't find this receive room. The link may have been malformed.",
+    },
+    unknown: {
+      icon: AlertCircle,
+      tone: "destructive" as const,
+      title: "Couldn't open the receive flow",
+      detail: "Something went wrong on our end. Please try again.",
+    },
+  }[error.reason];
+
+  const Icon = config.icon;
+  const toneClass =
+    config.tone === "amber"
+      ? "border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20"
+      : config.tone === "destructive"
+        ? "border-destructive/30 bg-destructive/[0.03]"
+        : "border-border/60 bg-muted/30";
+  const iconClass =
+    config.tone === "amber"
+      ? "text-amber-600 dark:text-amber-400"
+      : config.tone === "destructive"
+        ? "text-destructive"
+        : "text-muted-foreground";
+
+  return (
+    <Card className={cn("border", toneClass)}>
+      <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+        <div className="flex size-12 items-center justify-center rounded-full bg-background">
+          <Icon className={cn("size-6", iconClass)} />
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-semibold">{config.title}</p>
+          <p className="text-xs text-muted-foreground">{config.detail}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }

@@ -84,7 +84,7 @@ export function NumberingFormatsForm({ company, canEdit }: Props) {
     hideCursor,
     broadcastCommit,
   } = useLiveForm<NumberingFormats>({
-    resource: "company:1",
+    resource: "company:1:numbering",
     disabled: !canEdit,
     initialState: normalize(company.numbering_formats),
     onCommit: (raw) => {

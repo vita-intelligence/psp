@@ -35,7 +35,6 @@ const ITEMS: SubnavItem[] = [
     href: "/procurement/invoices",
     label: "Invoices",
     Icon: Receipt,
-    comingSoon: true,
   },
   {
     href: "/procurement/requirements",
@@ -47,7 +46,6 @@ const ITEMS: SubnavItem[] = [
     href: "/procurement/inspections",
     label: "Inspections",
     Icon: Microscope,
-    comingSoon: true,
   },
   {
     href: "/procurement/critical-on-hand",

@@ -29,6 +29,7 @@ defmodule Backend.GoodsIn do
   alias Backend.Accounts.User
   alias Backend.Audit
   alias Backend.GoodsIn.{Inspection, InspectionFile, InspectionItem}
+  alias Backend.ListQueries
   alias Backend.Purchasing.{PurchaseOrder, PurchaseOrderLine}
   alias Backend.Repo
   alias Backend.Stock
@@ -40,6 +41,12 @@ defmodule Backend.GoodsIn do
   @file_uploadable_statuses ~w(draft submitted)
   @allowed_file_mimes ~w(application/pdf image/jpeg image/png image/webp image/heic)
   @max_file_bytes 20 * 1024 * 1024
+
+  @inspection_sortable ~w(id delivery_date status inserted_at)a
+  @inspection_search ~w(transport_company vehicle_registration seal_number)a
+  @inspection_default_sort {:delivery_date, :desc}
+
+  @inspection_statuses ~w(draft submitted approved hold rejected)
 
   # ----- list / get ------------------------------------------------
 
@@ -76,6 +83,63 @@ defmodule Backend.GoodsIn do
         preload: [:goods_in_operator, :quality_approver]
       )
     )
+  end
+
+  @doc """
+  Global "Inspections ledger" — paginated list of every inspection
+  for the company, with PO, operator, and approver preloaded so the
+  desktop ledger renders the row without a per-row fetch.
+
+  Options:
+
+    * `:cursor`, `:limit`, `:sort` — `ListQueries` standard
+    * `:search` — substring against transport company / vehicle reg /
+      seal number
+    * `:status` — exact `draft | submitted | approved | hold | rejected`
+    * `:purchase_order_id` — narrow to one PO (FK, not uuid)
+    * `:from_date`, `:to_date` — `delivery_date` range
+  """
+  def list_page(company_id, opts \\ []) when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @inspection_default_sort)
+
+    base =
+      Inspection
+      |> where([i], i.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @inspection_search)
+      |> maybe_status_filter(opts[:status])
+      |> maybe_po_filter(opts[:purchase_order_id])
+      |> maybe_date_range(opts[:from_date], opts[:to_date])
+      |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
+      |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_status_filter(query, nil), do: query
+  defp maybe_status_filter(query, ""), do: query
+
+  defp maybe_status_filter(query, status)
+       when is_binary(status) and status in @inspection_statuses do
+    where(query, [i], i.status == ^status)
+  end
+
+  defp maybe_status_filter(query, _), do: query
+
+  defp maybe_po_filter(query, nil), do: query
+
+  defp maybe_po_filter(query, po_id) when is_integer(po_id),
+    do: where(query, [i], i.purchase_order_id == ^po_id)
+
+  defp maybe_date_range(query, nil, nil), do: query
+
+  defp maybe_date_range(query, from, nil),
+    do: where(query, [i], i.delivery_date >= ^from)
+
+  defp maybe_date_range(query, nil, to),
+    do: where(query, [i], i.delivery_date <= ^to)
+
+  defp maybe_date_range(query, from, to) do
+    where(query, [i], i.delivery_date >= ^from and i.delivery_date <= ^to)
   end
 
   # ----- create draft ---------------------------------------------

@@ -264,6 +264,19 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "purchase-order"),
     do: RBAC.has_permission?(user, "procurement.po_create")
 
+  # AP-ledger invoice form — gated by the manage permission (same gate
+  # the HTTP create / update / delete actions enforce). Topic shape is
+  # `form:invoice:<po_uuid>:new` on create and `form:invoice:<uuid>`
+  # on edit; `parse_topic/1` accepts either.
+  defp can_edit_resource?(user, "invoice"),
+    do: RBAC.has_permission?(user, "procurement.invoice_manage")
+
+  # PO receive dialog — multiple operators can collaborate on a single
+  # receive event (one reading off the BOL, one keying pack qtys). The
+  # head-of-room gate prevents simultaneous submits from racing.
+  defp can_edit_resource?(user, "po-receive"),
+    do: RBAC.has_permission?(user, "procurement.po_receive")
+
   # Stock — lot identity + packaging edit form. `stock.receive` covers
   # the create flow (/stock/lots/new); `stock.edit` covers the per-lot
   # edit page. Either lets you join the room.
@@ -271,6 +284,13 @@ defmodule BackendWeb.FormChannel do
     do:
       RBAC.has_permission?(user, "stock.edit") or
         RBAC.has_permission?(user, "stock.receive")
+
+  # Warehouse plan editor — storage cells / levels CRUD inside a rack.
+  # Same gate as the warehouse itself; multiple planners may stack the
+  # levels together. Room limit stays at the default 10 — if the plan
+  # editor ever needs more concurrent hands, bump via `room_limit_for/1`.
+  defp can_edit_resource?(user, "warehouse-cells"),
+    do: RBAC.has_permission?(user, "warehouses.edit")
 
   # Storage tag vocabulary editor.
   defp can_edit_resource?(user, "storage-tag"),

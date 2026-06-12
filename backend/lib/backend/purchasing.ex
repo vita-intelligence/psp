@@ -68,7 +68,7 @@ defmodule Backend.Purchasing do
       |> maybe_status_filter(opts[:status])
       |> maybe_vendor_filter(opts[:vendor_id])
       |> ListQueries.apply_sort(sort, @po_sortable, @po_default_sort)
-      |> preload([:vendor, :created_by, :submitted_by, :default_warehouse])
+      |> preload([:vendor, :created_by, :submitted_by, :default_warehouse, :lines])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
@@ -110,7 +110,10 @@ defmodule Backend.Purchasing do
               :ordered_by,
               :cancelled_by,
               :default_warehouse,
-              lines: [:item, :warehouse],
+              # `:stock_uom` on `item` so the mobile pre-receive
+              # checklist + any other "qty + uom" renderer can show
+              # the symbol without a second fetch.
+              lines: [item: :stock_uom, warehouse: []],
               approvals: [:signed_by],
               files: [:uploaded_by]
             ]
@@ -220,19 +223,27 @@ defmodule Backend.Purchasing do
   end
 
   # Pull vendor's standing tax_rate + currency onto the create attrs
-  # when the caller didn't supply them. Worker-typed values win.
+  # when the caller didn't supply them. Worker-typed values win, then
+  # vendor-row values, then company-wide defaults from
+  # `/settings/company`.
   defp apply_vendor_defaults(attrs) do
     vendor_id = attrs["vendor_id"] || attrs[:vendor_id]
+    company = Backend.Companies.current()
 
-    case fetch_vendor(vendor_id) do
-      nil ->
-        attrs
+    attrs =
+      case fetch_vendor(vendor_id) do
+        nil ->
+          attrs
 
-      vendor ->
-        attrs
-        |> default_attr("tax_rate", vendor.tax_rate)
-        |> default_attr("currency_code", vendor.currency_code)
-    end
+        vendor ->
+          attrs
+          |> default_attr("tax_rate", vendor.tax_rate)
+          |> default_attr("currency_code", vendor.currency_code)
+      end
+
+    attrs
+    |> default_attr("tax_rate", company && company.tax_rate)
+    |> default_attr("currency_code", company && company.currency_code)
   end
 
   defp fetch_vendor(nil), do: nil

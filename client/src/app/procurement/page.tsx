@@ -1,6 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { FileText, Receipt, ShoppingCart, Users } from "lucide-react";
+import {
+  ClipboardCheck,
+  FileText,
+  Microscope,
+  Receipt,
+  ShoppingCart,
+  TrendingUp,
+  Users,
+} from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
@@ -37,9 +45,8 @@ const SECTIONS: ProcSection[] = [
     href: "/procurement/invoices",
     label: "Invoices",
     description:
-      "Vendor invoices linked to POs. Three-way match (PO ↔ receipts ↔ invoice) + payment status.",
+      "Vendor invoices linked to POs. AP ledger with multi-currency totals, due-date tracking, and payment status.",
     Icon: Receipt,
-    comingSoon: true,
   },
   {
     href: "/procurement/requirements",
@@ -47,6 +54,29 @@ const SECTIONS: ProcSection[] = [
     description:
       "What needs ordering next, derived from reorder points and forecast demand.",
     Icon: FileText,
+    comingSoon: true,
+  },
+  {
+    href: "/procurement/inspections",
+    label: "Inspections",
+    description:
+      "Goods-in inspections against POs. 8-section checklist + dual ESIGN.",
+    Icon: Microscope,
+  },
+  {
+    href: "/procurement/critical-on-hand",
+    label: "Critical",
+    description:
+      "Items below safety stock or with a vendor lead time longer than current cover.",
+    Icon: ClipboardCheck,
+    comingSoon: true,
+  },
+  {
+    href: "/procurement/statistics",
+    label: "Statistics",
+    description:
+      "Spend by vendor, on-time delivery, lead-time variance, top-spend items.",
+    Icon: TrendingUp,
     comingSoon: true,
   },
 ];

@@ -89,7 +89,7 @@ export function AllowedIpsForm({ company, canEdit }: Props) {
     hideCursor,
     broadcastCommit,
   } = useLiveForm<State>({
-    resource: "company:1",
+    resource: "company:1:allowed-ips",
     disabled: !canEdit,
     initialState: normalize(company.allowed_ips),
     onCommit: (raw) => {

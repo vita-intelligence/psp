@@ -83,7 +83,7 @@ export function HolidaysForm({ company, canEdit }: Props) {
     hideCursor,
     broadcastCommit,
   } = useLiveForm<FormState>({
-    resource: "company:1",
+    resource: "company:1:holidays",
     disabled: !canEdit,
     initialState: { items: normalize(company.holidays) },
     onCommit: (raw) => {

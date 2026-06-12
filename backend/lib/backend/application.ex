@@ -18,6 +18,12 @@ defmodule Backend.Application do
       # Per-run config (`:enabled`, `:run_on_boot`, Req plug for
       # mocking) lives in `config/runtime.exs`.
       currency_rates_pull_child(),
+      # ChromicPDF — headless Chrome pool for document rendering
+      # (PO PDF / Delivery note / RFQ). `disable_scripts: true` so
+      # we don't execute JS from our own templates (defence-in-depth);
+      # `session_pool: %{size: 3}` keeps the cold-start tax to a single
+      # boot at app start instead of per-request.
+      chromic_pdf_child(),
       # Start to serve requests, typically the last entry
       BackendWeb.Endpoint
     ]
@@ -44,6 +50,17 @@ defmodule Backend.Application do
 
     if Keyword.get(cfg, :start, true) do
       {Backend.Workers.CurrencyRatesPull, Keyword.take(cfg, [:enabled, :run_on_boot])}
+    end
+  end
+
+  # ChromicPDF supervisor child. Skipped in :test (boots a real Chrome
+  # process — slow + flaky for unit tests) and toggleable via
+  # `config :backend, :chromic_pdf, start: false`.
+  defp chromic_pdf_child do
+    cfg = Application.get_env(:backend, :chromic_pdf, [])
+
+    if Keyword.get(cfg, :start, true) do
+      {ChromicPDF, session_pool: [size: 3], disable_scripts: true}
     end
   end
 end

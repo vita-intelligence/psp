@@ -475,8 +475,10 @@ export interface VendorSummary {
   uuid: string;
   code: string | null;
   name: string;
+  email: string | null;
   currency_code: string;
   default_lead_time_days: number;
+  payment_terms_days: number;
   approval_status: VendorApprovalStatus;
   is_active: boolean;
 }
@@ -493,18 +495,39 @@ export type PurchaseOrderStatus =
 
 export type PurchaseOrderApprovalKind = "approver" | "director";
 
+export interface PurchaseOrderLineItemSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  item_type: ItemType;
+  external_sku: string | null;
+  /** Two-state regulatory gate — surfaced on the mobile pre-receive
+   *  checklist so the operator can flag items that aren't finalised. */
+  compliance_status: ItemComplianceStatus;
+  /** Storage requirement tags (e.g. `requires_coa`, `allergen_milk`) —
+   *  the mobile pre-receive checklist renders compliance chips off
+   *  this list. */
+  storage_tags: string[];
+  /** Custom attribute bag from the item record. Defensive lookups for
+   *  flags like `requires_cold_chain` happen on the FE. */
+  attributes: Record<string, unknown>;
+  /** Default stock unit of measurement. Pre-receive checklist renders
+   *  the symbol next to the expected qty. */
+  stock_uom: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    symbol: string;
+    name: string;
+  } | null;
+}
+
 export interface PurchaseOrderLine {
   uuid: string;
   purchase_order_id: number;
   item_id: number;
-  item: {
-    id: number;
-    uuid: string;
-    code: string | null;
-    name: string;
-    item_type: ItemType;
-    external_sku: string | null;
-  } | null;
+  item: PurchaseOrderLineItemSummary | null;
   qty_ordered: string;
   qty_received: string;
   unit_price: string;

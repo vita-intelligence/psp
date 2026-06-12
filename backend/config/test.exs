@@ -41,3 +41,8 @@ config :phoenix,
 # tests call `Backend.Workers.CurrencyRatesPull.run_now/1` directly
 # with a `Req.Test` plug instead of waiting for the 08:00 UTC tick.
 config :backend, Backend.Workers.CurrencyRatesPull, start: false
+
+# ChromicPDF would boot a real Chrome process under the test supervisor;
+# we don't want that in unit tests. Document-renderer tests that need
+# real PDFs can flip this back on at the test level.
+config :backend, :chromic_pdf, start: false

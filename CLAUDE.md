@@ -1,16 +1,19 @@
 # PSP — Project Rules
 
-## HARD RULE: every form is realtime + collaborative
+## HARD RULE: every editable form is realtime + collaborative ("head of room" pattern)
+
+**Before you write any new form, OR touch any existing one, ask: does this allow a user to save or delete data? If yes, the realtime collab pattern is mandatory.** This rule is the #1 source of regressions in this codebase. You will forget it. Re-read this section every time.
 
 Every form gated by an edit/create capability MUST support live multi-user collaboration. If a user has permission to edit, they MUST see in real time:
 
-- **Who else** is in the form (header avatar stack)
-- **Which field** each peer is focused on (per-input indicator)
-- **Where their cursor** is on the form (live cursor overlay)
+- **Who else** is in the form (header avatar stack — `<CollabAvatars />`)
+- **Which field** each peer is focused on (per-input indicator — `<FieldEditingIndicator />`)
+- **Where their cursor** is on the form (live cursor overlay — `<RemoteCursor />`)
+- **Who is "head of room"** — the earliest joiner. **Only the head of room can hit Save or Delete the record.** Everyone else gets a `<CreatorLockBanner />` and inert buttons. This is the collision-prevention mechanism — without it, two simultaneous saves race.
 
 Up to **10 simultaneous editors** per form (`MAX_COLLABORATORS = 10`, mirrored server-side as `@default_room_limit`).
 
-This is not optional. Vendor forms, PO forms, qualification dialogs, invoice forms, certificate dialogs, settings forms — all of them. New forms ship with collab on day one; existing non-collab forms get migrated when next touched.
+This applies to: vendor forms, PO forms, PO line dialogs, qualification dialogs, invoice forms, certificate dialogs, settings sub-forms, item forms, lot forms, role forms, attribute-definition forms, storage-tag forms, role/user-access matrices — every single one. New forms ship with collab on day one; existing non-collab forms get migrated when next touched. No exceptions for "simple" forms — they grow.
 
 ### Pattern source of truth
 
@@ -32,7 +35,7 @@ Backend channel: `backend/lib/backend_web/channels/form_channel.ex` — one chan
 3. **`<CollabAvatars peers={presence} />`** in the card header.
 4. **Every input** wired through `focusField` / `blurField` with `<FieldEditingIndicator peer={fieldEditors.<field>} />` next to it. Use the `CollabRow` / `CollabTextareaRow` helpers from `warehouse-form.tsx` as the model.
 5. **Remote cursors** anchored to the form Card via a ref + `onMouseMove` → `setCursor(x, y)` (normalised 0..1), `onMouseLeave` → `hideCursor()`, and a `ResizeObserver` for anchor size. Cursor layer: `absolute inset-0 z-30 overflow-hidden rounded-xl pointer-events-none`.
-6. **Creator gate** — only `isCreator` may finalise. Save AND Discard buttons disabled for non-creators with the "Only {creator.name} can save…" banner. Non-creator clicks never hit the server.
+6. **Head-of-room gate (= `isCreator`)** — only the earliest joiner ("head of room") may finalise. Save AND Discard buttons disabled for non-creators with the "Only {creator.name} can save…" banner. Non-creator clicks never hit the server. This is the collision-prevention rule — without the gate, two peers' simultaneous saves race and one set of edits silently wins. **Delete** the record itself follows the same gate (head of room only).
 7. **On successful save**: call `broadcastCommit({...})` AND `invalidateAudit(entity, id)` from `@/lib/audit/invalidator` so peers refresh their Activity card.
 8. **Restore integration** (edit forms): `subscribeRestore(entity, id, ...)` so "Restore version" on an Activity row pushes state into the form.
 9. **`<JoinErrorCard error={joinError} />`** when the channel join fails (`form_full` / `forbidden` / `bad_topic` / `unknown`). Never render a broken form.
@@ -52,11 +55,24 @@ The channel is generic. To enable a new resource:
 
 ### When NOT to apply
 
-- Read-only detail pages (no form).
-- One-shot action dialogs with no free-text input (e.g. "Approve PO" confirm).
+- Read-only detail pages (no fields to edit, no Save button).
+- One-shot system actions with no user input (e.g. "Refresh ECB rates", "Approve PO" confirm).
 - Modals that close on save in <5s with a single field — too short-lived to justify a channel.
 
 Everything else: use the pattern.
+
+### HARD RULE: every monetary field reads from `/settings/company`
+
+**Don't hardcode currency anywhere.** Money displayed, stored, or computed must respect:
+- `company.currency_code` (the base currency — GBP for Vita) as the default
+- `company.currency_rates` (the bag of `{currency, rate}` rows) for FX conversion
+- `company.tax_rate` for default tax %
+- `company.decimal_separator` / `thousands_separator` / `currency_format` for display
+- `company.csv_separator` for CSV exports
+
+Use `formatCompanyMoney` from `client/src/lib/format/company.ts` for display. Use `company.currency_rates` (not a hardcoded table) when converting between currencies. If a place needs a currency input, use `<CurrencyPicker />` from `client/src/components/forms/currency-picker.tsx`, not a hardcoded `<Select>`. **If a feature looks like it ignores company settings, fix the feature — don't add another setting.**
+
+Same goes for company-wide settings in general: dates (`date_format`, `first_day_of_week`), numbering (`numbering_formats`), working hours, holidays, allowed IPs. The settings page is the source of truth — every consumer reads from there.
 
 ---
 

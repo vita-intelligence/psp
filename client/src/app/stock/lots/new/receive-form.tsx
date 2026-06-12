@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { CurrencyPicker } from "@/components/forms/currency-picker";
 import {
   SearchPicker,
   type SearchPickerOption,
@@ -1184,17 +1185,14 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                 error={fieldErrors.currency?.[0]}
                 editor={fieldEditors.currency}
               >
-                <Input
+                <CurrencyPicker
                   id="currency"
                   value={draft.currency}
-                  onChange={(e) =>
-                    update("currency", e.target.value.toUpperCase())
-                  }
+                  onChange={(v) => update("currency", v ?? "")}
                   onFocus={() => focusField("currency")}
                   onBlur={() => blurField("currency")}
-                  maxLength={3}
-                  placeholder="GBP"
-                  className="h-9 w-24 font-mono uppercase"
+                  compact
+                  className="w-32"
                 />
               </Field>
             </div>

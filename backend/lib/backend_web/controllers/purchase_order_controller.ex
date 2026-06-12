@@ -12,10 +12,23 @@ defmodule BackendWeb.PurchaseOrderController do
 
   use BackendWeb, :controller
 
+  alias Backend.Documents
+  alias Backend.Numbering
   alias Backend.Purchasing
   alias Backend.Purchasing.VendorPrices
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
+
+  # PO statuses where finalised documents (signed PO + delivery note
+  # + CSV + internal PDF) are live. Vendor-facing PO can't leak before
+  # director sign-off.
+  @document_statuses ~w(approved ordered partially_received received)
+
+  # RFQs live earlier — the whole point of an RFQ is to discover
+  # pricing before the PO is firm. So they're offerable any time the
+  # PO has lines, except after `cancelled` (no point) or `received`
+  # (the deal is closed).
+  @rfq_statuses ~w(draft pending_approver pending_director approved ordered partially_received)
 
   # Same allow list as the vendor evidence upload — PDF, images,
   # Word, Excel, plain text. PO quotes are usually PDFs from the
@@ -29,7 +42,17 @@ defmodule BackendWeb.PurchaseOrderController do
   @max_evidence_bytes 20 * 1024 * 1024
 
   plug RequirePermission, "procurement.po_view"
-       when action in [:index, :show, :serve_file]
+       when action in [
+              :index,
+              :show,
+              :serve_file,
+              :document_internal_pdf,
+              :document_vendor_pdf,
+              :document_delivery_note,
+              :document_rfq,
+              :document_csv,
+              :document_mailto
+            ]
   plug RequirePermission, "procurement.po_create"
        when action in [
               :create,
@@ -586,5 +609,86 @@ defmodule BackendWeb.PurchaseOrderController do
         Errors.changeset_fields(cs)
       )
     )
+  end
+
+  # ----- documents -------------------------------------------------
+
+  def document_internal_pdf(conn, params),
+    do: send_pdf(conn, params, &Documents.purchase_order_pdf(&1, audience: :internal), "internal")
+
+  def document_vendor_pdf(conn, params),
+    do: send_pdf(conn, params, &Documents.purchase_order_pdf(&1, audience: :vendor), "vendor")
+
+  def document_delivery_note(conn, params),
+    do: send_pdf(conn, params, &Documents.delivery_note_pdf/1, "delivery-note")
+
+  def document_rfq(conn, params),
+    do: send_pdf(conn, params, &Documents.rfq_pdf/1, "rfq", statuses: @rfq_statuses)
+
+  @mailto_kinds %{"po" => :po, "rfq" => :rfq, "note" => :note}
+
+  def document_mailto(conn, %{"purchase_order_id" => uuid, "kind" => kind})
+      when is_map_key(@mailto_kinds, kind) do
+    actor = conn.assigns.current_user
+    statuses = if kind == "po", do: @document_statuses, else: @rfq_statuses
+
+    with {:ok, po} <- fetch_document_po(actor, uuid, statuses) do
+      payload = Documents.mailto_payload(po, actor, Map.fetch!(@mailto_kinds, kind))
+      json(conn, payload)
+    end
+  end
+
+  def document_mailto(conn, _params),
+    do: unprocessable(conn, "unknown_kind", "Unknown mailto kind.")
+
+  def document_csv(conn, %{"purchase_order_id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with {:ok, po} <- fetch_document_po(actor, uuid) do
+      csv = Documents.purchase_order_csv(po)
+      filename = po_filename(po, actor, "lines", "csv")
+
+      conn
+      |> put_resp_content_type("text/csv")
+      |> put_resp_header("content-disposition", ~s(attachment; filename="#{filename}"))
+      |> send_resp(200, csv)
+    end
+  end
+
+
+  defp send_pdf(conn, %{"purchase_order_id" => uuid}, render_fn, kind, opts \\ []) do
+    actor = conn.assigns.current_user
+    allowed = Keyword.get(opts, :statuses, @document_statuses)
+
+    with {:ok, po} <- fetch_document_po(actor, uuid, allowed),
+         {:ok, bytes} <- render_fn.(po) do
+      filename = po_filename(po, actor, kind, "pdf")
+
+      conn
+      |> put_resp_content_type("application/pdf")
+      |> put_resp_header("content-disposition", ~s(inline; filename="#{filename}"))
+      |> send_resp(200, bytes)
+    end
+  end
+
+  defp fetch_document_po(actor, uuid, allowed_statuses \\ @document_statuses) do
+    case Purchasing.get_for_company(actor.company_id, uuid) do
+      nil ->
+        {:error, :not_found}
+
+      po ->
+        if po.status in allowed_statuses do
+          {:ok, po}
+        else
+          {:error, :document_not_available}
+        end
+    end
+  end
+
+  defp po_filename(po, actor, kind, ext) do
+    company = Backend.Companies.current()
+    code = Numbering.render(po.id, company, "purchase_order") || "PO-#{po.id}"
+    _ = actor
+    "#{code}-#{kind}.#{ext}"
   end
 end

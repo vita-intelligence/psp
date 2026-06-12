@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { CurrencyPicker } from "@/components/forms/currency-picker";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -42,6 +43,7 @@ import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type { StockLot } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { updateLotAction, type UpdateLotInput } from "@/lib/stock/actions";
+import { invalidateAudit } from "@/lib/audit/invalidator";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -128,6 +130,9 @@ export function LotEditForm({ lot, canEdit }: Props) {
         setOriginal(msg.state);
         resetState(msg.state);
         setEditing(false);
+        // Peer just wrote an audit row our local Activity card doesn't
+        // have yet — nudge it to refetch the timeline.
+        invalidateAudit("stock_lot", lot.id);
         router.refresh();
       }
     },
@@ -193,7 +198,12 @@ export function LotEditForm({ lot, canEdit }: Props) {
       if (res.ok) {
         toast.success(`Saved ${lot.code ?? `lot #${lot.id}`}`);
         setOriginal(draft);
+        // Fan out the success to peer editors — they reset their
+        // dirty baseline + refresh the Activity card. The audit row
+        // we just wrote needs an explicit nudge on this client too
+        // so our own AuditHistoryCard refetches.
         broadcastCommit({ kind: "saved", state: draft });
+        invalidateAudit("stock_lot", lot.id);
         setEditing(false);
         router.refresh();
       } else {
@@ -672,17 +682,14 @@ function IdentitySection({
               className="h-9 font-mono"
               inputMode="decimal"
             />
-            <Input
+            <CurrencyPicker
               id="currency"
               value={draft.currency}
-              onChange={(e) =>
-                onChange("currency", e.target.value.toUpperCase())
-              }
+              onChange={(v) => onChange("currency", v ?? "")}
               onFocus={() => focusField("currency")}
               onBlur={() => blurField("currency")}
-              placeholder="GBP"
-              className="h-9 w-20 font-mono"
-              maxLength={3}
+              compact
+              className="w-28"
             />
           </div>
         </Field>

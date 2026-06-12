@@ -23,6 +23,7 @@ defmodule BackendWeb.CompanyController do
   use BackendWeb, :controller
 
   alias Backend.Companies
+  alias Backend.Workers.CurrencyRatesPull
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
@@ -34,7 +35,8 @@ defmodule BackendWeb.CompanyController do
               :update,
               :update_locale,
               :update_bag,
-              :update_currency_rates_auto_pull
+              :update_currency_rates_auto_pull,
+              :refresh_currency_rates_now
             ]
 
   action_fallback BackendWeb.FallbackController
@@ -129,7 +131,22 @@ defmodule BackendWeb.CompanyController do
            actor
          ) do
       {:ok, company} ->
-        json(conn, %{company: Payloads.company(company)})
+        # Flipping ON should not silently leave the user waiting for
+        # tomorrow's 08:00 UTC tick. Pull now so the rates list paints
+        # straight away. Best-effort: a transient ECB outage shouldn't
+        # block the toggle flip — `Refresh now` is right there for the
+        # retry, and the daily cron is still scheduled.
+        fresh =
+          if enabled do
+            case CurrencyRatesPull.run_now([]) do
+              {:ok, _} -> Companies.current()
+              {:error, _} -> company
+            end
+          else
+            company
+          end
+
+        json(conn, %{company: Payloads.company(fresh)})
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn
@@ -153,5 +170,48 @@ defmodule BackendWeb.CompanyController do
         "Expected `enabled` (true | false)."
       )
     )
+  end
+
+  @doc """
+  Manual ECB refresh trigger. Runs `CurrencyRatesPull.run_now/1`
+  synchronously and reloads the company so the FE can revalidate the
+  page. Same `company.edit` permission gates this as the auto-pull
+  toggle — there's no separate "trigger refresh" capability since the
+  feed is published reference data, not a decision.
+  """
+  def refresh_currency_rates_now(conn, _params) do
+    company = Companies.current()
+
+    if company.currency_rates_auto_pull do
+      case CurrencyRatesPull.run_now([]) do
+        {:ok, %{processed: processed}} ->
+          fresh = Companies.current()
+
+          json(conn, %{
+            company: Payloads.company(fresh),
+            processed: processed
+          })
+
+        {:error, reason} ->
+          conn
+          |> put_status(:bad_gateway)
+          |> json(
+            Errors.payload(
+              "ecb_fetch_failed",
+              "Couldn't reach the ECB feed. Try again in a moment — the daily 08:00 UTC tick will still run on schedule.",
+              %{reason: inspect(reason)}
+            )
+          )
+      end
+    else
+      conn
+      |> put_status(:conflict)
+      |> json(
+        Errors.payload(
+          "auto_pull_disabled",
+          "Auto-pull is off — manage rates manually below."
+        )
+      )
+    end
   end
 end

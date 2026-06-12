@@ -91,7 +91,7 @@ export function CompanyIdentityForm({
     hideCursor,
     broadcastCommit,
   } = useLiveForm<FormState>({
-    resource: "company:1",
+    resource: "company:1:identity",
     disabled: !canEdit,
     initialState: initialFrom(company),
     onCommit: (raw) => {

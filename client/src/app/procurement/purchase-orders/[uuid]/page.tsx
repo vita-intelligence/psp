@@ -17,12 +17,15 @@ import {
   listWarehousesForReceive,
 } from "@/lib/stock/server";
 import { ProcurementSubnav } from "../../procurement-subnav";
+import { PODocumentsToolbar } from "./po-documents-toolbar";
+import { POInvoicesCard } from "./po-invoices-card";
 import { POLinesCard } from "./po-lines-card";
 import { POReceiveCard } from "./po-receive-card";
 import { POWorkflowCard } from "./po-workflow-card";
 import type { PurchaseOrderStatus } from "@/lib/types";
 import { formatCompanyMoney } from "@/lib/format/company";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { listInvoicesForPO } from "@/lib/invoices/server";
 
 export const metadata = { title: "PO · Procurement · PSP" };
 
@@ -62,13 +65,15 @@ export default async function PODetailPage({
   }
 
   const { uuid } = await params;
-  const [po, items, warehouses, prefs, initialComments] = await Promise.all([
-    getPurchaseOrder(uuid),
-    listItemsForReceive(),
-    listWarehousesForReceive(),
-    getCompanyDefaults(),
-    listCommentsForEntity("purchase_order", uuid),
-  ]);
+  const [po, items, warehouses, prefs, initialComments, invoices] =
+    await Promise.all([
+      getPurchaseOrder(uuid),
+      listItemsForReceive(),
+      listWarehousesForReceive(),
+      getCompanyDefaults(),
+      listCommentsForEntity("purchase_order", uuid),
+      listInvoicesForPO(uuid),
+    ]);
   if (!po) notFound();
 
   const canCreate = hasPermission(user, "procurement.po_create");
@@ -79,6 +84,9 @@ export default async function PODetailPage({
     "procurement.po_director_approve",
   );
   const canReceive = hasPermission(user, "procurement.po_receive");
+  const canInvoiceView = hasPermission(user, "procurement.invoice_view");
+  const canInvoiceManage = hasPermission(user, "procurement.invoice_manage");
+  const canInvoiceApprove = hasPermission(user, "procurement.invoice_approve");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -139,6 +147,8 @@ export default async function PODetailPage({
             canCancel={canCreate}
           />
 
+          <PODocumentsToolbar po={po} />
+
           <POLinesCard
             po={po}
             items={items ?? []}
@@ -150,6 +160,17 @@ export default async function PODetailPage({
               po={po}
               warehouses={warehouses}
               canReceive={canReceive}
+            />
+          )}
+
+          {canInvoiceView && (
+            <POInvoicesCard
+              po={po}
+              companyCurrency={prefs?.currency_code ?? "GBP"}
+              invoices={invoices}
+              canView={canInvoiceView}
+              canManage={canInvoiceManage}
+              canApprove={canInvoiceApprove}
             />
           )}
 

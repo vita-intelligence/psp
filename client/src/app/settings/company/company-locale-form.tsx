@@ -126,7 +126,7 @@ export function CompanyLocaleForm({ company, canEdit }: CompanyLocaleFormProps) 
     hideCursor,
     broadcastCommit,
   } = useLiveForm<FormState>({
-    resource: "company:1",
+    resource: "company:1:locale",
     disabled: !canEdit,
     initialState: initialFrom(company),
     onCommit: (raw) => {

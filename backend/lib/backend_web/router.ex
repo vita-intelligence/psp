@@ -76,6 +76,10 @@ defmodule BackendWeb.Router do
         CompanyController,
         :update_currency_rates_auto_pull
 
+    post "/company/currency-rates/refresh-now",
+         CompanyController,
+         :refresh_currency_rates_now
+
     resources "/warehouses", WarehouseController,
       only: [:index, :show, :create, :update, :delete] do
       # Floors are nested — /warehouses/:warehouse_id/floors. Phoenix
@@ -256,6 +260,29 @@ defmodule BackendWeb.Router do
       # per-line decisions + dual ESIGN sign-off.
       post "/goods-in-inspections", GoodsInInspectionController, :create
       get "/goods-in-inspections", GoodsInInspectionController, :index
+
+      # Document toolbar (MRPEasy-parity): four PDF renders + a CSV
+      # export. Each lives under `/documents/<kind>` so route names
+      # stay stable as we add formats. Gated by `procurement.po_view`
+      # via the parent plug; status gate (must be director-signed)
+      # is enforced in the controller action.
+      get "/documents/internal-pdf", PurchaseOrderController, :document_internal_pdf
+      get "/documents/vendor-pdf", PurchaseOrderController, :document_vendor_pdf
+      get "/documents/delivery-note", PurchaseOrderController, :document_delivery_note
+      get "/documents/rfq", PurchaseOrderController, :document_rfq
+      get "/documents/csv", PurchaseOrderController, :document_csv
+
+      # Pre-filled mail draft for the Send PO / Send RFQ / Send note
+      # buttons. The FE GETs `{to, subject, body}` and constructs a
+      # `mailto:` URL the user's mail client opens — same MRPEasy UX.
+      # No server-side send; the user previews/edits/sends themselves.
+      get "/documents/mailto/:kind", PurchaseOrderController, :document_mailto
+
+      # Vendor invoices recorded against this PO. Per-PO scope is
+      # `:index_for_po` + `:create`; the global ledger and per-row
+      # actions live under `/api/procurement/invoices/...`.
+      get "/invoices", ProcurementInvoiceController, :index_for_po
+      post "/invoices", ProcurementInvoiceController, :create
     end
 
     # Goods-In Inspection — show / update / item / sign actions sit
@@ -265,6 +292,31 @@ defmodule BackendWeb.Router do
     scope "/goods-in-inspections" do
       get "/:id", GoodsInInspectionController, :show
       patch "/:id", GoodsInInspectionController, :update
+    end
+
+    # Inspections ledger — global "Goods-In Inspections" feed across
+    # every PO for the company. Mirrors `/procurement/invoices` so the
+    # desktop tables feel the same. Per-inspection show / update /
+    # sign still live under `/goods-in-inspections/:id`.
+    get "/procurement/inspections", GoodsInInspectionController, :index_global
+
+    # AP ledger — vendor invoices. Index is the global "Incoming
+    # invoices" feed (MRPEasy parity); :show / :update / :delete and
+    # the lifecycle transitions sit under the same scope. File serve
+    # is here too so a deep-link works without a parent PO context.
+    scope "/procurement/invoices" do
+      get "/", ProcurementInvoiceController, :index_global
+      get "/:id", ProcurementInvoiceController, :show
+      patch "/:id", ProcurementInvoiceController, :update
+      delete "/:id", ProcurementInvoiceController, :delete
+
+      post "/:id/mark-paid", ProcurementInvoiceController, :mark_paid
+      post "/:id/dispute", ProcurementInvoiceController, :mark_disputed
+      post "/:id/void", ProcurementInvoiceController, :mark_void
+
+      post "/:id/file", ProcurementInvoiceController, :attach_file
+      delete "/:id/file", ProcurementInvoiceController, :detach_file
+      get "/:id/file/serve", ProcurementInvoiceController, :serve_file
     end
 
     scope "/goods-in-inspections/:goods_in_inspection_id" do

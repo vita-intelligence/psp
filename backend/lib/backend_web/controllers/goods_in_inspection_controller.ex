@@ -24,7 +24,7 @@ defmodule BackendWeb.GoodsInInspectionController do
   alias BackendWeb.Plugs.RequirePermission
 
   plug RequirePermission, "goods_in.view"
-       when action in [:index, :show, :serve_file]
+       when action in [:index, :index_global, :show, :serve_file]
 
   plug RequirePermission, "goods_in.inspect"
        when action in [
@@ -65,6 +65,73 @@ defmodule BackendWeb.GoodsInInspectionController do
       inspection -> json(conn, %{goods_in_inspection: Payloads.goods_in_inspection(inspection)})
     end
   end
+
+  @doc """
+  Global "Inspections ledger" — paginated list of every inspection
+  for the company. Mirrors the procurement-invoice global ledger
+  shape so the desktop tables feel the same.
+  """
+  def index_global(conn, params) do
+    actor = conn.assigns.current_user
+
+    opts =
+      [
+        cursor: params["cursor"],
+        limit: params["limit"],
+        sort: parse_sort(params["sort"]),
+        search: params["search"],
+        status: params["status"],
+        purchase_order_id: parse_int(params["purchase_order_id"]),
+        from_date: parse_date(params["from_date"]),
+        to_date: parse_date(params["to_date"])
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    {items, next_cursor} = GoodsIn.list_page(actor.company_id, opts)
+
+    json(conn, %{
+      items: Enum.map(items, &Payloads.goods_in_inspection_summary/1),
+      next_cursor: next_cursor
+    })
+  end
+
+  defp parse_sort(nil), do: nil
+  defp parse_sort(""), do: nil
+
+  defp parse_sort(s) when is_binary(s) do
+    case String.split(s, ":", parts: 2) do
+      [field, "asc"] -> {String.to_existing_atom(field), :asc}
+      [field, "desc"] -> {String.to_existing_atom(field), :desc}
+      _ -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp parse_int(nil), do: nil
+  defp parse_int(""), do: nil
+  defp parse_int(n) when is_integer(n), do: n
+
+  defp parse_int(raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_int(_), do: nil
+
+  defp parse_date(nil), do: nil
+  defp parse_date(""), do: nil
+
+  defp parse_date(raw) when is_binary(raw) do
+    case Date.from_iso8601(raw) do
+      {:ok, d} -> d
+      _ -> nil
+    end
+  end
+
+  defp parse_date(_), do: nil
 
   # ----- create draft ----------------------------------------------
 

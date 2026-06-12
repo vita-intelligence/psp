@@ -22,6 +22,18 @@ config :backend, BackendWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {0, 0, 0, 0}],
+  # HTTPS listener so the realtime WebSocket can run as `wss://` when
+  # the FE is served over HTTPS (dev cert from the Next.js side covers
+  # localhost). Without this, modern browsers block `ws://` from an
+  # `https://` origin (mixed content), and every collab form gates the
+  # Save button on a successful presence sync.
+  https: [
+    ip: {0, 0, 0, 0},
+    port: 4001,
+    cipher_suite: :strong,
+    keyfile: Path.expand("../../client/certificates/localhost-key.pem", __DIR__),
+    certfile: Path.expand("../../client/certificates/localhost.pem", __DIR__)
+  ],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

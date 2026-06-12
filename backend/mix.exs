@@ -53,7 +53,13 @@ defmodule Backend.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:bcrypt_elixir, "~> 3.1"},
-      {:cors_plug, "~> 3.0"}
+      {:cors_plug, "~> 3.0"},
+      # Headless Chrome PDF renderer for PO / Delivery note / RFQ
+      # documents. Uses the system Chrome binary in dev (mac picks up
+      # /Applications/Google Chrome.app automatically) and is started
+      # under our supervision tree with a small pool — see
+      # `Backend.Application`.
+      {:chromic_pdf, "~> 1.17"}
     ]
   end
 

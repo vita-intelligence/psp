@@ -85,7 +85,7 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
     hideCursor,
     broadcastCommit,
   } = useLiveForm<FormState>({
-    resource: "company:1",
+    resource: "company:1:working-hours",
     disabled: !canEdit,
     initialState: normalize(company.working_hours),
     onCommit: (raw) => {
@@ -209,7 +209,7 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
                       <Input
                         id={opensId}
                         type="time"
-                        value={state[day].opens_at ?? ""}
+                        value={state[day]?.opens_at ?? ""}
                         onChange={(e) =>
                           updateDay(day, "opens_at", e.target.value)
                         }
@@ -227,7 +227,7 @@ export function WorkingHoursForm({ company, canEdit }: Props) {
                       <Input
                         id={closesId}
                         type="time"
-                        value={state[day].closes_at ?? ""}
+                        value={state[day]?.closes_at ?? ""}
                         onChange={(e) =>
                           updateDay(day, "closes_at", e.target.value)
                         }

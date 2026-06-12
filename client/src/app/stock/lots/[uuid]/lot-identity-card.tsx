@@ -1,5 +1,5 @@
 import type { StockLot } from "@/lib/types";
-import { formatCompanyDate } from "@/lib/format/company";
+import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { FileText } from "lucide-react";
 
@@ -52,8 +52,10 @@ export async function LotIdentityCard({ lot }: { lot: StockLot }) {
         <Row
           label="Unit cost"
           value={
-            lot.unit_cost
-              ? `${lot.unit_cost} ${lot.currency ?? ""}`.trim()
+            lot.unit_cost != null
+              ? formatCompanyMoney(lot.unit_cost, prefs, {
+                  currency_code: lot.currency ?? undefined,
+                })
               : null
           }
           mono
