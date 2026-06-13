@@ -19,9 +19,11 @@ import type {
   InspectionSummary,
   InspectionsLedgerPage,
 } from "@/lib/inspections/types";
+import type { Warehouse } from "@/lib/types";
 
 interface Props {
   initialPage: InspectionsLedgerPage;
+  warehouses: Warehouse[];
 }
 
 const STATUS_LABEL: Record<InspectionStatus, string> = {
@@ -110,11 +112,22 @@ async function fetchInspectionsPage(params: {
  * a read-only detail page instead of a collab edit dialog, because the
  * inspection wizard itself already owns the editable surface (mobile).
  */
-export function InspectionsLedger({ initialPage }: Props) {
+export function InspectionsLedger({ initialPage, warehouses }: Props) {
   const router = useRouter();
   const prefs = useFormatPrefs();
 
-  const filters = useMemo<FilterDef[]>(() => [STATUS_FILTER], []);
+  const filters = useMemo<FilterDef[]>(() => {
+    const warehouseFilter: FilterDef = {
+      field: "warehouse_id",
+      label: "Warehouse",
+      options: warehouses
+        .filter((w) => w.is_active)
+        .map((w) => ({ label: w.name, value: String(w.id) })),
+    };
+    return warehouseFilter.options.length > 0
+      ? [STATUS_FILTER, warehouseFilter]
+      : [STATUS_FILTER];
+  }, [warehouses]);
 
   const columns = useMemo<DataTableColumn<InspectionSummary>[]>(
     () => [

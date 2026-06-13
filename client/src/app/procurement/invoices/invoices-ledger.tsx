@@ -359,7 +359,7 @@ export function InvoicesLedger({
           if (!open) setDialog({ kind: "closed" });
         }}
       >
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl max-h-[92vh] flex flex-col p-0">
           <DialogHeader className="sr-only">
             <DialogTitle>
               {dialog.kind === "edit"

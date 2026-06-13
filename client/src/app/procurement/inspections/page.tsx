@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listInspectionsPage } from "@/lib/inspections/server";
+import { listWarehousesForReceive } from "@/lib/stock/server";
 import { ProcurementSubnav } from "../procurement-subnav";
 import { InspectionsLedger } from "./inspections-ledger";
 
@@ -16,7 +17,10 @@ export default async function ProcurementInspectionsPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = await listInspectionsPage();
+  const [initialPage, warehouses] = await Promise.all([
+    listInspectionsPage(),
+    listWarehousesForReceive(),
+  ]);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -47,6 +51,7 @@ export default async function ProcurementInspectionsPage() {
                 next_cursor: null,
               }
             }
+            warehouses={warehouses}
           />
         </div>
       </main>

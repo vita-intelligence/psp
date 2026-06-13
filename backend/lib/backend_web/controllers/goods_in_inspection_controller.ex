@@ -82,6 +82,7 @@ defmodule BackendWeb.GoodsInInspectionController do
         search: params["search"],
         status: params["status"],
         purchase_order_id: parse_int(params["purchase_order_id"]),
+        warehouse_id: parse_int(params["warehouse_id"]),
         from_date: parse_date(params["from_date"]),
         to_date: parse_date(params["to_date"])
       ]

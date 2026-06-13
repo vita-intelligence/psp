@@ -108,6 +108,7 @@ defmodule Backend.GoodsIn do
       |> ListQueries.apply_search(opts[:search], @inspection_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_po_filter(opts[:purchase_order_id])
+      |> maybe_warehouse_filter(opts[:warehouse_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
       |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
       |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
@@ -129,6 +130,21 @@ defmodule Backend.GoodsIn do
 
   defp maybe_po_filter(query, po_id) when is_integer(po_id),
     do: where(query, [i], i.purchase_order_id == ^po_id)
+
+  # Warehouse scope — inspections inherit the PO's
+  # `default_warehouse_id`. QC and warehouse managers covering one
+  # unit filter the global ledger down to their own deliveries.
+  defp maybe_warehouse_filter(query, nil), do: query
+  defp maybe_warehouse_filter(query, ""), do: query
+
+  defp maybe_warehouse_filter(query, warehouse_id) when is_integer(warehouse_id) do
+    from i in query,
+      join: po in Backend.Purchasing.PurchaseOrder,
+      on: po.id == i.purchase_order_id,
+      where: po.default_warehouse_id == ^warehouse_id
+  end
+
+  defp maybe_warehouse_filter(query, _), do: query
 
   defp maybe_date_range(query, nil, nil), do: query
 

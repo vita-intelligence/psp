@@ -20,6 +20,7 @@ import { ProcurementSubnav } from "../../procurement-subnav";
 import { PODocumentsToolbar } from "./po-documents-toolbar";
 import { POInvoicesCard } from "./po-invoices-card";
 import { POLinesCard } from "./po-lines-card";
+import { POPaperworkAlert } from "./po-paperwork-alert";
 import { POReceiveCard } from "./po-receive-card";
 import { POWorkflowCard } from "./po-workflow-card";
 import type { PurchaseOrderStatus } from "@/lib/types";
@@ -138,6 +139,8 @@ export default async function PODetailPage({
               </div>
             </div>
           </header>
+
+          <POPaperworkAlert po={po} invoices={invoices ?? []} />
 
           <POWorkflowCard
             po={po}
