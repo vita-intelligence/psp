@@ -4,8 +4,10 @@ import { getSessionToken } from "../auth/server";
 import type {
   BOM,
   BOMLedgerPage,
+  Workstation,
   WorkstationGroup,
   WorkstationGroupLedgerPage,
+  WorkstationLedgerPage,
 } from "./types";
 
 export interface ListBOMsOpts {
@@ -104,6 +106,46 @@ export async function getWorkstationGroup(
       { token, cache: "no-store" },
     );
     return group;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------
+// Workstations
+// ---------------------------------------------------------------
+
+export interface ListWorkstationsOpts {
+  query?: string;
+}
+
+export async function listWorkstationsPage(
+  opts: ListWorkstationsOpts = {},
+): Promise<WorkstationLedgerPage | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  const qs = opts.query ? `?${opts.query}` : "";
+  try {
+    return await api<WorkstationLedgerPage>(
+      `/api/production/workstations${qs}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function getWorkstation(
+  uuid: string,
+): Promise<Workstation | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const { workstation } = await api<{ workstation: Workstation }>(
+      `/api/production/workstations/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return workstation;
   } catch {
     return null;
   }

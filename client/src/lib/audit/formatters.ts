@@ -336,6 +336,20 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     color: "Colour",
     is_active: "Active",
   },
+  workstation: {
+    name: "Name",
+    code: "Number",
+    notes: "Notes",
+    workstation_group_id: "Workstation group",
+    warehouse_id: "Production site",
+    hourly_rate_enabled: "Hourly rate override",
+    hourly_rate: "Hourly rate",
+    productivity: "Productivity",
+    idle_from: "Idle from",
+    idle_to: "Idle to",
+    is_active: "Active",
+    external_id: "vita-performance ID",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

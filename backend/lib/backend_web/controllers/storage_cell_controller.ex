@@ -22,12 +22,15 @@ defmodule BackendWeb.StorageCellController do
   alias Backend.Warehouses
   alias Backend.Warehouses.Plans
   alias BackendWeb.{Errors, Payloads, WarehousePlanBroadcast}
-  alias BackendWeb.Plugs.RequirePermission
+  alias BackendWeb.Plugs.RequireWarehouseKindPermission
 
-  plug RequirePermission, "warehouses.view" when action in [:show]
+  plug RequireWarehouseKindPermission,
+       [warehouse: "warehouses.view", production_facility: "production.facility_view"]
+       when action in [:show]
 
-  plug RequirePermission,
-       "warehouses.edit" when action in [:create, :update, :delete, :split, :sync_tags]
+  plug RequireWarehouseKindPermission,
+       [warehouse: "warehouses.edit", production_facility: "production.facility_edit"]
+       when action in [:create, :update, :delete, :split, :sync_tags]
 
   action_fallback BackendWeb.FallbackController
 

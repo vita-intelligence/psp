@@ -58,7 +58,6 @@ const SECTIONS: ProdSection[] = [
     description:
       "Physical machines + their capacity, calendar, and downtime.",
     Icon: Settings2,
-    comingSoon: true,
   },
   {
     href: "/production/workstation-groups",

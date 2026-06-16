@@ -117,6 +117,7 @@ defmodule BackendWeb.Payloads do
       id: w.id,
       uuid: w.uuid,
       code: render_code(w, "warehouse"),
+      kind: w.kind,
       company_id: w.company_id,
       name: w.name,
       address: w.address,
@@ -712,6 +713,120 @@ defmodule BackendWeb.Payloads do
   end
 
   def workstation_group_summary(_), do: nil
+
+  # ----- workstations ----------------------------------------------
+
+  @doc """
+  Full workstation payload — detail page reads. Embeds the group +
+  warehouse summaries the FE form needs without an extra round-trip,
+  plus the M2M `default_workers` list as a flat user-summary array.
+  Inherited hourly rate is also surfaced (`effective_hourly_rate`) so
+  the FE form's read-only display lines up with how the scheduler
+  resolves it.
+  """
+  def workstation(%Backend.Production.Workstation{} = w) do
+    %{
+      id: w.id,
+      uuid: w.uuid,
+      code: render_code(w, "workstation"),
+      external_id: w.external_id,
+      name: w.name,
+      notes: w.notes,
+      workstation_group_id: w.workstation_group_id,
+      workstation_group: workstation_group_summary(w.workstation_group),
+      warehouse_id: w.warehouse_id,
+      warehouse: maybe_site_summary(w.warehouse),
+      hourly_rate_enabled: w.hourly_rate_enabled,
+      hourly_rate: decimal_to_string(w.hourly_rate),
+      effective_hourly_rate: workstation_effective_rate(w),
+      productivity: decimal_to_string(w.productivity),
+      idle_from: w.idle_from,
+      idle_to: w.idle_to,
+      is_active: w.is_active,
+      default_workers: workstation_default_workers(w),
+      created_by: actor(w, :created_by),
+      updated_by: actor(w, :updated_by),
+      inserted_at: w.inserted_at,
+      updated_at: w.updated_at
+    }
+  end
+
+  def workstation(_), do: nil
+
+  @doc "Slim workstation row for the ledger."
+  def workstation_summary(%Backend.Production.Workstation{} = w) do
+    %{
+      id: w.id,
+      uuid: w.uuid,
+      code: render_code(w, "workstation"),
+      name: w.name,
+      workstation_group: workstation_group_summary(w.workstation_group),
+      warehouse: maybe_site_summary(w.warehouse),
+      productivity: decimal_to_string(w.productivity),
+      hourly_rate_enabled: w.hourly_rate_enabled,
+      hourly_rate: decimal_to_string(w.hourly_rate),
+      is_active: w.is_active,
+      idle_from: w.idle_from,
+      idle_to: w.idle_to,
+      inserted_at: w.inserted_at,
+      updated_at: w.updated_at
+    }
+  end
+
+  def workstation_summary(_), do: nil
+
+  # Group rate when the workstation hasn't ticked the override; the
+  # workstation's own rate when it has. Returned as a decimal string
+  # (or nil).
+  defp workstation_effective_rate(%Backend.Production.Workstation{} = w) do
+    cond do
+      w.hourly_rate_enabled and w.hourly_rate != nil ->
+        decimal_to_string(w.hourly_rate)
+
+      match?(%Backend.Production.WorkstationGroup{}, w.workstation_group) and
+          w.workstation_group.hourly_rate_enabled ->
+        decimal_to_string(w.workstation_group.hourly_rate)
+
+      true ->
+        nil
+    end
+  end
+
+  defp workstation_default_workers(%Backend.Production.Workstation{} = w) do
+    case Map.get(w, :default_worker_assignments) do
+      %Ecto.Association.NotLoaded{} ->
+        []
+
+      list when is_list(list) ->
+        Enum.map(list, fn a ->
+          case a.user do
+            %Backend.Accounts.User{} = u ->
+              %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+            _ ->
+              nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  end
+
+  # Minimal site card on a workstation payload — full warehouse
+  # payload pulls in readiness which we don't need here.
+  defp maybe_site_summary(%Backend.Warehouses.Warehouse{} = w) do
+    %{
+      id: w.id,
+      uuid: w.uuid,
+      code: render_code(w, "warehouse"),
+      name: w.name,
+      kind: w.kind
+    }
+  end
+
+  defp maybe_site_summary(_), do: nil
 
   defp preloaded_list(record, field, shape_fn) do
     case Map.get(record, field) do

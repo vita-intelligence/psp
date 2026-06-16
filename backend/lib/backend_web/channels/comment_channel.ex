@@ -121,6 +121,9 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "workstation_group"),
     do: gate(user, "production.workstation_group_view")
 
+  defp check_view_perm(user, "workstation"),
+    do: gate(user, "production.workstation_view")
+
   defp check_view_perm(_user, _other), do: {:error, :forbidden}
 
   defp gate(user, code) do
@@ -157,6 +160,13 @@ defmodule BackendWeb.CommentChannel do
 
   defp resolve_entity_id(user, "workstation_group", uuid) do
     case Backend.Production.get_workstation_group(user.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "workstation", uuid) do
+    case Backend.Production.get_workstation(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
       _ -> {:error, :not_found}
     end

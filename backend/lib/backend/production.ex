@@ -28,7 +28,16 @@ defmodule Backend.Production do
   alias Backend.Audit
   alias Backend.ListQueries
   alias Backend.Items.Item
-  alias Backend.Production.{BOM, BOMLine, BOMVersion, WorkstationGroup}
+  alias Backend.Production.{
+    BOM,
+    BOMLine,
+    BOMVersion,
+    Workstation,
+    WorkstationDefaultWorker,
+    WorkstationGroup
+  }
+
+  alias Backend.Warehouses.Warehouse
   alias Backend.Repo
   alias Backend.Stock.Lot, as: StockLot
 
@@ -630,6 +639,314 @@ defmodule Backend.Production do
       holidays: g.holidays,
       color: g.color,
       is_active: g.is_active
+    }
+  end
+
+  # ============================================================
+  # Workstations
+  # ============================================================
+  #
+  # One workstation = one physical machine / line slot / cell inside
+  # a workstation group on a production-facility-kind site. Default
+  # workers (M2M) ride on `workstation_default_workers`. Sync with
+  # vita-performance keys on `external_id` (UUID).
+
+  @ws_search [:name, :notes]
+  @ws_sortable [:inserted_at, :updated_at, :name]
+  @ws_default_sort {:inserted_at, :desc}
+
+  def list_workstations_page(company_id, opts \\ []) when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @ws_default_sort)
+
+    base =
+      Workstation
+      |> where([w], w.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @ws_search)
+      |> maybe_ws_group_filter(opts[:workstation_group_id])
+      |> maybe_ws_warehouse_filter(opts[:warehouse_id])
+      |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_sort(sort, @ws_sortable, @ws_default_sort)
+      |> preload([:workstation_group, :warehouse, :created_by, :updated_by])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_ws_group_filter(query, nil), do: query
+
+  defp maybe_ws_group_filter(query, id) when is_integer(id),
+    do: where(query, [w], w.workstation_group_id == ^id)
+
+  defp maybe_ws_group_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [w], w.workstation_group_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_ws_group_filter(query, _), do: query
+
+  defp maybe_ws_warehouse_filter(query, nil), do: query
+
+  defp maybe_ws_warehouse_filter(query, id) when is_integer(id),
+    do: where(query, [w], w.warehouse_id == ^id)
+
+  defp maybe_ws_warehouse_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [w], w.warehouse_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_ws_warehouse_filter(query, _), do: query
+
+  def get_workstation(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    Workstation
+    |> where([w], w.company_id == ^company_id and w.uuid == ^uuid)
+    |> preload([
+      :workstation_group,
+      :warehouse,
+      :created_by,
+      :updated_by,
+      default_worker_assignments: :user
+    ])
+    |> Repo.one()
+  end
+
+  @doc """
+  Create a workstation. The `default_worker_ids` key (if present) is
+  pulled off the attrs map and replayed as M2M inserts inside the
+  same transaction so the row + its assignments commit atomically.
+
+  Refuses to create against a non-production-facility warehouse —
+  workstations are a production concept and a warehouse-kind row
+  hosting them would short-circuit a future capability check.
+  """
+  def create_workstation(%User{} = actor, attrs) do
+    {worker_ids, attrs} = pull_worker_ids(attrs)
+    attrs = stringify_keys(attrs)
+
+    attrs =
+      attrs
+      |> Map.put("company_id", actor.company_id)
+      |> Map.put("created_by_id", actor.id)
+      |> Map.put("updated_by_id", actor.id)
+      # Block any client attempt to populate the sync hook directly.
+      |> Map.delete("external_id")
+
+    with :ok <- ensure_production_facility(actor, attrs["warehouse_id"]),
+         :ok <- ensure_group_in_company(actor, attrs["workstation_group_id"]) do
+      Repo.transaction(fn ->
+        with {:ok, ws} <-
+               %Workstation{}
+               |> Workstation.changeset(attrs)
+               |> Repo.insert(),
+             {:ok, _} <- replace_default_workers(actor, ws, worker_ids) do
+          Audit.record_created(actor, "workstation", ws, ws_snapshot(ws))
+          ws
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, ws} -> {:ok, reload_workstation(ws)}
+        other -> other
+      end
+    end
+  end
+
+  def update_workstation(%User{} = actor, %Workstation{} = ws, attrs) do
+    {worker_ids, attrs} = pull_worker_ids(attrs)
+    attrs = stringify_keys(attrs)
+    before = ws_snapshot(ws)
+
+    attrs =
+      attrs
+      |> Map.delete("company_id")
+      |> Map.delete("created_by_id")
+      |> Map.delete("external_id")
+      |> Map.put("updated_by_id", actor.id)
+
+    with :ok <-
+           (if Map.has_key?(attrs, "warehouse_id"),
+              do: ensure_production_facility(actor, attrs["warehouse_id"]),
+              else: :ok),
+         :ok <-
+           (if Map.has_key?(attrs, "workstation_group_id"),
+              do: ensure_group_in_company(actor, attrs["workstation_group_id"]),
+              else: :ok) do
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               ws
+               |> Workstation.changeset(attrs)
+               |> Repo.update(),
+             {:ok, _} <-
+               (if is_list(worker_ids),
+                  do: replace_default_workers(actor, updated, worker_ids),
+                  else: {:ok, :unchanged}) do
+          Audit.record_updated(
+            actor,
+            "workstation",
+            updated,
+            before,
+            ws_snapshot(updated)
+          )
+
+          updated
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, ws} -> {:ok, reload_workstation(ws)}
+        other -> other
+      end
+    end
+  end
+
+  def delete_workstation(%User{} = actor, %Workstation{} = ws) do
+    before = ws_snapshot(ws)
+
+    case Repo.delete(ws) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "workstation", deleted, before)
+        {:ok, deleted}
+
+      err ->
+        err
+    end
+  end
+
+  defp reload_workstation(%Workstation{} = ws) do
+    Repo.preload(
+      ws,
+      [
+        :workstation_group,
+        :warehouse,
+        :created_by,
+        :updated_by,
+        default_worker_assignments: :user
+      ],
+      force: true
+    )
+  end
+
+  defp pull_worker_ids(attrs) do
+    case Map.pop(attrs, "default_worker_ids", :unset) do
+      {:unset, attrs} ->
+        case Map.pop(attrs, :default_worker_ids, :unset) do
+          {:unset, attrs} -> {nil, attrs}
+          {ids, attrs} -> {normalise_ids(ids), attrs}
+        end
+
+      {ids, attrs} ->
+        {normalise_ids(ids), attrs}
+    end
+  end
+
+  defp normalise_ids(ids) when is_list(ids) do
+    ids
+    |> Enum.map(fn
+      n when is_integer(n) -> n
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {n, ""} -> n
+          _ -> nil
+        end
+      _ -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp normalise_ids(_), do: []
+
+  defp replace_default_workers(_actor, _ws, nil), do: {:ok, :unchanged}
+
+  defp replace_default_workers(%User{} = actor, %Workstation{} = ws, ids)
+       when is_list(ids) do
+    # Wholesale-replace: wipe + reinsert inside the parent transaction.
+    Repo.delete_all(
+      from a in WorkstationDefaultWorker, where: a.workstation_id == ^ws.id
+    )
+
+    inserts =
+      Enum.map(ids, fn user_id ->
+        %{
+          workstation_id: ws.id,
+          user_id: user_id,
+          company_id: actor.company_id,
+          inserted_at: now()
+        }
+      end)
+
+    case inserts do
+      [] -> {:ok, 0}
+      rows -> {:ok, elem(Repo.insert_all(WorkstationDefaultWorker, rows), 0)}
+    end
+  end
+
+  defp ensure_production_facility(_actor, nil), do: {:error, :warehouse_required}
+
+  defp ensure_production_facility(%User{} = actor, id) do
+    int_id =
+      case id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+        _ -> nil
+      end
+
+    case int_id && Repo.get(Warehouse, int_id) do
+      %Warehouse{company_id: cid, kind: "production_facility"} when cid == actor.company_id ->
+        :ok
+
+      %Warehouse{company_id: cid} when cid == actor.company_id ->
+        {:error, :site_must_be_production_facility}
+
+      _ ->
+        {:error, :warehouse_not_found}
+    end
+  end
+
+  defp ensure_group_in_company(_actor, nil), do: {:error, :workstation_group_required}
+
+  defp ensure_group_in_company(%User{} = actor, id) do
+    int_id =
+      case id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+        _ -> nil
+      end
+
+    case int_id && Repo.get(WorkstationGroup, int_id) do
+      %WorkstationGroup{company_id: cid} when cid == actor.company_id -> :ok
+      _ -> {:error, :workstation_group_not_found}
+    end
+  end
+
+  defp ws_snapshot(%Workstation{} = ws) do
+    %{
+      name: ws.name,
+      notes: ws.notes,
+      workstation_group_id: ws.workstation_group_id,
+      warehouse_id: ws.warehouse_id,
+      hourly_rate_enabled: ws.hourly_rate_enabled,
+      hourly_rate: ws.hourly_rate,
+      productivity: ws.productivity,
+      idle_from: ws.idle_from,
+      idle_to: ws.idle_to,
+      is_active: ws.is_active,
+      external_id: ws.external_id
     }
   end
 end

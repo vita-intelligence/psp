@@ -11,8 +11,10 @@ import {
 import type {
   BOM,
   BOMUpsertInput,
+  Workstation,
   WorkstationGroup,
   WorkstationGroupUpsertInput,
+  WorkstationUpsertInput,
 } from "./types";
 
 export type BOMResult =
@@ -223,6 +225,88 @@ export async function deleteWorkstationGroupAction(
       ...toErrorResult(err, {
         source: "deleteWorkstationGroupAction",
         fallbackDetail: "Couldn't delete the workstation group.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// Workstations
+// ---------------------------------------------------------------
+
+export type WorkstationResult =
+  | { ok: true; workstation: Workstation }
+  | (ErrorResult & { ok: false });
+
+export async function createWorkstationAction(
+  attrs: WorkstationUpsertInput,
+): Promise<WorkstationResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("createWorkstationAction") };
+  try {
+    const { workstation } = await api<{ workstation: Workstation }>(
+      "/api/production/workstations",
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/workstations");
+    return { ok: true, workstation };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "createWorkstationAction",
+        fallbackDetail: "Couldn't create the workstation.",
+      }),
+    };
+  }
+}
+
+export async function updateWorkstationAction(
+  uuid: string,
+  attrs: WorkstationUpsertInput,
+): Promise<WorkstationResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("updateWorkstationAction") };
+  try {
+    const { workstation } = await api<{ workstation: Workstation }>(
+      `/api/production/workstations/${encodeURIComponent(uuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/workstations");
+    revalidatePath(`/production/workstations/${uuid}`);
+    return { ok: true, workstation };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateWorkstationAction",
+        fallbackDetail: "Couldn't save the workstation.",
+      }),
+    };
+  }
+}
+
+export async function deleteWorkstationAction(
+  uuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("deleteWorkstationAction") };
+  try {
+    await api<void>(
+      `/api/production/workstations/${encodeURIComponent(uuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath("/production/workstations");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "deleteWorkstationAction",
+        fallbackDetail: "Couldn't delete the workstation.",
       }),
     };
   }

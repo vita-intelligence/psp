@@ -64,7 +64,15 @@ export type PermissionCode =
   | "production.workstation_group_view"
   | "production.workstation_group_create"
   | "production.workstation_group_edit"
-  | "production.workstation_group_delete";
+  | "production.workstation_group_delete"
+  | "production.facility_view"
+  | "production.facility_create"
+  | "production.facility_edit"
+  | "production.facility_delete"
+  | "production.workstation_view"
+  | "production.workstation_create"
+  | "production.workstation_edit"
+  | "production.workstation_delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

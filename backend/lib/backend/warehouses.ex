@@ -51,10 +51,15 @@ defmodule Backend.Warehouses do
   """
   def list_for_company(company_id, opts \\ []) do
     sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
+    # Default scope = warehouse-kind so legacy call sites stay unchanged.
+    # Controllers managing the production-facility surface pass
+    # `kind: "production_facility"`; pass `:any` to opt out entirely.
+    kind = Keyword.get(opts, :kind, "warehouse")
 
     base =
       Warehouse
       |> where([w], w.company_id == ^company_id)
+      |> kind_scope(kind)
       |> ListQueries.apply_search(opts[:search], @search_fields)
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
@@ -62,6 +67,13 @@ defmodule Backend.Warehouses do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp kind_scope(query, :any), do: query
+  defp kind_scope(query, nil), do: query
+  defp kind_scope(query, kind) when kind in ~w(warehouse production_facility),
+    do: where(query, [w], w.kind == ^kind)
+
+  defp kind_scope(query, _other), do: query
 
   # FE sends `sort=code:asc` from the Code column header. The display
   # code is `prefix + lpad(id, padding)` so id order = code order under
@@ -104,6 +116,22 @@ defmodule Backend.Warehouses do
   end
 
   def get_for_company(_company_id, _), do: nil
+
+  @doc """
+  Like `get_for_company/2` but refuses to return a row whose `kind`
+  doesn't match — used by the kind-scoped controllers so e.g. a
+  GET /api/production/facilities/<uuid> can never return a regular
+  warehouse and vice versa.
+  """
+  def get_for_company_kind(company_id, uuid, kind)
+      when is_binary(uuid) and kind in ~w(warehouse production_facility) do
+    case get_for_company(company_id, uuid) do
+      %Warehouse{kind: ^kind} = w -> w
+      _ -> nil
+    end
+  end
+
+  def get_for_company_kind(_company_id, _uuid, _kind), do: nil
 
   ## Mutation --------------------------------------------------------
 

@@ -17,6 +17,7 @@ import {
   Tags,
   Users,
   Warehouse,
+  Factory,
   ShieldCheck,
   Ruler,
   ChevronDown,
@@ -50,6 +51,12 @@ const ITEMS: NavItem[] = [
     label: "Warehouses",
     icon: Warehouse,
     permission: "warehouses.view",
+  },
+  {
+    href: "/settings/production-sites",
+    label: "Production sites",
+    icon: Factory,
+    permission: "production.facility_view",
   },
   {
     href: "/settings/storage-tags",

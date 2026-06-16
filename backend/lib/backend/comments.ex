@@ -43,6 +43,10 @@ defmodule Backend.Comments do
     "workstation_group" => [
       "production.workstation_group_edit",
       "production.workstation_group_create"
+    ],
+    "workstation" => [
+      "production.workstation_edit",
+      "production.workstation_create"
     ]
   }
 

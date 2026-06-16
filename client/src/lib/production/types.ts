@@ -188,3 +188,92 @@ export interface WorkstationGroupUpsertInput {
   color?: string | null;
   is_active?: boolean;
 }
+
+// ---------------------------------------------------------------
+// Workstations
+// ---------------------------------------------------------------
+
+export interface WorkstationSiteSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  kind: "warehouse" | "production_facility";
+}
+
+export interface WorkstationDefaultWorker {
+  id: number;
+  uuid: string;
+  name: string;
+  email: string;
+}
+
+export interface Workstation {
+  id: number;
+  uuid: string;
+  code: string | null;
+  /** UUID populated by the vita-performance sync job. NULL until
+   *  the workstation has been mirrored. Surfaced read-only on the
+   *  FE so admins can see the join key without editing it. */
+  external_id: string | null;
+  name: string;
+  notes: string | null;
+  workstation_group_id: number;
+  workstation_group: WorkstationGroupSummary | null;
+  warehouse_id: number;
+  warehouse: WorkstationSiteSummary | null;
+  hourly_rate_enabled: boolean;
+  /** Decimal string when set. */
+  hourly_rate: string | null;
+  /** Computed by the BE — workstation rate when toggle on, else the
+   *  group's rate (when its toggle is on), else `null`. The form's
+   *  inheritance label reads this. */
+  effective_hourly_rate: string | null;
+  productivity: string;
+  idle_from: string | null;
+  idle_to: string | null;
+  is_active: boolean;
+  default_workers: WorkstationDefaultWorker[];
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface WorkstationSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  workstation_group: WorkstationGroupSummary | null;
+  warehouse: WorkstationSiteSummary | null;
+  productivity: string;
+  hourly_rate_enabled: boolean;
+  hourly_rate: string | null;
+  is_active: boolean;
+  idle_from: string | null;
+  idle_to: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface WorkstationLedgerPage {
+  items: WorkstationSummary[];
+  next_cursor: string | null;
+}
+
+export interface WorkstationUpsertInput {
+  name?: string;
+  notes?: string | null;
+  workstation_group_id?: number;
+  warehouse_id?: number;
+  hourly_rate_enabled?: boolean;
+  hourly_rate?: string | null;
+  productivity?: string | number;
+  idle_from?: string | null;
+  idle_to?: string | null;
+  is_active?: boolean;
+  /** Wholesale replace — BE wipes the M2M set and reinserts the
+   *  ids sent here inside the same transaction. */
+  default_worker_ids?: number[];
+}

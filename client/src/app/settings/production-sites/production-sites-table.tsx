@@ -1,0 +1,172 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useMemo } from "react";
+import { DataTable } from "@/components/data-table";
+import type {
+  DataTableColumn,
+  FilterDef,
+  PageResult,
+  SortSpec,
+} from "@/components/data-table";
+import type { Warehouse } from "@/lib/types";
+import { Badge } from "@/components/ui/badge-mini";
+import { auditColumns } from "@/components/audit/audit-table-columns";
+
+interface ProductionSitesTableProps {
+  initialPage: PageResult<Warehouse>;
+  toolbarActions?: React.ReactNode;
+  beforeTable?: React.ReactNode;
+}
+
+const FILTERS: FilterDef[] = [
+  {
+    field: "is_active",
+    label: "Status",
+    options: [
+      { label: "Active", value: true },
+      { label: "Inactive", value: false },
+    ],
+  },
+];
+
+const DEFAULT_SORT: SortSpec = { field: "name", direction: "asc" };
+
+async function fetchSitesPage(params: {
+  cursor: string | null;
+  limit: number;
+  sort: SortSpec | null;
+  filters: Record<string, string | boolean | number>;
+  search: string;
+}): Promise<PageResult<Warehouse>> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit));
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.sort)
+    qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
+  if (params.search) qs.set("search", params.search);
+  for (const [k, v] of Object.entries(params.filters)) {
+    qs.set(`filter[${k}]`, String(v));
+  }
+
+  const res = await fetch(`/api/production-facilities?${qs.toString()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* leave detail */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as PageResult<Warehouse>;
+}
+
+export function ProductionSitesTable({
+  initialPage,
+  toolbarActions,
+  beforeTable,
+}: ProductionSitesTableProps) {
+  const router = useRouter();
+
+  const columns = useMemo<DataTableColumn<Warehouse>[]>(
+    () => [
+      {
+        id: "code",
+        header: "Code",
+        sortField: "code",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        widthClassName: "w-28",
+        cell: (w) =>
+          w.code ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              {w.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "name",
+        header: "Name",
+        sortField: "name",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        hideable: false,
+        widthClassName: "min-w-[14rem]",
+        cell: (w) => <span className="truncate font-medium">{w.name}</span>,
+      },
+      {
+        id: "address",
+        header: "Address",
+        widthClassName: "min-w-[14rem]",
+        cell: (w) =>
+          w.address ? (
+            <span className="line-clamp-1 text-sm text-muted-foreground">
+              {w.address}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "status",
+        header: "Status",
+        sortField: "is_active",
+        sortLabels: { asc: "Inactive first", desc: "Active first" },
+        widthClassName: "w-28",
+        cell: (w) => (
+          <Badge tone={w.is_active ? "emerald" : "muted"}>
+            {w.is_active ? "Active" : "Inactive"}
+          </Badge>
+        ),
+      },
+      ...auditColumns<Warehouse>(),
+    ],
+    [],
+  );
+
+  return (
+    <DataTable<Warehouse>
+      tableId="production-sites"
+      columns={columns}
+      rowKey={(w) => String(w.id)}
+      fetchPage={fetchSitesPage}
+      initialPage={initialPage}
+      defaultSort={DEFAULT_SORT}
+      searchPlaceholder="Search by name or address…"
+      filters={FILTERS}
+      onRowClick={(w) => router.push(`/settings/production-sites/${w.uuid}`)}
+      toolbarActions={toolbarActions}
+      beforeTable={beforeTable}
+      renderMobileCard={(w) => (
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="truncate text-sm font-semibold">{w.name}</p>
+              <Badge tone={w.is_active ? "emerald" : "muted"}>
+                {w.is_active ? "Active" : "Inactive"}
+              </Badge>
+            </div>
+          </div>
+          {w.address && (
+            <p className="line-clamp-2 text-xs text-muted-foreground">
+              {w.address}
+            </p>
+          )}
+        </div>
+      )}
+      emptyState={
+        <div className="space-y-1">
+          <p className="text-sm font-medium">No production sites yet</p>
+          <p className="text-xs text-muted-foreground">
+            Add your first manufacturing facility to start mapping its
+            floor plan and WIP storage.
+          </p>
+        </div>
+      }
+    />
+  );
+}

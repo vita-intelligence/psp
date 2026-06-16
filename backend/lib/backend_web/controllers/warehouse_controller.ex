@@ -23,7 +23,7 @@ defmodule BackendWeb.WarehouseController do
 
   def index(conn, params) do
     user = conn.assigns.current_user
-    opts = list_opts_from_params(params)
+    opts = Keyword.put(list_opts_from_params(params), :kind, "warehouse")
 
     {items, next_cursor} = Warehouses.list_for_company(user.company_id, opts)
 
@@ -69,7 +69,7 @@ defmodule BackendWeb.WarehouseController do
   def show(conn, %{"id" => id}) do
     user = conn.assigns.current_user
 
-    case Warehouses.get_for_company(user.company_id, id) do
+    case Warehouses.get_for_company_kind(user.company_id, id, "warehouse") do
       nil -> {:error, :not_found}
       warehouse -> json(conn, %{warehouse: Payloads.warehouse(warehouse)})
     end
@@ -77,8 +77,11 @@ defmodule BackendWeb.WarehouseController do
 
   def create(conn, params) do
     user = conn.assigns.current_user
+    # Force kind on create so a malicious payload can't slip a
+    # production_facility row in through this surface.
+    attrs = Map.put(params, "kind", "warehouse")
 
-    case Warehouses.create(user, user.company_id, params) do
+    case Warehouses.create(user, user.company_id, attrs) do
       {:ok, warehouse} ->
         conn
         |> put_status(:created)
@@ -100,12 +103,16 @@ defmodule BackendWeb.WarehouseController do
   def update(conn, %{"id" => id} = params) do
     user = conn.assigns.current_user
 
-    case Warehouses.get_for_company(user.company_id, id) do
+    case Warehouses.get_for_company_kind(user.company_id, id, "warehouse") do
       nil ->
         {:error, :not_found}
 
       warehouse ->
-        case Warehouses.update(user, warehouse, Map.delete(params, "id")) do
+        # Strip `kind` from update payload — discriminator is immutable
+        # after create. A facility can't quietly become a warehouse.
+        attrs = params |> Map.delete("id") |> Map.delete("kind")
+
+        case Warehouses.update(user, warehouse, attrs) do
           {:ok, updated} ->
             json(conn, %{warehouse: Payloads.warehouse(updated)})
 
@@ -126,7 +133,7 @@ defmodule BackendWeb.WarehouseController do
   def delete(conn, %{"id" => id}) do
     user = conn.assigns.current_user
 
-    case Warehouses.get_for_company(user.company_id, id) do
+    case Warehouses.get_for_company_kind(user.company_id, id, "warehouse") do
       nil ->
         {:error, :not_found}
 

@@ -48,6 +48,45 @@ export async function getWarehouse(uuid: string): Promise<Warehouse | null> {
   }
 }
 
+// ---------------------------------------------------------------
+// Production facilities — sibling helpers on the same row shape.
+// ---------------------------------------------------------------
+
+export async function listProductionFacilitiesFirstPage(
+  limit = 25,
+): Promise<PageResult<Warehouse>> {
+  const token = await getSessionToken();
+  if (!token) return { items: [], next_cursor: null };
+
+  try {
+    return await api<PageResult<Warehouse>>(
+      `/api/production-facilities?limit=${limit}`,
+      { token },
+    );
+  } catch (err) {
+    if (err instanceof ApiError) return { items: [], next_cursor: null };
+    throw err;
+  }
+}
+
+export async function getProductionFacility(
+  uuid: string,
+): Promise<Warehouse | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+
+  try {
+    const { warehouse } = await api<{ warehouse: Warehouse }>(
+      `/api/production-facilities/${uuid}`,
+      { token },
+    );
+    return warehouse;
+  } catch (err) {
+    if (err instanceof ApiError) return null;
+    throw err;
+  }
+}
+
 /** Slim active-warehouse list for the mobile picker. Tries the device
  *  bearer first so the tablet hits the endpoint without a laptop
  *  session, then falls back to the session token. Returns an empty

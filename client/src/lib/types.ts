@@ -163,7 +163,8 @@ export interface AuditEvent {
     | "purchase_order_line"
     | "purchase_order_approval"
     | "bom"
-    | "workstation_group";
+    | "workstation_group"
+    | "workstation";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";
@@ -216,6 +217,10 @@ export interface Contact {
   value: string;
 }
 
+/** Discriminator on the warehouses table — same plumbing, two
+ *  visibly-distinct surfaces (warehouses + production sites). */
+export type WarehouseKind = "warehouse" | "production_facility";
+
 export interface Warehouse {
   /** Internal DB id. Never in URLs — those use `uuid`. */
   id: number;
@@ -224,6 +229,8 @@ export interface Warehouse {
   /** Short auto-generated identifier (WH00001, …). nil for legacy
    *  rows that landed before the migration. */
   code: string | null;
+  /** Which surface this row belongs to. Immutable post-create. */
+  kind: WarehouseKind;
   company_id: number;
   name: string;
   address: string | null;

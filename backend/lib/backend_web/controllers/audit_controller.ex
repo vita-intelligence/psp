@@ -19,7 +19,12 @@ defmodule BackendWeb.AuditController do
   action_fallback BackendWeb.FallbackController
 
   @entity_view_perms %{
-    "warehouse" => "warehouses.view",
+    # `warehouse` is kind-dependent — the same table powers warehouses
+    # (`warehouses.view`) and production facilities
+    # (`production.facility_view`). The atom sentinel tells
+    # `check_view_perm/2` to defer to `check_entity_in_company/3`
+    # where we've loaded the row and can read its kind.
+    "warehouse" => :kind_dependent,
     "user" => "users.view",
     "template" => "roles.view",
     # Floor + storage location + storage cell histories ride the
@@ -60,7 +65,8 @@ defmodule BackendWeb.AuditController do
     "purchase_order_approval" => "procurement.po_view",
     # Production domain.
     "bom" => "production.bom_view",
-    "workstation_group" => "production.workstation_group_view"
+    "workstation_group" => "production.workstation_group_view",
+    "workstation" => "production.workstation_view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -102,9 +108,18 @@ defmodule BackendWeb.AuditController do
           "No #{entity_type} with id=#{entity_id_str} is visible to your company.")
 
       # User is logged in but lacks the view permission for this
-      # entity type. Include the required code so admins can grant it.
+      # entity type. Include the required code so admins can grant it
+      # (or a hint for the kind-dependent warehouse case).
       {:error, :forbidden} ->
-        required = Map.get(@entity_view_perms, entity_type)
+        required =
+          case Map.get(@entity_view_perms, entity_type) do
+            :kind_dependent ->
+              "warehouses.view or production.facility_view"
+
+            other ->
+              other
+          end
+
         send_error(conn, :forbidden, "missing_permission",
           "You need the `#{required}` permission to view #{entity_type} activity.")
     end
@@ -125,6 +140,13 @@ defmodule BackendWeb.AuditController do
 
   defp check_view_perm(actor, entity_type) do
     case Map.fetch(@entity_view_perms, entity_type) do
+      # "warehouse" is special: the same table backs both warehouse-
+      # and production-facility-kind rows. The kind-specific perm
+      # check happens in `check_entity_in_company/3` once we've
+      # loaded the row and can read its kind.
+      {:ok, :kind_dependent} ->
+        :ok
+
       {:ok, code} ->
         if RBAC.has_permission?(actor, code), do: :ok, else: {:error, :forbidden}
 
@@ -135,8 +157,19 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "warehouse", entity_id) do
     case Backend.Repo.get(Warehouses.Warehouse, entity_id) do
-      %{company_id: company_id} when company_id == actor.company_id -> :ok
-      _ -> {:error, :cross_company}
+      %{company_id: company_id, kind: kind} when company_id == actor.company_id ->
+        code =
+          case kind do
+            "production_facility" -> "production.facility_view"
+            _ -> "warehouses.view"
+          end
+
+        if RBAC.has_permission?(actor, code),
+          do: :ok,
+          else: {:error, :forbidden}
+
+      _ ->
+        {:error, :cross_company}
     end
   end
 
@@ -340,6 +373,13 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "workstation_group", entity_id) do
     case Backend.Repo.get(Backend.Production.WorkstationGroup, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "workstation", entity_id) do
+    case Backend.Repo.get(Backend.Production.Workstation, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

@@ -51,7 +51,6 @@ const ITEMS: SubnavItem[] = [
     href: "/production/workstations",
     label: "Workstations",
     Icon: Settings2,
-    comingSoon: true,
   },
   {
     href: "/production/workstation-groups",

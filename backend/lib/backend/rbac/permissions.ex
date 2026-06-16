@@ -169,7 +169,17 @@ defmodule Backend.RBAC.Permissions do
     {"production.workstation_group_create", "Create new workstation groups"},
     {"production.workstation_group_edit",
      "Edit existing workstation groups (instances, rate, working hours)"},
-    {"production.workstation_group_delete", "Delete workstation groups"}
+    {"production.workstation_group_delete", "Delete workstation groups"},
+    {"production.facility_view", "View production sites + their floor plans"},
+    {"production.facility_create", "Create new production sites"},
+    {"production.facility_edit",
+     "Edit production sites (details, floors, locations, cells)"},
+    {"production.facility_delete", "Delete production sites"},
+    {"production.workstation_view", "View workstations"},
+    {"production.workstation_create", "Create new workstations"},
+    {"production.workstation_edit",
+     "Edit workstations (group, rate, productivity, idle window, default workers)"},
+    {"production.workstation_delete", "Delete workstations"}
   ]
 
   def all do
@@ -493,6 +503,26 @@ defmodule Backend.RBAC.Permissions do
             create: "production.workstation_group_create",
             update: "production.workstation_group_edit",
             delete: "production.workstation_group_delete"
+          },
+          %{
+            key: "production_facilities",
+            label: "Production sites",
+            description:
+              "Physical manufacturing sites with their own floor plan. Holds WIP stock and (in a follow-up) the workstations that run on the floor.",
+            read: "production.facility_view",
+            create: "production.facility_create",
+            update: "production.facility_edit",
+            delete: "production.facility_delete"
+          },
+          %{
+            key: "workstations",
+            label: "Workstations",
+            description:
+              "Individual machines / line slots inside a workstation group on a production site. Schedule, MOs, and vita-performance scoring key on these rows.",
+            read: "production.workstation_view",
+            create: "production.workstation_create",
+            update: "production.workstation_edit",
+            delete: "production.workstation_delete"
           }
         ]
       }

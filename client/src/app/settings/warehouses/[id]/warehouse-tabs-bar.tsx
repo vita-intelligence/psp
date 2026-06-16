@@ -7,6 +7,10 @@ export type WarehouseTab = "details" | "plan";
 interface WarehouseTabsBarProps {
   active: WarehouseTab;
   warehouseUuid: string;
+  /** Detail-page base path the tabs link to. Defaults to
+   *  `/settings/warehouses` so existing callers keep working;
+   *  the production-sites page passes `/settings/production-sites`. */
+  basePath?: string;
 }
 
 /**
@@ -18,6 +22,7 @@ interface WarehouseTabsBarProps {
 export function WarehouseTabsBar({
   active,
   warehouseUuid,
+  basePath = "/settings/warehouses",
 }: WarehouseTabsBarProps) {
   const items: Array<{ id: WarehouseTab; label: string; icon: typeof FileText }> = [
     { id: "details", label: "Details", icon: FileText },
@@ -26,12 +31,12 @@ export function WarehouseTabsBar({
 
   return (
     <nav
-      aria-label="Warehouse sections"
+      aria-label="Site sections"
       className="flex items-center gap-1 border-b border-border/60"
     >
       {items.map((item) => {
         const isActive = active === item.id;
-        const href = `/settings/warehouses/${warehouseUuid}?tab=${item.id}`;
+        const href = `${basePath}/${warehouseUuid}?tab=${item.id}`;
         const Icon = item.icon;
         return (
           <Link

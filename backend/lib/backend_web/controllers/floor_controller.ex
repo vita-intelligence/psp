@@ -17,10 +17,15 @@ defmodule BackendWeb.FloorController do
   alias Backend.Warehouses
   alias Backend.Warehouses.Plans
   alias BackendWeb.{Errors, Payloads, WarehousePlanBroadcast}
-  alias BackendWeb.Plugs.RequirePermission
+  alias BackendWeb.Plugs.RequireWarehouseKindPermission
 
-  plug RequirePermission, "warehouses.view" when action in [:index, :show]
-  plug RequirePermission, "warehouses.edit" when action in [:create, :update, :delete]
+  plug RequireWarehouseKindPermission,
+       [warehouse: "warehouses.view", production_facility: "production.facility_view"]
+       when action in [:index, :show]
+
+  plug RequireWarehouseKindPermission,
+       [warehouse: "warehouses.edit", production_facility: "production.facility_edit"]
+       when action in [:create, :update, :delete]
 
   action_fallback BackendWeb.FallbackController
 

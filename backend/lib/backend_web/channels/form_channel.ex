@@ -218,6 +218,15 @@ defmodule BackendWeb.FormChannel do
     do: RBAC.has_permission?(user, "warehouses.edit") or
         RBAC.has_permission?(user, "warehouses.create")
 
+  # Production-facility form — sibling of warehouse, gated by the
+  # production.facility_* permission family. The form component is
+  # shared (kind prop switches labels + endpoint) but the channel
+  # topic is distinct so a warehouse editor doesn't collide with a
+  # facility editor on the same browser session.
+  defp can_edit_resource?(user, "production-facility"),
+    do: RBAC.has_permission?(user, "production.facility_edit") or
+        RBAC.has_permission?(user, "production.facility_create")
+
   defp can_edit_resource?(user, "company"),
     do: RBAC.has_permission?(user, "company.edit")
 
@@ -303,6 +312,11 @@ defmodule BackendWeb.FormChannel do
     do:
       RBAC.has_permission?(user, "production.workstation_group_edit") or
         RBAC.has_permission?(user, "production.workstation_group_create")
+
+  defp can_edit_resource?(user, "workstation"),
+    do:
+      RBAC.has_permission?(user, "production.workstation_edit") or
+        RBAC.has_permission?(user, "production.workstation_create")
 
   defp can_edit_resource?(_user, _resource), do: false
 

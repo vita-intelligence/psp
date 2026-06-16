@@ -38,7 +38,12 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { cn } from "@/lib/utils";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
-import type { Warehouse, Contact, CompanyDefaults } from "@/lib/types";
+import type {
+  Warehouse,
+  WarehouseKind,
+  Contact,
+  CompanyDefaults,
+} from "@/lib/types";
 import type { WorkingHours, Holiday } from "@/lib/company/bags";
 import {
   WorkingHoursEditor,
@@ -52,7 +57,9 @@ import {
 } from "@/components/scheduling/holidays-editor";
 import type { FieldErrors } from "@/lib/auth/actions";
 import {
+  createProductionFacilityAction,
   createWarehouseAction,
+  updateProductionFacilityAction,
   updateWarehouseAction,
 } from "@/lib/warehouses/actions";
 import { invalidateAudit, subscribeRestore } from "@/lib/audit/invalidator";
@@ -75,6 +82,11 @@ interface WarehouseFormProps {
    *  page. */
   company: CompanyDefaults;
   canEdit: boolean;
+  /** Which surface this form is mounted on. Defaults to `warehouse`
+   *  for backwards compatibility with existing call sites. Controls
+   *  the action endpoints, the channel topic, the navigation target
+   *  on create, and the copy in the header. */
+  kind?: WarehouseKind;
 }
 
 const CONTACT_TYPES: Contact["type"][] = ["phone", "email", "url", "other"];
@@ -154,9 +166,20 @@ export function WarehouseForm({
   warehouse,
   company,
   canEdit,
+  kind = "warehouse",
 }: WarehouseFormProps) {
   const router = useRouter();
-  const resource = warehouse ? `warehouse:${warehouse.uuid}` : "warehouse:new";
+  // Distinct channel topic per kind so a warehouse editor and a
+  // facility editor never collide on the same browser session.
+  const resourceKey = kind === "production_facility" ? "production-facility" : "warehouse";
+  const resource = warehouse
+    ? `${resourceKey}:${warehouse.uuid}`
+    : `${resourceKey}:new`;
+  const listPath =
+    kind === "production_facility"
+      ? "/settings/production-sites"
+      : "/settings/warehouses";
+  const noun = kind === "production_facility" ? "production site" : "warehouse";
   // Broadcast our current form on the lobby so the list page can show
   // "X is editing this" badges. Cleared on unmount when we navigate
   // away from the form.
@@ -198,10 +221,10 @@ export function WarehouseForm({
       const msg = raw as CommitPayload | null;
       if (!msg) return;
       if (msg.kind === "created") {
-        toast.success("Warehouse created", {
+        toast.success(`${capitalise(noun)} created`, {
           description: `${creator?.name ?? "The host"} just finalized "${msg.name}".`,
         });
-        router.push(`/settings/warehouses/${msg.uuid}`);
+        router.push(`${listPath}/${msg.uuid}`);
       } else if (msg.kind === "saved") {
         toast.success("Saved", {
           description: `${creator?.name ?? "The host"} just saved the form.`,
@@ -354,13 +377,26 @@ export function WarehouseForm({
       },
     };
 
+    const update =
+      kind === "production_facility"
+        ? updateProductionFacilityAction
+        : updateWarehouseAction;
+    const create =
+      kind === "production_facility"
+        ? createProductionFacilityAction
+        : createWarehouseAction;
+
     startTransition(async () => {
       const res = warehouse
-        ? await updateWarehouseAction(warehouse.uuid, payload)
-        : await createWarehouseAction(payload);
+        ? await update(warehouse.uuid, payload)
+        : await create(payload);
 
       if (res.ok) {
-        toast.success(warehouse ? "Warehouse saved" : "Warehouse created");
+        toast.success(
+          warehouse
+            ? `${capitalise(noun)} saved`
+            : `${capitalise(noun)} created`,
+        );
         setOriginal(state);
 
         // Refresh the Activity card on this page without a page
@@ -380,7 +416,7 @@ export function WarehouseForm({
             uuid: res.warehouse.uuid,
             name: res.warehouse.name,
           });
-          router.push(`/settings/warehouses/${res.warehouse.uuid}`);
+          router.push(`${listPath}/${res.warehouse.uuid}`);
         }
         return;
       }
@@ -436,7 +472,7 @@ export function WarehouseForm({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1.5">
             <CardTitle>
-              {warehouse ? warehouse.name : "New warehouse"}
+              {warehouse ? warehouse.name : `New ${noun}`}
             </CardTitle>
             <CardDescription>
               Set up a physical location. Working hours, timezone, and
@@ -501,7 +537,7 @@ export function WarehouseForm({
                   <Switch
                     checked={state.is_active}
                     onCheckedChange={(v) => setField("is_active", v)}
-                    aria-label="Warehouse is active"
+                    aria-label={`${capitalise(noun)} is active`}
                   />
                   <span className="text-sm text-muted-foreground">
                     {state.is_active
@@ -529,7 +565,7 @@ export function WarehouseForm({
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
                     {state.timezone_override
-                      ? "Using a warehouse-specific timezone"
+                      ? `Using a ${noun}-specific timezone`
                       : "Inheriting from company"}
                   </p>
                   <p className="text-xs text-muted-foreground">
@@ -595,7 +631,7 @@ export function WarehouseForm({
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
                     {state.working_hours_override
-                      ? "Warehouse-specific schedule"
+                      ? `${capitalise(noun)}-specific schedule`
                       : "Inheriting from company"}
                   </p>
                   <p className="text-xs text-muted-foreground">
@@ -646,7 +682,7 @@ export function WarehouseForm({
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
                     {state.holidays_override
-                      ? "Warehouse-specific holiday calendar"
+                      ? `${capitalise(noun)}-specific holiday calendar`
                       : "Inheriting from company"}
                   </p>
                   <p className="text-xs text-muted-foreground">
@@ -822,7 +858,7 @@ export function WarehouseForm({
                     {pending && (
                       <Loader2 className="mr-2 size-4 animate-spin" />
                     )}
-                    {warehouse ? "Save changes" : "Create warehouse"}
+                    {warehouse ? "Save changes" : `Create ${noun}`}
                   </Button>
                 </div>
               </>
@@ -1022,4 +1058,8 @@ function CollabTextareaRow({
       </div>
     </div>
   );
+}
+
+function capitalise(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 }

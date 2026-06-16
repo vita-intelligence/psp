@@ -34,6 +34,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "workstation_group"
   end
 
+  pipeline :comments_workstation do
+    plug :put_entity_type, "workstation"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -117,10 +121,56 @@ defmodule BackendWeb.Router do
         post "/cells/sync-tags", StorageCellController, :sync_tags
 
         # Cells nest directly under their location — they have no
-        # meaning outside the parent so :index is omitted (cells
-        # come along on the location payload).
+        # meaning otherwise so :index is omitted (cells come along
+        # on the location payload).
         resources "/cells", StorageCellController,
           except: [:new, :edit, :index]
+      end
+    end
+
+    # Production facilities — same plumbing as warehouses on the
+    # nested children, gated through the kind-aware perm plug so
+    # the `production.facility_*` permission family controls access.
+    #
+    # The nested children explicitly use `:warehouse_id` in the path
+    # (instead of Phoenix's auto-named `:production_facility_id`)
+    # so the shared FloorController / StorageLocationController /
+    # StorageCellController don't need duplicated param-key
+    # handling — they read `conn.params["warehouse_id"]` for both
+    # warehouses and production facilities.
+    resources "/production-facilities", ProductionFacilityController,
+      only: [:index, :show, :create, :update, :delete]
+
+    scope "/production-facilities/:warehouse_id" do
+      get "/floors", FloorController, :index, as: :production_facility_floor
+      post "/floors", FloorController, :create
+      get "/floors/:id", FloorController, :show
+      patch "/floors/:id", FloorController, :update
+      put "/floors/:id", FloorController, :update
+      delete "/floors/:id", FloorController, :delete
+
+      post "/storage-locations", StorageLocationController, :create,
+        as: :production_facility_storage_location
+
+      get "/storage-locations/:id", StorageLocationController, :show
+      patch "/storage-locations/:id", StorageLocationController, :update
+      put "/storage-locations/:id", StorageLocationController, :update
+      delete "/storage-locations/:id", StorageLocationController, :delete
+
+      scope "/storage-locations/:storage_location_id" do
+        post "/cells/split", StorageCellController, :split,
+          as: :production_facility_cell_split
+
+        post "/cells/sync-tags", StorageCellController, :sync_tags,
+          as: :production_facility_cell_sync_tags
+
+        post "/cells", StorageCellController, :create,
+          as: :production_facility_cell
+
+        get "/cells/:id", StorageCellController, :show
+        patch "/cells/:id", StorageCellController, :update
+        put "/cells/:id", StorageCellController, :update
+        delete "/cells/:id", StorageCellController, :delete
       end
     end
 
@@ -315,6 +365,12 @@ defmodule BackendWeb.Router do
       post "/workstation-groups", WorkstationGroupController, :create
       patch "/workstation-groups/:id", WorkstationGroupController, :update
       delete "/workstation-groups/:id", WorkstationGroupController, :delete
+
+      get "/workstations", WorkstationController, :index
+      get "/workstations/:id", WorkstationController, :show
+      post "/workstations", WorkstationController, :create
+      patch "/workstations/:id", WorkstationController, :update
+      delete "/workstations/:id", WorkstationController, :delete
     end
 
     # Goods-In Inspection — show / update / item / sign actions sit
@@ -517,6 +573,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/production/workstation-groups/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_workstation_group]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/production/workstations/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_workstation]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

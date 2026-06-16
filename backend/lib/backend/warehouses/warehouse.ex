@@ -17,12 +17,21 @@ defmodule Backend.Warehouses.Warehouse do
   alias Backend.Companies.Company
   alias Backend.Warehouses.{Floor, StorageLocation}
 
+  @kinds ~w(warehouse production_facility)
+  def kinds, do: @kinds
+
   schema "warehouses" do
     # Public identifier — used in URLs, API paths, channel topics.
     # Integer PK stays for cheaper FKs. Display code (WH00001, …) is
     # rendered on the fly from `companies.numbering_formats["warehouse"]`
     # + the PK id; not stored on the row.
     field :uuid, Ecto.UUID, autogenerate: true
+    # Discriminator between the two surfaces sharing this table:
+    # `warehouse` (raw + finished-goods storage) and
+    # `production_facility` (WIP storage + workstation host site).
+    # Set on create from the controller; immutable thereafter so a
+    # facility can't silently become a warehouse mid-life.
+    field :kind, :string, default: "warehouse"
     field :name, :string
     field :address, :string
     field :notes, :string
@@ -49,6 +58,7 @@ defmodule Backend.Warehouses.Warehouse do
     warehouse
     |> cast(attrs, [
       :company_id,
+      :kind,
       :name,
       :address,
       :notes,
@@ -61,10 +71,17 @@ defmodule Backend.Warehouses.Warehouse do
       :created_by_id,
       :updated_by_id
     ])
-    |> validate_required([:company_id, :name])
+    |> validate_required([:company_id, :name, :kind])
     |> validate_length(:name, min: 1, max: 200)
+    |> validate_inclusion(:kind, @kinds,
+      message: "must be warehouse or production_facility"
+    )
     |> unique_constraint([:company_id, :name],
       name: :warehouses_company_id_name_index
+    )
+    |> check_constraint(:kind,
+      name: :warehouses_kind_known,
+      message: "must be warehouse or production_facility"
     )
   end
 end
