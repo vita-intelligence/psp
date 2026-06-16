@@ -48,6 +48,9 @@ import type { Certificate, CertificateType } from "@/lib/types";
 interface FormProps {
   certificate: Certificate | null;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const CERT_TYPES: Array<{ value: CertificateType; label: string }> = [
@@ -85,7 +88,7 @@ function initialFrom(cert: Certificate | null): FormState {
   };
 }
 
-export function CertificateForm({ certificate, canEdit }: FormProps) {
+export function CertificateForm({ certificate, canEdit, onSavedSuccess }: FormProps) {
   const router = useRouter();
   const isEdit = certificate !== null;
   const resource = certificate
@@ -213,6 +216,7 @@ export function CertificateForm({ certificate, canEdit }: FormProps) {
 
       if (isEdit) {
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
       } else {
         broadcastCommit({
           kind: "created",

@@ -15,6 +15,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   workstation_group: "production/workstation-groups",
   workstation: "production/workstations",
   routing: "production/routings",
+  manufacturing_order: "production/manufacturing-orders",
 };
 
 /** Server-component-friendly initial timeline fetch. Returns null on

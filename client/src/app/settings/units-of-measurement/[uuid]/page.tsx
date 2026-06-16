@@ -7,6 +7,7 @@ import { ChevronLeft } from "lucide-react";
 import { getUnitOfMeasurement } from "@/lib/units/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { UnitForm } from "../unit-form";
 
 export const metadata = { title: "Edit unit · Settings · PSP" };
@@ -46,7 +47,9 @@ export default async function EditUnitPage({
         </Button>
       </div>
 
-      <UnitForm unit={unit} canEdit={canEdit} />
+      <EditModeToggle canEdit={canEdit}>
+        <UnitForm unit={unit} canEdit={canEdit} />
+      </EditModeToggle>
 
       <AuditMetaSection
         inserted_at={unit.inserted_at}

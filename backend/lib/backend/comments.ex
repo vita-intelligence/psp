@@ -51,6 +51,10 @@ defmodule Backend.Comments do
     "routing" => [
       "production.routing_edit",
       "production.routing_create"
+    ],
+    "manufacturing_order" => [
+      "production.mo_edit",
+      "production.mo_create"
     ]
   }
 

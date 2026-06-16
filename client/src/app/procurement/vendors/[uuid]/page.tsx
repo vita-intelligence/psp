@@ -13,6 +13,7 @@ import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { ProcurementSubnav } from "../../procurement-subnav";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { VendorForm } from "../vendor-form";
 import { VendorApprovalCard } from "./vendor-approval-card";
 import { VendorQualificationCard } from "./vendor-qualification-card";
@@ -113,7 +114,9 @@ export default async function VendorDetailPage({
 
           <VendorQualificationCard vendor={vendor} canEdit={canEdit} />
 
-          <VendorForm vendor={vendor} canEdit={canEdit} />
+          <EditModeToggle canEdit={canEdit}>
+            <VendorForm vendor={vendor} canEdit={canEdit} />
+          </EditModeToggle>
 
           <CommentThread
             entityType="vendor"

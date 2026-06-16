@@ -6,6 +6,7 @@ import { getCompanyDefaults } from "@/lib/company/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, AlertCircle } from "lucide-react";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { WarehouseForm } from "../../warehouses/warehouse-form";
 import { DeleteProductionSiteButton } from "./delete-production-site-button";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -85,12 +86,14 @@ export default async function ProductionSiteEditPage({
 
       {tab === "details" ? (
         <>
-          <WarehouseForm
-            warehouse={facility}
-            company={companyDefaults}
-            canEdit={canEdit}
-            kind="production_facility"
-          />
+          <EditModeToggle canEdit={canEdit}>
+            <WarehouseForm
+              warehouse={facility}
+              company={companyDefaults}
+              canEdit={canEdit}
+              kind="production_facility"
+            />
+          </EditModeToggle>
           <AuditMetaSection
             inserted_at={facility.inserted_at}
             updated_at={facility.updated_at}

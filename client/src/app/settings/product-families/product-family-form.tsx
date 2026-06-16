@@ -42,6 +42,9 @@ interface FormProps {
   /** `null` ⇒ new family; otherwise the row being edited. */
   family: ProductFamily | null;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 interface FormState {
@@ -61,7 +64,7 @@ function initialFrom(family: ProductFamily | null): FormState {
 /** Single-record form for the product-families admin. Mirrors the
  *  storage-tag form pattern. Code is auto-rendered from numbering
  *  format; only name / description / active are editable. */
-export function ProductFamilyForm({ family, canEdit }: FormProps) {
+export function ProductFamilyForm({ family, canEdit, onSavedSuccess }: FormProps) {
   const router = useRouter();
   const isEdit = family !== null;
   const resource = family
@@ -182,6 +185,7 @@ export function ProductFamilyForm({ family, canEdit }: FormProps) {
 
       if (isEdit) {
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
       } else {
         broadcastCommit({
           kind: "created",

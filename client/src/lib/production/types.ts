@@ -369,3 +369,164 @@ export interface RoutingUpsertInput {
     default_worker_ids?: number[];
   }>;
 }
+
+// ---------------------------------------------------------------
+// Manufacturing orders
+// ---------------------------------------------------------------
+
+export type ManufacturingOrderStatus =
+  | "draft"
+  | "approved"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export interface ManufacturingOrderSiteSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  kind: "warehouse" | "production_facility";
+}
+
+export interface ManufacturingOrderRoutingSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+}
+
+export interface ManufacturingOrderPart {
+  id: number;
+  uuid: string;
+  sort_order: number;
+  is_fixed: boolean;
+  part: BOMPartSummary | null;
+  unit_of_measurement: {
+    id: number;
+    uuid: string;
+    name: string;
+    symbol: string;
+    dimension: string;
+  } | null;
+  /** Per-output qty from the BOM line. */
+  line_qty: string | null;
+  /** `line_qty × MO quantity` (or just `line_qty` when the line is
+   *  flagged is_fixed). Display column "Required". */
+  required_qty: string | null;
+  unit_cost: string | null;
+  total_cost: string | null;
+  /** Booking-side columns. All null until the execution layer
+   *  ships — render as "—" placeholders. */
+  consumed_qty: string | null;
+  booked_qty: string | null;
+  lot: string | null;
+  status: string | null;
+  storage_location: string | null;
+  available_from: string | null;
+}
+
+export interface ManufacturingOrderOperation {
+  id: number;
+  uuid: string;
+  sort_order: number;
+  operation_description: string | null;
+  setup_time_min: string | null;
+  cycle_time_min: string | null;
+  fixed_cost: string | null;
+  variable_cost: string | null;
+  capacity: string;
+  workstation_group: WorkstationGroupSummary | null;
+  /** Specific workstation gets assigned at run time. */
+  workstation: { id: number; uuid: string; name: string } | null;
+  /** Routing-step's default workers. */
+  workers: Array<{ id: number; uuid: string; name: string; email: string }>;
+  /** Computed from MO start + accumulated step durations. */
+  planned_start: string;
+  planned_finish: string;
+  /** Execution-only — null until that layer ships. */
+  actual_start: string | null;
+  actual_finish: string | null;
+  applied_overhead_cost: string | null;
+  labor_cost: string | null;
+  /** MO quantity carried per step for display. */
+  quantity: string;
+}
+
+export interface ManufacturingOrder {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  revision: string;
+  quantity: string;
+  due_date: string | null;
+  start_at: string;
+  finish_at: string;
+  expiry_date: string | null;
+  notes: string | null;
+  warehouse_id: number;
+  warehouse: ManufacturingOrderSiteSummary | null;
+  item_id: number;
+  item: BOMPartSummary | null;
+  bom_id: number;
+  bom: BOMSummary | null;
+  routing_id: number | null;
+  routing: ManufacturingOrderRoutingSummary | null;
+  assigned_to_id: number;
+  assigned_to: AuditActor | null;
+  approved_by_id: number | null;
+  approved_by: AuditActor | null;
+  approved_at: string | null;
+  /** Materials cost = sum(bom_line × MO qty × unit_cost). */
+  approximate_cost: string | null;
+  materials_cost: string | null;
+  /** materials_cost / MO quantity. */
+  cost_per_unit: string | null;
+  parts: ManufacturingOrderPart[];
+  operations: ManufacturingOrderOperation[];
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface ManufacturingOrderSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  revision: string;
+  quantity: string;
+  due_date: string | null;
+  start_at: string;
+  finish_at: string;
+  item: BOMPartSummary | null;
+  bom: BOMSummary | null;
+  warehouse: ManufacturingOrderSiteSummary | null;
+  assigned_to: AuditActor | null;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface ManufacturingOrderLedgerPage {
+  items: ManufacturingOrderSummary[];
+  next_cursor: string | null;
+}
+
+export interface ManufacturingOrderUpsertInput {
+  warehouse_id?: number;
+  item_id?: number;
+  bom_id?: number;
+  routing_id?: number | null;
+  quantity?: string | number;
+  due_date?: string | null;
+  start_at?: string;
+  finish_at?: string;
+  expiry_date?: string | null;
+  assigned_to_id?: number;
+  revision?: string;
+  notes?: string | null;
+}

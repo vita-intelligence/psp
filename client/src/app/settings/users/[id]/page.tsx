@@ -23,6 +23,7 @@ import {
   Calendar,
   CircleDot,
 } from "lucide-react";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { UserAccessForm } from "./user-access-form";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -139,12 +140,14 @@ export default async function UserAdminPage({ params }: PageProps) {
         </CardContent>
       </Card>
 
-      <UserAccessForm
-        subject={subject}
-        matrix={availableMatrix}
-        canEdit={canEditAccess}
-        canApplyTemplate={canApplyTemplate}
-      />
+      <EditModeToggle canEdit={canEditAccess}>
+        <UserAccessForm
+          subject={subject}
+          matrix={availableMatrix}
+          canEdit={canEditAccess}
+          canApplyTemplate={canApplyTemplate}
+        />
+      </EditModeToggle>
 
       {/* Departments tab arrives in the next slice. */}
       <PlaceholderCard

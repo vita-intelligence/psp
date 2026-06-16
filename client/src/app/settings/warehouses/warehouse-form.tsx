@@ -87,6 +87,9 @@ interface WarehouseFormProps {
    *  the action endpoints, the channel topic, the navigation target
    *  on create, and the copy in the header. */
   kind?: WarehouseKind;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const CONTACT_TYPES: Contact["type"][] = ["phone", "email", "url", "other"];
@@ -167,6 +170,7 @@ export function WarehouseForm({
   company,
   canEdit,
   kind = "warehouse",
+  onSavedSuccess,
 }: WarehouseFormProps) {
   const router = useRouter();
   // Distinct channel topic per kind so a warehouse editor and a
@@ -410,6 +414,7 @@ export function WarehouseForm({
         // show a toast.
         if (warehouse) {
           broadcastCommit({ kind: "saved", state });
+          onSavedSuccess?.();
         } else {
           broadcastCommit({
             kind: "created",

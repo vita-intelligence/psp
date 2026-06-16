@@ -98,6 +98,9 @@ interface FormProps {
    *  same vocabulary used by storage locations + cells so allocation
    *  matches are a single set check. */
   storageTags: StorageTag[];
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const ITEM_TYPE_OPTIONS: Array<{ value: ItemType; label: string; desc: string }> = [
@@ -438,6 +441,7 @@ export function ItemForm({
   attributeDefinitions,
   allAllergens,
   storageTags,
+  onSavedSuccess,
 }: FormProps) {
   const router = useRouter();
   const isEdit = item !== null;
@@ -780,6 +784,7 @@ export function ItemForm({
 
       if (isEdit) {
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
         router.refresh();
       } else {
         broadcastCommit({

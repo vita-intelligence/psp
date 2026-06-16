@@ -32,6 +32,7 @@ defmodule Backend.Production do
     BOM,
     BOMLine,
     BOMVersion,
+    ManufacturingOrder,
     Routing,
     RoutingStep,
     RoutingStepWorker,
@@ -1250,6 +1251,355 @@ defmodule Backend.Production do
       other_fixed_cost: r.other_fixed_cost,
       other_variable_cost: r.other_variable_cost,
       other_variable_cost_basis: r.other_variable_cost_basis
+    }
+  end
+
+  # ============================================================
+  # Manufacturing orders
+  # ============================================================
+  #
+  # Status state machine:
+  #   draft       → approved | cancelled
+  #   approved    → in_progress | cancelled | draft (amend)
+  #   in_progress → completed | cancelled
+  #   completed   → (terminal)
+  #   cancelled   → (terminal)
+
+  @mo_search [:revision, :notes]
+  @mo_sortable [:inserted_at, :updated_at, :start_at, :finish_at, :due_date]
+  @mo_default_sort {:inserted_at, :desc}
+
+  @mo_transitions %{
+    {"draft", "approved"} => "production.mo_approve",
+    {"draft", "cancelled"} => "production.mo_execute",
+    {"approved", "in_progress"} => "production.mo_execute",
+    {"approved", "cancelled"} => "production.mo_execute",
+    {"approved", "draft"} => "production.mo_approve",
+    {"in_progress", "completed"} => "production.mo_execute",
+    {"in_progress", "cancelled"} => "production.mo_execute"
+  }
+
+  def mo_transitions, do: @mo_transitions
+
+  def list_manufacturing_orders_page(company_id, opts \\ [])
+      when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @mo_default_sort)
+
+    base =
+      ManufacturingOrder
+      |> where([m], m.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @mo_search)
+      |> maybe_mo_status_filter(opts[:status])
+      |> maybe_mo_item_filter(opts[:item_id])
+      |> maybe_mo_warehouse_filter(opts[:warehouse_id])
+      |> ListQueries.apply_sort(sort, @mo_sortable, @mo_default_sort)
+      |> preload([
+        :item,
+        :bom,
+        :warehouse,
+        :assigned_to,
+        :created_by,
+        :updated_by
+      ])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_mo_status_filter(query, nil), do: query
+
+  defp maybe_mo_status_filter(query, s) when is_binary(s) and s != "",
+    do: where(query, [m], m.status == ^s)
+
+  defp maybe_mo_status_filter(query, _), do: query
+
+  defp maybe_mo_item_filter(query, nil), do: query
+
+  defp maybe_mo_item_filter(query, id) when is_integer(id),
+    do: where(query, [m], m.item_id == ^id)
+
+  defp maybe_mo_item_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [m], m.item_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_mo_item_filter(query, _), do: query
+
+  defp maybe_mo_warehouse_filter(query, nil), do: query
+
+  defp maybe_mo_warehouse_filter(query, id) when is_integer(id),
+    do: where(query, [m], m.warehouse_id == ^id)
+
+  defp maybe_mo_warehouse_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [m], m.warehouse_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_mo_warehouse_filter(query, _), do: query
+
+  def get_manufacturing_order(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    ManufacturingOrder
+    |> where([m], m.company_id == ^company_id and m.uuid == ^uuid)
+    |> preload([
+      :item,
+      :warehouse,
+      :assigned_to,
+      :approved_by,
+      :created_by,
+      :updated_by,
+      bom: [lines: [:part, :unit_of_measurement]],
+      routing: [steps: [:workstation_group, worker_assignments: :user]]
+    ])
+    |> Repo.one()
+  end
+
+  def create_manufacturing_order(%User{} = actor, attrs) do
+    attrs = stringify_keys(attrs)
+
+    attrs =
+      attrs
+      |> Map.put("company_id", actor.company_id)
+      |> Map.put("created_by_id", actor.id)
+      |> Map.put("updated_by_id", actor.id)
+      |> Map.delete("status")
+      |> Map.delete("approved_by_id")
+      |> Map.delete("approved_at")
+
+    with :ok <- ensure_mo_site_production_facility(actor, attrs["warehouse_id"]),
+         :ok <- ensure_mo_bom_for_item(actor, attrs["item_id"], attrs["bom_id"]) do
+      %ManufacturingOrder{}
+      |> ManufacturingOrder.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, mo} ->
+          Audit.record_created(actor, "manufacturing_order", mo, mo_snapshot(mo))
+          {:ok, reload_manufacturing_order(mo)}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  def update_manufacturing_order(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do
+    attrs = stringify_keys(attrs)
+    before = mo_snapshot(mo)
+
+    attrs =
+      attrs
+      |> Map.delete("company_id")
+      |> Map.delete("status")
+      |> Map.delete("approved_by_id")
+      |> Map.delete("approved_at")
+      |> Map.put("updated_by_id", actor.id)
+
+    with :ok <-
+           (if Map.has_key?(attrs, "warehouse_id"),
+              do: ensure_mo_site_production_facility(actor, attrs["warehouse_id"]),
+              else: :ok),
+         :ok <-
+           (if Map.has_key?(attrs, "bom_id") or Map.has_key?(attrs, "item_id"),
+              do:
+                ensure_mo_bom_for_item(
+                  actor,
+                  Map.get(attrs, "item_id", mo.item_id),
+                  Map.get(attrs, "bom_id", mo.bom_id)
+                ),
+              else: :ok) do
+      mo
+      |> ManufacturingOrder.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          Audit.record_updated(
+            actor,
+            "manufacturing_order",
+            updated,
+            before,
+            mo_snapshot(updated)
+          )
+
+          {:ok, reload_manufacturing_order(updated)}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  @doc """
+  Transition an MO to a new status. Refuses if the pair isn't in
+  `@mo_transitions`. Permission gating happens on the controller.
+  """
+  def transition_mo(%User{} = actor, %ManufacturingOrder{} = mo, to)
+      when is_binary(to) do
+    case Map.fetch(@mo_transitions, {mo.status, to}) do
+      :error ->
+        {:error, :invalid_transition, mo.status}
+
+      {:ok, _perm} ->
+        before = mo_snapshot(mo)
+
+        attrs = %{
+          "status" => to,
+          "updated_by_id" => actor.id
+        }
+
+        attrs =
+          cond do
+            to == "approved" ->
+              attrs
+              |> Map.put("approved_by_id", actor.id)
+              |> Map.put("approved_at", now())
+
+            mo.status == "approved" and to == "draft" ->
+              attrs
+              |> Map.put("approved_by_id", nil)
+              |> Map.put("approved_at", nil)
+
+            true ->
+              attrs
+          end
+
+        mo
+        |> ManufacturingOrder.transition_changeset(attrs)
+        |> Repo.update()
+        |> case do
+          {:ok, updated} ->
+            Audit.record_updated(
+              actor,
+              "manufacturing_order",
+              updated,
+              before,
+              mo_snapshot(updated)
+            )
+
+            {:ok, reload_manufacturing_order(updated)}
+
+          err ->
+            err
+        end
+    end
+  end
+
+  def delete_manufacturing_order(%User{} = actor, %ManufacturingOrder{} = mo) do
+    before = mo_snapshot(mo)
+
+    case Repo.delete(mo) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "manufacturing_order", deleted, before)
+        {:ok, deleted}
+
+      err ->
+        err
+    end
+  end
+
+  defp reload_manufacturing_order(%ManufacturingOrder{} = mo) do
+    Repo.preload(
+      mo,
+      [
+        :item,
+        :warehouse,
+        :assigned_to,
+        :approved_by,
+        :created_by,
+        :updated_by,
+        bom: [lines: [:part, :unit_of_measurement]],
+        routing: [steps: [:workstation_group, worker_assignments: :user]]
+      ],
+      force: true
+    )
+  end
+
+  defp ensure_mo_site_production_facility(_actor, nil), do: {:error, :warehouse_required}
+
+  defp ensure_mo_site_production_facility(%User{} = actor, id) do
+    int_id =
+      case id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+
+        _ -> nil
+      end
+
+    case int_id && Repo.get(Backend.Warehouses.Warehouse, int_id) do
+      %{company_id: cid, kind: "production_facility"} when cid == actor.company_id ->
+        :ok
+
+      %{company_id: cid} when cid == actor.company_id ->
+        {:error, :site_must_be_production_facility}
+
+      _ ->
+        {:error, :warehouse_not_found}
+    end
+  end
+
+  defp ensure_mo_bom_for_item(_actor, _item_id, nil), do: {:error, :bom_required}
+
+  defp ensure_mo_bom_for_item(%User{} = actor, item_id, raw_bom_id) do
+    int_bom =
+      case raw_bom_id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+
+        _ -> nil
+      end
+
+    int_item =
+      case item_id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+
+        _ -> nil
+      end
+
+    case int_bom && Repo.get(BOM, int_bom) do
+      %BOM{company_id: cid, item_id: bom_item_id}
+      when cid == actor.company_id and bom_item_id == int_item ->
+        :ok
+
+      %BOM{company_id: cid} when cid == actor.company_id ->
+        {:error, :bom_item_mismatch}
+
+      _ ->
+        {:error, :bom_not_found}
+    end
+  end
+
+  defp mo_snapshot(%ManufacturingOrder{} = mo) do
+    %{
+      warehouse_id: mo.warehouse_id,
+      item_id: mo.item_id,
+      bom_id: mo.bom_id,
+      routing_id: mo.routing_id,
+      quantity: mo.quantity,
+      due_date: mo.due_date,
+      start_at: mo.start_at,
+      finish_at: mo.finish_at,
+      expiry_date: mo.expiry_date,
+      assigned_to_id: mo.assigned_to_id,
+      revision: mo.revision,
+      status: mo.status,
+      approved_by_id: mo.approved_by_id,
+      approved_at: mo.approved_at,
+      notes: mo.notes
     }
   end
 end

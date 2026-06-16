@@ -4,6 +4,8 @@ import { getSessionToken } from "../auth/server";
 import type {
   BOM,
   BOMLedgerPage,
+  ManufacturingOrder,
+  ManufacturingOrderLedgerPage,
   Routing,
   RoutingLedgerPage,
   Workstation,
@@ -186,6 +188,46 @@ export async function getRouting(uuid: string): Promise<Routing | null> {
       { token, cache: "no-store" },
     );
     return routing;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------
+// Manufacturing orders
+// ---------------------------------------------------------------
+
+export interface ListManufacturingOrdersOpts {
+  query?: string;
+}
+
+export async function listManufacturingOrdersPage(
+  opts: ListManufacturingOrdersOpts = {},
+): Promise<ManufacturingOrderLedgerPage | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  const qs = opts.query ? `?${opts.query}` : "";
+  try {
+    return await api<ManufacturingOrderLedgerPage>(
+      `/api/production/manufacturing-orders${qs}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function getManufacturingOrder(
+  uuid: string,
+): Promise<ManufacturingOrder | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return mo;
   } catch {
     return null;
   }

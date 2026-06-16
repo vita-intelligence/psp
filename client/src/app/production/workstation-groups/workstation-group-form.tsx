@@ -88,6 +88,9 @@ interface WorkstationGroupFormProps {
   company: CompanyDefaults;
   canEdit: boolean;
   canDelete: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const KIND_LABELS: Record<WorkstationGroupKind, string> = {
@@ -172,6 +175,7 @@ export function WorkstationGroupForm({
   company,
   canEdit,
   canDelete,
+  onSavedSuccess,
 }: WorkstationGroupFormProps) {
   const router = useRouter();
   const resource = group
@@ -310,6 +314,7 @@ export function WorkstationGroupForm({
 
         if (group) {
           broadcastCommit({ kind: "saved", state });
+          onSavedSuccess?.();
         } else {
           broadcastCommit({
             kind: "created",

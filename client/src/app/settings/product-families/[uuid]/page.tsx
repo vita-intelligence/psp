@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ChevronLeft } from "lucide-react";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { ProductFamilyForm } from "../product-family-form";
 
 export const metadata = { title: "Edit product family · Settings · PSP" };
@@ -63,7 +64,9 @@ export default async function EditProductFamilyPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ProductFamilyForm family={family} canEdit={canEdit} />
+          <EditModeToggle canEdit={canEdit}>
+            <ProductFamilyForm family={family} canEdit={canEdit} />
+          </EditModeToggle>
         </CardContent>
       </Card>
     </div>

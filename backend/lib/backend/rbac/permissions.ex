@@ -184,7 +184,15 @@ defmodule Backend.RBAC.Permissions do
     {"production.routing_create", "Create new routings"},
     {"production.routing_edit",
      "Edit existing routings (steps, costs, worker assignments)"},
-    {"production.routing_delete", "Delete routings"}
+    {"production.routing_delete", "Delete routings"},
+    {"production.mo_view", "View manufacturing orders"},
+    {"production.mo_create", "Create new manufacturing orders"},
+    {"production.mo_edit", "Edit draft / approved manufacturing orders"},
+    {"production.mo_approve",
+     "Approve or unapprove a manufacturing order (gate to the schedule)"},
+    {"production.mo_execute",
+     "Start, complete, or cancel a manufacturing order (run on the floor)"},
+    {"production.mo_delete", "Delete manufacturing orders"}
   ]
 
   def all do
@@ -538,6 +546,16 @@ defmodule Backend.RBAC.Permissions do
             create: "production.routing_create",
             update: "production.routing_edit",
             delete: "production.routing_delete"
+          },
+          %{
+            key: "manufacturing_orders",
+            label: "Manufacturing orders",
+            description:
+              "Planned production runs. Update covers the header form; the separate `mo_approve` / `mo_execute` perms gate status transitions (approve / start / complete / cancel).",
+            read: "production.mo_view",
+            create: "production.mo_create",
+            update: "production.mo_edit",
+            delete: "production.mo_delete"
           }
         ]
       }

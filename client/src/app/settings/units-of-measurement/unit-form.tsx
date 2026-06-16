@@ -42,6 +42,9 @@ interface FormProps {
   /** `null` ⇒ new unit; otherwise the row being edited. */
   unit: UnitOfMeasurement | null;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const DIMENSION_OPTIONS: Array<{ value: UnitDimension; label: string }> = [
@@ -83,7 +86,7 @@ function initialFrom(unit: UnitOfMeasurement | null): FormState {
   };
 }
 
-export function UnitForm({ unit, canEdit }: FormProps) {
+export function UnitForm({ unit, canEdit, onSavedSuccess }: FormProps) {
   const router = useRouter();
   const isEdit = unit !== null;
   const resource = unit
@@ -253,6 +256,7 @@ export function UnitForm({ unit, canEdit }: FormProps) {
       // peers receiving `saved` reset their baseline + toast.
       if (isEdit) {
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
       } else {
         broadcastCommit({
           kind: "created",

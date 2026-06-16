@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ChevronLeft } from "lucide-react";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { StorageTagForm } from "../storage-tag-form";
 
 export const metadata = { title: "Edit storage tag · Settings · PSP" };
@@ -60,7 +61,9 @@ export default async function EditStorageTagPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <StorageTagForm tag={tag} canEdit={canEdit} />
+          <EditModeToggle canEdit={canEdit}>
+            <StorageTagForm tag={tag} canEdit={canEdit} />
+          </EditModeToggle>
         </CardContent>
       </Card>
     </div>

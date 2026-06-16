@@ -52,6 +52,9 @@ interface UserAccessFormProps {
    *  because an admin might be able to edit access without seeing
    *  templates (rare but legal: roles.edit without roles.view). */
   canApplyTemplate: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 interface FormState {
@@ -81,6 +84,7 @@ export function UserAccessForm({
   matrix,
   canEdit,
   canApplyTemplate,
+  onSavedSuccess,
 }: UserAccessFormProps) {
   const router = useRouter();
   const resource = `user-access:${subject.uuid}`;
@@ -253,6 +257,7 @@ export function UserAccessForm({
         setOriginal(state);
         invalidateAudit("user", subject.id);
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
         router.refresh();
         return;
       }

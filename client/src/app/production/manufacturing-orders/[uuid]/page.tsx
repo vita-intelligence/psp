@@ -1,23 +1,26 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, Route } from "lucide-react";
+import { ChevronLeft, Factory } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge-mini";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { getRouting } from "@/lib/production/server";
+import { getManufacturingOrder } from "@/lib/production/server";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
-import { ProductionSubnav } from "../../production-subnav";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
-import { RoutingForm } from "../routing-form";
+import { ProductionSubnav } from "../../production-subnav";
+import { ManufacturingOrderForm } from "../mo-form";
+import { MOStatusActions } from "../mo-status-actions";
+import { MOCostSummary } from "../mo-cost-summary";
+import { MOPartsTable } from "../mo-parts-table";
+import { MOOperationsTable } from "../mo-operations-table";
 
-export const metadata = { title: "Routing · Production · PSP" };
+export const metadata = { title: "Manufacturing order · Production · PSP" };
 
 export const dynamic = "force-dynamic";
 
@@ -25,24 +28,26 @@ interface Props {
   params: Promise<{ uuid: string }>;
 }
 
-export default async function RoutingDetailPage({ params }: Props) {
+export default async function ManufacturingOrderDetailPage({ params }: Props) {
   const user = await requireUser();
-  if (!hasPermission(user, "production.routing_view")) {
+  if (!hasPermission(user, "production.mo_view")) {
     redirect("/settings/profile");
   }
 
   const { uuid } = await params;
-  const [routing, company, initialComments] = await Promise.all([
-    getRouting(uuid),
+  const [mo, company, initialComments] = await Promise.all([
+    getManufacturingOrder(uuid),
     getCompanyDefaults(),
-    listCommentsForEntity("routing", uuid),
+    listCommentsForEntity("manufacturing_order", uuid),
   ]);
-  if (!routing || !company) notFound();
+  if (!mo || !company) notFound();
 
-  const canEdit = hasPermission(user, "production.routing_edit");
-  const canDelete = hasPermission(user, "production.routing_delete");
+  const canEdit = hasPermission(user, "production.mo_edit");
+  const canDelete = hasPermission(user, "production.mo_delete");
+  const canApprove = hasPermission(user, "production.mo_approve");
+  const canExecute = hasPermission(user, "production.mo_execute");
   const canComment =
-    canEdit || hasPermission(user, "production.routing_create");
+    canEdit || hasPermission(user, "production.mo_create");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -51,7 +56,7 @@ export default async function RoutingDetailPage({ params }: Props) {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <div className="mx-auto max-w-6xl space-y-6">
           <div>
             <Button
               asChild
@@ -59,52 +64,56 @@ export default async function RoutingDetailPage({ params }: Props) {
               size="sm"
               className="text-muted-foreground"
             >
-              <Link href="/production/routings">
+              <Link href="/production/manufacturing-orders">
                 <ChevronLeft className="mr-1 size-4" />
-                Back to routings
+                Back to manufacturing orders
               </Link>
             </Button>
           </div>
 
-          <header className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                <Route className="size-6 text-brand" />
-                {routing.name}
-              </h1>
-              {!routing.is_active && <Badge tone="muted">Archived</Badge>}
-            </div>
+          <header className="space-y-2">
+            <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
+              <Factory className="size-6 text-brand" />
+              {mo.item ? mo.item.name : "Manufacturing order"}
+            </h1>
             <p className="font-mono text-xs text-muted-foreground">
-              {routing.code ?? `#${routing.id}`}
-              {routing.item && (
+              {mo.code ?? `#${mo.id}`}
+              {mo.warehouse && (
                 <>
-                  {" "}· Output:{" "}
+                  {" "}· Site:{" "}
                   <span className="font-medium text-foreground">
-                    {routing.item.name}
+                    {mo.warehouse.name}
                   </span>
                 </>
               )}
-              {routing.bom && (
+              {mo.bom && (
                 <>
                   {" "}· BOM:{" "}
                   <span className="font-medium text-foreground">
-                    {routing.bom.code ?? routing.bom.name}
+                    {mo.bom.code ?? mo.bom.name}
                   </span>
                 </>
               )}
             </p>
+            <MOStatusActions
+              mo={mo}
+              canApprove={canApprove}
+              canExecute={canExecute}
+            />
           </header>
 
           <EditModeToggle canEdit={canEdit}>
-            <RoutingForm
-              routing={routing}
-              outputItem={null}
-              initialBom={null}
+            <ManufacturingOrderForm
+              mo={mo}
               company={company}
               canEdit={canEdit}
               canDelete={canDelete}
             />
           </EditModeToggle>
+
+          <MOCostSummary mo={mo} company={company} />
+          <MOPartsTable mo={mo} company={company} />
+          <MOOperationsTable mo={mo} company={company} />
 
           <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
             <header className="mb-3">
@@ -113,8 +122,8 @@ export default async function RoutingDetailPage({ params }: Props) {
               </h2>
             </header>
             <CommentThread
-              entityType="routing"
-              entityUuid={routing.uuid}
+              entityType="manufacturing_order"
+              entityUuid={mo.uuid}
               initial={initialComments ?? []}
               canComment={canComment}
               currentUserId={user.id}
@@ -122,14 +131,14 @@ export default async function RoutingDetailPage({ params }: Props) {
           </section>
 
           <AuditMetaSection
-            inserted_at={routing.inserted_at}
-            updated_at={routing.updated_at}
-            created_by={routing.created_by}
-            updated_by={routing.updated_by}
+            inserted_at={mo.inserted_at}
+            updated_at={mo.updated_at}
+            created_by={mo.created_by}
+            updated_by={mo.updated_by}
           />
           <AuditHistoryCard
-            entityType="routing"
-            entityId={routing.id}
+            entityType="manufacturing_order"
+            entityId={mo.id}
             canRestore={false}
           />
         </div>

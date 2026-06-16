@@ -15,6 +15,7 @@ import { listCertificatesForPicker } from "@/lib/certificates/server";
 import { listStorageTags } from "@/lib/storage-tags/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { ItemForm } from "../item-form";
 import { ItemImagesSection } from "../images/item-images-section";
 import { ItemCertificatesSection } from "../certificates/item-certificates-section";
@@ -81,17 +82,19 @@ export default async function EditItemPage({
 
       {/* Mega-form: identity + per-type compliance + risk + spec +
           packaging. One useLiveForm room, one save, atomic transaction. */}
-      <ItemForm
-        item={item}
-        canEdit={canEdit}
-        canEditRisk={canEditRisk}
-        canApproveRisk={canApproveRisk}
-        units={units ?? []}
-        families={families ?? []}
-        attributeDefinitions={attributeDefinitions ?? []}
-        allAllergens={allergens ?? []}
-        storageTags={storageTags ?? []}
-      />
+      <EditModeToggle canEdit={canEdit}>
+        <ItemForm
+          item={item}
+          canEdit={canEdit}
+          canEditRisk={canEditRisk}
+          canApproveRisk={canApproveRisk}
+          units={units ?? []}
+          families={families ?? []}
+          attributeDefinitions={attributeDefinitions ?? []}
+          allAllergens={allergens ?? []}
+          storageTags={storageTags ?? []}
+        />
+      </EditModeToggle>
 
       {/* Certificate attachments are M:N with per-row state. */}
       <ItemCertificatesSection

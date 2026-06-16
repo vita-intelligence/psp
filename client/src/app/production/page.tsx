@@ -34,7 +34,6 @@ const SECTIONS: ProdSection[] = [
     description:
       "Open MOs, their status, consumed stock, and yield. Drives the floor schedule.",
     Icon: Factory,
-    comingSoon: true,
   },
   {
     href: "/production/schedule",

@@ -112,6 +112,9 @@ interface RoutingFormProps {
   company: CompanyDefaults;
   canEdit: boolean;
   canDelete: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 function newId(): string {
@@ -223,6 +226,7 @@ export function RoutingForm({
   company,
   canEdit,
   canDelete,
+  onSavedSuccess,
 }: RoutingFormProps) {
   const router = useRouter();
   const resource = routing ? `routing:${routing.uuid}` : "routing:new";
@@ -489,6 +493,7 @@ export function RoutingForm({
         invalidateAudit("routing", res.routing.id);
         if (routing) {
           broadcastCommit({ kind: "saved", state });
+          onSavedSuccess?.();
         } else {
           broadcastCommit({
             kind: "created",

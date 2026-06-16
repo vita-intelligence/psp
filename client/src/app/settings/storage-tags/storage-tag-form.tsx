@@ -48,6 +48,9 @@ interface FormProps {
   /** `null` ⇒ new tag; otherwise the row being edited. */
   tag: StorageTag | null;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const KIND_OPTIONS: Array<{ value: StorageTag["kind"]; label: string }> = [
@@ -75,7 +78,7 @@ function initialFrom(tag: StorageTag | null): FormState {
 /** Single-record form for the storage-tags admin. Used by /new and
  *  /[uuid]. On success navigates back to the list; on failure shows
  *  inline field errors + a banner with the raw detail. */
-export function StorageTagForm({ tag, canEdit }: FormProps) {
+export function StorageTagForm({ tag, canEdit, onSavedSuccess }: FormProps) {
   const router = useRouter();
   const isEdit = tag !== null;
   const resource = tag ? `storage-tag:${tag.uuid}` : "storage-tag:new";
@@ -195,6 +198,7 @@ export function StorageTagForm({ tag, canEdit }: FormProps) {
 
       if (isEdit) {
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
       } else {
         broadcastCommit({
           kind: "created",

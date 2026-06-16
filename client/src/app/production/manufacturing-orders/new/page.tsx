@@ -8,15 +8,13 @@ import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ProductionSubnav } from "../../production-subnav";
-import { WorkstationGroupForm } from "../workstation-group-form";
+import { ManufacturingOrderForm } from "../mo-form";
 
-export const metadata = {
-  title: "New workstation group · Production · PSP",
-};
+export const metadata = { title: "New manufacturing order · Production · PSP" };
 
-export default async function NewWorkstationGroupPage() {
+export default async function NewManufacturingOrderPage() {
   const user = await requireUser();
-  if (!hasPermission(user, "production.workstation_group_create")) {
+  if (!hasPermission(user, "production.mo_create")) {
     redirect("/settings/profile");
   }
   const company = await getCompanyDefaults();
@@ -37,9 +35,9 @@ export default async function NewWorkstationGroupPage() {
               size="sm"
               className="text-muted-foreground"
             >
-              <Link href="/production/workstation-groups">
+              <Link href="/production/manufacturing-orders">
                 <ChevronLeft className="mr-1 size-4" />
-                Back to workstation groups
+                Back to manufacturing orders
               </Link>
             </Button>
           </div>
@@ -47,12 +45,12 @@ export default async function NewWorkstationGroupPage() {
           <header className="space-y-1.5">
             <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
               <Factory className="size-6 text-brand" />
-              New workstation group
+              New manufacturing order
             </h1>
           </header>
 
-          <WorkstationGroupForm
-            group={null}
+          <ManufacturingOrderForm
+            mo={null}
             company={company}
             canEdit
             canDelete={false}

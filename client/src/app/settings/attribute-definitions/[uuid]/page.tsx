@@ -7,6 +7,7 @@ import { ChevronLeft } from "lucide-react";
 import { getAttributeDefinition } from "@/lib/attribute-definitions/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { AttributeDefinitionForm } from "../attribute-definition-form";
 
 export const metadata = { title: "Edit custom attribute · Settings · PSP" };
@@ -41,7 +42,9 @@ export default async function EditAttributeDefinitionPage({
         </Link>
       </Button>
 
-      <AttributeDefinitionForm attribute={attr} canEdit={canManage} />
+      <EditModeToggle canEdit={canManage}>
+        <AttributeDefinitionForm attribute={attr} canEdit={canManage} />
+      </EditModeToggle>
 
       <AuditMetaSection
         inserted_at={attr.inserted_at}

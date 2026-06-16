@@ -67,6 +67,9 @@ import {
 interface Props {
   vendor: Vendor | null;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const UNSET = "__unset__";
@@ -114,7 +117,7 @@ const PAYMENT_BASIS_OPTIONS: VendorPaymentBasis[] = [
  * Realtime collab per psp/CLAUDE.md: presence avatars, per-field
  * editing indicators, remote cursors, creator gate on the Save button.
  */
-export function VendorForm({ vendor, canEdit }: Props) {
+export function VendorForm({ vendor, canEdit, onSavedSuccess }: Props) {
   const router = useRouter();
   const resource = vendor ? `vendor:${vendor.uuid}` : "vendor:new";
   useFormPresenceBeacon(resource);
@@ -237,6 +240,7 @@ export function VendorForm({ vendor, canEdit }: Props) {
           return;
         }
         broadcastCommit({ kind: "saved", state: draft });
+        onSavedSuccess?.();
         router.refresh();
       } else {
         setTopError({ detail: res.detail, code: res.code, debug: res.debug });

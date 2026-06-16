@@ -7,6 +7,7 @@ import { ChevronLeft } from "lucide-react";
 import { getCertificate } from "@/lib/certificates/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { CertificateForm } from "../certificate-form";
 
 export const metadata = { title: "Edit certificate · Settings · PSP" };
@@ -41,7 +42,9 @@ export default async function EditCertificatePage({
         </Link>
       </Button>
 
-      <CertificateForm certificate={cert} canEdit={canManage} />
+      <EditModeToggle canEdit={canManage}>
+        <CertificateForm certificate={cert} canEdit={canManage} />
+      </EditModeToggle>
 
       <AuditMetaSection
         inserted_at={cert.inserted_at}

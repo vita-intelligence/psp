@@ -6,6 +6,7 @@ import { getPermissionMatrix } from "@/lib/permissions/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft } from "lucide-react";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { TemplateForm } from "../template-form";
 import { DeleteTemplateButton } from "./delete-template-button";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -56,7 +57,9 @@ export default async function EditTemplatePage({ params }: PageProps) {
           <DeleteTemplateButton uuid={template.uuid} name={template.name} />
         )}
       </div>
-      <TemplateForm template={template} matrix={matrix} canEdit={canEdit} />
+      <EditModeToggle canEdit={canEdit}>
+        <TemplateForm template={template} matrix={matrix} canEdit={canEdit} />
+      </EditModeToggle>
       <AuditMetaSection
         inserted_at={template.inserted_at}
         updated_at={template.updated_at}

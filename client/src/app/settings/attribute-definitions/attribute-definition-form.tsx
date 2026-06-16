@@ -55,6 +55,9 @@ import type {
 interface FormProps {
   attribute: AttributeDefinition | null;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const SCOPES: Array<{ value: AttributeScope; label: string }> = [
@@ -102,7 +105,7 @@ function initialFrom(attr: AttributeDefinition | null): FormState {
   };
 }
 
-export function AttributeDefinitionForm({ attribute, canEdit }: FormProps) {
+export function AttributeDefinitionForm({ attribute, canEdit, onSavedSuccess }: FormProps) {
   const router = useRouter();
   const isEdit = attribute !== null;
   const resource = attribute
@@ -255,6 +258,7 @@ export function AttributeDefinitionForm({ attribute, canEdit }: FormProps) {
 
       if (isEdit) {
         broadcastCommit({ kind: "saved", state });
+        onSavedSuccess?.();
       } else {
         broadcastCommit({
           kind: "created",

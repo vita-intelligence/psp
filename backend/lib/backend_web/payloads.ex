@@ -845,6 +845,283 @@ defmodule BackendWeb.Payloads do
 
   def routing_step(_), do: nil
 
+  # ----- manufacturing orders --------------------------------------
+
+  @doc """
+  Full MO payload — detail page reads. Includes computed
+  `approximate_cost` (sum of bom_line.qty × part.last_unit_cost ×
+  mo.quantity) so the FE shows the cost without a second fetch.
+  """
+  def manufacturing_order(%Backend.Production.ManufacturingOrder{} = mo) do
+    {parts, materials_cost} = mo_parts_breakdown(mo)
+    operations = mo_operations_breakdown(mo)
+
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status,
+      revision: mo.revision,
+      quantity: decimal_to_string(mo.quantity),
+      due_date: mo.due_date,
+      start_at: mo.start_at,
+      finish_at: mo.finish_at,
+      expiry_date: mo.expiry_date,
+      notes: mo.notes,
+      warehouse_id: mo.warehouse_id,
+      warehouse: mo_site_summary(mo.warehouse),
+      item_id: mo.item_id,
+      item: maybe_item_summary(mo.item),
+      bom_id: mo.bom_id,
+      bom: bom_summary(mo.bom),
+      routing_id: mo.routing_id,
+      routing: mo_routing_summary(mo.routing),
+      assigned_to_id: mo.assigned_to_id,
+      assigned_to: actor(mo, :assigned_to),
+      approved_by_id: mo.approved_by_id,
+      approved_by: actor(mo, :approved_by),
+      approved_at: mo.approved_at,
+      approximate_cost: decimal_to_string(materials_cost),
+      materials_cost: decimal_to_string(materials_cost),
+      cost_per_unit: mo_cost_per_unit(materials_cost, mo.quantity),
+      parts: parts,
+      operations: operations,
+      created_by: actor(mo, :created_by),
+      updated_by: actor(mo, :updated_by),
+      inserted_at: mo.inserted_at,
+      updated_at: mo.updated_at
+    }
+  end
+
+  def manufacturing_order(_), do: nil
+
+  @doc "Slim MO for the ledger."
+  def manufacturing_order_summary(%Backend.Production.ManufacturingOrder{} = mo) do
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status,
+      revision: mo.revision,
+      quantity: decimal_to_string(mo.quantity),
+      due_date: mo.due_date,
+      start_at: mo.start_at,
+      finish_at: mo.finish_at,
+      item: maybe_item_summary(mo.item),
+      bom: bom_summary(mo.bom),
+      warehouse: mo_site_summary(mo.warehouse),
+      assigned_to: actor(mo, :assigned_to),
+      created_by: actor(mo, :created_by),
+      updated_by: actor(mo, :updated_by),
+      inserted_at: mo.inserted_at,
+      updated_at: mo.updated_at
+    }
+  end
+
+  def manufacturing_order_summary(_), do: nil
+
+  defp mo_site_summary(%Backend.Warehouses.Warehouse{} = w),
+    do: %{
+      id: w.id,
+      uuid: w.uuid,
+      code: render_code(w, "warehouse"),
+      name: w.name,
+      kind: w.kind
+    }
+
+  defp mo_site_summary(_), do: nil
+
+  defp mo_routing_summary(%Backend.Production.Routing{} = r),
+    do: %{
+      id: r.id,
+      uuid: r.uuid,
+      code: render_code(r, "routing"),
+      name: r.name
+    }
+
+  defp mo_routing_summary(_), do: nil
+
+  # Build the parts breakdown the MO detail page renders. Each BOM
+  # line yields one row with required qty (bom_line.qty × MO qty),
+  # unit cost (most-recent received cost from `stock_lots`), total
+  # cost. Booking-side columns (consumed / booked / lot / status /
+  # storage_location) stay nil — those land when the execution layer
+  # ships. Returns `{parts, materials_total_cost}`.
+  defp mo_parts_breakdown(%Backend.Production.ManufacturingOrder{
+         bom: %Backend.Production.BOM{} = bom,
+         quantity: mo_qty,
+         company_id: company_id
+       }) do
+    lines =
+      case bom.lines do
+        %Ecto.Association.NotLoaded{} ->
+          Backend.Repo.preload(bom, lines: [:part, :unit_of_measurement]).lines
+
+        list when is_list(list) ->
+          list
+      end
+      |> Enum.sort_by(& &1.sort_order)
+
+    part_ids = lines |> Enum.map(& &1.part_id) |> Enum.reject(&is_nil/1)
+    costs = Backend.Production.average_unit_costs(company_id, part_ids)
+
+    {parts, total} =
+      Enum.reduce(lines, {[], Decimal.new("0")}, fn line, {acc_parts, acc_total} ->
+        unit_cost = Map.get(costs, line.part_id)
+
+        required_qty =
+          cond do
+            line.is_fixed -> line.qty
+            is_nil(line.qty) -> nil
+            is_nil(mo_qty) -> nil
+            true -> Decimal.mult(line.qty, mo_qty)
+          end
+
+        line_total =
+          cond do
+            is_nil(required_qty) -> nil
+            is_nil(unit_cost) -> nil
+            true -> Decimal.mult(required_qty, unit_cost)
+          end
+
+        part_row = %{
+          id: line.id,
+          uuid: line.uuid,
+          sort_order: line.sort_order,
+          is_fixed: line.is_fixed,
+          part: maybe_item_summary(line.part),
+          unit_of_measurement:
+            maybe_unit_compact(line.unit_of_measurement) ||
+              maybe_unit_compact(line.part && line.part.stock_uom),
+          line_qty: decimal_to_string(line.qty),
+          required_qty: decimal_to_string(required_qty),
+          unit_cost: decimal_to_string(unit_cost),
+          total_cost: decimal_to_string(line_total),
+          # Booking-side columns — placeholders until execution ships.
+          consumed_qty: nil,
+          booked_qty: nil,
+          lot: nil,
+          status: nil,
+          storage_location: nil,
+          available_from: nil
+        }
+
+        new_total = if line_total, do: Decimal.add(acc_total, line_total), else: acc_total
+        {[part_row | acc_parts], new_total}
+      end)
+
+    parts = Enum.reverse(parts)
+
+    materials_total =
+      if Decimal.equal?(total, Decimal.new("0")), do: nil, else: total
+
+    {parts, materials_total}
+  end
+
+  defp mo_parts_breakdown(_), do: {[], nil}
+
+  defp mo_cost_per_unit(nil, _qty), do: nil
+
+  defp mo_cost_per_unit(_total, qty) when is_nil(qty), do: nil
+
+  defp mo_cost_per_unit(total, %Decimal{} = qty) do
+    if Decimal.equal?(qty, Decimal.new("0")) do
+      nil
+    else
+      total
+      |> Decimal.div(qty)
+      |> decimal_to_string()
+    end
+  end
+
+  # Build the operations breakdown — one row per routing step, with
+  # the planned start / finish derived from the MO's start + the
+  # accumulated step durations. Steps run sequentially in this
+  # rev; parallel scheduling lands with the real planner.
+  defp mo_operations_breakdown(%Backend.Production.ManufacturingOrder{
+         routing: %Backend.Production.Routing{} = routing,
+         quantity: qty,
+         start_at: start_at
+       })
+       when not is_nil(start_at) do
+    steps =
+      case routing.steps do
+        %Ecto.Association.NotLoaded{} ->
+          Backend.Repo.preload(
+            routing,
+            steps: [:workstation_group, worker_assignments: :user]
+          ).steps
+
+        list when is_list(list) ->
+          list
+      end
+      |> Enum.sort_by(& &1.sort_order)
+
+    {ops, _cursor} =
+      Enum.reduce(steps, {[], start_at}, fn step, {acc, cursor} ->
+        duration_seconds = step_duration_seconds(step, qty)
+        finish = DateTime.add(cursor, duration_seconds, :second)
+
+        op = %{
+          id: step.id,
+          uuid: step.uuid,
+          sort_order: step.sort_order,
+          operation_description: step.operation_description,
+          setup_time_min: decimal_to_string(step.setup_time_min),
+          cycle_time_min: decimal_to_string(step.cycle_time_min),
+          fixed_cost: decimal_to_string(step.fixed_cost),
+          variable_cost: decimal_to_string(step.variable_cost),
+          capacity: decimal_to_string(step.capacity),
+          workstation_group: workstation_group_summary(step.workstation_group),
+          # Specific workstation gets assigned at run time; not known yet.
+          workstation: nil,
+          workers: routing_step_workers(step),
+          planned_start: cursor,
+          planned_finish: finish,
+          # Execution-only columns — placeholders until that layer
+          # ships.
+          actual_start: nil,
+          actual_finish: nil,
+          applied_overhead_cost: nil,
+          labor_cost: nil,
+          quantity: decimal_to_string(qty)
+        }
+
+        {[op | acc], finish}
+      end)
+
+    Enum.reverse(ops)
+  end
+
+  defp mo_operations_breakdown(_), do: []
+
+  # Total step time in seconds = setup_min × 60 + ceil(cycle_min ×
+  # qty / capacity) × 60. Defaults handle nil values gracefully.
+  defp step_duration_seconds(step, qty) do
+    setup = step.setup_time_min || Decimal.new("0")
+    cycle = step.cycle_time_min || Decimal.new("0")
+    capacity = step.capacity || Decimal.new("1")
+    quantity = qty || Decimal.new("0")
+
+    cycle_total =
+      if Decimal.equal?(capacity, Decimal.new("0")) do
+        Decimal.new("0")
+      else
+        cycle
+        |> Decimal.mult(quantity)
+        |> Decimal.div(capacity)
+      end
+
+    total_minutes = Decimal.add(setup, cycle_total)
+    # Floor to whole seconds — sub-second precision on a routing step
+    # is noise.
+    total_minutes
+    |> Decimal.mult(Decimal.new("60"))
+    |> Decimal.round(0, :ceiling)
+    |> Decimal.to_integer()
+  end
+
+
   defp routing_steps_list(%Backend.Production.Routing{steps: %Ecto.Association.NotLoaded{}}),
     do: []
 

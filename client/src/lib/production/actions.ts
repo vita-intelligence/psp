@@ -11,6 +11,9 @@ import {
 import type {
   BOM,
   BOMUpsertInput,
+  ManufacturingOrder,
+  ManufacturingOrderStatus,
+  ManufacturingOrderUpsertInput,
   Routing,
   RoutingUpsertInput,
   Workstation,
@@ -388,6 +391,117 @@ export async function deleteRoutingAction(
       ...toErrorResult(err, {
         source: "deleteRoutingAction",
         fallbackDetail: "Couldn't delete the routing.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// Manufacturing orders
+// ---------------------------------------------------------------
+
+export type ManufacturingOrderResult =
+  | { ok: true; mo: ManufacturingOrder }
+  | (ErrorResult & { ok: false });
+
+export async function createManufacturingOrderAction(
+  attrs: ManufacturingOrderUpsertInput,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("createManufacturingOrderAction") };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      "/api/production/manufacturing-orders",
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "createManufacturingOrderAction",
+        fallbackDetail: "Couldn't create the manufacturing order.",
+      }),
+    };
+  }
+}
+
+export async function updateManufacturingOrderAction(
+  uuid: string,
+  attrs: ManufacturingOrderUpsertInput,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("updateManufacturingOrderAction") };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateManufacturingOrderAction",
+        fallbackDetail: "Couldn't save the manufacturing order.",
+      }),
+    };
+  }
+}
+
+export async function transitionManufacturingOrderAction(
+  uuid: string,
+  to: ManufacturingOrderStatus,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("transitionManufacturingOrderAction"),
+    };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/transition`,
+      { method: "POST", token, body: JSON.stringify({ to }) },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "transitionManufacturingOrderAction",
+        fallbackDetail: "Couldn't change the manufacturing order's status.",
+      }),
+    };
+  }
+}
+
+export async function deleteManufacturingOrderAction(
+  uuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("deleteManufacturingOrderAction") };
+  try {
+    await api<void>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "deleteManufacturingOrderAction",
+        fallbackDetail: "Couldn't delete the manufacturing order.",
       }),
     };
   }

@@ -45,6 +45,9 @@ interface TemplateFormProps {
   template: PermissionTemplate | null;
   matrix: PermissionMatrix;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 interface FormState {
@@ -72,6 +75,7 @@ export function TemplateForm({
   template,
   matrix,
   canEdit,
+  onSavedSuccess,
 }: TemplateFormProps) {
   const router = useRouter();
   const resource = template ? `role:${template.uuid}` : "role:new";
@@ -229,6 +233,7 @@ export function TemplateForm({
           toast.success("Template saved");
           setOriginal(state);
           broadcastCommit({ kind: "saved", state });
+          onSavedSuccess?.();
           router.refresh();
         } else {
           toast.success("Template created");

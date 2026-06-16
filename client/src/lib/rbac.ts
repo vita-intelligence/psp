@@ -76,7 +76,13 @@ export type PermissionCode =
   | "production.routing_view"
   | "production.routing_create"
   | "production.routing_edit"
-  | "production.routing_delete";
+  | "production.routing_delete"
+  | "production.mo_view"
+  | "production.mo_create"
+  | "production.mo_edit"
+  | "production.mo_approve"
+  | "production.mo_execute"
+  | "production.mo_delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

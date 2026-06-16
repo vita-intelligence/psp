@@ -49,6 +49,9 @@ import { cn } from "@/lib/utils";
 interface Props {
   lot: StockLot;
   canEdit: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 const STATUS_OPTIONS: StockLot["status"][] = [
@@ -92,7 +95,7 @@ type DraftSnapshot = {
  * The Edit toggle stays — until the creator presses Edit the form
  * renders read-only; once editing, peers may join and co-edit live.
  */
-export function LotEditForm({ lot, canEdit }: Props) {
+export function LotEditForm({ lot, canEdit, onSavedSuccess }: Props) {
   const router = useRouter();
   const resource = `stock-lot:${lot.uuid}`;
   useFormPresenceBeacon(resource);
@@ -205,6 +208,7 @@ export function LotEditForm({ lot, canEdit }: Props) {
         broadcastCommit({ kind: "saved", state: draft });
         invalidateAudit("stock_lot", lot.id);
         setEditing(false);
+        onSavedSuccess?.();
         router.refresh();
       } else {
         setTopError({

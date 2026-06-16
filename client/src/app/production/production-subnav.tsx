@@ -33,7 +33,6 @@ const ITEMS: SubnavItem[] = [
     href: "/production/manufacturing-orders",
     label: "Manufacturing orders",
     Icon: Factory,
-    comingSoon: true,
   },
   {
     href: "/production/schedule",

@@ -10,7 +10,8 @@ export type CommentEntityType =
   | "bom"
   | "workstation_group"
   | "workstation"
-  | "routing";
+  | "routing"
+  | "manufacturing_order";
 
 export type CommentVisibility = "internal" | "shared";
 

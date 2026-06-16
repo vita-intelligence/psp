@@ -362,6 +362,23 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     other_variable_cost_basis: "Other variable basis",
     steps: "Operations",
   },
+  manufacturing_order: {
+    warehouse_id: "Site",
+    item_id: "Product",
+    bom_id: "BOM",
+    routing_id: "Routing",
+    quantity: "Quantity",
+    due_date: "Due date",
+    start_at: "Start",
+    finish_at: "Finish",
+    expiry_date: "Expiry date",
+    assigned_to_id: "Assigned to",
+    revision: "Revision",
+    status: "Status",
+    approved_by_id: "Approved by",
+    approved_at: "Approved at",
+    notes: "Notes",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

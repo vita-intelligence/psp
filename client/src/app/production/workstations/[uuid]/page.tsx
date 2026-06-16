@@ -14,6 +14,7 @@ import { CommentThread } from "@/components/comments/comment-thread";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { ProductionSubnav } from "../../production-subnav";
+import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { WorkstationForm } from "../workstation-form";
 
 export const metadata = { title: "Workstation · Production · PSP" };
@@ -50,7 +51,7 @@ export default async function WorkstationDetailPage({ params }: Props) {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-3xl space-y-6">
+        <div className="mx-auto max-w-5xl space-y-6">
           <div>
             <Button
               asChild
@@ -94,12 +95,14 @@ export default async function WorkstationDetailPage({ params }: Props) {
             </p>
           </header>
 
-          <WorkstationForm
-            workstation={ws}
-            company={company}
-            canEdit={canEdit}
-            canDelete={canDelete}
-          />
+          <EditModeToggle canEdit={canEdit}>
+            <WorkstationForm
+              workstation={ws}
+              company={company}
+              canEdit={canEdit}
+              canDelete={canDelete}
+            />
+          </EditModeToggle>
 
           <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
             <header className="mb-3">

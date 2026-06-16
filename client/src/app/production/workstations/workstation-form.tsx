@@ -88,6 +88,9 @@ interface WorkstationFormProps {
   company: CompanyDefaults;
   canEdit: boolean;
   canDelete: boolean;
+  /** Fired on successful save so the EditModeToggle wrapper flips
+   *  the page back to view mode. */
+  onSavedSuccess?: () => void;
 }
 
 function initialFrom(ws: Workstation | null): FormState {
@@ -146,6 +149,7 @@ export function WorkstationForm({
   company,
   canEdit,
   canDelete,
+  onSavedSuccess,
 }: WorkstationFormProps) {
   const router = useRouter();
   const resource = workstation
@@ -371,6 +375,7 @@ export function WorkstationForm({
         invalidateAudit("workstation", res.workstation.id);
         if (workstation) {
           broadcastCommit({ kind: "saved", state });
+          onSavedSuccess?.();
         } else {
           broadcastCommit({
             kind: "created",
