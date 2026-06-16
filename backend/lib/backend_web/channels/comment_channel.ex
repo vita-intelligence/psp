@@ -115,6 +115,9 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "stock_lot"),
     do: gate(user, "stock.view")
 
+  defp check_view_perm(user, "bom"),
+    do: gate(user, "production.bom_view")
+
   defp check_view_perm(_user, _other), do: {:error, :forbidden}
 
   defp gate(user, code) do
@@ -137,6 +140,13 @@ defmodule BackendWeb.CommentChannel do
 
   defp resolve_entity_id(user, "stock_lot", uuid) do
     case Stock.get_for_company(user.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "bom", uuid) do
+    case Backend.Production.get(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
       _ -> {:error, :not_found}
     end

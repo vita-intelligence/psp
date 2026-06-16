@@ -24,6 +24,7 @@ defmodule Backend.Numbering do
   alias Backend.Devices.LinkedDevice
   alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
+  alias Backend.Production.BOM
   alias Backend.RBAC.Role
   alias Backend.Repo
   alias Backend.Purchasing.PurchaseOrder
@@ -49,7 +50,8 @@ defmodule Backend.Numbering do
     "linked_device" => LinkedDevice,
     "vendor" => Vendor,
     "purchase_order" => PurchaseOrder,
-    "goods_in_inspection" => GoodsInInspection
+    "goods_in_inspection" => GoodsInInspection,
+    "bom" => BOM
   }
 
   @default_padding 5

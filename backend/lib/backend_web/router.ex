@@ -26,6 +26,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "stock_lot"
   end
 
+  pipeline :comments_bom do
+    plug :put_entity_type, "bom"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -289,6 +293,20 @@ defmodule BackendWeb.Router do
       post "/invoices", ProcurementInvoiceController, :create
     end
 
+    # Production — BOM CRUD today, manufacturing orders / routings /
+    # workstations land here in future passes. Permission gates live
+    # on `BackendWeb.BOMController` itself (production.bom_*).
+    scope "/production" do
+      get "/boms", BOMController, :index
+      get "/boms/:id", BOMController, :show
+      post "/boms", BOMController, :create
+      patch "/boms/:id", BOMController, :update
+      post "/boms/:id/set-primary", BOMController, :set_primary
+      post "/boms/:id/revert", BOMController, :revert
+      get "/boms/:bom_id/versions", BOMController, :versions
+      delete "/boms/:id", BOMController, :delete
+    end
+
     # Goods-In Inspection — show / update / item / sign actions sit
     # outside the PO scope because the inspection has its own uuid
     # and the operator may move between inspections without first
@@ -471,6 +489,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/stock/lots/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_stock_lot]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/production/boms/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_bom]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

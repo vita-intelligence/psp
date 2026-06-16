@@ -312,6 +312,15 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     signed_by_id: "Signer",
     purchase_order_id: "Purchase order",
   },
+  bom: {
+    name: "Name",
+    code: "Number",
+    notes: "Notes",
+    is_primary: "Primary recipe",
+    is_active: "Active",
+    item_id: "Output item",
+    lines: "Parts",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

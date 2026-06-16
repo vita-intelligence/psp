@@ -1,4 +1,9 @@
-import { Boxes, Settings as SettingsIcon, ShoppingCart } from "lucide-react";
+import {
+  Boxes,
+  Factory,
+  Settings as SettingsIcon,
+  ShoppingCart,
+} from "lucide-react";
 import type { User } from "@/lib/types";
 import { hasPermission } from "@/lib/rbac";
 import { ModuleTile } from "./module-tile";
@@ -27,6 +32,14 @@ export function ModuleGrid({ user }: { user: User }) {
       Icon: ShoppingCart,
       caption: "Vendors, POs, invoices",
       gate: hasPermission(user, "vendors.view"),
+    },
+    {
+      key: "production",
+      href: "/production",
+      label: "Production",
+      Icon: Factory,
+      caption: "BOMs, manufacturing, routings",
+      gate: hasPermission(user, "production.bom_view"),
     },
     {
       key: "settings",

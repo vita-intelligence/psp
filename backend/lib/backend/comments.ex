@@ -38,7 +38,8 @@ defmodule Backend.Comments do
     "vendor" => ["vendors.edit", "vendors.create"],
     "purchase_order" => ["procurement.po_create"],
     "stock_lot" => ["stock.edit", "stock.receive"],
-    "purchase_order_line" => ["procurement.po_create"]
+    "purchase_order_line" => ["procurement.po_create"],
+    "bom" => ["production.bom_edit", "production.bom_create"]
   }
 
   @entity_types Map.keys(@write_perms)

@@ -572,6 +572,90 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_uom_compact(_), do: nil
 
+  @doc """
+  Bill of Materials — header + every component row preloaded. The
+  desktop detail page renders the full payload; the ledger uses
+  `bom_summary/1` for the list row.
+  """
+  def bom(%Backend.Production.BOM{} = b) do
+    %{
+      id: b.id,
+      uuid: b.uuid,
+      code: render_code(b, "bom"),
+      name: b.name,
+      notes: b.notes,
+      is_primary: b.is_primary,
+      is_active: b.is_active,
+      item_id: b.item_id,
+      item: maybe_item_summary(b.item),
+      lines: preloaded_list(b, :lines, &bom_line/1),
+      inserted_at: b.inserted_at,
+      updated_at: b.updated_at,
+      created_by: actor(b, :created_by),
+      updated_by: actor(b, :updated_by)
+    }
+  end
+
+  def bom(_), do: nil
+
+  def bom_line(%Backend.Production.BOMLine{} = l) do
+    %{
+      id: l.id,
+      uuid: l.uuid,
+      bom_id: l.bom_id,
+      sort_order: l.sort_order,
+      qty: l.qty,
+      is_fixed: l.is_fixed,
+      notes: l.notes,
+      part_id: l.part_id,
+      part: maybe_item_summary(l.part),
+      unit_of_measurement_id: l.unit_of_measurement_id,
+      unit_of_measurement: maybe_uom_compact(l.unit_of_measurement)
+    }
+  end
+
+  def bom_line(_), do: nil
+
+  @doc """
+  Slim BOM row for the ledger — strips notes + line details so the
+  table query stays light.
+  """
+  def bom_summary(%Backend.Production.BOM{} = b) do
+    %{
+      id: b.id,
+      uuid: b.uuid,
+      code: render_code(b, "bom"),
+      name: b.name,
+      is_primary: b.is_primary,
+      is_active: b.is_active,
+      item: maybe_item_summary(b.item),
+      created_by: actor(b, :created_by),
+      updated_by: actor(b, :updated_by),
+      inserted_at: b.inserted_at,
+      updated_at: b.updated_at
+    }
+  end
+
+  def bom_summary(_), do: nil
+
+  @doc """
+  One row from `bom_versions`. Snapshot stays opaque to the FE — the
+  version-history card just needs version_no + when + who + notes;
+  revert is a separate POST that loads the snapshot server-side.
+  """
+  def bom_version(%Backend.Production.BOMVersion{} = v) do
+    %{
+      id: v.id,
+      uuid: v.uuid,
+      version_no: v.version_no,
+      notes: v.notes,
+      created_by: actor(v, :created_by),
+      inserted_at: v.inserted_at
+    }
+  end
+
+  def bom_version(_), do: nil
+
   defp preloaded_list(record, field, shape_fn) do
     case Map.get(record, field) do
       %Ecto.Association.NotLoaded{} -> []

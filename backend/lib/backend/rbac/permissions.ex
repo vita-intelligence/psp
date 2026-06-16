@@ -143,15 +143,28 @@ defmodule Backend.RBAC.Permissions do
   ]
 
   # Goods-In Inspection — BRCGS / FSSC 22000 incoming-inspection
-  # workflow. Two-signature split (segregation of duties):
+  # workflow. Two-signature flow:
   # `inspect` fills the form + signs as the goods-in operator;
-  # `approve` reviews + signs as the quality approver.
+  # `approve` reviews + signs as the quality approver. Same user
+  # is permitted to hold both roles (our regulatory framework
+  # allows it, see `Backend.GoodsIn.sign_quality_approver/3`).
   @goods_in [
     {"goods_in.view", "View Goods-In Inspections"},
     {"goods_in.inspect",
      "Create + fill + sign as goods-in operator on an inspection"},
     {"goods_in.approve",
      "Sign as quality approver and record the QC verdict on an inspection"}
+  ]
+
+  # Production — BOM management is the first piece. Manufacturing
+  # orders, routings, workstations, and the schedule follow in
+  # future passes; their permission codes will slot in here keeping
+  # the `production.*` namespace stable.
+  @production [
+    {"production.bom_view", "View Bills of Materials"},
+    {"production.bom_create", "Create new BOMs"},
+    {"production.bom_edit", "Edit existing BOMs (lines, parts, primary flag)"},
+    {"production.bom_delete", "Delete BOMs"}
   ]
 
   def all do
@@ -169,7 +182,8 @@ defmodule Backend.RBAC.Permissions do
         @stock ++
         @vendors ++
         @procurement ++
-        @goods_in,
+        @goods_in ++
+        @production,
       &elem(&1, 0)
     )
   end
@@ -189,7 +203,9 @@ defmodule Backend.RBAC.Permissions do
       certificates: @certificates,
       stock: @stock,
       vendors: @vendors,
-      procurement: @procurement
+      procurement: @procurement,
+      goods_in: @goods_in,
+      production: @production
     }
   end
 
@@ -422,6 +438,46 @@ defmodule Backend.RBAC.Permissions do
             create: "procurement.invoice_manage",
             update: "procurement.invoice_manage",
             delete: "procurement.invoice_manage"
+          }
+        ]
+      },
+      %{
+        section: "Goods-In",
+        resources: [
+          %{
+            key: "goods_in_inspections",
+            label: "Goods-In Inspections",
+            description:
+              "BRCGS / FSSC 22000 receiving inspections. `inspect` signs as goods-in operator, `approve` signs as quality approver.",
+            read: "goods_in.view",
+            create: "goods_in.inspect",
+            update: "goods_in.inspect",
+            delete: nil
+          },
+          %{
+            key: "goods_in_quality_signoff",
+            label: "Quality sign-off",
+            description:
+              "Approver tier — records the QC verdict and fans out lifecycle events on every linked stock lot.",
+            read: "goods_in.view",
+            create: nil,
+            update: "goods_in.approve",
+            delete: nil
+          }
+        ]
+      },
+      %{
+        section: "Production",
+        resources: [
+          %{
+            key: "boms",
+            label: "Bills of Materials",
+            description:
+              "Recipes for manufactured items — parts + quantities. Restricted to finished_product / semi_finished item types.",
+            read: "production.bom_view",
+            create: "production.bom_create",
+            update: "production.bom_edit",
+            delete: "production.bom_delete"
           }
         ]
       }

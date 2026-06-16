@@ -56,7 +56,11 @@ export type PermissionCode =
   | "procurement.invoice_approve"
   | "goods_in.view"
   | "goods_in.inspect"
-  | "goods_in.approve";
+  | "goods_in.approve"
+  | "production.bom_view"
+  | "production.bom_create"
+  | "production.bom_edit"
+  | "production.bom_delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

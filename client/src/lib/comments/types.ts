@@ -6,7 +6,8 @@ export type CommentEntityType =
   | "vendor"
   | "purchase_order"
   | "stock_lot"
-  | "purchase_order_line";
+  | "purchase_order_line"
+  | "bom";
 
 export type CommentVisibility = "internal" | "shared";
 

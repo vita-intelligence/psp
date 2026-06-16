@@ -44,9 +44,31 @@ defmodule Backend.Items do
   end
 
   defp maybe_type_filter(query, nil), do: query
+  defp maybe_type_filter(query, ""), do: query
 
   defp maybe_type_filter(query, type) when is_binary(type) do
-    where(query, [i], i.item_type == ^type)
+    # Support `?item_type=finished_product,semi_finished` so the BOM
+    # picker can ask for all bommable types in a single round-trip.
+    # Single-value calls still work — splitting a string with no
+    # commas returns a one-element list.
+    case String.split(type, ",", trim: true) |> Enum.map(&String.trim/1) do
+      [] ->
+        query
+
+      [single] ->
+        where(query, [i], i.item_type == ^single)
+
+      list ->
+        where(query, [i], i.item_type in ^list)
+    end
+  end
+
+  defp maybe_type_filter(query, list) when is_list(list) do
+    case Enum.reject(list, &(&1 in [nil, ""])) do
+      [] -> query
+      [single] -> where(query, [i], i.item_type == ^single)
+      more -> where(query, [i], i.item_type in ^more)
+    end
   end
 
   defp normalise_sort({:code, dir}), do: {:id, dir}

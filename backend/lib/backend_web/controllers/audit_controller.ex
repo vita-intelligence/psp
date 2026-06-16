@@ -57,7 +57,9 @@ defmodule BackendWeb.AuditController do
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
-    "purchase_order_approval" => "procurement.po_view"
+    "purchase_order_approval" => "procurement.po_view",
+    # Production domain.
+    "bom" => "production.bom_view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -324,6 +326,13 @@ defmodule BackendWeb.AuditController do
   defp check_entity_in_company(actor, "purchase_order_approval", entity_id) do
     case Backend.Repo.get(Backend.Purchasing.PurchaseOrderApproval, entity_id) do
       %{purchase_order_id: poid} -> check_parent_purchase_order(actor, poid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "bom", entity_id) do
+    case Backend.Repo.get(Backend.Production.BOM, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end
   end

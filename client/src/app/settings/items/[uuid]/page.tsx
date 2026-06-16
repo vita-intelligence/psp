@@ -18,6 +18,7 @@ import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { ItemForm } from "../item-form";
 import { ItemImagesSection } from "../images/item-images-section";
 import { ItemCertificatesSection } from "../certificates/item-certificates-section";
+import { ItemBOMsCard } from "./item-boms-card";
 
 export const metadata = { title: "Edit item · Settings · PSP" };
 
@@ -97,6 +98,14 @@ export default async function EditItemPage({
         item={item}
         canEdit={canEdit}
         certificates={certificates ?? []}
+      />
+
+      {/* BOMs — visible only when the item's `item_type` is bommable
+          (finished_product or semi_finished). Server-side enforces the
+          same rule in `Backend.Production.create_bom/2`. */}
+      <ItemBOMsCard
+        item={item}
+        canCreate={hasPermission(user, "production.bom_create")}
       />
 
       <AuditMetaSection
