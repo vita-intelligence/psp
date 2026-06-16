@@ -350,6 +350,18 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     is_active: "Active",
     external_id: "vita-performance ID",
   },
+  routing: {
+    name: "Name",
+    code: "Number",
+    notes: "Notes",
+    item_id: "Output item",
+    bom_id: "Connected BOM",
+    is_active: "Active",
+    other_fixed_cost: "Other fixed cost",
+    other_variable_cost: "Other variable cost",
+    other_variable_cost_basis: "Other variable basis",
+    steps: "Operations",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

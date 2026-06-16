@@ -4,6 +4,8 @@ import { getSessionToken } from "../auth/server";
 import type {
   BOM,
   BOMLedgerPage,
+  Routing,
+  RoutingLedgerPage,
   Workstation,
   WorkstationGroup,
   WorkstationGroupLedgerPage,
@@ -146,6 +148,44 @@ export async function getWorkstation(
       { token, cache: "no-store" },
     );
     return workstation;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------
+// Routings
+// ---------------------------------------------------------------
+
+export interface ListRoutingsOpts {
+  query?: string;
+}
+
+export async function listRoutingsPage(
+  opts: ListRoutingsOpts = {},
+): Promise<RoutingLedgerPage | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  const qs = opts.query ? `?${opts.query}` : "";
+  try {
+    return await api<RoutingLedgerPage>(`/api/production/routings${qs}`, {
+      token,
+      cache: "no-store",
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getRouting(uuid: string): Promise<Routing | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const { routing } = await api<{ routing: Routing }>(
+      `/api/production/routings/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return routing;
   } catch {
     return null;
   }

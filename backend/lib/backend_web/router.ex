@@ -38,6 +38,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "workstation"
   end
 
+  pipeline :comments_routing do
+    plug :put_entity_type, "routing"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -371,6 +375,12 @@ defmodule BackendWeb.Router do
       post "/workstations", WorkstationController, :create
       patch "/workstations/:id", WorkstationController, :update
       delete "/workstations/:id", WorkstationController, :delete
+
+      get "/routings", RoutingController, :index
+      get "/routings/:id", RoutingController, :show
+      post "/routings", RoutingController, :create
+      patch "/routings/:id", RoutingController, :update
+      delete "/routings/:id", RoutingController, :delete
     end
 
     # Goods-In Inspection — show / update / item / sign actions sit
@@ -582,6 +592,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/production/workstations/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_workstation]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/production/routings/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_routing]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

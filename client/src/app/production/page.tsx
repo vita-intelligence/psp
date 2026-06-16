@@ -79,7 +79,6 @@ const SECTIONS: ProdSection[] = [
     description:
       "Operations + setup times per BOM. The schedule reads off these.",
     Icon: Route,
-    comingSoon: true,
   },
   {
     href: "/production/statistics",

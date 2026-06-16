@@ -32,6 +32,9 @@ defmodule Backend.Production do
     BOM,
     BOMLine,
     BOMVersion,
+    Routing,
+    RoutingStep,
+    RoutingStepWorker,
     Workstation,
     WorkstationDefaultWorker,
     WorkstationGroup
@@ -947,6 +950,306 @@ defmodule Backend.Production do
       idle_to: ws.idle_to,
       is_active: ws.is_active,
       external_id: ws.external_id
+    }
+  end
+
+  # ============================================================
+  # Routings
+  # ============================================================
+  #
+  # Routing = ordered list of operations against workstation groups
+  # that turns a BOM's inputs into a finished item. Belongs to an
+  # Item (required, same bommable gate as BOMs) + optional BOM.
+  #
+  # Steps + per-step workers are wholesale-replaced on save inside
+  # the same transaction as the header — audit captures one update
+  # event per save instead of one per step.
+
+  @routing_search [:name, :notes]
+  @routing_sortable [:inserted_at, :updated_at, :name]
+  @routing_default_sort {:inserted_at, :desc}
+
+  def list_routings_page(company_id, opts \\ []) when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @routing_default_sort)
+
+    base =
+      Routing
+      |> where([r], r.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @routing_search)
+      |> maybe_routing_item_filter(opts[:item_id])
+      |> maybe_routing_bom_filter(opts[:bom_id])
+      |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_sort(sort, @routing_sortable, @routing_default_sort)
+      |> preload([:item, :bom, :created_by, :updated_by])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_routing_item_filter(query, nil), do: query
+
+  defp maybe_routing_item_filter(query, id) when is_integer(id),
+    do: where(query, [r], r.item_id == ^id)
+
+  defp maybe_routing_item_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [r], r.item_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_routing_item_filter(query, _), do: query
+
+  defp maybe_routing_bom_filter(query, nil), do: query
+
+  defp maybe_routing_bom_filter(query, id) when is_integer(id),
+    do: where(query, [r], r.bom_id == ^id)
+
+  defp maybe_routing_bom_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [r], r.bom_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_routing_bom_filter(query, _), do: query
+
+  def get_routing(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    Routing
+    |> where([r], r.company_id == ^company_id and r.uuid == ^uuid)
+    |> preload([
+      :item,
+      :bom,
+      :created_by,
+      :updated_by,
+      steps: [:workstation_group, worker_assignments: :user]
+    ])
+    |> Repo.one()
+  end
+
+  @doc """
+  Create a routing. `steps` and `default_worker_ids` (per step) are
+  pulled off attrs and replayed inside a single transaction.
+  """
+  def create_routing(%User{} = actor, attrs) do
+    attrs = stringify_keys(attrs)
+    steps_attrs = pull_steps(attrs)
+
+    with {:ok, item} <- fetch_output_item(actor, attrs["item_id"]),
+         :ok <- ensure_bommable_item_type(item),
+         :ok <- ensure_bom_for_item(actor, item.id, attrs["bom_id"]) do
+      attrs =
+        attrs
+        |> Map.put("company_id", actor.company_id)
+        |> Map.put("item_id", item.id)
+        |> Map.put_new("name", default_routing_name(item))
+        |> Map.put("created_by_id", actor.id)
+        |> Map.put("updated_by_id", actor.id)
+
+      Repo.transaction(fn ->
+        with {:ok, routing} <-
+               %Routing{}
+               |> Routing.changeset(attrs)
+               |> Repo.insert(),
+             {:ok, _steps} <- replace_routing_steps(actor, routing, steps_attrs) do
+          Audit.record_created(actor, "routing", routing, routing_snapshot(routing))
+          routing
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, {:step_failed, idx, cs}} -> Repo.rollback({:step_failed, idx, cs})
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, routing} -> {:ok, reload_routing(routing)}
+        other -> other
+      end
+    end
+  end
+
+  def update_routing(%User{} = actor, %Routing{} = routing, attrs) do
+    attrs = stringify_keys(attrs)
+    steps_attrs = pull_steps(attrs)
+    before = routing_snapshot(routing)
+
+    attrs =
+      attrs
+      |> Map.delete("company_id")
+      |> Map.delete("item_id")
+      |> Map.put("updated_by_id", actor.id)
+
+    with :ok <-
+           (if Map.has_key?(attrs, "bom_id"),
+              do: ensure_bom_for_item(actor, routing.item_id, attrs["bom_id"]),
+              else: :ok) do
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               routing
+               |> Routing.changeset(attrs)
+               |> Repo.update(),
+             {:ok, _steps} <-
+               (if is_list(steps_attrs),
+                  do: replace_routing_steps(actor, updated, steps_attrs),
+                  else: {:ok, :unchanged}) do
+          Audit.record_updated(
+            actor,
+            "routing",
+            updated,
+            before,
+            routing_snapshot(updated)
+          )
+
+          updated
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, {:step_failed, idx, cs}} -> Repo.rollback({:step_failed, idx, cs})
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, routing} -> {:ok, reload_routing(routing)}
+        other -> other
+      end
+    end
+  end
+
+  def delete_routing(%User{} = actor, %Routing{} = routing) do
+    before = routing_snapshot(routing)
+
+    case Repo.delete(routing) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "routing", deleted, before)
+        {:ok, deleted}
+
+      err ->
+        err
+    end
+  end
+
+  defp reload_routing(%Routing{} = r) do
+    Repo.preload(
+      r,
+      [
+        :item,
+        :bom,
+        :created_by,
+        :updated_by,
+        steps: [:workstation_group, worker_assignments: :user]
+      ],
+      force: true
+    )
+  end
+
+  # Pull steps off the attrs map. `nil` means "no steps key given —
+  # leave the existing set alone" (matters for PATCH that only edits
+  # the header). `[]` means "wipe all steps".
+  defp pull_steps(attrs) do
+    case Map.get(attrs, "steps", :unset) do
+      :unset -> nil
+      list when is_list(list) -> list
+      _ -> nil
+    end
+  end
+
+  defp replace_routing_steps(_actor, _routing, nil), do: {:ok, :unchanged}
+
+  defp replace_routing_steps(%User{} = actor, %Routing{} = routing, steps_attrs)
+       when is_list(steps_attrs) do
+    Repo.delete_all(from s in RoutingStep, where: s.routing_id == ^routing.id)
+
+    steps_attrs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {raw, idx}, {:ok, acc} ->
+      step_attrs =
+        raw
+        |> stringify_keys()
+        |> Map.put("company_id", actor.company_id)
+        |> Map.put("routing_id", routing.id)
+        |> Map.put_new("sort_order", idx)
+
+      worker_ids = step_attrs |> Map.get("default_worker_ids") |> normalise_ids()
+
+      step_attrs = Map.delete(step_attrs, "default_worker_ids")
+
+      case %RoutingStep{}
+           |> RoutingStep.changeset(step_attrs)
+           |> Repo.insert() do
+        {:ok, step} ->
+          assign_step_workers(actor, step, worker_ids)
+          {:cont, {:ok, [step | acc]}}
+
+        {:error, cs} ->
+          {:halt, {:error, {:step_failed, idx, cs}}}
+      end
+    end)
+    |> case do
+      {:ok, steps} -> {:ok, Enum.reverse(steps)}
+      err -> err
+    end
+  end
+
+  defp assign_step_workers(%User{} = actor, %RoutingStep{} = step, ids) when is_list(ids) do
+    rows =
+      Enum.map(ids, fn user_id ->
+        %{
+          routing_step_id: step.id,
+          user_id: user_id,
+          company_id: actor.company_id,
+          inserted_at: now()
+        }
+      end)
+
+    case rows do
+      [] -> {:ok, 0}
+      list -> {n, _} = Repo.insert_all(RoutingStepWorker, list); {:ok, n}
+    end
+  end
+
+  defp default_routing_name(%Item{name: name}),
+    do: name <> " Routing"
+
+  # If `bom_id` is present and not nil, ensure it belongs to the
+  # same company AND points at the same output item as the routing.
+  # A BOM for one item paired with a routing for another would
+  # silently break MO planning.
+  defp ensure_bom_for_item(_actor, _item_id, nil), do: :ok
+
+  defp ensure_bom_for_item(%User{} = actor, item_id, raw_bom_id) do
+    int_id =
+      case raw_bom_id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+
+        _ -> nil
+      end
+
+    case int_id && Repo.get(BOM, int_id) do
+      %BOM{company_id: cid, item_id: bom_item_id}
+      when cid == actor.company_id and bom_item_id == item_id ->
+        :ok
+
+      %BOM{company_id: cid} when cid == actor.company_id ->
+        {:error, :bom_item_mismatch}
+
+      _ ->
+        {:error, :bom_not_found}
+    end
+  end
+
+  defp routing_snapshot(%Routing{} = r) do
+    %{
+      name: r.name,
+      notes: r.notes,
+      item_id: r.item_id,
+      bom_id: r.bom_id,
+      is_active: r.is_active,
+      other_fixed_cost: r.other_fixed_cost,
+      other_variable_cost: r.other_variable_cost,
+      other_variable_cost_basis: r.other_variable_cost_basis
     }
   end
 end

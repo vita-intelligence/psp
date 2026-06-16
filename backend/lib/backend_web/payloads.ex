@@ -775,6 +775,106 @@ defmodule BackendWeb.Payloads do
 
   def workstation_summary(_), do: nil
 
+  # ----- routings --------------------------------------------------
+
+  @doc """
+  Full routing payload — header + ordered steps + per-step worker
+  summaries. Decimals stringified so JS keeps full precision.
+  """
+  def routing(%Backend.Production.Routing{} = r) do
+    %{
+      id: r.id,
+      uuid: r.uuid,
+      code: render_code(r, "routing"),
+      name: r.name,
+      notes: r.notes,
+      is_active: r.is_active,
+      company_id: r.company_id,
+      item_id: r.item_id,
+      item: maybe_item_summary(r.item),
+      bom_id: r.bom_id,
+      bom: bom_summary(r.bom),
+      other_fixed_cost: decimal_to_string(r.other_fixed_cost),
+      other_variable_cost: decimal_to_string(r.other_variable_cost),
+      other_variable_cost_basis: decimal_to_string(r.other_variable_cost_basis),
+      steps: routing_steps_list(r),
+      created_by: actor(r, :created_by),
+      updated_by: actor(r, :updated_by),
+      inserted_at: r.inserted_at,
+      updated_at: r.updated_at
+    }
+  end
+
+  def routing(_), do: nil
+
+  @doc "Slim routing row for the ledger."
+  def routing_summary(%Backend.Production.Routing{} = r) do
+    %{
+      id: r.id,
+      uuid: r.uuid,
+      code: render_code(r, "routing"),
+      name: r.name,
+      is_active: r.is_active,
+      item: maybe_item_summary(r.item),
+      bom: bom_summary(r.bom),
+      created_by: actor(r, :created_by),
+      updated_by: actor(r, :updated_by),
+      inserted_at: r.inserted_at,
+      updated_at: r.updated_at
+    }
+  end
+
+  def routing_summary(_), do: nil
+
+  def routing_step(%Backend.Production.RoutingStep{} = s) do
+    %{
+      id: s.id,
+      uuid: s.uuid,
+      sort_order: s.sort_order,
+      operation_description: s.operation_description,
+      setup_time_min: decimal_to_string(s.setup_time_min),
+      cycle_time_min: decimal_to_string(s.cycle_time_min),
+      fixed_cost: decimal_to_string(s.fixed_cost),
+      variable_cost: decimal_to_string(s.variable_cost),
+      capacity: decimal_to_string(s.capacity),
+      workstation_group_id: s.workstation_group_id,
+      workstation_group: workstation_group_summary(s.workstation_group),
+      workers: routing_step_workers(s)
+    }
+  end
+
+  def routing_step(_), do: nil
+
+  defp routing_steps_list(%Backend.Production.Routing{steps: %Ecto.Association.NotLoaded{}}),
+    do: []
+
+  defp routing_steps_list(%Backend.Production.Routing{steps: steps}) when is_list(steps),
+    do: steps |> Enum.sort_by(& &1.sort_order) |> Enum.map(&routing_step/1)
+
+  defp routing_steps_list(_), do: []
+
+  defp routing_step_workers(%Backend.Production.RoutingStep{} = s) do
+    case Map.get(s, :worker_assignments) do
+      %Ecto.Association.NotLoaded{} ->
+        []
+
+      list when is_list(list) ->
+        Enum.map(list, fn a ->
+          case a.user do
+            %Backend.Accounts.User{} = u ->
+              %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+            _ ->
+              nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  end
+
   # Group rate when the workstation hasn't ticked the override; the
   # workstation's own rate when it has. Returned as a decimal string
   # (or nil).

@@ -72,7 +72,11 @@ export type PermissionCode =
   | "production.workstation_view"
   | "production.workstation_create"
   | "production.workstation_edit"
-  | "production.workstation_delete";
+  | "production.workstation_delete"
+  | "production.routing_view"
+  | "production.routing_create"
+  | "production.routing_edit"
+  | "production.routing_delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

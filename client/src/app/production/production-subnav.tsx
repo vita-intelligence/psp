@@ -62,7 +62,6 @@ const ITEMS: SubnavItem[] = [
     href: "/production/routings",
     label: "Routings",
     Icon: Route,
-    comingSoon: true,
   },
   {
     href: "/production/statistics",

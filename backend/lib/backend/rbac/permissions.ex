@@ -179,7 +179,12 @@ defmodule Backend.RBAC.Permissions do
     {"production.workstation_create", "Create new workstations"},
     {"production.workstation_edit",
      "Edit workstations (group, rate, productivity, idle window, default workers)"},
-    {"production.workstation_delete", "Delete workstations"}
+    {"production.workstation_delete", "Delete workstations"},
+    {"production.routing_view", "View routings"},
+    {"production.routing_create", "Create new routings"},
+    {"production.routing_edit",
+     "Edit existing routings (steps, costs, worker assignments)"},
+    {"production.routing_delete", "Delete routings"}
   ]
 
   def all do
@@ -523,6 +528,16 @@ defmodule Backend.RBAC.Permissions do
             create: "production.workstation_create",
             update: "production.workstation_edit",
             delete: "production.workstation_delete"
+          },
+          %{
+            key: "routings",
+            label: "Routings",
+            description:
+              "Ordered list of operations against workstation groups that turns a BOM into a finished item. Drives schedule, MO costing, and per-step worker assignments.",
+            read: "production.routing_view",
+            create: "production.routing_create",
+            update: "production.routing_edit",
+            delete: "production.routing_delete"
           }
         ]
       }

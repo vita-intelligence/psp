@@ -318,6 +318,11 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "production.workstation_edit") or
         RBAC.has_permission?(user, "production.workstation_create")
 
+  defp can_edit_resource?(user, "routing"),
+    do:
+      RBAC.has_permission?(user, "production.routing_edit") or
+        RBAC.has_permission?(user, "production.routing_create")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

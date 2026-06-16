@@ -25,7 +25,7 @@ defmodule Backend.Numbering do
   alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
   alias Backend.Production.BOM
-  alias Backend.Production.{Workstation, WorkstationGroup}
+  alias Backend.Production.{Routing, Workstation, WorkstationGroup}
   alias Backend.RBAC.Role
   alias Backend.Repo
   alias Backend.Purchasing.PurchaseOrder
@@ -54,7 +54,8 @@ defmodule Backend.Numbering do
     "goods_in_inspection" => GoodsInInspection,
     "bom" => BOM,
     "workstation_group" => WorkstationGroup,
-    "workstation" => Workstation
+    "workstation" => Workstation,
+    "routing" => Routing
   }
 
   @default_padding 5

@@ -47,6 +47,10 @@ defmodule Backend.Comments do
     "workstation" => [
       "production.workstation_edit",
       "production.workstation_create"
+    ],
+    "routing" => [
+      "production.routing_edit",
+      "production.routing_create"
     ]
   }
 

@@ -66,7 +66,8 @@ defmodule BackendWeb.AuditController do
     # Production domain.
     "bom" => "production.bom_view",
     "workstation_group" => "production.workstation_group_view",
-    "workstation" => "production.workstation_view"
+    "workstation" => "production.workstation_view",
+    "routing" => "production.routing_view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -380,6 +381,13 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "workstation", entity_id) do
     case Backend.Repo.get(Backend.Production.Workstation, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "routing", entity_id) do
+    case Backend.Repo.get(Backend.Production.Routing, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

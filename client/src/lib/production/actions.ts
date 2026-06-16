@@ -11,6 +11,8 @@ import {
 import type {
   BOM,
   BOMUpsertInput,
+  Routing,
+  RoutingUpsertInput,
   Workstation,
   WorkstationGroup,
   WorkstationGroupUpsertInput,
@@ -307,6 +309,85 @@ export async function deleteWorkstationAction(
       ...toErrorResult(err, {
         source: "deleteWorkstationAction",
         fallbackDetail: "Couldn't delete the workstation.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// Routings
+// ---------------------------------------------------------------
+
+export type RoutingResult =
+  | { ok: true; routing: Routing }
+  | (ErrorResult & { ok: false });
+
+export async function createRoutingAction(
+  attrs: RoutingUpsertInput,
+): Promise<RoutingResult> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("createRoutingAction") };
+  try {
+    const { routing } = await api<{ routing: Routing }>(
+      "/api/production/routings",
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/routings");
+    return { ok: true, routing };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "createRoutingAction",
+        fallbackDetail: "Couldn't create the routing.",
+      }),
+    };
+  }
+}
+
+export async function updateRoutingAction(
+  uuid: string,
+  attrs: RoutingUpsertInput,
+): Promise<RoutingResult> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("updateRoutingAction") };
+  try {
+    const { routing } = await api<{ routing: Routing }>(
+      `/api/production/routings/${encodeURIComponent(uuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/routings");
+    revalidatePath(`/production/routings/${uuid}`);
+    return { ok: true, routing };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateRoutingAction",
+        fallbackDetail: "Couldn't save the routing.",
+      }),
+    };
+  }
+}
+
+export async function deleteRoutingAction(
+  uuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("deleteRoutingAction") };
+  try {
+    await api<void>(`/api/production/routings/${encodeURIComponent(uuid)}`, {
+      method: "DELETE",
+      token,
+    });
+    revalidatePath("/production/routings");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "deleteRoutingAction",
+        fallbackDetail: "Couldn't delete the routing.",
       }),
     };
   }

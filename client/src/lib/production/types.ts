@@ -277,3 +277,95 @@ export interface WorkstationUpsertInput {
    *  ids sent here inside the same transaction. */
   default_worker_ids?: number[];
 }
+
+// ---------------------------------------------------------------
+// Routings
+// ---------------------------------------------------------------
+
+export interface RoutingStepWorker {
+  id: number;
+  uuid: string;
+  name: string;
+  email: string;
+}
+
+export interface RoutingStep {
+  id: number;
+  uuid: string;
+  sort_order: number;
+  operation_description: string | null;
+  setup_time_min: string | null;
+  cycle_time_min: string | null;
+  fixed_cost: string | null;
+  variable_cost: string | null;
+  capacity: string;
+  workstation_group_id: number;
+  workstation_group: WorkstationGroupSummary | null;
+  workers: RoutingStepWorker[];
+}
+
+export interface Routing {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  notes: string | null;
+  is_active: boolean;
+  company_id: number;
+  item_id: number;
+  item: BOMPartSummary | null;
+  bom_id: number | null;
+  bom: BOMSummary | null;
+  other_fixed_cost: string | null;
+  other_variable_cost: string | null;
+  other_variable_cost_basis: string;
+  steps: RoutingStep[];
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface RoutingSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  is_active: boolean;
+  item: BOMPartSummary | null;
+  bom: BOMSummary | null;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface RoutingLedgerPage {
+  items: RoutingSummary[];
+  next_cursor: string | null;
+}
+
+/** POST/PATCH /api/production/routings payload. `steps` is sent as
+ *  the full current snapshot — BE wipes + reinserts inside one
+ *  transaction. Omit `steps` on PATCH to keep the existing set. */
+export interface RoutingUpsertInput {
+  item_id?: number;
+  bom_id?: number | null;
+  name?: string;
+  notes?: string | null;
+  is_active?: boolean;
+  other_fixed_cost?: string | null;
+  other_variable_cost?: string | null;
+  other_variable_cost_basis?: string | number;
+  steps?: Array<{
+    workstation_group_id: number;
+    operation_description?: string | null;
+    setup_time_min?: string | null;
+    cycle_time_min?: string | null;
+    fixed_cost?: string | null;
+    variable_cost?: string | null;
+    capacity?: string | number;
+    sort_order?: number;
+    default_worker_ids?: number[];
+  }>;
+}

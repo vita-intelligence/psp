@@ -40,7 +40,8 @@ type EntityType =
   | "purchase_order_approval"
   | "bom"
   | "workstation_group"
-  | "workstation";
+  | "workstation"
+  | "routing";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();
