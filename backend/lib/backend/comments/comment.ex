@@ -17,7 +17,7 @@ defmodule Backend.Comments.Comment do
   alias Backend.Accounts.User
   alias Backend.Companies.Company
 
-  @entity_types ~w(vendor purchase_order stock_lot purchase_order_line bom)
+  @entity_types ~w(vendor purchase_order stock_lot purchase_order_line bom workstation_group)
   @visibilities ~w(internal shared)
   @body_max 4_000
 

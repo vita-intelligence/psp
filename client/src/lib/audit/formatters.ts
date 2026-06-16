@@ -321,6 +321,21 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     item_id: "Output item",
     lines: "Parts",
   },
+  workstation_group: {
+    name: "Name",
+    code: "Number",
+    notes: "Notes",
+    instances: "Number of instances",
+    kind: "Type",
+    hourly_rate_enabled: "Hourly rate set",
+    hourly_rate: "Hourly rate",
+    custom_working_hours: "Custom working hours",
+    working_hours: "Working hours",
+    custom_holidays: "Custom holidays",
+    holidays: "Holidays",
+    color: "Colour",
+    is_active: "Active",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

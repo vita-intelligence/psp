@@ -1,7 +1,12 @@
 import "server-only";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { BOM, BOMLedgerPage } from "./types";
+import type {
+  BOM,
+  BOMLedgerPage,
+  WorkstationGroup,
+  WorkstationGroupLedgerPage,
+} from "./types";
 
 export interface ListBOMsOpts {
   /** Append to the upstream query string verbatim — e.g.
@@ -61,5 +66,45 @@ export async function listBOMsForItem(
     });
   } catch {
     return [];
+  }
+}
+
+// ---------------------------------------------------------------
+// Workstation groups
+// ---------------------------------------------------------------
+
+export interface ListWorkstationGroupsOpts {
+  query?: string;
+}
+
+export async function listWorkstationGroupsPage(
+  opts: ListWorkstationGroupsOpts = {},
+): Promise<WorkstationGroupLedgerPage | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  const qs = opts.query ? `?${opts.query}` : "";
+  try {
+    return await api<WorkstationGroupLedgerPage>(
+      `/api/production/workstation-groups${qs}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function getWorkstationGroup(
+  uuid: string,
+): Promise<WorkstationGroup | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const { group } = await api<{ group: WorkstationGroup }>(
+      `/api/production/workstation-groups/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return group;
+  } catch {
+    return null;
   }
 }

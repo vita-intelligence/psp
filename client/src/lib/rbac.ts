@@ -60,7 +60,11 @@ export type PermissionCode =
   | "production.bom_view"
   | "production.bom_create"
   | "production.bom_edit"
-  | "production.bom_delete";
+  | "production.bom_delete"
+  | "production.workstation_group_view"
+  | "production.workstation_group_create"
+  | "production.workstation_group_edit"
+  | "production.workstation_group_delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

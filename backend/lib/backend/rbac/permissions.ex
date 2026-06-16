@@ -164,7 +164,12 @@ defmodule Backend.RBAC.Permissions do
     {"production.bom_view", "View Bills of Materials"},
     {"production.bom_create", "Create new BOMs"},
     {"production.bom_edit", "Edit existing BOMs (lines, parts, primary flag)"},
-    {"production.bom_delete", "Delete BOMs"}
+    {"production.bom_delete", "Delete BOMs"},
+    {"production.workstation_group_view", "View workstation groups"},
+    {"production.workstation_group_create", "Create new workstation groups"},
+    {"production.workstation_group_edit",
+     "Edit existing workstation groups (instances, rate, working hours)"},
+    {"production.workstation_group_delete", "Delete workstation groups"}
   ]
 
   def all do
@@ -478,6 +483,16 @@ defmodule Backend.RBAC.Permissions do
             create: "production.bom_create",
             update: "production.bom_edit",
             delete: "production.bom_delete"
+          },
+          %{
+            key: "workstation_groups",
+            label: "Workstation groups",
+            description:
+              "Clusters of identical workstations — ovens, capsulators, packaging lines. Future workstations and routings hang off these.",
+            read: "production.workstation_group_view",
+            create: "production.workstation_group_create",
+            update: "production.workstation_group_edit",
+            delete: "production.workstation_group_delete"
           }
         ]
       }

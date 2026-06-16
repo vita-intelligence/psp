@@ -656,6 +656,63 @@ defmodule BackendWeb.Payloads do
 
   def bom_version(_), do: nil
 
+  # ----- workstation groups ---------------------------------------
+
+  @doc """
+  Full workstation-group payload — every column the detail page +
+  edit form read. Decimal hourly_rate is stringified so JS can hold
+  the precision without coercing to float.
+  """
+  def workstation_group(%Backend.Production.WorkstationGroup{} = g) do
+    %{
+      id: g.id,
+      uuid: g.uuid,
+      code: render_code(g, "workstation_group"),
+      name: g.name,
+      notes: g.notes,
+      instances: g.instances,
+      kind: g.kind,
+      hourly_rate_enabled: g.hourly_rate_enabled,
+      hourly_rate: decimal_to_string(g.hourly_rate),
+      custom_working_hours: g.custom_working_hours,
+      working_hours: g.working_hours || %{},
+      custom_holidays: g.custom_holidays,
+      holidays: g.holidays || [],
+      color: g.color,
+      is_active: g.is_active,
+      created_by: actor(g, :created_by),
+      updated_by: actor(g, :updated_by),
+      inserted_at: g.inserted_at,
+      updated_at: g.updated_at
+    }
+  end
+
+  def workstation_group(_), do: nil
+
+  @doc """
+  Slim workstation-group row for the ledger.
+  """
+  def workstation_group_summary(%Backend.Production.WorkstationGroup{} = g) do
+    %{
+      id: g.id,
+      uuid: g.uuid,
+      code: render_code(g, "workstation_group"),
+      name: g.name,
+      kind: g.kind,
+      instances: g.instances,
+      hourly_rate_enabled: g.hourly_rate_enabled,
+      hourly_rate: decimal_to_string(g.hourly_rate),
+      color: g.color,
+      is_active: g.is_active,
+      created_by: actor(g, :created_by),
+      updated_by: actor(g, :updated_by),
+      inserted_at: g.inserted_at,
+      updated_at: g.updated_at
+    }
+  end
+
+  def workstation_group_summary(_), do: nil
+
   defp preloaded_list(record, field, shape_fn) do
     case Map.get(record, field) do
       %Ecto.Association.NotLoaded{} -> []

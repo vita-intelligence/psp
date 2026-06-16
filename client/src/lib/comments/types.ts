@@ -7,7 +7,8 @@ export type CommentEntityType =
   | "purchase_order"
   | "stock_lot"
   | "purchase_order_line"
-  | "bom";
+  | "bom"
+  | "workstation_group";
 
 export type CommentVisibility = "internal" | "shared";
 

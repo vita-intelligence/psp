@@ -12,6 +12,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   stock_lot: "stock/lots",
   purchase_order_line: "purchase-order-lines",
   bom: "production/boms",
+  workstation_group: "production/workstation-groups",
 };
 
 /** Server-component-friendly initial timeline fetch. Returns null on

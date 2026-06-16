@@ -28,7 +28,7 @@ defmodule Backend.Production do
   alias Backend.Audit
   alias Backend.ListQueries
   alias Backend.Items.Item
-  alias Backend.Production.{BOM, BOMLine, BOMVersion}
+  alias Backend.Production.{BOM, BOMLine, BOMVersion, WorkstationGroup}
   alias Backend.Repo
   alias Backend.Stock.Lot, as: StockLot
 
@@ -483,4 +483,153 @@ defmodule Backend.Production do
   defp parse_id(_), do: nil
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
+
+  # ============================================================
+  # Workstation groups
+  # ============================================================
+  #
+  # A workstation group is a named cluster of identical workstations
+  # (an oven bank, a packaging line). Individual workstations come in
+  # a later pass; the group is the parent every workstation will point
+  # at. Fields mirror the MRPEasy reference (Name, Instances, Type,
+  # Hourly rate, custom working hours / holidays, Colour, Notes).
+
+  @wg_search [:name, :notes]
+  @wg_sortable [:inserted_at, :updated_at, :name]
+  @wg_default_sort {:inserted_at, :desc}
+
+  @doc """
+  Paginated workstation-group ledger. Filters:
+
+    * `:kind` — `active_processing` / `passive_processing`.
+    * `:is_active` — defaults to all; pass `true` to hide archived.
+
+  Sort + cursor follow `Backend.ListQueries`.
+  """
+  def list_workstation_groups_page(company_id, opts \\ [])
+      when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @wg_default_sort)
+
+    base =
+      WorkstationGroup
+      |> where([g], g.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @wg_search)
+      |> maybe_wg_kind_filter(opts[:kind])
+      |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_sort(sort, @wg_sortable, @wg_default_sort)
+      |> preload([:created_by, :updated_by])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_wg_kind_filter(query, nil), do: query
+
+  defp maybe_wg_kind_filter(query, kind) when kind in ~w(active_processing passive_processing),
+    do: where(query, [g], g.kind == ^kind)
+
+  defp maybe_wg_kind_filter(query, _), do: query
+
+  @doc """
+  Fetch a workstation group by uuid, scoped to the company. Preloads
+  the audit actor associations the detail page renders.
+  """
+  def get_workstation_group(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    WorkstationGroup
+    |> where([g], g.company_id == ^company_id and g.uuid == ^uuid)
+    |> preload([:created_by, :updated_by])
+    |> Repo.one()
+  end
+
+  @doc """
+  Create a workstation group under the actor's company. Stamps the
+  audit log and returns the row preloaded.
+  """
+  def create_workstation_group(%User{} = actor, attrs) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.put("company_id", actor.company_id)
+      |> Map.put("created_by_id", actor.id)
+      |> Map.put("updated_by_id", actor.id)
+
+    %WorkstationGroup{}
+    |> WorkstationGroup.changeset(attrs)
+    |> Repo.insert()
+    |> case do
+      {:ok, group} ->
+        Audit.record_created(actor, "workstation_group", group, wg_snapshot(group))
+        {:ok, reload_workstation_group(group)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Update an existing workstation group. Strips identity fields the
+  client can't change (company_id, created_by).
+  """
+  def update_workstation_group(%User{} = actor, %WorkstationGroup{} = group, attrs) do
+    before = wg_snapshot(group)
+
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.delete("company_id")
+      |> Map.delete("created_by_id")
+      |> Map.put("updated_by_id", actor.id)
+
+    group
+    |> WorkstationGroup.changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(actor, "workstation_group", updated, before, wg_snapshot(updated))
+        {:ok, reload_workstation_group(updated)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Delete a workstation group. Hard delete for now — workstations
+  hanging off the group land in a later migration with a
+  `:restrict` on_delete so we won't silently lose those links once
+  they exist.
+  """
+  def delete_workstation_group(%User{} = actor, %WorkstationGroup{} = group) do
+    before = wg_snapshot(group)
+
+    case Repo.delete(group) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "workstation_group", deleted, before)
+        {:ok, deleted}
+
+      err ->
+        err
+    end
+  end
+
+  defp reload_workstation_group(%WorkstationGroup{} = g),
+    do: Repo.preload(g, [:created_by, :updated_by], force: true)
+
+  # Audit snapshot — every column the operator can change at form time.
+  defp wg_snapshot(%WorkstationGroup{} = g) do
+    %{
+      name: g.name,
+      notes: g.notes,
+      instances: g.instances,
+      kind: g.kind,
+      hourly_rate_enabled: g.hourly_rate_enabled,
+      hourly_rate: g.hourly_rate,
+      custom_working_hours: g.custom_working_hours,
+      working_hours: g.working_hours,
+      custom_holidays: g.custom_holidays,
+      holidays: g.holidays,
+      color: g.color,
+      is_active: g.is_active
+    }
+  end
 end

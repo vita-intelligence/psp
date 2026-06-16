@@ -8,7 +8,12 @@ import {
   unauthorizedResult,
   type ErrorResult,
 } from "../errors/server";
-import type { BOM, BOMUpsertInput } from "./types";
+import type {
+  BOM,
+  BOMUpsertInput,
+  WorkstationGroup,
+  WorkstationGroupUpsertInput,
+} from "./types";
 
 export type BOMResult =
   | { ok: true; bom: BOM }
@@ -136,6 +141,88 @@ export async function deleteBOMAction(
       ...toErrorResult(err, {
         source: "deleteBOMAction",
         fallbackDetail: "Couldn't delete the BOM.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// Workstation groups
+// ---------------------------------------------------------------
+
+export type WorkstationGroupResult =
+  | { ok: true; group: WorkstationGroup }
+  | (ErrorResult & { ok: false });
+
+export async function createWorkstationGroupAction(
+  attrs: WorkstationGroupUpsertInput,
+): Promise<WorkstationGroupResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("createWorkstationGroupAction") };
+  try {
+    const { group } = await api<{ group: WorkstationGroup }>(
+      "/api/production/workstation-groups",
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/workstation-groups");
+    return { ok: true, group };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "createWorkstationGroupAction",
+        fallbackDetail: "Couldn't create the workstation group.",
+      }),
+    };
+  }
+}
+
+export async function updateWorkstationGroupAction(
+  uuid: string,
+  attrs: WorkstationGroupUpsertInput,
+): Promise<WorkstationGroupResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("updateWorkstationGroupAction") };
+  try {
+    const { group } = await api<{ group: WorkstationGroup }>(
+      `/api/production/workstation-groups/${encodeURIComponent(uuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/workstation-groups");
+    revalidatePath(`/production/workstation-groups/${uuid}`);
+    return { ok: true, group };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateWorkstationGroupAction",
+        fallbackDetail: "Couldn't save the workstation group.",
+      }),
+    };
+  }
+}
+
+export async function deleteWorkstationGroupAction(
+  uuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("deleteWorkstationGroupAction") };
+  try {
+    await api<void>(
+      `/api/production/workstation-groups/${encodeURIComponent(uuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath("/production/workstation-groups");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "deleteWorkstationGroupAction",
+        fallbackDetail: "Couldn't delete the workstation group.",
       }),
     };
   }

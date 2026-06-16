@@ -114,3 +114,77 @@ export interface BOMUpsertInput {
     sort_order?: number;
   }>;
 }
+
+// ---------------------------------------------------------------
+// Workstation groups
+// ---------------------------------------------------------------
+
+export type WorkstationGroupKind =
+  | "active_processing"
+  | "passive_processing";
+
+/** Shape of the per-day working-hours override. Mirrors what the
+ *  company-level editor produces — open-ended on purpose so the FE
+ *  editor can evolve without a type churn. */
+export type WorkstationGroupWorkingHours = Record<string, unknown>;
+
+export interface WorkstationGroup {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  notes: string | null;
+  instances: number;
+  kind: WorkstationGroupKind;
+  hourly_rate_enabled: boolean;
+  /** Decimal string when present (preserves precision in JSON). */
+  hourly_rate: string | null;
+  custom_working_hours: boolean;
+  working_hours: WorkstationGroupWorkingHours;
+  custom_holidays: boolean;
+  /** ISO date strings (`YYYY-MM-DD`). */
+  holidays: string[];
+  color: string | null;
+  is_active: boolean;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface WorkstationGroupSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  kind: WorkstationGroupKind;
+  instances: number;
+  hourly_rate_enabled: boolean;
+  hourly_rate: string | null;
+  color: string | null;
+  is_active: boolean;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface WorkstationGroupLedgerPage {
+  items: WorkstationGroupSummary[];
+  next_cursor: string | null;
+}
+
+export interface WorkstationGroupUpsertInput {
+  name?: string;
+  notes?: string | null;
+  instances?: number;
+  kind?: WorkstationGroupKind;
+  hourly_rate_enabled?: boolean;
+  hourly_rate?: string | null;
+  custom_working_hours?: boolean;
+  working_hours?: WorkstationGroupWorkingHours;
+  custom_holidays?: boolean;
+  holidays?: string[];
+  color?: string | null;
+  is_active?: boolean;
+}

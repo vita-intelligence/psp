@@ -162,7 +162,8 @@ export interface AuditEvent {
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
-    | "bom";
+    | "bom"
+    | "workstation_group";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";

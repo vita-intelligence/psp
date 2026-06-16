@@ -66,7 +66,6 @@ const SECTIONS: ProdSection[] = [
     description:
       "Group interchangeable workstations so a routing step can land on whichever is free.",
     Icon: Network,
-    comingSoon: true,
   },
   {
     href: "/production/boms",

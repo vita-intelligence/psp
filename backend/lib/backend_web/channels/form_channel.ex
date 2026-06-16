@@ -296,6 +296,14 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "storage-tag"),
     do: RBAC.has_permission?(user, "storage_tags.manage")
 
+  # Workstation group form — clusters of identical workstations
+  # (oven banks, packaging lines). Create or edit both qualify;
+  # the head-of-room gate prevents collision on save.
+  defp can_edit_resource?(user, "workstation-group"),
+    do:
+      RBAC.has_permission?(user, "production.workstation_group_edit") or
+        RBAC.has_permission?(user, "production.workstation_group_create")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to
