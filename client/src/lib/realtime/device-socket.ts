@@ -1,7 +1,7 @@
 "use client";
 
 import { Socket } from "phoenix";
-import { env } from "../env";
+import { resolveSocketUrl } from "./socket-url";
 
 /**
  * Single Phoenix socket per mobile tab, authenticated with the paired
@@ -23,7 +23,7 @@ export async function getDeviceSocket(): Promise<Socket | null> {
   const { token } = (await res.json()) as { token: string };
   if (!token) return null;
 
-  socket = new Socket(env.wsUrl, { params: { device_token: token } });
+  socket = new Socket(resolveSocketUrl(), { params: { device_token: token } });
   socket.connect();
   return socket;
 }

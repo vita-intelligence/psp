@@ -1,6 +1,7 @@
 import "server-only";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
+import { getDeviceToken } from "../devices/server";
 import type { PurchaseOrder } from "../types";
 
 export async function listPurchaseOrdersPage(): Promise<{
@@ -19,8 +20,13 @@ export async function listPurchaseOrdersPage(): Promise<{
   }
 }
 
+// Device-token first, then session — same fallback as
+// `getMobileIncoming`. The `/m/incoming/[uuid]` pre-receive page is
+// reachable from the paired tablet (device cookie) AND from a logged-in
+// admin opening the URL on a desktop (session cookie); both must
+// resolve a PO without a 404.
 export async function getPurchaseOrder(uuid: string): Promise<PurchaseOrder | null> {
-  const token = await getSessionToken();
+  const token = (await getDeviceToken()) ?? (await getSessionToken());
   if (!token) return null;
   try {
     const { purchase_order } = await api<{ purchase_order: PurchaseOrder }>(

@@ -11,17 +11,15 @@ import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { listCommentsForEntity } from "@/lib/comments/server";
+import { listInspectionsForPo } from "@/lib/goods-in/server";
 import { getPurchaseOrder } from "@/lib/purchase-orders/server";
-import {
-  listItemsForReceive,
-  listWarehousesForReceive,
-} from "@/lib/stock/server";
+import { listItemsForReceive } from "@/lib/stock/server";
 import { ProcurementSubnav } from "../../procurement-subnav";
 import { PODocumentsToolbar } from "./po-documents-toolbar";
+import { POInspectionsCard } from "./po-inspections-card";
 import { POInvoicesCard } from "./po-invoices-card";
 import { POLinesCard } from "./po-lines-card";
 import { POPaperworkAlert } from "./po-paperwork-alert";
-import { POReceiveCard } from "./po-receive-card";
 import { POWorkflowCard } from "./po-workflow-card";
 import type { PurchaseOrderStatus } from "@/lib/types";
 import { formatCompanyMoney } from "@/lib/format/company";
@@ -66,14 +64,18 @@ export default async function PODetailPage({
   }
 
   const { uuid } = await params;
-  const [po, items, warehouses, prefs, initialComments, invoices] =
+  const [po, items, prefs, initialComments, invoices, inspections] =
     await Promise.all([
       getPurchaseOrder(uuid),
       listItemsForReceive(),
-      listWarehousesForReceive(),
       getCompanyDefaults(),
       listCommentsForEntity("purchase_order", uuid),
       listInvoicesForPO(uuid),
+      // Same fetcher the mobile pre-receive page uses; returns every
+      // inspection on this PO (draft + submitted + terminal) so the
+      // operator can drill into a past goods-in record from the
+      // desktop without leaving the PO context.
+      listInspectionsForPo(uuid),
     ]);
   if (!po) notFound();
 
@@ -84,7 +86,6 @@ export default async function PODetailPage({
     user,
     "procurement.po_director_approve",
   );
-  const canReceive = hasPermission(user, "procurement.po_receive");
   const canInvoiceView = hasPermission(user, "procurement.invoice_view");
   const canInvoiceManage = hasPermission(user, "procurement.invoice_manage");
   const canInvoiceApprove = hasPermission(user, "procurement.invoice_approve");
@@ -158,13 +159,16 @@ export default async function PODetailPage({
             canEdit={canCreate && po.status === "draft"}
           />
 
-          {["ordered", "partially_received"].includes(po.status) && (
-            <POReceiveCard
-              po={po}
-              warehouses={warehouses}
-              canReceive={canReceive}
-            />
-          )}
+          {/* Inspections card surfaces every GI inspection the
+              goods-in operator ran against this PO — the auto-receive
+              chain means each row corresponds to one physical
+              delivery + QC verdict. This replaces the old "Record
+              receipt" dialog: dimensions / packs / batch are all
+              captured during the operator's mobile checklist, signing
+              flips the PO to received automatically. Stays visible
+              regardless of PO status so audit-trail lookups keep
+              working post-close. */}
+          <POInspectionsCard inspections={inspections} prefs={prefs} />
 
           {canInvoiceView && (
             <POInvoicesCard

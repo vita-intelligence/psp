@@ -72,6 +72,16 @@ const STATUS_FILTER: FilterDef = {
   ],
 };
 
+// Viewer-aware filter. Pair with `Status: Submitted` to reproduce the
+// mobile "Needs my sign-off" chip — the BE resolves `mine=true` to
+// `goods_in_operator_id = current_user.id OR quality_approver_id =
+// current_user.id` so QC also sees rows they signed off on.
+const MINE_FILTER: FilterDef = {
+  field: "mine",
+  label: "Owner",
+  options: [{ label: "Mine only", value: "true" }],
+};
+
 const DEFAULT_SORT: SortSpec = { field: "delivery_date", direction: "desc" };
 
 async function fetchInspectionsPage(params: {
@@ -125,8 +135,8 @@ export function InspectionsLedger({ initialPage, warehouses }: Props) {
         .map((w) => ({ label: w.name, value: String(w.id) })),
     };
     return warehouseFilter.options.length > 0
-      ? [STATUS_FILTER, warehouseFilter]
-      : [STATUS_FILTER];
+      ? [STATUS_FILTER, MINE_FILTER, warehouseFilter]
+      : [STATUS_FILTER, MINE_FILTER];
   }, [warehouses]);
 
   const columns = useMemo<DataTableColumn<InspectionSummary>[]>(

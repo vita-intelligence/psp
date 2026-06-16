@@ -66,6 +66,11 @@ defmodule Backend.Purchasing.PurchaseOrder do
     belongs_to :updated_by, User
     belongs_to :submitted_by, User
     belongs_to :ordered_by, User
+    # Set by `receive_against_po/3` at the moment the PO flips to
+    # `received` / `partially_received`. With the inspection-driven
+    # auto-receive in `sign_operator`, this is the goods-in operator
+    # who signed off the checklist on the phone.
+    belongs_to :received_by, User
     belongs_to :cancelled_by, User
     belongs_to :default_warehouse, Warehouse
 
@@ -126,6 +131,7 @@ defmodule Backend.Purchasing.PurchaseOrder do
       :ordered_at,
       :ordered_by_id,
       :received_at,
+      :received_by_id,
       :cancelled_at,
       :cancelled_by_id,
       :cancellation_reason,

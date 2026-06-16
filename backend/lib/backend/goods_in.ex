@@ -110,6 +110,7 @@ defmodule Backend.GoodsIn do
       |> maybe_po_filter(opts[:purchase_order_id])
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
+      |> maybe_actor_filter(opts[:actor_id])
       |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
       |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
 
@@ -157,6 +158,19 @@ defmodule Backend.GoodsIn do
   defp maybe_date_range(query, from, to) do
     where(query, [i], i.delivery_date >= ^from and i.delivery_date <= ^to)
   end
+
+  # "Mine" filter — rows where the given user is either the goods-in
+  # operator or the quality approver. Powers the "Mine" chip on the
+  # mobile inspections list + the desktop ledger so a user can see
+  # everything they've personally touched without scrolling.
+  defp maybe_actor_filter(query, nil), do: query
+  defp maybe_actor_filter(query, ""), do: query
+
+  defp maybe_actor_filter(query, actor_id) when is_integer(actor_id) do
+    where(query, [i], i.goods_in_operator_id == ^actor_id or i.quality_approver_id == ^actor_id)
+  end
+
+  defp maybe_actor_filter(query, _), do: query
 
   # ----- create draft ---------------------------------------------
 
@@ -241,6 +255,7 @@ defmodule Backend.GoodsIn do
         "goods_in_inspection_id" => i.id,
         "purchase_order_line_id" => line.id
       })
+      |> reconcile_qty_from_packs()
 
     existing =
       Repo.one(
@@ -288,6 +303,45 @@ defmodule Backend.GoodsIn do
 
   defp after_item_write(other, _actor, _kind), do: other
 
+  # When the FE sends a non-empty `packs` list we own the qty_received
+  # number — sum the packs and overwrite whatever the client claimed.
+  # Keeps the two columns from drifting and stops the FE from having
+  # to compute the total twice (once for display, once for the wire).
+  defp reconcile_qty_from_packs(%{"packs" => packs} = attrs) when is_list(packs) and packs != [] do
+    sum =
+      Enum.reduce(packs, Decimal.new(0), fn pack, acc ->
+        case pack_qty(pack) do
+          {:ok, dec} -> Decimal.add(acc, dec)
+          :error -> acc
+        end
+      end)
+
+    Map.put(attrs, "qty_received", Decimal.to_string(sum))
+  end
+
+  defp reconcile_qty_from_packs(attrs), do: attrs
+
+  defp pack_qty(pack) do
+    raw = pack["qty"] || pack[:qty]
+
+    cond do
+      is_nil(raw) ->
+        :error
+
+      is_binary(raw) ->
+        case Decimal.parse(String.trim(raw)) do
+          {dec, ""} -> {:ok, dec}
+          _ -> :error
+        end
+
+      is_integer(raw) or is_float(raw) ->
+        {:ok, Decimal.new(to_string(raw))}
+
+      true ->
+        :error
+    end
+  end
+
   # ----- ESIGN signatures -----------------------------------------
 
   @doc """
@@ -312,29 +366,184 @@ defmodule Backend.GoodsIn do
           "updated_by_id" => actor.id
         })
 
-      i
-      |> Inspection.operator_sign_changeset(attrs)
-      |> Repo.update()
-      |> case do
-        {:ok, updated} ->
+      # Wrap the sign + receive in one transaction so a failed
+      # auto-receive (warehouse not configured for quarantine, etc.)
+      # rolls the operator's signature back. Either both happen, or
+      # neither does.
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               i
+               |> Inspection.operator_sign_changeset(attrs)
+               |> Repo.update(),
+             {:ok, _} <- maybe_auto_receive_po(actor, updated) do
           Audit.record_updated(actor, "goods_in_inspection", updated, %{status: "draft"}, %{
             status: updated.status,
             goods_in_operator_signed_at: updated.goods_in_operator_signed_at
           })
 
-          {:ok, reload(updated)}
-
-        other ->
-          other
-      end
+          reload(updated)
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     end
   end
 
   def sign_operator(_, %Inspection{}, _), do: {:error, :not_editable}
 
+  # When the operator signs off, the inspection IS the receiving
+  # event: walk every per-line pack the operator captured, build the
+  # `receive_against_po` payload, and run the receive in-line. Lots
+  # land in quarantine status, placed in the warehouse's quarantine
+  # cell, tagged with this inspection's id so the approver's later
+  # sign-off can fan out `qc_passed` / `qc_failed` events on exactly
+  # the right rows.
+  #
+  # No-ops when:
+  #   * The PO is already `received` (subsequent inspection on a
+  #     fully-received PO — defensive; the FE shouldn't surface that).
+  #   * Every inspection item has zero packs (legacy / nothing-arrived
+  #     scenario — the inspection is signed but no goods land).
+  defp maybe_auto_receive_po(%User{} = actor, %Inspection{} = inspection) do
+    inspection =
+      Repo.preload(inspection, [
+        :purchase_order,
+        items: [:purchase_order_line]
+      ])
+
+    case inspection.purchase_order do
+      nil ->
+        {:ok, nil}
+
+      %Backend.Purchasing.PurchaseOrder{status: status} = po
+      when status in ["ordered", "partially_received"] ->
+        case build_receive_attrs(inspection, po) do
+          {:ok, []} ->
+            {:ok, po}
+
+          {:ok, line_attrs} ->
+            attrs = %{
+              "warehouse_id" => po.default_warehouse_id,
+              "goods_in_inspection_id" => inspection.id,
+              "lines" => line_attrs
+            }
+
+            Backend.Purchasing.receive_against_po(actor, po, attrs)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      %Backend.Purchasing.PurchaseOrder{} = po ->
+        # Already received / cancelled — nothing to do. The inspection
+        # still signs (multi-inspection on a partially-received PO is
+        # a legitimate flow).
+        {:ok, po}
+    end
+  end
+
+  # Flatten inspection items + their pack arrays into the wire shape
+  # `receive_against_po/3` expects. Items with empty `packs` are
+  # silently skipped — `validate_receive_lines` would 422 on an empty
+  # `packs` list otherwise, and "nothing arrived for this line" is a
+  # legitimate per-line state.
+  #
+  # The mobile pack editor is deliberately tight (operators capture
+  # qty + L/W/H + weight + units-per-pack only — `stack_factor` is a
+  # warehouse-safety setting, not a dock concern). The receive flow
+  # validates stack_factor as a positive integer though, so default
+  # missing values to 1 (= no vertical stacking) on the way out.
+  defp build_receive_attrs(%Inspection{} = inspection, _po) do
+    line_attrs =
+      inspection.items
+      |> Enum.flat_map(fn item ->
+        packs = if is_list(item.packs), do: item.packs, else: []
+        line_uuid = item.purchase_order_line && item.purchase_order_line.uuid
+
+        cond do
+          packs == [] ->
+            []
+
+          is_nil(line_uuid) ->
+            []
+
+          true ->
+            packs_with_defaults = Enum.map(packs, &normalise_pack_for_receive/1)
+            [%{"line_uuid" => line_uuid, "packs" => packs_with_defaults}]
+        end
+      end)
+
+    {:ok, line_attrs}
+  end
+
+  # Stamp the wire defaults `receive_against_po` insists on but the
+  # inspection wizard doesn't surface:
+  #
+  #   * `stack_factor` — warehouse-safety cap; defaults to 1 (no
+  #     vertical stacking).
+  #   * `units_per_package` — when one wizard row represents one
+  #     physical pack (the operator's mental model), the per-pack
+  #     UoM content equals the row's `qty`. Falling back to a hard
+  #     `1` makes the schema's `packages = qty / units_per_package`
+  #     compute N packs for a single-drum receive, then disqualifies
+  #     every cell on weight. Mirror qty so packages = 1 per row.
+  defp normalise_pack_for_receive(pack) when is_map(pack) do
+    qty = pack["qty"] || pack[:qty]
+
+    pack
+    |> Map.put_new("stack_factor", 1)
+    |> ensure_units_per_package(qty)
+  end
+
+  defp normalise_pack_for_receive(other), do: other
+
+  defp ensure_units_per_package(pack, qty) do
+    case pack["units_per_package"] || pack[:units_per_package] do
+      nil ->
+        Map.put(pack, "units_per_package", coerce_numeric(qty) || 1)
+
+      "" ->
+        Map.put(pack, "units_per_package", coerce_numeric(qty) || 1)
+
+      0 ->
+        Map.put(pack, "units_per_package", coerce_numeric(qty) || 1)
+
+      "0" ->
+        Map.put(pack, "units_per_package", coerce_numeric(qty) || 1)
+
+      _ ->
+        pack
+    end
+  end
+
+  defp coerce_numeric(nil), do: nil
+
+  defp coerce_numeric(n) when is_integer(n) and n > 0, do: n
+  defp coerce_numeric(n) when is_float(n) and n > 0, do: trunc(n)
+
+  defp coerce_numeric(%Decimal{} = d) do
+    case Decimal.compare(d, Decimal.new(0)) do
+      :gt -> Decimal.to_integer(Decimal.round(d, 0, :down))
+      _ -> nil
+    end
+  end
+
+  defp coerce_numeric(s) when is_binary(s) do
+    case Decimal.parse(String.trim(s)) do
+      {dec, ""} -> coerce_numeric(dec)
+      _ -> nil
+    end
+  end
+
+  defp coerce_numeric(_), do: nil
+
   @doc """
   Quality approver signs — flips submitted → approved | hold | rejected.
-  Approver MUST differ from goods-in operator (segregation of duties).
+  The approver may be the same person who signed as operator — the
+  regulatory framework we follow allows a single qualified user to
+  carry both roles (the audit trail still records the dual signature
+  + decision rationale separately).
 
   Inside one transaction:
     * Stamp the approver's signature + quality_decision + reason
@@ -342,59 +551,52 @@ defmodule Backend.GoodsIn do
       lifecycle event matching the per-line material_decision (see
       moduledoc for the matrix)
 
-  Returns `{:error, :not_submitted}` if status != submitted, or
-  `{:error, :same_signer_as_operator}` if actor == operator.
+  Returns `{:error, :not_submitted}` if status != submitted.
   """
   def sign_quality_approver(
         %User{} = actor,
         %Inspection{status: "submitted"} = i,
         %{} = attrs
       ) do
-    cond do
-      actor.id == i.goods_in_operator_id ->
-        {:error, :same_signer_as_operator}
+    decision = attrs[:quality_decision] || attrs["quality_decision"]
+    reason = attrs[:quality_decision_reason] || attrs["quality_decision_reason"]
+    sig = attrs[:signature_image] || attrs["signature_image"]
 
-      true ->
-        decision = attrs[:quality_decision] || attrs["quality_decision"]
-        reason = attrs[:quality_decision_reason] || attrs["quality_decision_reason"]
-        sig = attrs[:signature_image] || attrs["signature_image"]
+    attrs_to_cast = %{
+      "quality_approver_id" => actor.id,
+      "quality_approver_signature_image" => sig,
+      "quality_approver_signed_at" =>
+        DateTime.utc_now() |> DateTime.truncate(:second),
+      "quality_decision" => decision,
+      "quality_decision_reason" => reason,
+      "status" => decision,
+      "updated_by_id" => actor.id
+    }
 
-        attrs_to_cast = %{
-          "quality_approver_id" => actor.id,
-          "quality_approver_signature_image" => sig,
-          "quality_approver_signed_at" =>
-            DateTime.utc_now() |> DateTime.truncate(:second),
-          "quality_decision" => decision,
-          "quality_decision_reason" => reason,
-          "status" => decision,
-          "updated_by_id" => actor.id
-        }
+    Repo.transaction(fn ->
+      with {:ok, updated} <-
+             i
+             |> Inspection.approver_sign_changeset(attrs_to_cast)
+             |> Repo.update(),
+           :ok <- fan_out_lot_events(actor, updated) do
+        Audit.record_updated(
+          actor,
+          "goods_in_inspection",
+          updated,
+          %{status: "submitted"},
+          %{
+            status: updated.status,
+            quality_decision: updated.quality_decision,
+            quality_approver_signed_at: updated.quality_approver_signed_at
+          }
+        )
 
-        Repo.transaction(fn ->
-          with {:ok, updated} <-
-                 i
-                 |> Inspection.approver_sign_changeset(attrs_to_cast)
-                 |> Repo.update(),
-               :ok <- fan_out_lot_events(actor, updated) do
-            Audit.record_updated(
-              actor,
-              "goods_in_inspection",
-              updated,
-              %{status: "submitted"},
-              %{
-                status: updated.status,
-                quality_decision: updated.quality_decision,
-                quality_approver_signed_at: updated.quality_approver_signed_at
-              }
-            )
-
-            reload(updated)
-          else
-            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-        end)
-    end
+        reload(updated)
+      else
+        {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
   end
 
   def sign_quality_approver(_, %Inspection{}, _), do: {:error, :not_submitted}

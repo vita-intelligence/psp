@@ -1,8 +1,21 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { Calendar, ChevronLeft, MapPin, MoveRight, Package, Tag } from "lucide-react";
+import {
+  AlertTriangle,
+  Calendar,
+  CheckCircle2,
+  ChevronLeft,
+  FileWarning,
+  MapPin,
+  MoveRight,
+  Package,
+  Snowflake,
+  Tag,
+} from "lucide-react";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getLotForScan } from "@/lib/stock/mobile";
+import { computeLotHandlingTags } from "@/lib/stock/handling-tags";
+import type { StockLot } from "@/lib/types";
 
 export const metadata = { title: "Lot · PSP Mobile" };
 
@@ -120,6 +133,7 @@ export default async function MobileLotPage({ params }: Props) {
             label="Expires"
             value={lot.expiry_at || "—"}
           />
+          <HandlingChips lot={lot} />
         </section>
 
         {/* Action — the same move flow works whether the lot is on
@@ -157,6 +171,40 @@ export default async function MobileLotPage({ params }: Props) {
     </div>
   );
 }
+
+function HandlingChips({ lot }: { lot: StockLot }) {
+  const tags = computeLotHandlingTags(lot.item);
+  if (tags.length === 0) return null;
+  return (
+    <div className="space-y-1.5 pt-1">
+      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        Handling
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {tags.map((tag) => {
+          const Icon = HANDLING_ICON[tag.icon];
+          return (
+            <span
+              key={tag.key}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tag.className}`}
+              title={tag.title}
+            >
+              {Icon ? <Icon className="size-2.5" /> : null}
+              {tag.label}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const HANDLING_ICON = {
+  alert: AlertTriangle,
+  check: CheckCircle2,
+  warning: FileWarning,
+  cold: Snowflake,
+} as const;
 
 function DetailRow({
   icon: Icon,

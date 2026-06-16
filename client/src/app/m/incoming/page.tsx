@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getSessionToken } from "@/lib/auth/server";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getMobileIncoming } from "@/lib/goods-in/server";
+import { INCOMING_WINDOW_DAYS } from "@/lib/goods-in/constants";
 import { listActiveWarehousesForMobile } from "@/lib/warehouses/server";
 import { MobileIncomingList } from "./mobile-incoming-list";
 
@@ -30,7 +31,7 @@ export default async function MobileIncomingPage() {
   // Bulk SSR fetch — kept tight (single endpoint + warehouses) so the
   // tablet renders well under the 500ms target on the dock's iffy wifi.
   const [incoming, warehouses] = await Promise.all([
-    getMobileIncoming(),
+    getMobileIncoming({ days: INCOMING_WINDOW_DAYS }),
     listActiveWarehousesForMobile(),
   ]);
 

@@ -183,6 +183,18 @@ export function POWorkflowCard({
         actor={po.ordered_by}
         timestamp={po.ordered_at}
       />
+      {/* "Received" rolls in once the goods-in operator signs the
+          inspection on the phone — that flow auto-calls
+          `receive_against_po` and stamps `received_by` with the
+          operator. Empty state (no actor, no timestamp) renders as
+          pending until that happens. */}
+      <StepRow
+        status={po.status}
+        step="received"
+        label="Received"
+        actor={po.received_by}
+        timestamp={po.received_at}
+      />
 
       {po.status === "cancelled" && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
@@ -384,8 +396,18 @@ function StepRow({
 }) {
   const currentIdx = STEP_ORDER.indexOf(status);
   const stepIdx = STEP_ORDER.indexOf(step);
-  const done = currentIdx >= 0 && currentIdx >= stepIdx + 1;
-  const current = status === step;
+  // "Received" is the terminal step + has an in-flight `partially_received`
+  // sibling status. Treat the pair explicitly so the row turns emerald
+  // once the PO is fully received (no later step exists to flip
+  // `done` via the default rule) and amber while partial.
+  const done =
+    step === "received"
+      ? status === "received"
+      : currentIdx >= 0 && currentIdx >= stepIdx + 1;
+  const current =
+    step === "received"
+      ? status === "partially_received"
+      : status === step;
 
   return (
     <div

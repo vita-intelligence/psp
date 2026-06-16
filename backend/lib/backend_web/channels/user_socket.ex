@@ -22,6 +22,7 @@ defmodule BackendWeb.UserSocket do
   channel "device:*", BackendWeb.DeviceChannel
   channel "pairing:*", BackendWeb.PairingChannel
   channel "comments:*", BackendWeb.CommentChannel
+  channel "user:*", BackendWeb.UserChannel
 
   @impl true
   def connect(%{"device_token" => token}, socket, _connect_info) when is_binary(token) do

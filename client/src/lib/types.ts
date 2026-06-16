@@ -622,6 +622,11 @@ export interface PurchaseOrder {
   ordered_at: string | null;
   ordered_by: AuditActor | null;
   received_at: string | null;
+  /** Stamped on the FIRST receive event (PO transitions to
+   *  `received` / `partially_received`). With the inspection-driven
+   *  auto-receive, this is the goods-in operator who signed off the
+   *  checklist on the phone. */
+  received_by: AuditActor | null;
   cancelled_at: string | null;
   cancelled_by: AuditActor | null;
   cancellation_reason: string | null;
@@ -1366,6 +1371,13 @@ export interface StockLotItemSummary {
   name: string;
   item_type: string;
   external_sku: string | null;
+  /** Item-level regulatory gate. The lot detail page surfaces this so
+   *  the operator sees the spec is finalised before they consume
+   *  against the lot. */
+  compliance_status?: ItemComplianceStatus;
+  /** Storage / handling tags (`requires_coa`, `allergen_milk`,
+   *  `requires_cold_chain`, etc.). Mirrors `Item.storage_tags`. */
+  storage_tags?: string[];
 }
 
 export interface StockLotUomSummary {

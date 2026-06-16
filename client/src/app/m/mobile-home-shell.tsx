@@ -1,27 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Bell,
   Camera,
   ClipboardCheck,
   LogOut,
   Package,
-  ShieldCheck,
   Truck,
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Wordmark } from "@/components/brand/wordmark";
-import {
-  getDeviceSocket,
-  disconnectDeviceSocket,
-} from "@/lib/realtime/device-socket";
+import { disconnectDeviceSocket } from "@/lib/realtime/device-socket";
 import type { DeviceDisplay } from "@/lib/devices/server";
+import { useDeviceChannel } from "./mobile-device-channel-provider";
 
 interface Props {
   display: DeviceDisplay;
@@ -35,11 +29,6 @@ interface Props {
   pendingPutawayCount: number;
   incomingTodayCount: number;
   submittedInspectionCount: number;
-}
-
-interface PingPayload {
-  message: string;
-  sent_at: string;
 }
 
 /**
@@ -75,22 +64,17 @@ export const MOBILE_HOME_TILES = [
     badgeKey: "incomingTodayCount",
   },
   {
-    key: "qc",
-    href: "/m/incoming?filter=needs-approval",
-    label: "QC sign-off",
-    description: "Approve submitted inspections",
-    icon: ShieldCheck,
-    permission: "goods_in.approve",
-    badgeKey: "submittedInspectionCount",
-  },
-  {
     key: "inspections",
-    href: "/m/incoming",
-    label: "My inspections",
-    description: "View only — no submit / approve",
+    href: "/m/inspections",
+    label: "Inspections",
+    description: "Review, sign off, re-print labels",
     icon: ClipboardCheck,
+    // `goods_in.view` covers everyone who needs to look at the
+    // ledger. Approvers see "Needs sign-off" chip + badge; pure
+    // viewers see "Mine" / "All recent" only — the list page enforces
+    // the perm-aware chip set client-side.
     permission: "goods_in.view",
-    badgeKey: null,
+    badgeKey: "submittedInspectionCount",
   },
   {
     key: "scan",
@@ -142,55 +126,7 @@ export function MobileHomeShell({
   submittedInspectionCount,
 }: Props) {
   const router = useRouter();
-  const [connected, setConnected] = useState(false);
-  const [revoked, setRevoked] = useState(false);
-  const channelRef = useRef<{ leave: () => void } | null>(null);
-
-  // Real-time device channel — same wiring as before. Pings toast in,
-  // revoke kicks us out.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const socket = await getDeviceSocket();
-      if (!socket || cancelled) return;
-
-      const channel = socket.channel(`device:${display.device_uuid}`, {});
-
-      channel.on("ping", (payload: PingPayload) => {
-        toast.message(payload.message, {
-          icon: <Bell className="size-4" />,
-          description: new Date(payload.sent_at).toLocaleTimeString(),
-        });
-      });
-
-      channel.on("revoked", () => {
-        setRevoked(true);
-        disconnectDeviceSocket();
-      });
-
-      channel
-        .join()
-        .receive("ok", () => setConnected(true))
-        .receive("error", () => setConnected(false));
-
-      socket.onError(() => setConnected(false));
-      socket.onOpen(() => {
-        if (channelRef.current) setConnected(true);
-      });
-
-      channelRef.current = channel;
-    })();
-
-    return () => {
-      cancelled = true;
-      channelRef.current?.leave();
-      channelRef.current = null;
-    };
-  }, [display.device_uuid]);
-
-  if (revoked) {
-    return <RevokedScreen onPairAgain={() => signOutAndPair(router)} />;
-  }
+  const { connected } = useDeviceChannel();
 
   const badgeFor = (
     key: MobileHomeTile["badgeKey"],
@@ -288,22 +224,6 @@ export function MobileHomeShell({
           Sign this device out
         </Button>
       </footer>
-    </div>
-  );
-}
-
-function RevokedScreen({ onPairAgain }: { onPairAgain: () => void }) {
-  return (
-    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-4 text-center">
-      <WifiOff className="size-8 text-destructive" />
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold">Device revoked</h1>
-        <p className="text-sm text-muted-foreground">
-          This device was signed out from your laptop. Pair again with a
-          fresh code to continue.
-        </p>
-      </div>
-      <Button onClick={onPairAgain}>Pair again</Button>
     </div>
   );
 }

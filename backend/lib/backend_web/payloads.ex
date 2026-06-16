@@ -612,6 +612,7 @@ defmodule BackendWeb.Payloads do
       ordered_at: po.ordered_at,
       ordered_by: actor(po, :ordered_by),
       received_at: po.received_at,
+      received_by: actor(po, :received_by),
       cancelled_at: po.cancelled_at,
       cancelled_by: actor(po, :cancelled_by),
       cancellation_reason: po.cancellation_reason,
@@ -798,8 +799,13 @@ defmodule BackendWeb.Payloads do
       quality_decision_reason: i.quality_decision_reason,
       goods_in_operator: actor(i, :goods_in_operator),
       goods_in_operator_signed_at: i.goods_in_operator_signed_at,
+      # Base64 data URLs — only on the detail payload (not in the
+      # ledger summary) since they're heavy. The desktop detail page
+      # renders them inline so QC can audit the actual scrawl.
+      goods_in_operator_signature_image: i.goods_in_operator_signature_image,
       quality_approver: actor(i, :quality_approver),
       quality_approver_signed_at: i.quality_approver_signed_at,
+      quality_approver_signature_image: i.quality_approver_signature_image,
       purchase_order_id: i.purchase_order_id,
       purchase_order_uuid: maybe_po_uuid(i),
       items: maybe_list(i.items, &goods_in_inspection_item/1),
@@ -882,6 +888,7 @@ defmodule BackendWeb.Payloads do
       packaging_condition_notes: item.packaging_condition_notes,
       material_decision: item.material_decision,
       material_decision_reason: item.material_decision_reason,
+      packs: item.packs || [],
       inserted_at: item.inserted_at,
       updated_at: item.updated_at
     }
@@ -1347,7 +1354,13 @@ defmodule BackendWeb.Payloads do
       code: render_code(i, "item"),
       name: i.name,
       item_type: i.item_type,
-      external_sku: i.external_sku
+      external_sku: i.external_sku,
+      # Surface the item's compliance + storage flags so the lot
+      # detail page can render handling chips (requires_coa,
+      # allergen_*, requires_cold_chain, etc.) without a second
+      # round-trip to the items API.
+      compliance_status: i.compliance_status,
+      storage_tags: i.storage_tags || []
     }
   end
 

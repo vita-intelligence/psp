@@ -39,6 +39,33 @@ export interface SectionCheck {
 /** Section JSONB bag — a map from check_key → SectionCheck. */
 export type SectionBag = Record<string, SectionCheck>;
 
+/** One physical pack within a per-line decision. The PO's qty for a
+ *  line can arrive split across multiple packs (4×25 kg drums + 1×50
+ *  kg sack = 5 packs); on QC approval each pack materialises as its
+ *  own stock_lot, mirroring the manual-lot creation flow. */
+export interface InspectionItemPack {
+  qty: string;
+  package_length_mm: number;
+  package_width_mm: number;
+  package_height_mm: number;
+  package_weight_kg: string;
+  units_per_package: number;
+  /** Optional per-pack override of the line's batch number. */
+  supplier_batch_no?: string | null;
+  /** ISO 3166-1 alpha-2 country code (e.g. "IT", "GB") — from the
+   *  pack's printed label or the vendor's CoA. */
+  country_of_origin?: string | null;
+  /** Vendor's spec / artwork revision printed on the pack. Free
+   *  text — vendors don't share a single revision scheme. */
+  revision?: string | null;
+  /** ISO date (YYYY-MM-DD) — date the batch was produced. */
+  manufactured_at?: string | null;
+  /** ISO date — best-before / use-by from the pack label. Falls back
+   *  to `manufactured_at + item.default_shelf_life_months` on the
+   *  server when omitted. */
+  expiry_at?: string | null;
+}
+
 export interface InspectionItem {
   id: number;
   uuid: string;
@@ -54,6 +81,9 @@ export interface InspectionItem {
   packaging_condition_notes: string | null;
   material_decision: MaterialDecision;
   material_decision_reason: string | null;
+  /** Pack breakdown — empty list means "legacy single implicit pack
+   *  of size qty_received" so old inspections render correctly. */
+  packs: InspectionItemPack[];
   inserted_at: string;
   updated_at: string;
 }
@@ -90,8 +120,15 @@ export interface Inspection {
   quality_decision_reason: string | null;
   goods_in_operator: AuditActor | null;
   goods_in_operator_signed_at: string | null;
+  /** Base64 data URL of the operator's scrawled signature — only
+   *  present on the detail payload (`getInspection`), never on the
+   *  ledger summary because of the size. */
+  goods_in_operator_signature_image: string | null;
   quality_approver: AuditActor | null;
   quality_approver_signed_at: string | null;
+  /** Base64 data URL of the approver's signature. Same caveat as the
+   *  operator one — detail payload only. */
+  quality_approver_signature_image: string | null;
   purchase_order_id: number;
   /** Parent PO uuid — present whenever the inspection was loaded via
    *  `GoodsIn.get/2` (which preloads `:purchase_order`). The FE uses
@@ -132,11 +169,15 @@ export interface InspectionSectionPatch {
   value: SectionBag;
 }
 
-/** Per-line decision payload — POST /goods-in-inspections/:id/items/:line_uuid. */
+/** Per-line decision payload — POST /goods-in-inspections/:id/items/:line_uuid.
+ *  When `packs` is a non-empty list, the BE reconciles `qty_received`
+ *  to `sum(packs[].qty)` server-side, so the FE only needs to pass
+ *  `qty_received` for legacy single-pack mode. */
 export interface InspectionItemUpsertInput {
   qty_received: string;
   packaging_condition?: PackagingCondition;
   packaging_condition_notes?: string | null;
   material_decision: MaterialDecision;
   material_decision_reason?: string | null;
+  packs?: InspectionItemPack[];
 }

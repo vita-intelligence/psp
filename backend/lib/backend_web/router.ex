@@ -53,6 +53,10 @@ defmodule BackendWeb.Router do
     get "/auth/me", AuthController, :me
     put "/auth/me", ProfileController, :update
     put "/auth/password", ProfileController, :change_password
+
+    # Phone → laptop print bridge. Lands a `print_label` push on the
+    # actor's `user:<uuid>` channel.
+    post "/realtime/print-label", PrintBridgeController, :print_label
     get "/team", UserController, :team
     get "/users", UserController, :index
     get "/users/:id", UserController, :show

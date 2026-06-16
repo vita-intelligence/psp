@@ -3,7 +3,9 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { QueryProvider } from "@/lib/query-client";
 import { Toaster } from "@/components/ui/sonner";
 import { CompanyPrefsProvider } from "@/lib/format/company-prefs-context";
+import { PrintBridgeListener } from "@/components/realtime/print-bridge-listener";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { getCurrentUser } from "@/lib/auth/server";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -31,7 +33,13 @@ export default async function RootLayout({
   // dates / numbers / money against the same source of truth without
   // prop drilling. Empty object when unauthed — the helpers fall back
   // to ISO + dot-decimal in that case.
-  const defaults = await getCompanyDefaults().catch(() => null);
+  //
+  // `viewer` carries just the uuid for the print-bridge listener — null
+  // on unauthed pages so the WS subscription stays dormant.
+  const [defaults, viewer] = await Promise.all([
+    getCompanyDefaults().catch(() => null),
+    getCurrentUser().catch(() => null),
+  ]);
 
   return (
     <html
@@ -46,6 +54,9 @@ export default async function RootLayout({
         <CompanyPrefsProvider prefs={defaults ?? {}}>
           <QueryProvider>{children}</QueryProvider>
         </CompanyPrefsProvider>
+        <PrintBridgeListener
+          viewer={viewer ? { uuid: viewer.uuid } : null}
+        />
         <Toaster richColors closeButton position="bottom-right" />
       </body>
     </html>

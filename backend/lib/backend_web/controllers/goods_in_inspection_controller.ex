@@ -84,7 +84,11 @@ defmodule BackendWeb.GoodsInInspectionController do
         purchase_order_id: parse_int(params["purchase_order_id"]),
         warehouse_id: parse_int(params["warehouse_id"]),
         from_date: parse_date(params["from_date"]),
-        to_date: parse_date(params["to_date"])
+        to_date: parse_date(params["to_date"]),
+        # `mine=true` resolves to the authenticated user's id at the
+        # controller boundary — the context layer stays user-agnostic
+        # so the FE doesn't have to know its own id.
+        actor_id: parse_actor_id(params["mine"], actor)
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -121,6 +125,16 @@ defmodule BackendWeb.GoodsInInspectionController do
   end
 
   defp parse_int(_), do: nil
+
+  # Resolve viewer-relative actor params (`mine`, `awaiting_signoff_from`)
+  # to the authenticated user's id. Accepts the usual truthy strings +
+  # the literal "me" so the FE can read more naturally
+  # (`awaiting_signoff_from=me`). Anything else falls through to `nil`.
+  defp parse_actor_id(raw, %{id: id})
+       when raw in ["true", "1", "me", true, 1],
+       do: id
+
+  defp parse_actor_id(_, _), do: nil
 
   defp parse_date(nil), do: nil
   defp parse_date(""), do: nil
@@ -289,13 +303,6 @@ defmodule BackendWeb.GoodsInInspectionController do
           conn,
           "not_submitted",
           "Inspection isn't awaiting quality sign-off."
-        )
-
-      {:error, :same_signer_as_operator} ->
-        conflict(
-          conn,
-          "same_signer_as_operator",
-          "Quality approver must be a different user from the goods-in operator (segregation of duties)."
         )
 
       {:error, {:illegal_transition, info}} ->

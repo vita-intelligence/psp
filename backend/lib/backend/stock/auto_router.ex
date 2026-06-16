@@ -13,7 +13,13 @@ defmodule Backend.Stock.AutoRouter do
       quarantine → quarantine
       on_hold    → hold
       rejected   → rejected
-      available  → regular
+      available  → NO MOVE — the operator owns the put-away decision.
+                   QC-passed lots physically stay in the quarantine bay
+                   until the put-away flow assigns them a real shelf;
+                   silently auto-shelving to a regular cell bypasses
+                   that decision and breaks BRCGS chain-of-custody.
+                   `list_pending_putaway/1` picks up status=available
+                   lots still sitting in a quarantine cell.
       depleted   → no move (qty 0)
       disposed   → no move (physically destroyed)
       received   → no move (waiting on quarantine routing event)
@@ -43,8 +49,7 @@ defmodule Backend.Stock.AutoRouter do
   @status_to_purpose %{
     "quarantine" => "quarantine",
     "on_hold" => "hold",
-    "rejected" => "rejected",
-    "available" => "regular"
+    "rejected" => "rejected"
   }
 
   @doc """

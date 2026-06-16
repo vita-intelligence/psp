@@ -1,18 +1,28 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ArrowLeft,
+  Building2,
+  CalendarClock,
+  CalendarDays,
   CheckCircle2,
   ClipboardCheck,
+  Coins,
+  Eye,
   FileWarning,
+  Mail,
+  MapPin,
   PackageCheck,
   PlayCircle,
   Snowflake,
+  StickyNote,
   Truck,
+  User2,
+  Warehouse,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +30,12 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import { createDraftAction } from "@/lib/goods-in/actions";
 import type { Inspection } from "@/lib/goods-in/types";
+import {
+  formatCompanyDate,
+  formatCompanyMoney,
+  formatCompanyNumber,
+} from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import type {
   PurchaseOrder,
   PurchaseOrderLine,
@@ -46,6 +62,7 @@ export function MobilePreReceiveCard({
   openInspection,
 }: Props) {
   const router = useRouter();
+  const prefs = useFormatPrefs();
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -58,6 +75,23 @@ export function MobilePreReceiveCard({
         : null,
     [po.expected_delivery_date, todayIso],
   );
+
+  // Aggregate counters across all lines so the operator can spot
+  // partial-receive state at a glance ("3 of 5 already in") without
+  // scanning every row.
+  const { totalReceived, totalOrdered, hasPartial } = useMemo(() => {
+    let received = 0;
+    let ordered = 0;
+    for (const l of po.lines) {
+      received += Number(l.qty_received) || 0;
+      ordered += Number(l.qty_ordered) || 0;
+    }
+    return {
+      totalReceived: received,
+      totalOrdered: ordered,
+      hasPartial: received > 0 && received < ordered,
+    };
+  }, [po.lines]);
 
   function startReceiving() {
     if (pending) return;
@@ -122,21 +156,33 @@ export function MobilePreReceiveCard({
           />
         )}
 
-        {/* PO summary card */}
+        {/* Identity card — what the operator cross-checks against the
+            packing slip first: PO #, vendor, delivery badge, status. */}
         <section className="rounded-xl border border-border/60 bg-card px-3 py-3">
           <div className="flex items-start gap-2">
             <Truck className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1 space-y-1.5">
-              {badge && (
-                <span
-                  className={cn(
-                    "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                    badge.className,
-                  )}
-                >
-                  {badge.label}
-                </span>
-              )}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {badge && (
+                  <span
+                    className={cn(
+                      "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                      badge.className,
+                    )}
+                  >
+                    {badge.label}
+                  </span>
+                )}
+                <StatusBadge status={po.status} />
+                {openInspection && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                    <ClipboardCheck className="size-2.5" />
+                    {openInspection.status === "draft"
+                      ? "Inspection in progress"
+                      : "Awaiting QC"}
+                  </span>
+                )}
+              </div>
               <div className="flex items-baseline gap-2 min-w-0">
                 <span className="font-mono text-xs font-semibold text-muted-foreground">
                   {po.code ?? `#${po.id}`}
@@ -147,19 +193,90 @@ export function MobilePreReceiveCard({
               </div>
               <p className="text-[11px] text-muted-foreground">
                 {po.lines.length}{" "}
-                {po.lines.length === 1 ? "line" : "lines"} expected ·{" "}
-                {po.default_warehouse?.name ?? "no default site"}
+                {po.lines.length === 1 ? "line" : "lines"}
+                {hasPartial && (
+                  <>
+                    {" · "}
+                    {formatCompanyNumber(totalReceived, prefs)} of{" "}
+                    {formatCompanyNumber(totalOrdered, prefs)} units already in
+                  </>
+                )}
               </p>
-              {openInspection && (
-                <p className="inline-flex items-center gap-1 rounded-md bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold text-sky-700 dark:text-sky-300">
-                  <ClipboardCheck className="size-2.5" />
-                  Inspection {openInspection.status === "draft"
-                    ? "in progress"
-                    : "awaiting QC"}
-                </p>
-              )}
             </div>
           </div>
+        </section>
+
+        {/* Verification rows — the operator scans these against vendor
+            paperwork: who, where, when, how much. */}
+        <section className="divide-y divide-border/40 rounded-xl border border-border/60 bg-card">
+          <DetailRow
+            icon={Building2}
+            label="Vendor"
+            value={po.vendor?.name ?? "—"}
+            sub={po.vendor?.code ?? undefined}
+          />
+          {po.vendor?.email && (
+            <DetailRow
+              icon={Mail}
+              label="Vendor email"
+              value={
+                <a
+                  href={`mailto:${po.vendor.email}`}
+                  className="text-sm font-medium text-foreground underline-offset-2 hover:underline"
+                >
+                  {po.vendor.email}
+                </a>
+              }
+            />
+          )}
+          <DetailRow
+            icon={Warehouse}
+            label="Deliver to"
+            value={po.default_warehouse?.name ?? "Site not set"}
+            sub={po.delivery_address ?? undefined}
+            subIcon={po.delivery_address ? MapPin : undefined}
+          />
+          <DetailRow
+            icon={CalendarDays}
+            label="Expected"
+            value={
+              po.expected_delivery_date
+                ? formatCompanyDate(po.expected_delivery_date, prefs)
+                : "Not set"
+            }
+          />
+          {po.ordered_at && (
+            <DetailRow
+              icon={CalendarClock}
+              label="Ordered"
+              value={formatCompanyDate(po.ordered_at, prefs)}
+              sub={po.ordered_by?.name ?? undefined}
+              subIcon={po.ordered_by?.name ? User2 : undefined}
+            />
+          )}
+          <DetailRow
+            icon={Coins}
+            label="PO total"
+            value={formatCompanyMoney(po.grand_total, prefs, {
+              currency_code: po.currency_code,
+            })}
+            sub={
+              po.currency_code !== prefs.currency_code
+                ? `in ${po.currency_code}`
+                : undefined
+            }
+          />
+          {po.notes && (
+            <DetailRow
+              icon={StickyNote}
+              label="PO notes"
+              value={
+                <span className="whitespace-pre-wrap text-sm text-foreground/90">
+                  {po.notes}
+                </span>
+              }
+            />
+          )}
         </section>
 
         {/* Line-by-line preview */}
@@ -174,7 +291,11 @@ export function MobilePreReceiveCard({
           ) : (
             <ul className="space-y-2">
               {po.lines.map((line) => (
-                <PreReceiveLineRow key={line.uuid} line={line} />
+                <PreReceiveLineRow
+                  key={line.uuid}
+                  line={line}
+                  poWarehouseId={po.default_warehouse_id}
+                />
               ))}
             </ul>
           )}
@@ -199,12 +320,22 @@ export function MobilePreReceiveCard({
             disabled={pending}
             className="flex-[2] gap-1.5 text-sm font-semibold"
           >
-            <PlayCircle className="size-4" />
+            {/* Draft → operator owns the wizard, surface a Play icon
+                + "Resume". Submitted / terminal → the inspection is
+                locked, surface an Eye + "View" so the operator knows
+                tapping won't reopen the form for edits. */}
+            {openInspection && openInspection.status !== "draft" ? (
+              <Eye className="size-4" />
+            ) : (
+              <PlayCircle className="size-4" />
+            )}
             {pending
               ? "Opening…"
               : openInspection
-                ? "Resume inspection"
-                : "Start receiving"}
+                ? openInspection.status === "draft"
+                  ? "Resume inspection"
+                  : "View inspection"
+                : "Mark as delivered"}
           </Button>
         </div>
       </footer>
@@ -212,10 +343,29 @@ export function MobilePreReceiveCard({
   );
 }
 
-function PreReceiveLineRow({ line }: { line: PurchaseOrderLine }) {
+function PreReceiveLineRow({
+  line,
+  poWarehouseId,
+}: {
+  line: PurchaseOrderLine;
+  poWarehouseId: number | null;
+}) {
+  const prefs = useFormatPrefs();
   const item = line.item;
   const uomSymbol = item?.stock_uom?.symbol ?? item?.stock_uom?.code ?? null;
   const chips = computeComplianceChips(item);
+
+  const qtyOrdered = Number(line.qty_ordered) || 0;
+  const qtyReceived = Number(line.qty_received) || 0;
+  const qtyRemaining = Math.max(qtyOrdered - qtyReceived, 0);
+  const isPartial = qtyReceived > 0 && qtyReceived < qtyOrdered;
+  const isComplete = qtyReceived >= qtyOrdered && qtyOrdered > 0;
+
+  // Per-line warehouse only matters when it deviates from the PO
+  // header default — otherwise it's noise that distracts from the
+  // delivery-address verification.
+  const hasWarehouseOverride =
+    line.warehouse_id != null && line.warehouse_id !== poWarehouseId;
 
   return (
     <li className="rounded-xl border border-border/60 bg-card px-3 py-3">
@@ -226,20 +376,49 @@ function PreReceiveLineRow({ line }: { line: PurchaseOrderLine }) {
             <p className="truncate text-sm font-medium">
               {item?.name ?? "Unknown item"}
             </p>
-            {line.vendor_part_no && (
-              <p className="font-mono text-[11px] text-muted-foreground">
-                {line.vendor_part_no}
-              </p>
-            )}
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              {item?.code && (
+                <span className="font-mono">{item.code}</span>
+              )}
+              {line.vendor_part_no && (
+                <span className="font-mono">
+                  Vendor: {line.vendor_part_no}
+                </span>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3 text-[11px]">
-            <span className="font-mono font-semibold">
-              {formatQty(line.qty_ordered)}
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px]">
+            <span className="font-mono text-sm font-semibold">
+              {formatCompanyNumber(qtyOrdered, prefs)}
               {uomSymbol ? ` ${uomSymbol}` : ""}
             </span>
             <span className="text-muted-foreground">expected</span>
+            {isPartial && (
+              <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                {formatCompanyNumber(qtyReceived, prefs)} already in ·{" "}
+                {formatCompanyNumber(qtyRemaining, prefs)} remaining
+              </span>
+            )}
+            {isComplete && (
+              <span className="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                Fully received
+              </span>
+            )}
           </div>
+
+          {hasWarehouseOverride && line.warehouse?.name && (
+            <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Warehouse className="size-3" />
+              Route to {line.warehouse.name}
+            </p>
+          )}
+
+          {line.notes && (
+            <p className="rounded-md bg-muted/50 px-2 py-1 text-[11px] text-foreground/80">
+              {line.notes}
+            </p>
+          )}
 
           {chips.length > 0 && (
             <div className="flex flex-wrap gap-1 pt-0.5">
@@ -261,6 +440,71 @@ function PreReceiveLineRow({ line }: { line: PurchaseOrderLine }) {
         </div>
       </div>
     </li>
+  );
+}
+
+// Generic icon-label-value row. `sub` is an optional secondary line
+// (address under warehouse, ordered-by under date, etc.).
+function DetailRow({
+  icon: Icon,
+  label,
+  value,
+  sub,
+  subIcon: SubIcon,
+}: {
+  icon: typeof AlertTriangle;
+  label: string;
+  value: ReactNode;
+  sub?: string;
+  subIcon?: typeof AlertTriangle;
+}) {
+  return (
+    <div className="flex items-start gap-3 px-3 py-2.5">
+      <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {label}
+        </p>
+        <div className="text-sm font-medium text-foreground">{value}</div>
+        {sub && (
+          <p className="inline-flex items-start gap-1 text-[11px] text-muted-foreground">
+            {SubIcon && <SubIcon className="mt-0.5 size-3 shrink-0" />}
+            <span className="whitespace-pre-wrap">{sub}</span>
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const STATUS_LABEL: Partial<Record<PurchaseOrder["status"], string>> = {
+  ordered: "Ordered",
+  partially_received: "Partial",
+  received: "Received",
+  approved: "Approved",
+};
+
+const STATUS_TONE: Partial<
+  Record<PurchaseOrder["status"], string>
+> = {
+  ordered: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
+  partially_received: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  received: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  approved: "bg-muted text-foreground/70",
+};
+
+function StatusBadge({ status }: { status: PurchaseOrder["status"] }) {
+  const label = STATUS_LABEL[status];
+  if (!label) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        STATUS_TONE[status] ?? "bg-muted text-foreground/70",
+      )}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -348,12 +592,6 @@ function computeComplianceChips(
   }
 
   return chips;
-}
-
-function formatQty(qty: string): string {
-  const n = Number(qty);
-  if (!Number.isFinite(n)) return qty;
-  return n.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
 function isoToday(): string {

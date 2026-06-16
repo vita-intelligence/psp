@@ -1,8 +1,14 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
-import Link from "next/link";
+import {
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import {
   Camera,
   Check,
@@ -10,6 +16,9 @@ import {
   ChevronRight,
   Image as ImageIcon,
   Loader2,
+  Plus,
+  Printer,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CountryPicker } from "@/components/forms/country-picker";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { SignaturePad } from "@/components/forms/signature-pad";
 import { cn } from "@/lib/utils";
@@ -35,10 +45,12 @@ import {
   uploadInspectionFileAction,
   upsertItemAction,
 } from "@/lib/goods-in/actions";
+import { sendQuarantineLabelAction } from "@/lib/realtime/actions";
 import type {
   Inspection,
   InspectionFile,
   InspectionItem,
+  InspectionItemPack,
   MaterialDecision,
   PackagingCondition,
   QualityDecision,
@@ -119,10 +131,6 @@ const FOOD_SAFETY_CHECKS: CheckRow[] = [
 
 const STORAGE_CHECKS: CheckRow[] = [
   {
-    key: "quarantine_label_applied",
-    label: "Quarantine label applied to every pack",
-  },
-  {
     key: "stored_in_designated_area",
     label: "Stored in the designated quarantine area",
   },
@@ -146,6 +154,7 @@ type Step =
   | "physical"
   | "food_safety"
   | "storage"
+  | "quarantine_label"
   | "sign_off";
 
 const STEPS: { id: Step; title: string }[] = [
@@ -156,6 +165,7 @@ const STEPS: { id: Step; title: string }[] = [
   { id: "physical", title: "Physical inspection" },
   { id: "food_safety", title: "Food safety checks" },
   { id: "storage", title: "Storage verification" },
+  { id: "quarantine_label", title: "Quarantine labels" },
   { id: "sign_off", title: "Sign-off" },
 ];
 
@@ -207,13 +217,17 @@ export function MobileInspectionWizard({
   // local drafts for fields the user is editing right now. We never
   // bind directly to `inspection` so an in-flight PATCH can't fight
   // the operator's typing.
-  const [delivery, setDelivery] = useState({
+  // Delivery time prefills to "now" when the draft hasn't captured one
+  // yet — the receiver is timestamping the moment the truck pulls in,
+  // so typing `HH:MM` by hand is just friction. The lazy initialiser
+  // means we compute it once at mount, not on every render.
+  const [delivery, setDelivery] = useState(() => ({
     delivery_date: inspection.delivery_date ?? "",
-    delivery_time: inspection.delivery_time ?? "",
+    delivery_time: inspection.delivery_time ?? currentLocalTime(),
     transport_company: inspection.transport_company ?? "",
     vehicle_registration: inspection.vehicle_registration ?? "",
     seal_number: inspection.seal_number ?? "",
-  });
+  }));
 
   const [vehicle, setVehicle] = useState<SectionBag>(
     inspection.vehicle_inspection ?? {},
@@ -249,10 +263,13 @@ export function MobileInspectionWizard({
   );
   const [approverReason, setApproverReason] = useState("");
 
+  // Same user may carry both signatures — the regulatory framework
+  // we follow allows a qualified user to act as both operator and
+  // approver. The audit trail still captures the two signatures +
+  // timestamps separately on the row.
   const canApprove =
     inspection.status === "submitted" &&
-    hasPermission(viewer, "goods_in.approve") &&
-    viewer.id !== inspection.goods_in_operator?.id;
+    hasPermission(viewer, "goods_in.approve");
 
   const showApprover =
     inspection.status === "submitted" && canApprove;
@@ -262,7 +279,6 @@ export function MobileInspectionWizard({
   const step = STEPS[stepIdx]!;
 
   const canAdvance = stepIdx < STEPS.length - 1;
-  const canRetreat = stepIdx > 0;
 
   /* ============ persistence helpers ============ */
 
@@ -324,17 +340,26 @@ export function MobileInspectionWizard({
           case "storage":
             resolve(await saveSection("storage_verification", storage));
             return;
+          case "quarantine_label":
+            // Action-only step — printing is fire-and-forget to the
+            // laptop, no inspection state changes here. Advance
+            // unconditionally so the operator can move on whether or
+            // not they actually printed anything.
+            resolve(true);
+            return;
           case "lines": {
-            // upsert every line that has at least a qty + decision; we
-            // do them serially so a single 422 surfaces with which line
-            // was the offender rather than a Promise.all swallow.
+            // upsert every line that has at least one complete pack +
+            // decision; we do them serially so a single 422 surfaces
+            // with which line was the offender rather than a
+            // Promise.all swallow.
             for (const line of lines) {
               const draft = items[line.uuid];
               if (!draft) continue;
-              if (!draft.qty_received) {
+              const completePacks = draft.packs.filter(isPackComplete);
+              if (completePacks.length === 0) {
                 setError({
-                  detail: `Enter a received qty for ${itemNameFor(line)}.`,
-                  code: "missing_qty",
+                  detail: `Add at least one complete pack (qty + dimensions + weight) for ${itemNameFor(line)}.`,
+                  code: "missing_packs",
                 });
                 resolve(false);
                 return;
@@ -350,8 +375,15 @@ export function MobileInspectionWizard({
                 resolve(false);
                 return;
               }
+              const packs = completePacks.map(packDraftToWire);
+              const totalQty = sumCompletePackQty(completePacks);
               const res = await upsertItemAction(inspection.uuid, line.uuid, {
-                qty_received: draft.qty_received,
+                // BE re-derives qty_received from `packs` server-side
+                // (see `reconcile_qty_from_packs`); we send our local
+                // sum so legacy callers + the changeset's required
+                // validation are both happy.
+                qty_received: String(totalQty),
+                packs,
                 packaging_condition: draft.packaging_condition || undefined,
                 packaging_condition_notes:
                   draft.packaging_condition_notes || null,
@@ -410,14 +442,6 @@ export function MobileInspectionWizard({
     if (!ok) return;
     if (canAdvance) {
       setStepIdx((i) => i + 1);
-      window.scrollTo({ top: 0 });
-    }
-  }
-
-  function onBack() {
-    if (saving) return;
-    if (canRetreat) {
-      setStepIdx((i) => i - 1);
       window.scrollTo({ top: 0 });
     }
   }
@@ -483,13 +507,14 @@ export function MobileInspectionWizard({
         className="sticky top-0 z-20 flex items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-3 backdrop-blur"
         data-testid="wizard-header"
       >
-        <Link
-          href="/m"
+        <button
+          type="button"
+          onClick={() => router.back()}
           className="rounded-md p-1.5 text-muted-foreground active:bg-muted"
-          aria-label="Back to home"
+          aria-label="Back"
         >
           <ChevronLeft className="size-5" />
-        </Link>
+        </button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs text-muted-foreground">
             {purchaseOrder.code ?? `PO #${purchaseOrder.id}`}
@@ -524,6 +549,7 @@ export function MobileInspectionWizard({
           <ApproverPanel
             inspection={inspection}
             lines={lines}
+            viewer={viewer}
             decision={approverDecision}
             onDecision={setApproverDecision}
             reason={approverReason}
@@ -561,51 +587,28 @@ export function MobileInspectionWizard({
               Sign and record decision
             </Button>
           ) : step.id === "sign_off" ? (
-            <>
-              <Button
-                size="lg"
-                variant="ghost"
-                onClick={onBack}
-                disabled={!canRetreat || saving}
-                className="gap-1"
-              >
-                <ChevronLeft className="size-4" />
-                Back
-              </Button>
-              <Button
-                size="lg"
-                className="flex-1 gap-1"
-                onClick={onSignOperator}
-                disabled={saving}
-                data-testid="sign-operator"
-              >
-                {saving ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Check className="size-4" />
-                )}
-                Sign as operator
-              </Button>
-            </>
+            <Button
+              size="lg"
+              className="flex-1 gap-1"
+              onClick={onSignOperator}
+              disabled={saving}
+              data-testid="sign-operator"
+            >
+              {saving ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Check className="size-4" />
+              )}
+              Sign as operator
+            </Button>
           ) : (
-            <>
-              <Button
-                size="lg"
-                variant="ghost"
-                onClick={onBack}
-                disabled={!canRetreat || saving}
-                className="gap-1"
-              >
-                <ChevronLeft className="size-4" />
-                Back
-              </Button>
-              <Button
-                size="lg"
-                className="flex-1 gap-1"
-                onClick={onNext}
-                disabled={saving}
-                data-testid="wizard-next"
-              >
+            <Button
+              size="lg"
+              className="flex-1 gap-1"
+              onClick={onNext}
+              disabled={saving}
+              data-testid="wizard-next"
+            >
                 {saving ? (
                   <Loader2 className="size-4 animate-spin" />
                 ) : (
@@ -615,7 +618,6 @@ export function MobileInspectionWizard({
                   </>
                 )}
               </Button>
-            </>
           )}
         </footer>
       )}
@@ -685,9 +687,13 @@ export function MobileInspectionWizard({
                     onChange={(e) =>
                       setDelivery({
                         ...delivery,
-                        vehicle_registration: e.target.value,
+                        vehicle_registration: e.target.value.toUpperCase(),
                       })
                     }
+                    className="uppercase"
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
                     placeholder="AB12 XYZ"
                   />
                 }
@@ -782,6 +788,14 @@ export function MobileInspectionWizard({
             )}
           </section>
         );
+      case "quarantine_label":
+        return (
+          <QuarantineLabelPanel
+            inspection={inspection}
+            lines={lines}
+            items={items}
+          />
+        );
       case "sign_off":
         return (
           <section className="space-y-4" data-testid="step-sign-off">
@@ -809,6 +823,15 @@ function StepHeading({ title }: { title: string }) {
   return (
     <h2 className="text-base font-semibold">{title}</h2>
   );
+}
+
+// Local wall-clock "HH:MM" — the shape `<input type="time">` expects.
+function currentLocalTime(): string {
+  const d = new Date();
+  return [
+    String(d.getHours()).padStart(2, "0"),
+    String(d.getMinutes()).padStart(2, "0"),
+  ].join(":");
 }
 
 function Field({
@@ -902,12 +925,132 @@ function SectionPanel({
   );
 }
 
+interface PackDraft {
+  tempId: string;
+  qty: string;
+  package_length_mm: string;
+  package_width_mm: string;
+  package_height_mm: string;
+  package_weight_kg: string;
+  units_per_package: string;
+  supplier_batch_no: string;
+  /** ISO 3166-1 alpha-2. Empty until the operator picks. */
+  country_of_origin: string;
+  revision: string;
+  /** ISO date "YYYY-MM-DD" — `<input type="date">` shape. */
+  manufactured_at: string;
+  expiry_at: string;
+}
+
 interface ItemDraft {
-  qty_received: string;
+  packs: PackDraft[];
   packaging_condition: PackagingCondition | "";
   packaging_condition_notes: string;
   material_decision: MaterialDecision;
   material_decision_reason: string;
+}
+
+function newPackId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `pack-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function makeDefaultPack(qty: string = ""): PackDraft {
+  return {
+    tempId: newPackId(),
+    qty,
+    package_length_mm: "",
+    package_width_mm: "",
+    package_height_mm: "",
+    package_weight_kg: "",
+    // Internal — one wizard row = one physical pack, so the row's
+    // qty IS the pack's capacity. Server-side reconciles this when
+    // the operator just types a qty (see `packDraftToWire`).
+    units_per_package: "",
+    supplier_batch_no: "",
+    country_of_origin: "",
+    revision: "",
+    manufactured_at: "",
+    expiry_at: "",
+  };
+}
+
+// A pack is "complete" when every numeric field has a usable value.
+// Sums + sign-off only consider complete packs so the operator can
+// have a half-typed extra row in flight without it blocking save.
+// `units_per_package` is auto-derived from qty on the wire (one
+// editor row = one physical pack), so it's not in the gate.
+function isPackComplete(p: PackDraft): boolean {
+  return (
+    Number(p.qty) > 0 &&
+    Number(p.package_length_mm) > 0 &&
+    Number(p.package_width_mm) > 0 &&
+    Number(p.package_height_mm) > 0 &&
+    Number(p.package_weight_kg) > 0
+  );
+}
+
+function sumCompletePackQty(packs: PackDraft[]): number {
+  return packs.filter(isPackComplete).reduce((acc, p) => acc + Number(p.qty), 0);
+}
+
+function packDraftToWire(p: PackDraft): InspectionItemPack {
+  const qty = Number(p.qty);
+  // One editor row = one physical pack, so units_per_package = qty.
+  // The schema's `packages = qty / units_per_package` formula then
+  // resolves to exactly 1 pack per row, matching the operator's
+  // mental model. If the operator explicitly typed something
+  // different in `units_per_package` we honour it (advanced case:
+  // "5 identical drums in 1 row" → qty=125, units_per_package=25).
+  const explicitUpp = Number(p.units_per_package);
+  const unitsPerPackage =
+    Number.isFinite(explicitUpp) && explicitUpp > 0 ? explicitUpp : qty;
+
+  return {
+    qty: String(qty),
+    package_length_mm: Number(p.package_length_mm),
+    package_width_mm: Number(p.package_width_mm),
+    package_height_mm: Number(p.package_height_mm),
+    package_weight_kg: String(Number(p.package_weight_kg)),
+    units_per_package: unitsPerPackage,
+    supplier_batch_no: p.supplier_batch_no.trim() || null,
+    country_of_origin: p.country_of_origin.trim().toUpperCase() || null,
+    revision: p.revision.trim() || null,
+    manufactured_at: p.manufactured_at || null,
+    expiry_at: p.expiry_at || null,
+  };
+}
+
+// Re-hydrate operator drafts from the server payload. When an
+// inspection was saved previously we get its `packs` list back and
+// each becomes one editable row; legacy rows without packs (or a
+// brand-new line) get a single empty pack so the operator has
+// something to fill in.
+function hydratePacks(item: InspectionItem | undefined): PackDraft[] {
+  if (item && Array.isArray(item.packs) && item.packs.length > 0) {
+    return item.packs.map((p) => ({
+      tempId: newPackId(),
+      qty: p.qty != null ? String(p.qty) : "",
+      package_length_mm:
+        p.package_length_mm != null ? String(p.package_length_mm) : "",
+      package_width_mm:
+        p.package_width_mm != null ? String(p.package_width_mm) : "",
+      package_height_mm:
+        p.package_height_mm != null ? String(p.package_height_mm) : "",
+      package_weight_kg:
+        p.package_weight_kg != null ? String(p.package_weight_kg) : "",
+      units_per_package:
+        p.units_per_package != null ? String(p.units_per_package) : "1",
+      supplier_batch_no: p.supplier_batch_no ?? "",
+      country_of_origin: p.country_of_origin ?? "",
+      revision: p.revision ?? "",
+      manufactured_at: p.manufactured_at ?? "",
+      expiry_at: p.expiry_at ?? "",
+    }));
+  }
+  return [makeDefaultPack()];
 }
 
 function buildInitialItems(
@@ -924,7 +1067,7 @@ function buildInitialItems(
   for (const line of lines) {
     const match = byLineUuid.get(line.uuid);
     out[line.uuid] = {
-      qty_received: match?.qty_received ?? line.qty_ordered ?? "",
+      packs: hydratePacks(match),
       packaging_condition: (match?.packaging_condition as PackagingCondition) ?? "",
       packaging_condition_notes: match?.packaging_condition_notes ?? "",
       material_decision: match?.material_decision ?? "accept",
@@ -951,6 +1094,38 @@ function LineCard({
     onChange({ ...value, [key]: v });
   }
 
+  function patchPack(tempId: string, patch: Partial<PackDraft>) {
+    set(
+      "packs",
+      value.packs.map((p) => (p.tempId === tempId ? { ...p, ...patch } : p)),
+    );
+  }
+
+  function addPack() {
+    set("packs", [...value.packs, makeDefaultPack()]);
+  }
+
+  function removePack(tempId: string) {
+    if (value.packs.length === 1) return;
+    set(
+      "packs",
+      value.packs.filter((p) => p.tempId !== tempId),
+    );
+  }
+
+  const uomSymbol =
+    line.item?.stock_uom?.symbol ?? line.item?.stock_uom?.code ?? null;
+  const qtyOrdered = Number(line.qty_ordered) || 0;
+  const totalReceived = sumCompletePackQty(value.packs);
+  const completeCount = value.packs.filter(isPackComplete).length;
+
+  // Diff vs PO — informational only, the wizard still allows a partial
+  // or over-receive (those are real-world cases and the QC decision
+  // captures the verdict). We just nudge the operator visually so an
+  // off-count gets a second look before sign-off.
+  const diffTone: "ok" | "warn" =
+    totalReceived === qtyOrdered ? "ok" : "warn";
+
   return (
     <div
       className="space-y-3 rounded-lg border border-border/60 bg-card p-3"
@@ -962,20 +1137,63 @@ function LineCard({
         </p>
         <p className="text-xs text-muted-foreground">
           Ordered: {line.qty_ordered}
+          {uomSymbol ? ` ${uomSymbol}` : ""}
+          {line.vendor_part_no ? ` · Vendor: ${line.vendor_part_no}` : ""}
         </p>
       </div>
-      <Field
-        label="Qty received"
-        input={
-          <Input
-            type="text"
-            inputMode="decimal"
-            value={value.qty_received}
-            onChange={(e) => set("qty_received", e.target.value)}
-            data-testid={`line-${line.uuid}-qty`}
+
+      {/* Packs — one row per physical pack. Each becomes its own
+          stock_lot on QC approval, mirroring the manual-lot creation
+          flow. PO has 50 kg, arrived as 25 kg × 2 bags → two pack
+          rows. */}
+      <div className="space-y-2">
+        <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+          Packs received
+        </Label>
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          One row per physical pack you received. If the PO is 50 kg
+          and the truck dropped two 25 kg drums, that's two rows of
+          25 each. Tap{" "}
+          <span className="font-medium text-foreground">+ Add pack</span>{" "}
+          for more.
+        </p>
+        {value.packs.map((p, idx) => (
+          <PackEditor
+            key={p.tempId}
+            index={idx}
+            pack={p}
+            uomSymbol={uomSymbol}
+            removable={value.packs.length > 1}
+            onPatch={(patch) => patchPack(p.tempId, patch)}
+            onRemove={() => removePack(p.tempId)}
           />
-        }
-      />
+        ))}
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={addPack}
+            className="gap-1"
+          >
+            <Plus className="size-3.5" />
+            Add pack
+          </Button>
+          <p
+            className={cn(
+              "text-[11px]",
+              diffTone === "ok"
+                ? "text-muted-foreground"
+                : "text-amber-700 dark:text-amber-300",
+            )}
+          >
+            Total {totalReceived}
+            {uomSymbol ? ` ${uomSymbol}` : ""} · {completeCount}/{value.packs.length} pack
+            {value.packs.length === 1 ? "" : "s"} complete
+          </p>
+        </div>
+      </div>
+
       <Field
         label="Packaging condition"
         input={
@@ -1050,13 +1268,428 @@ function LineCard({
   );
 }
 
+function PackEditor({
+  index,
+  pack,
+  uomSymbol,
+  removable,
+  onPatch,
+  onRemove,
+}: {
+  index: number;
+  pack: PackDraft;
+  uomSymbol: string | null;
+  removable: boolean;
+  onPatch: (patch: Partial<PackDraft>) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Pack {index + 1}
+        </span>
+        {removable && (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove pack ${index + 1}`}
+            className="rounded p-1 text-muted-foreground active:bg-destructive/10 active:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <PackInput
+          label={
+            uomSymbol ? `Product in pack (${uomSymbol})` : "Product in pack"
+          }
+          value={pack.qty}
+          onChange={(v) => onPatch({ qty: v })}
+          placeholder="25"
+          mode="decimal"
+          helper="How much product this single pack/drum holds"
+        />
+        <PackInput
+          label="Pack weight (kg)"
+          value={pack.package_weight_kg}
+          onChange={(v) => onPatch({ package_weight_kg: v })}
+          placeholder="25.000"
+          mode="decimal"
+          helper="Total weight of the loaded pack"
+        />
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <PackInput
+          label="L (mm)"
+          value={pack.package_length_mm}
+          onChange={(v) => onPatch({ package_length_mm: v.replace(/\D/g, "") })}
+          placeholder="400"
+          mode="integer"
+        />
+        <PackInput
+          label="W (mm)"
+          value={pack.package_width_mm}
+          onChange={(v) => onPatch({ package_width_mm: v.replace(/\D/g, "") })}
+          placeholder="300"
+          mode="integer"
+        />
+        <PackInput
+          label="H (mm)"
+          value={pack.package_height_mm}
+          onChange={(v) => onPatch({ package_height_mm: v.replace(/\D/g, "") })}
+          placeholder="250"
+          mode="integer"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-2">
+        <PackInput
+          label="Batch (opt)"
+          value={pack.supplier_batch_no}
+          onChange={(v) => onPatch({ supplier_batch_no: v })}
+          placeholder="BA-001"
+          mode="text"
+          mono
+        />
+      </div>
+
+      {/* Traceability fields — manufactured + expiry from the pack
+          label, country of origin from the CoA, revision when the
+          vendor stamps one. All optional at the FE level so the
+          operator can step forward if the vendor's paperwork is
+          missing a value (audit catches that gap in QC review). */}
+      <div className="grid grid-cols-2 gap-2">
+        <PackInput
+          label="Manufactured"
+          value={pack.manufactured_at}
+          onChange={(v) => onPatch({ manufactured_at: v })}
+          mode="date"
+        />
+        <PackInput
+          label="Expiry"
+          value={pack.expiry_at}
+          onChange={(v) => onPatch({ expiry_at: v })}
+          mode="date"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block space-y-0.5">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Country of origin
+          </span>
+          <CountryPicker
+            value={pack.country_of_origin || null}
+            onChange={(code) => onPatch({ country_of_origin: code ?? "" })}
+            placeholder="Pick country…"
+            compact
+          />
+        </label>
+        <PackInput
+          label="Revision (opt)"
+          value={pack.revision}
+          onChange={(v) => onPatch({ revision: v })}
+          placeholder="V01"
+          mode="text"
+          mono
+        />
+      </div>
+    </div>
+  );
+}
+
+function PackInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  mode,
+  mono,
+  helper,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  mode: "decimal" | "integer" | "text" | "date";
+  mono?: boolean;
+  /** Optional one-line clarification under the input. Use when the
+   *  label alone could be misread (e.g. "Pack weight" vs "Product in
+   *  pack" — both are kg numbers, the helper disambiguates). */
+  helper?: string;
+}) {
+  return (
+    <label className="block space-y-0.5">
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <Input
+        type={mode === "date" ? "date" : "text"}
+        inputMode={
+          mode === "integer"
+            ? "numeric"
+            : mode === "decimal"
+              ? "decimal"
+              : undefined
+        }
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={label}
+        className={cn("h-9 text-sm", mono && "font-mono")}
+      />
+      {helper && (
+        <span className="block text-[10px] leading-tight text-muted-foreground/80">
+          {helper}
+        </span>
+      )}
+    </label>
+  );
+}
+
 function itemNameFor(line: PurchaseOrderLine): string {
   return line.item?.name ?? line.vendor_part_no ?? `Line ${line.uuid.slice(0, 6)}`;
+}
+
+// Pack-level "Send to laptop" panel. Each row is one physical pack the
+// operator captured in the Per-line step; tapping Send fires a
+// `print_label` event through the realtime bridge that the operator's
+// own laptop session listens for. The laptop pops a print-copies
+// dialog and opens the PDF in a new tab.
+function QuarantineLabelPanel({
+  inspection,
+  lines,
+  items,
+}: {
+  inspection: Inspection;
+  lines: PurchaseOrderLine[];
+  items: Record<string, ItemDraft>;
+}) {
+  // Flatten every complete pack across every line into one print
+  // queue. Incomplete drafts are silently skipped so the operator
+  // can't accidentally print a half-typed pack with no dimensions.
+  const printable = useMemo(
+    () => buildPrintablePacksFromDrafts(lines, items),
+    [lines, items],
+  );
+
+  return (
+    <section className="space-y-4" data-testid="step-quarantine-label">
+      <StepHeading title="Quarantine labels" />
+      <p className="text-sm text-muted-foreground">
+        Print a quarantine label for every pack you received. Tap{" "}
+        <span className="font-medium text-foreground">Send to laptop</span>{" "}
+        and the print dialog will pop up on your laptop — pick copies
+        and hit print.
+      </p>
+
+      <PrintablePackList
+        inspectionUuid={inspection.uuid}
+        packs={printable}
+        emptyState={
+          <div className="rounded-lg border border-dashed border-border/60 px-4 py-8 text-center">
+            <p className="text-sm font-medium">No packs captured yet</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Go back to{" "}
+              <span className="font-medium text-foreground">Per-line decisions</span>{" "}
+              and add packs before printing labels.
+            </p>
+          </div>
+        }
+      />
+    </section>
+  );
+}
+
+// Normalised printable-pack shape — what `<PrintablePackList />`
+// renders, agnostic to whether the source is editable drafts (wizard
+// step) or server-returned inspection items (read-only summary).
+interface PrintablePack {
+  key: string;
+  lineUuid: string;
+  packIndex: number;
+  packCount: number;
+  itemName: string;
+  qty: string;
+  uomSymbol: string | null;
+  packLengthMm: number | string;
+  packWidthMm: number | string;
+  packHeightMm: number | string;
+  supplierBatchNo: string | null;
+}
+
+function buildPrintablePacksFromDrafts(
+  lines: PurchaseOrderLine[],
+  items: Record<string, ItemDraft>,
+): PrintablePack[] {
+  const out: PrintablePack[] = [];
+  for (const line of lines) {
+    const draft = items[line.uuid];
+    if (!draft) continue;
+    const completeCount = draft.packs.filter(isPackComplete).length;
+    draft.packs.forEach((pack, idx) => {
+      if (!isPackComplete(pack)) return;
+      out.push({
+        key: `${line.uuid}:${idx}`,
+        lineUuid: line.uuid,
+        packIndex: idx,
+        packCount: completeCount,
+        itemName: itemNameFor(line),
+        qty: pack.qty,
+        uomSymbol:
+          line.item?.stock_uom?.symbol ?? line.item?.stock_uom?.code ?? null,
+        packLengthMm: pack.package_length_mm,
+        packWidthMm: pack.package_width_mm,
+        packHeightMm: pack.package_height_mm,
+        supplierBatchNo: pack.supplier_batch_no || null,
+      });
+    });
+  }
+  return out;
+}
+
+// Server-side hydration: walks every InspectionItem's saved `packs`
+// array. Used by the read-only summary so the operator can re-print
+// labels after the inspection's been submitted — they're locked out
+// of edits but a missed label print is still a real recovery flow.
+function buildPrintablePacksFromInspection(
+  inspection: Inspection,
+  lines: PurchaseOrderLine[],
+): PrintablePack[] {
+  const linesByUuid = new Map(lines.map((l) => [l.uuid, l]));
+  const out: PrintablePack[] = [];
+  for (const item of inspection.items) {
+    const lineUuid = item.purchase_order_line_uuid;
+    if (!lineUuid) continue;
+    const line = linesByUuid.get(lineUuid);
+    const itemName = line ? itemNameFor(line) : "Unknown item";
+    const uomSymbol =
+      line?.item?.stock_uom?.symbol ?? line?.item?.stock_uom?.code ?? null;
+    const packs = Array.isArray(item.packs) ? item.packs : [];
+    const packCount = packs.length;
+    packs.forEach((pack, idx) => {
+      out.push({
+        key: `${lineUuid}:${idx}`,
+        lineUuid,
+        packIndex: idx,
+        packCount,
+        itemName,
+        qty: String(pack.qty ?? ""),
+        uomSymbol,
+        packLengthMm: pack.package_length_mm,
+        packWidthMm: pack.package_width_mm,
+        packHeightMm: pack.package_height_mm,
+        supplierBatchNo: pack.supplier_batch_no || null,
+      });
+    });
+  }
+  return out;
+}
+
+function PrintablePackList({
+  inspectionUuid,
+  packs,
+  emptyState,
+}: {
+  inspectionUuid: string;
+  packs: PrintablePack[];
+  emptyState: ReactNode;
+}) {
+  const [sendingKey, setSendingKey] = useState<string | null>(null);
+  const [sentKeys, setSentKeys] = useState<Set<string>>(new Set());
+
+  async function send(p: PrintablePack) {
+    if (sendingKey === p.key) return;
+    setSendingKey(p.key);
+    try {
+      const res = await sendQuarantineLabelAction({
+        inspection_uuid: inspectionUuid,
+        line_uuid: p.lineUuid,
+        pack_index: p.packIndex,
+        pack_count: p.packCount,
+        item_name: p.itemName,
+        qty: p.qty,
+        uom_symbol: p.uomSymbol,
+        supplier_batch_no: p.supplierBatchNo,
+      });
+      if (res.ok) {
+        setSentKeys((prev) => new Set(prev).add(p.key));
+        toast.success("Sent to laptop", {
+          description: `${p.itemName} · pack ${p.packIndex + 1}`,
+        });
+      } else {
+        toast.error("Couldn't reach the laptop", { description: res.detail });
+      }
+    } finally {
+      setSendingKey(null);
+    }
+  }
+
+  if (packs.length === 0) return <>{emptyState}</>;
+
+  return (
+    <ul className="space-y-2">
+      {packs.map((p) => {
+        const sent = sentKeys.has(p.key);
+        const sending = sendingKey === p.key;
+        return (
+          <li
+            key={p.key}
+            className="rounded-xl border border-border/60 bg-card p-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="truncate text-sm font-semibold">
+                  {p.itemName}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Pack {p.packIndex + 1} of {p.packCount} ·{" "}
+                  <span className="font-mono">{p.qty}</span>
+                  {p.uomSymbol ? ` ${p.uomSymbol}` : ""} ·{" "}
+                  <span className="font-mono">
+                    {p.packLengthMm}×{p.packWidthMm}×{p.packHeightMm}
+                  </span>{" "}
+                  mm
+                </p>
+                {p.supplierBatchNo && (
+                  <p className="font-mono text-[11px] text-muted-foreground">
+                    Batch: {p.supplierBatchNo}
+                  </p>
+                )}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={sent ? "outline" : "default"}
+                onClick={() => send(p)}
+                disabled={sending}
+                className="shrink-0 gap-1"
+              >
+                {sending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : sent ? (
+                  <Check className="size-3.5" />
+                ) : (
+                  <Printer className="size-3.5" />
+                )}
+                {sending ? "Sending…" : sent ? "Sent" : "Send to laptop"}
+              </Button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 function ApproverPanel({
   inspection,
   lines,
+  viewer,
   decision,
   onDecision,
   reason,
@@ -1065,21 +1698,40 @@ function ApproverPanel({
 }: {
   inspection: Inspection;
   lines: PurchaseOrderLine[];
+  viewer: User;
   decision: QualityDecision;
   onDecision: (d: QualityDecision) => void;
   reason: string;
   onReason: (r: string) => void;
   onSignatureChange: (s: string | null) => void;
 }) {
+  // Surface dual-role explicitly when the same user is about to sign
+  // both ends. Allowed by our regulatory framework but worth flagging
+  // so the operator-as-approver knows the second signature still
+  // counts as an independent ESIGN event for the audit trail.
+  const isSelfApproval =
+    inspection.goods_in_operator?.id != null &&
+    inspection.goods_in_operator.id === viewer.id;
+
   return (
     <section className="space-y-4" data-testid="approver-panel">
-      <header>
+      <header className="space-y-1.5">
         <h2 className="text-base font-semibold">Review and approve</h2>
         <p className="text-xs text-muted-foreground">
           Signed by operator{" "}
           {inspection.goods_in_operator?.name ?? "—"} on{" "}
           {inspection.goods_in_operator_signed_at?.slice(0, 10) ?? "—"}.
         </p>
+        {isSelfApproval && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-200">
+            <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              You signed this inspection as operator. You're now signing
+              as the quality approver — both signatures will be recorded
+              independently on the audit trail.
+            </span>
+          </div>
+        )}
       </header>
 
       <ReadOnlySummary inspection={inspection} lines={lines} />
@@ -1203,6 +1855,47 @@ function ReadOnlySummary({
           })}
         </ul>
       </div>
+      <ReadOnlyQuarantineLabels inspection={inspection} lines={lines} />
+    </div>
+  );
+}
+
+// Surfaces "Send to laptop" buttons on the read-only summary so the
+// operator can re-print quarantine labels they missed during the
+// wizard's print step. Active for every status — once the inspection
+// is signed off the wizard's print panel is gone, but the dock still
+// needs a way to recover a missing label without unlocking edits.
+function ReadOnlyQuarantineLabels({
+  inspection,
+  lines,
+}: {
+  inspection: Inspection;
+  lines: PurchaseOrderLine[];
+}) {
+  const printable = useMemo(
+    () => buildPrintablePacksFromInspection(inspection, lines),
+    [inspection, lines],
+  );
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-card p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-wider text-muted-foreground">
+          Quarantine labels
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          Re-print missed labels
+        </p>
+      </div>
+      <PrintablePackList
+        inspectionUuid={inspection.uuid}
+        packs={printable}
+        emptyState={
+          <p className="text-xs text-muted-foreground">
+            No pack data captured on this inspection.
+          </p>
+        }
+      />
     </div>
   );
 }

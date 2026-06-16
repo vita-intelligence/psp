@@ -950,15 +950,33 @@ defmodule Backend.Purchasing do
 
             settled =
               if new_status != po.status do
+                # Stamp received_by the first time the PO crosses into
+                # received / partially_received. A subsequent
+                # multi-delivery receive against the same PO doesn't
+                # rewrite it — the *first* operator to land goods
+                # against this PO owns the attribution.
+                received_by_attr =
+                  if new_status in ["received", "partially_received"] and
+                       is_nil(refreshed.received_by_id) do
+                    %{"received_by_id" => actor.id}
+                  else
+                    %{}
+                  end
+
                 {:ok, transitioned} =
-                  transition_db(actor, refreshed, %{
-                    "status" => new_status,
-                    "received_at" =>
-                      if(new_status == "received",
-                        do: DateTime.utc_now() |> DateTime.truncate(:second)
-                      ),
-                    "updated_by_id" => actor.id
-                  })
+                  transition_db(
+                    actor,
+                    refreshed,
+                    %{
+                      "status" => new_status,
+                      "received_at" =>
+                        if(new_status == "received",
+                          do: DateTime.utc_now() |> DateTime.truncate(:second)
+                        ),
+                      "updated_by_id" => actor.id
+                    }
+                    |> Map.merge(received_by_attr)
+                  )
 
                 transitioned
               else
@@ -1345,6 +1363,7 @@ defmodule Backend.Purchasing do
         :updated_by,
         :submitted_by,
         :ordered_by,
+        :received_by,
         :cancelled_by,
         :default_warehouse,
         lines: [:item, :warehouse],

@@ -3,9 +3,13 @@ import Link from "next/link";
 import {
   ArrowLeft,
   ClipboardCheck,
+  FileText,
   FileWarning,
+  ImageIcon,
   Microscope,
   PackageCheck,
+  Paperclip,
+  Printer,
   ShieldAlert,
   ShieldCheck,
   Truck,
@@ -23,9 +27,11 @@ import { getPurchaseOrder } from "@/lib/purchase-orders/server";
 import { INSPECTION_SECTIONS } from "@/lib/inspections/section-checks";
 import type {
   Inspection,
+  InspectionFile,
   InspectionItem,
   InspectionStatus,
   MaterialDecision,
+  PackagingCondition,
   QualityDecision,
   SectionBag,
   SectionCheck,
@@ -88,6 +94,11 @@ const MATERIAL_DECISION_TONE: Record<
   accept: "emerald",
   hold: "amber",
   reject: "destructive",
+};
+
+const PACKAGING_CONDITION_LABEL: Record<PackagingCondition, string> = {
+  good: "Good",
+  damaged: "Damaged",
 };
 
 /**
@@ -175,6 +186,8 @@ export default async function ProcurementInspectionDetailPage({
               bag={inspection[section.key]}
             />
           ))}
+
+          <FilesCard inspection={inspection} prefs={prefs} />
 
           {inspection.quality_decision_reason && (
             <section className="rounded-lg border border-border/60 bg-card p-4">
@@ -289,35 +302,179 @@ function LinesCard({
           {items.map(({ item, line }) => (
             <li
               key={item.uuid}
-              className="flex flex-wrap items-start gap-3 rounded-md border border-border/40 px-3 py-2.5"
+              className="space-y-2 rounded-md border border-border/40 px-3 py-2.5"
             >
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <p className="truncate text-sm font-medium">
-                  {line?.item?.name ?? "Unknown item"}
-                </p>
-                {line?.vendor_part_no && (
-                  <p className="font-mono text-[11px] text-muted-foreground">
-                    {line.vendor_part_no}
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <p className="truncate text-sm font-medium">
+                    {line?.item?.name ?? "Unknown item"}
                   </p>
-                )}
-                <p className="text-[11px] text-muted-foreground">
-                  Received {item.qty_received}
-                  {line?.qty_ordered ? ` of ${line.qty_ordered}` : ""}
-                </p>
-                {item.material_decision_reason && (
-                  <p className="pt-1 text-xs text-muted-foreground">
-                    {item.material_decision_reason}
+                  {line?.vendor_part_no && (
+                    <p className="font-mono text-[11px] text-muted-foreground">
+                      {line.vendor_part_no}
+                    </p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground">
+                    Received {item.qty_received}
+                    {line?.qty_ordered ? ` of ${line.qty_ordered}` : ""}
                   </p>
-                )}
+                  {item.packaging_condition && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      <Badge
+                        tone={
+                          item.packaging_condition === "good"
+                            ? "emerald"
+                            : "amber"
+                        }
+                      >
+                        Packaging:{" "}
+                        {PACKAGING_CONDITION_LABEL[item.packaging_condition]}
+                      </Badge>
+                      {item.packaging_condition_notes && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {item.packaging_condition_notes}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {item.material_decision_reason && (
+                    <p className="pt-1 text-xs text-muted-foreground">
+                      {item.material_decision_reason}
+                    </p>
+                  )}
+                </div>
+                <Badge tone={MATERIAL_DECISION_TONE[item.material_decision]}>
+                  {MATERIAL_DECISION_LABEL[item.material_decision]}
+                </Badge>
               </div>
-              <Badge tone={MATERIAL_DECISION_TONE[item.material_decision]}>
-                {MATERIAL_DECISION_LABEL[item.material_decision]}
-              </Badge>
+
+              {item.packs && item.packs.length > 0 && line && (
+                <PacksTable
+                  inspectionUuid={inspection.uuid}
+                  lineUuid={line.uuid}
+                  packs={item.packs}
+                  uomSymbol={
+                    line.item?.stock_uom?.symbol ??
+                    line.item?.stock_uom?.code ??
+                    null
+                  }
+                />
+              )}
             </li>
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+// Per-pack rollup with a direct print link. Operators sometimes miss
+// the wizard's quarantine-label step on the dock tablet and need to
+// re-print from their desk — this surfaces the same PDF endpoint the
+// mobile bridge fires, just without the realtime hop (the laptop is
+// already the print target).
+function PacksTable({
+  inspectionUuid,
+  lineUuid,
+  packs,
+  uomSymbol,
+}: {
+  inspectionUuid: string;
+  lineUuid: string;
+  packs: NonNullable<InspectionItem["packs"]>;
+  uomSymbol: string | null;
+}) {
+  return (
+    <div className="rounded-md border border-border/30 bg-muted/20 px-2.5 py-2">
+      <div className="mb-1 flex items-center justify-between">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Packs · {packs.length}
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          Quarantine label per pack
+        </p>
+      </div>
+      <ul className="divide-y divide-border/30">
+        {packs.map((pack, idx) => {
+          const href =
+            `/api/m/inspections/${encodeURIComponent(inspectionUuid)}` +
+            `/quarantine-label.pdf?line_uuid=${encodeURIComponent(lineUuid)}` +
+            `&pack_index=${idx}&copies=1`;
+          return (
+            <li
+              key={idx}
+              className="flex items-center justify-between gap-3 py-1.5 text-xs"
+            >
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="font-medium">
+                  Pack {idx + 1} ·{" "}
+                  <span className="font-mono">{String(pack.qty ?? "")}</span>
+                  {uomSymbol ? ` ${uomSymbol}` : ""}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  <span className="font-mono">
+                    {pack.package_length_mm}×{pack.package_width_mm}×
+                    {pack.package_height_mm}
+                  </span>{" "}
+                  mm · {String(pack.package_weight_kg ?? "")} kg
+                  {pack.units_per_package
+                    ? ` · ${pack.units_per_package}/pack`
+                    : ""}
+                  {pack.supplier_batch_no
+                    ? ` · Batch ${pack.supplier_batch_no}`
+                    : ""}
+                </p>
+                {(pack.manufactured_at ||
+                  pack.expiry_at ||
+                  pack.country_of_origin ||
+                  pack.revision) && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {pack.manufactured_at ? (
+                      <>
+                        Mfd <span className="font-mono">{pack.manufactured_at}</span>
+                      </>
+                    ) : null}
+                    {pack.expiry_at ? (
+                      <>
+                        {pack.manufactured_at ? " · " : ""}
+                        Exp <span className="font-mono">{pack.expiry_at}</span>
+                      </>
+                    ) : null}
+                    {pack.country_of_origin ? (
+                      <>
+                        {pack.manufactured_at || pack.expiry_at ? " · " : ""}
+                        Origin{" "}
+                        <span className="font-mono">{pack.country_of_origin}</span>
+                      </>
+                    ) : null}
+                    {pack.revision ? (
+                      <>
+                        {pack.manufactured_at ||
+                        pack.expiry_at ||
+                        pack.country_of_origin
+                          ? " · "
+                          : ""}
+                        Rev <span className="font-mono">{pack.revision}</span>
+                      </>
+                    ) : null}
+                  </p>
+                )}
+              </div>
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] font-medium hover:bg-muted"
+                title="Print quarantine label for this pack"
+              >
+                <Printer className="size-3" />
+                Print
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -334,26 +491,237 @@ function SignaturesCard({
         <ShieldCheck className="size-4" />
         Signatures
       </h2>
-      <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        <Field label="Goods-in operator">
-          {inspection.goods_in_operator?.name ?? (
-            <span className="text-muted-foreground/60">— not signed</span>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <SignatureBlock
+          label="Goods-in operator"
+          actorName={inspection.goods_in_operator?.name ?? null}
+          signedAtIso={inspection.goods_in_operator_signed_at}
+          signedAtFormatted={formatCompanyDate(
+            inspection.goods_in_operator_signed_at,
+            prefs,
           )}
-        </Field>
-        <Field label="Operator signed at">
-          {formatCompanyDate(inspection.goods_in_operator_signed_at, prefs)}
-        </Field>
-        <Field label="Quality approver">
-          {inspection.quality_approver?.name ?? (
-            <span className="text-muted-foreground/60">— not signed</span>
+          image={inspection.goods_in_operator_signature_image}
+        />
+        <SignatureBlock
+          label="Quality approver"
+          actorName={inspection.quality_approver?.name ?? null}
+          signedAtIso={inspection.quality_approver_signed_at}
+          signedAtFormatted={formatCompanyDate(
+            inspection.quality_approver_signed_at,
+            prefs,
           )}
-        </Field>
-        <Field label="Approver signed at">
-          {formatCompanyDate(inspection.quality_approver_signed_at, prefs)}
-        </Field>
-      </dl>
+          image={inspection.quality_approver_signature_image}
+        />
+      </div>
     </section>
   );
+}
+
+function SignatureBlock({
+  label,
+  actorName,
+  signedAtIso,
+  signedAtFormatted,
+  image,
+}: {
+  label: string;
+  actorName: string | null;
+  /** Raw signed-at — drives the "is this signed at all?" check.
+   *  We can't read off `signedAtFormatted` because that string is
+   *  always non-empty (formatter returns "—" for null). */
+  signedAtIso: string | null;
+  signedAtFormatted: string;
+  image: string | null;
+}) {
+  const signed = Boolean(signedAtIso);
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      {image ? (
+        <div className="overflow-hidden rounded-md border border-border/40 bg-background">
+          {/* Base64 data URL — direct <img> is fine, no Next/Image
+              optimisation needed (and would cost a route trip). */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={image}
+            alt={`${label} signature`}
+            className="block h-24 w-full object-contain bg-white p-2"
+          />
+        </div>
+      ) : signed ? (
+        // ESIGN'd but the bitmap wasn't captured (legacy row, or the
+        // signature pad didn't flush). Make the signed state clear so
+        // the auditor doesn't read this as "unsigned".
+        <div className="flex items-center justify-center gap-2 rounded-md border border-border/40 bg-emerald-500/5 px-3 py-6 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+          <ShieldCheck className="size-4" />
+          Signed — image not captured
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed border-border/40 px-3 py-6 text-center text-xs text-muted-foreground">
+          — not signed
+        </div>
+      )}
+      <div className="flex justify-between text-xs">
+        <span className="font-medium">
+          {actorName ?? (
+            <span className="text-muted-foreground/60">— not signed</span>
+          )}
+        </span>
+        <span className="text-muted-foreground">{signedAtFormatted}</span>
+      </div>
+    </div>
+  );
+}
+
+// Files attached to the inspection — photos of the truck, the lot,
+// damaged packaging; uploaded CoAs; whatever the operator captured on
+// the dock. Photos render inline; PDFs / other docs render as
+// download links. URLs come from the BE serve proxy so the cookie /
+// device token attaches transparently when the desktop user opens
+// them in a new tab.
+function FilesCard({
+  inspection,
+  prefs,
+}: {
+  inspection: Inspection;
+  prefs: Awaited<ReturnType<typeof getCompanyDefaults>>;
+}) {
+  const files = inspection.files ?? [];
+  const photos = files.filter((f) => f.kind === "photo");
+  const others = files.filter((f) => f.kind !== "photo");
+
+  return (
+    <section className="rounded-lg border border-border/60 bg-card p-4">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+        <Paperclip className="size-4" />
+        Photos &amp; attachments
+        <span className="ml-1 text-xs text-muted-foreground/70">
+          · {files.length}
+        </span>
+      </h2>
+
+      {files.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No photos or attachments uploaded.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {photos.length > 0 && (
+            <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {photos.map((f) => (
+                <li
+                  key={f.uuid}
+                  className="group overflow-hidden rounded-md border border-border/40 bg-muted/20"
+                >
+                  <a
+                    href={f.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={f.url}
+                      alt={f.filename}
+                      className="block aspect-square w-full object-cover transition-opacity group-hover:opacity-90"
+                    />
+                  </a>
+                  <FileFooter file={f} prefs={prefs} />
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {others.length > 0 && (
+            <ul className="space-y-1.5">
+              {others.map((f) => (
+                <li
+                  key={f.uuid}
+                  className="flex items-center gap-3 rounded-md border border-border/40 px-3 py-2 text-sm"
+                >
+                  <FileIcon file={f} />
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={f.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block truncate font-medium hover:underline"
+                    >
+                      {f.filename}
+                    </a>
+                    <p className="text-[11px] text-muted-foreground">
+                      {formatKind(f.kind)} ·{" "}
+                      {formatFileSize(f.byte_size)} ·{" "}
+                      {formatCompanyDate(f.uploaded_at, prefs)}
+                      {f.uploaded_by?.name
+                        ? ` · by ${f.uploaded_by.name}`
+                        : ""}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FileFooter({
+  file,
+  prefs,
+}: {
+  file: InspectionFile;
+  prefs: Awaited<ReturnType<typeof getCompanyDefaults>>;
+}) {
+  return (
+    <div className="space-y-0.5 px-2 py-1.5 text-[10px] text-muted-foreground">
+      <p className="truncate font-medium text-foreground/80" title={file.filename}>
+        {file.filename}
+      </p>
+      <p>
+        {formatFileSize(file.byte_size)} ·{" "}
+        {formatCompanyDate(file.uploaded_at, prefs)}
+      </p>
+    </div>
+  );
+}
+
+function FileIcon({ file }: { file: InspectionFile }) {
+  if (file.mime.startsWith("image/")) {
+    return <ImageIcon className="size-4 shrink-0 text-muted-foreground" />;
+  }
+  if (file.mime === "application/pdf" || file.kind === "coa") {
+    return <FileText className="size-4 shrink-0 text-muted-foreground" />;
+  }
+  return <Paperclip className="size-4 shrink-0 text-muted-foreground" />;
+}
+
+function formatKind(kind: InspectionFile["kind"]): string {
+  switch (kind) {
+    case "photo":
+      return "Photo";
+    case "coa":
+      return "CoA";
+    default:
+      return "Attachment";
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 function SectionCard({

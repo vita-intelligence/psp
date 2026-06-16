@@ -26,6 +26,7 @@ import type {
   MobileIncomingRow,
   MobileIncomingOpenInspection,
 } from "@/lib/goods-in/server";
+import { INCOMING_WINDOW_DAYS } from "@/lib/goods-in/constants";
 
 interface WarehouseOption {
   id: number;
@@ -65,9 +66,12 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
   const [response, setResponse] = useState<MobileIncomingResponse | null>(
     initialResponse,
   );
-  const [warehouseId, setWarehouseId] = useState<number | null>(
-    warehouses[0]?.id ?? null,
-  );
+  // null = "All warehouses". Matches the SSR fetch (which omits the
+  // warehouse filter) so the initial paint and first client refresh
+  // agree — otherwise the silent auto-filter to the first warehouse
+  // would hide POs from any other warehouse the moment the user
+  // taps refresh.
+  const [warehouseId, setWarehouseId] = useState<number | null>(null);
   const [dayFilter, setDayFilter] = useState<DayFilter>("today");
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -84,6 +88,7 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
         const params = new URLSearchParams();
         if (warehouseId != null)
           params.set("warehouse_id", String(warehouseId));
+        params.set("days", String(INCOMING_WINDOW_DAYS));
         const res = await fetch(
           `/api/m/incoming?${params.toString()}`,
           { cache: "no-store" },
@@ -201,6 +206,18 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
 
         {warehouses.length > 1 && (
           <div className="mt-2 -mx-1 flex gap-1 overflow-x-auto pb-1">
+            <button
+              type="button"
+              onClick={() => setWarehouseId(null)}
+              className={cn(
+                "shrink-0 rounded-full border px-3 py-1 text-xs font-medium",
+                warehouseId === null
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border/60 bg-background text-muted-foreground",
+              )}
+            >
+              All warehouses
+            </button>
             {warehouses.map((wh) => (
               <button
                 key={wh.uuid}

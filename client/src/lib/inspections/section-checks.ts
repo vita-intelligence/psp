@@ -80,10 +80,6 @@ export const FOOD_SAFETY_CHECKS: CheckRow[] = [
 
 export const STORAGE_CHECKS: CheckRow[] = [
   {
-    key: "quarantine_label_applied",
-    label: "Quarantine label applied to every pack",
-  },
-  {
     key: "stored_in_designated_area",
     label: "Stored in the designated quarantine area",
   },

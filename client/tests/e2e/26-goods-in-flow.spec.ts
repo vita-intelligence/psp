@@ -242,7 +242,7 @@ test.describe("Goods-In Inspection workflow", () => {
     await api.dispose();
   });
 
-  test("segregation of duties — same user can't sign both operator + approver", async ({
+  test("same user may sign both operator + approver under our regulatory framework", async ({
     playwright,
   }) => {
     const { poUuid, lineUuid } = await buildOrderedPoWithLine(playwright, 20);
@@ -273,8 +273,10 @@ test.describe("Goods-In Inspection workflow", () => {
       data: { signature_image: "data:image/png;base64,iVBORw0KG" },
     });
 
-    // Try to sign as quality approver using the SAME host token →
-    // segregation of duties guard rejects.
+    // Same token signs as quality approver — accepted. Our regulatory
+    // framework permits a single qualified user to carry both roles;
+    // the FE banner ("Review and approve" panel) flags the dual-sign
+    // explicitly for the audit trail.
     const sameSignerRes = await api.post(
       `/api/goods-in-inspections/${insp.uuid}/sign-quality`,
       {
@@ -284,13 +286,24 @@ test.describe("Goods-In Inspection workflow", () => {
         },
       },
     );
-    expect(sameSignerRes.status(), "same signer should 409").toBe(409);
-    // Backend.Errors.payload/3 surfaces the code under `error`.
+    expect(sameSignerRes.status(), "same signer should now be allowed").toBe(
+      200,
+    );
     const body = (await sameSignerRes.json()) as {
-      error?: string;
-      code?: string;
+      goods_in_inspection: {
+        status: string;
+        quality_decision: string | null;
+        goods_in_operator: { id: number } | null;
+        quality_approver: { id: number } | null;
+      };
     };
-    expect(body.error ?? body.code).toBe("same_signer_as_operator");
+    expect(body.goods_in_inspection.status).toBe("approved");
+    expect(body.goods_in_inspection.quality_decision).toBe("approved");
+    // Both signature fields land on the SAME user — that's the whole
+    // point of this test now.
+    expect(body.goods_in_inspection.goods_in_operator?.id).toEqual(
+      body.goods_in_inspection.quality_approver?.id,
+    );
     await api.dispose();
   });
 });

@@ -175,11 +175,14 @@ defmodule Backend.Stock.AutoRouterTest do
       assert AutoRouter.target_purpose_for("quarantine") == "quarantine"
       assert AutoRouter.target_purpose_for("on_hold") == "hold"
       assert AutoRouter.target_purpose_for("rejected") == "rejected"
-      assert AutoRouter.target_purpose_for("available") == "regular"
     end
 
     test "no-op statuses return nil" do
-      for status <- ~w(expected requested received depleted disposed canceled) do
+      # `available` is intentionally absent — QC-passed lots stay in
+      # the quarantine bay so the operator's put-away flow owns the
+      # placement decision. See `AutoRouter` moduledoc for the
+      # BRCGS rationale.
+      for status <- ~w(available expected requested received depleted disposed canceled) do
         assert AutoRouter.target_purpose_for(status) == nil
       end
     end
@@ -205,15 +208,20 @@ defmodule Backend.Stock.AutoRouterTest do
       assert hd(active).storage_cell_id == ctx.cells.quarantine.id
     end
 
-    test "lot passes qc_passed and routes to regular cell", ctx do
+    test "lot passes qc_passed and STAYS in quarantine cell (operator owns put-away)", ctx do
       lot = lot_in_cell(ctx.company, ctx.item, ctx.uom, ctx.cells.quarantine, "quarantine")
 
       assert {:ok, %{status: "available"}} =
                Lifecycle.record_event(lot, "qc_passed", actor_attrs(ctx.user))
 
+      # No auto-route on `available` — the lot must sit in the
+      # quarantine bay until the put-away flow assigns a real shelf.
+      # `Stock.list_pending_putaway/1` surfaces it via the
+      # status=available + purpose=quarantine clause.
       placements = active_placements(lot.id)
       assert length(placements) == 1
-      assert hd(placements).storage_cell_id == ctx.cells.regular.id
+      assert hd(placements).storage_cell_id == ctx.cells.quarantine.id
+      assert auto_route_movements(lot.id) == []
     end
 
     test "lot fails qc and routes to rejected cell", ctx do
@@ -318,19 +326,25 @@ defmodule Backend.Stock.AutoRouterTest do
       assert auto_route_movements(lot.id) == []
     end
 
-    test "auto_route movement is recorded on the audit trail", ctx do
-      lot = lot_in_cell(ctx.company, ctx.item, ctx.uom, ctx.cells.quarantine, "quarantine")
+    test "auto_route movement is recorded on a routed status transition", ctx do
+      # Use held (→ hold cell) instead of qc_passed — `available` no
+      # longer auto-routes (operator put-away owns that decision).
+      lot = lot_in_cell(ctx.company, ctx.item, ctx.uom, ctx.cells.regular, "received")
 
-      assert {:ok, %{status: "available"}} =
-               Lifecycle.record_event(lot, "qc_passed", actor_attrs(ctx.user))
+      assert {:ok, %{status: "on_hold"}} =
+               Lifecycle.record_event(
+                 lot,
+                 "held",
+                 actor_attrs(ctx.user, reason: "Vendor recall")
+               )
 
       movements = auto_route_movements(lot.id)
       assert length(movements) == 1
       [m] = movements
       assert m.kind == "auto_route"
       assert m.reference_kind == "lifecycle_event"
-      assert m.from_cell_id == ctx.cells.quarantine.id
-      assert m.to_cell_id == ctx.cells.regular.id
+      assert m.from_cell_id == ctx.cells.regular.id
+      assert m.to_cell_id == ctx.cells.hold.id
     end
   end
 

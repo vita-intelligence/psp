@@ -1,7 +1,14 @@
 import type { StockLot } from "@/lib/types";
 import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { FileText } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FileText,
+  FileWarning,
+  Snowflake,
+} from "lucide-react";
+import { computeLotHandlingTags } from "@/lib/stock/handling-tags";
 
 /**
  * Read-only identity card: supplier batch, country, source, dates,
@@ -62,6 +69,8 @@ export async function LotIdentityCard({ lot }: { lot: StockLot }) {
         />
       </dl>
 
+      <HandlingTags lot={lot} />
+
       {lot.notes && (
         <div className="mt-4 rounded-md border border-border/40 bg-muted/30 px-3 py-2">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -73,6 +82,45 @@ export async function LotIdentityCard({ lot }: { lot: StockLot }) {
     </section>
   );
 }
+
+// Inline handling chips — driven off the item's `storage_tags` +
+// `compliance_status` + cold-chain attribute. Mirrors the chip set
+// the mobile pre-receive checklist renders so operators see the
+// same flags regardless of which surface they're on.
+function HandlingTags({ lot }: { lot: StockLot }) {
+  const tags = computeLotHandlingTags(lot.item);
+  if (tags.length === 0) return null;
+
+  return (
+    <div className="mt-4 space-y-1.5">
+      <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+        Handling
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {tags.map((tag) => {
+          const Icon = HANDLING_ICON[tag.icon];
+          return (
+            <span
+              key={tag.key}
+              title={tag.title}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tag.className}`}
+            >
+              {Icon ? <Icon className="size-2.5" /> : null}
+              {tag.label}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const HANDLING_ICON = {
+  alert: AlertTriangle,
+  check: CheckCircle2,
+  warning: FileWarning,
+  cold: Snowflake,
+} as const;
 
 function Row({
   label,

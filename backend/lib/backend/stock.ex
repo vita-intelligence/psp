@@ -1284,6 +1284,17 @@ defmodule Backend.Stock do
   Used by the mobile /m pending-putaway list.
   """
   def list_pending_putaway(company_id) when is_integer(company_id) do
+    # Two flavours of "pending putaway":
+    #
+    #   1. Anything physically in the auto-managed `unregistered`
+    #      staging cell — that's the manual-receive flow's parking
+    #      spot.
+    #   2. `available` lots still sitting in a `quarantine` purpose
+    #      cell — QC just cleared them but the operator hasn't picked
+    #      a real shelf yet. The auto-router deliberately doesn't move
+    #      these (`Backend.Stock.AutoRouter`'s status->purpose matrix
+    #      excludes `available`) so put-away stays an operator
+    #      decision, not a silent system move.
     from(l in Lot,
       join: p in Placement,
       on: p.stock_lot_id == l.id,
@@ -1291,8 +1302,9 @@ defmodule Backend.Stock do
       on: c.id == p.storage_cell_id,
       where:
         l.company_id == ^company_id and
-          c.system_kind == "unregistered" and
-          p.qty > 0,
+          p.qty > 0 and
+          (c.system_kind == "unregistered" or
+             (l.status == "available" and c.purpose == "quarantine")),
       distinct: l.id,
       preload: [
         :item,
