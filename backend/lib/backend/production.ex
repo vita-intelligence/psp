@@ -1527,41 +1527,6 @@ defmodule Backend.Production do
   end
 
   @doc """
-  Available stock for an item — sum of placements on lots that are
-  `received` or `available`, minus active MO bookings against those
-  lots. Used by the cascade resolver to decide whether to spawn a
-  child MO.
-  """
-  def available_stock_for_item(company_id, item_id)
-      when is_integer(company_id) and is_integer(item_id) do
-    on_hand =
-      from(p in StockPlacementAlias,
-        join: l in StockLot, on: l.id == p.stock_lot_id,
-        where:
-          l.company_id == ^company_id and
-            l.item_id == ^item_id and
-            l.status in ["received", "available"],
-        select: coalesce(sum(p.qty), 0)
-      )
-      |> Repo.one()
-      |> decimal_or_zero()
-
-    booked =
-      from(b in ManufacturingOrderBooking,
-        join: l in StockLot, on: l.id == b.stock_lot_id,
-        where:
-          l.company_id == ^company_id and
-            l.item_id == ^item_id and
-            b.status == "requested",
-        select: coalesce(sum(b.quantity), 0)
-      )
-      |> Repo.one()
-      |> decimal_or_zero()
-
-    Decimal.sub(on_hand, booked)
-  end
-
-  @doc """
   Full MO chain centered on `mo` — walks up to the root via
   `parent_mo_id` then collects every descendant breadth-first.
   Returns a flat list of MO records (with item preloaded) so the
@@ -1956,10 +1921,70 @@ defmodule Backend.Production do
         # transitions (cancel, amend) stay open so the planner isn't
         # painted into a corner if a child stalls.
         case ensure_children_complete(mo, to) do
-          :ok -> do_transition(actor, mo, to)
+          :ok -> transactional_transition(actor, mo, to)
           {:error, _} = err -> err
         end
     end
+  end
+
+  # Wraps the transition so cancel-side effects (releasing bookings,
+  # cascade-cancelling open children) are atomic with the status flip
+  # itself. A crash mid-way rolls everything back so we never leave
+  # an MO half-cancelled.
+  defp transactional_transition(%User{} = actor, %ManufacturingOrder{} = mo, to) do
+    Repo.transaction(fn ->
+      case do_transition(actor, mo, to) do
+        {:ok, updated} ->
+          if to == "cancelled" do
+            release_mo_bookings(actor, updated)
+            cancel_open_children(actor, updated)
+          end
+
+          updated
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # Release every still-active booking on this MO. Used as a side
+  # effect of cancelling so dead MOs don't keep stock reserved.
+  defp release_mo_bookings(%User{} = actor, %ManufacturingOrder{} = mo) do
+    bookings =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.manufacturing_order_id == ^mo.id and
+            b.status == "requested"
+      )
+      |> Repo.all()
+
+    Enum.each(bookings, &delete_booking(actor, &1))
+  end
+
+  # Recursively cancel every draft / approved child of this MO. The
+  # recursion happens because each child transition itself goes
+  # through transition_mo → triggers the same cleanup, all in the
+  # current transaction. in_progress + completed children stay put
+  # — those are physically running or already produced stock.
+  defp cancel_open_children(%User{} = actor, %ManufacturingOrder{} = mo) do
+    children =
+      from(c in ManufacturingOrder,
+        where:
+          c.parent_mo_id == ^mo.id and
+            c.status in ["draft", "approved"]
+      )
+      |> Repo.all()
+
+    Enum.each(children, fn child ->
+      case transition_mo(actor, child, "cancelled") do
+        {:ok, _} -> :ok
+        # Don't roll back the parent if a child can't be cancelled —
+        # in_progress/completed children are valid terminals; other
+        # errors are logged via the changeset path anyway.
+        _ -> :ok
+      end
+    end)
   end
 
   defp do_transition(%User{} = actor, %ManufacturingOrder{} = mo, to) do
@@ -2345,15 +2370,61 @@ defmodule Backend.Production do
           |> order_by([l], asc_nulls_last: l.expiry_at, asc: l.id)
       end
 
-    query
-    |> Repo.all()
+    lots = Repo.all(query)
+    lot_ids = Enum.map(lots, & &1.id)
+
+    # Batch the two availability sub-totals into a single round-trip
+    # each (was O(L) extra queries per call — became visible when the
+    # FEFO allocator ran across a BOM with many short-dated lots).
+    {on_hand_by_lot, booked_by_lot} =
+      case lot_ids do
+        [] -> {%{}, %{}}
+        _ -> {on_hand_sums(lot_ids), booked_sums(lot_ids, exclude_booking_id)}
+      end
+
+    lots
     |> Enum.map(fn lot ->
-      available = lot_available_qty(lot.id, exclude_booking_id)
+      on_hand = Map.get(on_hand_by_lot, lot.id, Decimal.new(0))
+      booked = Map.get(booked_by_lot, lot.id, Decimal.new(0))
+      available = Decimal.sub(on_hand, booked)
       {lot, available, primary_cell_for_lot(lot)}
     end)
     |> Enum.filter(fn {_lot, available, _cell} ->
       Decimal.compare(available, Decimal.new("0")) == :gt
     end)
+  end
+
+  defp on_hand_sums(lot_ids) when is_list(lot_ids) do
+    from(p in StockPlacementAlias,
+      where: p.stock_lot_id in ^lot_ids,
+      group_by: p.stock_lot_id,
+      select: {p.stock_lot_id, coalesce(sum(p.qty), 0)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp booked_sums(lot_ids, nil) when is_list(lot_ids) do
+    from(b in ManufacturingOrderBooking,
+      where: b.stock_lot_id in ^lot_ids and b.status == "requested",
+      group_by: b.stock_lot_id,
+      select: {b.stock_lot_id, coalesce(sum(b.quantity), 0)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp booked_sums(lot_ids, exclude_booking_id) when is_list(lot_ids) and is_integer(exclude_booking_id) do
+    from(b in ManufacturingOrderBooking,
+      where:
+        b.stock_lot_id in ^lot_ids and
+          b.status == "requested" and
+          b.id != ^exclude_booking_id,
+      group_by: b.stock_lot_id,
+      select: {b.stock_lot_id, coalesce(sum(b.quantity), 0)}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   defp normalise_strategy(s) when s in [:fefo, :fifo], do: s
@@ -2570,13 +2641,30 @@ defmodule Backend.Production do
   end
 
   @doc """
-  Release every active booking on the MO AND cancel any child MOs
-  still in draft / approved that were spawned to cover its semi-
-  finished gaps. In-progress / completed children stay put — those
-  are physically running or already produced stock and shouldn't
-  be torn down by a single button.
+  Release every active booking on the MO AND cascade-cancel its
+  draft/approved descendants (recursively, because transition_mo
+  itself releases bookings + cancels children on every cancel).
+  In-progress / completed children stay put — those are physically
+  running or already produced stock and shouldn't be torn down by
+  a single button.
+
+  Returns `{:ok, %{bookings: top_level_released, children: top_level_cancelled}}`.
+  Deeper-tree releases happen but aren't counted here; the audit
+  trail captures the per-MO detail.
   """
   def release_all_for_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    Repo.transaction(fn ->
+      released_bookings = release_mo_bookings_count(actor, mo)
+      cancelled_children = cancel_open_children_count(actor, mo)
+      %{bookings: released_bookings, children: cancelled_children}
+    end)
+  end
+
+  # Counting variants of the helpers — used by the controller response
+  # so the toast can show how many top-level releases happened. The
+  # internal cascade variants don't bother counting since they're
+  # already inside another transaction.
+  defp release_mo_bookings_count(%User{} = actor, %ManufacturingOrder{} = mo) do
     bookings =
       from(b in ManufacturingOrderBooking,
         where:
@@ -2586,8 +2674,11 @@ defmodule Backend.Production do
       |> Repo.all()
 
     Enum.each(bookings, &delete_booking(actor, &1))
+    length(bookings)
+  end
 
-    cancellable_children =
+  defp cancel_open_children_count(%User{} = actor, %ManufacturingOrder{} = mo) do
+    children =
       from(c in ManufacturingOrder,
         where:
           c.parent_mo_id == ^mo.id and
@@ -2595,15 +2686,12 @@ defmodule Backend.Production do
       )
       |> Repo.all()
 
-    cancelled_count =
-      Enum.reduce(cancellable_children, 0, fn child, acc ->
-        case transition_mo(actor, child, "cancelled") do
-          {:ok, _} -> acc + 1
-          _ -> acc
-        end
-      end)
-
-    {:ok, %{bookings: length(bookings), children: cancelled_count}}
+    Enum.reduce(children, 0, fn child, acc ->
+      case transition_mo(actor, child, "cancelled") do
+        {:ok, _} -> acc + 1
+        _ -> acc
+      end
+    end)
   end
 
   defp allocate_for_item(
