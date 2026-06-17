@@ -26,6 +26,7 @@ defmodule Backend.Production.ManufacturingOrder do
     BOM,
     ManufacturingOrderBooking,
     ManufacturingOrderStep,
+    MOConsumerLink,
     Routing
   }
 
@@ -78,6 +79,19 @@ defmodule Backend.Production.ManufacturingOrder do
     has_many :bookings, ManufacturingOrderBooking,
       foreign_key: :manufacturing_order_id,
       preload_order: [asc: :item_id, asc: :id]
+
+    # This MO acts as a shared batch — these links point at the
+    # additional consumer MOs it feeds (the primary parent stays
+    # on parent_mo_id).
+    has_many :consumer_links, MOConsumerLink,
+      foreign_key: :batch_mo_id,
+      preload_order: [asc: :inserted_at]
+
+    # This MO is a consumer — these links point at the batch MO(s)
+    # that supply it via shared-batch merge.
+    has_many :supplier_links, MOConsumerLink,
+      foreign_key: :consumer_mo_id,
+      preload_order: [asc: :inserted_at]
 
     timestamps(type: :utc_datetime)
   end

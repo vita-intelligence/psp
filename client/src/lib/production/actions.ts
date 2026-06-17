@@ -489,6 +489,118 @@ export async function transitionManufacturingOrderAction(
 }
 
 /**
+ * Merge this MO into another batch — cancels this MO, bumps the
+ * target's qty, records a consumer link from target → this MO's
+ * parent. BE rejects if items differ, either MO is past
+ * pre-execution, or the merge would create a cycle.
+ */
+export async function mergeMOIntoBatchAction(
+  sourceUuid: string,
+  targetUuid: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("mergeMOIntoBatchAction") };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(sourceUuid)}/merge-into`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ target_uuid: targetUuid }),
+      },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${sourceUuid}`);
+    revalidatePath(`/production/manufacturing-orders/${targetUuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "mergeMOIntoBatchAction",
+        fallbackDetail: "Couldn't merge MO into the target batch.",
+      }),
+    };
+  }
+}
+
+/**
+ * Slide an entire project (root MO + every descendant via
+ * parent_mo_id) by `deltaSeconds`. Used by the project-view drag
+ * handler so the whole chain moves together in one round-trip.
+ */
+export async function shiftProjectAction(
+  rootUuid: string,
+  deltaSeconds: number,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("shiftProjectAction") };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(rootUuid)}/shift-chain`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ delta_seconds: deltaSeconds }),
+      },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${rootUuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "shiftProjectAction",
+        fallbackDetail: "Couldn't reschedule the project.",
+      }),
+    };
+  }
+}
+
+/**
+ * Slide an entire MO's schedule (header + all steps) by
+ * `deltaSeconds`. Used by the production schedule drag handler so
+ * a single drop is one round-trip + atomic on the BE.
+ */
+export async function shiftManufacturingOrderAction(
+  uuid: string,
+  deltaSeconds: number,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("shiftManufacturingOrderAction"),
+    };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/shift`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ delta_seconds: deltaSeconds }),
+      },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "shiftManufacturingOrderAction",
+        fallbackDetail: "Couldn't reschedule the MO.",
+      }),
+    };
+  }
+}
+
+/**
  * Approval-workflow actions (prepare / unprepare / approve / reject /
  * amend). Reject MUST include a non-empty reason; the others ignore
  * it. All four cascade down the MO tree on the BE.

@@ -180,6 +180,160 @@ defmodule BackendWeb.ManufacturingOrderController do
     end
   end
 
+  # POST /api/production/manufacturing-orders/:id/shift
+  # Body: %{"delta_seconds" => integer}. Slides the whole MO chain
+  # (header + every step) by `delta_seconds` in one transaction. Used
+  # by the production schedule drag handler.
+  def shift(conn, %{"id" => uuid, "delta_seconds" => delta}) when is_integer(delta) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_edit") do
+          case Production.shift_mo_schedule(actor, mo, delta) do
+            {:ok, updated} ->
+              json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+        else
+          forbidden(conn, "Missing production.mo_edit permission.")
+        end
+    end
+  end
+
+  def shift(conn, _), do: unprocessable(conn, "invalid_payload", "Pass delta_seconds as an integer.")
+
+  # POST /api/production/manufacturing-orders/:id/shift-chain
+  # Like /shift but recurses through every descendant in the project
+  # so the whole chain moves together. Used by the project-view drag
+  # handler on the schedule.
+  def shift_chain(conn, %{"id" => uuid, "delta_seconds" => delta}) when is_integer(delta) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_edit") do
+          case Production.shift_mo_chain(actor, mo, delta) do
+            {:ok, updated} ->
+              json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+        else
+          forbidden(conn, "Missing production.mo_edit permission.")
+        end
+    end
+  end
+
+  def shift_chain(conn, _),
+    do: unprocessable(conn, "invalid_payload", "Pass delta_seconds as an integer.")
+
+  # GET /api/production/manufacturing-orders/:id/merge-candidates
+  # Open sub-MOs that produce the same item — picker source for the
+  # 'Merge into another batch' dialog.
+  def merge_candidates(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        items = Production.list_merge_candidates(actor, mo)
+
+        json(conn, %{
+          items:
+            Enum.map(items, fn m ->
+              %{
+                id: m.id,
+                uuid: m.uuid,
+                code: Backend.Numbering.render(m.id, %Backend.Companies.Company{id: actor.company_id}, "manufacturing_order"),
+                status: m.status,
+                quantity: Decimal.to_string(m.quantity || Decimal.new(0), :normal),
+                item: %{
+                  id: m.item.id,
+                  name: m.item.name
+                },
+                parent_mo:
+                  case m.parent_mo do
+                    nil -> nil
+                    p -> %{id: p.id, uuid: p.uuid, code: Backend.Numbering.render(p.id, %Backend.Companies.Company{id: actor.company_id}, "manufacturing_order")}
+                  end
+              }
+            end)
+        })
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/merge-into
+  # Body: %{"target_uuid": "..."}. Cancels this MO, bumps the target's
+  # qty, records a consumer link from target → this MO's parent.
+  def merge_into(conn, %{"id" => uuid, "target_uuid" => target_uuid}) do
+    actor = conn.assigns.current_user
+
+    if RBAC.has_permission?(actor, "production.mo_edit") do
+      with %ManufacturingOrder{} = source <-
+             Production.get_manufacturing_order(actor.company_id, uuid),
+           %ManufacturingOrder{} = target <-
+             Production.get_manufacturing_order(actor.company_id, target_uuid) do
+        case Production.merge_mo_into_batch(actor, source, target) do
+          {:ok, merged} ->
+            json(conn, %{mo: Payloads.manufacturing_order(merged)})
+
+          {:error, :item_mismatch} ->
+            unprocessable(
+              conn,
+              "item_mismatch",
+              "Batches can only be merged when they produce the same item."
+            )
+
+          {:error, :source_must_be_sub_mo} ->
+            unprocessable(
+              conn,
+              "source_must_be_sub_mo",
+              "Only sub-production runs can be merged into another batch."
+            )
+
+          {:error, {:not_pre_execution, status}} ->
+            unprocessable(
+              conn,
+              "not_pre_execution",
+              "Both MOs must be in draft or approved — one is currently #{status}."
+            )
+
+          {:error, :would_cycle} ->
+            unprocessable(
+              conn,
+              "would_cycle",
+              "That merge would create a circular dependency between MOs."
+            )
+
+          {:error, :same_mo} ->
+            unprocessable(conn, "same_mo", "Can't merge an MO into itself.")
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
+        end
+      else
+        _ -> not_found(conn)
+      end
+    else
+      forbidden(conn, "Missing production.mo_edit permission.")
+    end
+  end
+
+  def merge_into(conn, _),
+    do: unprocessable(conn, "invalid_payload", "Pass target_uuid as a string.")
+
   # Approval-workflow actions. Each gates on the right permission +
   # dispatches to a Production.* helper that handles the cascade.
   defp dispatch_signature(conn, actor, mo, action, params) do

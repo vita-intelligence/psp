@@ -7,6 +7,7 @@ import type {
   ManufacturingOrder,
   ManufacturingOrderLedgerPage,
   ManufacturingOrderStep,
+  ProductionScheduleResponse,
   Routing,
   RoutingLedgerPage,
   Workstation,
@@ -246,6 +247,28 @@ export async function getManufacturingOrderStep(
       { token, cache: "no-store" },
     );
     return step;
+  } catch {
+    return null;
+  }
+}
+
+export async function getProductionSchedule(
+  warehouseId: number,
+  from: string,
+  to: string,
+): Promise<ProductionScheduleResponse | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const qs = new URLSearchParams({
+      warehouse_id: String(warehouseId),
+      from,
+      to,
+    }).toString();
+    return await api<ProductionScheduleResponse>(
+      `/api/production/schedule?${qs}`,
+      { token, cache: "no-store" },
+    );
   } catch {
     return null;
   }

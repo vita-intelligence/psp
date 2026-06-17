@@ -105,7 +105,9 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
               canPrepare={canPrepare}
               canApprove={canApprove}
               canExecute={canExecute}
+              canEdit={canEdit}
               currentUserId={user.id}
+              company={company}
             />
           </header>
 

@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   CircleSlash,
   ClipboardCheck,
+  GitMerge,
   Loader2,
   PenSquare,
   Play,
@@ -40,6 +41,8 @@ import type {
   ManufacturingOrder,
   ManufacturingOrderStatus,
 } from "@/lib/production/types";
+import type { CompanyDefaults } from "@/lib/types";
+import { MergeIntoBatchDialog } from "./merge-into-batch-dialog";
 
 interface Props {
   mo: ManufacturingOrder;
@@ -49,7 +52,10 @@ interface Props {
   canApprove: boolean;
   /** Can start / complete / cancel (run on the floor). */
   canExecute: boolean;
+  /** Can edit MO header + merge-into-batch (structural changes). */
+  canEdit: boolean;
   currentUserId: number;
+  company: CompanyDefaults;
 }
 
 const STATUS_STYLES: Record<
@@ -108,12 +114,15 @@ export function MOStatusActions({
   canPrepare,
   canApprove,
   canExecute,
+  canEdit,
   currentUserId,
+  company,
 }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [actionError, setActionError] = useState<{
     detail: string;
     code?: string;
@@ -215,6 +224,25 @@ export function MOStatusActions({
           </span>
         )}
 
+        {/* Shared-batch consumer pills */}
+        {mo.consumer_links.length > 0 && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 ring-1 ring-inset ring-teal-200 dark:bg-teal-950/30 dark:text-teal-300 dark:ring-teal-900/50">
+            <GitMerge className="size-3" />
+            Also feeds {mo.consumer_links.length} other MO
+            {mo.consumer_links.length === 1 ? "" : "s"}
+          </span>
+        )}
+
+        {mo.supplier_links.length > 0 && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 ring-1 ring-inset ring-teal-200 dark:bg-teal-950/30 dark:text-teal-300 dark:ring-teal-900/50">
+            <GitMerge className="size-3" />
+            Supplied by shared batch{" "}
+            {mo.supplier_links
+              .map((l) => l.batch_mo?.code ?? `MO #${l.batch_mo?.id ?? "?"}`)
+              .join(", ")}
+          </span>
+        )}
+
         {/* Action buttons */}
         <ActionStrip
           mo={mo}
@@ -222,6 +250,7 @@ export function MOStatusActions({
           canPrepare={canPrepare}
           canApprove={canApprove}
           canExecute={canExecute}
+          canEdit={canEdit}
           isPreparer={isPreparer}
           pending={pending}
           pendingLabel={pendingLabel}
@@ -239,6 +268,7 @@ export function MOStatusActions({
               "Cancel this MO? Active bookings will be released and draft sub-MOs cancelled.",
             )
           }
+          onMerge={() => setMergeOpen(true)}
         />
       </div>
 
@@ -318,6 +348,15 @@ export function MOStatusActions({
           pending={pending && pendingLabel === "Reject"}
         />
       )}
+
+      {mergeOpen && (
+        <MergeIntoBatchDialog
+          source={mo}
+          company={company}
+          open={mergeOpen}
+          onOpenChange={setMergeOpen}
+        />
+      )}
     </div>
   );
 }
@@ -328,6 +367,7 @@ interface ActionStripProps {
   canPrepare: boolean;
   canApprove: boolean;
   canExecute: boolean;
+  canEdit: boolean;
   isPreparer: boolean;
   pending: boolean;
   pendingLabel: string | null;
@@ -339,6 +379,7 @@ interface ActionStripProps {
   onStart: () => void;
   onComplete: () => void;
   onCancel: () => void;
+  onMerge: () => void;
 }
 
 function ActionStrip(props: ActionStripProps) {
@@ -348,6 +389,7 @@ function ActionStrip(props: ActionStripProps) {
     canPrepare,
     canApprove,
     canExecute,
+    canEdit,
     isPreparer,
     pending,
     pendingLabel,
@@ -474,6 +516,22 @@ function ActionStrip(props: ActionStripProps) {
       onClick: props.onCancel,
       variant: "ghost",
       destructive: true,
+    });
+  }
+
+  // Merge-into-batch only on sub-MOs (must have a parent) that are
+  // pre-execution and produce a semi-finished item.
+  if (
+    isChild &&
+    canEdit &&
+    (mo.status === "draft" || mo.status === "approved") &&
+    mo.item?.item_type === "semi_finished"
+  ) {
+    actionButton({
+      label: "Merge into batch",
+      icon: GitMerge,
+      onClick: props.onMerge,
+      variant: "outline",
     });
   }
 

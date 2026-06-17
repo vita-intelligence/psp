@@ -892,6 +892,11 @@ defmodule BackendWeb.Payloads do
       parent_mo_id: mo.parent_mo_id,
       parent_mo: mo_parent_summary(Map.get(mo, :parent_mo)),
       children: mo_children_summary(Map.get(mo, :children)),
+      # Shared-batch links. `consumer_links` = other MOs that pull
+      # from this batch. `supplier_links` = batches that supply this
+      # MO via a shared-batch merge.
+      consumer_links: mo_consumer_links_payload(Map.get(mo, :consumer_links)),
+      supplier_links: mo_supplier_links_payload(Map.get(mo, :supplier_links)),
       # Open children — drives the "Waiting on N sub-MO" pill in the
       # MO header. Completed / cancelled children don't count.
       blocking_children_count:
@@ -1010,6 +1015,40 @@ defmodule BackendWeb.Payloads do
   end
 
   defp mo_children_summary(_), do: []
+
+  defp mo_consumer_links_payload(list) when is_list(list) do
+    Enum.map(list, fn link ->
+      %{
+        id: link.id,
+        uuid: link.uuid,
+        shared_qty: decimal_to_string(link.shared_qty),
+        consumer_mo:
+          case Map.get(link, :consumer_mo) do
+            %Backend.Production.ManufacturingOrder{} = mo -> mo_parent_summary(mo)
+            _ -> nil
+          end
+      }
+    end)
+  end
+
+  defp mo_consumer_links_payload(_), do: []
+
+  defp mo_supplier_links_payload(list) when is_list(list) do
+    Enum.map(list, fn link ->
+      %{
+        id: link.id,
+        uuid: link.uuid,
+        shared_qty: decimal_to_string(link.shared_qty),
+        batch_mo:
+          case Map.get(link, :batch_mo) do
+            %Backend.Production.ManufacturingOrder{} = mo -> mo_parent_summary(mo)
+            _ -> nil
+          end
+      }
+    end)
+  end
+
+  defp mo_supplier_links_payload(_), do: []
 
   defp mo_chain_summary(%Backend.Production.ManufacturingOrder{parent_mo_id: nil, children: %Ecto.Association.NotLoaded{}}),
     do: []
@@ -1429,6 +1468,47 @@ defmodule BackendWeb.Payloads do
   end
 
   def mo_step(_), do: nil
+
+  @doc """
+  Compact operation row for the production schedule page. Drops the
+  cost / actual / worker noise — the schedule cares about position
+  (workstation group + time window) and just enough MO context for
+  the operator to identify the block at a glance.
+  """
+  def schedule_operation(%Backend.Production.ManufacturingOrderStep{} = s) do
+    %{
+      id: s.id,
+      uuid: s.uuid,
+      manufacturing_order_id: s.manufacturing_order_id,
+      manufacturing_order: schedule_mo_summary(s.manufacturing_order),
+      workstation_group_id: s.workstation_group_id,
+      workstation_group: workstation_group_summary(s.workstation_group),
+      operation_description: s.operation_description,
+      planned_start: s.planned_start,
+      planned_finish: s.planned_finish,
+      actual_start: s.actual_start,
+      actual_finish: s.actual_finish,
+      quantity: decimal_to_string(s.quantity),
+      sort_order: s.sort_order
+    }
+  end
+
+  def schedule_operation(_), do: nil
+
+  defp schedule_mo_summary(%Backend.Production.ManufacturingOrder{} = mo) do
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status,
+      quantity: decimal_to_string(mo.quantity),
+      item: maybe_item_summary(mo.item),
+      warehouse_id: mo.warehouse_id,
+      parent_mo_id: mo.parent_mo_id
+    }
+  end
+
+  defp schedule_mo_summary(_), do: nil
 
   defp mo_step_workers(%Backend.Production.ManufacturingOrderStep{} = s) do
     case Map.get(s, :worker_assignments) do

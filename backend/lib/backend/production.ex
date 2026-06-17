@@ -36,6 +36,7 @@ defmodule Backend.Production do
     ManufacturingOrderBooking,
     ManufacturingOrderStep,
     ManufacturingOrderStepWorker,
+    MOConsumerLink,
     Routing,
     RoutingStep,
     RoutingStepWorker,
@@ -45,6 +46,7 @@ defmodule Backend.Production do
   }
 
   alias Backend.Warehouses.Warehouse
+  alias Backend.Companies.Company
   alias Backend.Repo
   alias Backend.Stock.Lot, as: StockLot
   alias Backend.Stock.Placement, as: StockPlacementAlias
@@ -1366,7 +1368,9 @@ defmodule Backend.Production do
       bom: [lines: [:part, :unit_of_measurement]],
       routing: [steps: [:workstation_group, worker_assignments: :user]],
       parent_mo: [:item],
-      children: [:item]
+      children: [:item],
+      consumer_links: [consumer_mo: [:item]],
+      supplier_links: [batch_mo: [:item]]
     ])
     |> Repo.one()
   end
@@ -1912,8 +1916,15 @@ defmodule Backend.Production do
             mo_snapshot(updated)
           )
 
-          # Header edit → drop approval if the tree was signed.
-          _ = demote_root_if_signed(actor, updated)
+          # Only structural edits break approval — what we're making,
+          # not when. Pure scheduling changes (start_at / finish_at /
+          # due_date / expiry_date) can be tweaked on an approved MO
+          # without re-signing; the rest (item / bom / routing /
+          # quantity / assignee / notes / revision) drop the tree
+          # back to draft.
+          if structural_mo_change?(before, mo_snapshot(updated)) do
+            _ = demote_root_if_signed(actor, updated)
+          end
 
           {:ok, reload_manufacturing_order(updated)}
 
@@ -1921,6 +1932,17 @@ defmodule Backend.Production do
           err
       end
     end
+  end
+
+  @structural_mo_fields ~w(
+    warehouse_id item_id bom_id routing_id quantity
+    assigned_to_id revision notes
+  )a
+
+  defp structural_mo_change?(before, after_) do
+    Enum.any?(@structural_mo_fields, fn key ->
+      Map.get(before, key) != Map.get(after_, key)
+    end)
   end
 
   @doc """
@@ -3044,5 +3066,418 @@ defmodule Backend.Production do
       stock_lot: [placements: :storage_cell]
     ])
     |> Repo.one()
+  end
+
+  @doc """
+  Shift an MO chain (root + every descendant via parent_mo_id) by
+  `delta_seconds`. One transaction so the calendar never shows a
+  half-shifted project. Used by the project-view drag handler.
+  """
+  def shift_mo_chain(%User{} = actor, %ManufacturingOrder{} = root, delta_seconds)
+      when is_integer(delta_seconds) do
+    if delta_seconds == 0 do
+      {:ok, reload_manufacturing_order(root)}
+    else
+      Repo.transaction(fn ->
+        chain_nodes = mo_chain(root)
+
+        Enum.each(chain_nodes, fn node ->
+          case shift_mo_only(actor, node, delta_seconds) do
+            {:ok, updated} ->
+              shift_mo_steps(actor, updated, delta_seconds)
+
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
+
+        Repo.get!(ManufacturingOrder, root.id)
+      end)
+      |> case do
+        {:ok, mo} -> {:ok, reload_manufacturing_order(mo)}
+        err -> err
+      end
+    end
+  end
+
+  @doc """
+  Shift an MO's whole schedule by `delta_seconds`. Updates MO.start_at
+  + MO.finish_at AND every step's planned_start + planned_finish in
+  one transaction so the calendar never shows a half-shifted run.
+
+  Atomic side-effect of dragging an MO block on the schedule. The FE
+  fires this once per drop instead of N step PATCHes.
+  """
+  def shift_mo_schedule(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds)
+      when is_integer(delta_seconds) do
+    if delta_seconds == 0 do
+      {:ok, reload_manufacturing_order(mo)}
+    else
+      Repo.transaction(fn ->
+        case shift_mo_only(actor, mo, delta_seconds) do
+          {:ok, updated} ->
+            shift_mo_steps(actor, updated, delta_seconds)
+            updated
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
+        err -> err
+      end
+    end
+  end
+
+  defp shift_mo_only(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds) do
+    before = mo_snapshot(mo)
+
+    new_start = mo.start_at && DateTime.add(mo.start_at, delta_seconds, :second)
+    new_finish = mo.finish_at && DateTime.add(mo.finish_at, delta_seconds, :second)
+
+    attrs = %{
+      "start_at" => new_start,
+      "finish_at" => new_finish,
+      "updated_by_id" => actor.id
+    }
+
+    mo
+    |> ManufacturingOrder.changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order",
+          updated,
+          before,
+          mo_snapshot(updated)
+        )
+
+        # Rescheduling does NOT demote approval — start/finish are
+        # timing-only fields. Approval is about WHAT we're making
+        # (BOM, qty, item, routing), not WHEN. Operators drag
+        # approved blocks around the calendar all day to balance
+        # the floor without needing a re-sign.
+
+        {:ok, updated}
+
+      err ->
+        err
+    end
+  end
+
+  defp shift_mo_steps(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds) do
+    steps =
+      from(s in ManufacturingOrderStep,
+        where: s.manufacturing_order_id == ^mo.id
+      )
+      |> Repo.all()
+
+    Enum.each(steps, fn step ->
+      before = mo_step_snapshot(step)
+
+      attrs = %{
+        "planned_start" =>
+          step.planned_start && DateTime.add(step.planned_start, delta_seconds, :second),
+        "planned_finish" =>
+          step.planned_finish && DateTime.add(step.planned_finish, delta_seconds, :second),
+        "updated_by_id" => actor.id
+      }
+
+      step
+      |> ManufacturingOrderStep.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          Audit.record_updated(
+            actor,
+            "manufacturing_order_step",
+            updated,
+            before,
+            mo_step_snapshot(updated)
+          )
+
+        _ ->
+          :ok
+      end
+    end)
+  end
+
+  # ----- Production schedule ---------------------------------------
+
+  @doc """
+  Operations to render on the production schedule for `warehouse`
+  between `from_date` and `to_date` (inclusive). Returns the MO
+  steps from any approved or in_progress MO whose
+  planned_start/planned_finish intersects the window.
+  """
+  def list_schedule_operations(%User{} = actor, %Warehouse{} = warehouse, from_date, to_date) do
+    from_dt = DateTime.new!(from_date, ~T[00:00:00], "Etc/UTC")
+    to_dt = DateTime.new!(to_date, ~T[23:59:59], "Etc/UTC")
+
+    from(s in ManufacturingOrderStep,
+      join: mo in ManufacturingOrder,
+      on: mo.id == s.manufacturing_order_id,
+      where:
+        s.company_id == ^actor.company_id and
+          mo.warehouse_id == ^warehouse.id and
+          mo.status in ["approved", "in_progress"] and
+          not is_nil(s.planned_start) and
+          not is_nil(s.planned_finish) and
+          s.planned_finish >= ^from_dt and
+          s.planned_start <= ^to_dt,
+      preload: [:workstation_group, manufacturing_order: [:item, :warehouse]],
+      order_by: [asc: s.planned_start, asc: s.id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Working-hour windows for each workstation group on each date in
+  the range. Precedence (per group, per day):
+
+      WSG override → warehouse override → company default
+
+  Holidays follow the same chain. A holiday returns an empty
+  `intervals` list for that day plus the `holiday_label` so the FE
+  can render the red strip on the day header.
+
+  Returns a list of `%{group_id, days: [%{date, intervals, holiday_label}]}`.
+  """
+  def resolve_working_windows(groups, %Warehouse{} = warehouse, %Company{} = company, from_date, to_date) do
+    dates = Date.range(from_date, to_date) |> Enum.to_list()
+
+    company_hours = normalise_working_hours(Map.get(company, :working_hours))
+    company_holidays = normalise_holidays_map(Map.get(company, :holidays))
+
+    warehouse_hours = normalise_working_hours(Map.get(warehouse, :working_hours))
+    warehouse_holidays = normalise_holidays_map(Map.get(warehouse, :holidays))
+
+    Enum.map(groups, fn g ->
+      hours_config =
+        cond do
+          g.custom_working_hours -> normalise_working_hours(g.working_hours)
+          warehouse_hours != %{} -> warehouse_hours
+          true -> company_hours
+        end
+
+      holidays_set =
+        cond do
+          g.custom_holidays -> g.holidays |> Enum.map(&Date.to_iso8601/1) |> MapSet.new()
+          warehouse_holidays != %{} -> warehouse_holidays |> Map.keys() |> MapSet.new()
+          true -> company_holidays |> Map.keys() |> MapSet.new()
+        end
+
+      holidays_lookup =
+        if g.custom_holidays do
+          %{}
+        else
+          if warehouse_holidays != %{}, do: warehouse_holidays, else: company_holidays
+        end
+
+      days =
+        Enum.map(dates, fn date ->
+          weekday = weekday_key(Date.day_of_week(date))
+
+          holiday_label = Map.get(holidays_lookup, Date.to_iso8601(date))
+
+          intervals =
+            cond do
+              MapSet.member?(holidays_set, Date.to_iso8601(date)) -> []
+              true -> intervals_for(hours_config, weekday, date)
+            end
+
+          %{date: date, intervals: intervals, holiday_label: holiday_label}
+        end)
+
+      %{group_id: g.id, days: days}
+    end)
+  end
+
+  defp normalise_working_hours(nil), do: %{}
+  defp normalise_working_hours(map) when is_map(map), do: map
+  defp normalise_working_hours(_), do: %{}
+
+  # Turn `%{"items" => [%{"date" => "2026-12-25", "label" => "Xmas"}]}`
+  # into `%{"2026-12-25" => "Xmas"}` for fast lookup. WSG holidays
+  # come through as `[~D[...]]` and are handled separately upstream.
+  defp normalise_holidays_map(nil), do: %{}
+
+  defp normalise_holidays_map(%{"items" => items}) when is_list(items) do
+    Enum.into(items, %{}, fn item ->
+      {Map.get(item, "date", ""), Map.get(item, "label", "")}
+    end)
+    |> Map.delete("")
+  end
+
+  defp normalise_holidays_map(%{} = m), do: m
+
+  defp normalise_holidays_map(_), do: %{}
+
+  defp intervals_for(hours_config, weekday, date) do
+    case Map.get(hours_config, weekday) do
+      %{"opens_at" => open, "closes_at" => close}
+      when is_binary(open) and is_binary(close) and open != "" and close != "" ->
+        [%{open: to_dt(date, open), close: to_dt(date, close)}]
+
+      _ ->
+        []
+    end
+  end
+
+  defp to_dt(date, "HH:MM" <> _ = _) do
+    # Fallback if a malformed string slipped through.
+    DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+  end
+
+  defp to_dt(date, time_str) when is_binary(time_str) do
+    case Time.from_iso8601(time_str <> ":00") do
+      {:ok, time} -> DateTime.new!(date, time, "Etc/UTC")
+      _ -> DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+    end
+  end
+
+  defp weekday_key(1), do: "monday"
+  defp weekday_key(2), do: "tuesday"
+  defp weekday_key(3), do: "wednesday"
+  defp weekday_key(4), do: "thursday"
+  defp weekday_key(5), do: "friday"
+  defp weekday_key(6), do: "saturday"
+  defp weekday_key(7), do: "sunday"
+
+  @doc """
+  Workstation groups for the company — schedule rows. Active only,
+  sorted by name. WSGs aren't per-warehouse in our model so the
+  same groups appear on every site's schedule (filtering happens
+  via the operation rows themselves).
+  """
+  def list_workstation_groups_for_schedule(%User{} = actor) do
+    from(g in WorkstationGroup,
+      where: g.company_id == ^actor.company_id and g.is_active == true,
+      order_by: [asc: g.name]
+    )
+    |> Repo.all()
+  end
+
+  # ----- Shared-batch consumer links -------------------------------
+
+  @doc """
+  Open sub-MOs (draft or approved) producing the same item as
+  `source`, excluding the source itself. Used by the FE picker to
+  surface candidate batches to merge into.
+  """
+  def list_merge_candidates(%User{} = actor, %ManufacturingOrder{} = source) do
+    from(m in ManufacturingOrder,
+      where:
+        m.company_id == ^actor.company_id and
+          m.id != ^source.id and
+          m.item_id == ^source.item_id and
+          m.status in ["draft", "approved"] and
+          not is_nil(m.parent_mo_id),
+      preload: [:item, :parent_mo],
+      order_by: [asc: m.start_at, asc: m.id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Merge a `source` sub-MO into an existing batch `target`. Bumps the
+  target's quantity by `source.quantity`, cancels the source (which
+  releases its bookings + cancels its own draft/approved children
+  via the existing recursive cancel), and records a consumer link
+  from the target to the source's parent.
+
+  Validations:
+
+    * Both MOs must be in `draft` or `approved` — physical production
+      already started can't be merged.
+    * Both must build the same item (no apples-into-oranges).
+    * The source must have a parent (it has to be a sub-MO; you can't
+      merge an FG run into another FG).
+    * The target's parent can't be the source (no cycles).
+
+  Returns `{:ok, reloaded_target}`.
+  """
+  def merge_mo_into_batch(
+        %User{} = actor,
+        %ManufacturingOrder{} = source,
+        %ManufacturingOrder{} = target
+      ) do
+    with :ok <- ensure_pre_execution(source),
+         :ok <- ensure_pre_execution(target),
+         :ok <- ensure_same_item(source, target),
+         :ok <- ensure_source_has_parent(source),
+         :ok <- ensure_not_self(source, target),
+         :ok <- ensure_not_cycle(source, target) do
+      Repo.transaction(fn ->
+        new_qty = Decimal.add(target.quantity || Decimal.new(0), source.quantity || Decimal.new(0))
+
+        with {:ok, bumped} <-
+               update_manufacturing_order(actor, target, %{"quantity" => new_qty}),
+             {:ok, _} <- transition_mo(actor, source, "cancelled"),
+             {:ok, _link} <-
+               %MOConsumerLink{}
+               |> MOConsumerLink.changeset(%{
+                 "company_id" => actor.company_id,
+                 "batch_mo_id" => target.id,
+                 "consumer_mo_id" => source.parent_mo_id,
+                 "shared_qty" => source.quantity,
+                 "created_by_id" => actor.id
+               })
+               |> Repo.insert() do
+          bumped
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, mo} -> {:ok, reload_manufacturing_order(mo)}
+        err -> err
+      end
+    end
+  end
+
+  defp ensure_pre_execution(%ManufacturingOrder{status: s})
+       when s in ["draft", "approved"],
+       do: :ok
+
+  defp ensure_pre_execution(%ManufacturingOrder{status: s}),
+    do: {:error, {:not_pre_execution, s}}
+
+  defp ensure_same_item(%ManufacturingOrder{item_id: a}, %ManufacturingOrder{item_id: b})
+       when a == b,
+       do: :ok
+
+  defp ensure_same_item(_, _), do: {:error, :item_mismatch}
+
+  defp ensure_source_has_parent(%ManufacturingOrder{parent_mo_id: nil}),
+    do: {:error, :source_must_be_sub_mo}
+
+  defp ensure_source_has_parent(_), do: :ok
+
+  defp ensure_not_self(%ManufacturingOrder{id: a}, %ManufacturingOrder{id: b}) when a == b,
+    do: {:error, :same_mo}
+
+  defp ensure_not_self(_, _), do: :ok
+
+  # Walk the target's parent chain — if we ever hit the source, the
+  # merge would create a cycle.
+  defp ensure_not_cycle(%ManufacturingOrder{} = source, %ManufacturingOrder{} = target) do
+    if has_ancestor?(target, source.id), do: {:error, :would_cycle}, else: :ok
+  end
+
+  defp has_ancestor?(%ManufacturingOrder{parent_mo_id: nil}, _ancestor_id), do: false
+
+  defp has_ancestor?(%ManufacturingOrder{parent_mo_id: pid}, ancestor_id) do
+    if pid == ancestor_id do
+      true
+    else
+      case Repo.get(ManufacturingOrder, pid) do
+        nil -> false
+        parent -> has_ancestor?(parent, ancestor_id)
+      end
+    end
   end
 end

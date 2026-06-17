@@ -363,6 +363,11 @@ defmodule BackendWeb.Router do
     # workstations land here in future passes. Permission gates live
     # on `BackendWeb.BOMController` itself (production.bom_*).
     scope "/production" do
+      # Schedule — read-only feed for the calendar / drag-and-drop
+      # planner. Drag mutations re-use the per-step PATCH endpoint
+      # under manufacturing-orders.
+      get "/schedule", ProductionScheduleController, :show
+
       get "/boms", BOMController, :index
       get "/boms/:id", BOMController, :show
       post "/boms", BOMController, :create
@@ -397,6 +402,22 @@ defmodule BackendWeb.Router do
       post "/manufacturing-orders/:id/transition",
            ManufacturingOrderController,
            :transition
+
+      post "/manufacturing-orders/:id/shift",
+           ManufacturingOrderController,
+           :shift
+
+      post "/manufacturing-orders/:id/shift-chain",
+           ManufacturingOrderController,
+           :shift_chain
+
+      get "/manufacturing-orders/:id/merge-candidates",
+          ManufacturingOrderController,
+          :merge_candidates
+
+      post "/manufacturing-orders/:id/merge-into",
+           ManufacturingOrderController,
+           :merge_into
 
       delete "/manufacturing-orders/:id",
              ManufacturingOrderController,

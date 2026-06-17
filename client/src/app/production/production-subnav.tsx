@@ -44,7 +44,6 @@ const ITEMS: SubnavItem[] = [
     href: "/production/schedule",
     label: "Production schedule",
     Icon: CalendarDays,
-    comingSoon: true,
   },
   {
     href: "/production/mps",

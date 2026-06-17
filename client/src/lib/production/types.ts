@@ -406,6 +406,69 @@ export type MOSignatureAction =
   | "reject"
   | "amend";
 
+// ---------------------------------------------------------------
+// Production schedule
+// ---------------------------------------------------------------
+
+export interface ScheduleOperationMOSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  quantity: string;
+  item: BOMPartSummary | null;
+  warehouse_id: number;
+  /** Set when this MO is a sub-MO; used by the project view to walk
+   *  up to the root. */
+  parent_mo_id: number | null;
+}
+
+export interface ScheduleOperation {
+  id: number;
+  uuid: string;
+  manufacturing_order_id: number;
+  manufacturing_order: ScheduleOperationMOSummary | null;
+  workstation_group_id: number | null;
+  workstation_group: WorkstationGroupSummary | null;
+  operation_description: string | null;
+  planned_start: string | null;
+  planned_finish: string | null;
+  actual_start: string | null;
+  actual_finish: string | null;
+  quantity: string | null;
+  sort_order: number;
+}
+
+export interface ScheduleWindowInterval {
+  open: string;
+  close: string;
+}
+
+export interface ScheduleDayWindow {
+  date: string;
+  holiday_label: string | null;
+  intervals: ScheduleWindowInterval[];
+}
+
+export interface ScheduleGroupWindows {
+  group_id: number;
+  days: ScheduleDayWindow[];
+}
+
+export interface ProductionScheduleResponse {
+  warehouse: {
+    id: number;
+    uuid: string;
+    name: string;
+    kind: "warehouse" | "production_facility";
+    timezone: string | null;
+  };
+  range: { from: string; to: string };
+  workstation_groups: WorkstationGroupSummary[];
+  operations: ScheduleOperation[];
+  working_windows: ScheduleGroupWindows[];
+}
+
 export interface ManufacturingOrderSiteSummary {
   id: number;
   uuid: string;
@@ -424,6 +487,30 @@ export interface ManufacturingOrderRelation {
   start_at?: string;
   finish_at?: string;
   item: BOMPartSummary | null;
+}
+
+export interface ManufacturingOrderConsumerLink {
+  id: number;
+  uuid: string;
+  shared_qty: string;
+  consumer_mo: ManufacturingOrderRelation | null;
+}
+
+export interface ManufacturingOrderSupplierLink {
+  id: number;
+  uuid: string;
+  shared_qty: string;
+  batch_mo: ManufacturingOrderRelation | null;
+}
+
+export interface ManufacturingOrderMergeCandidate {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  quantity: string;
+  item: { id: number; name: string };
+  parent_mo: { id: number; uuid: string; code: string | null } | null;
 }
 
 /** One node in the MO chain — root + every descendant — flat with
@@ -660,6 +747,11 @@ export interface ManufacturingOrder {
   /** Children whose status is not yet completed/cancelled — drives
    *  the "Waiting on N sub-MO" pill in the header. */
   blocking_children_count: number;
+  /** Secondary consumer links — extra MOs that pull from this MO
+   *  as a shared batch (beyond the primary parent_mo). */
+  consumer_links: ManufacturingOrderConsumerLink[];
+  /** Supplier links — shared batches that feed THIS MO via merge. */
+  supplier_links: ManufacturingOrderSupplierLink[];
   /** Full MO chain centered on this one (root + all descendants).
    *  Empty when the MO has no parent and no children. */
   chain: ManufacturingOrderChainNode[];
