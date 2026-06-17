@@ -632,10 +632,18 @@ export async function deleteBookingAction(
   }
 }
 
+export type BookingStrategy = "fefo" | "fifo";
+
 export async function bookAllPartsAction(
   moUuid: string,
+  strategy: BookingStrategy = "fefo",
 ): Promise<
-  | { ok: true; created: number; bookings: ManufacturingOrderBooking[] }
+  | {
+      ok: true;
+      created: number;
+      strategy: BookingStrategy;
+      bookings: ManufacturingOrderBooking[];
+    }
   | (ErrorResult & { ok: false })
 > {
   const token = await getSessionToken();
@@ -643,10 +651,11 @@ export async function bookAllPartsAction(
   try {
     const data = await api<{
       created: number;
+      strategy: BookingStrategy;
       bookings: ManufacturingOrderBooking[];
     }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/book-all`,
-      { method: "POST", token, body: JSON.stringify({}) },
+      { method: "POST", token, body: JSON.stringify({ strategy }) },
     );
     revalidatePath(`/production/manufacturing-orders/${moUuid}`);
     return { ok: true, ...data };

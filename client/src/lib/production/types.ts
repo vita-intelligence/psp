@@ -406,6 +406,30 @@ export interface ManufacturingOrderSiteSummary {
   kind: "warehouse" | "production_facility";
 }
 
+export interface ManufacturingOrderRelation {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  quantity: string;
+  revision?: string;
+  start_at?: string;
+  finish_at?: string;
+  item: BOMPartSummary | null;
+}
+
+/** One node in the MO chain — root + every descendant — flat with
+ *  parent_mo_id so the FE can rebuild the tree. */
+export interface ManufacturingOrderChainNode {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  quantity: string;
+  parent_mo_id: number | null;
+  item: BOMPartSummary | null;
+}
+
 export interface ManufacturingOrderRoutingSummary {
   id: number;
   uuid: string;
@@ -437,9 +461,30 @@ export interface ManufacturingOrderPart {
   booked_qty: string | null;
   /** Sum of consumed across active bookings. */
   consumed_qty: string | null;
-  /** Sub-rows — one per booking. The FE renders these as nested
-   *  rows under the master row. */
+  /** Sum of qty being produced by open child MOs feeding this part. */
+  pending_from_sub_mos_qty: string | null;
+  /** Required - booked - pending. Nil when zero (line fully covered) or
+   *  when required can't be computed. FE renders a synthetic red
+   *  'Not booked' sub-row when this is > 0. */
+  unbooked_qty: string | null;
+  /** Derived coverage state — drives the master-row badge.
+   *  - `booked`              fully covered by reserved real stock
+   *  - `sub_mo_in_progress`  covered, but sub-MO contributes majority
+   *  - `partial`             gap exists, no sub-MO covering it
+   *  - `not_booked`          nothing covered
+   *  - `unknown`             required qty couldn't be computed */
+  coverage_status:
+    | "booked"
+    | "sub_mo_in_progress"
+    | "partial"
+    | "not_booked"
+    | "unknown";
+  /** Real bookings against existing lots. Render with status
+   *  label "Booked". */
   bookings: ManufacturingOrderBooking[];
+  /** Open child MOs producing this part — render as additional
+   *  amber "Awaiting production from MO-XXX" sub-rows on the FE. */
+  pending_from_sub_mos: ManufacturingOrderRelation[];
   /** Legacy single-row columns — always null now that bookings can
    *  stack against a line. Kept on the type so older payload
    *  consumers don't break. */
@@ -597,6 +642,19 @@ export interface ManufacturingOrder {
   bom: BOMSummary | null;
   routing_id: number | null;
   routing: ManufacturingOrderRoutingSummary | null;
+  /** Set when this MO was auto-spawned to cover a semi-finished
+   *  shortfall on another MO. */
+  parent_mo_id: number | null;
+  parent_mo: ManufacturingOrderRelation | null;
+  /** Auto-spawned children that produce semi-finished inputs this
+   *  MO consumes. Empty when nothing was cascaded. */
+  children: ManufacturingOrderRelation[];
+  /** Children whose status is not yet completed/cancelled — drives
+   *  the "Waiting on N sub-MO" pill in the header. */
+  blocking_children_count: number;
+  /** Full MO chain centered on this one (root + all descendants).
+   *  Empty when the MO has no parent and no children. */
+  chain: ManufacturingOrderChainNode[];
   assigned_to_id: number;
   assigned_to: AuditActor | null;
   approved_by_id: number | null;
@@ -645,6 +703,9 @@ export interface ManufacturingOrderUpsertInput {
   item_id?: number;
   bom_id?: number;
   routing_id?: number | null;
+  /** Set when manually spawning a sub-MO under another MO from the
+   *  parts table 'Add sub-MO' dialog. Auto-cascade also sets this. */
+  parent_mo_id?: number | null;
   quantity?: string | number;
   due_date?: string | null;
   start_at?: string;

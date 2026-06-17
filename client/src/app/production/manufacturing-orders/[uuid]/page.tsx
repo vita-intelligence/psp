@@ -19,6 +19,10 @@ import { MOStatusActions } from "../mo-status-actions";
 import { MOCostSummary } from "../mo-cost-summary";
 import { MOPartsTable } from "../mo-parts-table";
 import { MOOperationsTable } from "../mo-operations-table";
+import {
+  MOParentBreadcrumb,
+} from "../mo-sub-production";
+import { MOChainRoadmap } from "../mo-chain-roadmap";
 
 export const metadata = { title: "Manufacturing order · Production · PSP" };
 
@@ -101,6 +105,10 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
               canExecute={canExecute}
             />
           </header>
+
+          <MOParentBreadcrumb mo={mo} />
+
+          <MOChainRoadmap mo={mo} company={company} />
 
           <EditModeToggle canEdit={canEdit}>
             <ManufacturingOrderForm

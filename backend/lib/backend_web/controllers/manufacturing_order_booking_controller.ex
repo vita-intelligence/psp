@@ -144,18 +144,20 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
     end
   end
 
-  def book_all(conn, %{"mo_id" => mo_uuid}) do
+  def book_all(conn, %{"mo_id" => mo_uuid} = params) do
     actor = conn.assigns.current_user
+    strategy = parse_strategy(params["strategy"])
 
     case Production.get_manufacturing_order(actor.company_id, mo_uuid) do
       nil ->
         not_found(conn, "Manufacturing order not found.")
 
       %ManufacturingOrder{} = mo ->
-        case Production.book_all_for_mo(actor, mo) do
+        case Production.book_all_for_mo(actor, mo, strategy: strategy) do
           {:ok, bookings} ->
             json(conn, %{
               created: length(bookings),
+              strategy: to_string(strategy),
               bookings: Enum.map(bookings, &Payloads.mo_booking/1)
             })
 
@@ -164,6 +166,10 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
         end
     end
   end
+
+  defp parse_strategy("fifo"), do: :fifo
+  defp parse_strategy("fefo"), do: :fefo
+  defp parse_strategy(_), do: :fefo
 
   def release_all(conn, %{"mo_id" => mo_uuid}) do
     actor = conn.assigns.current_user

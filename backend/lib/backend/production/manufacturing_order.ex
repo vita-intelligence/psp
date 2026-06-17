@@ -59,6 +59,15 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
+    # Parent / child chain. FG MO whose BOM needs a semi-finished
+    # the stock can't cover auto-spawns one child MO per shortfall.
+    # The child's `parent_mo_id` points back here.
+    belongs_to :parent_mo, __MODULE__, foreign_key: :parent_mo_id
+
+    has_many :children, __MODULE__,
+      foreign_key: :parent_mo_id,
+      preload_order: [asc: :inserted_at]
+
     has_many :steps, ManufacturingOrderStep,
       foreign_key: :manufacturing_order_id,
       preload_order: [asc: :sort_order]
@@ -83,6 +92,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :item_id,
       :bom_id,
       :routing_id,
+      :parent_mo_id,
       :quantity,
       :due_date,
       :start_at,

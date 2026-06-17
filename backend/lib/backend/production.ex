@@ -47,6 +47,7 @@ defmodule Backend.Production do
   alias Backend.Warehouses.Warehouse
   alias Backend.Repo
   alias Backend.Stock.Lot, as: StockLot
+  alias Backend.Stock.Placement, as: StockPlacementAlias
 
   # Item types that CAN own a BOM. Anything else is a recipe input,
   # never an output. Kept here (rather than the schema) because this
@@ -1357,7 +1358,9 @@ defmodule Backend.Production do
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
       bookings: [:item, :storage_cell, stock_lot: [placements: :storage_cell]],
       bom: [lines: [:part, :unit_of_measurement]],
-      routing: [steps: [:workstation_group, worker_assignments: :user]]
+      routing: [steps: [:workstation_group, worker_assignments: :user]],
+      parent_mo: [:item],
+      children: [:item]
     ])
     |> Repo.one()
   end
@@ -1388,6 +1391,10 @@ defmodule Backend.Production do
       |> Map.delete("status")
       |> Map.delete("approved_by_id")
       |> Map.delete("approved_at")
+      # Default to the item's primary BOM when the caller hasn't
+      # picked one — used by Add-sub-MO from the parts table where
+      # the operator only knows the part, not which recipe to pick.
+      |> maybe_resolve_bom(actor)
       |> maybe_resolve_routing(actor)
 
     with :ok <- ensure_mo_site_production_facility(actor, attrs["warehouse_id"]),
@@ -1397,7 +1404,14 @@ defmodule Backend.Production do
                %ManufacturingOrder{}
                |> ManufacturingOrder.changeset(attrs)
                |> Repo.insert(),
-             :ok <- snapshot_mo_steps(actor, mo) do
+             :ok <- snapshot_mo_steps(actor, mo),
+             # Auto-book FEFO so existing stock is reserved up-front.
+             # Then cascade only the unbooked remainder of semi-finished
+             # inputs into child MOs — so a parent that already has
+             # half its inputs in stock spawns a child MO only for the
+             # missing half.
+             {:ok, _bookings} <- book_all_for_mo(actor, mo, strategy: :fefo),
+             :ok <- cascade_unbooked_children(actor, mo, 0) do
           Audit.record_created(actor, "manufacturing_order", mo, mo_snapshot(mo))
           mo
         else
@@ -1409,6 +1423,201 @@ defmodule Backend.Production do
         err -> err
       end
     end
+  end
+
+  @max_cascade_depth 5
+
+  # Walk the MO's BOM for semi-finished inputs whose existing-stock
+  # booking didn't cover the full requirement. For each shortfall,
+  # spawn a child MO for the unbooked remainder. The child gets
+  # `parent_mo_id` set; its own auto-book + cascade runs recursively
+  # so a tree of MOs is created in one shot.
+  defp cascade_unbooked_children(_actor, _mo, depth) when depth >= @max_cascade_depth, do: :ok
+
+  defp cascade_unbooked_children(%User{} = actor, %ManufacturingOrder{} = mo, depth) do
+    mo = Repo.preload(mo, [:bookings, bom: [lines: :part]], force: true)
+
+    lines =
+      case mo.bom do
+        %BOM{lines: lines} when is_list(lines) -> lines
+        _ -> []
+      end
+
+    Enum.each(lines, fn line ->
+      maybe_spawn_unbooked_child(actor, mo, line, depth)
+    end)
+
+    :ok
+  end
+
+  defp maybe_spawn_unbooked_child(%User{} = actor, %ManufacturingOrder{} = mo, line, depth) do
+    case line.part do
+      %Item{item_type: "semi_finished"} = part ->
+        per_output = line.qty || Decimal.new(0)
+
+        required =
+          if line.is_fixed do
+            per_output
+          else
+            Decimal.mult(per_output, mo.quantity || Decimal.new(0))
+          end
+
+        booked =
+          mo.bookings
+          |> Enum.filter(fn b ->
+            b.item_id == part.id and b.status == "requested"
+          end)
+          |> Enum.reduce(Decimal.new(0), fn b, acc ->
+            Decimal.add(acc, b.quantity || Decimal.new(0))
+          end)
+
+        gap = Decimal.sub(required, booked)
+
+        if Decimal.compare(gap, Decimal.new("0")) == :gt do
+          spawn_child_mo(actor, mo, part, gap, depth)
+        else
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp spawn_child_mo(%User{} = actor, %ManufacturingOrder{} = mo, %Item{} = part, gap, depth) do
+    case primary_bom_for_item(mo.company_id, part.id) do
+      nil ->
+        # No BOM on this semi-finished — can't auto-make it. Planner
+        # has to fix the catalogue or hand-create the run.
+        :ok
+
+      %BOM{id: bom_id} ->
+        child_attrs =
+          %{
+            "company_id" => mo.company_id,
+            "warehouse_id" => mo.warehouse_id,
+            "item_id" => part.id,
+            "bom_id" => bom_id,
+            "parent_mo_id" => mo.id,
+            "quantity" => gap,
+            # Child must finish before parent starts; planner can
+            # adjust the schedule.
+            "start_at" => mo.start_at,
+            "finish_at" => mo.start_at,
+            "assigned_to_id" => mo.assigned_to_id,
+            "revision" => mo.revision,
+            "created_by_id" => actor.id,
+            "updated_by_id" => actor.id
+          }
+          |> maybe_resolve_routing(actor)
+
+        case %ManufacturingOrder{}
+             |> ManufacturingOrder.changeset(child_attrs)
+             |> Repo.insert() do
+          {:ok, child} ->
+            :ok = snapshot_mo_steps(actor, child)
+            Audit.record_created(actor, "manufacturing_order", child, mo_snapshot(child))
+            {:ok, _} = book_all_for_mo(actor, child, strategy: :fefo)
+            cascade_unbooked_children(actor, child, depth + 1)
+
+          {:error, _cs} ->
+            :ok
+        end
+    end
+  end
+
+  @doc """
+  Available stock for an item — sum of placements on lots that are
+  `received` or `available`, minus active MO bookings against those
+  lots. Used by the cascade resolver to decide whether to spawn a
+  child MO.
+  """
+  def available_stock_for_item(company_id, item_id)
+      when is_integer(company_id) and is_integer(item_id) do
+    on_hand =
+      from(p in StockPlacementAlias,
+        join: l in StockLot, on: l.id == p.stock_lot_id,
+        where:
+          l.company_id == ^company_id and
+            l.item_id == ^item_id and
+            l.status in ["received", "available"],
+        select: coalesce(sum(p.qty), 0)
+      )
+      |> Repo.one()
+      |> decimal_or_zero()
+
+    booked =
+      from(b in ManufacturingOrderBooking,
+        join: l in StockLot, on: l.id == b.stock_lot_id,
+        where:
+          l.company_id == ^company_id and
+            l.item_id == ^item_id and
+            b.status == "requested",
+        select: coalesce(sum(b.quantity), 0)
+      )
+      |> Repo.one()
+      |> decimal_or_zero()
+
+    Decimal.sub(on_hand, booked)
+  end
+
+  @doc """
+  Full MO chain centered on `mo` — walks up to the root via
+  `parent_mo_id` then collects every descendant breadth-first.
+  Returns a flat list of MO records (with item preloaded) so the
+  FE can rebuild the tree from `parent_mo_id`. Cycle-safe via a
+  seen-set; depth-capped to match the cascade limit.
+  """
+  def mo_chain(%ManufacturingOrder{} = mo) do
+    root = walk_to_root(mo, MapSet.new())
+    collect_descendants([root], MapSet.new([root.id]))
+  end
+
+  defp walk_to_root(%ManufacturingOrder{parent_mo_id: nil} = mo, _seen) do
+    Repo.preload(mo, :item)
+  end
+
+  defp walk_to_root(%ManufacturingOrder{parent_mo_id: pid} = mo, seen) do
+    cond do
+      MapSet.member?(seen, mo.id) ->
+        Repo.preload(mo, :item)
+
+      parent = Repo.get(ManufacturingOrder, pid) ->
+        walk_to_root(parent, MapSet.put(seen, mo.id))
+
+      true ->
+        Repo.preload(mo, :item)
+    end
+  end
+
+  defp collect_descendants(frontier, seen) when frontier == [], do: []
+
+  defp collect_descendants(frontier, seen) do
+    loaded = Enum.map(frontier, &Repo.preload(&1, :item))
+
+    ids = Enum.map(loaded, & &1.id)
+
+    children =
+      from(c in ManufacturingOrder,
+        where: c.parent_mo_id in ^ids and c.id not in ^MapSet.to_list(seen),
+        preload: :item
+      )
+      |> Repo.all()
+
+    next_seen = Enum.reduce(children, seen, &MapSet.put(&2, &1.id))
+    loaded ++ collect_descendants(children, next_seen)
+  end
+
+  defp primary_bom_for_item(company_id, item_id) do
+    Repo.one(
+      from b in BOM,
+        where:
+          b.company_id == ^company_id and
+            b.item_id == ^item_id and
+            b.is_active == true,
+        order_by: [desc: b.is_primary, desc: b.id],
+        limit: 1
+    )
   end
 
   @doc """
@@ -1742,49 +1951,82 @@ defmodule Backend.Production do
         {:error, :invalid_transition, mo.status}
 
       {:ok, _perm} ->
-        before = mo_snapshot(mo)
-
-        attrs = %{
-          "status" => to,
-          "updated_by_id" => actor.id
-        }
-
-        attrs =
-          cond do
-            to == "approved" ->
-              attrs
-              |> Map.put("approved_by_id", actor.id)
-              |> Map.put("approved_at", now())
-
-            mo.status == "approved" and to == "draft" ->
-              attrs
-              |> Map.put("approved_by_id", nil)
-              |> Map.put("approved_at", nil)
-
-            true ->
-              attrs
-          end
-
-        mo
-        |> ManufacturingOrder.transition_changeset(attrs)
-        |> Repo.update()
-        |> case do
-          {:ok, updated} ->
-            Audit.record_updated(
-              actor,
-              "manufacturing_order",
-              updated,
-              before,
-              mo_snapshot(updated)
-            )
-
-            {:ok, reload_manufacturing_order(updated)}
-
-          err ->
-            err
+        # Parent MO can't start until every child finished.
+        # Block the approved → in_progress hop specifically; other
+        # transitions (cancel, amend) stay open so the planner isn't
+        # painted into a corner if a child stalls.
+        case ensure_children_complete(mo, to) do
+          :ok -> do_transition(actor, mo, to)
+          {:error, _} = err -> err
         end
     end
   end
+
+  defp do_transition(%User{} = actor, %ManufacturingOrder{} = mo, to) do
+    before = mo_snapshot(mo)
+
+    attrs = %{
+      "status" => to,
+      "updated_by_id" => actor.id
+    }
+
+    attrs =
+      cond do
+        to == "approved" ->
+          attrs
+          |> Map.put("approved_by_id", actor.id)
+          |> Map.put("approved_at", now())
+
+        mo.status == "approved" and to == "draft" ->
+          attrs
+          |> Map.put("approved_by_id", nil)
+          |> Map.put("approved_at", nil)
+
+        true ->
+          attrs
+      end
+
+    mo
+    |> ManufacturingOrder.transition_changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order",
+          updated,
+          before,
+          mo_snapshot(updated)
+        )
+
+        {:ok, reload_manufacturing_order(updated)}
+
+      err ->
+        err
+    end
+  end
+
+  # Block in_progress when any child MO hasn't completed yet. Other
+  # transitions stay open so the planner can still cancel / amend
+  # while children are mid-flight.
+  defp ensure_children_complete(%ManufacturingOrder{} = mo, "in_progress") do
+    open =
+      from(c in ManufacturingOrder,
+        where:
+          c.parent_mo_id == ^mo.id and
+            c.status not in ["completed", "cancelled"],
+        select: count(c.id)
+      )
+      |> Repo.one()
+
+    if open > 0 do
+      {:error, :children_not_complete}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_children_complete(_mo, _to), do: :ok
 
   def delete_manufacturing_order(%User{} = actor, %ManufacturingOrder{} = mo) do
     before = mo_snapshot(mo)
@@ -1851,6 +2093,28 @@ defmodule Backend.Production do
   # Precedence: routing pinned to this BOM > item-level default
   # (bom_id IS NULL) > nothing (operator can attach one later via the
   # routings UI).
+  # Fill in bom_id from the item's primary BOM when the caller
+  # didn't pick one explicitly. Used by the "Add sub-MO" dialog on
+  # the parts table where the operator only knows the part.
+  defp maybe_resolve_bom(attrs, %User{} = actor) do
+    cond do
+      Map.has_key?(attrs, "bom_id") and not is_nil(attrs["bom_id"]) ->
+        attrs
+
+      true ->
+        case attrs["item_id"] |> coerce_int() do
+          nil ->
+            attrs
+
+          item_id ->
+            case primary_bom_for_item(actor.company_id, item_id) do
+              %BOM{id: bom_id} -> Map.put(attrs, "bom_id", bom_id)
+              _ -> attrs
+            end
+        end
+    end
+  end
+
   defp maybe_resolve_routing(attrs, %User{} = actor) do
     cond do
       Map.has_key?(attrs, "routing_id") and not is_nil(attrs["routing_id"]) ->
@@ -2005,8 +2269,6 @@ defmodule Backend.Production do
 
   # ----- MO bookings (stock reservations) --------------------------
 
-  alias Backend.Stock.Placement, as: StockPlacement
-
   @doc """
   Active bookings against `lot_id`, ignoring an optional one (used
   by the update path so a booking doesn't count itself when checking
@@ -2033,7 +2295,7 @@ defmodule Backend.Production do
   def lot_available_qty(lot_id, exclude_booking_id \\ nil)
       when is_integer(lot_id) do
     on_hand =
-      from(p in StockPlacement,
+      from(p in StockPlacementAlias,
         where: p.stock_lot_id == ^lot_id,
         select: coalesce(sum(p.qty), 0)
       )
@@ -2058,15 +2320,32 @@ defmodule Backend.Production do
   def list_bookable_lots(%User{} = actor, item_id, opts \\ [])
       when is_integer(item_id) do
     exclude_booking_id = Keyword.get(opts, :exclude_booking_id)
+    strategy = normalise_strategy(Keyword.get(opts, :strategy, :fefo))
 
     eligible_statuses = ~w(received available)
 
-    StockLot
-    |> where([l], l.company_id == ^actor.company_id)
-    |> where([l], l.item_id == ^item_id)
-    |> where([l], l.status in ^eligible_statuses)
-    |> order_by([l], asc_nulls_last: l.expiry_at, asc: l.id)
-    |> preload([:item, placements: :storage_cell])
+    query =
+      StockLot
+      |> where([l], l.company_id == ^actor.company_id)
+      |> where([l], l.item_id == ^item_id)
+      |> where([l], l.status in ^eligible_statuses)
+      |> preload([:item, placements: :storage_cell])
+
+    query =
+      case strategy do
+        :fifo ->
+          # First-in, first-out — oldest received goods leave first.
+          # Falls back to the lot id for deterministic ordering.
+          query
+          |> order_by([l], asc_nulls_last: l.received_at, asc: l.id)
+
+        :fefo ->
+          # First-expired, first-out — closest expiry leaves first.
+          query
+          |> order_by([l], asc_nulls_last: l.expiry_at, asc: l.id)
+      end
+
+    query
     |> Repo.all()
     |> Enum.map(fn lot ->
       available = lot_available_qty(lot.id, exclude_booking_id)
@@ -2076,6 +2355,11 @@ defmodule Backend.Production do
       Decimal.compare(available, Decimal.new("0")) == :gt
     end)
   end
+
+  defp normalise_strategy(s) when s in [:fefo, :fifo], do: s
+  defp normalise_strategy("fifo"), do: :fifo
+  defp normalise_strategy("fefo"), do: :fefo
+  defp normalise_strategy(_), do: :fefo
 
   defp primary_cell_for_lot(%StockLot{placements: placements})
        when is_list(placements) and placements != [] do
@@ -2230,7 +2514,9 @@ defmodule Backend.Production do
   Returns `{:ok, created_bookings}` always — partial fulfilment is
   the expected case when stock is short.
   """
-  def book_all_for_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+  def book_all_for_mo(%User{} = actor, %ManufacturingOrder{} = mo, opts \\ []) do
+    strategy = normalise_strategy(Keyword.get(opts, :strategy, :fefo))
+
     mo =
       Repo.preload(mo, [
         :bookings,
@@ -2270,7 +2556,7 @@ defmodule Backend.Production do
         if Decimal.compare(needed, Decimal.new("0")) != :gt do
           []
         else
-          allocate_for_item(actor, mo, line.part_id, needed)
+          allocate_for_item(actor, mo, line.part_id, needed, strategy)
         end
       end)
       |> case do
@@ -2300,8 +2586,14 @@ defmodule Backend.Production do
     {:ok, length(bookings)}
   end
 
-  defp allocate_for_item(%User{} = actor, %ManufacturingOrder{} = mo, item_id, needed) do
-    lots = list_bookable_lots(actor, item_id)
+  defp allocate_for_item(
+         %User{} = actor,
+         %ManufacturingOrder{} = mo,
+         item_id,
+         needed,
+         strategy \\ :fefo
+       ) do
+    lots = list_bookable_lots(actor, item_id, strategy: strategy)
 
     {bookings, _remaining} =
       Enum.reduce_while(lots, {[], needed}, fn {lot, available, cell}, {acc, left} ->

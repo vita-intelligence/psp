@@ -3,9 +3,11 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import Link from "next/link";
 import {
   ChevronDown,
   ChevronRight,
+  Factory,
   Loader2,
   Plus,
   RotateCcw,
@@ -17,19 +19,20 @@ import {
 } from "@/lib/format/company";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import {
-  bookAllPartsAction,
-  releaseAllPartsAction,
-} from "@/lib/production/actions";
+import { releaseAllPartsAction } from "@/lib/production/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
   ManufacturingOrder,
   ManufacturingOrderBooking,
   ManufacturingOrderPart,
+  ManufacturingOrderRelation,
 } from "@/lib/production/types";
 import { AddBookingDialog } from "./add-booking-dialog";
 import { ReleaseBookingDialog } from "./release-booking-dialog";
+import { BookAllDialog } from "./book-all-dialog";
+import { AddSubMoDialog } from "./add-sub-mo-dialog";
+import { ReleaseSubMoDialog } from "./release-sub-mo-dialog";
 
 interface Props {
   mo: ManufacturingOrder;
@@ -52,6 +55,13 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
     part: ManufacturingOrderPart;
     booking: ManufacturingOrderBooking;
   } | null>(null);
+  const [addingSubMoFor, setAddingSubMoFor] =
+    useState<ManufacturingOrderPart | null>(null);
+  const [releasingSubMo, setReleasingSubMo] = useState<{
+    part: ManufacturingOrderPart;
+    child: ManufacturingOrderRelation;
+  } | null>(null);
+  const [bookAllOpen, setBookAllOpen] = useState(false);
   const [pendingAll, startTransitionAll] = useTransition();
 
   if (mo.parts.length === 0) {
@@ -68,24 +78,6 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
   }
 
   const hasAnyBookings = mo.parts.some((p) => p.bookings.length > 0);
-
-  function onBookAll() {
-    if (!canEdit) return;
-    startTransitionAll(async () => {
-      const res = await bookAllPartsAction(mo.uuid);
-      if (res.ok) {
-        toast.success(
-          res.created === 0
-            ? "Nothing more to book — already covered."
-            : `${res.created} booking${res.created === 1 ? "" : "s"} created.`,
-        );
-        invalidateAudit("manufacturing_order", mo.id);
-        router.refresh();
-      } else {
-        toast.error(res.detail);
-      }
-    });
-  }
 
   function onReleaseAll() {
     if (!canEdit) return;
@@ -130,13 +122,9 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
             size="sm"
             variant="outline"
             disabled={pendingAll}
-            onClick={onBookAll}
+            onClick={() => setBookAllOpen(true)}
           >
-            {pendingAll ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Plus className="size-3.5" />
-            )}
+            <Plus className="size-3.5" />
             Book all parts
           </Button>
           {hasAnyBookings && (
@@ -148,7 +136,11 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
               onClick={onReleaseAll}
               className="text-muted-foreground"
             >
-              <RotateCcw className="size-3.5" />
+              {pendingAll ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="size-3.5" />
+              )}
               Release all booked parts
             </Button>
           )}
@@ -169,7 +161,7 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
               <th className="px-2 py-1.5 text-left">Status</th>
               <th className="px-2 py-1.5 text-left">Storage</th>
               <th className="px-2 py-1.5 text-left">Available from</th>
-              <th className="w-8 px-2 py-1.5" aria-label="Actions" />
+              <th className="w-10 px-2 py-1.5" aria-label="Actions" />
             </tr>
           </thead>
           <tbody>
@@ -181,6 +173,10 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
                 canEdit={canEdit}
                 onAdd={() => setAddingFor(p)}
                 onRelease={(b) => setReleasing({ part: p, booking: b })}
+                onAddSubMo={() => setAddingSubMoFor(p)}
+                onReleaseSubMo={(child) =>
+                  setReleasingSubMo({ part: p, child })
+                }
               />
             ))}
           </tbody>
@@ -207,6 +203,35 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
           onOpenChange={(o) => !o && setReleasing(null)}
         />
       )}
+
+      {bookAllOpen && (
+        <BookAllDialog
+          mo={mo}
+          open={bookAllOpen}
+          onOpenChange={setBookAllOpen}
+        />
+      )}
+
+      {addingSubMoFor && (
+        <AddSubMoDialog
+          mo={mo}
+          part={addingSubMoFor}
+          company={company}
+          open={Boolean(addingSubMoFor)}
+          onOpenChange={(o) => !o && setAddingSubMoFor(null)}
+        />
+      )}
+
+      {releasingSubMo && (
+        <ReleaseSubMoDialog
+          mo={mo}
+          part={releasingSubMo.part}
+          child={releasingSubMo.child}
+          company={company}
+          open={Boolean(releasingSubMo)}
+          onOpenChange={(o) => !o && setReleasingSubMo(null)}
+        />
+      )}
     </section>
   );
 }
@@ -217,10 +242,22 @@ interface PartRowsProps {
   canEdit: boolean;
   onAdd: () => void;
   onRelease: (b: ManufacturingOrderBooking) => void;
+  onAddSubMo: () => void;
+  onReleaseSubMo: (child: ManufacturingOrderRelation) => void;
 }
 
-function PartRows({ p, company, canEdit, onAdd, onRelease }: PartRowsProps) {
-  const hasBookings = p.bookings.length > 0;
+function PartRows({
+  p,
+  company,
+  canEdit,
+  onAdd,
+  onRelease,
+  onAddSubMo,
+  onReleaseSubMo,
+}: PartRowsProps) {
+  const hasUnbooked = Number(p.unbooked_qty ?? "0") > 0;
+  const hasBookings =
+    p.bookings.length > 0 || p.pending_from_sub_mos.length > 0 || hasUnbooked;
   const [open, setOpen] = useState(hasBookings);
   const uom =
     p.unit_of_measurement?.symbol ?? p.part?.stock_uom?.symbol ?? "";
@@ -290,16 +327,31 @@ function PartRows({ p, company, canEdit, onAdd, onRelease }: PartRowsProps) {
         <td className="px-2 py-2 text-muted-foreground/60">—</td>
         <td className="px-1 py-1 text-right">
           {canEdit && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              onClick={onAdd}
-              aria-label="Add a booking"
-              title="Add a booking"
-            >
-              <Plus />
-            </Button>
+            <div className="flex items-center justify-end gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={onAdd}
+                aria-label="Book from stock"
+                title="Book from stock"
+              >
+                <Plus />
+              </Button>
+              {p.part?.item_type === "semi_finished" && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={onAddSubMo}
+                  aria-label="Add a sub-MO"
+                  title="Add a sub-MO"
+                  className="text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/30"
+                >
+                  <Factory />
+                </Button>
+              )}
+            </div>
           )}
         </td>
       </tr>
@@ -315,34 +367,71 @@ function PartRows({ p, company, canEdit, onAdd, onRelease }: PartRowsProps) {
             onRelease={() => onRelease(b)}
           />
         ))}
+      {open && hasUnbooked && (
+        <NotBookedRow
+          part={p}
+          uom={uom}
+          unitCost={p.unit_cost}
+          unbookedQty={p.unbooked_qty ?? "0"}
+          company={company}
+          canEdit={canEdit}
+          onAddBooking={onAdd}
+          onAddSubMo={onAddSubMo}
+        />
+      )}
+      {open &&
+        p.pending_from_sub_mos.map((child) => (
+          <PendingSubMoRow
+            key={`sub-${child.id}`}
+            child={child}
+            uom={uom}
+            unitCost={p.unit_cost}
+            company={company}
+            canEdit={canEdit}
+            onRelease={() => onReleaseSubMo(child)}
+          />
+        ))}
     </>
   );
 }
 
+const COVERAGE_STYLE: Record<
+  ManufacturingOrderPart["coverage_status"],
+  { text: string; label: string; dot: string }
+> = {
+  booked: {
+    text: "text-emerald-700 dark:text-emerald-300",
+    label: "Booked",
+    dot: "bg-emerald-500",
+  },
+  sub_mo_in_progress: {
+    text: "text-amber-800 dark:text-amber-300",
+    label: "Sub-MO running",
+    dot: "bg-amber-500 animate-pulse",
+  },
+  partial: {
+    text: "text-amber-800 dark:text-amber-300",
+    label: "Partial",
+    dot: "bg-amber-500",
+  },
+  not_booked: {
+    text: "text-destructive",
+    label: "Not booked",
+    dot: "bg-destructive",
+  },
+  unknown: {
+    text: "text-muted-foreground/60",
+    label: "—",
+    dot: "bg-muted-foreground/40",
+  },
+};
+
 function UnderBookedBadge({ p }: { p: ManufacturingOrderPart }) {
-  if (!p.required_qty) return <span className="text-muted-foreground/50">—</span>;
-  const required = Number(p.required_qty);
-  const booked = Number(p.booked_qty ?? "0");
-  if (Number.isNaN(required) || Number.isNaN(booked)) {
-    return <span className="text-muted-foreground/50">—</span>;
-  }
-  if (booked === 0) {
-    return (
-      <span className="inline-flex items-center gap-1 text-destructive">
-        Not booked
-      </span>
-    );
-  }
-  if (booked >= required) {
-    return (
-      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
-        Fully booked
-      </span>
-    );
-  }
+  const style = COVERAGE_STYLE[p.coverage_status];
   return (
-    <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300">
-      Partial
+    <span className={cn("inline-flex items-center gap-1.5", style.text)}>
+      <span className={cn("size-1.5 rounded-full", style.dot)} aria-hidden />
+      {style.label}
     </span>
   );
 }
@@ -370,7 +459,7 @@ function BookingRow({
       : null;
 
   return (
-    <tr className={cn("border-b border-border/40", "text-amber-700 dark:text-amber-300")}>
+    <tr className="border-b border-border/40">
       <td className="px-2 py-1.5 pl-8 text-muted-foreground" />
       <td className="px-2 py-1.5 text-right" />
       <td className="px-2 py-1.5 text-right font-mono">
@@ -390,7 +479,9 @@ function BookingRow({
       <td className="px-2 py-1.5 font-mono">
         {booking.stock_lot?.code ?? "—"}
       </td>
-      <td className="px-2 py-1.5 capitalize">{booking.status}</td>
+      <td className="px-2 py-1.5">
+        <BookingStatusBadge status={booking.status} />
+      </td>
       <td className="px-2 py-1.5">
         {booking.storage_location?.name ?? "—"}
       </td>
@@ -410,6 +501,217 @@ function BookingRow({
             onClick={onRelease}
             aria-label="Release this booking"
             title="Release this booking"
+          >
+            <RotateCcw />
+          </Button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+const BOOKING_STATUS: Record<
+  ManufacturingOrderBooking["status"],
+  { text: string; bg: string; dot: string; label: string }
+> = {
+  requested: {
+    text: "text-emerald-700 dark:text-emerald-300",
+    bg: "bg-emerald-50 dark:bg-emerald-950/30",
+    dot: "bg-emerald-500",
+    label: "Booked",
+  },
+  consumed: {
+    text: "text-indigo-700 dark:text-indigo-300",
+    bg: "bg-indigo-50 dark:bg-indigo-950/30",
+    dot: "bg-indigo-500",
+    label: "Consumed",
+  },
+  cancelled: {
+    text: "text-muted-foreground",
+    bg: "bg-muted/60",
+    dot: "bg-muted-foreground/40",
+    label: "Released",
+  },
+};
+
+function BookingStatusBadge({
+  status,
+}: {
+  status: ManufacturingOrderBooking["status"];
+}) {
+  const s = BOOKING_STATUS[status];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ring-border/40",
+        s.bg,
+        s.text,
+      )}
+    >
+      <span className={cn("size-1.5 rounded-full", s.dot)} aria-hidden />
+      {s.label}
+    </span>
+  );
+}
+
+interface NotBookedRowProps {
+  part: ManufacturingOrderPart;
+  uom: string;
+  unitCost: string | null;
+  unbookedQty: string;
+  company: CompanyDefaults;
+  canEdit: boolean;
+  onAddBooking: () => void;
+  onAddSubMo: () => void;
+}
+
+/**
+ * MRPEasy-style "still missing" sub-row. Surfaces the gap (and its
+ * £ value) as its own line so the operator sees exactly how much
+ * coverage is short. Quick-action buttons let them resolve the gap
+ * inline by either booking more stock or spawning another sub-MO.
+ */
+function NotBookedRow({
+  part,
+  uom,
+  unitCost,
+  unbookedQty,
+  company,
+  canEdit,
+  onAddBooking,
+  onAddSubMo,
+}: NotBookedRowProps) {
+  const lineTotal =
+    unitCost && unbookedQty
+      ? String(Number(unitCost) * Number(unbookedQty))
+      : null;
+
+  return (
+    <tr className="border-b border-border/40 bg-destructive/[0.04]">
+      <td className="px-2 py-1.5 pl-8 text-xs text-muted-foreground" />
+      <td className="px-2 py-1.5 text-right" />
+      <td className="px-2 py-1.5 text-right font-mono text-muted-foreground/60">
+        —
+      </td>
+      <td className="px-2 py-1.5 text-right font-mono text-destructive">
+        {formatCompanyNumber(unbookedQty, company)} {uom}
+      </td>
+      <td className="px-2 py-1.5 text-right font-mono">
+        {unitCost ? formatCompanyMoney(unitCost, company) : "—"}
+      </td>
+      <td className="px-2 py-1.5 text-right font-mono text-destructive">
+        {lineTotal ? formatCompanyMoney(lineTotal, company) : "—"}
+      </td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
+      <td className="px-2 py-1.5">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive ring-1 ring-inset ring-destructive/30">
+          <span className="size-1.5 rounded-full bg-destructive" aria-hidden />
+          Not booked
+        </span>
+      </td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
+      <td className="px-1 py-1 text-right">
+        {canEdit && (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              onClick={onAddBooking}
+              aria-label="Book from stock"
+              title="Book from stock"
+            >
+              <Plus />
+            </Button>
+            {part.part?.item_type === "semi_finished" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={onAddSubMo}
+                aria-label="Add a sub-MO"
+                title="Add a sub-MO"
+                className="text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/30"
+              >
+                <Factory />
+              </Button>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+interface PendingSubMoRowProps {
+  child: ManufacturingOrderRelation;
+  uom: string;
+  unitCost: string | null;
+  company: CompanyDefaults;
+  canEdit: boolean;
+  onRelease: () => void;
+}
+
+function PendingSubMoRow({
+  child,
+  uom,
+  unitCost,
+  company,
+  canEdit,
+  onRelease,
+}: PendingSubMoRowProps) {
+  const lineTotal =
+    unitCost && child.quantity
+      ? String(Number(unitCost) * Number(child.quantity))
+      : null;
+
+  return (
+    <tr className="border-b border-border/40 bg-amber-50/30 dark:bg-amber-950/10">
+      <td className="px-2 py-1.5 pl-8">
+        <Link
+          href={`/production/manufacturing-orders/${child.uuid}`}
+          className="inline-flex items-center gap-1.5 text-xs text-amber-800 hover:underline dark:text-amber-300"
+        >
+          <Factory className="size-3" />
+          From {child.code ?? `MO #${child.id}`}
+        </Link>
+      </td>
+      <td className="px-2 py-1.5 text-right" />
+      <td className="px-2 py-1.5 text-right font-mono">{`0 ${uom}`.trim()}</td>
+      <td className="px-2 py-1.5 text-right font-mono text-amber-800 dark:text-amber-300">
+        {formatCompanyNumber(child.quantity, company)} {uom}
+      </td>
+      <td className="px-2 py-1.5 text-right font-mono">
+        {unitCost ? formatCompanyMoney(unitCost, company) : "—"}
+      </td>
+      <td className="px-2 py-1.5 text-right font-mono">
+        {lineTotal ? formatCompanyMoney(lineTotal, company) : "—"}
+      </td>
+      <td className="px-2 py-1.5 font-mono text-muted-foreground/70">
+        (sub-MO)
+      </td>
+      <td className="px-2 py-1.5">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:ring-amber-900/50",
+          )}
+        >
+          <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" aria-hidden />
+          Awaiting production
+        </span>
+      </td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
+      <td className="px-1 py-1 text-right">
+        {canEdit && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={onRelease}
+            aria-label="Release / adjust sub-MO"
+            title="Release or adjust this sub-MO"
           >
             <RotateCcw />
           </Button>

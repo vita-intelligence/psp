@@ -889,6 +889,22 @@ defmodule BackendWeb.Payloads do
       bom: bom_summary(mo.bom),
       routing_id: mo.routing_id,
       routing: mo_routing_summary(mo.routing),
+      parent_mo_id: mo.parent_mo_id,
+      parent_mo: mo_parent_summary(Map.get(mo, :parent_mo)),
+      children: mo_children_summary(Map.get(mo, :children)),
+      # Open children — drives the "Waiting on N sub-MO" pill in the
+      # MO header. Completed / cancelled children don't count.
+      blocking_children_count:
+        Map.get(mo, :children)
+        |> case do
+          %Ecto.Association.NotLoaded{} -> 0
+          list when is_list(list) ->
+            Enum.count(list, &(&1.status not in ["completed", "cancelled"]))
+          _ -> 0
+        end,
+      # Full root-to-leaf chain centered on this MO, so the FE can
+      # render the production roadmap without an extra fetch.
+      chain: mo_chain_summary(mo),
       assigned_to_id: mo.assigned_to_id,
       assigned_to: actor(mo, :assigned_to),
       approved_by_id: mo.approved_by_id,
@@ -954,6 +970,75 @@ defmodule BackendWeb.Payloads do
 
   defp mo_routing_summary(_), do: nil
 
+  defp mo_parent_summary(%Backend.Production.ManufacturingOrder{} = mo) do
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status,
+      quantity: decimal_to_string(mo.quantity),
+      item: maybe_item_summary(mo.item)
+    }
+  end
+
+  defp mo_parent_summary(_), do: nil
+
+  defp mo_children_summary(list) when is_list(list) do
+    list
+    |> Enum.sort_by(& &1.inserted_at, NaiveDateTime)
+    |> Enum.map(fn child ->
+      %{
+        id: child.id,
+        uuid: child.uuid,
+        code: render_code(child, "manufacturing_order"),
+        status: child.status,
+        quantity: decimal_to_string(child.quantity),
+        revision: child.revision,
+        start_at: child.start_at,
+        finish_at: child.finish_at,
+        item: maybe_item_summary(child.item)
+      }
+    end)
+  end
+
+  defp mo_children_summary(_), do: []
+
+  defp mo_chain_summary(%Backend.Production.ManufacturingOrder{parent_mo_id: nil, children: %Ecto.Association.NotLoaded{}}),
+    do: []
+
+  defp mo_chain_summary(%Backend.Production.ManufacturingOrder{} = mo) do
+    # Only do the chain walk when the MO is actually part of a tree.
+    # A leaf with no parent and no children stays empty (the FE hides
+    # the roadmap card).
+    parent_id = mo.parent_mo_id
+
+    children =
+      case Map.get(mo, :children) do
+        %Ecto.Association.NotLoaded{} -> []
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    if is_nil(parent_id) and children == [] do
+      []
+    else
+      Backend.Production.mo_chain(mo)
+      |> Enum.map(fn node ->
+        %{
+          id: node.id,
+          uuid: node.uuid,
+          code: render_code(node, "manufacturing_order"),
+          status: node.status,
+          quantity: decimal_to_string(node.quantity),
+          parent_mo_id: node.parent_mo_id,
+          item: maybe_item_summary(node.item)
+        }
+      end)
+    end
+  end
+
+  defp mo_chain_summary(_), do: []
+
   # Build the parts breakdown the MO detail page renders. Each BOM
   # line is a master row (required qty, unit cost, total) with the
   # individual bookings nested underneath as sub-rows so the FE can
@@ -988,6 +1073,20 @@ defmodule BackendWeb.Payloads do
       end
 
     bookings_by_item = Enum.group_by(bookings, & &1.item_id)
+
+    # Open children producing each item — used to compute the
+    # "Sub-MO running" status. Keyed by item_id of the child's output.
+    children =
+      case Map.get(mo, :children) do
+        %Ecto.Association.NotLoaded{} -> []
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    children_by_item =
+      children
+      |> Enum.filter(&(&1.status not in ["completed", "cancelled"]))
+      |> Enum.group_by(& &1.item_id)
 
     part_ids = lines |> Enum.map(& &1.part_id) |> Enum.reject(&is_nil/1)
     costs = Backend.Production.average_unit_costs(company_id, part_ids)
@@ -1025,6 +1124,31 @@ defmodule BackendWeb.Payloads do
             Decimal.add(acc, b.consumed_quantity || Decimal.new(0))
           end)
 
+        # Pending contributions from open child MOs producing this
+        # part. Each contribution shows up as its own sub-row on the
+        # FE labelled "Awaiting production from MO-XXX".
+        pending_children = Map.get(children_by_item, line.part_id, [])
+
+        pending_sum =
+          Enum.reduce(pending_children, Decimal.new(0), fn c, acc ->
+            Decimal.add(acc, c.quantity || Decimal.new(0))
+          end)
+
+        coverage = Decimal.add(booked_sum, pending_sum)
+
+        coverage_status =
+          coverage_state_for(required_qty, booked_sum, pending_sum, coverage)
+
+        unbooked_qty =
+          case required_qty do
+            nil ->
+              nil
+
+            %Decimal{} ->
+              gap = Decimal.sub(required_qty, coverage)
+              if Decimal.compare(gap, Decimal.new("0")) == :gt, do: gap, else: nil
+          end
+
         part_row = %{
           id: line.id,
           uuid: line.uuid,
@@ -1040,7 +1164,11 @@ defmodule BackendWeb.Payloads do
           total_cost: decimal_to_string(line_total),
           booked_qty: decimal_to_string(booked_sum),
           consumed_qty: decimal_to_string(consumed_sum),
+          pending_from_sub_mos_qty: decimal_to_string(pending_sum),
+          unbooked_qty: decimal_to_string(unbooked_qty),
+          coverage_status: coverage_status,
           bookings: Enum.map(line_bookings, &mo_booking/1),
+          pending_from_sub_mos: Enum.map(pending_children, &mo_pending_sub_mo_row/1),
           # Legacy single-row columns — kept null since multiple
           # bookings can stack against the same line.
           lot: nil,
@@ -1062,6 +1190,43 @@ defmodule BackendWeb.Payloads do
   end
 
   defp mo_parts_breakdown(_), do: {[], nil}
+
+  # Derive the master-row badge state from booked + sub-MO pending vs
+  # required. `nil` required (no qty on the line) leaves it `unknown`.
+  defp coverage_state_for(nil, _booked, _pending, _coverage), do: "unknown"
+
+  defp coverage_state_for(%Decimal{} = required, booked, pending, coverage) do
+    cond do
+      Decimal.compare(coverage, required) in [:eq, :gt] ->
+        # Fully covered. Pick the dominant source so the badge tells
+        # the operator whether to wait on a sub-MO or just go.
+        cond do
+          Decimal.compare(pending, Decimal.new("0")) == :gt and
+              Decimal.compare(booked, pending) == :lt ->
+            "sub_mo_in_progress"
+
+          true ->
+            "booked"
+        end
+
+      Decimal.compare(coverage, Decimal.new("0")) == :gt ->
+        "partial"
+
+      true ->
+        "not_booked"
+    end
+  end
+
+  defp mo_pending_sub_mo_row(%Backend.Production.ManufacturingOrder{} = child) do
+    %{
+      id: child.id,
+      uuid: child.uuid,
+      code: render_code(child, "manufacturing_order"),
+      status: child.status,
+      quantity: decimal_to_string(child.quantity),
+      item: maybe_item_summary(child.item)
+    }
+  end
 
   @doc """
   Full booking row payload — the FE renders one of these per

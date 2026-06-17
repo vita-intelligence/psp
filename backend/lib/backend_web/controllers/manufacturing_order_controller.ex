@@ -140,6 +140,17 @@ defmodule BackendWeb.ManufacturingOrderController do
                     )
                   )
 
+                {:error, :children_not_complete} ->
+                  conn
+                  |> put_status(:unprocessable_entity)
+                  |> json(
+                    Errors.payload(
+                      "children_not_complete",
+                      "Finish or cancel every sub-production MO before starting this one.",
+                      %{}
+                    )
+                  )
+
                 {:error, %Ecto.Changeset{} = cs} ->
                   changeset_error(conn, cs)
               end

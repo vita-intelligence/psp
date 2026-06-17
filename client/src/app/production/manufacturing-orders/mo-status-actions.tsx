@@ -193,6 +193,21 @@ export function MOStatusActions({ mo, canApprove, canExecute }: Props) {
           {STATUS_LABEL[mo.status]}
         </span>
 
+        {mo.blocking_children_count > 0 && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:ring-amber-900/50">
+            <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" aria-hidden />
+            Waiting on {mo.blocking_children_count} sub-MO
+            {mo.blocking_children_count === 1 ? "" : "s"}
+          </span>
+        )}
+
+        {mo.parent_mo && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-200 dark:bg-indigo-950/30 dark:text-indigo-300 dark:ring-indigo-900/50">
+            <span className="size-1.5 rounded-full bg-indigo-500" aria-hidden />
+            Feeds {mo.parent_mo.code ?? `MO #${mo.parent_mo.id}`}
+          </span>
+        )}
+
         {actions.length > 0 && (
           <span className="h-5 w-px bg-border" aria-hidden />
         )}
