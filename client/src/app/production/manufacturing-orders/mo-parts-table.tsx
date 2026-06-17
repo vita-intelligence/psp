@@ -83,7 +83,7 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
     if (!canEdit) return;
     if (
       !window.confirm(
-        "Release every active booking on this MO? Stock goes back to its lots.",
+        "Release every active booking on this MO AND cancel sub-MOs still in draft / approved? In-progress and completed sub-MOs stay put.",
       )
     ) {
       return;
@@ -91,11 +91,18 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
     startTransitionAll(async () => {
       const res = await releaseAllPartsAction(mo.uuid);
       if (res.ok) {
-        toast.success(
-          res.released === 0
-            ? "Nothing to release."
-            : `${res.released} booking${res.released === 1 ? "" : "s"} released.`,
-        );
+        const parts: string[] = [];
+        if (res.released > 0) {
+          parts.push(
+            `${res.released} booking${res.released === 1 ? "" : "s"} released`,
+          );
+        }
+        if (res.cancelled_sub_mos > 0) {
+          parts.push(
+            `${res.cancelled_sub_mos} sub-MO${res.cancelled_sub_mos === 1 ? "" : "s"} cancelled`,
+          );
+        }
+        toast.success(parts.length === 0 ? "Nothing to release." : parts.join(" · "));
         invalidateAudit("manufacturing_order", mo.id);
         router.refresh();
       } else {

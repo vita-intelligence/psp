@@ -179,8 +179,13 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
         not_found(conn, "Manufacturing order not found.")
 
       %ManufacturingOrder{} = mo ->
-        {:ok, count} = Production.release_all_for_mo(actor, mo)
-        json(conn, %{released: count})
+        {:ok, %{bookings: released_bookings, children: cancelled_children}} =
+          Production.release_all_for_mo(actor, mo)
+
+        json(conn, %{
+          released: released_bookings,
+          cancelled_sub_mos: cancelled_children
+        })
     end
   end
 

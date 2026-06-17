@@ -673,14 +673,14 @@ export async function bookAllPartsAction(
 export async function releaseAllPartsAction(
   moUuid: string,
 ): Promise<
-  | { ok: true; released: number }
+  | { ok: true; released: number; cancelled_sub_mos: number }
   | (ErrorResult & { ok: false })
 > {
   const token = await getSessionToken();
   if (!token)
     return { ok: false, ...unauthorizedResult("releaseAllPartsAction") };
   try {
-    const data = await api<{ released: number }>(
+    const data = await api<{ released: number; cancelled_sub_mos: number }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/release-all`,
       { method: "POST", token, body: JSON.stringify({}) },
     );

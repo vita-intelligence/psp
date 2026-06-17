@@ -2570,8 +2570,11 @@ defmodule Backend.Production do
   end
 
   @doc """
-  Release every active booking on the MO. Convenience wrapper for
-  the "Release all booked parts" button.
+  Release every active booking on the MO AND cancel any child MOs
+  still in draft / approved that were spawned to cover its semi-
+  finished gaps. In-progress / completed children stay put — those
+  are physically running or already produced stock and shouldn't
+  be torn down by a single button.
   """
   def release_all_for_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
     bookings =
@@ -2583,7 +2586,24 @@ defmodule Backend.Production do
       |> Repo.all()
 
     Enum.each(bookings, &delete_booking(actor, &1))
-    {:ok, length(bookings)}
+
+    cancellable_children =
+      from(c in ManufacturingOrder,
+        where:
+          c.parent_mo_id == ^mo.id and
+            c.status in ["draft", "approved"]
+      )
+      |> Repo.all()
+
+    cancelled_count =
+      Enum.reduce(cancellable_children, 0, fn child, acc ->
+        case transition_mo(actor, child, "cancelled") do
+          {:ok, _} -> acc + 1
+          _ -> acc
+        end
+      end)
+
+    {:ok, %{bookings: length(bookings), children: cancelled_count}}
   end
 
   defp allocate_for_item(
