@@ -46,6 +46,12 @@ defmodule Backend.Production.WorkstationGroup do
     field :color, :string
     field :is_active, :boolean, default: true
 
+    # Pre-filled SOP / operation description for routings + MO steps
+    # whose workstation_group_id matches this row. Operators see this
+    # as the auto-fill on the routing-step form when the description
+    # is empty.
+    field :default_operation_notes, :string
+
     belongs_to :company, Company
     belongs_to :created_by, User
     belongs_to :updated_by, User
@@ -59,6 +65,7 @@ defmodule Backend.Production.WorkstationGroup do
     custom_working_hours working_hours
     custom_holidays holidays
     color is_active
+    default_operation_notes
     created_by_id updated_by_id
   )a
 
@@ -68,6 +75,7 @@ defmodule Backend.Production.WorkstationGroup do
     |> validate_required([:company_id, :name, :kind])
     |> validate_length(:name, min: 1, max: 200)
     |> validate_length(:notes, max: 4000)
+    |> validate_length(:default_operation_notes, max: 10_000)
     |> validate_inclusion(:kind, @kinds,
       message: "must be active_processing or passive_processing"
     )

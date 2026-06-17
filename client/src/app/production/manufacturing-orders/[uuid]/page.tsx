@@ -113,7 +113,7 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
 
           <MOCostSummary mo={mo} company={company} />
           <MOPartsTable mo={mo} company={company} />
-          <MOOperationsTable mo={mo} company={company} />
+          <MOOperationsTable mo={mo} company={company} canEdit={canEdit} />
 
           <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
             <header className="mb-3">

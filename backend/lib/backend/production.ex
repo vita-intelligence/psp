@@ -33,6 +33,8 @@ defmodule Backend.Production do
     BOMLine,
     BOMVersion,
     ManufacturingOrder,
+    ManufacturingOrderStep,
+    ManufacturingOrderStepWorker,
     Routing,
     RoutingStep,
     RoutingStepWorker,
@@ -1351,8 +1353,24 @@ defmodule Backend.Production do
       :approved_by,
       :created_by,
       :updated_by,
+      steps: [:workstation_group, :routing_step, worker_assignments: :user],
       bom: [lines: [:part, :unit_of_measurement]],
       routing: [steps: [:workstation_group, worker_assignments: :user]]
+    ])
+    |> Repo.one()
+  end
+
+  def get_mo_step(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    ManufacturingOrderStep
+    |> where([s], s.company_id == ^company_id and s.uuid == ^uuid)
+    |> preload([
+      :workstation_group,
+      :routing_step,
+      :manufacturing_order,
+      :created_by,
+      :updated_by,
+      worker_assignments: :user
     ])
     |> Repo.one()
   end
@@ -1368,21 +1386,300 @@ defmodule Backend.Production do
       |> Map.delete("status")
       |> Map.delete("approved_by_id")
       |> Map.delete("approved_at")
+      |> maybe_resolve_routing(actor)
 
     with :ok <- ensure_mo_site_production_facility(actor, attrs["warehouse_id"]),
          :ok <- ensure_mo_bom_for_item(actor, attrs["item_id"], attrs["bom_id"]) do
-      %ManufacturingOrder{}
-      |> ManufacturingOrder.changeset(attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, mo} ->
+      Repo.transaction(fn ->
+        with {:ok, mo} <-
+               %ManufacturingOrder{}
+               |> ManufacturingOrder.changeset(attrs)
+               |> Repo.insert(),
+             :ok <- snapshot_mo_steps(actor, mo) do
           Audit.record_created(actor, "manufacturing_order", mo, mo_snapshot(mo))
-          {:ok, reload_manufacturing_order(mo)}
-
-        err ->
-          err
+          mo
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, mo} -> {:ok, reload_manufacturing_order(mo)}
+        err -> err
       end
     end
+  end
+
+  @doc """
+  Copy the MO's routing template into per-MO `mo_steps` rows.
+  Idempotent: if the MO already has steps, this no-ops.
+  Without a routing, also a no-op — the operator can still finish
+  the MO; the operations table just stays empty.
+  """
+  def snapshot_mo_steps(%User{} = actor, %ManufacturingOrder{} = mo) do
+    mo =
+      Repo.preload(mo, [
+        :steps,
+        routing: [steps: [:workstation_group, worker_assignments: :user]]
+      ])
+
+    cond do
+      mo.steps != [] ->
+        :ok
+
+      is_nil(mo.routing) ->
+        :ok
+
+      true ->
+        routing_steps = mo.routing.steps |> Enum.sort_by(& &1.sort_order)
+
+        {snapshots, _cursor} =
+          Enum.reduce(routing_steps, {[], mo.start_at}, fn rstep, {acc, cursor} ->
+            duration = step_duration_seconds_for_snapshot(rstep, mo.quantity)
+            finish = if cursor, do: DateTime.add(cursor, duration, :second), else: nil
+
+            attrs = %{
+              "company_id" => mo.company_id,
+              "manufacturing_order_id" => mo.id,
+              "workstation_group_id" => rstep.workstation_group_id,
+              "routing_step_id" => rstep.id,
+              "sort_order" => rstep.sort_order,
+              "operation_description" =>
+                resolve_operation_description(rstep),
+              "setup_time_min" => rstep.setup_time_min,
+              "cycle_time_min" => rstep.cycle_time_min,
+              "fixed_cost" => rstep.fixed_cost,
+              "variable_cost" => rstep.variable_cost,
+              "capacity" => rstep.capacity,
+              "planned_start" => cursor,
+              "planned_finish" => finish,
+              "quantity" => mo.quantity,
+              "created_by_id" => actor.id,
+              "updated_by_id" => actor.id
+            }
+
+            case %ManufacturingOrderStep{}
+                 |> ManufacturingOrderStep.changeset(attrs)
+                 |> Repo.insert() do
+              {:ok, step} ->
+                # Carry over the template's default workers.
+                Enum.each(rstep.worker_assignments, fn wa ->
+                  %ManufacturingOrderStepWorker{}
+                  |> ManufacturingOrderStepWorker.changeset(%{
+                    "manufacturing_order_step_id" => step.id,
+                    "user_id" => wa.user_id,
+                    "company_id" => mo.company_id
+                  })
+                  |> Repo.insert!()
+                end)
+
+                {[step | acc], finish}
+
+              {:error, changeset} ->
+                throw({:snapshot_failed, changeset})
+            end
+          end)
+
+        _ = snapshots
+        :ok
+    end
+  catch
+    {:snapshot_failed, changeset} -> {:error, changeset}
+  end
+
+  # If the routing step has no description of its own, fall back
+  # through the group → station chain so a default typed anywhere in
+  # that family carries through to the MO.
+  defp resolve_operation_description(rstep) do
+    cond do
+      is_binary(rstep.operation_description) and
+          String.trim(rstep.operation_description) != "" ->
+        rstep.operation_description
+
+      match?(%Backend.Production.WorkstationGroup{}, rstep.workstation_group) ->
+        effective_group_operation_notes(rstep.workstation_group)
+
+      true ->
+        nil
+    end
+  end
+
+  @doc """
+  Group's own default, with a station-level fallback. If the group
+  hasn't been given a default but at least one of its workstations
+  has one, return that station's value. Ties broken by lowest id so
+  the choice is deterministic.
+
+  Public so the payload layer can surface this on `workstation_group_summary`
+  and the FE prefill matches what the BE snapshot will write.
+  """
+  def effective_group_operation_notes(%Backend.Production.WorkstationGroup{} = g) do
+    cond do
+      is_binary(g.default_operation_notes) and
+          String.trim(g.default_operation_notes) != "" ->
+        g.default_operation_notes
+
+      true ->
+        from(w in Workstation,
+          where:
+            w.workstation_group_id == ^g.id and
+              w.is_active == true and
+              not is_nil(w.default_operation_notes) and
+              fragment("btrim(?) <> ''", w.default_operation_notes),
+          order_by: [asc: w.id],
+          limit: 1,
+          select: w.default_operation_notes
+        )
+        |> Repo.one()
+    end
+  end
+
+  def effective_group_operation_notes(_), do: nil
+
+  # Mirror of payloads' step_duration_seconds, kept here so the
+  # snapshot doesn't reach into the web layer.
+  defp step_duration_seconds_for_snapshot(step, qty) do
+    setup = step.setup_time_min || Decimal.new("0")
+    cycle = step.cycle_time_min || Decimal.new("0")
+    capacity = step.capacity || Decimal.new("1")
+    quantity = qty || Decimal.new("0")
+
+    cycle_total =
+      if Decimal.equal?(capacity, Decimal.new("0")) do
+        Decimal.new("0")
+      else
+        cycle |> Decimal.mult(quantity) |> Decimal.div(capacity)
+      end
+
+    Decimal.add(setup, cycle_total)
+    |> Decimal.mult(Decimal.new("60"))
+    |> Decimal.round(0, :ceiling)
+    |> Decimal.to_integer()
+  end
+
+  @doc """
+  Update one MO step. The form sends the full editable header +
+  workers list; we wholesale-replace the worker join rows inside the
+  same transaction so audit captures one event.
+
+  Permission gating is enforced upstream by the controller — this
+  function trusts the actor to have the right scope.
+  """
+  def update_mo_step(%User{} = actor, %ManufacturingOrderStep{} = step, attrs) do
+    attrs = stringify_keys(attrs)
+    before = mo_step_snapshot(step)
+    worker_ids = extract_worker_ids(attrs)
+
+    attrs =
+      attrs
+      |> Map.delete("worker_ids")
+      |> Map.delete("workers")
+      |> Map.delete("company_id")
+      |> Map.delete("manufacturing_order_id")
+      |> Map.put("updated_by_id", actor.id)
+
+    Repo.transaction(fn ->
+      with {:ok, updated} <-
+             step
+             |> ManufacturingOrderStep.changeset(attrs)
+             |> Repo.update(),
+           :ok <- replace_mo_step_workers(updated, worker_ids) do
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_step",
+          updated,
+          before,
+          mo_step_snapshot(updated)
+        )
+
+        updated
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, step} -> {:ok, reload_mo_step(step)}
+      err -> err
+    end
+  end
+
+  defp extract_worker_ids(attrs) do
+    cond do
+      is_list(attrs["worker_ids"]) ->
+        attrs["worker_ids"]
+        |> Enum.map(&coerce_int/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
+      is_list(attrs["workers"]) ->
+        attrs["workers"]
+        |> Enum.map(fn
+          %{"id" => id} -> coerce_int(id)
+          %{id: id} -> coerce_int(id)
+          id when is_integer(id) or is_binary(id) -> coerce_int(id)
+          _ -> nil
+        end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
+      true ->
+        :unchanged
+    end
+  end
+
+  defp replace_mo_step_workers(_step, :unchanged), do: :ok
+
+  defp replace_mo_step_workers(%ManufacturingOrderStep{} = step, ids) when is_list(ids) do
+    from(w in ManufacturingOrderStepWorker,
+      where: w.manufacturing_order_step_id == ^step.id
+    )
+    |> Repo.delete_all()
+
+    Enum.each(ids, fn user_id ->
+      %ManufacturingOrderStepWorker{}
+      |> ManufacturingOrderStepWorker.changeset(%{
+        "manufacturing_order_step_id" => step.id,
+        "user_id" => user_id,
+        "company_id" => step.company_id
+      })
+      |> Repo.insert!()
+    end)
+
+    :ok
+  end
+
+  defp reload_mo_step(%ManufacturingOrderStep{} = step) do
+    Repo.preload(
+      step,
+      [
+        :workstation_group,
+        :routing_step,
+        :manufacturing_order,
+        :created_by,
+        :updated_by,
+        worker_assignments: :user
+      ],
+      force: true
+    )
+  end
+
+  defp mo_step_snapshot(%ManufacturingOrderStep{} = step) do
+    %{
+      operation_description: step.operation_description,
+      setup_time_min: step.setup_time_min,
+      cycle_time_min: step.cycle_time_min,
+      capacity: step.capacity,
+      fixed_cost: step.fixed_cost,
+      variable_cost: step.variable_cost,
+      planned_start: step.planned_start,
+      planned_finish: step.planned_finish,
+      actual_start: step.actual_start,
+      actual_finish: step.actual_finish,
+      applied_overhead_cost: step.applied_overhead_cost,
+      labor_cost: step.labor_cost,
+      quantity: step.quantity,
+      workstation_group_id: step.workstation_group_id,
+      notes: step.notes
+    }
   end
 
   def update_manufacturing_order(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do
@@ -1396,6 +1693,7 @@ defmodule Backend.Production do
       |> Map.delete("approved_by_id")
       |> Map.delete("approved_at")
       |> Map.put("updated_by_id", actor.id)
+      |> maybe_resolve_routing_for_update(actor, mo)
 
     with :ok <-
            (if Map.has_key?(attrs, "warehouse_id"),
@@ -1509,6 +1807,7 @@ defmodule Backend.Production do
         :approved_by,
         :created_by,
         :updated_by,
+        steps: [:workstation_group, :routing_step, worker_assignments: :user],
         bom: [lines: [:part, :unit_of_measurement]],
         routing: [steps: [:workstation_group, worker_assignments: :user]]
       ],
@@ -1542,6 +1841,105 @@ defmodule Backend.Production do
         {:error, :warehouse_not_found}
     end
   end
+
+  # The MO form doesn't ask the operator to pick a routing — there's
+  # usually one canonical routing per BOM. Resolve it here on create
+  # (and on bom_id/item_id change in update) so the operations table
+  # has something to render and so labour cost projection works.
+  # Precedence: routing pinned to this BOM > item-level default
+  # (bom_id IS NULL) > nothing (operator can attach one later via the
+  # routings UI).
+  defp maybe_resolve_routing(attrs, %User{} = actor) do
+    cond do
+      Map.has_key?(attrs, "routing_id") and not is_nil(attrs["routing_id"]) ->
+        attrs
+
+      true ->
+        case resolve_routing(actor, attrs["item_id"], attrs["bom_id"]) do
+          nil -> attrs
+          rid -> Map.put(attrs, "routing_id", rid)
+        end
+    end
+  end
+
+  defp maybe_resolve_routing_for_update(attrs, %User{} = actor, %ManufacturingOrder{} = mo) do
+    cond do
+      Map.has_key?(attrs, "routing_id") ->
+        attrs
+
+      not (Map.has_key?(attrs, "bom_id") or Map.has_key?(attrs, "item_id")) ->
+        attrs
+
+      true ->
+        item_id = Map.get(attrs, "item_id", mo.item_id)
+        bom_id = Map.get(attrs, "bom_id", mo.bom_id)
+
+        case resolve_routing(actor, item_id, bom_id) do
+          nil -> Map.put(attrs, "routing_id", nil)
+          rid -> Map.put(attrs, "routing_id", rid)
+        end
+    end
+  end
+
+  defp resolve_routing(%User{} = actor, item_id, bom_id) do
+    item_id = coerce_int(item_id)
+    bom_id = coerce_int(bom_id)
+
+    cond do
+      is_nil(item_id) ->
+        nil
+
+      true ->
+        # Prefer the most specific match: a routing pinned to a BOM
+        # outranks one that's null-bom (item-level default). The
+        # CASE form sidesteps Postgres's parser tripping on the
+        # natural-looking `NOT (... IS NULL)::int` ordering.
+        from(r in Routing,
+          where: r.company_id == ^actor.company_id and r.item_id == ^item_id,
+          order_by: [
+            desc: fragment("CASE WHEN ? IS NULL THEN 0 ELSE 1 END", r.bom_id),
+            desc: r.updated_at
+          ],
+          limit: 1,
+          select: r
+        )
+        |> maybe_pin_to_bom(bom_id)
+        |> Repo.one()
+        |> case do
+          %Routing{id: id} -> id
+          _ -> nil
+        end
+    end
+  end
+
+  defp maybe_pin_to_bom(query, nil), do: query
+
+  defp maybe_pin_to_bom(query, bom_id) when is_integer(bom_id) do
+    # Prefer a routing pinned to this BOM if one exists; otherwise the
+    # query above already falls back to the item-level default.
+    bom_match =
+      from(r in Routing,
+        where: r.bom_id == ^bom_id,
+        limit: 1,
+        select: r.id
+      )
+
+    case Repo.one(bom_match) do
+      nil -> query
+      _id -> from(r in query, where: r.bom_id == ^bom_id)
+    end
+  end
+
+  defp coerce_int(n) when is_integer(n), do: n
+
+  defp coerce_int(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  defp coerce_int(_), do: nil
 
   defp ensure_mo_bom_for_item(_actor, _item_id, nil), do: {:error, :bom_required}
 

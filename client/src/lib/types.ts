@@ -166,7 +166,8 @@ export interface AuditEvent {
     | "workstation_group"
     | "workstation"
     | "routing"
-    | "manufacturing_order";
+    | "manufacturing_order"
+    | "manufacturing_order_step";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";

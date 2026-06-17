@@ -72,6 +72,7 @@ interface WorkerOption extends SearchPickerOption {
 interface FormState {
   name: string;
   notes: string;
+  default_operation_notes: string;
   workstation_group: GroupOption | null;
   warehouse: SiteOption | null;
   productivity: string;
@@ -98,6 +99,7 @@ function initialFrom(ws: Workstation | null): FormState {
     return {
       name: "",
       notes: "",
+      default_operation_notes: "",
       workstation_group: null,
       warehouse: null,
       productivity: "1.00",
@@ -112,6 +114,7 @@ function initialFrom(ws: Workstation | null): FormState {
   return {
     name: ws.name,
     notes: ws.notes ?? "",
+    default_operation_notes: ws.default_operation_notes ?? "",
     workstation_group: ws.workstation_group
       ? {
           id: ws.workstation_group.id,
@@ -351,6 +354,7 @@ export function WorkstationForm({
     const payload = {
       name: state.name.trim(),
       notes: state.notes.trim() || null,
+      default_operation_notes: state.default_operation_notes.trim() || null,
       workstation_group_id: state.workstation_group.id,
       warehouse_id: state.warehouse.id,
       productivity: String(productivityNum),
@@ -562,6 +566,65 @@ export function WorkstationForm({
                 editor={fieldEditors.notes}
                 errors={fieldErrors.notes}
               />
+
+              <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
+                <Label
+                  htmlFor="default_operation_notes"
+                  className="pt-2.5 text-sm font-medium"
+                >
+                  Default operation notes
+                </Label>
+                <div className="space-y-1.5">
+                  <div className="relative">
+                    <Textarea
+                      id="default_operation_notes"
+                      value={state.default_operation_notes}
+                      onChange={(e) =>
+                        setField("default_operation_notes", e.target.value)
+                      }
+                      onFocus={() => focusField("default_operation_notes")}
+                      onBlur={() => blurField("default_operation_notes")}
+                      rows={6}
+                      placeholder="Station-specific SOP — overrides the workstation group's default when set."
+                      aria-invalid={Boolean(
+                        fieldErrors.default_operation_notes &&
+                          fieldErrors.default_operation_notes.length > 0,
+                      )}
+                    />
+                    <FieldEditingIndicator
+                      peer={fieldEditors.default_operation_notes}
+                    />
+                  </div>
+                  {state.default_operation_notes.trim() === "" &&
+                    workstation?.workstation_group?.default_operation_notes && (
+                      <p className="text-xs text-muted-foreground">
+                        Currently inheriting from{" "}
+                        <span className="font-medium text-foreground">
+                          {workstation.workstation_group.name}
+                        </span>
+                        :{" "}
+                        <span className="italic">
+                          &ldquo;
+                          {workstation.workstation_group.default_operation_notes.slice(
+                            0,
+                            120,
+                          )}
+                          {workstation.workstation_group.default_operation_notes
+                            .length > 120
+                            ? "…"
+                            : ""}
+                          &rdquo;
+                        </span>
+                      </p>
+                    )}
+                  <p className="text-xs text-muted-foreground">
+                    Set this when a specific machine needs SOP detail that
+                    doesn&apos;t apply to the rest of the group. Leave blank to
+                    inherit the group default.
+                  </p>
+                  <FieldError messages={fieldErrors.default_operation_notes} />
+                </div>
+              </div>
 
               <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
                 <Label className="pt-1.5 text-sm font-medium">Active</Label>

@@ -213,6 +213,13 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  defp resolve_entity_id(actor, "manufacturing_order_step", uuid) do
+    case Backend.Production.get_mo_step(actor.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp resolve_entity_id(_actor, _other, _uuid), do: {:error, :not_found}
 
   defp view_perm_for("vendor"), do: "vendors.view"
@@ -223,6 +230,7 @@ defmodule BackendWeb.CommentsController do
   defp view_perm_for("workstation"), do: "production.workstation_view"
   defp view_perm_for("routing"), do: "production.routing_view"
   defp view_perm_for("manufacturing_order"), do: "production.mo_view"
+  defp view_perm_for("manufacturing_order_step"), do: "production.mo_view"
   defp view_perm_for(_), do: nil
 
   defp check_view_perm(actor, entity_type) do

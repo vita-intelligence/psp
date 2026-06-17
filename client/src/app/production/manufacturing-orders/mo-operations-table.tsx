@@ -1,3 +1,6 @@
+import Link from "next/link";
+import { Pencil } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
 import { format as formatDateFns } from "date-fns";
 import type { CompanyDefaults } from "@/lib/types";
@@ -6,6 +9,7 @@ import type { ManufacturingOrder } from "@/lib/production/types";
 interface Props {
   mo: ManufacturingOrder;
   company: CompanyDefaults;
+  canEdit: boolean;
 }
 
 /**
@@ -15,8 +19,8 @@ interface Props {
  * routing actually configures. Actual start/finish + cost columns
  * are placeholders until the execution layer ships.
  */
-export function MOOperationsTable({ mo, company }: Props) {
-  if (!mo.routing || mo.operations.length === 0) {
+export function MOOperationsTable({ mo, company, canEdit }: Props) {
+  if (mo.operations.length === 0) {
     return (
       <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
         <header className="mb-3">
@@ -35,10 +39,15 @@ export function MOOperationsTable({ mo, company }: Props) {
     <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
       <header className="mb-3 flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-semibold tracking-tight">Operations</h2>
-        <p className="text-[11px] text-muted-foreground">
-          {mo.routing.code ?? mo.routing.name} — planned times derived
-          from routing × MO qty
-        </p>
+        {mo.routing && (
+          <p className="text-[11px] text-muted-foreground">
+            Snapshotted from{" "}
+            <span className="font-medium text-foreground">
+              {mo.routing.code ?? mo.routing.name}
+            </span>{" "}
+            · click the pencil to modify any operation
+          </p>
+        )}
       </header>
 
       <div className="overflow-x-auto">
@@ -53,6 +62,7 @@ export function MOOperationsTable({ mo, company }: Props) {
               <th className="px-2 py-1.5 text-left">Actual start</th>
               <th className="px-2 py-1.5 text-left">Actual finish</th>
               <th className="px-2 py-1.5 text-right">Labor cost</th>
+              <th className="w-8 px-2 py-1.5" aria-label="Edit" />
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
@@ -86,16 +96,24 @@ export function MOOperationsTable({ mo, company }: Props) {
                   )}
                 </td>
                 <td className="px-2 py-1.5">
-                  <span className="font-mono text-[11px]">
-                    {formatCompanyDate(op.planned_start, company)}{" "}
-                    {formatDateFns(new Date(op.planned_start), "HH:mm")}
-                  </span>
+                  {op.planned_start ? (
+                    <span className="font-mono text-[11px]">
+                      {formatCompanyDate(op.planned_start, company)}{" "}
+                      {formatDateFns(new Date(op.planned_start), "HH:mm")}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
                 </td>
                 <td className="px-2 py-1.5">
-                  <span className="font-mono text-[11px]">
-                    {formatCompanyDate(op.planned_finish, company)}{" "}
-                    {formatDateFns(new Date(op.planned_finish), "HH:mm")}
-                  </span>
+                  {op.planned_finish ? (
+                    <span className="font-mono text-[11px]">
+                      {formatCompanyDate(op.planned_finish, company)}{" "}
+                      {formatDateFns(new Date(op.planned_finish), "HH:mm")}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
                 </td>
                 <td className="px-2 py-1.5">
                   {op.workers.length === 0 ? (
@@ -113,12 +131,52 @@ export function MOOperationsTable({ mo, company }: Props) {
                     </div>
                   )}
                 </td>
-                <td className="px-2 py-1.5 text-muted-foreground/50">—</td>
-                <td className="px-2 py-1.5 text-muted-foreground/50">—</td>
-                <td className="px-2 py-1.5 text-right text-muted-foreground/50">
-                  {op.labor_cost
-                    ? formatCompanyMoney(op.labor_cost, company)
-                    : "—"}
+                <td className="px-2 py-1.5">
+                  {op.actual_start ? (
+                    <span className="font-mono text-[11px]">
+                      {formatCompanyDate(op.actual_start, company)}{" "}
+                      {formatDateFns(new Date(op.actual_start), "HH:mm")}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5">
+                  {op.actual_finish ? (
+                    <span className="font-mono text-[11px]">
+                      {formatCompanyDate(op.actual_finish, company)}{" "}
+                      {formatDateFns(new Date(op.actual_finish), "HH:mm")}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5 text-right">
+                  {op.labor_cost ? (
+                    <span className="font-mono text-xs">
+                      {formatCompanyMoney(op.labor_cost, company)}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </td>
+                <td className="px-1 py-1 text-right">
+                  {canEdit && op.editable ? (
+                    <Button
+                      asChild
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label="Modify operation"
+                      title="Modify operation"
+                    >
+                      <Link
+                        href={`/production/manufacturing-orders/${mo.uuid}/operations/${op.uuid}`}
+                      >
+                        <Pencil />
+                      </Link>
+                    </Button>
+                  ) : null}
                 </td>
               </tr>
             ))}

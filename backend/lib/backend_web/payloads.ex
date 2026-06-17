@@ -681,6 +681,7 @@ defmodule BackendWeb.Payloads do
       holidays: g.holidays || [],
       color: g.color,
       is_active: g.is_active,
+      default_operation_notes: g.default_operation_notes,
       created_by: actor(g, :created_by),
       updated_by: actor(g, :updated_by),
       inserted_at: g.inserted_at,
@@ -705,6 +706,13 @@ defmodule BackendWeb.Payloads do
       hourly_rate: decimal_to_string(g.hourly_rate),
       color: g.color,
       is_active: g.is_active,
+      default_operation_notes: g.default_operation_notes,
+      # Group's own default OR a station-level fallback. Routing /
+      # MO prefill reads this so a default typed on any station in
+      # the group still flows through, even when the group itself
+      # hasn't been given a default.
+      effective_default_operation_notes:
+        Backend.Production.effective_group_operation_notes(g),
       created_by: actor(g, :created_by),
       updated_by: actor(g, :updated_by),
       inserted_at: g.inserted_at,
@@ -743,6 +751,11 @@ defmodule BackendWeb.Payloads do
       idle_from: w.idle_from,
       idle_to: w.idle_to,
       is_active: w.is_active,
+      default_operation_notes: w.default_operation_notes,
+      # Inherited from the group when the station hasn't set its own.
+      # Surfaced so the FE can show a "currently using group default"
+      # hint next to an empty field on the station form.
+      effective_operation_notes: workstation_effective_operation_notes(w),
       default_workers: workstation_default_workers(w),
       created_by: actor(w, :created_by),
       updated_by: actor(w, :updated_by),
@@ -1034,10 +1047,18 @@ defmodule BackendWeb.Payloads do
     end
   end
 
-  # Build the operations breakdown — one row per routing step, with
-  # the planned start / finish derived from the MO's start + the
-  # accumulated step durations. Steps run sequentially in this
-  # rev; parallel scheduling lands with the real planner.
+  # Build the operations breakdown from the per-MO snapshot table.
+  # Falls back to the routing template only if the snapshot hasn't
+  # run yet (legacy MOs created before the snapshot migration; we
+  # backfilled known cases but the fallback keeps the page useful
+  # while data settles).
+  defp mo_operations_breakdown(%Backend.Production.ManufacturingOrder{steps: steps})
+       when is_list(steps) and steps != [] do
+    steps
+    |> Enum.sort_by(& &1.sort_order)
+    |> Enum.map(&mo_step/1)
+  end
+
   defp mo_operations_breakdown(%Backend.Production.ManufacturingOrder{
          routing: %Backend.Production.Routing{} = routing,
          quantity: qty,
@@ -1073,18 +1094,18 @@ defmodule BackendWeb.Payloads do
           variable_cost: decimal_to_string(step.variable_cost),
           capacity: decimal_to_string(step.capacity),
           workstation_group: workstation_group_summary(step.workstation_group),
-          # Specific workstation gets assigned at run time; not known yet.
           workstation: nil,
           workers: routing_step_workers(step),
           planned_start: cursor,
           planned_finish: finish,
-          # Execution-only columns — placeholders until that layer
-          # ships.
           actual_start: nil,
           actual_finish: nil,
           applied_overhead_cost: nil,
           labor_cost: nil,
-          quantity: decimal_to_string(qty)
+          quantity: decimal_to_string(qty),
+          # Sentinel: the row hasn't been snapshotted yet so the
+          # pencil-edit affordance hides on the FE.
+          editable: false
         }
 
         {[op | acc], finish}
@@ -1094,6 +1115,80 @@ defmodule BackendWeb.Payloads do
   end
 
   defp mo_operations_breakdown(_), do: []
+
+  @doc """
+  Full per-MO step payload — used both on the MO detail page (one
+  row per op) and on the per-step edit page show/update endpoints.
+  """
+  def mo_step(%Backend.Production.ManufacturingOrderStep{} = s) do
+    %{
+      id: s.id,
+      uuid: s.uuid,
+      sort_order: s.sort_order,
+      operation_description: s.operation_description,
+      setup_time_min: decimal_to_string(s.setup_time_min),
+      cycle_time_min: decimal_to_string(s.cycle_time_min),
+      fixed_cost: decimal_to_string(s.fixed_cost),
+      variable_cost: decimal_to_string(s.variable_cost),
+      capacity: decimal_to_string(s.capacity),
+      planned_start: s.planned_start,
+      planned_finish: s.planned_finish,
+      actual_start: s.actual_start,
+      actual_finish: s.actual_finish,
+      applied_overhead_cost: decimal_to_string(s.applied_overhead_cost),
+      labor_cost: decimal_to_string(s.labor_cost),
+      quantity: decimal_to_string(s.quantity),
+      notes: s.notes,
+      workstation_group_id: s.workstation_group_id,
+      workstation_group: workstation_group_summary(s.workstation_group),
+      routing_step_id: s.routing_step_id,
+      workers: mo_step_workers(s),
+      manufacturing_order_id: s.manufacturing_order_id,
+      manufacturing_order: mo_step_parent_summary(s.manufacturing_order),
+      created_by: actor(s, :created_by),
+      updated_by: actor(s, :updated_by),
+      inserted_at: s.inserted_at,
+      updated_at: s.updated_at,
+      editable: true
+    }
+  end
+
+  def mo_step(_), do: nil
+
+  defp mo_step_workers(%Backend.Production.ManufacturingOrderStep{} = s) do
+    case Map.get(s, :worker_assignments) do
+      %Ecto.Association.NotLoaded{} ->
+        []
+
+      list when is_list(list) ->
+        list
+        |> Enum.map(fn a ->
+          case a.user do
+            %Backend.Accounts.User{} = u ->
+              %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+            _ ->
+              nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp mo_step_parent_summary(%Backend.Production.ManufacturingOrder{} = mo) do
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status,
+      quantity: decimal_to_string(mo.quantity)
+    }
+  end
+
+  defp mo_step_parent_summary(_), do: nil
 
   # Total step time in seconds = setup_min × 60 + ceil(cycle_min ×
   # qty / capacity) × 60. Defaults handle nil values gracefully.
@@ -1163,6 +1258,21 @@ defmodule BackendWeb.Payloads do
       match?(%Backend.Production.WorkstationGroup{}, w.workstation_group) and
           w.workstation_group.hourly_rate_enabled ->
         decimal_to_string(w.workstation_group.hourly_rate)
+
+      true ->
+        nil
+    end
+  end
+
+  # The station's own override when set; otherwise the group's default.
+  # Mirrors the resolution the routing-step form will run on the FE.
+  defp workstation_effective_operation_notes(%Backend.Production.Workstation{} = w) do
+    cond do
+      is_binary(w.default_operation_notes) and w.default_operation_notes != "" ->
+        w.default_operation_notes
+
+      match?(%Backend.Production.WorkstationGroup{}, w.workstation_group) ->
+        w.workstation_group.default_operation_notes
 
       true ->
         nil

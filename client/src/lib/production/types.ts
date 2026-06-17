@@ -146,6 +146,9 @@ export interface WorkstationGroup {
   holidays: string[];
   color: string | null;
   is_active: boolean;
+  /** Long-form SOP / operation description. Prefills the routing-step
+   *  + MO-step `operation_description` when this group is picked. */
+  default_operation_notes: string | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;
@@ -163,6 +166,12 @@ export interface WorkstationGroupSummary {
   hourly_rate: string | null;
   color: string | null;
   is_active: boolean;
+  /** Group's own default. NULL ⇒ inherit nothing at this level. */
+  default_operation_notes: string | null;
+  /** BE-resolved: group's own value when set, otherwise a station-
+   *  level fallback (so a default typed on any workstation in this
+   *  group still surfaces here). Routings + MO snapshots read this. */
+  effective_default_operation_notes: string | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;
@@ -187,6 +196,7 @@ export interface WorkstationGroupUpsertInput {
   holidays?: string[];
   color?: string | null;
   is_active?: boolean;
+  default_operation_notes?: string | null;
 }
 
 // ---------------------------------------------------------------
@@ -233,6 +243,12 @@ export interface Workstation {
   idle_from: string | null;
   idle_to: string | null;
   is_active: boolean;
+  /** Station-level override for the group's default operation notes.
+   *  NULL ⇒ inherit. */
+  default_operation_notes: string | null;
+  /** BE-computed: station override when set, else group default,
+   *  else null. The form renders the inheritance hint off this. */
+  effective_operation_notes: string | null;
   default_workers: WorkstationDefaultWorker[];
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
@@ -273,6 +289,7 @@ export interface WorkstationUpsertInput {
   idle_from?: string | null;
   idle_to?: string | null;
   is_active?: boolean;
+  default_operation_notes?: string | null;
   /** Wholesale replace — BE wipes the M2M set and reinserts the
    *  ids sent here inside the same transaction. */
   default_worker_ids?: number[];
@@ -437,20 +454,59 @@ export interface ManufacturingOrderOperation {
   variable_cost: string | null;
   capacity: string;
   workstation_group: WorkstationGroupSummary | null;
-  /** Specific workstation gets assigned at run time. */
-  workstation: { id: number; uuid: string; name: string } | null;
-  /** Routing-step's default workers. */
+  /** Reserved for the execution layer. Specific workstation
+   *  selection lands when that ships. */
+  workstation?: { id: number; uuid: string; name: string } | null;
+  /** Assigned workers — defaults snapshotted from the routing
+   *  template's per-step defaults, then editable per-MO. */
   workers: Array<{ id: number; uuid: string; name: string; email: string }>;
-  /** Computed from MO start + accumulated step durations. */
-  planned_start: string;
-  planned_finish: string;
-  /** Execution-only — null until that layer ships. */
+  /** Computed default at snapshot time; editable per-MO. */
+  planned_start: string | null;
+  planned_finish: string | null;
+  /** Filled in via the operator's modify-operation page (or by
+   *  the execution layer once it ships). */
   actual_start: string | null;
   actual_finish: string | null;
   applied_overhead_cost: string | null;
   labor_cost: string | null;
-  /** MO quantity carried per step for display. */
-  quantity: string;
+  /** Actual produced quantity on this op (defaults to MO qty on
+   *  snapshot; partial runs / scrap let it diverge). */
+  quantity: string | null;
+  /** True for rows from the per-MO snapshot (have a uuid the edit
+   *  page can route to). Legacy live-projection rows are false. */
+  editable: boolean;
+}
+
+export interface ManufacturingOrderStep extends ManufacturingOrderOperation {
+  notes: string | null;
+  workstation_group_id: number | null;
+  routing_step_id: number | null;
+  manufacturing_order_id: number;
+  manufacturing_order: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: ManufacturingOrderStatus;
+    quantity: string;
+  } | null;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface ManufacturingOrderStepUpsertInput {
+  operation_description?: string | null;
+  workstation_group_id?: number;
+  planned_start?: string | null;
+  planned_finish?: string | null;
+  actual_start?: string | null;
+  actual_finish?: string | null;
+  applied_overhead_cost?: string | null;
+  labor_cost?: string | null;
+  quantity?: string | null;
+  notes?: string | null;
+  worker_ids?: number[];
 }
 
 export interface ManufacturingOrder {

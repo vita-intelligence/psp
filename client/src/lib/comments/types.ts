@@ -11,7 +11,8 @@ export type CommentEntityType =
   | "workstation_group"
   | "workstation"
   | "routing"
-  | "manufacturing_order";
+  | "manufacturing_order"
+  | "manufacturing_order_step";
 
 export type CommentVisibility = "internal" | "shared";
 

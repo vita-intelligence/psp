@@ -328,6 +328,15 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "production.mo_edit") or
         RBAC.has_permission?(user, "production.mo_create")
 
+  # Per-MO operation step edit room. Either mo_edit (planning) OR
+  # mo_execute (logging actuals) opens the room — the field-level
+  # gate that decides which subset is writable lives in the
+  # ManufacturingOrderStepController.
+  defp can_edit_resource?(user, "manufacturing-order-step"),
+    do:
+      RBAC.has_permission?(user, "production.mo_edit") or
+        RBAC.has_permission?(user, "production.mo_execute")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

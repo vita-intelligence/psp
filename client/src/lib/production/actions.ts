@@ -13,6 +13,8 @@ import type {
   BOMUpsertInput,
   ManufacturingOrder,
   ManufacturingOrderStatus,
+  ManufacturingOrderStep,
+  ManufacturingOrderStepUpsertInput,
   ManufacturingOrderUpsertInput,
   Routing,
   RoutingUpsertInput,
@@ -502,6 +504,46 @@ export async function deleteManufacturingOrderAction(
       ...toErrorResult(err, {
         source: "deleteManufacturingOrderAction",
         fallbackDetail: "Couldn't delete the manufacturing order.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// MO operation steps
+// ---------------------------------------------------------------
+
+export type ManufacturingOrderStepResult =
+  | { ok: true; step: ManufacturingOrderStep }
+  | (ErrorResult & { ok: false });
+
+export async function updateManufacturingOrderStepAction(
+  moUuid: string,
+  stepUuid: string,
+  attrs: ManufacturingOrderStepUpsertInput,
+): Promise<ManufacturingOrderStepResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("updateManufacturingOrderStepAction"),
+    };
+  try {
+    const { step } = await api<{ step: ManufacturingOrderStep }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/steps/${encodeURIComponent(stepUuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    revalidatePath(
+      `/production/manufacturing-orders/${moUuid}/operations/${stepUuid}`,
+    );
+    return { ok: true, step };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateManufacturingOrderStepAction",
+        fallbackDetail: "Couldn't save the operation.",
       }),
     };
   }

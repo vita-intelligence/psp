@@ -55,6 +55,10 @@ defmodule Backend.Comments do
     "manufacturing_order" => [
       "production.mo_edit",
       "production.mo_create"
+    ],
+    "manufacturing_order_step" => [
+      "production.mo_edit",
+      "production.mo_execute"
     ]
   }
 

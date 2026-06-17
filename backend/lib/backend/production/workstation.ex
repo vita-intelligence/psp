@@ -46,6 +46,12 @@ defmodule Backend.Production.Workstation do
 
     field :is_active, :boolean, default: true
 
+    # Station-specific override for the workstation_group's
+    # default operation notes. When non-nil, takes precedence on the
+    # routing-step prefill once a station is picked. When nil, the
+    # parent group's value applies.
+    field :default_operation_notes, :string
+
     belongs_to :company, Company
     belongs_to :workstation_group, WorkstationGroup
     belongs_to :warehouse, Warehouse
@@ -69,6 +75,7 @@ defmodule Backend.Production.Workstation do
     productivity
     idle_from idle_to
     is_active
+    default_operation_notes
     created_by_id updated_by_id
   )a
 
@@ -78,6 +85,7 @@ defmodule Backend.Production.Workstation do
     |> validate_required([:company_id, :name, :workstation_group_id, :warehouse_id])
     |> validate_length(:name, min: 1, max: 200)
     |> validate_length(:notes, max: 4000)
+    |> validate_length(:default_operation_notes, max: 10_000)
     |> validate_number(:productivity, greater_than: 0)
     |> validate_hourly_rate()
     |> validate_idle_window()

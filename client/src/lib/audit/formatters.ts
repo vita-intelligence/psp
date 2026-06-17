@@ -379,6 +379,23 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     approved_at: "Approved at",
     notes: "Notes",
   },
+  manufacturing_order_step: {
+    operation_description: "Operation",
+    workstation_group_id: "Workstation group",
+    setup_time_min: "Setup (min)",
+    cycle_time_min: "Cycle (min)",
+    capacity: "Capacity",
+    fixed_cost: "Fixed cost",
+    variable_cost: "Variable cost",
+    planned_start: "Planned start",
+    planned_finish: "Planned finish",
+    actual_start: "Actual start",
+    actual_finish: "Actual finish",
+    applied_overhead_cost: "Applied overhead",
+    labor_cost: "Labor cost",
+    quantity: "Quantity",
+    notes: "Notes",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

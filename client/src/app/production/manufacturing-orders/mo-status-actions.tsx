@@ -4,15 +4,15 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { cn } from "@/lib/utils";
 import {
   CheckCircle2,
   CircleSlash,
   Loader2,
   Play,
   RotateCcw,
-  Sparkles,
+  ThumbsUp,
 } from "lucide-react";
 import { useState } from "react";
 import { invalidateAudit } from "@/lib/audit/invalidator";
@@ -42,7 +42,7 @@ const ACTIONS_BY_STATUS: Record<ManufacturingOrderStatus, Action[]> = {
     {
       label: "Approve",
       toStatus: "approved",
-      icon: Sparkles,
+      icon: ThumbsUp,
       requires: "approve",
     },
     {
@@ -97,15 +97,40 @@ const ACTIONS_BY_STATUS: Record<ManufacturingOrderStatus, Action[]> = {
   cancelled: [],
 };
 
-const STATUS_TONE: Record<
+const STATUS_STYLES: Record<
   ManufacturingOrderStatus,
-  "muted" | "amber" | "emerald" | "destructive"
+  { ring: string; bg: string; text: string; dot: string }
 > = {
-  draft: "muted",
-  approved: "amber",
-  in_progress: "amber",
-  completed: "emerald",
-  cancelled: "destructive",
+  draft: {
+    ring: "ring-border",
+    bg: "bg-muted/60",
+    text: "text-muted-foreground",
+    dot: "bg-muted-foreground/50",
+  },
+  approved: {
+    ring: "ring-indigo-200 dark:ring-indigo-900/50",
+    bg: "bg-indigo-50 dark:bg-indigo-950/30",
+    text: "text-indigo-700 dark:text-indigo-300",
+    dot: "bg-indigo-500",
+  },
+  in_progress: {
+    ring: "ring-amber-200 dark:ring-amber-900/50",
+    bg: "bg-amber-50 dark:bg-amber-950/30",
+    text: "text-amber-800 dark:text-amber-300",
+    dot: "bg-amber-500 animate-pulse",
+  },
+  completed: {
+    ring: "ring-emerald-200 dark:ring-emerald-900/50",
+    bg: "bg-emerald-50 dark:bg-emerald-950/30",
+    text: "text-emerald-700 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+  cancelled: {
+    ring: "ring-destructive/30",
+    bg: "bg-destructive/10",
+    text: "text-destructive",
+    dot: "bg-destructive",
+  },
 };
 
 const STATUS_LABEL: Record<ManufacturingOrderStatus, string> = {
@@ -151,10 +176,27 @@ export function MOStatusActions({ mo, canApprove, canExecute }: Props) {
     });
   }
 
+  const style = STATUS_STYLES[mo.status];
+
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={STATUS_TONE[mo.status]}>{STATUS_LABEL[mo.status]}</Badge>
+      <div className="flex flex-wrap items-center gap-3">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset",
+            style.bg,
+            style.text,
+            style.ring,
+          )}
+        >
+          <span className={cn("size-1.5 rounded-full", style.dot)} />
+          {STATUS_LABEL[mo.status]}
+        </span>
+
+        {actions.length > 0 && (
+          <span className="h-5 w-px bg-border" aria-hidden />
+        )}
+
         {actions.map((a) => {
           const Icon = a.icon;
           const isThisPending = pending && pendingLabel === a.label;
@@ -168,24 +210,26 @@ export function MOStatusActions({ mo, canApprove, canExecute }: Props) {
               onClick={() => run(a)}
               className={
                 a.destructive
-                  ? "text-destructive hover:bg-destructive/10"
+                  ? "text-destructive hover:bg-destructive/10 hover:text-destructive"
                   : undefined
               }
             >
               {isThisPending ? (
-                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                <Loader2 className="size-3.5 animate-spin" />
               ) : (
-                <Icon className="mr-1.5 size-3.5" />
+                <Icon className="size-3.5" />
               )}
               {a.label}
             </Button>
           );
         })}
-        {actions.length === 0 && mo.status !== "completed" && mo.status !== "cancelled" && (
-          <span className="text-xs text-muted-foreground">
-            Ask an admin for the right permission to transition status.
-          </span>
-        )}
+        {actions.length === 0 &&
+          mo.status !== "completed" &&
+          mo.status !== "cancelled" && (
+            <span className="text-xs text-muted-foreground">
+              Ask an admin for the right permission to transition status.
+            </span>
+          )}
       </div>
       {actionError && (
         <ErrorBanner detail={actionError.detail} code={actionError.code} />

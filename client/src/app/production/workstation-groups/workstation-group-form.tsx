@@ -70,6 +70,7 @@ import type {
 interface FormState {
   name: string;
   notes: string;
+  default_operation_notes: string;
   instances: string;
   kind: WorkstationGroupKind;
   hourly_rate_enabled: boolean;
@@ -142,6 +143,7 @@ function initialFrom(group: WorkstationGroup | null): FormState {
     return {
       name: "",
       notes: "",
+      default_operation_notes: "",
       instances: "1",
       kind: "active_processing",
       hourly_rate_enabled: false,
@@ -157,6 +159,7 @@ function initialFrom(group: WorkstationGroup | null): FormState {
   return {
     name: group.name,
     notes: group.notes ?? "",
+    default_operation_notes: group.default_operation_notes ?? "",
     instances: String(group.instances ?? 1),
     kind: group.kind,
     hourly_rate_enabled: group.hourly_rate_enabled,
@@ -284,6 +287,7 @@ export function WorkstationGroupForm({
     const payload = {
       name: state.name.trim(),
       notes: state.notes.trim() || null,
+      default_operation_notes: state.default_operation_notes.trim() || null,
       instances,
       kind: state.kind,
       hourly_rate_enabled: state.hourly_rate_enabled,
@@ -481,6 +485,43 @@ export function WorkstationGroupForm({
                 editor={fieldEditors.notes}
                 errors={fieldErrors.notes}
               />
+
+              <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
+                <Label
+                  htmlFor="default_operation_notes"
+                  className="pt-2.5 text-sm font-medium"
+                >
+                  Default operation notes
+                </Label>
+                <div className="space-y-1.5">
+                  <div className="relative">
+                    <Textarea
+                      id="default_operation_notes"
+                      value={state.default_operation_notes}
+                      onChange={(e) =>
+                        setField("default_operation_notes", e.target.value)
+                      }
+                      onFocus={() => focusField("default_operation_notes")}
+                      onBlur={() => blurField("default_operation_notes")}
+                      rows={6}
+                      placeholder="Standard operating procedure for this group — checks, weights, time targets, safety notes…"
+                      aria-invalid={Boolean(
+                        fieldErrors.default_operation_notes &&
+                          fieldErrors.default_operation_notes.length > 0,
+                      )}
+                    />
+                    <FieldEditingIndicator
+                      peer={fieldEditors.default_operation_notes}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Auto-fills the operation description on routing steps and
+                    MO operations whenever this group is picked. Individual
+                    workstations can override.
+                  </p>
+                  <FieldError messages={fieldErrors.default_operation_notes} />
+                </div>
+              </div>
 
               <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
                 <Label className="pt-1.5 text-sm font-medium">Active</Label>

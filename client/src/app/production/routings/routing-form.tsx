@@ -71,6 +71,9 @@ interface BOMOption extends SearchPickerOption {
 
 interface GroupOption extends SearchPickerOption {
   color: string | null;
+  /** Carried on the option so picking a group auto-fills the step's
+   *  operation description when it's empty. */
+  defaultOperationNotes: string | null;
 }
 
 interface WorkerOption extends SearchPickerOption {
@@ -151,6 +154,8 @@ function hydrateSteps(routing: Routing | null): StepDraft[] {
             label: s.workstation_group.name,
             code: s.workstation_group.code,
             color: s.workstation_group.color,
+            defaultOperationNotes:
+              s.workstation_group.default_operation_notes ?? null,
           }
         : null,
       operation_description: s.operation_description ?? "",
@@ -368,13 +373,27 @@ export function RoutingForm({
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return [];
       const body = (await res.json()) as {
-        items?: Array<{ id: number; name: string; code: string | null; color: string | null }>;
+        items?: Array<{
+          id: number;
+          name: string;
+          code: string | null;
+          color: string | null;
+          default_operation_notes: string | null;
+          effective_default_operation_notes: string | null;
+        }>;
       };
       return (body.items ?? []).map((g) => ({
         id: g.id,
         label: g.name,
         code: g.code,
         color: g.color,
+        // Prefer the effective value (group default + station
+        // fallback) so a default typed on any workstation in the
+        // group still prefills the step description.
+        defaultOperationNotes:
+          g.effective_default_operation_notes ??
+          g.default_operation_notes ??
+          null,
       }));
     } catch {
       return [];
@@ -927,7 +946,23 @@ function StepRow({
       <td className="px-2 py-2 min-w-[12rem]">
         <SearchPicker<GroupOption>
           value={step.workstation_group}
-          onChange={(opt) => onPatch({ workstation_group: opt })}
+          onChange={(opt) => {
+            // Auto-fill the description with the group's default SOP
+            // when the operator hasn't typed anything yet. Lets new
+            // routings inherit the group's SOP without an extra click,
+            // while still respecting any custom text already in place.
+            const shouldPrefillDescription =
+              opt != null &&
+              (opt.defaultOperationNotes ?? "").trim() !== "" &&
+              step.operation_description.trim() === "";
+
+            onPatch({
+              workstation_group: opt,
+              ...(shouldPrefillDescription
+                ? { operation_description: opt!.defaultOperationNotes ?? "" }
+                : {}),
+            });
+          }}
           fetcher={searchGroups}
           placeholder="Pick group…"
           disabled={!canEdit}
@@ -954,6 +989,22 @@ function StepRow({
           className="min-h-[2.5rem]"
           disabled={!canEdit}
         />
+        {step.workstation_group?.defaultOperationNotes &&
+          step.operation_description.trim() === "" && (
+            <button
+              type="button"
+              onClick={() =>
+                onPatch({
+                  operation_description:
+                    step.workstation_group!.defaultOperationNotes ?? "",
+                })
+              }
+              disabled={!canEdit}
+              className="mt-1 text-[10px] text-brand hover:underline disabled:opacity-50"
+            >
+              Use group default
+            </button>
+          )}
       </td>
       <td className="px-2 py-2 w-24">
         <Input

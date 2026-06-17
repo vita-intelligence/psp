@@ -6,6 +6,7 @@ import type {
   BOMLedgerPage,
   ManufacturingOrder,
   ManufacturingOrderLedgerPage,
+  ManufacturingOrderStep,
   Routing,
   RoutingLedgerPage,
   Workstation,
@@ -228,6 +229,23 @@ export async function getManufacturingOrder(
       { token, cache: "no-store" },
     );
     return mo;
+  } catch {
+    return null;
+  }
+}
+
+export async function getManufacturingOrderStep(
+  moUuid: string,
+  stepUuid: string,
+): Promise<ManufacturingOrderStep | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const { step } = await api<{ step: ManufacturingOrderStep }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/steps/${encodeURIComponent(stepUuid)}`,
+      { token, cache: "no-store" },
+    );
+    return step;
   } catch {
     return null;
   }
