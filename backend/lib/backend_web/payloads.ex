@@ -955,16 +955,14 @@ defmodule BackendWeb.Payloads do
   defp mo_routing_summary(_), do: nil
 
   # Build the parts breakdown the MO detail page renders. Each BOM
-  # line yields one row with required qty (bom_line.qty × MO qty),
-  # unit cost (most-recent received cost from `stock_lots`), total
-  # cost. Booking-side columns (consumed / booked / lot / status /
-  # storage_location) stay nil — those land when the execution layer
-  # ships. Returns `{parts, materials_total_cost}`.
+  # line is a master row (required qty, unit cost, total) with the
+  # individual bookings nested underneath as sub-rows so the FE can
+  # render the MRPEasy-style hierarchy.
   defp mo_parts_breakdown(%Backend.Production.ManufacturingOrder{
          bom: %Backend.Production.BOM{} = bom,
          quantity: mo_qty,
          company_id: company_id
-       }) do
+       } = mo) do
     lines =
       case bom.lines do
         %Ecto.Association.NotLoaded{} ->
@@ -974,6 +972,22 @@ defmodule BackendWeb.Payloads do
           list
       end
       |> Enum.sort_by(& &1.sort_order)
+
+    bookings =
+      case Map.get(mo, :bookings) do
+        %Ecto.Association.NotLoaded{} ->
+          Backend.Repo.preload(mo,
+            bookings: [:item, :storage_cell, stock_lot: [placements: :storage_cell]]
+          ).bookings
+
+        list when is_list(list) ->
+          list
+
+        _ ->
+          []
+      end
+
+    bookings_by_item = Enum.group_by(bookings, & &1.item_id)
 
     part_ids = lines |> Enum.map(& &1.part_id) |> Enum.reject(&is_nil/1)
     costs = Backend.Production.average_unit_costs(company_id, part_ids)
@@ -997,6 +1011,20 @@ defmodule BackendWeb.Payloads do
             true -> Decimal.mult(required_qty, unit_cost)
           end
 
+        line_bookings =
+          Map.get(bookings_by_item, line.part_id, [])
+          |> Enum.filter(&(&1.status == "requested"))
+
+        booked_sum =
+          Enum.reduce(line_bookings, Decimal.new(0), fn b, acc ->
+            Decimal.add(acc, b.quantity || Decimal.new(0))
+          end)
+
+        consumed_sum =
+          Enum.reduce(line_bookings, Decimal.new(0), fn b, acc ->
+            Decimal.add(acc, b.consumed_quantity || Decimal.new(0))
+          end)
+
         part_row = %{
           id: line.id,
           uuid: line.uuid,
@@ -1010,9 +1038,11 @@ defmodule BackendWeb.Payloads do
           required_qty: decimal_to_string(required_qty),
           unit_cost: decimal_to_string(unit_cost),
           total_cost: decimal_to_string(line_total),
-          # Booking-side columns — placeholders until execution ships.
-          consumed_qty: nil,
-          booked_qty: nil,
+          booked_qty: decimal_to_string(booked_sum),
+          consumed_qty: decimal_to_string(consumed_sum),
+          bookings: Enum.map(line_bookings, &mo_booking/1),
+          # Legacy single-row columns — kept null since multiple
+          # bookings can stack against the same line.
           lot: nil,
           status: nil,
           storage_location: nil,
@@ -1032,6 +1062,78 @@ defmodule BackendWeb.Payloads do
   end
 
   defp mo_parts_breakdown(_), do: {[], nil}
+
+  @doc """
+  Full booking row payload — the FE renders one of these per
+  sub-row under each part master row.
+  """
+  def mo_booking(%Backend.Production.ManufacturingOrderBooking{} = b) do
+    %{
+      id: b.id,
+      uuid: b.uuid,
+      quantity: decimal_to_string(b.quantity),
+      consumed_quantity: decimal_to_string(b.consumed_quantity),
+      status: b.status,
+      note: b.note,
+      item_id: b.item_id,
+      item: maybe_item_summary(b.item),
+      stock_lot_id: b.stock_lot_id,
+      stock_lot: mo_booking_lot_summary(b.stock_lot),
+      storage_cell_id: b.storage_cell_id,
+      storage_location: mo_booking_cell_summary(b.storage_cell),
+      manufacturing_order_id: b.manufacturing_order_id,
+      inserted_at: b.inserted_at,
+      updated_at: b.updated_at
+    }
+  end
+
+  def mo_booking(_), do: nil
+
+  defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot) do
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      status: lot.status,
+      expiry_at: lot.expiry_at,
+      available_from: lot.available_from
+    }
+  end
+
+  defp mo_booking_lot_summary(_), do: nil
+
+  defp mo_booking_cell_summary(%Backend.Warehouses.StorageCell{} = c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      name: c.name,
+      purpose: c.purpose
+    }
+  end
+
+  defp mo_booking_cell_summary(_), do: nil
+
+  @doc """
+  Row for the "Add a booking" lot picker. Includes lot identity,
+  cell snapshot, expiry, unit cost (so the FE can preview the total
+  before booking), and the live available qty.
+  """
+  def mo_bookable_lot(%Backend.Stock.Lot{} = lot, available, cell) do
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      status: lot.status,
+      manufactured_at: lot.manufactured_at,
+      expiry_at: lot.expiry_at,
+      available_from: lot.available_from,
+      unit_cost: decimal_to_string(lot.unit_cost),
+      currency: lot.currency,
+      supplier_batch_no: lot.supplier_batch_no,
+      available_qty: decimal_to_string(available),
+      storage_location: mo_booking_cell_summary(cell)
+    }
+  end
 
   defp mo_cost_per_unit(nil, _qty), do: nil
 

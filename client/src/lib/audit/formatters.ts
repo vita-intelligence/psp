@@ -396,6 +396,15 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     quantity: "Quantity",
     notes: "Notes",
   },
+  manufacturing_order_booking: {
+    stock_lot_id: "Lot",
+    storage_cell_id: "Storage",
+    item_id: "Stock item",
+    quantity: "Booked qty",
+    consumed_quantity: "Consumed qty",
+    status: "Status",
+    note: "Note",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

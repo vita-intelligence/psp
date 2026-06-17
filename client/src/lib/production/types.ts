@@ -433,14 +433,82 @@ export interface ManufacturingOrderPart {
   required_qty: string | null;
   unit_cost: string | null;
   total_cost: string | null;
-  /** Booking-side columns. All null until the execution layer
-   *  ships — render as "—" placeholders. */
-  consumed_qty: string | null;
+  /** Sum of active bookings against this line. */
   booked_qty: string | null;
+  /** Sum of consumed across active bookings. */
+  consumed_qty: string | null;
+  /** Sub-rows — one per booking. The FE renders these as nested
+   *  rows under the master row. */
+  bookings: ManufacturingOrderBooking[];
+  /** Legacy single-row columns — always null now that bookings can
+   *  stack against a line. Kept on the type so older payload
+   *  consumers don't break. */
   lot: string | null;
   status: string | null;
   storage_location: string | null;
   available_from: string | null;
+}
+
+export interface ManufacturingOrderBookingLotSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: string;
+  expiry_at: string | null;
+  available_from: string | null;
+}
+
+export interface ManufacturingOrderBookingCellSummary {
+  id: number;
+  uuid: string;
+  name: string | null;
+  purpose: string;
+}
+
+export type ManufacturingOrderBookingStatus =
+  | "requested"
+  | "consumed"
+  | "cancelled";
+
+export interface ManufacturingOrderBooking {
+  id: number;
+  uuid: string;
+  quantity: string;
+  consumed_quantity: string;
+  status: ManufacturingOrderBookingStatus;
+  note: string | null;
+  item_id: number;
+  item: BOMPartSummary | null;
+  stock_lot_id: number;
+  stock_lot: ManufacturingOrderBookingLotSummary | null;
+  storage_cell_id: number | null;
+  storage_location: ManufacturingOrderBookingCellSummary | null;
+  manufacturing_order_id: number;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface BookableLot {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: string;
+  manufactured_at: string | null;
+  expiry_at: string | null;
+  available_from: string | null;
+  unit_cost: string | null;
+  currency: string | null;
+  supplier_batch_no: string | null;
+  available_qty: string;
+  storage_location: ManufacturingOrderBookingCellSummary | null;
+}
+
+export interface ManufacturingOrderBookingUpsertInput {
+  item_id?: number;
+  stock_lot_id?: number;
+  storage_cell_id?: number | null;
+  quantity?: string | number;
+  note?: string | null;
 }
 
 export interface ManufacturingOrderOperation {

@@ -411,6 +411,38 @@ defmodule BackendWeb.Router do
       patch "/manufacturing-orders/:mo_id/steps/:id",
             ManufacturingOrderStepController,
             :update
+
+      # MO stock bookings — operator-driven reservations against
+      # specific lots. `bookable-lots` returns the candidate list
+      # for the "Add a booking" dialog with available-qty computed
+      # live so two operators can't over-reserve.
+      get "/manufacturing-orders/:mo_id/bookings",
+          ManufacturingOrderBookingController,
+          :index
+
+      get "/manufacturing-orders/:mo_id/bookable-lots",
+          ManufacturingOrderBookingController,
+          :bookable_lots
+
+      post "/manufacturing-orders/:mo_id/bookings",
+           ManufacturingOrderBookingController,
+           :create
+
+      post "/manufacturing-orders/:mo_id/bookings/book-all",
+           ManufacturingOrderBookingController,
+           :book_all
+
+      post "/manufacturing-orders/:mo_id/bookings/release-all",
+           ManufacturingOrderBookingController,
+           :release_all
+
+      patch "/manufacturing-orders/:mo_id/bookings/:id",
+            ManufacturingOrderBookingController,
+            :update
+
+      delete "/manufacturing-orders/:mo_id/bookings/:id",
+             ManufacturingOrderBookingController,
+             :delete
     end
 
     # Goods-In Inspection — show / update / item / sign actions sit

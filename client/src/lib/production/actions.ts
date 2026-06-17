@@ -12,6 +12,8 @@ import type {
   BOM,
   BOMUpsertInput,
   ManufacturingOrder,
+  ManufacturingOrderBooking,
+  ManufacturingOrderBookingUpsertInput,
   ManufacturingOrderStatus,
   ManufacturingOrderStep,
   ManufacturingOrderStepUpsertInput,
@@ -544,6 +546,143 @@ export async function updateManufacturingOrderStepAction(
       ...toErrorResult(err, {
         source: "updateManufacturingOrderStepAction",
         fallbackDetail: "Couldn't save the operation.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// MO stock bookings
+// ---------------------------------------------------------------
+
+export type ManufacturingOrderBookingResult =
+  | { ok: true; booking: ManufacturingOrderBooking }
+  | (ErrorResult & { ok: false });
+
+export async function createBookingAction(
+  moUuid: string,
+  attrs: ManufacturingOrderBookingUpsertInput,
+): Promise<ManufacturingOrderBookingResult> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("createBookingAction") };
+  try {
+    const { booking } = await api<{ booking: ManufacturingOrderBooking }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings`,
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    return { ok: true, booking };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "createBookingAction",
+        fallbackDetail: "Couldn't book that lot.",
+      }),
+    };
+  }
+}
+
+export async function updateBookingAction(
+  moUuid: string,
+  bookingUuid: string,
+  attrs: ManufacturingOrderBookingUpsertInput,
+): Promise<ManufacturingOrderBookingResult> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("updateBookingAction") };
+  try {
+    const { booking } = await api<{ booking: ManufacturingOrderBooking }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/${encodeURIComponent(bookingUuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    return { ok: true, booking };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateBookingAction",
+        fallbackDetail: "Couldn't update the booking.",
+      }),
+    };
+  }
+}
+
+export async function deleteBookingAction(
+  moUuid: string,
+  bookingUuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("deleteBookingAction") };
+  try {
+    await api<void>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/${encodeURIComponent(bookingUuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "deleteBookingAction",
+        fallbackDetail: "Couldn't release the booking.",
+      }),
+    };
+  }
+}
+
+export async function bookAllPartsAction(
+  moUuid: string,
+): Promise<
+  | { ok: true; created: number; bookings: ManufacturingOrderBooking[] }
+  | (ErrorResult & { ok: false })
+> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("bookAllPartsAction") };
+  try {
+    const data = await api<{
+      created: number;
+      bookings: ManufacturingOrderBooking[];
+    }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/book-all`,
+      { method: "POST", token, body: JSON.stringify({}) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    return { ok: true, ...data };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "bookAllPartsAction",
+        fallbackDetail: "Couldn't auto-book parts.",
+      }),
+    };
+  }
+}
+
+export async function releaseAllPartsAction(
+  moUuid: string,
+): Promise<
+  | { ok: true; released: number }
+  | (ErrorResult & { ok: false })
+> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("releaseAllPartsAction") };
+  try {
+    const data = await api<{ released: number }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/release-all`,
+      { method: "POST", token, body: JSON.stringify({}) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    return { ok: true, ...data };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "releaseAllPartsAction",
+        fallbackDetail: "Couldn't release the bookings.",
       }),
     };
   }

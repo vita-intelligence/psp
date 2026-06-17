@@ -22,7 +22,13 @@ defmodule Backend.Production.ManufacturingOrder do
   alias Backend.Accounts.User
   alias Backend.Companies.Company
   alias Backend.Items.Item
-  alias Backend.Production.{BOM, ManufacturingOrderStep, Routing}
+  alias Backend.Production.{
+    BOM,
+    ManufacturingOrderBooking,
+    ManufacturingOrderStep,
+    Routing
+  }
+
   alias Backend.Warehouses.Warehouse
 
   @statuses ~w(draft approved in_progress completed cancelled)
@@ -56,6 +62,10 @@ defmodule Backend.Production.ManufacturingOrder do
     has_many :steps, ManufacturingOrderStep,
       foreign_key: :manufacturing_order_id,
       preload_order: [asc: :sort_order]
+
+    has_many :bookings, ManufacturingOrderBooking,
+      foreign_key: :manufacturing_order_id,
+      preload_order: [asc: :item_id, asc: :id]
 
     timestamps(type: :utc_datetime)
   end

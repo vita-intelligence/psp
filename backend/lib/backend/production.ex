@@ -33,6 +33,7 @@ defmodule Backend.Production do
     BOMLine,
     BOMVersion,
     ManufacturingOrder,
+    ManufacturingOrderBooking,
     ManufacturingOrderStep,
     ManufacturingOrderStepWorker,
     Routing,
@@ -1354,6 +1355,7 @@ defmodule Backend.Production do
       :created_by,
       :updated_by,
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
+      bookings: [:item, :storage_cell, stock_lot: [placements: :storage_cell]],
       bom: [lines: [:part, :unit_of_measurement]],
       routing: [steps: [:workstation_group, worker_assignments: :user]]
     ])
@@ -1999,5 +2001,454 @@ defmodule Backend.Production do
       approved_at: mo.approved_at,
       notes: mo.notes
     }
+  end
+
+  # ----- MO bookings (stock reservations) --------------------------
+
+  alias Backend.Stock.Placement, as: StockPlacement
+
+  @doc """
+  Active bookings against `lot_id`, ignoring an optional one (used
+  by the update path so a booking doesn't count itself when checking
+  capacity).
+  """
+  def lot_booked_qty(lot_id, exclude_booking_id \\ nil)
+      when is_integer(lot_id) do
+    base =
+      from(b in ManufacturingOrderBooking,
+        where: b.stock_lot_id == ^lot_id and b.status == "requested",
+        select: coalesce(sum(b.quantity), 0)
+      )
+
+    case exclude_booking_id do
+      nil -> Repo.one(base)
+      id when is_integer(id) -> Repo.one(from b in base, where: b.id != ^id)
+    end
+  end
+
+  @doc """
+  Available qty for `lot_id` = sum(placements.qty) - active bookings.
+  Returned as a Decimal.
+  """
+  def lot_available_qty(lot_id, exclude_booking_id \\ nil)
+      when is_integer(lot_id) do
+    on_hand =
+      from(p in StockPlacement,
+        where: p.stock_lot_id == ^lot_id,
+        select: coalesce(sum(p.qty), 0)
+      )
+      |> Repo.one()
+      |> decimal_or_zero()
+
+    booked =
+      lot_booked_qty(lot_id, exclude_booking_id)
+      |> decimal_or_zero()
+
+    Decimal.sub(on_hand, booked)
+  end
+
+  @doc """
+  Lots an operator can pick from to book against an item. Excludes
+  lots with zero available qty, lots in disposed / rejected / on_hold
+  states, and lots not in the actor's company.
+
+  Returns a list of `{lot, available_qty, primary_cell}` triples
+  sorted by FEFO (earliest expiry first).
+  """
+  def list_bookable_lots(%User{} = actor, item_id, opts \\ [])
+      when is_integer(item_id) do
+    exclude_booking_id = Keyword.get(opts, :exclude_booking_id)
+
+    eligible_statuses = ~w(received available)
+
+    StockLot
+    |> where([l], l.company_id == ^actor.company_id)
+    |> where([l], l.item_id == ^item_id)
+    |> where([l], l.status in ^eligible_statuses)
+    |> order_by([l], asc_nulls_last: l.expiry_at, asc: l.id)
+    |> preload([:item, placements: :storage_cell])
+    |> Repo.all()
+    |> Enum.map(fn lot ->
+      available = lot_available_qty(lot.id, exclude_booking_id)
+      {lot, available, primary_cell_for_lot(lot)}
+    end)
+    |> Enum.filter(fn {_lot, available, _cell} ->
+      Decimal.compare(available, Decimal.new("0")) == :gt
+    end)
+  end
+
+  defp primary_cell_for_lot(%StockLot{placements: placements})
+       when is_list(placements) and placements != [] do
+    placements
+    |> Enum.sort_by(&Decimal.to_float(&1.qty || Decimal.new(0)), :desc)
+    |> List.first()
+    |> Map.get(:storage_cell)
+  end
+
+  defp primary_cell_for_lot(_), do: nil
+
+  @doc """
+  List bookings for an MO with the lookups the FE renders. Sorted
+  by item then insertion order so the master rows on the parts
+  table group cleanly.
+  """
+  def list_mo_bookings(%ManufacturingOrder{id: mo_id, company_id: cid}) do
+    from(b in ManufacturingOrderBooking,
+      where: b.manufacturing_order_id == ^mo_id and b.company_id == ^cid,
+      order_by: [asc: b.item_id, asc: b.id],
+      preload: [
+        :item,
+        :storage_cell,
+        stock_lot: [placements: :storage_cell]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Create a booking. Validates capacity against the lot's available
+  qty so two operators can't over-reserve the same lot.
+  """
+  def create_booking(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do
+    attrs = stringify_keys(attrs)
+
+    attrs =
+      attrs
+      |> Map.put("company_id", mo.company_id)
+      |> Map.put("manufacturing_order_id", mo.id)
+      |> Map.put("created_by_id", actor.id)
+      |> Map.put("updated_by_id", actor.id)
+      |> Map.put_new("status", "requested")
+      |> snapshot_storage_cell_from_lot()
+
+    with :ok <- ensure_lot_belongs_to_company(actor, attrs["stock_lot_id"]),
+         :ok <- ensure_item_matches_lot(attrs["item_id"], attrs["stock_lot_id"]),
+         :ok <-
+           ensure_capacity(
+             attrs["stock_lot_id"],
+             attrs["quantity"],
+             nil
+           ) do
+      %ManufacturingOrderBooking{}
+      |> ManufacturingOrderBooking.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, booking} ->
+          Audit.record_created(
+            actor,
+            "manufacturing_order_booking",
+            booking,
+            booking_snapshot(booking)
+          )
+
+          {:ok, reload_booking(booking)}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  @doc """
+  Update booking qty (partial release). Re-validates capacity so
+  raising a qty can't overflow the lot.
+  """
+  def update_booking(
+        %User{} = actor,
+        %ManufacturingOrderBooking{} = booking,
+        attrs
+      ) do
+    attrs = stringify_keys(attrs)
+    before = booking_snapshot(booking)
+
+    attrs =
+      attrs
+      |> Map.delete("company_id")
+      |> Map.delete("manufacturing_order_id")
+      |> Map.delete("item_id")
+      |> Map.delete("stock_lot_id")
+      |> Map.delete("status")
+      |> Map.put("updated_by_id", actor.id)
+
+    new_qty = attrs["quantity"] || booking.quantity
+
+    with :ok <- ensure_capacity(booking.stock_lot_id, new_qty, booking.id) do
+      booking
+      |> ManufacturingOrderBooking.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          Audit.record_updated(
+            actor,
+            "manufacturing_order_booking",
+            updated,
+            before,
+            booking_snapshot(updated)
+          )
+
+          {:ok, reload_booking(updated)}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  @doc """
+  Release a booking — hard-delete so the lot's available qty
+  recomputes cleanly. Audit captures the deletion event with the
+  pre-release snapshot.
+  """
+  def delete_booking(%User{} = actor, %ManufacturingOrderBooking{} = booking) do
+    before = booking_snapshot(booking)
+
+    case Repo.delete(booking) do
+      {:ok, deleted} ->
+        Audit.record_deleted(
+          actor,
+          "manufacturing_order_booking",
+          deleted,
+          before
+        )
+
+        {:ok, deleted}
+
+      err ->
+        err
+    end
+  end
+
+  @doc """
+  Auto-book everything still outstanding on the MO's BOM, picking
+  oldest-expiry lots first. Per-line behaviour:
+
+    * needed = bom_line.quantity × mo.quantity − already booked
+    * iterate eligible lots in FEFO order, booking up to the smaller
+      of (lot available, line still needed)
+    * stop when the line is covered or no more lots remain
+
+  Returns `{:ok, created_bookings}` always — partial fulfilment is
+  the expected case when stock is short.
+  """
+  def book_all_for_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    mo =
+      Repo.preload(mo, [
+        :bookings,
+        bom: [lines: :part]
+      ])
+
+    bom_lines =
+      case mo.bom do
+        %BOM{lines: lines} when is_list(lines) -> lines
+        _ -> []
+      end
+
+    Repo.transaction(fn ->
+      Enum.flat_map(bom_lines, fn line ->
+        already =
+          mo.bookings
+          |> Enum.filter(fn b ->
+            b.item_id == line.part_id and b.status == "requested"
+          end)
+          |> Enum.reduce(Decimal.new(0), fn b, acc ->
+            Decimal.add(acc, b.quantity || Decimal.new(0))
+          end)
+
+        # is_fixed lines stay at the BOM-line qty regardless of MO
+        # qty (e.g. "use exactly 1 packet"). Everything else scales.
+        per_output_qty = line.qty || Decimal.new(0)
+
+        line_total =
+          if line.is_fixed do
+            per_output_qty
+          else
+            Decimal.mult(per_output_qty, mo.quantity || Decimal.new(0))
+          end
+
+        needed = Decimal.sub(line_total, already)
+
+        if Decimal.compare(needed, Decimal.new("0")) != :gt do
+          []
+        else
+          allocate_for_item(actor, mo, line.part_id, needed)
+        end
+      end)
+      |> case do
+        bookings -> bookings
+      end
+    end)
+    |> case do
+      {:ok, bookings} -> {:ok, bookings}
+      err -> err
+    end
+  end
+
+  @doc """
+  Release every active booking on the MO. Convenience wrapper for
+  the "Release all booked parts" button.
+  """
+  def release_all_for_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    bookings =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.manufacturing_order_id == ^mo.id and
+            b.status == "requested"
+      )
+      |> Repo.all()
+
+    Enum.each(bookings, &delete_booking(actor, &1))
+    {:ok, length(bookings)}
+  end
+
+  defp allocate_for_item(%User{} = actor, %ManufacturingOrder{} = mo, item_id, needed) do
+    lots = list_bookable_lots(actor, item_id)
+
+    {bookings, _remaining} =
+      Enum.reduce_while(lots, {[], needed}, fn {lot, available, cell}, {acc, left} ->
+        if Decimal.compare(left, Decimal.new("0")) != :gt do
+          {:halt, {acc, left}}
+        else
+          take =
+            if Decimal.compare(available, left) == :lt do
+              available
+            else
+              left
+            end
+
+          attrs = %{
+            "company_id" => mo.company_id,
+            "manufacturing_order_id" => mo.id,
+            "item_id" => item_id,
+            "stock_lot_id" => lot.id,
+            "storage_cell_id" => cell && cell.id,
+            "quantity" => take,
+            "status" => "requested",
+            "created_by_id" => actor.id,
+            "updated_by_id" => actor.id
+          }
+
+          case %ManufacturingOrderBooking{}
+               |> ManufacturingOrderBooking.changeset(attrs)
+               |> Repo.insert() do
+            {:ok, booking} ->
+              Audit.record_created(
+                actor,
+                "manufacturing_order_booking",
+                booking,
+                booking_snapshot(booking)
+              )
+
+              {:cont, {[reload_booking(booking) | acc], Decimal.sub(left, take)}}
+
+            {:error, _cs} ->
+              {:cont, {acc, left}}
+          end
+        end
+      end)
+
+    Enum.reverse(bookings)
+  end
+
+  defp ensure_capacity(_lot_id, nil, _exclude), do: {:error, :quantity_required}
+
+  defp ensure_capacity(lot_id, quantity, exclude_booking_id) when is_integer(lot_id) do
+    desired = decimal_or_zero(quantity)
+
+    if Decimal.compare(desired, Decimal.new("0")) != :gt do
+      {:error, :quantity_required}
+    else
+      available = lot_available_qty(lot_id, exclude_booking_id)
+
+      if Decimal.compare(desired, available) == :gt do
+        {:error, {:insufficient_stock, available}}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp ensure_capacity(_, _, _), do: {:error, :lot_required}
+
+  defp ensure_lot_belongs_to_company(_actor, nil), do: {:error, :lot_required}
+
+  defp ensure_lot_belongs_to_company(%User{} = actor, lot_id) do
+    case Repo.get(StockLot, coerce_int(lot_id)) do
+      %StockLot{company_id: cid} when cid == actor.company_id -> :ok
+      _ -> {:error, :lot_not_found}
+    end
+  end
+
+  defp ensure_item_matches_lot(item_id, lot_id) do
+    iid = coerce_int(item_id)
+    lid = coerce_int(lot_id)
+
+    case lid && Repo.get(StockLot, lid) do
+      %StockLot{item_id: lot_item} when lot_item == iid -> :ok
+      %StockLot{} -> {:error, :item_lot_mismatch}
+      _ -> {:error, :lot_not_found}
+    end
+  end
+
+  defp snapshot_storage_cell_from_lot(attrs) do
+    case {attrs["storage_cell_id"], coerce_int(attrs["stock_lot_id"])} do
+      {nil, lot_id} when is_integer(lot_id) ->
+        lot = Repo.get(StockLot, lot_id) |> Repo.preload(placements: :storage_cell)
+
+        case primary_cell_for_lot(lot) do
+          nil -> attrs
+          cell -> Map.put(attrs, "storage_cell_id", cell.id)
+        end
+
+      _ ->
+        attrs
+    end
+  end
+
+  defp reload_booking(%ManufacturingOrderBooking{} = b) do
+    Repo.preload(
+      b,
+      [:item, :storage_cell, :created_by, :updated_by, stock_lot: [placements: :storage_cell]],
+      force: true
+    )
+  end
+
+  defp booking_snapshot(%ManufacturingOrderBooking{} = b) do
+    %{
+      manufacturing_order_id: b.manufacturing_order_id,
+      item_id: b.item_id,
+      stock_lot_id: b.stock_lot_id,
+      storage_cell_id: b.storage_cell_id,
+      quantity: b.quantity,
+      consumed_quantity: b.consumed_quantity,
+      status: b.status,
+      note: b.note
+    }
+  end
+
+  defp decimal_or_zero(nil), do: Decimal.new(0)
+  defp decimal_or_zero(%Decimal{} = d), do: d
+  defp decimal_or_zero(n) when is_integer(n), do: Decimal.new(n)
+  defp decimal_or_zero(n) when is_float(n), do: Decimal.from_float(n)
+
+  defp decimal_or_zero(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> Decimal.new(0)
+    end
+  end
+
+  defp decimal_or_zero(_), do: Decimal.new(0)
+
+  def get_booking(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    ManufacturingOrderBooking
+    |> where([b], b.company_id == ^company_id and b.uuid == ^uuid)
+    |> preload([
+      :item,
+      :storage_cell,
+      :manufacturing_order,
+      stock_lot: [placements: :storage_cell]
+    ])
+    |> Repo.one()
   end
 end
