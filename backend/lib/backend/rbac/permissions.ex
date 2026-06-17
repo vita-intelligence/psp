@@ -188,8 +188,10 @@ defmodule Backend.RBAC.Permissions do
     {"production.mo_view", "View manufacturing orders"},
     {"production.mo_create", "Create new manufacturing orders"},
     {"production.mo_edit", "Edit draft / approved manufacturing orders"},
+    {"production.mo_prepare",
+     "Mark a manufacturing order tree as prepared (1st of 2 signatures)"},
     {"production.mo_approve",
-     "Approve or unapprove a manufacturing order (gate to the schedule)"},
+     "Countersign / reject / amend a prepared MO tree (2nd of 2 signatures)"},
     {"production.mo_execute",
      "Start, complete, or cancel a manufacturing order (run on the floor)"},
     {"production.mo_delete", "Delete manufacturing orders"}

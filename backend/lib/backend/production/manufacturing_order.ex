@@ -31,7 +31,7 @@ defmodule Backend.Production.ManufacturingOrder do
 
   alias Backend.Warehouses.Warehouse
 
-  @statuses ~w(draft approved in_progress completed cancelled)
+  @statuses ~w(draft prepared approved in_progress completed cancelled)
   def statuses, do: @statuses
 
   schema "manufacturing_orders" do
@@ -47,6 +47,8 @@ defmodule Backend.Production.ManufacturingOrder do
     field :status, :string, default: "draft"
 
     field :approved_at, :utc_datetime
+    field :prepared_at, :utc_datetime
+    field :rejection_reason, :string
     field :notes, :string
 
     belongs_to :company, Company
@@ -56,6 +58,7 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :routing, Routing
     belongs_to :assigned_to, User
     belongs_to :approved_by, User
+    belongs_to :prepared_by, User
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -141,8 +144,17 @@ defmodule Backend.Production.ManufacturingOrder do
   """
   def transition_changeset(mo, attrs) do
     mo
-    |> cast(attrs, [:status, :approved_at, :approved_by_id, :updated_by_id])
+    |> cast(attrs, [
+      :status,
+      :approved_at,
+      :approved_by_id,
+      :prepared_at,
+      :prepared_by_id,
+      :rejection_reason,
+      :updated_by_id
+    ])
     |> validate_inclusion(:status, @statuses)
+    |> validate_length(:rejection_reason, max: 2_000)
     |> check_constraint(:status,
       name: :manufacturing_orders_status_known,
       message: "must be a known status"

@@ -10,6 +10,7 @@ import {
   Network,
   Route,
   Settings2,
+  ShieldCheck,
   TrendingUp,
   Workflow,
   type LucideIcon,
@@ -33,6 +34,11 @@ const ITEMS: SubnavItem[] = [
     href: "/production/manufacturing-orders",
     label: "Manufacturing orders",
     Icon: Factory,
+  },
+  {
+    href: "/production/approvals",
+    label: "Approvals",
+    Icon: ShieldCheck,
   },
   {
     href: "/production/schedule",

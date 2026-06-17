@@ -80,6 +80,7 @@ export type PermissionCode =
   | "production.mo_view"
   | "production.mo_create"
   | "production.mo_edit"
+  | "production.mo_prepare"
   | "production.mo_approve"
   | "production.mo_execute"
   | "production.mo_delete";

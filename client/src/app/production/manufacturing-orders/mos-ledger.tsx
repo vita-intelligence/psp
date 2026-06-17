@@ -27,10 +27,11 @@ const DEFAULT_SORT: SortSpec = { field: "inserted_at", direction: "desc" };
 
 const STATUS_TONE: Record<
   ManufacturingOrderStatus,
-  "muted" | "amber" | "emerald" | "destructive"
+  "muted" | "amber" | "emerald" | "destructive" | "indigo"
 > = {
   draft: "muted",
-  approved: "amber",
+  prepared: "amber",
+  approved: "indigo",
   in_progress: "amber",
   completed: "emerald",
   cancelled: "destructive",
@@ -38,6 +39,7 @@ const STATUS_TONE: Record<
 
 const STATUS_LABEL: Record<ManufacturingOrderStatus, string> = {
   draft: "Draft",
+  prepared: "Awaiting approval",
   approved: "Approved",
   in_progress: "In progress",
   completed: "Completed",
@@ -50,6 +52,7 @@ const FILTERS: FilterDef[] = [
     label: "Status",
     options: [
       { label: "Draft", value: "draft" },
+      { label: "Awaiting approval", value: "prepared" },
       { label: "Approved", value: "approved" },
       { label: "In progress", value: "in_progress" },
       { label: "Completed", value: "completed" },

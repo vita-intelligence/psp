@@ -103,6 +103,25 @@ defmodule BackendWeb.ManufacturingOrderController do
   end
 
   # POST /api/production/manufacturing-orders/:id/transition
+  #
+  # Two shapes:
+  #   {"action": "prepare" | "unprepare" | "approve" | "reject" | "amend",
+  #    "reason": "..."}  -- approval-workflow actions, dispatched
+  #                          through Production.* helpers so the
+  #                          cascade + 4-eyes + reason rules run.
+  #   {"to": "in_progress" | "cancelled" | "completed"}
+  #                       -- direct status changes via the existing
+  #                          @mo_transitions map.
+  def transition(conn, %{"id" => uuid, "action" => action} = params)
+      when is_binary(action) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil -> not_found(conn)
+      %ManufacturingOrder{} = mo -> dispatch_signature(conn, actor, mo, action, params)
+    end
+  end
+
   def transition(conn, %{"id" => uuid, "to" => to}) when is_binary(to) do
     actor = conn.assigns.current_user
 
@@ -160,6 +179,74 @@ defmodule BackendWeb.ManufacturingOrderController do
         end
     end
   end
+
+  # Approval-workflow actions. Each gates on the right permission +
+  # dispatches to a Production.* helper that handles the cascade.
+  defp dispatch_signature(conn, actor, mo, action, params) do
+    with {:ok, perm} <- perm_for_action(action),
+         :ok <- check_perm(actor, perm),
+         {:ok, result} <- run_signature(actor, mo, action, params) do
+      json(conn, %{mo: Payloads.manufacturing_order(result)})
+    else
+      {:error, :unknown_action} ->
+        unprocessable(conn, "unknown_action", "Unknown approval action #{inspect(action)}.")
+
+      {:error, :missing_perm, perm} ->
+        forbidden(conn, "Missing #{perm} permission for this action.")
+
+      {:error, :not_root} ->
+        unprocessable(
+          conn,
+          "not_root",
+          "Approval is handled at the root MO of this tree."
+        )
+
+      {:error, {:invalid_status, current}} ->
+        unprocessable(
+          conn,
+          "invalid_status",
+          "MO is #{current}; this action isn't valid from that state."
+        )
+
+      {:error, :same_signer} ->
+        unprocessable(
+          conn,
+          "same_signer",
+          "Approver must be different from the preparer (4-eyes rule)."
+        )
+
+      {:error, :reason_required} ->
+        unprocessable(
+          conn,
+          "reason_required",
+          "Rejection needs a reason — type one in the dialog."
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
+  defp perm_for_action("prepare"), do: {:ok, "production.mo_prepare"}
+  defp perm_for_action("unprepare"), do: {:ok, "production.mo_prepare"}
+  defp perm_for_action("approve"), do: {:ok, "production.mo_approve"}
+  defp perm_for_action("reject"), do: {:ok, "production.mo_approve"}
+  defp perm_for_action("amend"), do: {:ok, "production.mo_approve"}
+  defp perm_for_action(_), do: {:error, :unknown_action}
+
+  defp check_perm(actor, perm) do
+    if RBAC.has_permission?(actor, perm), do: :ok, else: {:error, :missing_perm, perm}
+  end
+
+  defp run_signature(actor, mo, "prepare", _params), do: Production.prepare_mo(actor, mo)
+  defp run_signature(actor, mo, "unprepare", _params), do: Production.unprepare_mo(actor, mo)
+  defp run_signature(actor, mo, "approve", _params), do: Production.approve_mo(actor, mo)
+  defp run_signature(actor, mo, "amend", _params), do: Production.amend_mo(actor, mo)
+
+  defp run_signature(actor, mo, "reject", %{"reason" => reason}),
+    do: Production.reject_mo(actor, mo, reason)
+
+  defp run_signature(_actor, _mo, "reject", _), do: {:error, :reason_required}
 
   def delete(conn, %{"id" => uuid}) do
     actor = conn.assigns.current_user

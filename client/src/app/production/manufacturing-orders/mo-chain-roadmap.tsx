@@ -1,5 +1,12 @@
 import Link from "next/link";
-import { ArrowDown, Check, CircleAlert, Factory, MapPin } from "lucide-react";
+import {
+  ArrowDown,
+  Check,
+  CircleAlert,
+  ClipboardCheck,
+  Factory,
+  MapPin,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatCompanyNumber } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
@@ -32,6 +39,14 @@ const STATUS_STYLES: Record<
     dot: "bg-muted-foreground/50",
     label: "Draft",
     icon: Factory,
+  },
+  prepared: {
+    border: "border-amber-300 dark:border-amber-800",
+    bg: "bg-amber-50/60 dark:bg-amber-950/30",
+    text: "text-amber-800 dark:text-amber-300",
+    dot: "bg-amber-500",
+    label: "Awaiting approval",
+    icon: ClipboardCheck,
   },
   approved: {
     border: "border-indigo-300 dark:border-indigo-800",

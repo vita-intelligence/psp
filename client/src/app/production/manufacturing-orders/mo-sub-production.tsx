@@ -24,6 +24,12 @@ const STATUS_TONE: Record<
     dot: "bg-muted-foreground/40",
     label: "Draft",
   },
+  prepared: {
+    bg: "bg-amber-50 dark:bg-amber-950/30",
+    text: "text-amber-800 dark:text-amber-300",
+    dot: "bg-amber-500",
+    label: "Awaiting approval",
+  },
   approved: {
     bg: "bg-indigo-50 dark:bg-indigo-950/30",
     text: "text-indigo-700 dark:text-indigo-300",

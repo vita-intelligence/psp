@@ -393,10 +393,18 @@ export interface RoutingUpsertInput {
 
 export type ManufacturingOrderStatus =
   | "draft"
+  | "prepared"
   | "approved"
   | "in_progress"
   | "completed"
   | "cancelled";
+
+export type MOSignatureAction =
+  | "prepare"
+  | "unprepare"
+  | "approve"
+  | "reject"
+  | "amend";
 
 export interface ManufacturingOrderSiteSummary {
   id: number;
@@ -660,6 +668,13 @@ export interface ManufacturingOrder {
   approved_by_id: number | null;
   approved_by: AuditActor | null;
   approved_at: string | null;
+  /** 1st signature — set when the planner marks the tree prepared. */
+  prepared_by_id: number | null;
+  prepared_by: AuditActor | null;
+  prepared_at: string | null;
+  /** Set when the approver rejects a prepared MO. Cleared on the
+   *  next prepare cycle. Shown as a banner. */
+  rejection_reason: string | null;
   /** Materials cost = sum(bom_line × MO qty × unit_cost). */
   approximate_cost: string | null;
   materials_cost: string | null;
@@ -687,6 +702,10 @@ export interface ManufacturingOrderSummary {
   bom: BOMSummary | null;
   warehouse: ManufacturingOrderSiteSummary | null;
   assigned_to: AuditActor | null;
+  prepared_by: AuditActor | null;
+  prepared_at: string | null;
+  approved_by: AuditActor | null;
+  approved_at: string | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;

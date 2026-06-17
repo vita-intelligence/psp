@@ -1,22 +1,41 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { ErrorBanner } from "@/components/forms/error-banner";
-import { cn } from "@/lib/utils";
 import {
+  AlertCircle,
   CheckCircle2,
   CircleSlash,
+  ClipboardCheck,
   Loader2,
+  PenSquare,
   Play,
   RotateCcw,
-  ThumbsUp,
+  ShieldCheck,
+  Undo2,
+  XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import { cn } from "@/lib/utils";
+import { format as formatDateFns } from "date-fns";
 import { invalidateAudit } from "@/lib/audit/invalidator";
-import { transitionManufacturingOrderAction } from "@/lib/production/actions";
+import {
+  signMOAction,
+  transitionManufacturingOrderAction,
+} from "@/lib/production/actions";
 import type {
   ManufacturingOrder,
   ManufacturingOrderStatus,
@@ -24,78 +43,14 @@ import type {
 
 interface Props {
   mo: ManufacturingOrder;
+  /** Can mark prepared / unprepare (1st signature). */
+  canPrepare: boolean;
+  /** Can approve / reject / amend (2nd signature). */
   canApprove: boolean;
+  /** Can start / complete / cancel (run on the floor). */
   canExecute: boolean;
+  currentUserId: number;
 }
-
-interface Action {
-  label: string;
-  toStatus: ManufacturingOrderStatus;
-  icon: typeof Play;
-  variant?: "default" | "outline" | "ghost";
-  destructive?: boolean;
-  requires: "approve" | "execute";
-}
-
-const ACTIONS_BY_STATUS: Record<ManufacturingOrderStatus, Action[]> = {
-  draft: [
-    {
-      label: "Approve",
-      toStatus: "approved",
-      icon: ThumbsUp,
-      requires: "approve",
-    },
-    {
-      label: "Cancel",
-      toStatus: "cancelled",
-      icon: CircleSlash,
-      variant: "ghost",
-      destructive: true,
-      requires: "execute",
-    },
-  ],
-  approved: [
-    {
-      label: "Start",
-      toStatus: "in_progress",
-      icon: Play,
-      requires: "execute",
-    },
-    {
-      label: "Amend",
-      toStatus: "draft",
-      icon: RotateCcw,
-      variant: "outline",
-      requires: "approve",
-    },
-    {
-      label: "Cancel",
-      toStatus: "cancelled",
-      icon: CircleSlash,
-      variant: "ghost",
-      destructive: true,
-      requires: "execute",
-    },
-  ],
-  in_progress: [
-    {
-      label: "Complete",
-      toStatus: "completed",
-      icon: CheckCircle2,
-      requires: "execute",
-    },
-    {
-      label: "Cancel",
-      toStatus: "cancelled",
-      icon: CircleSlash,
-      variant: "ghost",
-      destructive: true,
-      requires: "execute",
-    },
-  ],
-  completed: [],
-  cancelled: [],
-};
 
 const STATUS_STYLES: Record<
   ManufacturingOrderStatus,
@@ -106,6 +61,12 @@ const STATUS_STYLES: Record<
     bg: "bg-muted/60",
     text: "text-muted-foreground",
     dot: "bg-muted-foreground/50",
+  },
+  prepared: {
+    ring: "ring-amber-200 dark:ring-amber-900/50",
+    bg: "bg-amber-50 dark:bg-amber-950/30",
+    text: "text-amber-800 dark:text-amber-300",
+    dot: "bg-amber-500",
   },
   approved: {
     ring: "ring-indigo-200 dark:ring-indigo-900/50",
@@ -135,36 +96,45 @@ const STATUS_STYLES: Record<
 
 const STATUS_LABEL: Record<ManufacturingOrderStatus, string> = {
   draft: "Draft",
+  prepared: "Awaiting approval",
   approved: "Approved",
   in_progress: "In progress",
   completed: "Completed",
   cancelled: "Cancelled",
 };
 
-export function MOStatusActions({ mo, canApprove, canExecute }: Props) {
+export function MOStatusActions({
+  mo,
+  canPrepare,
+  canApprove,
+  canExecute,
+  currentUserId,
+}: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
+  const [rejectOpen, setRejectOpen] = useState(false);
   const [actionError, setActionError] = useState<{
     detail: string;
     code?: string;
   } | null>(null);
 
-  const actions = ACTIONS_BY_STATUS[mo.status].filter((a) =>
-    a.requires === "approve" ? canApprove : canExecute,
-  );
+  // Sub-MOs don't get their own signature buttons — approval is
+  // handled at the root of the chain. We still allow execution
+  // actions (start/complete/cancel) on a child since each MO runs
+  // independently once approved.
+  const isChild = mo.parent_mo_id != null;
 
-  function run(action: Action) {
-    if (action.destructive) {
-      if (!window.confirm(`Move this MO to "${action.toStatus}"?`)) return;
-    }
+  function runStatus(
+    label: string,
+    to: ManufacturingOrderStatus,
+    confirmMsg?: string,
+  ) {
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
     setActionError(null);
-    setPendingLabel(action.label);
+    setPendingLabel(label);
     startTransition(async () => {
-      const res = await transitionManufacturingOrderAction(
-        mo.uuid,
-        action.toStatus,
-      );
+      const res = await transitionManufacturingOrderAction(mo.uuid, to);
       setPendingLabel(null);
       if (res.ok) {
         toast.success(`Status → ${STATUS_LABEL[res.mo.status]}`);
@@ -176,7 +146,44 @@ export function MOStatusActions({ mo, canApprove, canExecute }: Props) {
     });
   }
 
+  function runSignature(
+    label: string,
+    action: "prepare" | "unprepare" | "approve" | "amend",
+  ) {
+    setActionError(null);
+    setPendingLabel(label);
+    startTransition(async () => {
+      const res = await signMOAction(mo.uuid, action);
+      setPendingLabel(null);
+      if (res.ok) {
+        toast.success(`Status → ${STATUS_LABEL[res.mo.status]}`);
+        invalidateAudit("manufacturing_order", mo.id);
+        router.refresh();
+      } else {
+        setActionError({ detail: res.detail, code: res.code });
+      }
+    });
+  }
+
+  function submitReject(reason: string) {
+    setActionError(null);
+    setPendingLabel("Reject");
+    startTransition(async () => {
+      const res = await signMOAction(mo.uuid, "reject", reason);
+      setPendingLabel(null);
+      if (res.ok) {
+        toast.success("Rejected. Tree returned to draft for revisions.");
+        invalidateAudit("manufacturing_order", mo.id);
+        setRejectOpen(false);
+        router.refresh();
+      } else {
+        setActionError({ detail: res.detail, code: res.code });
+      }
+    });
+  }
+
   const style = STATUS_STYLES[mo.status];
+  const isPreparer = mo.prepared_by_id === currentUserId;
 
   return (
     <div className="space-y-2">
@@ -208,47 +215,354 @@ export function MOStatusActions({ mo, canApprove, canExecute }: Props) {
           </span>
         )}
 
-        {actions.length > 0 && (
-          <span className="h-5 w-px bg-border" aria-hidden />
-        )}
+        {/* Action buttons */}
+        <ActionStrip
+          mo={mo}
+          isChild={isChild}
+          canPrepare={canPrepare}
+          canApprove={canApprove}
+          canExecute={canExecute}
+          isPreparer={isPreparer}
+          pending={pending}
+          pendingLabel={pendingLabel}
+          onPrepare={() => runSignature("Mark prepared", "prepare")}
+          onUnprepare={() => runSignature("Unprepare", "unprepare")}
+          onApprove={() => runSignature("Approve", "approve")}
+          onReject={() => setRejectOpen(true)}
+          onAmend={() => runSignature("Amend", "amend")}
+          onStart={() => runStatus("Start", "in_progress")}
+          onComplete={() => runStatus("Complete", "completed")}
+          onCancel={() =>
+            runStatus(
+              "Cancel",
+              "cancelled",
+              "Cancel this MO? Active bookings will be released and draft sub-MOs cancelled.",
+            )
+          }
+        />
+      </div>
 
-        {actions.map((a) => {
-          const Icon = a.icon;
-          const isThisPending = pending && pendingLabel === a.label;
-          return (
-            <Button
-              key={a.label}
-              type="button"
-              size="sm"
-              variant={a.variant ?? "default"}
-              disabled={pending}
-              onClick={() => run(a)}
-              className={
-                a.destructive
-                  ? "text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  : undefined
-              }
-            >
-              {isThisPending ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Icon className="size-3.5" />
-              )}
-              {a.label}
-            </Button>
-          );
-        })}
-        {actions.length === 0 &&
-          mo.status !== "completed" &&
-          mo.status !== "cancelled" && (
-            <span className="text-xs text-muted-foreground">
-              Ask an admin for the right permission to transition status.
+      {/* Rejection reason banner */}
+      {mo.status === "draft" && mo.rejection_reason && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/[0.04] px-3 py-2 text-xs text-destructive">
+          <p className="flex items-start gap-2">
+            <XCircle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              <span className="font-medium">Rejected.</span>{" "}
+              {mo.rejection_reason}
+            </span>
+          </p>
+        </div>
+      )}
+
+      {/* Signature line */}
+      {(mo.prepared_by || mo.approved_by) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+          {mo.prepared_by && mo.prepared_at && (
+            <span className="inline-flex items-center gap-1">
+              <PenSquare className="size-3 text-amber-700 dark:text-amber-300" />
+              Prepared by{" "}
+              <span className="font-medium text-foreground">
+                {mo.prepared_by.name}
+              </span>{" "}
+              · {formatDateFns(new Date(mo.prepared_at), "dd MMM yyyy HH:mm")}
             </span>
           )}
-      </div>
+          {mo.approved_by && mo.approved_at && (
+            <span className="inline-flex items-center gap-1">
+              <ShieldCheck className="size-3 text-emerald-700 dark:text-emerald-300" />
+              Approved by{" "}
+              <span className="font-medium text-foreground">
+                {mo.approved_by.name}
+              </span>{" "}
+              · {formatDateFns(new Date(mo.approved_at), "dd MMM yyyy HH:mm")}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Same-signer hint for the approver */}
+      {mo.status === "prepared" && canApprove && isPreparer && (
+        <p className="rounded-md border border-amber-500/30 bg-amber-50/40 px-3 py-2 text-[11px] text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+          You prepared this MO, so a different user needs to approve it (4-eyes rule).
+        </p>
+      )}
+
+      {/* Child-MO approval hint */}
+      {isChild && (mo.status === "draft" || mo.status === "prepared") && (
+        <p className="text-[11px] text-muted-foreground">
+          Approval is handled at{" "}
+          {mo.parent_mo ? (
+            <Link
+              href={`/production/manufacturing-orders/${mo.parent_mo.uuid}`}
+              className="font-medium text-brand hover:underline"
+            >
+              {mo.parent_mo.code ?? `MO #${mo.parent_mo.id}`}
+            </Link>
+          ) : (
+            "the root MO"
+          )}
+          .
+        </p>
+      )}
+
       {actionError && (
         <ErrorBanner detail={actionError.detail} code={actionError.code} />
       )}
+
+      {rejectOpen && (
+        <RejectDialog
+          open={rejectOpen}
+          onOpenChange={setRejectOpen}
+          onSubmit={submitReject}
+          pending={pending && pendingLabel === "Reject"}
+        />
+      )}
     </div>
+  );
+}
+
+interface ActionStripProps {
+  mo: ManufacturingOrder;
+  isChild: boolean;
+  canPrepare: boolean;
+  canApprove: boolean;
+  canExecute: boolean;
+  isPreparer: boolean;
+  pending: boolean;
+  pendingLabel: string | null;
+  onPrepare: () => void;
+  onUnprepare: () => void;
+  onApprove: () => void;
+  onReject: () => void;
+  onAmend: () => void;
+  onStart: () => void;
+  onComplete: () => void;
+  onCancel: () => void;
+}
+
+function ActionStrip(props: ActionStripProps) {
+  const {
+    mo,
+    isChild,
+    canPrepare,
+    canApprove,
+    canExecute,
+    isPreparer,
+    pending,
+    pendingLabel,
+  } = props;
+
+  // Buttons rendered for the current status. Child MOs hide the
+  // signature actions (prepare/approve/reject/amend) since approval
+  // happens at the root.
+  const buttons: React.ReactNode[] = [];
+
+  function actionButton(opts: {
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    onClick: () => void;
+    variant?: "default" | "outline" | "ghost";
+    disabled?: boolean;
+    title?: string;
+    destructive?: boolean;
+  }) {
+    const Icon = opts.icon;
+    const isThisPending = pending && pendingLabel === opts.label;
+    buttons.push(
+      <Button
+        key={opts.label}
+        type="button"
+        size="sm"
+        variant={opts.variant ?? "default"}
+        disabled={pending || opts.disabled}
+        onClick={opts.onClick}
+        title={opts.title}
+        className={
+          opts.destructive
+            ? "text-destructive hover:bg-destructive/10 hover:text-destructive"
+            : undefined
+        }
+      >
+        {isThisPending ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Icon className="size-3.5" />
+        )}
+        {opts.label}
+      </Button>,
+    );
+  }
+
+  if (mo.status === "draft" && !isChild && canPrepare) {
+    actionButton({
+      label: "Mark prepared",
+      icon: ClipboardCheck,
+      onClick: props.onPrepare,
+    });
+  }
+
+  if (mo.status === "prepared" && !isChild) {
+    if (canApprove) {
+      actionButton({
+        label: "Approve",
+        icon: ShieldCheck,
+        onClick: props.onApprove,
+        disabled: isPreparer,
+        title: isPreparer
+          ? "You prepared this MO — a different user must approve it."
+          : undefined,
+      });
+      actionButton({
+        label: "Reject",
+        icon: XCircle,
+        onClick: props.onReject,
+        variant: "outline",
+        destructive: true,
+      });
+    }
+    if (canPrepare && isPreparer) {
+      actionButton({
+        label: "Unprepare",
+        icon: Undo2,
+        onClick: props.onUnprepare,
+        variant: "ghost",
+      });
+    }
+  }
+
+  if (mo.status === "approved") {
+    if (canExecute) {
+      actionButton({
+        label: "Start",
+        icon: Play,
+        onClick: props.onStart,
+        disabled: mo.blocking_children_count > 0,
+        title:
+          mo.blocking_children_count > 0
+            ? "Finish or cancel every sub-MO before starting."
+            : undefined,
+      });
+    }
+    if (canApprove && !isChild) {
+      actionButton({
+        label: "Amend",
+        icon: RotateCcw,
+        onClick: props.onAmend,
+        variant: "outline",
+      });
+    }
+  }
+
+  if (mo.status === "in_progress" && canExecute) {
+    actionButton({
+      label: "Complete",
+      icon: CheckCircle2,
+      onClick: props.onComplete,
+    });
+  }
+
+  // Cancel is available at every pre-complete stage when canExecute.
+  if (
+    canExecute &&
+    mo.status !== "completed" &&
+    mo.status !== "cancelled"
+  ) {
+    actionButton({
+      label: "Cancel",
+      icon: CircleSlash,
+      onClick: props.onCancel,
+      variant: "ghost",
+      destructive: true,
+    });
+  }
+
+  if (buttons.length === 0) return null;
+
+  return (
+    <>
+      <span className="h-5 w-px bg-border" aria-hidden />
+      {buttons}
+    </>
+  );
+}
+
+function RejectDialog({
+  open,
+  onOpenChange,
+  onSubmit,
+  pending,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (reason: string) => void;
+  pending: boolean;
+}) {
+  const [reason, setReason] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (reason.trim() === "") return;
+    onSubmit(reason.trim());
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Reject this MO</DialogTitle>
+          <DialogDescription>
+            Send the tree back to draft with a reason. The preparer will
+            see your note as a banner and the audit log will record both
+            signatures.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="reject-reason" className="text-sm font-medium">
+              Reason
+            </Label>
+            <Textarea
+              id="reject-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={4}
+              placeholder="Why are you rejecting this run? Be specific so the preparer can fix it."
+              required
+              disabled={pending}
+            />
+          </div>
+
+          <p className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-50/40 px-3 py-2 text-[11px] text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              The whole tree (this MO + every draft/prepared/approved child)
+              will return to draft. Bookings stay put — they only release on
+              cancel.
+            </span>
+          </p>
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              disabled={pending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={pending || reason.trim() === ""}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+              Reject
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -1273,12 +1273,15 @@ defmodule Backend.Production do
   @mo_sortable [:inserted_at, :updated_at, :start_at, :finish_at, :due_date]
   @mo_default_sort {:inserted_at, :desc}
 
+  # Status-change pairs that the generic transition endpoint accepts.
+  # Approval-flow transitions (prepare / approve / reject / amend) go
+  # through their own context functions so the side effects (cascade,
+  # 4-eyes rule, required reason) can be enforced cleanly.
   @mo_transitions %{
-    {"draft", "approved"} => "production.mo_approve",
     {"draft", "cancelled"} => "production.mo_execute",
+    {"prepared", "cancelled"} => "production.mo_execute",
     {"approved", "in_progress"} => "production.mo_execute",
     {"approved", "cancelled"} => "production.mo_execute",
-    {"approved", "draft"} => "production.mo_approve",
     {"in_progress", "completed"} => "production.mo_execute",
     {"in_progress", "cancelled"} => "production.mo_execute"
   }
@@ -1302,6 +1305,8 @@ defmodule Backend.Production do
         :bom,
         :warehouse,
         :assigned_to,
+        :prepared_by,
+        :approved_by,
         :created_by,
         :updated_by
       ])
@@ -1353,6 +1358,7 @@ defmodule Backend.Production do
       :warehouse,
       :assigned_to,
       :approved_by,
+      :prepared_by,
       :created_by,
       :updated_by,
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
@@ -1419,8 +1425,17 @@ defmodule Backend.Production do
         end
       end)
       |> case do
-        {:ok, mo} -> {:ok, reload_manufacturing_order(mo)}
-        err -> err
+        {:ok, mo} ->
+          # Add-sub-MO under an already-signed parent invalidates the
+          # approval — the tree no longer matches what was signed off.
+          # The initial cascade-create on a brand-new root MO can't
+          # trigger this (the new MO is itself draft so the root walk
+          # finds the same draft MO; no-op).
+          if mo.parent_mo_id, do: demote_root_if_signed(actor, mo)
+          {:ok, reload_manufacturing_order(mo)}
+
+        err ->
+          err
       end
     end
   end
@@ -1897,6 +1912,9 @@ defmodule Backend.Production do
             mo_snapshot(updated)
           )
 
+          # Header edit → drop approval if the tree was signed.
+          _ = demote_root_if_signed(actor, updated)
+
           {:ok, reload_manufacturing_order(updated)}
 
         err ->
@@ -1987,29 +2005,15 @@ defmodule Backend.Production do
     end)
   end
 
-  defp do_transition(%User{} = actor, %ManufacturingOrder{} = mo, to) do
+  defp do_transition(%User{} = actor, %ManufacturingOrder{} = mo, to, extra_attrs \\ %{}) do
     before = mo_snapshot(mo)
 
-    attrs = %{
-      "status" => to,
-      "updated_by_id" => actor.id
-    }
-
     attrs =
-      cond do
-        to == "approved" ->
-          attrs
-          |> Map.put("approved_by_id", actor.id)
-          |> Map.put("approved_at", now())
-
-        mo.status == "approved" and to == "draft" ->
-          attrs
-          |> Map.put("approved_by_id", nil)
-          |> Map.put("approved_at", nil)
-
-        true ->
-          attrs
-      end
+      %{
+        "status" => to,
+        "updated_by_id" => actor.id
+      }
+      |> Map.merge(extra_attrs)
 
     mo
     |> ManufacturingOrder.transition_changeset(attrs)
@@ -2030,6 +2034,186 @@ defmodule Backend.Production do
         err
     end
   end
+
+  # ----- Approval workflow (prepare / approve / reject / amend) ----
+
+  @doc """
+  1st signature — planner marks the root MO + every draft descendant
+  as prepared. From here the scientist countersigns. Operator can
+  pull it back to draft with `unprepare_mo/2` without involving the
+  approver.
+
+  Only valid on the ROOT MO. Returns `{:error, :not_root}` for sub-
+  MOs (the tree is signed at the root).
+  """
+  def prepare_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_root(mo),
+         :ok <- ensure_status_in(mo, ["draft"]) do
+      cascade_approval_transition(actor, mo, "prepared", %{
+        "prepared_by_id" => actor.id,
+        "prepared_at" => now(),
+        "rejection_reason" => nil
+      })
+    end
+  end
+
+  @doc """
+  Preparer's amend — returns the tree to draft before the scientist
+  has signed. Clears the preparer signature so the next prep cycle
+  records a fresh timestamp.
+  """
+  def unprepare_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_root(mo),
+         :ok <- ensure_status_in(mo, ["prepared"]) do
+      cascade_approval_transition(actor, mo, "draft", %{
+        "prepared_by_id" => nil,
+        "prepared_at" => nil
+      })
+    end
+  end
+
+  @doc """
+  2nd signature — scientist approves the prepared root + every
+  descendant. Enforces the 4-eyes rule (approver != preparer).
+  """
+  def approve_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_root(mo),
+         :ok <- ensure_status_in(mo, ["prepared"]),
+         :ok <- ensure_different_signer(mo, actor) do
+      cascade_approval_transition(actor, mo, "approved", %{
+        "approved_by_id" => actor.id,
+        "approved_at" => now()
+      })
+    end
+  end
+
+  @doc """
+  Scientist sends the tree back to draft with a required reason.
+  Clears both signatures so the preparer fixes + re-signs from the
+  bottom of the workflow. Reason recorded on the root MO + audit
+  trail; shown as a banner until the next prepare cycle.
+  """
+  def reject_mo(%User{} = actor, %ManufacturingOrder{} = mo, reason)
+      when is_binary(reason) do
+    trimmed = String.trim(reason)
+
+    with :ok <- ensure_root(mo),
+         :ok <- ensure_status_in(mo, ["prepared"]),
+         :ok <- ensure_non_empty_reason(trimmed) do
+      cascade_approval_transition(actor, mo, "draft", %{
+        "approved_by_id" => nil,
+        "approved_at" => nil,
+        "prepared_by_id" => nil,
+        "prepared_at" => nil,
+        "rejection_reason" => trimmed
+      })
+    end
+  end
+
+  def reject_mo(_actor, _mo, _), do: {:error, :reason_required}
+
+  @doc """
+  Approver's amend — returns an approved tree to draft. Clears both
+  signatures so the next pass starts fresh.
+  """
+  def amend_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_root(mo),
+         :ok <- ensure_status_in(mo, ["approved"]) do
+      cascade_approval_transition(actor, mo, "draft", %{
+        "approved_by_id" => nil,
+        "approved_at" => nil,
+        "prepared_by_id" => nil,
+        "prepared_at" => nil
+      })
+    end
+  end
+
+  @doc """
+  Walk to the root of `mo`'s tree; if it's in a signed state
+  (`prepared` or `approved`), demote the whole tree back to draft
+  and clear the signatures. Called as a side effect of any
+  structural change so the approval invariant holds: what's
+  approved == what's actually run.
+
+  No-op when the root is draft / in_progress / completed / cancelled.
+  Logs to the audit trail via the same cascade path the approver
+  uses, so the timeline shows "edit X by user Y → auto-demoted".
+  """
+  def demote_root_if_signed(%User{} = actor, %ManufacturingOrder{} = mo) do
+    root = walk_to_root(mo, MapSet.new())
+
+    case root.status do
+      "prepared" ->
+        cascade_approval_transition(actor, root, "draft", %{
+          "prepared_by_id" => nil,
+          "prepared_at" => nil
+        })
+
+      "approved" ->
+        cascade_approval_transition(actor, root, "draft", %{
+          "approved_by_id" => nil,
+          "approved_at" => nil,
+          "prepared_by_id" => nil,
+          "prepared_at" => nil
+        })
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Apply the transition to the root then cascade to every draft /
+  # prepared / approved descendant inside one transaction. Children
+  # already in_progress / completed / cancelled stay put — physical
+  # production is immutable.
+  defp cascade_approval_transition(%User{} = actor, %ManufacturingOrder{} = root, to, signature_attrs) do
+    Repo.transaction(fn ->
+      with {:ok, updated} <- do_transition(actor, root, to, signature_attrs),
+           :ok <- cascade_approval_to_children(actor, updated, to, signature_attrs) do
+        updated
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp cascade_approval_to_children(actor, %ManufacturingOrder{} = parent, to, signature_attrs) do
+    children =
+      from(c in ManufacturingOrder,
+        where:
+          c.parent_mo_id == ^parent.id and
+            c.status in ["draft", "prepared", "approved"]
+      )
+      |> Repo.all()
+
+    Enum.each(children, fn child ->
+      case do_transition(actor, child, to, signature_attrs) do
+        {:ok, updated_child} ->
+          cascade_approval_to_children(actor, updated_child, to, signature_attrs)
+
+        {:error, _} ->
+          :ok
+      end
+    end)
+
+    :ok
+  end
+
+  defp ensure_root(%ManufacturingOrder{parent_mo_id: nil}), do: :ok
+  defp ensure_root(%ManufacturingOrder{}), do: {:error, :not_root}
+
+  defp ensure_status_in(%ManufacturingOrder{status: s}, allowed) do
+    if s in allowed, do: :ok, else: {:error, {:invalid_status, s}}
+  end
+
+  defp ensure_different_signer(%ManufacturingOrder{prepared_by_id: pid}, %User{id: aid})
+       when not is_nil(pid) and pid == aid,
+       do: {:error, :same_signer}
+
+  defp ensure_different_signer(_mo, _actor), do: :ok
+
+  defp ensure_non_empty_reason(""), do: {:error, :reason_required}
+  defp ensure_non_empty_reason(_), do: :ok
 
   # Block in_progress when any child MO hasn't completed yet. Other
   # transitions stay open so the planner can still cancel / amend
@@ -2496,6 +2680,7 @@ defmodule Backend.Production do
             booking_snapshot(booking)
           )
 
+          _ = demote_root_if_signed(actor, mo)
           {:ok, reload_booking(booking)}
 
         err ->
@@ -2541,6 +2726,7 @@ defmodule Backend.Production do
             booking_snapshot(updated)
           )
 
+          maybe_demote_via_booking(actor, updated)
           {:ok, reload_booking(updated)}
 
         err ->
@@ -2566,10 +2752,18 @@ defmodule Backend.Production do
           before
         )
 
+        maybe_demote_via_booking(actor, booking)
         {:ok, deleted}
 
       err ->
         err
+    end
+  end
+
+  defp maybe_demote_via_booking(%User{} = actor, %ManufacturingOrderBooking{manufacturing_order_id: mo_id}) do
+    case Repo.get(ManufacturingOrder, mo_id) do
+      %ManufacturingOrder{} = mo -> demote_root_if_signed(actor, mo)
+      _ -> :ok
     end
   end
 

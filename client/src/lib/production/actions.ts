@@ -18,6 +18,7 @@ import type {
   ManufacturingOrderStep,
   ManufacturingOrderStepUpsertInput,
   ManufacturingOrderUpsertInput,
+  MOSignatureAction,
   Routing,
   RoutingUpsertInput,
   Workstation,
@@ -482,6 +483,41 @@ export async function transitionManufacturingOrderAction(
       ...toErrorResult(err, {
         source: "transitionManufacturingOrderAction",
         fallbackDetail: "Couldn't change the manufacturing order's status.",
+      }),
+    };
+  }
+}
+
+/**
+ * Approval-workflow actions (prepare / unprepare / approve / reject /
+ * amend). Reject MUST include a non-empty reason; the others ignore
+ * it. All four cascade down the MO tree on the BE.
+ */
+export async function signMOAction(
+  uuid: string,
+  action: MOSignatureAction,
+  reason?: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token) return { ok: false, ...unauthorizedResult("signMOAction") };
+
+  const body: Record<string, unknown> = { action };
+  if (action === "reject" && reason) body.reason = reason;
+
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/transition`,
+      { method: "POST", token, body: JSON.stringify(body) },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "signMOAction",
+        fallbackDetail: "Couldn't record the signature.",
       }),
     };
   }

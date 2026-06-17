@@ -48,6 +48,7 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
 
   const canEdit = hasPermission(user, "production.mo_edit");
   const canDelete = hasPermission(user, "production.mo_delete");
+  const canPrepare = hasPermission(user, "production.mo_prepare");
   const canApprove = hasPermission(user, "production.mo_approve");
   const canExecute = hasPermission(user, "production.mo_execute");
   const canComment =
@@ -101,8 +102,10 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             </p>
             <MOStatusActions
               mo={mo}
+              canPrepare={canPrepare}
               canApprove={canApprove}
               canExecute={canExecute}
+              currentUserId={user.id}
             />
           </header>
 
