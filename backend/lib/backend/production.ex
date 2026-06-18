@@ -1754,6 +1754,81 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Move a single step to a new starting time, re-walking through
+  working hours so the step's `planned_start` / `planned_finish`
+  never land inside closed time. Used by the workstation-view op
+  drag — the manager grabs an op block, drops it on a new time
+  slot, and the walker auto-pushes the step to the next valid
+  working window if the drop landed in a night/weekend/holiday.
+
+  Optional `:workstation_group_id` reassigns the step to a
+  different WSG (e.g. dragging onto a different row).
+
+  Returns `{:ok, step, %{outside_hours_seconds: N}}` mirroring the
+  schedule_mo shape — non-zero outside hours means the step's
+  duration overflowed past available working windows.
+  """
+  def move_mo_step(actor, step, new_start_dt, opts \\ [])
+
+  def move_mo_step(
+        %User{} = actor,
+        %ManufacturingOrderStep{} = step,
+        %DateTime{} = new_start_dt,
+        opts
+      ) do
+    if DateTime.compare(new_start_dt, now()) == :lt do
+      {:error, :past_time}
+    else
+      do_move_mo_step(actor, step, new_start_dt, opts)
+    end
+  end
+
+  defp do_move_mo_step(actor, step, new_start_dt, opts) do
+    mo = Repo.get!(ManufacturingOrder, step.manufacturing_order_id)
+    intervals = working_intervals_for_mo(mo, new_start_dt)
+    duration = step.planned_duration_seconds || 0
+
+    {:ok,
+     %{
+       start_at: walked_start,
+       finish_at: walked_finish,
+       outside_hours_seconds: outside
+     }} = ScheduleWalker.walk_forward(intervals, new_start_dt, duration)
+
+    wsg_id = Keyword.get(opts, :workstation_group_id)
+    before = mo_step_snapshot(step)
+
+    attrs = %{
+      "planned_start" => walked_start,
+      "planned_finish" => walked_finish,
+      "updated_by_id" => actor.id
+    }
+
+    attrs =
+      if is_integer(wsg_id) do
+        Map.put(attrs, "workstation_group_id", wsg_id)
+      else
+        attrs
+      end
+
+    case step |> ManufacturingOrderStep.changeset(attrs) |> Repo.update() do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_step",
+          updated,
+          before,
+          mo_step_snapshot(updated)
+        )
+
+        {:ok, updated, %{outside_hours_seconds: outside}}
+
+      {:error, cs} ->
+        {:error, cs}
+    end
+  end
+
+  @doc """
   Update one MO step. The form sends the full editable header +
   workers list; we wholesale-replace the worker join rows inside the
   same transaction so audit captures one event.

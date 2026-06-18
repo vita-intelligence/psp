@@ -40,13 +40,13 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
+  moveManufacturingOrderStepAction,
   scheduleManufacturingOrderAction,
   scheduleProjectAction,
   shiftManufacturingOrderAction,
   shiftProjectAction,
   unscheduleManufacturingOrderAction,
   unscheduleProjectAction,
-  updateManufacturingOrderStepAction,
 } from "@/lib/production/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { CompanyDefaults } from "@/lib/types";
@@ -707,7 +707,10 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
       if (!moUuid) return;
 
       const snapshot = data;
-      // Optimistic: update this one op in place.
+      // Optimistic: update this one op in place. Server runs the
+      // walker so the actual final position may shift forward into
+      // the next working window if the drop landed in closed time —
+      // the reload() below pulls in those walker-adjusted times.
       setData((cur) =>
         cur
           ? {
@@ -727,13 +730,17 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
       );
 
       startTransition(async () => {
-        const res = await updateManufacturingOrderStepAction(moUuid, op.uuid, {
-          planned_start: newStart,
-          planned_finish: newFinish,
-          workstation_group_id: newWsgId ?? undefined,
-        });
+        const res = await moveManufacturingOrderStepAction(
+          moUuid,
+          op.uuid,
+          newStart,
+          newWsgId !== op.workstation_group_id && newWsgId != null
+            ? { workstationGroupId: newWsgId }
+            : undefined,
+        );
         if (res.ok) {
           toast.success("Operation updated");
+          warnIfOutsideHours(res.outsideHoursSeconds ?? 0);
           invalidateAudit("manufacturing_order_step", op.id);
           router.refresh();
           await reload();

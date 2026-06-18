@@ -75,6 +75,82 @@ defmodule BackendWeb.ManufacturingOrderStepController do
     end
   end
 
+  # POST /api/production/manufacturing-orders/:mo_id/steps/:id/move
+  # Body: %{"new_start_at" => ISO datetime, "workstation_group_id" => N?}
+  # Re-walks this single step through working hours starting from
+  # `new_start_at`. Used by the workstation-view op drag so dropped
+  # blocks always land inside a working window.
+  def move(conn, %{
+        "mo_id" => mo_uuid,
+        "id" => uuid,
+        "new_start_at" => start_raw
+      } = params) when is_binary(start_raw) do
+    actor = conn.assigns.current_user
+
+    opts =
+      case params["workstation_group_id"] do
+        nil -> []
+        wsg when is_integer(wsg) -> [workstation_group_id: wsg]
+        wsg when is_binary(wsg) ->
+          case Integer.parse(wsg) do
+            {n, ""} -> [workstation_group_id: n]
+            _ -> []
+          end
+        _ -> []
+      end
+
+    with %ManufacturingOrder{id: mo_id} <-
+           Production.get_manufacturing_order(actor.company_id, mo_uuid),
+         %ManufacturingOrderStep{manufacturing_order_id: ^mo_id} = step <-
+           Production.get_mo_step(actor.company_id, uuid),
+         true <- RBAC.has_permission?(actor, "production.mo_edit"),
+         {:ok, dt, _offset} <- DateTime.from_iso8601(start_raw),
+         {:ok, updated, meta} <-
+           Production.move_mo_step(
+             actor,
+             step,
+             DateTime.shift_zone!(dt, "Etc/UTC"),
+             opts
+           ) do
+      json(conn, %{
+        step: Payloads.mo_step(updated),
+        outside_hours_seconds: meta.outside_hours_seconds
+      })
+    else
+      false ->
+        forbidden(conn, "Missing production.mo_edit permission.")
+
+      {:error, :past_time} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "past_time",
+            "Can't move the operation before the current time.",
+            %{}
+          )
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+
+      _ ->
+        not_found(conn)
+    end
+  end
+
+  def move(conn, _) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(
+      Errors.payload(
+        "invalid_payload",
+        "Pass new_start_at as an ISO datetime.",
+        %{}
+      )
+    )
+  end
+
   # ----- helpers ---------------------------------------------------
 
   defp ensure_required_perms(actor, params) do

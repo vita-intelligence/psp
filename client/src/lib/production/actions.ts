@@ -822,8 +822,51 @@ export async function deleteManufacturingOrderAction(
 // ---------------------------------------------------------------
 
 export type ManufacturingOrderStepResult =
-  | { ok: true; step: ManufacturingOrderStep }
+  | { ok: true; step: ManufacturingOrderStep; outsideHoursSeconds?: number }
   | (ErrorResult & { ok: false });
+
+/** Move one step to a new starting time, re-walking through working
+ *  hours. Used by the workstation-view op drag so the step always
+ *  lands inside a working window — never floating in night/weekend.
+ *  Optionally reassigns to a different WSG when dropped on another
+ *  station's row. */
+export async function moveManufacturingOrderStepAction(
+  moUuid: string,
+  stepUuid: string,
+  newStartAt: string,
+  opts?: { workstationGroupId?: number },
+): Promise<ManufacturingOrderStepResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("moveManufacturingOrderStepAction"),
+    };
+  try {
+    const body: Record<string, unknown> = { new_start_at: newStartAt };
+    if (opts?.workstationGroupId !== undefined) {
+      body.workstation_group_id = opts.workstationGroupId;
+    }
+    const { step, outside_hours_seconds } = await api<{
+      step: ManufacturingOrderStep;
+      outside_hours_seconds: number;
+    }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/steps/${encodeURIComponent(stepUuid)}/move`,
+      { method: "POST", token, body: JSON.stringify(body) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, step, outsideHoursSeconds: outside_hours_seconds ?? 0 };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "moveManufacturingOrderStepAction",
+        fallbackDetail: "Couldn't move the operation.",
+      }),
+    };
+  }
+}
 
 export async function updateManufacturingOrderStepAction(
   moUuid: string,

@@ -449,6 +449,10 @@ defmodule BackendWeb.Router do
             ManufacturingOrderStepController,
             :update
 
+      post "/manufacturing-orders/:mo_id/steps/:id/move",
+           ManufacturingOrderStepController,
+           :move
+
       # MO stock bookings — operator-driven reservations against
       # specific lots. `bookable-lots` returns the candidate list
       # for the "Add a booking" dialog with available-qty computed
