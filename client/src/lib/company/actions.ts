@@ -59,3 +59,29 @@ export async function updateCompanyLocaleAction(
     });
   }
 }
+
+export async function updateCompanyWarehousePickupAction(
+  input: { default_pickup_window_hours: number },
+): Promise<CompanyResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return unauthorizedResult("updateCompanyWarehousePickupAction");
+
+  try {
+    const res = await api<{ company: Company }>(
+      "/api/company/warehouse-pickup",
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify(input),
+      },
+    );
+    revalidatePath("/settings/company");
+    return { ok: true, company: res.company };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "updateCompanyWarehousePickupAction",
+      fallbackDetail: "Couldn't save the warehouse pickup defaults.",
+    });
+  }
+}

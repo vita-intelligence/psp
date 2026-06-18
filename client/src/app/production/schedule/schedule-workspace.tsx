@@ -92,6 +92,7 @@ interface Site {
 interface Props {
   sites: Site[];
   canEditSteps: boolean;
+  canRelease: boolean;
   company: CompanyDefaults;
 }
 
@@ -114,7 +115,12 @@ function readStoredZoom(): ZoomLevel {
   return "week";
 }
 
-export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
+export function ScheduleWorkspace({
+  sites,
+  canEditSteps,
+  canRelease,
+  company,
+}: Props) {
   const router = useRouter();
   const [siteId, setSiteId] = useState<number>(sites[0]?.id ?? 0);
   const [view, setView] = useState<ScheduleView>("mo");
@@ -1191,6 +1197,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
           parentByMo={parentByMo}
           company={company}
           canEdit={canEditSteps}
+          canRelease={canRelease}
           onClose={() => setEditTarget(null)}
           onSaved={() => {
             void reload();

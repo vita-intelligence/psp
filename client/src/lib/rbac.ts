@@ -83,7 +83,9 @@ export type PermissionCode =
   | "production.mo_prepare"
   | "production.mo_approve"
   | "production.mo_execute"
-  | "production.mo_delete";
+  | "production.mo_release"
+  | "production.mo_delete"
+  | "warehouse.pick";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

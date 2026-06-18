@@ -66,6 +66,16 @@ defmodule Backend.Companies do
   end
 
   @doc """
+  Warehouse-pickup defaults — currently just the default visibility
+  window for released MOs. Per-MO override lives on the MO row.
+  """
+  def update_warehouse_pickup(%Company{} = company, attrs) do
+    company
+    |> Company.warehouse_pickup_changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
   Replace any of the JSONB bags atomically. Caller is responsible for
   validating the shape it's writing — we just stash it.
 

@@ -1079,3 +1079,74 @@ export async function releaseAllPartsAction(
     };
   }
 }
+
+/**
+ * Planner action — release a scheduled MO to the warehouse picker
+ * queue. Optional `pickupWindowHours` overrides the company default
+ * for this MO. BE refuses if any booked lot isn't `available`.
+ */
+export async function releaseManufacturingOrderToWarehouseAction(
+  uuid: string,
+  pickupWindowHours?: number | null,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("releaseManufacturingOrderToWarehouseAction"),
+    };
+  try {
+    const body: Record<string, unknown> = {};
+    if (typeof pickupWindowHours === "number" && pickupWindowHours > 0) {
+      body.pickup_window_hours = pickupWindowHours;
+    }
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/release-to-warehouse`,
+      { method: "POST", token, body: JSON.stringify(body) },
+    );
+    revalidatePath("/production/schedule");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "releaseManufacturingOrderToWarehouseAction",
+        fallbackDetail: "Couldn't release this MO to the warehouse.",
+      }),
+    };
+  }
+}
+
+/**
+ * Planner action — pull an MO back from the warehouse picker queue.
+ * BE refuses if pickup is already in progress (picker has to abort
+ * first or finish).
+ */
+export async function unreleaseManufacturingOrderFromWarehouseAction(
+  uuid: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("unreleaseManufacturingOrderFromWarehouseAction"),
+    };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/release-to-warehouse`,
+      { method: "DELETE", token },
+    );
+    revalidatePath("/production/schedule");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "unreleaseManufacturingOrderFromWarehouseAction",
+        fallbackDetail: "Couldn't unrelease this MO.",
+      }),
+    };
+  }
+}

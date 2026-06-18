@@ -53,6 +53,7 @@ import type {
 } from "@/lib/production/types";
 
 import { walkForwardClient } from "./schedule-shared";
+import { ScheduleReleaseSection } from "./schedule-release-section";
 
 export type ScheduleEditTarget =
   | { kind: "project"; rootMoUuid: string }
@@ -66,6 +67,7 @@ export interface ScheduleEditDialogProps {
   parentByMo: Map<number, number | null>;
   company: CompanyDefaults;
   canEdit: boolean;
+  canRelease: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -109,6 +111,7 @@ function ScheduleEditDialogInner({
   parentByMo,
   company,
   canEdit,
+  canRelease,
   onClose,
   onSaved,
 }: ScheduleEditDialogProps) {
@@ -294,6 +297,21 @@ function ScheduleEditDialogInner({
 
       {!joinError && (
         <div className="-mx-1 max-h-[58vh] space-y-4 overflow-y-auto px-1">
+          {/* Release-to-warehouse section. One per MO in scope, gated
+              to single-MO buckets (project + mo + step). */}
+          {scope?.buckets.length === 1 &&
+            scope.buckets[0].ops[0]?.manufacturing_order && (
+              <ScheduleReleaseSection
+                mo={scope.buckets[0].ops[0].manufacturing_order}
+                canRelease={canRelease}
+                isCreator={isCreator}
+                defaultWindowHours={company.default_pickup_window_hours}
+                companyDateFormat={company}
+                onChanged={() => {
+                  onSaved();
+                }}
+              />
+            )}
           {scope?.buckets.map((bucket) => (
             <MoBucketCard
               key={bucket.moId}

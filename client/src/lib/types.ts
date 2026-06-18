@@ -110,6 +110,11 @@ export interface Company {
   currency_rates_source: "manual" | "ecb_auto";
   allowed_ips: Record<string, unknown>;
   numbering_formats: Record<string, unknown>;
+  /** Default warehouse-pickup visibility window (hours). Per-MO
+   *  override on `ManufacturingOrder.pickup_window_hours`. Once a
+   *  scheduled MO is released to the warehouse, it appears in the
+   *  picker queue once `planned_start - window` has passed. */
+  default_pickup_window_hours: number;
 }
 
 export interface UserListEntry extends User {
@@ -213,6 +218,7 @@ export interface CompanyDefaults {
   currency_code: string;
   currency_format: string;
   generic_place_name: string;
+  default_pickup_window_hours: number;
 }
 
 export interface Contact {

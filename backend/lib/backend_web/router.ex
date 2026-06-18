@@ -98,6 +98,7 @@ defmodule BackendWeb.Router do
     get "/company", CompanyController, :show
     put "/company", CompanyController, :update
     put "/company/locale", CompanyController, :update_locale
+    put "/company/warehouse-pickup", CompanyController, :update_warehouse_pickup
     put "/company/bag", CompanyController, :update_bag
 
     put "/company/currency-rates/auto-pull",

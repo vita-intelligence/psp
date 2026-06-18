@@ -422,6 +422,12 @@ export interface ScheduleOperationMOSummary {
   /** Set when this MO is a sub-MO; used by the project view to walk
    *  up to the root. */
   parent_mo_id: number | null;
+  /** Warehouse pickup state — drives the Release button + "released"
+   *  badge on schedule blocks. */
+  released_to_warehouse_at: string | null;
+  pickup_window_hours: number | null;
+  pickup_started_at: string | null;
+  pickup_completed_at: string | null;
 }
 
 export interface PlannedSegment {
@@ -671,6 +677,11 @@ export interface ManufacturingOrderBooking {
   storage_cell_id: number | null;
   storage_location: ManufacturingOrderBookingCellSummary | null;
   manufacturing_order_id: number;
+  /** Set when the picker has scanned both the cell + lot and tapped
+   *  Mark Picked. Lot is logically still at storage_cell until the
+   *  final confirm-transfer emits the actual move movement. */
+  picked_at: string | null;
+  picked_by: AuditActor | null;
   inserted_at: string;
   updated_at: string;
 }
@@ -820,6 +831,22 @@ export interface ManufacturingOrder {
   /** Set when the approver rejects a prepared MO. Cleared on the
    *  next prepare cycle. Shown as a banner. */
   rejection_reason: string | null;
+  /** Warehouse-pickup state. All four stamps null until the planner
+   *  releases the MO. State projection:
+   *    - released = released_to_warehouse_at != null
+   *    - picking-in-progress = pickup_started_at != null && pickup_completed_at == null
+   *    - handed-off = pickup_completed_at != null
+   */
+  released_to_warehouse_at: string | null;
+  released_to_warehouse_by: AuditActor | null;
+  /** Per-MO override for the picker visibility window in hours. Null
+   *  falls back to company.default_pickup_window_hours. */
+  pickup_window_hours: number | null;
+  pickup_started_at: string | null;
+  pickup_started_by: AuditActor | null;
+  pickup_completed_at: string | null;
+  pickup_completed_by: AuditActor | null;
+  production_cell_id: number | null;
   /** Materials cost = sum(bom_line × MO qty × unit_cost). */
   approximate_cost: string | null;
   materials_cost: string | null;
@@ -857,6 +884,19 @@ export interface ManufacturingOrderSummary {
   updated_by: AuditActor | null;
   inserted_at: string;
   updated_at: string;
+}
+
+/** Warehouse picker queue entry — one per released MO whose pickup
+ *  window has opened and whose pickup isn't yet complete. */
+export interface PickupQueueEntry {
+  mo: ManufacturingOrderSummary;
+  visible_from: string;
+  pickup_by: string | null;
+  window_hours: number;
+  pickup_started_at: string | null;
+  pickup_started_by: AuditActor | null;
+  released_to_warehouse_at: string;
+  released_to_warehouse_by_id: number | null;
 }
 
 export interface ManufacturingOrderLedgerPage {

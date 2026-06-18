@@ -22,6 +22,7 @@ export default async function ProductionSchedulePage() {
   }
 
   const canEditSteps = hasPermission(user, "production.mo_edit");
+  const canRelease = hasPermission(user, "production.mo_release");
   const [facilities, company] = await Promise.all([
     listProductionFacilitiesFirstPage(50),
     getCompanyDefaults(),
@@ -68,6 +69,7 @@ export default async function ProductionSchedulePage() {
           <ScheduleWorkspace
             sites={sites}
             canEditSteps={canEditSteps}
+            canRelease={canRelease}
             company={company}
           />
         )}

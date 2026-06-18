@@ -9,6 +9,7 @@ import { HolidaysForm } from "./holidays-form";
 import { CurrencyRatesForm } from "./currency-rates-form";
 import { AllowedIpsForm } from "./allowed-ips-form";
 import { NumberingFormatsForm } from "./numbering-formats-form";
+import { WarehousePickupForm } from "./warehouse-pickup-form";
 import { AlertCircle } from "lucide-react";
 
 export const metadata = { title: "Company · Settings · PSP" };
@@ -46,6 +47,7 @@ export default async function CompanySettingsPage() {
       <CompanyLocaleForm company={company} canEdit={canEdit} />
       <WorkingHoursForm company={company} canEdit={canEdit} />
       <HolidaysForm company={company} canEdit={canEdit} />
+      <WarehousePickupForm company={company} canEdit={canEdit} />
       <CurrencyRatesForm company={company} canEdit={canEdit} />
       <AllowedIpsForm company={company} canEdit={canEdit} />
       <NumberingFormatsForm company={company} canEdit={canEdit} />

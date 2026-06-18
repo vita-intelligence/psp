@@ -80,6 +80,7 @@ defmodule BackendWeb.Payloads do
       currency_rates_source: company.currency_rates_source,
       allowed_ips: company.allowed_ips,
       numbering_formats: company.numbering_formats,
+      default_pickup_window_hours: company.default_pickup_window_hours,
       inserted_at: company.inserted_at,
       updated_at: company.updated_at
     }
@@ -106,7 +107,8 @@ defmodule BackendWeb.Payloads do
       thousands_separator: company.thousands_separator,
       currency_code: company.currency_code,
       currency_format: company.currency_format,
-      generic_place_name: company.generic_place_name
+      generic_place_name: company.generic_place_name,
+      default_pickup_window_hours: company.default_pickup_window_hours
     }
   end
 
@@ -1623,7 +1625,13 @@ defmodule BackendWeb.Payloads do
       quantity: decimal_to_string(mo.quantity),
       item: maybe_item_summary(mo.item),
       warehouse_id: mo.warehouse_id,
-      parent_mo_id: mo.parent_mo_id
+      parent_mo_id: mo.parent_mo_id,
+      # Warehouse-pickup state needed by the schedule UI's Release
+      # button + the "released" badge on calendar blocks.
+      released_to_warehouse_at: mo.released_to_warehouse_at,
+      pickup_window_hours: mo.pickup_window_hours,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_completed_at: mo.pickup_completed_at
     }
   end
 
