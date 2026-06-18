@@ -44,6 +44,7 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm, type JoinError } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { invalidateAudit } from "@/lib/audit/invalidator";
+import { setManufacturingOrderStepSegmentsAction } from "@/lib/production/actions";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
   PlannedSegment,
@@ -208,34 +209,23 @@ function ScheduleEditDialogInner({
         if (!op) continue;
         const moSummary = op.manufacturing_order;
         if (!moSummary) continue;
-        const segments = state.ops[opUuid] ?? [];
-        const body = {
-          segments: segments.map((s) => ({
-            start_at: localToIso(s.start_at),
-            finish_at: localToIso(s.finish_at),
-          })),
-        };
-        const res = await fetch(
-          `/api/production/manufacturing-orders/${moSummary.uuid}/steps/${op.uuid}/set-segments`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            cache: "no-store",
-          },
+        const segments = (state.ops[opUuid] ?? []).map((s) => ({
+          start_at: localToIso(s.start_at),
+          finish_at: localToIso(s.finish_at),
+        }));
+        const result = await setManufacturingOrderStepSegmentsAction(
+          moSummary.uuid,
+          op.uuid,
+          segments,
         );
-        if (!res.ok) {
-          const err = (await res.json().catch(() => ({}))) as {
-            detail?: string;
-            fields?: Record<string, string[]>;
-          };
-          const fieldMsg = err.fields
-            ? Object.values(err.fields).flat()[0]
+        if (!result.ok) {
+          const fieldMsg = result.fields
+            ? Object.values(result.fields).flat()[0]
             : null;
           throw new Error(
             fieldMsg ||
-              err.detail ||
-              `Failed to save ${op.operation_description ?? "operation"} (HTTP ${res.status})`,
+              result.detail ||
+              `Failed to save ${op.operation_description ?? "operation"}`,
           );
         }
         invalidateAudit("manufacturing_order_step", op.id);

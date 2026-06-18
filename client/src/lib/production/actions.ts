@@ -868,6 +868,40 @@ export async function moveManufacturingOrderStepAction(
   }
 }
 
+export async function setManufacturingOrderStepSegmentsAction(
+  moUuid: string,
+  stepUuid: string,
+  segments: Array<{ start_at: string; finish_at: string }>,
+): Promise<ManufacturingOrderStepResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("setManufacturingOrderStepSegmentsAction"),
+    };
+  try {
+    const { step } = await api<{ step: ManufacturingOrderStep }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/steps/${encodeURIComponent(stepUuid)}/set-segments`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ segments }),
+      },
+    );
+    revalidatePath(`/production/manufacturing-orders/${moUuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, step };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "setManufacturingOrderStepSegmentsAction",
+        fallbackDetail: "Couldn't save the pinned segments.",
+      }),
+    };
+  }
+}
+
 export async function updateManufacturingOrderStepAction(
   moUuid: string,
   stepUuid: string,
