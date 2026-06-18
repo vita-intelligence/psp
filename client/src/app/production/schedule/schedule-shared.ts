@@ -93,6 +93,19 @@ export function useTimeScale(): TimeScale {
   return ctx;
 }
 
+/** The valid drop window for the actively-dragged MO. null when
+ *  nothing is being dragged or the drag has no chain constraints. */
+export interface DragBounds {
+  minStartMs: number;
+  maxFinishMs: number | null;
+}
+
+export const DragBoundsContext = createContext<DragBounds | null>(null);
+
+export function useDragBounds(): DragBounds | null {
+  return useContext(DragBoundsContext);
+}
+
 export function startOfMondayUTC(date: Date): Date {
   const d = new Date(date);
   const day = d.getUTCDay();

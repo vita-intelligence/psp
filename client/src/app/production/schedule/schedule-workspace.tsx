@@ -24,6 +24,7 @@ import {
 import {
   DndContext,
   PointerSensor,
+  pointerWithin,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -52,6 +53,7 @@ import type { CompanyDefaults } from "@/lib/types";
 import type { ProductionScheduleResponse } from "@/lib/production/types";
 import { ScheduleBacklog } from "./schedule-backlog";
 import {
+  DragBoundsContext,
   ScheduleScaleContext,
   ZOOM_LABELS,
   ZOOM_LEVELS,
@@ -62,7 +64,12 @@ import {
   rangeForZoom,
   type ZoomLevel,
 } from "./schedule-shared";
-import { MOView, rowsFromOps, type MORow } from "./schedule-view-mo";
+import {
+  LABEL_GUTTER_PX,
+  MOView,
+  rowsFromOps,
+  type MORow,
+} from "./schedule-view-mo";
 import { WorkstationView } from "./schedule-view-workstation";
 import {
   ProjectView,
@@ -113,6 +120,13 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
   const [data, setData] = useState<ProductionScheduleResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  // Bounds within which the actively-dragged MO can land without
+  // violating chain order. null when nothing is dragged (or the
+  // drag has no chain constraints, e.g. a whole-project shift).
+  const [dragBounds, setDragBounds] = useState<{
+    minStartMs: number;
+    maxFinishMs: number | null;
+  } | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     cursorX: number;
     cursorY: number;
@@ -291,11 +305,126 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
       // Op-level drag → planner wants to slot it into a station.
       chooseView("workstation");
     }
+
+    // Compute the valid drop window for chain-constrained drags.
+    // For project drag (the whole chain shifts together) we don't
+    // need bounds — relative order is preserved internally.
+    if (
+      id.startsWith("mo-") ||
+      id.startsWith("op-") ||
+      id.startsWith("backlog-mo-") ||
+      id.startsWith("backlog-op-")
+    ) {
+      setDragBounds(computeDragBounds(id));
+    } else {
+      setDragBounds(null);
+    }
+  }
+
+  /** Find the [minStart, maxFinish] window the dragged MO must
+   *  fit inside. Returns null if neither bound applies (root MO
+   *  with no scheduled children). */
+  function computeDragBounds(dragId: string): {
+    minStartMs: number;
+    maxFinishMs: number | null;
+  } | null {
+    if (!data) return null;
+
+    // Resolve the MO id we're constraining.
+    let moId: number | null = null;
+    if (dragId.startsWith("mo-")) {
+      const uuid = dragId.slice("mo-".length);
+      moId = moRows.find((r) => r.moUuid === uuid)?.moId ?? null;
+    } else if (dragId.startsWith("op-")) {
+      const opId = Number(dragId.slice("op-".length));
+      moId =
+        data.operations.find((o) => o.id === opId)?.manufacturing_order?.id ??
+        null;
+    } else if (
+      dragId.startsWith("backlog-mo-") ||
+      dragId.startsWith("backlog-op-")
+    ) {
+      const uuid = dragId.startsWith("backlog-op-")
+        ? dragId.slice("backlog-op-".length)
+        : dragId.slice("backlog-mo-".length);
+      const mo = data.backlog.find((b) => b.uuid === uuid);
+      moId = mo?.id ?? null;
+    }
+    if (moId == null) return null;
+
+    // Build parent_mo_id map across BOTH operations and backlog.
+    // The visible operations alone won't tell us about a parent
+    // whose ops are out of view; the backlog payload includes
+    // parent_mo_id for every MO so we can still walk the chain.
+    const parentById = new Map<number, number | null>();
+    for (const op of data.operations) {
+      const mo = op.manufacturing_order;
+      if (!mo) continue;
+      parentById.set(mo.id, mo.parent_mo_id ?? null);
+    }
+    for (const b of data.backlog) {
+      parentById.set(b.id, b.parent_mo_id ?? null);
+    }
+
+    // Walk UP the chain to find the latest "must finish before"
+    // start among scheduled ancestors.
+    let maxFinishMs: number | null = null;
+    {
+      const seen = new Set<number>();
+      let cur = parentById.get(moId) ?? null;
+      while (cur != null && !seen.has(cur)) {
+        seen.add(cur);
+        const ancestorOps = data.operations.filter(
+          (o) => o.manufacturing_order?.id === cur && o.planned_start,
+        );
+        if (ancestorOps.length > 0) {
+          const start = Math.min(
+            ...ancestorOps.map((o) => new Date(o.planned_start!).getTime()),
+          );
+          // The tightest (earliest) ancestor start wins.
+          maxFinishMs = maxFinishMs == null ? start : Math.min(maxFinishMs, start);
+        }
+        cur = parentById.get(cur) ?? null;
+      }
+    }
+
+    // Walk DOWN the chain (BFS) for scheduled descendants — find
+    // the latest finish; we must START after that.
+    let minStartMs = Date.now();
+    {
+      const childrenByMo = new Map<number, number[]>();
+      for (const [child, parent] of parentById) {
+        if (parent == null) continue;
+        const arr = childrenByMo.get(parent) ?? [];
+        arr.push(child);
+        childrenByMo.set(parent, arr);
+      }
+      const queue = [...(childrenByMo.get(moId) ?? [])];
+      const seen = new Set<number>();
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const descOps = data.operations.filter(
+          (o) => o.manufacturing_order?.id === id && o.planned_finish,
+        );
+        if (descOps.length > 0) {
+          const finish = Math.max(
+            ...descOps.map((o) => new Date(o.planned_finish!).getTime()),
+          );
+          minStartMs = Math.max(minStartMs, finish);
+        }
+        for (const c of childrenByMo.get(id) ?? []) queue.push(c);
+      }
+    }
+
+    return { minStartMs, maxFinishMs };
   }
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveDragId(null);
     setDragPreview(null);
+    setDragBounds(null);
     if (!canEditSteps || !data) return;
     const { active, delta, over } = event;
     const idStr = String(active.id);
@@ -437,6 +566,19 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
         toast.error("Can't drag the block before the current time.");
         return;
       }
+      // Chain-order guard — block dragging a child past its parent's
+      // start (or vice versa) before we even fire the request so the
+      // user never sees the optimistic move bounce back.
+      const newLastMs = new Date(row.finish).getTime() + msDelta;
+      const chainErr = validateChainOrder(
+        row.moId,
+        newFirstStart.getTime(),
+        newLastMs,
+      );
+      if (chainErr) {
+        toast.error(chainErr);
+        return;
+      }
       warnIfDropOutsideHours(newFirstStart);
 
       const snapshot = data;
@@ -512,11 +654,46 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
         toast.error("Can't drag the operation before the current time.");
         return;
       }
+      const newFinishDate = new Date(
+        new Date(op.planned_finish).getTime() + msDelta,
+      );
+      // Chain-order guard at the MO level — a single op shift moves
+      // the whole MO's bounds out of sync if it crosses a parent /
+      // child boundary.
+      const moBounds = (() => {
+        if (!op.manufacturing_order) return null;
+        const moId = op.manufacturing_order.id;
+        const sibs = data.operations.filter(
+          (o) =>
+            o.manufacturing_order?.id === moId &&
+            o.id !== opId &&
+            o.planned_start &&
+            o.planned_finish,
+        );
+        const starts = sibs.map((o) => new Date(o.planned_start!).getTime());
+        const finishes = sibs.map((o) => new Date(o.planned_finish!).getTime());
+        starts.push(newStartDate.getTime());
+        finishes.push(newFinishDate.getTime());
+        return {
+          moId,
+          first: Math.min(...starts),
+          last: Math.max(...finishes),
+        };
+      })();
+      if (moBounds) {
+        const chainErr = validateChainOrder(
+          moBounds.moId,
+          moBounds.first,
+          moBounds.last,
+        );
+        if (chainErr) {
+          toast.error(chainErr);
+          return;
+        }
+      }
       warnIfDropOutsideHours(newStartDate);
       const newStart = newStartDate.toISOString();
-      const newFinish = new Date(
-        new Date(op.planned_finish).getTime() + msDelta,
-      ).toISOString();
+      const newFinish = newFinishDate.toISOString();
 
       let newWsgId = op.workstation_group_id;
       if (over) {
@@ -616,22 +793,92 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
     }
   }
 
+  // Walk parent_mo_id ancestors of `moId` (transitive) and the
+  // direct + indirect descendants to ensure the new placement
+  // doesn't break chain ordering. Returns a human-readable error
+  // string if a violation would happen, null if the move is OK.
+  // Mirrors the backend guards so the user gets instant feedback
+  // — no optimistic flicker before the BE rejects.
+  function validateChainOrder(
+    moId: number,
+    newFirstMs: number,
+    newLastMs: number,
+  ): string | null {
+    if (!data) return null;
+    // Build a per-MO summary from the visible operations.
+    const parentByMo = new Map<number, number | null>();
+    const codeByMo = new Map<number, string | null>();
+    const firstStartByMo = new Map<number, number>();
+    const lastFinishByMo = new Map<number, number>();
+    for (const op of data.operations) {
+      const mo = op.manufacturing_order;
+      if (!mo || !op.planned_start || !op.planned_finish) continue;
+      parentByMo.set(mo.id, mo.parent_mo_id ?? null);
+      codeByMo.set(mo.id, mo.code);
+      const s = new Date(op.planned_start).getTime();
+      const f = new Date(op.planned_finish).getTime();
+      const curFirst = firstStartByMo.get(mo.id);
+      const curLast = lastFinishByMo.get(mo.id);
+      if (curFirst === undefined || s < curFirst) firstStartByMo.set(mo.id, s);
+      if (curLast === undefined || f > curLast) lastFinishByMo.set(mo.id, f);
+    }
+
+    // 1) Must finish before every scheduled ancestor starts.
+    let cur = parentByMo.get(moId) ?? null;
+    const seenUp = new Set<number>();
+    while (cur != null && !seenUp.has(cur)) {
+      seenUp.add(cur);
+      const ancestorStart = firstStartByMo.get(cur);
+      if (ancestorStart !== undefined && newLastMs > ancestorStart) {
+        return `This MO must finish before ${codeByMo.get(cur) ?? `MO #${cur}`} starts.`;
+      }
+      cur = parentByMo.get(cur) ?? null;
+    }
+
+    // 2) Must start after every scheduled descendant finishes.
+    // BFS through descendants via reverse-lookup on parent map.
+    const childrenByMo = new Map<number, number[]>();
+    for (const [child, parent] of parentByMo) {
+      if (parent == null) continue;
+      const arr = childrenByMo.get(parent) ?? [];
+      arr.push(child);
+      childrenByMo.set(parent, arr);
+    }
+    const queue: number[] = [...(childrenByMo.get(moId) ?? [])];
+    const seenDown = new Set<number>();
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seenDown.has(id)) continue;
+      seenDown.add(id);
+      const descLast = lastFinishByMo.get(id);
+      if (descLast !== undefined && descLast > newFirstMs) {
+        return `This MO must start after ${codeByMo.get(id) ?? `MO #${id}`} finishes — that sub-MO feeds this one.`;
+      }
+      for (const grand of childrenByMo.get(id) ?? []) queue.push(grand);
+    }
+    return null;
+  }
+
   function cursorToScheduleTime(): Date | null {
     const cursor = cursorRef.current;
     const canvas = canvasRef.current;
     if (!cursor || !canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    // Account for the row-label gutter — the grid columns inside
-    // each view start AFTER a sticky 14-16rem label column. We
-    // can't read that here without view-specific knowledge, so we
-    // clamp on the canvas left edge + use scrollLeft of the
-    // nearest scrolling parent. The label gutter is sticky inside
-    // the scrolling container, so as the user scrolls the column
-    // travels with them — the time axis still maps cleanly from
-    // the canvas's content-x.
-    const localX = cursor.x - rect.left + canvas.scrollLeft;
-    if (localX < 0) return null;
-    const ms = localX / scale.preset.pxPerMs;
+
+    // The CalendarShell renders its own inner scroll container
+    // (data-schedule-scroll). Use THAT element for scrollLeft +
+    // bounding rect — the outer canvas wrapper doesn't scroll
+    // and would return scrollLeft=0, throwing the math off.
+    const scrollEl =
+      (canvas.querySelector("[data-schedule-scroll]") as HTMLElement | null) ??
+      canvas;
+
+    const rect = scrollEl.getBoundingClientRect();
+    // Cursor → scrolled-content-x → time-axis-x. Subtract the
+    // label gutter because the time axis only starts AFTER it.
+    const contentX = cursor.x - rect.left + scrollEl.scrollLeft;
+    const timeAxisX = contentX - LABEL_GUTTER_PX;
+    if (timeAxisX < 0) return null;
+    const ms = timeAxisX / scale.preset.pxPerMs;
     return new Date(scale.rangeStart.getTime() + ms);
   }
 
@@ -649,16 +896,23 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
   return (
     <DndContext
       sensors={sensors}
+      // Pointer-based collision detection — the droppable the
+      // cursor is currently inside wins. Better than the default
+      // rectIntersection for this calendar because blocks can be
+      // partially clipped by the scroll container yet still
+      // visually under the cursor; rectIntersection picks based on
+      // un-clipped bounding boxes and can mis-target a wsg row when
+      // the user wants the backlog.
+      collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       // Disable dnd-kit's auto-scroll: combined with the canvas's
-      // own overflow-auto it jerks the dragged block's transform
+      // own overflow it jerks the dragged block's transform
       // mid-drag, which looks like the block teleporting off-cursor.
-      // The planner navigates the calendar with the on-screen
-      // controls; no need for drag-to-edge scrolling.
       autoScroll={false}
     >
       <ScheduleScaleContext.Provider value={scale}>
+        <DragBoundsContext.Provider value={dragBounds}>
         <div className="flex min-h-0 flex-1 flex-col">
           {/* Sticky control bar */}
           <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border/60 bg-card px-3 py-2 shadow-sm">
@@ -805,6 +1059,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
             />
           )}
         </div>
+        </DragBoundsContext.Provider>
       </ScheduleScaleContext.Provider>
     </DndContext>
   );
@@ -833,7 +1088,10 @@ function CanvasArea({
     <div
       ref={canvasRef}
       className={cn(
-        "flex min-h-0 min-w-0 flex-1 flex-col overflow-auto bg-background transition-shadow",
+        // No overflow on this wrapper — the CalendarShell owns the
+        // scroll container inside. Nested overflow ancestors clip
+        // dragged blocks twice and confuse the drop detection.
+        "flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-shadow",
         isBacklogDrag &&
           "shadow-[inset_0_0_0_2px_color-mix(in_oklab,var(--color-brand)_45%,transparent)]",
       )}
@@ -895,6 +1153,11 @@ function chainUuidsForRoot(
       seen.add(cur);
       const pid = parentIds.get(cur);
       if (pid == null) return cur;
+      // Parent isn't in this slice of operations — treat current
+      // as visible root. Matches projectRowsFromOps in
+      // schedule-view-project.tsx so optimistic shift targets the
+      // same MOs the project view shows.
+      if (!parentIds.has(pid)) return cur;
       cur = pid;
     }
   }

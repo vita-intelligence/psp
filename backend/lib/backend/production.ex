@@ -3350,22 +3350,45 @@ defmodule Backend.Production do
     Repo.transaction(fn ->
       intervals = working_intervals_for_mo(root, start_dt)
 
-      {root_mo, root_outside, root_start} =
-        case do_schedule_one_forward(actor, root, start_dt, intervals) do
-          {:ok, mo, off, first_start} -> {mo, off, first_start}
-          {:error, :wrong_status} -> Repo.rollback(:wrong_status)
-          {:error, reason} -> Repo.rollback(reason)
-        end
+      # FORWARD topological scheduling. Drop_dt = the EARLIEST start
+      # of the whole chain. Leaves (deepest descendants) start at
+      # drop_dt; each parent starts when ALL its children have
+      # finished. So the chain extends RIGHT of the cursor, not
+      # backward into the past, and "drop here" matches the planner's
+      # mental model of "this is when work on the project begins".
+      chain =
+        mo_chain(root)
+        |> Enum.filter(&(&1.status in ["approved", "scheduled"]))
 
-      # Walk descendants level by level so grandchildren are also
-      # scheduled. Each child finishes before its IMMEDIATE parent
-      # starts — not before the root. So MO17 (grandchild of root,
-      # child of MO16) is backward-scheduled from MO16's start, not
-      # from the root's start.
-      descendant_outside =
-        schedule_descendants_backward(actor, root.id, root_start, intervals)
+      ordered = chain_in_topo_order_leaves_first(chain)
 
-      {root_mo, root_outside + descendant_outside}
+      {_finish_by_mo, total_outside} =
+        Enum.reduce(ordered, {%{}, 0}, fn mo, {finishes, off_total} ->
+          children_finishes =
+            chain
+            |> Enum.filter(fn c -> c.parent_mo_id == mo.id end)
+            |> Enum.map(fn c -> Map.get(finishes, c.id) end)
+            |> Enum.filter(&(&1 != nil))
+
+          earliest =
+            case children_finishes do
+              [] -> start_dt
+              list -> [start_dt | list] |> Enum.max(DateTime)
+            end
+
+          case do_schedule_one_forward(actor, mo, earliest, intervals) do
+            {:ok, _mo, off, _first, last} ->
+              {Map.put(finishes, mo.id, last), off_total + off}
+
+            {:error, :wrong_status} ->
+              Repo.rollback(:wrong_status)
+
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
+
+      {Repo.get!(ManufacturingOrder, root.id), total_outside}
     end)
     |> case do
       {:ok, {updated, outside}} ->
@@ -3377,29 +3400,37 @@ defmodule Backend.Production do
     end
   end
 
-  defp schedule_descendants_backward(actor, parent_id, parent_start_dt, intervals) do
-    children =
-      from(c in ManufacturingOrder,
-        where:
-          c.parent_mo_id == ^parent_id and
-            c.status in ["approved", "scheduled"]
-      )
-      |> Repo.all()
+  # Post-order traversal of the chain so every parent comes after
+  # all of its descendants. Lets the forward scheduler chain finish
+  # times up the tree (parent.earliest = max(children.finish)).
+  defp chain_in_topo_order_leaves_first(mos) do
+    by_id = Map.new(mos, &{&1.id, &1})
 
-    Enum.reduce(children, 0, fn child, off_acc ->
-      case do_schedule_one_backward(actor, child, parent_start_dt, intervals) do
-        {:ok, _mo, off, child_start_dt} ->
-          # Recurse: this child's own descendants must finish before
-          # THIS child starts, not before the root.
-          grand_off =
-            schedule_descendants_backward(actor, child.id, child_start_dt, intervals)
+    root =
+      Enum.find(mos, fn m ->
+        is_nil(m.parent_mo_id) or not Map.has_key?(by_id, m.parent_mo_id)
+      end)
 
-          off_acc + off + grand_off
+    case root do
+      nil -> mos
+      r -> post_order_walk(r, by_id, MapSet.new(), []) |> elem(0)
+    end
+  end
 
-        {:error, _reason} ->
-          off_acc
-      end
-    end)
+  defp post_order_walk(mo, by_id, seen, acc) do
+    if MapSet.member?(seen, mo.id) do
+      {acc, seen}
+    else
+      seen = MapSet.put(seen, mo.id)
+      children = Enum.filter(Map.values(by_id), &(&1.parent_mo_id == mo.id))
+
+      {acc, seen} =
+        Enum.reduce(children, {acc, seen}, fn c, {a, s} ->
+          post_order_walk(c, by_id, s, a)
+        end)
+
+      {acc ++ [mo], seen}
+    end
   end
 
   # ----- Internal scheduling helpers ------------------------------
@@ -3442,7 +3473,7 @@ defmodule Backend.Production do
         )
         |> Repo.all()
 
-      {cursor, first_start, off_total} =
+      {last_finish, first_start, off_total} =
         Enum.reduce(steps, {start_dt, nil, 0}, fn step, {cursor, first, off_acc} ->
           duration = step.planned_duration_seconds || 0
 
@@ -3453,8 +3484,6 @@ defmodule Backend.Production do
           {s_finish, first || s_start, off_acc + off}
         end)
 
-      _ = cursor
-
       updated =
         if mo.status != "scheduled" do
           {:ok, u} = do_transition(actor, mo, "scheduled")
@@ -3463,7 +3492,10 @@ defmodule Backend.Production do
           reload_manufacturing_order(mo)
         end
 
-      {:ok, updated, off_total, first_start || start_dt}
+      # Tuple grew a 5th element (last_finish) so the chain walker
+      # can chain MOs forward — parent's earliest_start =
+      # max(child.last_finish) across direct children.
+      {:ok, updated, off_total, first_start || start_dt, last_finish}
     end
   end
 

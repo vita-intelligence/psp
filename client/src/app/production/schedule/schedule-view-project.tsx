@@ -50,7 +50,15 @@ export function projectRowsFromOps(
       if (seen.has(cur)) return cur;
       seen.add(cur);
       const pid = parentIdByMoId.get(cur);
+      // Real root — parent_mo_id is null. Walk stops here.
       if (pid == null) return cur;
+      // Parent isn't in this schedule response (e.g. user is in
+      // Day zoom and the parent's steps fall on a different day).
+      // Treat the current MO as the visible root of THIS slice of
+      // the chain — otherwise we'd return the invisible parent's
+      // id and end up with a "MO #X — 0" placeholder because we
+      // don't have metadata for it.
+      if (!parentIdByMoId.has(pid)) return cur;
       cur = pid;
     }
   }

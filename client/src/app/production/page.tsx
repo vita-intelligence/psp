@@ -41,7 +41,6 @@ const SECTIONS: ProdSection[] = [
     description:
       "Calendar view of every MO across workstations and groups. Drag to re-plan.",
     Icon: CalendarDays,
-    comingSoon: true,
   },
   {
     href: "/production/mps",

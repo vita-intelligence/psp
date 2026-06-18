@@ -17,6 +17,7 @@ import {
   dayLabel,
   isoDate,
   rangeDays as rangeDaysList,
+  useDragBounds,
   useTimeScale,
   type DayWindow,
   type TimeScale,
@@ -200,6 +201,61 @@ export function Gridlines() {
           style={{ left: l.left }}
         />
       ))}
+    </>
+  );
+}
+
+/** Red diagonal-stripe overlay covering the areas where a
+ *  currently-dragged MO CAN'T land without breaking chain order
+ *  (before scheduled descendants finish, or after the parent's
+ *  start). Renders only while a chain-constrained drag is active. */
+export function DragBoundsOverlay() {
+  const scale = useTimeScale();
+  const bounds = useDragBounds();
+  if (!bounds) return null;
+
+  const startMs = scale.rangeStart.getTime();
+  const endMs = scale.rangeEnd.getTime();
+  const minPx = Math.max(scale.pxAt(new Date(bounds.minStartMs)), 0);
+  const maxPx =
+    bounds.maxFinishMs == null
+      ? scale.rangeWidthPx
+      : Math.min(scale.pxAt(new Date(bounds.maxFinishMs)), scale.rangeWidthPx);
+
+  const showLeft = bounds.minStartMs > startMs;
+  const showRight = bounds.maxFinishMs != null && bounds.maxFinishMs < endMs;
+
+  return (
+    <>
+      {showLeft && (
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 left-0 bg-destructive/15"
+          style={{
+            width: minPx,
+            backgroundImage:
+              "repeating-linear-gradient(135deg, transparent 0 6px, rgba(220,38,38,0.15) 6px 12px)",
+          }}
+        />
+      )}
+      {showRight && (
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 bg-destructive/15"
+          style={{
+            left: maxPx,
+            right: 0,
+            backgroundImage:
+              "repeating-linear-gradient(135deg, transparent 0 6px, rgba(220,38,38,0.15) 6px 12px)",
+          }}
+        />
+      )}
+      {/* Soft green tint over the valid window — confirms
+          "yes, you can drop in here" without being intrusive. */}
+      {(showLeft || showRight) && (
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 bg-emerald-100/20"
+          style={{ left: minPx, width: Math.max(maxPx - minPx, 0) }}
+        />
+      )}
     </>
   );
 }
@@ -443,6 +499,7 @@ export function CalendarShell({
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollRef}
+          data-schedule-scroll
           className="absolute inset-0 overflow-auto"
         >
           <div
@@ -463,6 +520,7 @@ export function CalendarShell({
               <WorkingHoursOverlay dayWindows={dayWindows} />
               <Gridlines />
               <PastZoneOverlay />
+              <DragBoundsOverlay />
             </div>
 
             {/* Layer 30 — sticky day header. Empty transparent
