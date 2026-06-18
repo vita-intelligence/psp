@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   LogOut,
   Package,
+  PackageOpen,
   Truck,
   Wifi,
   WifiOff,
@@ -75,6 +76,15 @@ export const MOBILE_HOME_TILES = [
     // the perm-aware chip set client-side.
     permission: "goods_in.view",
     badgeKey: "submittedInspectionCount",
+  },
+  {
+    key: "pickup",
+    href: "/m/pickup",
+    label: "Pickup queue",
+    description: "Pick released MOs for production",
+    icon: PackageOpen,
+    permission: "warehouse.pick",
+    badgeKey: null,
   },
   {
     key: "scan",
