@@ -3082,20 +3082,36 @@ defmodule Backend.Production do
     if delta_seconds == 0 do
       {:ok, reload_manufacturing_order(root)}
     else
-      Repo.transaction(fn ->
-        chain_nodes = mo_chain(root)
+      # Re-run the forward-topological scheduler from (current
+      # chain earliest + delta). The walker handles working hours
+      # so each step lands inside a valid working interval —
+      # never floating in the night / weekend after a drag.
+      case chain_earliest_start(root) do
+        nil ->
+          {:ok, reload_manufacturing_order(root)}
 
-        Enum.each(chain_nodes, fn node ->
-          shift_mo_steps(actor, node, delta_seconds)
-        end)
+        earliest ->
+          new_start = DateTime.add(earliest, delta_seconds, :second)
 
-        Repo.get!(ManufacturingOrder, root.id)
-      end)
-      |> case do
-        {:ok, mo} -> {:ok, reload_manufacturing_order(mo)}
-        err -> err
+          case schedule_mo_chain(actor, root, new_start) do
+            {:ok, updated, _meta} -> {:ok, updated}
+            err -> err
+          end
       end
     end
+  end
+
+  defp chain_earliest_start(%ManufacturingOrder{} = root) do
+    chain = mo_chain(root)
+    ids = Enum.map(chain, & &1.id)
+
+    from(s in ManufacturingOrderStep,
+      where:
+        s.manufacturing_order_id in ^ids and
+          not is_nil(s.planned_start),
+      select: min(s.planned_start)
+    )
+    |> Repo.one()
   end
 
   @doc """
@@ -3110,101 +3126,42 @@ defmodule Backend.Production do
     if delta_seconds == 0 do
       {:ok, reload_manufacturing_order(mo)}
     else
-      # Pre-flight: where would the steps land after shift?
-      # Reject up-front so we don't run an Audit-noisy transaction
-      # that we're about to roll back.
-      with :ok <- check_shift_not_past(mo, delta_seconds),
-           :ok <- check_shift_chain_order(mo, delta_seconds) do
-        Repo.transaction(fn ->
-          shift_mo_steps(actor, mo, delta_seconds)
-          Repo.get!(ManufacturingOrder, mo.id)
-        end)
-        |> case do
-          {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
-          err -> err
-        end
+      # Re-run the walker-aware scheduler from (current first
+      # step start + delta). schedule_mo internally walks forward
+      # through working windows and enforces past_time / chain
+      # order — so the dragged block always lands inside working
+      # hours, never floating in closed time.
+      case mo_first_step_start(mo) do
+        nil ->
+          # Nothing scheduled yet — nothing to shift.
+          {:ok, reload_manufacturing_order(mo)}
+
+        first_start ->
+          new_start = DateTime.add(first_start, delta_seconds, :second)
+
+          case schedule_mo(actor, mo, new_start) do
+            {:ok, updated, _meta} -> {:ok, updated}
+            err -> err
+          end
       end
     end
   end
 
-  defp check_shift_not_past(%ManufacturingOrder{id: id}, delta_seconds) do
-    earliest =
-      from(s in ManufacturingOrderStep,
-        where: s.manufacturing_order_id == ^id and not is_nil(s.planned_start),
-        select: min(s.planned_start)
-      )
-      |> Repo.one()
-
-    cond do
-      is_nil(earliest) ->
-        :ok
-
-      DateTime.compare(DateTime.add(earliest, delta_seconds, :second), now()) == :lt ->
-        {:error, :past_time}
-
-      true ->
-        :ok
-    end
+  defp mo_first_step_start(%ManufacturingOrder{id: id}) do
+    from(s in ManufacturingOrderStep,
+      where:
+        s.manufacturing_order_id == ^id and
+          not is_nil(s.planned_start),
+      select: min(s.planned_start)
+    )
+    |> Repo.one()
   end
 
-  defp check_shift_chain_order(%ManufacturingOrder{id: id} = mo, delta_seconds) do
-    bounds =
-      from(s in ManufacturingOrderStep,
-        where:
-          s.manufacturing_order_id == ^id and
-            not is_nil(s.planned_start) and
-            not is_nil(s.planned_finish),
-        select: %{first: min(s.planned_start), last: max(s.planned_finish)}
-      )
-      |> Repo.one()
-
-    case bounds do
-      %{first: nil} ->
-        :ok
-
-      %{first: first, last: last} ->
-        new_first = DateTime.add(first, delta_seconds, :second)
-        new_last = DateTime.add(last, delta_seconds, :second)
-        check_chain_order(mo, new_first, new_last)
-    end
-  end
-
-  defp shift_mo_steps(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds) do
-    steps =
-      from(s in ManufacturingOrderStep,
-        where: s.manufacturing_order_id == ^mo.id
-      )
-      |> Repo.all()
-
-    Enum.each(steps, fn step ->
-      before = mo_step_snapshot(step)
-
-      attrs = %{
-        "planned_start" =>
-          step.planned_start && DateTime.add(step.planned_start, delta_seconds, :second),
-        "planned_finish" =>
-          step.planned_finish && DateTime.add(step.planned_finish, delta_seconds, :second),
-        "updated_by_id" => actor.id
-      }
-
-      step
-      |> ManufacturingOrderStep.changeset(attrs)
-      |> Repo.update()
-      |> case do
-        {:ok, updated} ->
-          Audit.record_updated(
-            actor,
-            "manufacturing_order_step",
-            updated,
-            before,
-            mo_step_snapshot(updated)
-          )
-
-        _ ->
-          :ok
-      end
-    end)
-  end
+  # Old delta-only helpers (check_shift_not_past, check_shift_chain_order,
+  # shift_mo_steps) were removed when shifts started delegating to the
+  # walker-aware schedule_mo / schedule_mo_chain. The schedulers
+  # handle past-time + chain-order checks AND ensure each step lands
+  # in working hours — no more blocks ending in closed time.
 
   @doc """
   Place an approved MO on the calendar at `start_dt`. Walks the
