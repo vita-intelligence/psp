@@ -108,31 +108,52 @@ defmodule Backend.Stock.Lifecycle do
     * `{:error, %Ecto.Changeset{}}`
   """
   def record_event(%Lot{} = lot, kind, attrs) when is_binary(kind) and is_map(attrs) do
-    case ensure_allowed(lot.status, kind) do
-      :ok ->
-        Repo.transaction(fn ->
-          case record_event_in_transaction(lot, kind, attrs) do
-            {:ok, result} ->
-              result
+    with :ok <- ensure_not_locked_by_pickup(lot, kind),
+         :ok <- ensure_allowed(lot.status, kind) do
+      Repo.transaction(fn ->
+        case record_event_in_transaction(lot, kind, attrs) do
+          {:ok, result} ->
+            result
 
-            {:error, :illegal_transition, info} ->
-              Repo.rollback({:illegal_transition, info})
+          {:error, :illegal_transition, info} ->
+            Repo.rollback({:illegal_transition, info})
 
-            {:error, %Ecto.Changeset{} = cs} ->
-              Repo.rollback(cs)
+          {:error, %Ecto.Changeset{} = cs} ->
+            Repo.rollback(cs)
 
-            {:error, reason} ->
-              Repo.rollback(reason)
-          end
-        end)
-        |> case do
-          {:ok, result} -> {:ok, result}
-          {:error, {:illegal_transition, info}} -> {:error, :illegal_transition, info}
-          {:error, other} -> {:error, other}
+          {:error, reason} ->
+            Repo.rollback(reason)
         end
-
+      end)
+      |> case do
+        {:ok, result} -> {:ok, result}
+        {:error, {:illegal_transition, info}} -> {:error, :illegal_transition, info}
+        {:error, other} -> {:error, other}
+      end
+    else
       {:error, :illegal_transition, info} ->
         {:error, :illegal_transition, info}
+
+      {:error, :locked_by_pickup_in_progress} ->
+        {:error, :locked_by_pickup_in_progress}
+    end
+  end
+
+  # Warehouse-pickup lock: once a picker has tapped Start Pickup on
+  # an MO, all booked lots are frozen at their current QC state until
+  # the pickup completes or aborts. The Release gate already refused
+  # to release any MO whose bookings included non-available lots, so
+  # by the time pickup starts every booked lot is verified available.
+  # Disallowing `qc_failed`, `held`, `disposed`, and `routed_to_quarantine`
+  # mid-pickup keeps the picker's worldview consistent — the lot they're
+  # about to scan can't suddenly become unpickable.
+  @kinds_blocked_during_pickup ~w(qc_failed held disposed routed_to_quarantine canceled)
+  defp ensure_not_locked_by_pickup(%Lot{} = lot, kind) do
+    if kind in @kinds_blocked_during_pickup and
+         Backend.Production.lot_locked_by_pickup?(lot.id) do
+      {:error, :locked_by_pickup_in_progress}
+    else
+      :ok
     end
   end
 

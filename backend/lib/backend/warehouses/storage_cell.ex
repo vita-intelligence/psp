@@ -22,7 +22,11 @@ defmodule Backend.Warehouses.StorageCell do
   # onto these so a quarantine lot physically sits in a quarantine
   # cell, a rejected lot in a rejected cell, etc. — closing the gap
   # between the database status and the warehouse floor.
-  @purposes ~w(regular quarantine hold rejected dispatch)
+  #
+  # `production_feed` is the destination cell warehouse pickers
+  # transfer a released MO's load to — sits in the production area,
+  # picked up by floor operators when they start the run.
+  @purposes ~w(regular quarantine hold rejected dispatch production_feed)
   def purposes, do: @purposes
 
   schema "storage_cells" do

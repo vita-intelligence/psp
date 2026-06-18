@@ -30,11 +30,19 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     field :status, :string, default: "requested"
     field :note, :string
 
+    # Set when the picker has scanned both the cell + lot for this
+    # booking and tapped Mark Picked. Lot is logically still at its
+    # original cell (no Stock.Movement emitted) — physically it's on
+    # the picker's trolley. Cleared on Abort Pickup; the eventual
+    # confirm-transfer emits the actual move movement.
+    field :picked_at, :utc_datetime
+
     belongs_to :company, Company
     belongs_to :manufacturing_order, ManufacturingOrder
     belongs_to :item, Item
     belongs_to :stock_lot, StockLot
     belongs_to :storage_cell, StorageCell
+    belongs_to :picked_by, User
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -44,6 +52,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
   @cast_fields ~w(
     company_id manufacturing_order_id item_id stock_lot_id storage_cell_id
     quantity consumed_quantity status note
+    picked_at picked_by_id
     created_by_id updated_by_id
   )a
 

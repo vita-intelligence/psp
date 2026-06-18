@@ -194,7 +194,18 @@ defmodule Backend.RBAC.Permissions do
      "Countersign / reject / amend a prepared MO tree (2nd of 2 signatures)"},
     {"production.mo_execute",
      "Start, complete, or cancel a manufacturing order (run on the floor)"},
+    {"production.mo_release",
+     "Release a scheduled MO to the warehouse for ingredient pickup"},
     {"production.mo_delete", "Delete manufacturing orders"}
+  ]
+
+  # Warehouse operator actions — distinct from `stock.move` because
+  # picking is a workflow gated by the MO lifecycle (head-of-picker
+  # lock, mandatory scan flow, final transfer + photo) rather than
+  # the freeform between-cell move stock.move covers.
+  @warehouse [
+    {"warehouse.pick",
+     "Start, scan, abort, and confirm-transfer warehouse pickup for a released MO"}
   ]
 
   def all do
@@ -213,7 +224,8 @@ defmodule Backend.RBAC.Permissions do
         @vendors ++
         @procurement ++
         @goods_in ++
-        @production,
+        @production ++
+        @warehouse,
       &elem(&1, 0)
     )
   end
@@ -235,7 +247,8 @@ defmodule Backend.RBAC.Permissions do
       vendors: @vendors,
       procurement: @procurement,
       goods_in: @goods_in,
-      production: @production
+      production: @production,
+      warehouse: @warehouse
     }
   end
 

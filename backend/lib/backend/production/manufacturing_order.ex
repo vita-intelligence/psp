@@ -58,6 +58,16 @@ defmodule Backend.Production.ManufacturingOrder do
     field :rejection_reason, :string
     field :notes, :string
 
+    # Warehouse pickup workflow. The planner releases a scheduled MO
+    # to the warehouse; the picker walks the bookings, scans each lot
+    # at its cell, then transfers the load to a production_feed cell.
+    # State is column-derived — see migration 20260618200000 for the
+    # projected-state matrix.
+    field :released_to_warehouse_at, :utc_datetime
+    field :pickup_window_hours, :integer
+    field :pickup_started_at, :utc_datetime
+    field :pickup_completed_at, :utc_datetime
+
     belongs_to :company, Company
     belongs_to :warehouse, Warehouse
     belongs_to :item, Item
@@ -66,6 +76,10 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :assigned_to, User
     belongs_to :approved_by, User
     belongs_to :prepared_by, User
+    belongs_to :released_to_warehouse_by, User
+    belongs_to :pickup_started_by, User
+    belongs_to :pickup_completed_by, User
+    belongs_to :production_cell, Backend.Warehouses.StorageCell
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -122,6 +136,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :assigned_to_id,
       :revision,
       :notes,
+      :pickup_window_hours,
       :created_by_id,
       :updated_by_id
     ])
@@ -136,6 +151,7 @@ defmodule Backend.Production.ManufacturingOrder do
     |> validate_length(:revision, max: 16)
     |> validate_length(:notes, max: 4000)
     |> validate_number(:quantity, greater_than: 0)
+    |> validate_number(:pickup_window_hours, greater_than: 0)
     |> assoc_constraint(:company)
     |> assoc_constraint(:warehouse)
     |> assoc_constraint(:item)
@@ -169,6 +185,32 @@ defmodule Backend.Production.ManufacturingOrder do
     |> check_constraint(:status,
       name: :manufacturing_orders_status_known,
       message: "must be a known status"
+    )
+  end
+
+  @doc """
+  Warehouse-pickup state changeset. Stamps the release / start-pickup
+  / abort-pickup / confirm-transfer timestamps without re-running the
+  form-level required checks (since these flows don't touch the MO
+  identity fields).
+  """
+  def pickup_changeset(mo, attrs) do
+    mo
+    |> cast(attrs, [
+      :released_to_warehouse_at,
+      :released_to_warehouse_by_id,
+      :pickup_window_hours,
+      :pickup_started_at,
+      :pickup_started_by_id,
+      :pickup_completed_at,
+      :pickup_completed_by_id,
+      :production_cell_id,
+      :updated_by_id
+    ])
+    |> validate_number(:pickup_window_hours, greater_than: 0)
+    |> check_constraint(:pickup_window_hours,
+      name: :mo_pickup_window_positive,
+      message: "must be greater than zero"
     )
   end
 

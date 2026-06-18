@@ -46,6 +46,13 @@ defmodule Backend.Companies.Company do
     field :allowed_ips, :map, default: %{}
     field :numbering_formats, :map, default: %{}
 
+    # Default warehouse-pickup visibility window (hours). Once a
+    # planner releases an MO to the warehouse, it appears on the
+    # picker page from `planned_start - default_pickup_window_hours`
+    # onward. Per-MO override on the MO row; per-MO release modal
+    # prefills with this value.
+    field :default_pickup_window_hours, :integer, default: 24
+
     # ECB auto-pull controls live alongside the rates bag rather than
     # inside it: cron writes / reads these without round-tripping
     # JSONB, and the FE can render "last pulled at HH:MM" without
@@ -130,6 +137,22 @@ defmodule Backend.Companies.Company do
     |> validate_inclusion(:currency_code, @currencies)
     |> validate_inclusion(:first_day_of_week, 0..6)
     |> validate_different_separators()
+  end
+
+  @doc """
+  Warehouse-pickup card update — currently just the default visibility
+  window. Sits on its own changeset so the FE save form has a clean
+  scope and audit captures the change distinct from locale edits.
+  """
+  def warehouse_pickup_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:default_pickup_window_hours])
+    |> validate_required([:default_pickup_window_hours])
+    |> validate_number(:default_pickup_window_hours, greater_than: 0)
+    |> check_constraint(:default_pickup_window_hours,
+      name: :companies_default_pickup_window_positive,
+      message: "must be greater than zero"
+    )
   end
 
   @currency_rates_sources ~w(manual ecb_auto)

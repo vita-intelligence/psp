@@ -923,6 +923,19 @@ defmodule BackendWeb.Payloads do
       prepared_by: actor(mo, :prepared_by),
       prepared_at: mo.prepared_at,
       rejection_reason: mo.rejection_reason,
+      # Warehouse-pickup state — null timestamps mean the MO hasn't
+      # entered the corresponding step yet. FE projects the state
+      # from these stamps: released = released_to_warehouse_at != nil,
+      # picking-in-progress = pickup_started_at != nil and
+      # pickup_completed_at == nil, handed-off = pickup_completed_at != nil.
+      released_to_warehouse_at: mo.released_to_warehouse_at,
+      released_to_warehouse_by: actor(mo, :released_to_warehouse_by),
+      pickup_window_hours: mo.pickup_window_hours,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_started_by: actor(mo, :pickup_started_by),
+      pickup_completed_at: mo.pickup_completed_at,
+      pickup_completed_by: actor(mo, :pickup_completed_by),
+      production_cell_id: mo.production_cell_id,
       approximate_cost: decimal_to_string(materials_cost),
       materials_cost: decimal_to_string(materials_cost),
       cost_per_unit: mo_cost_per_unit(materials_cost, mo.quantity),
@@ -1319,12 +1332,43 @@ defmodule BackendWeb.Payloads do
       storage_cell_id: b.storage_cell_id,
       storage_location: mo_booking_cell_summary(b.storage_cell),
       manufacturing_order_id: b.manufacturing_order_id,
+      # Pickup state — picked_at IS NOT NULL means the lot is on the
+      # picker's trolley (logically still at storage_cell until the
+      # final confirm-transfer emits the actual move movement).
+      picked_at: b.picked_at,
+      picked_by: actor(b, :picked_by),
       inserted_at: b.inserted_at,
       updated_at: b.updated_at
     }
   end
 
   def mo_booking(_), do: nil
+
+  @doc """
+  One row of the warehouse picker's queue. Wraps the MO with the
+  picker-relevant projections (visibility window, pickup_by time,
+  current head-of-picker if started). The full MO payload is heavy;
+  this stays slim so the queue list loads fast on mobile.
+  """
+  def pickup_queue_entry(%{
+        mo: %Backend.Production.ManufacturingOrder{} = mo,
+        pickup_by: pickup_by,
+        visible_from: visible_from,
+        window_hours: window_hours
+      }) do
+    %{
+      mo: manufacturing_order_summary(mo),
+      visible_from: visible_from,
+      pickup_by: pickup_by,
+      window_hours: window_hours,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_started_by: actor(mo, :pickup_started_by),
+      released_to_warehouse_at: mo.released_to_warehouse_at,
+      released_to_warehouse_by_id: mo.released_to_warehouse_by_id
+    }
+  end
+
+  def pickup_queue_entry(_), do: nil
 
   defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot) do
     %{

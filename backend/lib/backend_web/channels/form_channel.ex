@@ -345,6 +345,15 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "project"),
     do: RBAC.has_permission?(user, "production.mo_edit")
 
+  # Warehouse pickup room — one channel per MO being picked. The
+  # head-of-picker (first joiner) is the only operator who can fire
+  # Start Pickup / Mark Picked / Abort / Confirm Transfer; other
+  # joiners see a CollabAvatars + "X is picking this" banner so a
+  # second operator doesn't accidentally double-scan. Gate is the
+  # picking capability, not stock.move — picking is a workflow scope.
+  defp can_edit_resource?(user, "mo-pickup"),
+    do: RBAC.has_permission?(user, "warehouse.pick")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

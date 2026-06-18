@@ -439,6 +439,18 @@ defmodule BackendWeb.Router do
              ManufacturingOrderController,
              :delete
 
+      # Warehouse-pickup release gate. Planner stamps the MO with a
+      # released-at timestamp + optional per-MO window override; the
+      # picker queue then surfaces it inside its visibility window.
+      # Unrelease yanks it back as long as pickup hasn't started.
+      post "/manufacturing-orders/:id/release-to-warehouse",
+           ManufacturingOrderController,
+           :release
+
+      delete "/manufacturing-orders/:id/release-to-warehouse",
+             ManufacturingOrderController,
+             :unrelease
+
       # Per-MO operation steps — snapshot of the routing template,
       # editable per-MO. Pencil-on-row → edit page.
       get "/manufacturing-orders/:mo_id/steps/:id",
@@ -566,6 +578,23 @@ defmodule BackendWeb.Router do
     # /api — device tokens fall through transparently.
     scope "/m" do
       get "/incoming", MobileIncomingController, :index
+
+      # Warehouse pickup workflow. The picker queue surfaces released
+      # MOs whose pickup window has opened; per-MO endpoints drive the
+      # scan + transfer flow. Gated by `warehouse.pick` in the
+      # controller.
+      get "/pickup-queue", WarehousePickupController, :queue
+      get "/pickup/:mo_uuid", WarehousePickupController, :show
+      post "/pickup/:mo_uuid/start", WarehousePickupController, :start
+      post "/pickup/:mo_uuid/abort", WarehousePickupController, :abort
+
+      post "/pickup/:mo_uuid/bookings/:booking_uuid/mark-picked",
+           WarehousePickupController,
+           :mark_picked
+
+      post "/pickup/:mo_uuid/confirm-transfer",
+           WarehousePickupController,
+           :confirm_transfer
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

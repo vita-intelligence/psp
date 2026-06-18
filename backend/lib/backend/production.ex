@@ -1776,10 +1776,22 @@ defmodule Backend.Production do
         %DateTime{} = new_start_dt,
         opts
       ) do
-    if DateTime.compare(new_start_dt, now()) == :lt do
-      {:error, :past_time}
-    else
-      do_move_mo_step(actor, step, new_start_dt, opts)
+    cond do
+      DateTime.compare(new_start_dt, now()) == :lt ->
+        {:error, :past_time}
+
+      step_locked_by_pickup?(step) ->
+        {:error, :pickup_in_progress}
+
+      true ->
+        do_move_mo_step(actor, step, new_start_dt, opts)
+    end
+  end
+
+  defp step_locked_by_pickup?(%ManufacturingOrderStep{} = step) do
+    case Repo.get(ManufacturingOrder, step.manufacturing_order_id) do
+      %ManufacturingOrder{} = mo -> mo_pickup_in_progress?(mo)
+      _ -> false
     end
   end
 
@@ -1849,6 +1861,12 @@ defmodule Backend.Production do
     # in the past (e.g. correcting last week's plan after the fact,
     # or shaving 10 minutes off a paused span that began an hour ago).
     # The change is audit-tracked, so we don't gate it.
+    #
+    # Pickup-in-progress IS gated, though — once the picker is on the
+    # floor we can't move the calendar block out from under them.
+    if step_locked_by_pickup?(step) do
+      {:error, :pickup_in_progress}
+    else
     with {:ok, parsed} <- parse_segment_list(segments) do
       [{first_start, _} | _] = parsed
       {_, last_finish} = List.last(parsed)
@@ -1888,6 +1906,7 @@ defmodule Backend.Production do
         {:error, cs} ->
           {:error, cs}
       end
+    end
     end
   end
 
@@ -2648,7 +2667,15 @@ defmodule Backend.Production do
       status: mo.status,
       approved_by_id: mo.approved_by_id,
       approved_at: mo.approved_at,
-      notes: mo.notes
+      notes: mo.notes,
+      released_to_warehouse_at: mo.released_to_warehouse_at,
+      released_to_warehouse_by_id: mo.released_to_warehouse_by_id,
+      pickup_window_hours: mo.pickup_window_hours,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_started_by_id: mo.pickup_started_by_id,
+      pickup_completed_at: mo.pickup_completed_at,
+      pickup_completed_by_id: mo.pickup_completed_by_id,
+      production_cell_id: mo.production_cell_id
     }
   end
 
@@ -3191,7 +3218,9 @@ defmodule Backend.Production do
       quantity: b.quantity,
       consumed_quantity: b.consumed_quantity,
       status: b.status,
-      note: b.note
+      note: b.note,
+      picked_at: b.picked_at,
+      picked_by_id: b.picked_by_id
     }
   end
 
@@ -4110,4 +4139,607 @@ defmodule Backend.Production do
       end
     end
   end
+
+  ## ===== Warehouse pickup workflow ================================
+  #
+  # Lifecycle, all stamps on the MO row (column-derived state):
+  #
+  #     scheduled ── release ──► released_to_warehouse_at
+  #         │
+  #         │  picker queue picks it up once
+  #         │  now() >= max(released_at, planned_start - window)
+  #         │
+  #         └── start ────────► pickup_started_at + by  (head-of-picker lock)
+  #             │
+  #             │  per-booking scan loop:
+  #             │    mark_booking_picked → booking.picked_at
+  #             │
+  #             ├── abort ────► clear pickup_started_* + picked_*
+  #             │
+  #             └── confirm ──► pickup_completed_at + by + production_cell_id
+  #                              + one Stock.Movement per booking
+  #                              (move from origin cell → production cell)
+  #
+  # All checks server-side; the picker never sees the gate logic.
+
+  @doc """
+  Effective pickup window for an MO — the MO's own override if set,
+  otherwise the company default. Used by the picker queue to compute
+  visibility and by the Release confirm modal to prefill the field.
+  """
+  def effective_pickup_window_hours(%ManufacturingOrder{} = mo) do
+    case mo.pickup_window_hours do
+      n when is_integer(n) and n > 0 ->
+        n
+
+      _ ->
+        case Repo.get(Company, mo.company_id) do
+          %Company{default_pickup_window_hours: n} when is_integer(n) and n > 0 -> n
+          _ -> 24
+        end
+    end
+  end
+
+  @doc """
+  True when this lot is reserved by a manufacturing order whose
+  pickup is already in flight (`pickup_started_at IS NOT NULL AND
+  pickup_completed_at IS NULL`). Used by `Stock.Lifecycle.record_event`
+  to refuse `qc_failed / held / disposed` events on lots that the
+  picker is mid-way through — once pickup starts, QC must already
+  be done. See the Release gate (`release_mo_to_warehouse/2`) which
+  refuses to release an MO with any non-`available` booked lots.
+  """
+  def lot_locked_by_pickup?(lot_id) when is_integer(lot_id) do
+    from(b in ManufacturingOrderBooking,
+      join: mo in ManufacturingOrder,
+      on: mo.id == b.manufacturing_order_id,
+      where:
+        b.stock_lot_id == ^lot_id and
+          b.status == "requested" and
+          not is_nil(mo.pickup_started_at) and
+          is_nil(mo.pickup_completed_at),
+      select: 1,
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> false
+      _ -> true
+    end
+  end
+
+  def lot_locked_by_pickup?(_), do: false
+
+  @doc """
+  True when this MO has its pickup in flight — used by step move /
+  set-segments to refuse rescheduling while the picker is on the
+  floor. Once pickup starts, the planner can't move the calendar
+  block out from under the warehouse.
+  """
+  def mo_pickup_in_progress?(%ManufacturingOrder{} = mo) do
+    not is_nil(mo.pickup_started_at) and is_nil(mo.pickup_completed_at)
+  end
+
+  def mo_pickup_in_progress?(_), do: false
+
+  @doc """
+  Planner action — release a scheduled MO to the warehouse. Refuses
+  if any of the MO's bookings point at a lot whose status isn't
+  `available` (stale-booking guard: QC must happen before release).
+
+  Optional `:pickup_window_hours` override; nil leaves the per-MO
+  field NULL and the picker falls back to the company default.
+  """
+  def release_mo_to_warehouse(%User{} = actor, %ManufacturingOrder{} = mo, opts \\ []) do
+    window = Keyword.get(opts, :pickup_window_hours)
+
+    with :ok <- ensure_status_in(mo, ["scheduled"]),
+         :ok <- ensure_all_booked_lots_available(mo) do
+      attrs = %{
+        "released_to_warehouse_at" => now(),
+        "released_to_warehouse_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      }
+
+      attrs =
+        if is_integer(window) and window > 0 do
+          Map.put(attrs, "pickup_window_hours", window)
+        else
+          attrs
+        end
+
+      apply_pickup_changeset(actor, mo, attrs)
+    end
+  end
+
+  @doc """
+  Planner action — undo a release. Only valid before pickup starts;
+  once `pickup_started_at` is set, the planner must wait or have the
+  picker abort first.
+  """
+  def unrelease_mo_from_warehouse(%User{} = actor, %ManufacturingOrder{} = mo) do
+    cond do
+      is_nil(mo.released_to_warehouse_at) ->
+        {:error, :not_released}
+
+      not is_nil(mo.pickup_started_at) ->
+        {:error, :pickup_in_progress}
+
+      true ->
+        apply_pickup_changeset(actor, mo, %{
+          "released_to_warehouse_at" => nil,
+          "released_to_warehouse_by_id" => nil,
+          "updated_by_id" => actor.id
+        })
+    end
+  end
+
+  @doc """
+  Picker action — claim the head-of-picker lock and stamp the start
+  of pickup. From this point QC verdicts on the booked lots are
+  locked (see `lot_locked_by_pickup?/1`) and the planner can no
+  longer reschedule the steps.
+  """
+  def start_mo_pickup(%User{} = actor, %ManufacturingOrder{} = mo) do
+    cond do
+      is_nil(mo.released_to_warehouse_at) ->
+        {:error, :not_released}
+
+      not is_nil(mo.pickup_started_at) and is_nil(mo.pickup_completed_at) ->
+        {:error, :pickup_already_started}
+
+      not is_nil(mo.pickup_completed_at) ->
+        {:error, :pickup_already_completed}
+
+      true ->
+        apply_pickup_changeset(actor, mo, %{
+          "pickup_started_at" => now(),
+          "pickup_started_by_id" => actor.id,
+          "updated_by_id" => actor.id
+        })
+    end
+  end
+
+  @doc """
+  Picker action — mark one booking as physically scanned. Verifies
+  the scanned lot + cell UUIDs match the booking. Lot stays logically
+  at its original cell; no `Stock.Movement` emitted yet (that happens
+  on confirm-transfer).
+
+  Idempotent: re-marking an already-picked booking succeeds without
+  re-stamping `picked_at` so a re-scan after a network hiccup doesn't
+  cause an error.
+  """
+  def mark_booking_picked(
+        %User{} = actor,
+        %ManufacturingOrderBooking{} = booking,
+        scanned_lot_uuid,
+        scanned_cell_uuid
+      )
+      when is_binary(scanned_lot_uuid) and is_binary(scanned_cell_uuid) do
+    mo = Repo.get!(ManufacturingOrder, booking.manufacturing_order_id)
+    lot = Repo.get!(StockLot, booking.stock_lot_id)
+
+    cell =
+      case booking.storage_cell_id do
+        nil -> nil
+        id -> Repo.get(Backend.Warehouses.StorageCell, id)
+      end
+
+    cond do
+      not mo_pickup_in_progress?(mo) ->
+        {:error, :pickup_not_in_progress}
+
+      booking.status != "requested" ->
+        {:error, :booking_not_pickable}
+
+      scanned_lot_uuid != lot.uuid ->
+        {:error, :wrong_lot}
+
+      not is_nil(cell) and scanned_cell_uuid != cell.uuid ->
+        {:error, :wrong_cell}
+
+      not is_nil(booking.picked_at) ->
+        {:ok, booking}
+
+      true ->
+        before = booking_snapshot(booking)
+
+        attrs = %{
+          "picked_at" => now(),
+          "picked_by_id" => actor.id,
+          "updated_by_id" => actor.id
+        }
+
+        case booking
+             |> ManufacturingOrderBooking.changeset(attrs)
+             |> Repo.update() do
+          {:ok, updated} ->
+            Audit.record_updated(
+              actor,
+              "manufacturing_order_booking",
+              updated,
+              before,
+              booking_snapshot(updated)
+            )
+
+            {:ok, updated}
+
+          err ->
+            err
+        end
+    end
+  end
+
+  @doc """
+  Picker action — abandon the in-flight pickup. Clears every booking's
+  `picked_at` and the MO's pickup_started_* stamps in one transaction.
+  Lots stay put (no movements were ever emitted). MO returns to
+  released-ready state; another picker can start fresh.
+  """
+  def abort_mo_pickup(%User{} = actor, %ManufacturingOrder{} = mo) do
+    cond do
+      not mo_pickup_in_progress?(mo) ->
+        {:error, :pickup_not_in_progress}
+
+      true ->
+        Repo.transaction(fn ->
+          # Clear picked_at on every booking. Plain Repo.update_all
+          # bypasses audit — fine here because the abort is itself
+          # the audited event (via apply_pickup_changeset below).
+          {_, _} =
+            from(b in ManufacturingOrderBooking,
+              where:
+                b.manufacturing_order_id == ^mo.id and
+                  not is_nil(b.picked_at)
+            )
+            |> Repo.update_all(
+              set: [
+                picked_at: nil,
+                picked_by_id: nil,
+                updated_at: now()
+              ]
+            )
+
+          case apply_pickup_changeset(actor, mo, %{
+                 "pickup_started_at" => nil,
+                 "pickup_started_by_id" => nil,
+                 "updated_by_id" => actor.id
+               }) do
+            {:ok, updated} -> updated
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+    end
+  end
+
+  @doc """
+  Picker action — final transfer. Validates that every booking is
+  picked, the target cell is an empty `production_feed` cell, then
+  emits one `Stock.Movement` per booking (`kind: "move"`, `from =
+  booking origin cell`, `to = production cell`, photo_url per
+  booking) and stamps `pickup_completed_at` + `production_cell_id`
+  on the MO. All-or-nothing — any validation failure rolls back.
+
+  `photo_urls_by_booking_uuid` is a map of booking UUID → uploaded
+  photo URL (from /api/m/movement-photos). Per CLAUDE.md compliance
+  rule #5 these are file refs, not user-typed URLs.
+
+  NB: the cell-fit calculation lives in the Phase 5 controller — by
+  the time this call lands, the FE has already confirmed (via the
+  same recommendation system used by the mobile move flow) that the
+  load fits. This function trusts the target_cell_uuid.
+  """
+  def confirm_pickup_transfer(
+        %User{} = actor,
+        %ManufacturingOrder{} = mo,
+        target_cell_uuid,
+        photo_urls_by_booking_uuid
+      )
+      when is_binary(target_cell_uuid) and is_map(photo_urls_by_booking_uuid) do
+    bookings = list_pickup_bookings(mo)
+
+    cond do
+      not mo_pickup_in_progress?(mo) ->
+        {:error, :pickup_not_in_progress}
+
+      Enum.any?(bookings, &is_nil(&1.picked_at)) ->
+        {:error, :bookings_not_all_picked}
+
+      Enum.empty?(bookings) ->
+        {:error, :no_bookings_to_transfer}
+
+      true ->
+        case fetch_production_feed_cell(mo.company_id, target_cell_uuid) do
+          {:error, reason} ->
+            {:error, reason}
+
+          {:ok, target_cell} ->
+            do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls_by_booking_uuid)
+        end
+    end
+  end
+
+  defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls) do
+    Repo.transaction(fn ->
+      now_dt = now()
+
+      Enum.each(bookings, fn booking ->
+        case transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
+          {:ok, _movement} -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+
+      case apply_pickup_changeset(actor, mo, %{
+             "pickup_completed_at" => now_dt,
+             "pickup_completed_by_id" => actor.id,
+             "production_cell_id" => target_cell.id,
+             "updated_by_id" => actor.id
+           }) do
+        {:ok, updated} -> updated
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # Emits one Stock.Movement per booked lot — moves the booking's qty
+  # from its origin cell to the production-feed cell. Mirrors
+  # Backend.Stock.insert_move_movement/7 but inline here so the whole
+  # pickup transfer lives in one transaction.
+  defp transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
+    photo_url = Map.get(photo_urls, booking.uuid)
+
+    %Backend.Stock.Movement{}
+    |> Backend.Stock.Movement.changeset(%{
+      "company_id" => booking.company_id,
+      "stock_lot_id" => booking.stock_lot_id,
+      "from_cell_id" => booking.storage_cell_id,
+      "to_cell_id" => target_cell.id,
+      "delta_qty" => booking.quantity,
+      "kind" => "move",
+      "actor_id" => actor.id,
+      "occurred_at" => now_dt,
+      "photo_url" => photo_url,
+      "reference_kind" => "manufacturing_order",
+      "reference_ref" => mo_uuid_for_booking(booking)
+    })
+    |> Repo.insert()
+    |> case do
+      {:ok, movement} ->
+        # Decrement origin placement, upsert destination placement
+        # so the on-floor inventory stays accurate.
+        with {:ok, _from_placement} <- decrement_lot_placement(booking),
+             {:ok, _to_placement} <- upsert_lot_placement(booking, target_cell) do
+          Audit.record_created(actor, "stock_movement", movement, %{
+            kind: movement.kind,
+            delta_qty: movement.delta_qty,
+            from_cell_id: movement.from_cell_id,
+            to_cell_id: movement.to_cell_id,
+            reference_kind: movement.reference_kind,
+            reference_ref: movement.reference_ref
+          })
+
+          {:ok, movement}
+        end
+
+      err ->
+        err
+    end
+  end
+
+  defp mo_uuid_for_booking(%ManufacturingOrderBooking{} = b) do
+    case Repo.get(ManufacturingOrder, b.manufacturing_order_id) do
+      %ManufacturingOrder{uuid: uuid} -> uuid
+      _ -> nil
+    end
+  end
+
+  defp decrement_lot_placement(%ManufacturingOrderBooking{} = b) do
+    case Repo.get_by(Backend.Stock.Placement,
+           stock_lot_id: b.stock_lot_id,
+           storage_cell_id: b.storage_cell_id
+         ) do
+      nil ->
+        {:error, :placement_not_found}
+
+      %Backend.Stock.Placement{} = p ->
+        new_qty = Decimal.sub(p.qty, b.quantity)
+
+        if Decimal.compare(new_qty, Decimal.new(0)) == :lt do
+          {:error, :insufficient_qty}
+        else
+          p
+          |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+          |> Repo.update()
+        end
+    end
+  end
+
+  defp upsert_lot_placement(%ManufacturingOrderBooking{} = b, target_cell) do
+    case Repo.get_by(Backend.Stock.Placement,
+           stock_lot_id: b.stock_lot_id,
+           storage_cell_id: target_cell.id
+         ) do
+      %Backend.Stock.Placement{} = existing ->
+        existing
+        |> Backend.Stock.Placement.changeset(%{
+          "qty" => Decimal.add(existing.qty, b.quantity)
+        })
+        |> Repo.update()
+
+      nil ->
+        %Backend.Stock.Placement{}
+        |> Backend.Stock.Placement.changeset(%{
+          "company_id" => b.company_id,
+          "stock_lot_id" => b.stock_lot_id,
+          "storage_cell_id" => target_cell.id,
+          "qty" => b.quantity
+        })
+        |> Repo.insert()
+    end
+  end
+
+  # ----- pickup queue + per-MO helpers ----------------------------
+
+  @doc """
+  Bookings the picker walks for this MO. Filtered to raw materials +
+  packaging because BOM-output (semi-finished) lots are produced by
+  child MOs and don't enter the warehouse picking flow until the
+  child completes (deferred to a later phase).
+  """
+  def list_pickup_bookings(%ManufacturingOrder{} = mo) do
+    from(b in ManufacturingOrderBooking,
+      join: it in Item,
+      on: it.id == b.item_id,
+      where:
+        b.manufacturing_order_id == ^mo.id and
+          b.status == "requested" and
+          it.type in ["raw_material", "packaging"],
+      order_by: [asc: it.name, asc: b.id],
+      preload: [
+        :item,
+        :picked_by,
+        storage_cell: [storage_location: [floor: [:warehouse]]],
+        stock_lot: [:item, :unit_of_measurement]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Picker-page queue for a company. Returns released MOs whose
+  visibility window has opened and whose pickup isn't yet complete.
+  Sorted by `pickup_by` (earliest first).
+
+  Visibility window:
+    open  = max(released_to_warehouse_at, planned_start - window)
+    close = pickup_completed_at IS NULL
+  """
+  def list_pickup_queue(company_id) when is_integer(company_id) do
+    now_dt = now()
+
+    company_default =
+      case Repo.get(Company, company_id) do
+        %Company{default_pickup_window_hours: n} when is_integer(n) and n > 0 -> n
+        _ -> 24
+      end
+
+    # Pull released + scheduled MOs first; compute visibility in
+    # Elixir so the per-MO window override + the company default fall
+    # through cleanly without a CASE expression on every row.
+    mos =
+      from(m in ManufacturingOrder,
+        where:
+          m.company_id == ^company_id and
+            m.status == "scheduled" and
+            not is_nil(m.released_to_warehouse_at) and
+            is_nil(m.pickup_completed_at),
+        preload: [:item, :warehouse, :pickup_started_by, steps: []]
+      )
+      |> Repo.all()
+
+    mos
+    |> Enum.map(fn mo ->
+      window_hours =
+        case mo.pickup_window_hours do
+          n when is_integer(n) and n > 0 -> n
+          _ -> company_default
+        end
+
+      planned_start = earliest_step_start(mo)
+      pickup_by = planned_start && DateTime.add(planned_start, -window_hours * 3600, :second)
+
+      visible_from =
+        cond do
+          is_nil(pickup_by) -> mo.released_to_warehouse_at
+          DateTime.compare(mo.released_to_warehouse_at, pickup_by) == :gt -> mo.released_to_warehouse_at
+          true -> pickup_by
+        end
+
+      %{
+        mo: mo,
+        pickup_by: pickup_by,
+        visible_from: visible_from,
+        window_hours: window_hours
+      }
+    end)
+    |> Enum.filter(fn %{visible_from: vf} ->
+      not is_nil(vf) and DateTime.compare(now_dt, vf) != :lt
+    end)
+    |> Enum.sort_by(fn %{pickup_by: pb} -> pb || ~U[2099-01-01 00:00:00Z] end, DateTime)
+  end
+
+  defp earliest_step_start(%ManufacturingOrder{steps: steps}) when is_list(steps) do
+    steps
+    |> Enum.map(& &1.planned_start)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      list -> Enum.min(list, DateTime)
+    end
+  end
+
+  defp earliest_step_start(_), do: nil
+
+  # ----- pickup helpers ------------------------------------------
+
+  defp apply_pickup_changeset(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do
+    before = mo_snapshot(mo)
+
+    mo
+    |> ManufacturingOrder.pickup_changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order",
+          updated,
+          before,
+          mo_snapshot(updated)
+        )
+
+        {:ok, reload_manufacturing_order(updated)}
+
+      err ->
+        err
+    end
+  end
+
+  defp ensure_all_booked_lots_available(%ManufacturingOrder{} = mo) do
+    stale =
+      from(b in ManufacturingOrderBooking,
+        join: l in StockLot,
+        on: l.id == b.stock_lot_id,
+        join: it in Item,
+        on: it.id == b.item_id,
+        where:
+          b.manufacturing_order_id == ^mo.id and
+            b.status == "requested" and
+            it.type in ["raw_material", "packaging"] and
+            l.status != "available",
+        select: %{booking_uuid: b.uuid, lot_uuid: l.uuid, lot_status: l.status}
+      )
+      |> Repo.all()
+
+    case stale do
+      [] -> :ok
+      list -> {:error, :stale_bookings, list}
+    end
+  end
+
+  defp fetch_production_feed_cell(company_id, uuid) do
+    case Repo.get_by(Backend.Warehouses.StorageCell, uuid: uuid, company_id: company_id) do
+      nil ->
+        {:error, :production_cell_not_found}
+
+      %Backend.Warehouses.StorageCell{purpose: "production_feed"} = cell ->
+        {:ok, cell}
+
+      %Backend.Warehouses.StorageCell{} ->
+        {:error, :production_cell_wrong_purpose}
+    end
+  end
+
 end

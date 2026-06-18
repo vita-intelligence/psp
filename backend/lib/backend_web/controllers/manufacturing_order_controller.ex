@@ -31,6 +31,9 @@ defmodule BackendWeb.ManufacturingOrderController do
   plug RequirePermission, "production.mo_edit" when action in [:update]
   plug RequirePermission, "production.mo_delete" when action in [:delete]
 
+  plug RequirePermission,
+       "production.mo_release" when action in [:release, :unrelease]
+
   def index(conn, params) do
     actor = conn.assigns.current_user
 
@@ -619,6 +622,91 @@ defmodule BackendWeb.ManufacturingOrderController do
         case Production.delete_manufacturing_order(actor, mo) do
           {:ok, _} -> send_resp(conn, :no_content, "")
           {:error, cs} -> changeset_error(conn, cs)
+        end
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/release-to-warehouse
+  # Body: %{"pickup_window_hours": integer | nil}
+  #
+  # Planner action — release a scheduled MO to the warehouse picker
+  # queue. Refuses if any booked lot isn't `available` (stale-booking
+  # guard — QC must be done before release).
+  def release(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        opts =
+          case params["pickup_window_hours"] do
+            n when is_integer(n) and n > 0 -> [pickup_window_hours: n]
+            n when is_binary(n) ->
+              case Integer.parse(n) do
+                {parsed, ""} when parsed > 0 -> [pickup_window_hours: parsed]
+                _ -> []
+              end
+            _ -> []
+          end
+
+        case Production.release_mo_to_warehouse(actor, mo, opts) do
+          {:ok, updated} ->
+            json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+          {:error, {:invalid_status, current}} ->
+            unprocessable(
+              conn,
+              "wrong_status",
+              "MO is #{current}; release requires a scheduled MO."
+            )
+
+          {:error, :stale_bookings, list} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "stale_bookings",
+                "One or more booked lots aren't available — resolve QC before release.",
+                %{bookings: list}
+              )
+            )
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
+        end
+    end
+  end
+
+  # DELETE /api/production/manufacturing-orders/:id/release-to-warehouse
+  #
+  # Planner action — pull an MO back from the warehouse queue. Only
+  # allowed if pickup hasn't started yet.
+  def unrelease(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        case Production.unrelease_mo_from_warehouse(actor, mo) do
+          {:ok, updated} ->
+            json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+          {:error, :not_released} ->
+            unprocessable(conn, "not_released", "MO isn't currently released.")
+
+          {:error, :pickup_in_progress} ->
+            unprocessable(
+              conn,
+              "pickup_in_progress",
+              "Picker has started — wait for them to finish or abort first."
+            )
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
         end
     end
   end
