@@ -1190,7 +1190,11 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
           workingIntervals={workingIntervals}
           parentByMo={parentByMo}
           company={company}
+          canEdit={canEditSteps}
           onClose={() => setEditTarget(null)}
+          onSaved={() => {
+            void reload();
+          }}
         />
         </ScheduleEditContext.Provider>
         </LivePreviewContext.Provider>

@@ -3,26 +3,30 @@
 /**
  * Click-to-edit dialog for calendar blocks. Three variants:
  *
- *   project — the chain root. Lists every MO in the chain and every
- *             operation inside each MO.
- *   mo      — single MO. Lists every operation inside it.
+ *   project — chain root. Edits every MO in the chain + every op.
+ *   mo      — single MO. Edits every op inside it.
  *   step    — single operation.
  *
- * Each operation row is split into work segments with the pauses
- * between them shown as their own rows. When the BE has stored
- * `planned_segments`, those are the literal source; otherwise the
- * client-side walker derives segments from
- * `planned_start + planned_duration_seconds + working_intervals` so
- * the dialog opens populated even for ops that were never manually
- * pinned.
+ * Each op is split into editable WORK rows; PAUSE rows are the gaps
+ * between consecutive work rows and render as their own (read-only,
+ * recomputed) row so the planner sees the actual pause spans.
  *
- * Phase B: read-only render. Phase C wires editing + realtime
- * collab + Save → POST /steps/:id/set-segments.
+ * Save persists each modified op's segments via the
+ * `/steps/:id/set-segments` endpoint — the walker is NOT consulted,
+ * the literal times become the source of truth.
+ *
+ * Realtime collab is mandatory per CLAUDE.md hard rule: per-form
+ * Phoenix channel, presence avatars, per-row peer indicators, head-
+ * of-room save gate, live cursors. Topic depends on the target:
+ *   project → form:project:<root_mo_uuid>
+ *   mo      → form:manufacturing-order:<mo_uuid>
+ *   step    → form:manufacturing-order-step:<step_uuid>
  */
 
-import { useMemo } from "react";
-import { ExternalLink } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, LockKeyhole, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
 
 import {
   Dialog,
@@ -33,6 +37,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm, type JoinError } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
+import { invalidateAudit } from "@/lib/audit/invalidator";
 import { formatCompanyDate } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
@@ -54,8 +65,13 @@ export interface ScheduleEditDialogProps {
   workingIntervals: Array<{ open: Date; close: Date }>;
   parentByMo: Map<number, number | null>;
   company: CompanyDefaults;
+  canEdit: boolean;
   onClose: () => void;
+  onSaved: () => void;
 }
+
+type SegmentRow = { start_at: string; finish_at: string };
+type DialogState = { ops: Record<string, SegmentRow[]> };
 
 interface MoBucket {
   moId: number;
@@ -65,79 +81,288 @@ interface MoBucket {
   ops: ScheduleOperation[];
 }
 
-interface ResolvedSegment {
-  startMs: number;
-  finishMs: number;
-  kind: "work";
+interface ResolvedScope {
+  title: string;
+  subtitle: string | null;
+  buckets: MoBucket[];
+  kind: ScheduleEditTarget["kind"];
+  resource: string;
 }
 
-interface ResolvedPause {
-  startMs: number;
-  finishMs: number;
-  kind: "pause";
+export function ScheduleEditDialog(props: ScheduleEditDialogProps) {
+  const open = props.target !== null && props.data !== null;
+  // Keep the inner component mounted ONLY while open so we don't hold
+  // a channel subscription for a closed dialog. Each open is a fresh
+  // join — initial state is recomputed from current schedule data so
+  // peers opening at different times don't get stale snapshots.
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && props.onClose()}>
+      {open && <ScheduleEditDialogInner {...props} />}
+    </Dialog>
+  );
 }
 
-type ResolvedRow = ResolvedSegment | ResolvedPause;
-
-export function ScheduleEditDialog({
+function ScheduleEditDialogInner({
   target,
   data,
   workingIntervals,
   parentByMo,
   company,
+  canEdit,
   onClose,
+  onSaved,
 }: ScheduleEditDialogProps) {
-  const open = target !== null && data !== null;
+  // target+data are non-null here because Inner only mounts when open.
+  const scope = useMemo<ResolvedScope | null>(
+    () => (target && data ? resolveScope(target, data, parentByMo) : null),
+    [target, data, parentByMo],
+  );
 
-  // Resolve the scope (which MOs + ops the dialog shows) from the
-  // target + the workspace's parent-of-MO map. Done in a memo so we
-  // recompute only when the target or schedule data changes.
-  const scope = useMemo(() => {
-    if (!open || !target || !data) return null;
-    return resolveScope(target, data, parentByMo);
-  }, [open, target, data, parentByMo]);
+  const initialState = useMemo<DialogState>(() => {
+    if (!scope) return { ops: {} };
+    const out: Record<string, SegmentRow[]> = {};
+    for (const bucket of scope.buckets) {
+      for (const op of bucket.ops) {
+        out[op.uuid] = deriveInitialSegments(op, workingIntervals);
+      }
+    }
+    return { ops: out };
+  }, [scope, workingIntervals]);
+
+  const {
+    state,
+    setField,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    connected,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<DialogState>({
+    resource: scope?.resource ?? "",
+    initialState,
+    disabled: !scope || !canEdit,
+    onCommit: (payload) => {
+      const p = payload as { kind?: string } | null;
+      if (p?.kind === "saved") {
+        toast.success(`${creator?.name ?? "A teammate"} saved the schedule.`);
+        onSaved();
+        onClose();
+      }
+    },
+  });
+
+  useFormPresenceBeacon(scope?.resource ?? "");
+
+  // ----- cursor anchor wiring -----
+  const cursorAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [anchorSize, setAnchorSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = cursorAnchorRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setAnchorSize({ w: rect.width, h: rect.height });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => () => hideCursor(), [hideCursor]);
+  const onCursorMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const el = cursorAnchorRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      setCursor((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
+    },
+    [setCursor],
+  );
+
+  // ----- save handling -----
+  const [saving, setSaving] = useState(false);
+  const dirty = useMemo(
+    () => opsDirty(initialState.ops, state.ops),
+    [initialState.ops, state.ops],
+  );
+
+  async function handleSave() {
+    if (!scope || !isCreator || !dirty) return;
+    const changed = changedOpUuids(initialState.ops, state.ops);
+    const opByUuid = new Map<string, ScheduleOperation>();
+    for (const bucket of scope.buckets) {
+      for (const op of bucket.ops) opByUuid.set(op.uuid, op);
+    }
+
+    setSaving(true);
+    try {
+      for (const opUuid of changed) {
+        const op = opByUuid.get(opUuid);
+        if (!op) continue;
+        const moSummary = op.manufacturing_order;
+        if (!moSummary) continue;
+        const segments = state.ops[opUuid] ?? [];
+        const body = {
+          segments: segments.map((s) => ({
+            start_at: localToIso(s.start_at),
+            finish_at: localToIso(s.finish_at),
+          })),
+        };
+        const res = await fetch(
+          `/api/production/manufacturing-orders/${moSummary.uuid}/steps/${op.uuid}/set-segments`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            cache: "no-store",
+          },
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(
+            err.detail || `Failed to save ${op.operation_description ?? "operation"}`,
+          );
+        }
+        invalidateAudit("manufacturing_order_step", op.id);
+      }
+      broadcastCommit({ kind: "saved", state });
+      toast.success("Schedule saved.");
+      onSaved();
+      onClose();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ----- mutators -----
+  function setOpSegments(opUuid: string, next: SegmentRow[]) {
+    setField("ops", { ...state.ops, [opUuid]: next });
+  }
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
-        <DialogHeader>
-          <DialogTitle>{scope?.title ?? "Edit schedule"}</DialogTitle>
-          <DialogDescription>{scope?.subtitle ?? null}</DialogDescription>
-        </DialogHeader>
+    <DialogContent
+      ref={cursorAnchorRef}
+      onMouseMove={onCursorMove}
+      onMouseLeave={hideCursor}
+      className="max-h-[88vh] max-w-3xl overflow-hidden"
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-lg">
+        {Object.entries(cursors).map(([id, cursor]) => (
+          <RemoteCursor
+            key={id}
+            cursor={cursor}
+            anchorWidth={anchorSize.w}
+            anchorHeight={anchorSize.h}
+          />
+        ))}
+      </div>
 
-        <div className="-mx-1 max-h-[60vh] space-y-4 overflow-y-auto px-1">
+      <DialogHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <DialogTitle>{scope?.title ?? "Edit schedule"}</DialogTitle>
+            <DialogDescription>{scope?.subtitle ?? null}</DialogDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <CollabAvatars peers={presence} />
+            {!canEdit && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
+                <LockKeyhole className="size-3" />
+                Read-only
+              </span>
+            )}
+          </div>
+        </div>
+      </DialogHeader>
+
+      {joinError && <JoinErrorBlock error={joinError} />}
+
+      {!joinError && !isCreator && creator && (
+        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200">
+          <strong className="font-semibold">{creator.name}</strong> is the host
+          of this edit room. Only they can save.
+        </div>
+      )}
+
+      {!joinError && (
+        <div className="-mx-1 max-h-[58vh] space-y-4 overflow-y-auto px-1">
           {scope?.buckets.map((bucket) => (
             <MoBucketCard
               key={bucket.moId}
               bucket={bucket}
-              workingIntervals={workingIntervals}
+              segmentsByOp={state.ops}
+              fieldEditors={fieldEditors}
+              onChange={setOpSegments}
+              onFocusField={focusField}
+              onBlurField={blurField}
+              disabled={!canEdit || !isCreator || saving}
               company={company}
               showMoHeader={scope.kind !== "step"}
             />
           ))}
         </div>
+      )}
 
-        <DialogFooter className="flex items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">
-            Read-only preview. Editing &amp; collab land next.
-          </p>
-          <Button variant="outline" onClick={onClose}>
-            Close
+      <DialogFooter className="flex items-center justify-between gap-2">
+        <p className="text-[11px] text-muted-foreground">
+          {connected
+            ? dirty
+              ? "Unsaved changes."
+              : "Up to date."
+            : "Connecting…"}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={onClose} disabled={saving}>
+            Cancel
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <Button
+            onClick={handleSave}
+            disabled={!isCreator || !dirty || saving || !!joinError}
+            title={
+              !isCreator && creator
+                ? `Only ${creator.name} can save this room.`
+                : undefined
+            }
+          >
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      </DialogFooter>
+    </DialogContent>
   );
 }
 
+// ===== Per-MO + per-op rendering =====
+
 function MoBucketCard({
   bucket,
-  workingIntervals,
+  segmentsByOp,
+  fieldEditors,
+  onChange,
+  onFocusField,
+  onBlurField,
+  disabled,
   company,
   showMoHeader,
 }: {
   bucket: MoBucket;
-  workingIntervals: Array<{ open: Date; close: Date }>;
+  segmentsByOp: Record<string, SegmentRow[]>;
+  fieldEditors: Record<string, ReturnType<typeof useLiveForm>["fieldEditors"][string]>;
+  onChange: (opUuid: string, next: SegmentRow[]) => void;
+  onFocusField: (field: string) => void;
+  onBlurField: (field: string) => void;
+  disabled: boolean;
   company: CompanyDefaults;
   showMoHeader: boolean;
 }) {
@@ -164,10 +389,15 @@ function MoBucketCard({
       )}
       <ul className="divide-y divide-border/60">
         {bucket.ops.map((op) => (
-          <OperationRow
+          <OperationEditor
             key={op.id}
             op={op}
-            workingIntervals={workingIntervals}
+            segments={segmentsByOp[op.uuid] ?? []}
+            fieldEditors={fieldEditors}
+            onChange={(next) => onChange(op.uuid, next)}
+            onFocusField={onFocusField}
+            onBlurField={onBlurField}
+            disabled={disabled}
             company={company}
           />
         ))}
@@ -176,23 +406,83 @@ function MoBucketCard({
   );
 }
 
-function OperationRow({
+function OperationEditor({
   op,
-  workingIntervals,
+  segments,
+  fieldEditors,
+  onChange,
+  onFocusField,
+  onBlurField,
+  disabled,
   company,
 }: {
   op: ScheduleOperation;
-  workingIntervals: Array<{ open: Date; close: Date }>;
+  segments: SegmentRow[];
+  fieldEditors: Record<string, ReturnType<typeof useLiveForm>["fieldEditors"][string]>;
+  onChange: (next: SegmentRow[]) => void;
+  onFocusField: (field: string) => void;
+  onBlurField: (field: string) => void;
+  disabled: boolean;
   company: CompanyDefaults;
 }) {
-  const rows = useMemo(
-    () => resolveOpRows(op, workingIntervals),
-    [op, workingIntervals],
-  );
+  const workSeconds = segments.reduce((acc, seg) => {
+    const s = new Date(seg.start_at).getTime();
+    const f = new Date(seg.finish_at).getTime();
+    if (!Number.isFinite(s) || !Number.isFinite(f) || f <= s) return acc;
+    return acc + (f - s) / 1000;
+  }, 0);
 
-  const workSeconds = rows
-    .filter((r): r is ResolvedSegment => r.kind === "work")
-    .reduce((acc, r) => acc + (r.finishMs - r.startMs) / 1000, 0);
+  function updateRow(i: number, patch: Partial<SegmentRow>) {
+    const next = segments.map((s, idx) => (idx === i ? { ...s, ...patch } : s));
+    onChange(next);
+  }
+
+  function appendWork() {
+    const last = segments[segments.length - 1];
+    const baseStart = last ? new Date(last.finish_at) : new Date();
+    const start = roundToMinute(baseStart);
+    const finish = new Date(start.getTime() + 30 * 60 * 1000);
+    onChange([
+      ...segments,
+      { start_at: dateToLocal(start), finish_at: dateToLocal(finish) },
+    ]);
+  }
+
+  function insertPauseAfter(i: number) {
+    // Move row i+1's start LATER by 30m to create a gap. If no
+    // row i+1, append a new work row 30m + 30m away.
+    const next = [...segments];
+    const after = next[i + 1];
+    if (after) {
+      const newStart = new Date(new Date(after.start_at).getTime() + 30 * 60 * 1000);
+      const newFinish = new Date(new Date(after.finish_at).getTime() + 30 * 60 * 1000);
+      next[i + 1] = {
+        start_at: dateToLocal(newStart),
+        finish_at: dateToLocal(newFinish),
+      };
+      // Cascade the shift forward through every subsequent row so
+      // we don't accidentally introduce an overlap downstream.
+      for (let j = i + 2; j < next.length; j++) {
+        next[j] = {
+          start_at: dateToLocal(new Date(new Date(next[j].start_at).getTime() + 30 * 60 * 1000)),
+          finish_at: dateToLocal(new Date(new Date(next[j].finish_at).getTime() + 30 * 60 * 1000)),
+        };
+      }
+      onChange(next);
+    } else {
+      const curEnd = new Date(segments[i].finish_at);
+      const start = new Date(curEnd.getTime() + 30 * 60 * 1000);
+      const finish = new Date(start.getTime() + 30 * 60 * 1000);
+      onChange([
+        ...segments,
+        { start_at: dateToLocal(start), finish_at: dateToLocal(finish) },
+      ]);
+    }
+  }
+
+  function removeRow(i: number) {
+    onChange(segments.filter((_, idx) => idx !== i));
+  }
 
   return (
     <li className="px-3 py-3">
@@ -222,63 +512,178 @@ function OperationRow({
         </span>
       </div>
 
-      {rows.length === 0 ? (
+      {segments.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           Not scheduled yet — drop the operation on the calendar first.
         </p>
       ) : (
         <ol className="space-y-1">
-          {rows.map((row, i) => (
-            <SegmentRow key={i} row={row} company={company} />
-          ))}
+          {segments.map((seg, i) => {
+            const prev = segments[i - 1];
+            const pauseSeconds = prev
+              ? Math.max(
+                  0,
+                  (new Date(seg.start_at).getTime() -
+                    new Date(prev.finish_at).getTime()) /
+                    1000,
+                )
+              : 0;
+            return (
+              <Fragment key={i}>
+                {pauseSeconds > 0 && (
+                  <li className="flex items-center gap-2 rounded border border-dashed border-amber-400/60 bg-amber-50/40 px-2 py-1 text-[11px] dark:bg-amber-950/20">
+                    <span className="font-medium text-amber-700 dark:text-amber-300">
+                      Pause
+                    </span>
+                    <span className="font-mono text-foreground/80">
+                      {formatStampLocal(prev!.finish_at, company)} →{" "}
+                      {formatStampLocal(seg.start_at, company)}
+                    </span>
+                    <span className="ml-auto text-muted-foreground">
+                      {formatDuration(pauseSeconds)}
+                    </span>
+                  </li>
+                )}
+                <SegmentEditRow
+                  opUuid={op.uuid}
+                  index={i}
+                  seg={seg}
+                  fieldKey={`op:${op.uuid}:row:${i}`}
+                  peer={fieldEditors[`op:${op.uuid}:row:${i}`] ?? null}
+                  onChange={(patch) => updateRow(i, patch)}
+                  onFocusField={onFocusField}
+                  onBlurField={onBlurField}
+                  onInsertPauseAfter={() => insertPauseAfter(i)}
+                  onRemove={() => removeRow(i)}
+                  disabled={disabled}
+                  canRemove={segments.length > 1}
+                />
+              </Fragment>
+            );
+          })}
         </ol>
+      )}
+
+      {segments.length > 0 && (
+        <button
+          type="button"
+          onClick={appendWork}
+          disabled={disabled}
+          className="mt-2 inline-flex items-center gap-1 text-[11px] text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+        >
+          <Plus className="size-3" /> Add work segment
+        </button>
       )}
     </li>
   );
 }
 
-function SegmentRow({
-  row,
-  company,
+function SegmentEditRow({
+  seg,
+  fieldKey,
+  peer,
+  onChange,
+  onFocusField,
+  onBlurField,
+  onInsertPauseAfter,
+  onRemove,
+  disabled,
+  canRemove,
 }: {
-  row: ResolvedRow;
-  company: CompanyDefaults;
+  opUuid: string;
+  index: number;
+  seg: SegmentRow;
+  fieldKey: string;
+  peer: ReturnType<typeof useLiveForm>["fieldEditors"][string];
+  onChange: (patch: Partial<SegmentRow>) => void;
+  onFocusField: (field: string) => void;
+  onBlurField: (field: string) => void;
+  onInsertPauseAfter: () => void;
+  onRemove: () => void;
+  disabled: boolean;
+  canRemove: boolean;
 }) {
-  const isPause = row.kind === "pause";
+  const startMs = new Date(seg.start_at).getTime();
+  const finishMs = new Date(seg.finish_at).getTime();
+  const invalid =
+    !Number.isFinite(startMs) || !Number.isFinite(finishMs) || finishMs <= startMs;
+
   return (
     <li
-      className={
-        isPause
-          ? "flex items-center gap-2 rounded border border-dashed border-amber-400/60 bg-amber-50/40 px-2 py-1 text-[11px] dark:bg-amber-950/20"
-          : "flex items-center gap-2 rounded border border-border/60 bg-background px-2 py-1 text-[11px]"
-      }
+      className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1.5 text-[11px] ${
+        invalid
+          ? "border-destructive bg-destructive/5"
+          : "border-border/60 bg-background"
+      }`}
     >
-      <span
-        className={
-          isPause
-            ? "font-medium text-amber-700 dark:text-amber-300"
-            : "font-medium text-foreground"
-        }
-      >
-        {isPause ? "Pause" : "Work"}
-      </span>
-      <span className="font-mono text-foreground/80">
-        {formatStamp(row.startMs, company)} → {formatStamp(row.finishMs, company)}
-      </span>
-      <span className="ml-auto text-muted-foreground">
-        {formatDuration((row.finishMs - row.startMs) / 1000)}
+      <span className="font-medium text-foreground">Work</span>
+      <Input
+        type="datetime-local"
+        value={seg.start_at}
+        onChange={(e) => onChange({ start_at: e.target.value })}
+        onFocus={() => onFocusField(fieldKey)}
+        onBlur={() => onBlurField(fieldKey)}
+        disabled={disabled}
+        className="h-7 w-[180px] text-[11px]"
+      />
+      <span aria-hidden>→</span>
+      <Input
+        type="datetime-local"
+        value={seg.finish_at}
+        onChange={(e) => onChange({ finish_at: e.target.value })}
+        onFocus={() => onFocusField(fieldKey)}
+        onBlur={() => onBlurField(fieldKey)}
+        disabled={disabled}
+        className="h-7 w-[180px] text-[11px]"
+      />
+      <FieldEditingIndicator peer={peer} />
+      <span className="ml-auto inline-flex items-center gap-1">
+        <button
+          type="button"
+          onClick={onInsertPauseAfter}
+          disabled={disabled}
+          title="Insert a pause after this segment"
+          className="rounded border border-border/60 px-1.5 py-0.5 text-[10px] hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          + Pause
+        </button>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={disabled}
+            title="Remove this segment"
+            className="rounded p-1 text-muted-foreground hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Trash2 className="size-3" />
+          </button>
+        )}
       </span>
     </li>
   );
 }
 
-// ----- scope resolution ------------------------------------------
+function JoinErrorBlock({ error }: { error: JoinError }) {
+  const msg =
+    error.reason === "forbidden"
+      ? "You don't have permission to edit this room."
+      : error.reason === "form_full"
+        ? `This room is full (max ${error.limit ?? 10} editors).`
+        : "Couldn't join the edit room.";
+  return (
+    <div className="rounded-md border border-destructive/60 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+      {msg}
+    </div>
+  );
+}
+
+// ===== Scope resolution =====
 
 function resolveScope(
   target: ScheduleEditTarget,
   data: ProductionScheduleResponse,
   parentByMo: Map<number, number | null>,
-): { title: string; subtitle: string | null; buckets: MoBucket[]; kind: ScheduleEditTarget["kind"] } | null {
+): ResolvedScope | null {
   if (target.kind === "step") {
     const op = data.operations.find((o) => o.uuid === target.stepUuid);
     if (!op) return null;
@@ -290,6 +695,7 @@ function resolveScope(
         : null,
       buckets: bucket ? [{ ...bucket, ops: [op] }] : [],
       kind: "step",
+      resource: `manufacturing-order-step:${op.uuid}`,
     };
   }
 
@@ -300,13 +706,19 @@ function resolveScope(
       subtitle: bucket?.itemName ?? null,
       buckets: bucket ? [bucket] : [],
       kind: "mo",
+      resource: `manufacturing-order:${target.moUuid}`,
     };
   }
 
-  // project
   const rootBucket = bucketForMoByUuid(target.rootMoUuid, data);
   if (!rootBucket) {
-    return { title: "Project", subtitle: null, buckets: [], kind: "project" };
+    return {
+      title: "Project",
+      subtitle: null,
+      buckets: [],
+      kind: "project",
+      resource: `project:${target.rootMoUuid}`,
+    };
   }
 
   const chainMoIds = collectChainMoIds(rootBucket.moId, data, parentByMo);
@@ -319,6 +731,7 @@ function resolveScope(
     subtitle: `${buckets.length} MO${buckets.length === 1 ? "" : "s"} · ${rootBucket.itemName}`,
     buckets,
     kind: "project",
+    resource: `project:${target.rootMoUuid}`,
   };
 }
 
@@ -352,18 +765,13 @@ function bucketForMoByUuid(
   return bucketForMo(summary.id, data);
 }
 
-/** Walk DOWN the chain from a root: every MO whose parent chain
- *  resolves to this root is included. Uses the workspace's
- *  parentByMo so only MOs visible in the schedule response count. */
 function collectChainMoIds(
   rootId: number,
   data: ProductionScheduleResponse,
   parentByMo: Map<number, number | null>,
 ): number[] {
   const allMoIds = new Set<number>();
-  for (const op of data.operations) {
-    allMoIds.add(op.manufacturing_order_id);
-  }
+  for (const op of data.operations) allMoIds.add(op.manufacturing_order_id);
   const result: number[] = [];
   for (const id of allMoIds) {
     let cur: number | null = id;
@@ -380,7 +788,6 @@ function collectChainMoIds(
     }
     if (seen) result.push(id);
   }
-  // Stable sort: root first, then by earliest planned_start.
   return result.sort((a, b) => {
     if (a === rootId) return -1;
     if (b === rootId) return 1;
@@ -388,10 +795,7 @@ function collectChainMoIds(
   });
 }
 
-function earliestStartFor(
-  moId: number,
-  data: ProductionScheduleResponse,
-): number {
+function earliestStartFor(moId: number, data: ProductionScheduleResponse): number {
   let min = Infinity;
   for (const op of data.operations) {
     if (op.manufacturing_order_id !== moId || !op.planned_start) continue;
@@ -401,42 +805,16 @@ function earliestStartFor(
   return Number.isFinite(min) ? min : Number.MAX_SAFE_INTEGER;
 }
 
-// ----- per-op row derivation --------------------------------------
+// ===== Segment derivation =====
 
-/** Produce work + pause rows for an op. Prefers stored
- *  `planned_segments` (manual pin) — falls back to walker output
- *  when none stored (auto-derived from working hours). */
-function resolveOpRows(
+function deriveInitialSegments(
   op: ScheduleOperation,
   workingIntervals: Array<{ open: Date; close: Date }>,
-): ResolvedRow[] {
-  const work: ResolvedSegment[] = sourceWorkSegments(op, workingIntervals);
-  if (work.length === 0) return [];
-
-  const rows: ResolvedRow[] = [];
-  for (let i = 0; i < work.length; i++) {
-    rows.push(work[i]);
-    const next = work[i + 1];
-    if (next && next.startMs > work[i].finishMs) {
-      rows.push({
-        kind: "pause",
-        startMs: work[i].finishMs,
-        finishMs: next.startMs,
-      });
-    }
-  }
-  return rows;
-}
-
-function sourceWorkSegments(
-  op: ScheduleOperation,
-  workingIntervals: Array<{ open: Date; close: Date }>,
-): ResolvedSegment[] {
+): SegmentRow[] {
   if (op.planned_segments && op.planned_segments.length > 0) {
-    return op.planned_segments.map((seg: PlannedSegment) => ({
-      kind: "work" as const,
-      startMs: new Date(seg.start_at).getTime(),
-      finishMs: new Date(seg.finish_at).getTime(),
+    return op.planned_segments.map((s: PlannedSegment) => ({
+      start_at: dateToLocal(new Date(s.start_at)),
+      finish_at: dateToLocal(new Date(s.finish_at)),
     }));
   }
   if (!op.planned_start || op.planned_duration_seconds <= 0) return [];
@@ -447,16 +825,79 @@ function sourceWorkSegments(
     op.planned_duration_seconds,
   );
   return walked.segments.map((s) => ({
-    kind: "work" as const,
-    startMs: s.open,
-    finishMs: s.close,
+    start_at: dateToLocal(new Date(s.open)),
+    finish_at: dateToLocal(new Date(s.close)),
   }));
 }
 
-// ----- formatting helpers -----------------------------------------
+function opsDirty(
+  initial: Record<string, SegmentRow[]>,
+  current: Record<string, SegmentRow[]>,
+): boolean {
+  const keys = new Set([...Object.keys(initial), ...Object.keys(current)]);
+  for (const k of keys) {
+    const a = initial[k] ?? [];
+    const b = current[k] ?? [];
+    if (a.length !== b.length) return true;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].start_at !== b[i].start_at || a[i].finish_at !== b[i].finish_at)
+        return true;
+    }
+  }
+  return false;
+}
 
-function formatStamp(ms: number, company: CompanyDefaults): string {
-  const d = new Date(ms);
+function changedOpUuids(
+  initial: Record<string, SegmentRow[]>,
+  current: Record<string, SegmentRow[]>,
+): string[] {
+  const out: string[] = [];
+  const keys = new Set([...Object.keys(initial), ...Object.keys(current)]);
+  for (const k of keys) {
+    const a = initial[k] ?? [];
+    const b = current[k] ?? [];
+    if (a.length !== b.length) {
+      out.push(k);
+      continue;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].start_at !== b[i].start_at || a[i].finish_at !== b[i].finish_at) {
+        out.push(k);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// ===== datetime-local helpers =====
+
+/** Format a Date as the YYYY-MM-DDTHH:MM that <input type="datetime-local">
+ *  expects. Local timezone — input renders local. */
+function dateToLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${day}T${hh}:${mm}`;
+}
+
+/** Convert a datetime-local string ("YYYY-MM-DDTHH:MM" interpreted as
+ *  LOCAL time) back to an ISO8601 UTC string for the BE. */
+function localToIso(local: string): string {
+  const d = new Date(local);
+  return d.toISOString();
+}
+
+function roundToMinute(d: Date): Date {
+  const next = new Date(d);
+  next.setSeconds(0, 0);
+  return next;
+}
+
+function formatStampLocal(local: string, company: CompanyDefaults): string {
+  const d = new Date(local);
   const date = formatCompanyDate(d.toISOString(), company);
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
