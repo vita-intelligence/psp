@@ -106,6 +106,53 @@ export function useDragBounds(): DragBounds | null {
   return useContext(DragBoundsContext);
 }
 
+/** The list of working intervals in the visible range — used by
+ *  blocks to compute their own "paused" sub-segments (closed time
+ *  that falls inside the block's span). */
+export const WorkingIntervalsContext = createContext<
+  Array<{ open: Date; close: Date }>
+>([]);
+
+export function useWorkingIntervals(): Array<{ open: Date; close: Date }> {
+  return useContext(WorkingIntervalsContext);
+}
+
+/** Intersect a block's span [startMs, endMs] with the working
+ *  intervals to find the CLOSED gaps inside it (overnight, weekend,
+ *  holiday). Blocks render these as striped overlay strips so the
+ *  user sees real work hours vs paused time. */
+export function closedSegmentsWithin(
+  startMs: number,
+  endMs: number,
+  intervals: Array<{ open: Date; close: Date }>,
+): Array<{ start: number; end: number }> {
+  if (endMs <= startMs) return [];
+  const sorted = intervals
+    .slice()
+    .sort((a, b) => a.open.getTime() - b.open.getTime());
+
+  const closed: Array<{ start: number; end: number }> = [];
+  let cursor = startMs;
+  for (const iv of sorted) {
+    const ivOpen = iv.open.getTime();
+    const ivClose = iv.close.getTime();
+    if (ivClose <= cursor) continue;
+    if (ivOpen >= endMs) break;
+    if (ivOpen > cursor) {
+      closed.push({
+        start: cursor,
+        end: Math.min(ivOpen, endMs),
+      });
+    }
+    cursor = Math.max(cursor, ivClose);
+    if (cursor >= endMs) return closed;
+  }
+  if (cursor < endMs) {
+    closed.push({ start: cursor, end: endMs });
+  }
+  return closed;
+}
+
 export function startOfMondayUTC(date: Date): Date {
   const d = new Date(date);
   const day = d.getUTCDay();
@@ -142,17 +189,29 @@ export function rangeForZoom(zoom: ZoomLevel, anchor: Date): {
   switch (zoom) {
     case "day": {
       const start = startOfDayUTC(anchor);
-      return { rangeStart: start, rangeEnd: addDays(start, 1) };
+      return {
+        rangeStart: start,
+        rangeEnd: addDays(start, ZOOM_PRESETS.day.rangeDays),
+      };
     }
     case "week": {
+      // rangeDays MUST come from ZOOM_PRESETS so the API request,
+      // the visible calendar width, and the navigation step all
+      // agree. Hard-coded 7 here got out of sync after I bumped
+      // the Week preset to 14 days, which silently truncated the
+      // API to only one week even though the calendar rendered two.
       const start = startOfMondayUTC(anchor);
-      return { rangeStart: start, rangeEnd: addDays(start, 7) };
+      return {
+        rangeStart: start,
+        rangeEnd: addDays(start, ZOOM_PRESETS.week.rangeDays),
+      };
     }
     case "month": {
-      // 4-week block starting on a Monday. Less calendar-perfect
-      // than month boundaries but simpler + always 28 days wide.
       const start = startOfMondayUTC(anchor);
-      return { rangeStart: start, rangeEnd: addDays(start, 28) };
+      return {
+        rangeStart: start,
+        rangeEnd: addDays(start, ZOOM_PRESETS.month.rangeDays),
+      };
     }
   }
 }

@@ -18,6 +18,7 @@ import {
   CalendarShell,
   Legend,
   LABEL_GUTTER_PX,
+  PausedSegmentsOverlay,
   dayWindowsForSite,
 } from "./schedule-view-mo";
 
@@ -37,9 +38,18 @@ export function WorkstationView({ data, canEditSteps }: WorkstationViewProps) {
       el.scrollLeft = 0;
       return;
     }
-    const sixAm = new Date(scale.rangeStart);
-    sixAm.setUTCHours(6, 0, 0, 0);
-    el.scrollLeft = Math.max(0, scale.pxAt(sixAm) - 24);
+    const now = new Date();
+    const inRange =
+      now.getTime() >= scale.rangeStart.getTime() &&
+      now.getTime() < scale.rangeEnd.getTime();
+    const target = inRange
+      ? new Date(now)
+      : (() => {
+          const d = new Date(scale.rangeStart);
+          d.setUTCHours(6, 0, 0, 0);
+          return d;
+        })();
+    el.scrollLeft = Math.max(0, scale.pxAt(target) - 48);
   }, [scale]);
 
   const days = useMemo(() => rangeDaysList(scale), [scale]);
@@ -208,7 +218,7 @@ function OperationBlock({
         ...dragStyle,
       }}
       className={cn(
-        "group absolute z-10 select-none rounded-md border px-2 py-1 text-[11px] shadow-sm transition-shadow",
+        "group absolute z-10 select-none overflow-hidden rounded-md border px-2 py-1 text-[11px] shadow-sm transition-shadow",
         isDragging && "z-30 cursor-grabbing shadow-lg",
         canEditSteps ? "cursor-grab" : "cursor-default",
         conflict
@@ -221,6 +231,10 @@ function OperationBlock({
           : `${mo?.code ?? `Op #${op.id}`} (read-only)`
       }
     >
+      <PausedSegmentsOverlay
+        spanStartMs={visibleStart}
+        spanEndMs={visibleEnd}
+      />
       <div
         aria-hidden
         className="absolute left-0 top-0 h-full w-1 rounded-l-md"

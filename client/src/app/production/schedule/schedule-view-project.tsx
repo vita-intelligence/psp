@@ -18,6 +18,7 @@ import {
   CalendarShell,
   LABEL_GUTTER_PX,
   Legend,
+  PausedSegmentsOverlay,
   dayWindowsForSite,
 } from "./schedule-view-mo";
 
@@ -125,9 +126,18 @@ export function ProjectView({ data, rows, canEditSteps }: ProjectViewProps) {
       el.scrollLeft = 0;
       return;
     }
-    const sixAm = new Date(scale.rangeStart);
-    sixAm.setUTCHours(6, 0, 0, 0);
-    el.scrollLeft = Math.max(0, scale.pxAt(sixAm) - 24);
+    const now = new Date();
+    const inRange =
+      now.getTime() >= scale.rangeStart.getTime() &&
+      now.getTime() < scale.rangeEnd.getTime();
+    const target = inRange
+      ? new Date(now)
+      : (() => {
+          const d = new Date(scale.rangeStart);
+          d.setUTCHours(6, 0, 0, 0);
+          return d;
+        })();
+    el.scrollLeft = Math.max(0, scale.pxAt(target) - 48);
   }, [scale]);
 
   const days = useMemo(() => rangeDaysList(scale), [scale]);
@@ -228,14 +238,18 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
         ...dragStyle,
       }}
       className={cn(
-        "absolute z-10 select-none rounded-md border-2 px-2 py-1 text-[11px] shadow-sm",
+        "absolute z-10 select-none overflow-hidden rounded-md border-2 px-2 py-1 text-[11px] shadow-sm",
         statusColor,
         canEditSteps ? "cursor-grab" : "cursor-default",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
       title={`${row.rootMoCode ?? `MO #${row.rootMoId}`} · ${row.itemName} · ${row.moCount} MO${row.moCount === 1 ? "" : "s"}`}
     >
-      <div className="flex h-full items-center gap-2">
+      <PausedSegmentsOverlay
+        spanStartMs={visibleStart}
+        spanEndMs={visibleEnd}
+      />
+      <div className="relative flex h-full items-center gap-2">
         <div className="min-w-0 flex-1">
           <p className="truncate font-mono text-[10px] font-semibold">
             {row.rootMoCode ?? `MO #${row.rootMoId}`}

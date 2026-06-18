@@ -14,11 +14,14 @@ import type {
 } from "@/lib/production/types";
 import {
   ROW_HEIGHT_PX,
+  WorkingIntervalsContext,
+  closedSegmentsWithin,
   dayLabel,
   isoDate,
   rangeDays as rangeDaysList,
   useDragBounds,
   useTimeScale,
+  useWorkingIntervals,
   type DayWindow,
   type TimeScale,
 } from "./schedule-shared";
@@ -201,6 +204,55 @@ export function Gridlines() {
           style={{ left: l.left }}
         />
       ))}
+    </>
+  );
+}
+
+/** Render diagonal-stripe overlays INSIDE a block for every
+ *  closed-time gap that falls within the block's visible span
+ *  (overnight, weekend, holiday). The block itself stays one
+ *  continuous rectangle — but the closed portions are visually
+ *  dimmed so the operator can read "work · paused · work · paused".
+ *  Positioned absolutely inside the block; the block must be
+ *  position: relative or absolute, and uses `overflow-hidden` to
+ *  clip stripes that overflow the rounded corners. */
+export function PausedSegmentsOverlay({
+  spanStartMs,
+  spanEndMs,
+}: {
+  spanStartMs: number;
+  spanEndMs: number;
+}) {
+  const scale = useTimeScale();
+  const intervals = useWorkingIntervals();
+  if (intervals.length === 0) return null;
+  if (spanEndMs <= spanStartMs) return null;
+
+  const closed = closedSegmentsWithin(spanStartMs, spanEndMs, intervals);
+  if (closed.length === 0) return null;
+
+  const pxPerMs = scale.preset.pxPerMs;
+
+  return (
+    <>
+      {closed.map((seg, i) => {
+        const left = (seg.start - spanStartMs) * pxPerMs;
+        const width = (seg.end - seg.start) * pxPerMs;
+        if (width <= 0) return null;
+        return (
+          <div
+            key={i}
+            aria-hidden
+            className="pointer-events-none absolute top-0 bottom-0 bg-background/55"
+            style={{
+              left,
+              width,
+              backgroundImage:
+                "repeating-linear-gradient(135deg, transparent 0 5px, rgba(100,116,139,0.35) 5px 10px)",
+            }}
+          />
+        );
+      })}
     </>
   );
 }
@@ -488,7 +540,21 @@ export function CalendarShell({
   const scale = useTimeScale();
   const totalWidth = rowLabelWidth + scale.rangeWidthPx;
 
+  // Flatten the per-day working windows into a single sorted list
+  // of intervals — used by blocks to compute their own paused
+  // sub-segments (closed time inside the block's span).
+  const workingIntervals = useMemo(() => {
+    const out: Array<{ open: Date; close: Date }> = [];
+    for (const day of dayWindows) {
+      for (const iv of day.intervals) {
+        out.push({ open: new Date(iv.open), close: new Date(iv.close) });
+      }
+    }
+    return out.sort((a, b) => a.open.getTime() - b.open.getTime());
+  }, [dayWindows]);
+
   return (
+    <WorkingIntervalsContext.Provider value={workingIntervals}>
     <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-card shadow-sm">
       {/* Outer card uses relative positioning so the corner cell
           can be hoisted OUTSIDE the scroll container as an overlay.
@@ -592,6 +658,7 @@ export function CalendarShell({
 
       {legend ?? <Legend />}
     </div>
+    </WorkingIntervalsContext.Provider>
   );
 }
 
@@ -650,8 +717,10 @@ export function MOView({ data, rows, canEditSteps }: MOViewProps) {
   const scale = useTimeScale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-scroll to the working-hours portion of the day on first
-  // render so the operator isn't staring at 00:00 dead time.
+  // Auto-scroll to "today" (or rangeStart 6am if today is outside
+  // the visible range). Otherwise on Week zoom the user lands on
+  // Monday and has to scroll right to find current/next-week
+  // blocks — making it look like "data didn't load".
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -659,9 +728,20 @@ export function MOView({ data, rows, canEditSteps }: MOViewProps) {
       el.scrollLeft = 0;
       return;
     }
-    const sixAm = new Date(scale.rangeStart);
-    sixAm.setUTCHours(6, 0, 0, 0);
-    el.scrollLeft = Math.max(0, scale.pxAt(sixAm) - 24);
+    const now = new Date();
+    const inRange =
+      now.getTime() >= scale.rangeStart.getTime() &&
+      now.getTime() < scale.rangeEnd.getTime();
+    const target = inRange
+      ? new Date(now)
+      : (() => {
+          const d = new Date(scale.rangeStart);
+          d.setUTCHours(6, 0, 0, 0);
+          return d;
+        })();
+    // Land a hair before the target so the user can see the
+    // adjacent past time too, but mostly forward.
+    el.scrollLeft = Math.max(0, scale.pxAt(target) - 48);
   }, [scale]);
 
   const days = useMemo(() => rangeDaysList(scale), [scale]);
@@ -787,6 +867,14 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
           );
         })}
       </div>
+      {/* "Paused" cut-outs for closed time inside the MO's span —
+          overnight gaps, weekends, holidays. Renders as a darker
+          striped overlay so the operator sees "work · paused · work"
+          even though the block itself stays one continuous unit. */}
+      <PausedSegmentsOverlay
+        spanStartMs={visibleStart}
+        spanEndMs={visibleEnd}
+      />
       <div className="relative flex h-full items-center gap-2 px-2 py-1">
         <div className="min-w-0 flex-1">
           <p className="truncate font-mono text-[10px] font-semibold">
