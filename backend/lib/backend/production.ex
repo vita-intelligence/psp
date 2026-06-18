@@ -4682,6 +4682,36 @@ defmodule Backend.Production do
 
   defp earliest_step_start(_), do: nil
 
+  @doc """
+  Empty production-feed cells for confirm-transfer auto-pick. A cell
+  counts as empty when no placement on it has positive qty. Returns
+  newest-first so a planner who just provisioned a fresh cell sees
+  it surface immediately.
+  """
+  def list_empty_production_feed_cells(company_id) when is_integer(company_id) do
+    occupied_subq =
+      from(p in Backend.Stock.Placement,
+        join: c in Backend.Warehouses.StorageCell,
+        on: c.id == p.storage_cell_id,
+        where:
+          c.company_id == ^company_id and
+            c.purpose == "production_feed" and
+            p.qty > 0,
+        select: c.id,
+        distinct: true
+      )
+
+    from(c in Backend.Warehouses.StorageCell,
+      where:
+        c.company_id == ^company_id and
+          c.purpose == "production_feed" and
+          c.id not in subquery(occupied_subq),
+      preload: [storage_location: [floor: [:warehouse]]],
+      order_by: [desc: c.inserted_at, desc: c.id]
+    )
+    |> Repo.all()
+  end
+
   # ----- pickup helpers ------------------------------------------
 
   defp apply_pickup_changeset(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do

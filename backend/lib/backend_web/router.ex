@@ -585,6 +585,9 @@ defmodule BackendWeb.Router do
       # scan + transfer flow. Gated by `warehouse.pick` in the
       # controller.
       get "/pickup-queue", WarehousePickupController, :queue
+      get "/pickup/production-feed-cells",
+          WarehousePickupController,
+          :production_feed_cells
       get "/pickup/:mo_uuid", WarehousePickupController, :show
       post "/pickup/:mo_uuid/start", WarehousePickupController, :start
       post "/pickup/:mo_uuid/abort", WarehousePickupController, :abort

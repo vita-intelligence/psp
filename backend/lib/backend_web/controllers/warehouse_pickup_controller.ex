@@ -37,7 +37,8 @@ defmodule BackendWeb.WarehousePickupController do
               :start,
               :abort,
               :mark_picked,
-              :confirm_transfer
+              :confirm_transfer,
+              :production_feed_cells
             ]
 
   # GET /api/m/pickup-queue
@@ -47,6 +48,34 @@ defmodule BackendWeb.WarehousePickupController do
     actor = conn.assigns.current_user
     entries = Production.list_pickup_queue(actor.company_id)
     json(conn, %{items: Enum.map(entries, &Payloads.pickup_queue_entry/1)})
+  end
+
+  # GET /api/m/pickup/production-feed-cells
+  # Empty production-feed cells for the confirm-transfer auto-pick.
+  # The FE picks the first one as the suggested target; operator can
+  # override with a different scan.
+  def production_feed_cells(conn, _params) do
+    actor = conn.assigns.current_user
+    cells = Production.list_empty_production_feed_cells(actor.company_id)
+
+    json(conn, %{
+      items:
+        Enum.map(cells, fn cell ->
+          loc = cell.storage_location
+
+          %{
+            id: cell.id,
+            uuid: cell.uuid,
+            name: cell.name,
+            code:
+              if(loc,
+                do: loc.code || loc.name || cell.name || "Cell ##{cell.id}",
+                else: cell.name || "Cell ##{cell.id}"
+              ),
+            location: loc && %{id: loc.id, uuid: loc.uuid, name: loc.name, code: loc.code}
+          }
+        end)
+    })
   end
 
   # GET /api/m/pickup/:mo_uuid

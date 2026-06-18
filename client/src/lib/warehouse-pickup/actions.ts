@@ -22,42 +22,37 @@ export type PickupBookingResult =
   | { ok: true; booking: ManufacturingOrderBooking }
   | (ErrorResult & { ok: false });
 
-async function pickupToken(source: string) {
-  const token = (await getDeviceToken()) ?? (await getSessionToken());
-  if (!token) {
-    return {
-      err: syntheticErrorResult({
-        source,
-        code: "unauthorized",
-        detail: "Device isn't signed in. Pair it again from your laptop.",
-      }),
-    };
-  }
-  return { token };
+async function token(): Promise<string | null> {
+  return (await getDeviceToken()) ?? (await getSessionToken());
+}
+
+function unauthorized(source: string): ErrorResult {
+  return syntheticErrorResult({
+    source,
+    code: "unauthorized",
+    detail: "Device isn't signed in. Pair it again from your laptop.",
+  });
 }
 
 /** Head-of-picker lock — claims the MO for this operator. */
 export async function startMoPickupAction(
   moUuid: string,
 ): Promise<PickupMoResult> {
-  const t = await pickupToken("startMoPickupAction");
-  if ("err" in t) return { ok: false, ...t.err };
+  const t = await token();
+  if (!t) return unauthorized("startMoPickupAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/m/pickup/${encodeURIComponent(moUuid)}/start`,
-      { method: "POST", token: t.token, body: JSON.stringify({}) },
+      { method: "POST", token: t, body: JSON.stringify({}) },
     );
     revalidatePath(`/m/pickup/${moUuid}`);
     revalidatePath(`/m/pickup`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
-        source: "startMoPickupAction",
-        fallbackDetail: "Couldn't start pickup.",
-      }),
-    };
+    return toErrorResult(err, {
+      source: "startMoPickupAction",
+      fallbackDetail: "Couldn't start pickup.",
+    });
   }
 }
 
@@ -68,14 +63,14 @@ export async function markBookingPickedAction(
   scannedLotUuid: string,
   scannedCellUuid: string,
 ): Promise<PickupBookingResult> {
-  const t = await pickupToken("markBookingPickedAction");
-  if ("err" in t) return { ok: false, ...t.err };
+  const t = await token();
+  if (!t) return unauthorized("markBookingPickedAction");
   try {
     const { booking } = await api<{ booking: ManufacturingOrderBooking }>(
       `/api/m/pickup/${encodeURIComponent(moUuid)}/bookings/${encodeURIComponent(bookingUuid)}/mark-picked`,
       {
         method: "POST",
-        token: t.token,
+        token: t,
         body: JSON.stringify({
           scanned_lot_uuid: scannedLotUuid,
           scanned_cell_uuid: scannedCellUuid,
@@ -84,13 +79,10 @@ export async function markBookingPickedAction(
     );
     return { ok: true, booking };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
-        source: "markBookingPickedAction",
-        fallbackDetail: "Couldn't mark booking as picked.",
-      }),
-    };
+    return toErrorResult(err, {
+      source: "markBookingPickedAction",
+      fallbackDetail: "Couldn't mark booking as picked.",
+    });
   }
 }
 
@@ -98,24 +90,21 @@ export async function markBookingPickedAction(
 export async function abortMoPickupAction(
   moUuid: string,
 ): Promise<PickupMoResult> {
-  const t = await pickupToken("abortMoPickupAction");
-  if ("err" in t) return { ok: false, ...t.err };
+  const t = await token();
+  if (!t) return unauthorized("abortMoPickupAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/m/pickup/${encodeURIComponent(moUuid)}/abort`,
-      { method: "POST", token: t.token, body: JSON.stringify({}) },
+      { method: "POST", token: t, body: JSON.stringify({}) },
     );
     revalidatePath(`/m/pickup/${moUuid}`);
     revalidatePath(`/m/pickup`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
-        source: "abortMoPickupAction",
-        fallbackDetail: "Couldn't abort pickup.",
-      }),
-    };
+    return toErrorResult(err, {
+      source: "abortMoPickupAction",
+      fallbackDetail: "Couldn't abort pickup.",
+    });
   }
 }
 
@@ -125,14 +114,14 @@ export async function confirmPickupTransferAction(
   productionCellUuid: string,
   photoUrlsByBookingUuid: Record<string, string>,
 ): Promise<PickupMoResult> {
-  const t = await pickupToken("confirmPickupTransferAction");
-  if ("err" in t) return { ok: false, ...t.err };
+  const t = await token();
+  if (!t) return unauthorized("confirmPickupTransferAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/m/pickup/${encodeURIComponent(moUuid)}/confirm-transfer`,
       {
         method: "POST",
-        token: t.token,
+        token: t,
         body: JSON.stringify({
           production_cell_uuid: productionCellUuid,
           photo_urls_by_booking_uuid: photoUrlsByBookingUuid,
@@ -143,12 +132,9 @@ export async function confirmPickupTransferAction(
     revalidatePath(`/m/pickup`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
-        source: "confirmPickupTransferAction",
-        fallbackDetail: "Couldn't complete the transfer.",
-      }),
-    };
+    return toErrorResult(err, {
+      source: "confirmPickupTransferAction",
+      fallbackDetail: "Couldn't complete the transfer.",
+    });
   }
 }
