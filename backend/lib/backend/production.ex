@@ -1843,8 +1843,13 @@ defmodule Backend.Production do
   """
   def set_mo_step_segments(%User{} = actor, %ManufacturingOrderStep{} = step, segments)
       when is_list(segments) do
-    with {:ok, parsed} <- parse_segment_list(segments),
-         :ok <- ensure_no_past_segments(parsed) do
+    # NOTE on past times: unlike `move_mo_step` (drag-to-reschedule),
+    # the planner here is explicitly TYPING values into a form. They
+    # may legitimately re-pin an op whose original planned start was
+    # in the past (e.g. correcting last week's plan after the fact,
+    # or shaving 10 minutes off a paused span that began an hour ago).
+    # The change is audit-tracked, so we don't gate it.
+    with {:ok, parsed} <- parse_segment_list(segments) do
       [{first_start, _} | _] = parsed
       {_, last_finish} = List.last(parsed)
 
@@ -1900,16 +1905,6 @@ defmodule Backend.Production do
         _ -> {:halt, {:error, :invalid_segments}}
       end
     end)
-  end
-
-  defp ensure_no_past_segments(parsed) do
-    now = now()
-
-    if Enum.any?(parsed, fn {s, _} -> DateTime.compare(s, now) == :lt end) do
-      {:error, :past_time}
-    else
-      :ok
-    end
   end
 
   @doc """

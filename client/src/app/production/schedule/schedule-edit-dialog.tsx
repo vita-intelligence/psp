@@ -44,7 +44,6 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm, type JoinError } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { invalidateAudit } from "@/lib/audit/invalidator";
-import { formatCompanyDate } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
   PlannedSegment,
@@ -226,9 +225,17 @@ function ScheduleEditDialogInner({
           },
         );
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = (await res.json().catch(() => ({}))) as {
+            detail?: string;
+            fields?: Record<string, string[]>;
+          };
+          const fieldMsg = err.fields
+            ? Object.values(err.fields).flat()[0]
+            : null;
           throw new Error(
-            err.detail || `Failed to save ${op.operation_description ?? "operation"}`,
+            fieldMsg ||
+              err.detail ||
+              `Failed to save ${op.operation_description ?? "operation"} (HTTP ${res.status})`,
           );
         }
         invalidateAudit("manufacturing_order_step", op.id);
@@ -484,6 +491,28 @@ function OperationEditor({
     onChange(segments.filter((_, idx) => idx !== i));
   }
 
+  /** Resize the pause that sits BEFORE segments[i] (i.e. the gap
+   *  between segments[i-1].finish and segments[i].start). Pushes
+   *  segments[i..end] forward / backward by the delta so we don't
+   *  introduce phantom overlaps. */
+  function setPauseBefore(i: number, newMinutes: number) {
+    if (i <= 0) return;
+    const prev = segments[i - 1];
+    const cur = segments[i];
+    const currentMs = new Date(cur.start_at).getTime() - new Date(prev.finish_at).getTime();
+    const targetMs = Math.max(0, Math.round(newMinutes * 60_000));
+    const deltaMs = targetMs - currentMs;
+    if (deltaMs === 0) return;
+    const next = segments.slice();
+    for (let j = i; j < next.length; j++) {
+      next[j] = {
+        start_at: dateToLocal(new Date(new Date(next[j].start_at).getTime() + deltaMs)),
+        finish_at: dateToLocal(new Date(new Date(next[j].finish_at).getTime() + deltaMs)),
+      };
+    }
+    onChange(next);
+  }
+
   return (
     <li className="px-3 py-3">
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -530,19 +559,15 @@ function OperationEditor({
               : 0;
             return (
               <Fragment key={i}>
-                {pauseSeconds > 0 && (
-                  <li className="flex items-center gap-2 rounded border border-dashed border-amber-400/60 bg-amber-50/40 px-2 py-1 text-[11px] dark:bg-amber-950/20">
-                    <span className="font-medium text-amber-700 dark:text-amber-300">
-                      Pause
-                    </span>
-                    <span className="font-mono text-foreground/80">
-                      {formatStampLocal(prev!.finish_at, company)} →{" "}
-                      {formatStampLocal(seg.start_at, company)}
-                    </span>
-                    <span className="ml-auto text-muted-foreground">
-                      {formatDuration(pauseSeconds)}
-                    </span>
-                  </li>
+                {prev && pauseSeconds > 0 && (
+                  <PauseRow
+                    prevFinishAt={prev.finish_at}
+                    nextStartAt={seg.start_at}
+                    pauseSeconds={pauseSeconds}
+                    onChangeMinutes={(m) => setPauseBefore(i, m)}
+                    onRemove={() => setPauseBefore(i, 0)}
+                    disabled={disabled}
+                  />
                 )}
                 <SegmentEditRow
                   opUuid={op.uuid}
@@ -659,6 +684,83 @@ function SegmentEditRow({
           </button>
         )}
       </span>
+    </li>
+  );
+}
+
+function PauseRow({
+  prevFinishAt,
+  nextStartAt,
+  pauseSeconds,
+  onChangeMinutes,
+  onRemove,
+  disabled,
+}: {
+  prevFinishAt: string;
+  nextStartAt: string;
+  pauseSeconds: number;
+  onChangeMinutes: (minutes: number) => void;
+  onRemove: () => void;
+  disabled: boolean;
+}) {
+  // Local text state so the user can type "1h 30m" without us
+  // recomputing & overwriting their input on every keystroke. We
+  // only push the parsed value upstream on blur or Enter.
+  const [draft, setDraft] = useState<string>(() => formatDuration(pauseSeconds));
+  const [invalid, setInvalid] = useState(false);
+
+  // If the upstream pause changes (e.g. a peer moved a row), reset
+  // the draft so we don't show a stale value.
+  useEffect(() => {
+    setDraft(formatDuration(pauseSeconds));
+    setInvalid(false);
+  }, [pauseSeconds]);
+
+  function commit() {
+    const parsed = parseDurationMinutes(draft);
+    if (parsed == null) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    onChangeMinutes(parsed);
+  }
+
+  return (
+    <li className="flex flex-wrap items-center gap-2 rounded border border-dashed border-amber-400/60 bg-amber-50/40 px-2 py-1 text-[11px] dark:bg-amber-950/20">
+      <span className="font-medium text-amber-700 dark:text-amber-300">
+        Pause
+      </span>
+      <span className="font-mono text-foreground/80">
+        {hhmm(prevFinishAt)} → {hhmm(nextStartAt)}
+      </span>
+      <label className="ml-auto inline-flex items-center gap-1">
+        <span className="text-muted-foreground">for</span>
+        <Input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            }
+          }}
+          disabled={disabled}
+          placeholder="1h 30m"
+          aria-label="Pause duration"
+          className={`h-7 w-[100px] text-[11px] ${invalid ? "border-destructive" : ""}`}
+        />
+      </label>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={disabled}
+        title="Remove this pause (collapse the gap)"
+        className="rounded p-1 text-muted-foreground hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Trash2 className="size-3" />
+      </button>
     </li>
   );
 }
@@ -896,14 +998,6 @@ function roundToMinute(d: Date): Date {
   return next;
 }
 
-function formatStampLocal(local: string, company: CompanyDefaults): string {
-  const d = new Date(local);
-  const date = formatCompanyDate(d.toISOString(), company);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${date} ${hh}:${mm}`;
-}
-
 function formatDuration(seconds: number): string {
   if (seconds <= 0) return "0m";
   const h = Math.floor(seconds / 3600);
@@ -911,4 +1005,53 @@ function formatDuration(seconds: number): string {
   if (h === 0) return `${m}m`;
   if (m === 0) return `${h}h`;
   return `${h}h ${m}m`;
+}
+
+/** Just HH:MM from a datetime-local-formatted ("YYYY-MM-DDTHH:MM")
+ *  string. Used by the pause row's contextual start→end line. */
+function hhmm(local: string): string {
+  const t = local.split("T")[1] ?? "";
+  return t.slice(0, 5);
+}
+
+/** Parse free-form durations into integer minutes. Accepts:
+ *
+ *    "90"        → 90
+ *    "90m"       → 90
+ *    "90 min"    → 90
+ *    "1h"        → 60
+ *    "1.5h"      → 90
+ *    "1h 30m"    → 90
+ *    "1h30"      → 90 (lone trailing number = minutes)
+ *    "01:30"     → 90 (HH:MM)
+ *    "0"         → 0  (lets the user collapse a pause)
+ *
+ *  Returns null when nothing parseable was typed — caller flags the
+ *  input as invalid so we don't silently push wrong data. */
+function parseDurationMinutes(raw: string): number | null {
+  const s = raw.trim().toLowerCase();
+  if (s === "") return null;
+  if (s === "0") return 0;
+
+  // HH:MM form
+  const colon = s.match(/^(\d+):(\d{1,2})$/);
+  if (colon) {
+    const h = Number(colon[1]);
+    const m = Number(colon[2]);
+    if (Number.isFinite(h) && Number.isFinite(m) && m < 60) return h * 60 + m;
+    return null;
+  }
+
+  // h/m form — sum every "<n>h" + "<n>m" + trailing bare "<n>" (as
+  // minutes if h came before, else as minutes too).
+  const hMatch = s.match(/(\d+(?:\.\d+)?)\s*h/);
+  const mMatch = s.match(/(\d+(?:\.\d+)?)\s*m/);
+  const bareMatch = s.match(/^(\d+(?:\.\d+)?)$/);
+  if (!hMatch && !mMatch && !bareMatch) return null;
+
+  let total = 0;
+  if (hMatch) total += Number(hMatch[1]) * 60;
+  if (mMatch) total += Number(mMatch[1]);
+  if (!hMatch && !mMatch && bareMatch) total = Number(bareMatch[1]);
+  return Number.isFinite(total) && total >= 0 ? Math.round(total) : null;
 }

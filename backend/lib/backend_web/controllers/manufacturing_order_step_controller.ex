@@ -172,17 +172,6 @@ defmodule BackendWeb.ManufacturingOrderStepController do
       false ->
         forbidden(conn, "Missing production.mo_edit permission.")
 
-      {:error, :past_time} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(
-          Errors.payload(
-            "past_time",
-            "Can't pin a work segment before the current time.",
-            %{}
-          )
-        )
-
       {:error, :invalid_segments} ->
         conn
         |> put_status(:unprocessable_entity)
