@@ -106,6 +106,23 @@ export function useDragBounds(): DragBounds | null {
   return useContext(DragBoundsContext);
 }
 
+/** Live walker-aware preview of where the currently-dragged block
+ *  will land — recomputed on every pointermove by the workspace.
+ *  Renders as a dashed ghost overlay in the calendar so the planner
+ *  sees the actual drop position (respecting working hours) BEFORE
+ *  they release the mouse. */
+export interface LivePreview {
+  rowMatcher: string;
+  segments: Array<{ startMs: number; finishMs: number }>;
+  outsideHoursSeconds: number;
+}
+
+export const LivePreviewContext = createContext<LivePreview | null>(null);
+
+export function useLivePreview(): LivePreview | null {
+  return useContext(LivePreviewContext);
+}
+
 /** The list of working intervals in the visible range — used by
  *  blocks to compute their own "paused" sub-segments (closed time
  *  that falls inside the block's span). */
@@ -115,6 +132,76 @@ export const WorkingIntervalsContext = createContext<
 
 export function useWorkingIntervals(): Array<{ open: Date; close: Date }> {
   return useContext(WorkingIntervalsContext);
+}
+
+/** Client-side mirror of Backend.Production.ScheduleWalker.walk_forward.
+ *  Place `durationSeconds` of work starting at `cursorMs`, walking
+ *  through `intervals` (sorted working windows). Steps spill into
+ *  later windows when one isn't enough; if we run out of intervals
+ *  the remainder lands as overflow (outsideHoursSeconds > 0).
+ *
+ *  Returned `start_at` is the first interval the work touches —
+ *  may be later than `cursorMs` if the cursor lands in closed time
+ *  and the walker had to push forward to the next window. */
+export function walkForwardClient(
+  intervals: Array<{ open: Date; close: Date }>,
+  cursorMs: number,
+  durationSeconds: number,
+): {
+  startAt: number;
+  finishAt: number;
+  segments: Array<{ open: number; close: number }>;
+  outsideHoursSeconds: number;
+} {
+  if (durationSeconds <= 0) {
+    return {
+      startAt: cursorMs,
+      finishAt: cursorMs,
+      segments: [],
+      outsideHoursSeconds: 0,
+    };
+  }
+
+  const sorted = intervals
+    .map((iv) => ({ open: iv.open.getTime(), close: iv.close.getTime() }))
+    .sort((a, b) => a.open - b.open);
+
+  let remainingMs = durationSeconds * 1000;
+  let cursor = cursorMs;
+  let startAt: number | null = null;
+  const segments: Array<{ open: number; close: number }> = [];
+
+  for (const w of sorted) {
+    if (w.close <= cursor) continue;
+    const effectiveStart = Math.max(w.open, cursor);
+    const spanMs = w.close - effectiveStart;
+
+    if (spanMs >= remainingMs) {
+      const finish = effectiveStart + remainingMs;
+      segments.push({ open: effectiveStart, close: finish });
+      return {
+        startAt: startAt ?? effectiveStart,
+        finishAt: finish,
+        segments,
+        outsideHoursSeconds: 0,
+      };
+    }
+
+    segments.push({ open: effectiveStart, close: w.close });
+    remainingMs -= spanMs;
+    cursor = w.close;
+    if (startAt === null) startAt = effectiveStart;
+  }
+
+  // Overflow — no more intervals. Place the remainder at `cursor`.
+  const overflowFinish = cursor + remainingMs;
+  segments.push({ open: cursor, close: overflowFinish });
+  return {
+    startAt: startAt ?? cursor,
+    finishAt: overflowFinish,
+    segments,
+    outsideHoursSeconds: remainingMs / 1000,
+  };
 }
 
 /** Intersect a block's span [startMs, endMs] with the working

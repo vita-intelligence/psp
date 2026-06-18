@@ -20,6 +20,7 @@ import {
   isoDate,
   rangeDays as rangeDaysList,
   useDragBounds,
+  useLivePreview,
   useTimeScale,
   useWorkingIntervals,
   type DayWindow,
@@ -312,6 +313,35 @@ export function DragBoundsOverlay() {
   );
 }
 
+/** Walker-aware ghost block(s) painted at the position the dragged
+ *  block WILL land — recomputed on every pointermove by the
+ *  workspace. Lets the planner see the snap-to-working-hours result
+ *  before releasing the mouse, including paused sub-segments when
+ *  the block straddles closed time. */
+export function LivePreviewGhost() {
+  const scale = useTimeScale();
+  const preview = useLivePreview();
+  if (!preview) return null;
+
+  return (
+    <>
+      {preview.segments.map((seg, i) => {
+        const left = scale.pxAt(new Date(seg.startMs));
+        const width = (seg.finishMs - seg.startMs) * scale.preset.pxPerMs;
+        if (width <= 0) return null;
+        return (
+          <div
+            key={i}
+            aria-hidden
+            className="pointer-events-none absolute top-1 bottom-1 rounded-md border-2 border-dashed border-indigo-500/70 bg-indigo-200/30"
+            style={{ left, width }}
+          />
+        );
+      })}
+    </>
+  );
+}
+
 function useNowEveryMinute(): Date {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -587,6 +617,7 @@ export function CalendarShell({
               <Gridlines />
               <PastZoneOverlay />
               <DragBoundsOverlay />
+              <LivePreviewGhost />
             </div>
 
             {/* Layer 30 — sticky day header. Empty transparent

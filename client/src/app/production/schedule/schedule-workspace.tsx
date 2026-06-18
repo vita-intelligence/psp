@@ -54,6 +54,7 @@ import type { ProductionScheduleResponse } from "@/lib/production/types";
 import { ScheduleBacklog } from "./schedule-backlog";
 import {
   DragBoundsContext,
+  LivePreviewContext,
   ScheduleScaleContext,
   ZOOM_LABELS,
   ZOOM_LEVELS,
@@ -62,6 +63,7 @@ import {
   fmtRangeLabel,
   isoDate,
   rangeForZoom,
+  walkForwardClient,
   type ZoomLevel,
 } from "./schedule-shared";
 import {
@@ -126,6 +128,14 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
   const [dragBounds, setDragBounds] = useState<{
     minStartMs: number;
     maxFinishMs: number | null;
+  } | null>(null);
+  // Live walker-aware ghost segments for the actively-dragged block.
+  // Recomputed on every pointermove during drag so the user sees
+  // EXACTLY where the walker will land things before they release.
+  const [livePreview, setLivePreview] = useState<{
+    rowMatcher: string; // mo uuid or op id for matching the row
+    segments: Array<{ startMs: number; finishMs: number }>;
+    outsideHoursSeconds: number;
   } | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     cursorX: number;
@@ -233,6 +243,28 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
     return projectRowsFromOps(data.operations, parentIds, meta);
   }, [data]);
 
+  // Flattened, deduped working intervals — used by the client-side
+  // walker so the live drag preview matches what the BE will produce
+  // on release. Same shape as the WorkingIntervalsContext one inside
+  // CalendarShell, computed here so the workspace-level drag handler
+  // can use it without crossing the context boundary.
+  const workingIntervals = useMemo(() => {
+    if (!data) return [];
+    const seen = new Set<string>();
+    const out: Array<{ open: Date; close: Date }> = [];
+    for (const grp of data.working_windows) {
+      for (const day of grp.days) {
+        for (const iv of day.intervals) {
+          const key = `${iv.open}-${iv.close}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push({ open: new Date(iv.open), close: new Date(iv.close) });
+        }
+      }
+    }
+    return out.sort((a, b) => a.open.getTime() - b.open.getTime());
+  }, [data]);
+
   function handleDragStart(event: DragStartEvent) {
     const id = String(event.active.id);
     setActiveDragId(id);
@@ -252,11 +284,42 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
         ? activator.clientY
         : cursorRef.current?.y ?? 0;
     cursorRef.current = { x: startX, y: startY };
+    const dragStartCursorX = startX;
+
+    // Snapshot of the dragged block's step durations + original
+    // first-step-start. The pointermove handler closes over this
+    // to recompute walker output on every cursor movement.
+    const draggedInfo = (() => {
+      if (id.startsWith("op-")) {
+        const opId = Number(id.slice("op-".length));
+        const op = data?.operations.find((o) => o.id === opId);
+        if (!op || !op.planned_start) return null;
+        return {
+          firstStartMs: new Date(op.planned_start).getTime(),
+          stepDurations: [op.planned_duration_seconds ?? 0],
+        };
+      }
+      if (id.startsWith("mo-")) {
+        const uuid = id.slice("mo-".length);
+        const row = moRows.find((r) => r.moUuid === uuid);
+        if (!row) return null;
+        return {
+          firstStartMs: new Date(row.start).getTime(),
+          stepDurations: row.steps
+            .slice()
+            .sort((a, b) => a.sort_order - b.sort_order)
+            .map((s) => s.planned_duration_seconds ?? 0),
+        };
+      }
+      return null;
+    })();
+    const intervalsForWalker = workingIntervals;
+    const pxPerMs = scale.preset.pxPerMs;
 
     // For backlog drags, prime the preview ghost with the block's
     // duration so it can be drawn at the right width even before
     // the first pointer-move (e.g. if the cursor stays still).
-    const data = event.active.data?.current as
+    const activePayload = event.active.data?.current as
       | { kind?: "project" | "mo"; durationSeconds?: number }
       | undefined;
     const kind = id.startsWith("backlog-project-")
@@ -268,7 +331,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
       setDragPreview({
         cursorX: startX,
         cursorY: startY,
-        durationSeconds: data?.durationSeconds ?? 0,
+        durationSeconds: activePayload?.durationSeconds ?? 0,
         kind,
       });
     }
@@ -279,6 +342,32 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
         setDragPreview((prev) =>
           prev ? { ...prev, cursorX: e.clientX, cursorY: e.clientY } : prev,
         );
+      }
+
+      // Walker-aware live preview for calendar-side drags. Chain
+      // walker calls so multi-step MOs show every step's final
+      // landing position — matches what the BE will compute on
+      // release. cursor.x in viewport pixels → delta_ms via the
+      // current zoom's pxPerMs.
+      if (draggedInfo && intervalsForWalker.length > 0) {
+        const deltaPx = e.clientX - dragStartCursorX;
+        const deltaMs = deltaPx / pxPerMs;
+        const newFirstStart = draggedInfo.firstStartMs + deltaMs;
+
+        let cursor = newFirstStart;
+        let outsideTotal = 0;
+        const segments: Array<{ startMs: number; finishMs: number }> = [];
+        for (const dur of draggedInfo.stepDurations) {
+          const r = walkForwardClient(intervalsForWalker, cursor, dur);
+          segments.push({ startMs: r.startAt, finishMs: r.finishAt });
+          cursor = r.finishAt;
+          outsideTotal += r.outsideHoursSeconds;
+        }
+        setLivePreview({
+          rowMatcher: id,
+          segments,
+          outsideHoursSeconds: outsideTotal,
+        });
       }
     }
     window.addEventListener("pointermove", onMove);
@@ -425,6 +514,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
     setActiveDragId(null);
     setDragPreview(null);
     setDragBounds(null);
+    setLivePreview(null);
     if (!canEditSteps || !data) return;
     const { active, delta, over } = event;
     const idStr = String(active.id);
@@ -920,6 +1010,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
     >
       <ScheduleScaleContext.Provider value={scale}>
         <DragBoundsContext.Provider value={dragBounds}>
+        <LivePreviewContext.Provider value={livePreview}>
         <div className="flex min-h-0 flex-1 flex-col">
           {/* Sticky control bar */}
           <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border/60 bg-card px-3 py-2 shadow-sm">
@@ -1066,6 +1157,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
             />
           )}
         </div>
+        </LivePreviewContext.Provider>
         </DragBoundsContext.Provider>
       </ScheduleScaleContext.Provider>
     </DndContext>
