@@ -151,6 +151,69 @@ defmodule BackendWeb.ManufacturingOrderStepController do
     )
   end
 
+  # POST /api/production/manufacturing-orders/:mo_id/steps/:id/set-segments
+  # Body: %{"segments" => [%{"start_at" => iso, "finish_at" => iso}, ...]}
+  # Persists the planner's literal segments (no walker). Used by the
+  # click-to-edit dialog when they pin start / finish per work block
+  # and insert custom pauses between them.
+  def set_segments(conn, %{"mo_id" => mo_uuid, "id" => uuid, "segments" => segments})
+      when is_list(segments) do
+    actor = conn.assigns.current_user
+
+    with %ManufacturingOrder{id: mo_id} <-
+           Production.get_manufacturing_order(actor.company_id, mo_uuid),
+         %ManufacturingOrderStep{manufacturing_order_id: ^mo_id} = step <-
+           Production.get_mo_step(actor.company_id, uuid),
+         true <- RBAC.has_permission?(actor, "production.mo_edit"),
+         {:ok, updated} <-
+           Production.set_mo_step_segments(actor, step, segments) do
+      json(conn, %{step: Payloads.mo_step(updated)})
+    else
+      false ->
+        forbidden(conn, "Missing production.mo_edit permission.")
+
+      {:error, :past_time} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "past_time",
+            "Can't pin a work segment before the current time.",
+            %{}
+          )
+        )
+
+      {:error, :invalid_segments} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "invalid_segments",
+            "Every segment needs an ISO8601 start_at and finish_at.",
+            %{}
+          )
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+
+      _ ->
+        not_found(conn)
+    end
+  end
+
+  def set_segments(conn, _) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(
+      Errors.payload(
+        "invalid_payload",
+        "Pass segments as a list of {start_at, finish_at} maps.",
+        %{}
+      )
+    )
+  end
+
   # ----- helpers ---------------------------------------------------
 
   defp ensure_required_perms(actor, params) do

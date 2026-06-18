@@ -1829,6 +1829,90 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Persist the planner's explicit work-segment list for a single MO
+  step (from the click-to-edit dialog). Segments are stored as the
+  literal times the user typed — the walker is NOT consulted. The
+  list MUST be in chronological order and may not overlap; pauses
+  between consecutive segments are legal.
+
+  planned_start = first segment start; planned_finish = last segment
+  finish; planned_duration_seconds = sum of work-segment durations.
+
+  Reject if any segment starts in the past, or if any segment is
+  malformed (changeset validation catches the rest).
+  """
+  def set_mo_step_segments(%User{} = actor, %ManufacturingOrderStep{} = step, segments)
+      when is_list(segments) do
+    with {:ok, parsed} <- parse_segment_list(segments),
+         :ok <- ensure_no_past_segments(parsed) do
+      [{first_start, _} | _] = parsed
+      {_, last_finish} = List.last(parsed)
+
+      duration_seconds =
+        Enum.reduce(parsed, 0, fn {s, f}, acc ->
+          acc + DateTime.diff(f, s, :second)
+        end)
+
+      jsonb_segments =
+        Enum.map(parsed, fn {s, f} ->
+          %{"start_at" => DateTime.to_iso8601(s), "finish_at" => DateTime.to_iso8601(f)}
+        end)
+
+      before = mo_step_snapshot(step)
+
+      attrs = %{
+        "planned_segments" => jsonb_segments,
+        "planned_start" => first_start,
+        "planned_finish" => last_finish,
+        "planned_duration_seconds" => duration_seconds,
+        "updated_by_id" => actor.id
+      }
+
+      case step |> ManufacturingOrderStep.changeset(attrs) |> Repo.update() do
+        {:ok, updated} ->
+          Audit.record_updated(
+            actor,
+            "manufacturing_order_step",
+            updated,
+            before,
+            mo_step_snapshot(updated)
+          )
+
+          {:ok, reload_mo_step(updated)}
+
+        {:error, cs} ->
+          {:error, cs}
+      end
+    end
+  end
+
+  defp parse_segment_list(list) do
+    Enum.reduce_while(list, {:ok, []}, fn seg, {:ok, acc} ->
+      start_raw = Map.get(seg, "start_at") || Map.get(seg, :start_at)
+      finish_raw = Map.get(seg, "finish_at") || Map.get(seg, :finish_at)
+
+      with start_raw when is_binary(start_raw) <- start_raw,
+           finish_raw when is_binary(finish_raw) <- finish_raw,
+           {:ok, s, _} <- DateTime.from_iso8601(start_raw),
+           {:ok, f, _} <- DateTime.from_iso8601(finish_raw) do
+        {:cont, {:ok, acc ++ [{DateTime.shift_zone!(s, "Etc/UTC"), DateTime.shift_zone!(f, "Etc/UTC")}]}}
+      else
+        _ -> {:halt, {:error, :invalid_segments}}
+      end
+    end)
+  end
+
+  defp ensure_no_past_segments(parsed) do
+    now = now()
+
+    if Enum.any?(parsed, fn {s, _} -> DateTime.compare(s, now) == :lt end) do
+      {:error, :past_time}
+    else
+      :ok
+    end
+  end
+
+  @doc """
   Update one MO step. The form sends the full editable header +
   workers list; we wholesale-replace the worker join rows inside the
   same transaction so audit captures one event.

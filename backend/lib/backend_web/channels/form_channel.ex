@@ -337,6 +337,14 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "production.mo_edit") or
         RBAC.has_permission?(user, "production.mo_execute")
 
+  # "project" is the virtual entity at the root of an MO chain —
+  # used by the schedule's click-to-edit dialog when the planner
+  # opens a project block (everything under one root). It gates on
+  # the same scope as the per-MO edit so a planner who can edit any
+  # MO in the chain can edit the project view.
+  defp can_edit_resource?(user, "project"),
+    do: RBAC.has_permission?(user, "production.mo_edit")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to
