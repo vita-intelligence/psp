@@ -15,15 +15,18 @@ import type {
 import {
   ROW_HEIGHT_PX,
   WorkingIntervalsContext,
+  anyOpHasManualSegments,
   closedSegmentsWithin,
   dayLabel,
   isoDate,
+  pausesFromWorkSpans,
   rangeDays as rangeDaysList,
   useDragBounds,
   useLivePreview,
   useScheduleEditor,
   useTimeScale,
   useWorkingIntervals,
+  workSpansForOps,
   type DayWindow,
   type TimeScale,
 } from "./schedule-shared";
@@ -221,16 +224,24 @@ export function Gridlines() {
 export function PausedSegmentsOverlay({
   spanStartMs,
   spanEndMs,
+  manualPauses,
 }: {
   spanStartMs: number;
   spanEndMs: number;
+  /** Pre-computed pause spans — supplied when the block is built
+   *  from explicit `planned_segments` (manual pinning) instead of
+   *  walker output. When undefined, falls back to intersecting
+   *  the block span with working hours. */
+  manualPauses?: Array<{ start: number; end: number }>;
 }) {
   const scale = useTimeScale();
   const intervals = useWorkingIntervals();
-  if (intervals.length === 0) return null;
   if (spanEndMs <= spanStartMs) return null;
 
-  const closed = closedSegmentsWithin(spanStartMs, spanEndMs, intervals);
+  const closed =
+    manualPauses ?? (intervals.length === 0
+      ? []
+      : closedSegmentsWithin(spanStartMs, spanEndMs, intervals));
   if (closed.length === 0) return null;
 
   const pxPerMs = scale.preset.pxPerMs;
@@ -834,6 +845,7 @@ interface MOblockProps {
 function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
   const scale = useTimeScale();
   const editor = useScheduleEditor();
+  const workingIntervals = useWorkingIntervals();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `mo-${row.moUuid}`,
@@ -912,13 +924,23 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
           );
         })}
       </div>
-      {/* "Paused" cut-outs for closed time inside the MO's span —
-          overnight gaps, weekends, holidays. Renders as a darker
-          striped overlay so the operator sees "work · paused · work"
-          even though the block itself stays one continuous unit. */}
+      {/* "Paused" cut-outs inside the MO's span. When any step has
+          stored `planned_segments` (manually pinned), pauses are the
+          complement of the union of work spans across all steps —
+          honouring custom pause rows. Otherwise the working-hours
+          fallback handles overnight + weekend gaps. */}
       <PausedSegmentsOverlay
         spanStartMs={visibleStart}
         spanEndMs={visibleEnd}
+        manualPauses={
+          anyOpHasManualSegments(row.steps)
+            ? pausesFromWorkSpans(
+                visibleStart,
+                visibleEnd,
+                workSpansForOps(row.steps, workingIntervals),
+              )
+            : undefined
+        }
       />
       <div className="relative flex h-full items-center gap-2 px-2 py-1">
         <div className="min-w-0 flex-1">

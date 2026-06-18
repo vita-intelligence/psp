@@ -261,6 +261,96 @@ export function closedSegmentsWithin(
   return closed;
 }
 
+/** Collect the union of WORK spans for a list of ops. For an op
+ *  with stored `planned_segments`, the literal segments are used;
+ *  for ops without (walker-driven), the client-side walker derives
+ *  segments from planned_start + duration + working windows. */
+export function workSpansForOps(
+  ops: Array<{
+    planned_start: string | null;
+    planned_duration_seconds: number;
+    planned_segments: Array<{ start_at: string; finish_at: string }> | null;
+  }>,
+  workingIntervals: Array<{ open: Date; close: Date }>,
+): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const op of ops) {
+    if (op.planned_segments && op.planned_segments.length > 0) {
+      for (const seg of op.planned_segments) {
+        const s = new Date(seg.start_at).getTime();
+        const e = new Date(seg.finish_at).getTime();
+        if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+          spans.push({ start: s, end: e });
+        }
+      }
+      continue;
+    }
+    if (!op.planned_start || op.planned_duration_seconds <= 0) continue;
+    const cursor = new Date(op.planned_start).getTime();
+    const walked = walkForwardClient(
+      workingIntervals,
+      cursor,
+      op.planned_duration_seconds,
+    );
+    for (const seg of walked.segments) {
+      spans.push({ start: seg.open, end: seg.close });
+    }
+  }
+  return spans;
+}
+
+/** True iff any op in the list has the explicit planned_segments
+ *  field set — used by blocks to decide whether to compute pauses
+ *  from segment complement (manual) or from working-hour gaps
+ *  (walker-driven). */
+export function anyOpHasManualSegments(
+  ops: Array<{
+    planned_segments: Array<unknown> | null;
+  }>,
+): boolean {
+  return ops.some((o) => o.planned_segments != null && o.planned_segments.length > 0);
+}
+
+/** Complement of a list of work spans within [startMs, endMs] — the
+ *  gaps where work is NOT happening. Used by block overlays when the
+ *  block is composed of explicitly-pinned segments (manual pauses)
+ *  rather than walker-derived work over working hours. */
+export function pausesFromWorkSpans(
+  startMs: number,
+  endMs: number,
+  workSpans: Array<{ start: number; end: number }>,
+): Array<{ start: number; end: number }> {
+  if (endMs <= startMs) return [];
+  const sorted = workSpans
+    .map((s) => ({
+      start: Math.max(s.start, startMs),
+      end: Math.min(s.end, endMs),
+    }))
+    .filter((s) => s.end > s.start)
+    .sort((a, b) => a.start - b.start);
+
+  // Merge overlapping work spans (chain blocks may overlap across MOs
+  // — we don't want phantom 0-length pauses inside a merged span).
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const s of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && s.start <= last.end) {
+      last.end = Math.max(last.end, s.end);
+    } else {
+      merged.push({ ...s });
+    }
+  }
+
+  const gaps: Array<{ start: number; end: number }> = [];
+  let cursor = startMs;
+  for (const s of merged) {
+    if (s.start > cursor) gaps.push({ start: cursor, end: s.start });
+    cursor = Math.max(cursor, s.end);
+  }
+  if (cursor < endMs) gaps.push({ start: cursor, end: endMs });
+  return gaps;
+}
+
 export function startOfMondayUTC(date: Date): Date {
   const d = new Date(date);
   const day = d.getUTCDay();

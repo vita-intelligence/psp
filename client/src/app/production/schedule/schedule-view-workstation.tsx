@@ -10,9 +10,11 @@ import type {
 } from "@/lib/production/types";
 import {
   ROW_HEIGHT_PX,
+  pausesFromWorkSpans,
   rangeDays as rangeDaysList,
   useScheduleEditor,
   useTimeScale,
+  useWorkingIntervals,
 } from "./schedule-shared";
 import {
   CalendarRow,
@@ -184,6 +186,7 @@ function OperationBlock({
 }: OperationBlockProps) {
   const scale = useTimeScale();
   const editor = useScheduleEditor();
+  const workingIntervals = useWorkingIntervals();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `op-${op.id}`,
@@ -241,6 +244,18 @@ function OperationBlock({
       <PausedSegmentsOverlay
         spanStartMs={visibleStart}
         spanEndMs={visibleEnd}
+        manualPauses={
+          op.planned_segments && op.planned_segments.length > 0
+            ? pausesFromWorkSpans(
+                visibleStart,
+                visibleEnd,
+                op.planned_segments.map((s) => ({
+                  start: new Date(s.start_at).getTime(),
+                  end: new Date(s.finish_at).getTime(),
+                })),
+              )
+            : undefined
+        }
       />
       <div
         aria-hidden

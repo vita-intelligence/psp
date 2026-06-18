@@ -10,9 +10,13 @@ import type {
   ScheduleOperation,
 } from "@/lib/production/types";
 import {
+  anyOpHasManualSegments,
+  pausesFromWorkSpans,
   rangeDays as rangeDaysList,
   useScheduleEditor,
   useTimeScale,
+  useWorkingIntervals,
+  workSpansForOps,
 } from "./schedule-shared";
 import {
   CalendarRow,
@@ -35,6 +39,9 @@ export interface ProjectRow {
   status: string;
   qty: string;
   moCount: number;
+  /** Every operation in this chain — used by the block overlay to
+   *  derive manual pause gaps when any step has stored segments. */
+  ops: ScheduleOperation[];
 }
 
 export function projectRowsFromOps(
@@ -101,6 +108,7 @@ export function projectRowsFromOps(
       status: meta?.status ?? "draft",
       qty: meta?.qty ?? "0",
       moCount: moIds.size,
+      ops,
     });
   }
   return rows.sort(
@@ -203,6 +211,7 @@ interface ProjectBlockProps {
 function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
   const scale = useTimeScale();
   const editor = useScheduleEditor();
+  const workingIntervals = useWorkingIntervals();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `project-${row.rootMoUuid}`,
@@ -259,6 +268,15 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
       <PausedSegmentsOverlay
         spanStartMs={visibleStart}
         spanEndMs={visibleEnd}
+        manualPauses={
+          anyOpHasManualSegments(row.ops)
+            ? pausesFromWorkSpans(
+                visibleStart,
+                visibleEnd,
+                workSpansForOps(row.ops, workingIntervals),
+              )
+            : undefined
+        }
       />
       <div className="relative flex h-full items-center gap-2">
         <div className="min-w-0 flex-1">
