@@ -55,6 +55,7 @@ import { ScheduleBacklog } from "./schedule-backlog";
 import {
   DragBoundsContext,
   LivePreviewContext,
+  ScheduleEditContext,
   ScheduleScaleContext,
   ZOOM_LABELS,
   ZOOM_LEVELS,
@@ -64,8 +65,11 @@ import {
   isoDate,
   rangeForZoom,
   walkForwardClient,
+  type ScheduleEditDispatch,
+  type ScheduleEditTarget,
   type ZoomLevel,
 } from "./schedule-shared";
+import { ScheduleEditDialog } from "./schedule-edit-dialog";
 import {
   LABEL_GUTTER_PX,
   MOView,
@@ -143,6 +147,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
     durationSeconds: number;
     kind: "project" | "mo";
   } | null>(null);
+  const [editTarget, setEditTarget] = useState<ScheduleEditTarget | null>(null);
   const [, startTransition] = useTransition();
 
   // The canvas DOM ref + a live cursor ref let us turn a drag-end
@@ -264,6 +269,27 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
     }
     return out.sort((a, b) => a.open.getTime() - b.open.getTime());
   }, [data]);
+
+  // Parent-MO map for the whole visible schedule — shared between
+  // chain-order validation, drag-bounds computation, and the
+  // click-to-edit dialog's project-scope resolution.
+  const parentByMo = useMemo(() => {
+    const map = new Map<number, number | null>();
+    if (!data) return map;
+    for (const op of data.operations) {
+      const mo = op.manufacturing_order;
+      if (!mo) continue;
+      map.set(mo.id, mo.parent_mo_id ?? null);
+    }
+    return map;
+  }, [data]);
+
+  // Editor dispatch handed down via context so a block deep in any
+  // view can request the dialog without prop-drilling.
+  const editDispatch = useMemo<ScheduleEditDispatch>(
+    () => ({ openEditor: (t: ScheduleEditTarget) => setEditTarget(t) }),
+    [],
+  );
 
   function handleDragStart(event: DragStartEvent) {
     const id = String(event.active.id);
@@ -1011,6 +1037,7 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
       <ScheduleScaleContext.Provider value={scale}>
         <DragBoundsContext.Provider value={dragBounds}>
         <LivePreviewContext.Provider value={livePreview}>
+        <ScheduleEditContext.Provider value={editDispatch}>
         <div className="flex min-h-0 flex-1 flex-col">
           {/* Sticky control bar */}
           <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border/60 bg-card px-3 py-2 shadow-sm">
@@ -1157,6 +1184,15 @@ export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
             />
           )}
         </div>
+        <ScheduleEditDialog
+          target={editTarget}
+          data={data}
+          workingIntervals={workingIntervals}
+          parentByMo={parentByMo}
+          company={company}
+          onClose={() => setEditTarget(null)}
+        />
+        </ScheduleEditContext.Provider>
         </LivePreviewContext.Provider>
         </DragBoundsContext.Provider>
       </ScheduleScaleContext.Provider>

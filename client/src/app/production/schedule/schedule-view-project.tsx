@@ -11,6 +11,7 @@ import type {
 } from "@/lib/production/types";
 import {
   rangeDays as rangeDaysList,
+  useScheduleEditor,
   useTimeScale,
 } from "./schedule-shared";
 import {
@@ -201,6 +202,7 @@ interface ProjectBlockProps {
 
 function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
   const scale = useTimeScale();
+  const editor = useScheduleEditor();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `project-${row.rootMoUuid}`,
@@ -230,6 +232,11 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      onClick={(e) => {
+        if (isDragging) return;
+        e.stopPropagation();
+        editor?.openEditor({ kind: "project", rootMoUuid: row.rootMoUuid });
+      }}
       style={{
         left,
         width,
@@ -240,10 +247,14 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
       className={cn(
         "absolute z-10 select-none overflow-hidden rounded-md border-2 px-2 py-1 text-[11px] shadow-sm",
         statusColor,
-        canEditSteps ? "cursor-grab" : "cursor-default",
+        canEditSteps ? "cursor-grab" : "cursor-pointer",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
-      title={`${row.rootMoCode ?? `MO #${row.rootMoId}`} · ${row.itemName} · ${row.moCount} MO${row.moCount === 1 ? "" : "s"}`}
+      title={
+        canEditSteps
+          ? `${row.rootMoCode ?? `MO #${row.rootMoId}`} · ${row.itemName} · ${row.moCount} MO${row.moCount === 1 ? "" : "s"} (drag to shift, click to edit)`
+          : `${row.rootMoCode ?? `MO #${row.rootMoId}`} · ${row.itemName} (click for details)`
+      }
     >
       <PausedSegmentsOverlay
         spanStartMs={visibleStart}

@@ -21,6 +21,7 @@ import {
   rangeDays as rangeDaysList,
   useDragBounds,
   useLivePreview,
+  useScheduleEditor,
   useTimeScale,
   useWorkingIntervals,
   type DayWindow,
@@ -832,6 +833,7 @@ interface MOblockProps {
 
 function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
   const scale = useTimeScale();
+  const editor = useScheduleEditor();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `mo-${row.moUuid}`,
@@ -864,6 +866,14 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      onClick={(e) => {
+        // dnd-kit's PointerSensor activates after the cursor travels
+        // its activationConstraint distance — a still-pointer click
+        // never triggers drag, so this onClick fires cleanly.
+        if (isDragging) return;
+        e.stopPropagation();
+        editor?.openEditor({ kind: "mo", moUuid: row.moUuid });
+      }}
       style={{
         left,
         width,
@@ -874,10 +884,14 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
       className={cn(
         "absolute z-10 select-none overflow-hidden rounded-md border-2 text-[11px] shadow-sm transition-shadow",
         statusColor,
-        canEditSteps ? "cursor-grab" : "cursor-default",
+        canEditSteps ? "cursor-grab" : "cursor-pointer",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
-      title={`${row.moCode ?? `MO #${row.moId}`} · ${row.itemName}`}
+      title={
+        canEditSteps
+          ? `${row.moCode ?? `MO #${row.moId}`} · ${row.itemName} (drag to move, click to edit)`
+          : `${row.moCode ?? `MO #${row.moId}`} · ${row.itemName} (click for details)`
+      }
     >
       {/* Per-step color bars — subtle bg hint for the WSGs that
           run this MO. */}

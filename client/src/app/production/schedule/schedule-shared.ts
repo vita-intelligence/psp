@@ -123,6 +123,27 @@ export function useLivePreview(): LivePreview | null {
   return useContext(LivePreviewContext);
 }
 
+/** Click-to-edit target dispatcher. Blocks call `openEditor` in
+ *  their onClick handler; the workspace mounts the dialog once and
+ *  picks up the target via state. Kept in a context so blocks don't
+ *  need to be plumbed with the dialog's setter through every view. */
+export type ScheduleEditTarget =
+  | { kind: "project"; rootMoUuid: string }
+  | { kind: "mo"; moUuid: string }
+  | { kind: "step"; stepUuid: string };
+
+export interface ScheduleEditDispatch {
+  openEditor: (target: ScheduleEditTarget) => void;
+}
+
+export const ScheduleEditContext = createContext<ScheduleEditDispatch | null>(
+  null,
+);
+
+export function useScheduleEditor(): ScheduleEditDispatch | null {
+  return useContext(ScheduleEditContext);
+}
+
 /** The list of working intervals in the visible range — used by
  *  blocks to compute their own "paused" sub-segments (closed time
  *  that falls inside the block's span). */

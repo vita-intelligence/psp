@@ -11,6 +11,7 @@ import type {
 import {
   ROW_HEIGHT_PX,
   rangeDays as rangeDaysList,
+  useScheduleEditor,
   useTimeScale,
 } from "./schedule-shared";
 import {
@@ -182,6 +183,7 @@ function OperationBlock({
   groupColor,
 }: OperationBlockProps) {
   const scale = useTimeScale();
+  const editor = useScheduleEditor();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `op-${op.id}`,
@@ -210,6 +212,11 @@ function OperationBlock({
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      onClick={(e) => {
+        if (isDragging) return;
+        e.stopPropagation();
+        editor?.openEditor({ kind: "step", stepUuid: op.uuid });
+      }}
       style={{
         left,
         width,
@@ -220,15 +227,15 @@ function OperationBlock({
       className={cn(
         "group absolute z-10 select-none overflow-hidden rounded-md border px-2 py-1 text-[11px] shadow-sm transition-shadow",
         isDragging && "z-30 cursor-grabbing shadow-lg",
-        canEditSteps ? "cursor-grab" : "cursor-default",
+        canEditSteps ? "cursor-grab" : "cursor-pointer",
         conflict
           ? "border-destructive bg-destructive/10 text-destructive ring-1 ring-destructive/60"
           : "border-border/70 bg-card text-foreground hover:shadow-md",
       )}
       title={
         canEditSteps
-          ? "Drag to reschedule or drop on another workstation to reassign."
-          : `${mo?.code ?? `Op #${op.id}`} (read-only)`
+          ? "Drag to reschedule, drop on another workstation to reassign, or click to edit."
+          : `${mo?.code ?? `Op #${op.id}`} (click for details)`
       }
     >
       <PausedSegmentsOverlay

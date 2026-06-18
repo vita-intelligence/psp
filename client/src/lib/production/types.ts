@@ -424,6 +424,11 @@ export interface ScheduleOperationMOSummary {
   parent_mo_id: number | null;
 }
 
+export interface PlannedSegment {
+  start_at: string;
+  finish_at: string;
+}
+
 export interface ScheduleOperation {
   id: number;
   uuid: string;
@@ -437,6 +442,10 @@ export interface ScheduleOperation {
   /** Preserved across unschedule — the calendar uses this to lay
    *  out steps when an MO is dropped from the backlog. */
   planned_duration_seconds: number;
+  /** Explicit segments the planner pinned via the click-to-edit
+   *  dialog. NULL → walker derives segments at render time. Set →
+   *  literal source of truth, walker stays out. Pauses = gaps. */
+  planned_segments: PlannedSegment[] | null;
   actual_start: string | null;
   actual_finish: string | null;
   quantity: string | null;
