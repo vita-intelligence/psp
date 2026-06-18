@@ -81,8 +81,6 @@ export function AddSubMoDialog({
         warehouse_id: mo.warehouse_id,
         item_id: part.part!.id,
         quantity: String(n),
-        start_at: mo.start_at,
-        finish_at: mo.start_at,
         assigned_to_id: mo.assigned_to_id,
         revision: mo.revision,
         // Linking to parent so it shows in the roadmap + blocks

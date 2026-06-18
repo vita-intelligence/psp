@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   ArrowDown,
+  CalendarClock,
   Check,
   CircleAlert,
   ClipboardCheck,
@@ -55,6 +56,14 @@ const STATUS_STYLES: Record<
     dot: "bg-indigo-500",
     label: "Approved",
     icon: Factory,
+  },
+  scheduled: {
+    border: "border-sky-300 dark:border-sky-800",
+    bg: "bg-sky-50/60 dark:bg-sky-950/30",
+    text: "text-sky-700 dark:text-sky-300",
+    dot: "bg-sky-500",
+    label: "Scheduled",
+    icon: CalendarClock,
   },
   in_progress: {
     border: "border-amber-300 dark:border-amber-800",

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
@@ -26,6 +27,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,13 +39,18 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
+  scheduleManufacturingOrderAction,
+  scheduleProjectAction,
   shiftManufacturingOrderAction,
   shiftProjectAction,
+  unscheduleManufacturingOrderAction,
+  unscheduleProjectAction,
   updateManufacturingOrderStepAction,
 } from "@/lib/production/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
+import type { CompanyDefaults } from "@/lib/types";
 import type { ProductionScheduleResponse } from "@/lib/production/types";
-import { MODurationEditor } from "./mo-duration-editor";
+import { ScheduleBacklog } from "./schedule-backlog";
 import {
   ScheduleScaleContext,
   ZOOM_LABELS,
@@ -72,6 +79,7 @@ interface Site {
 interface Props {
   sites: Site[];
   canEditSteps: boolean;
+  company: CompanyDefaults;
 }
 
 type ScheduleView = "mo" | "workstation" | "project";
@@ -93,7 +101,7 @@ function readStoredZoom(): ZoomLevel {
   return "week";
 }
 
-export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
+export function ScheduleWorkspace({ sites, canEditSteps, company }: Props) {
   const router = useRouter();
   const [siteId, setSiteId] = useState<number>(sites[0]?.id ?? 0);
   const [view, setView] = useState<ScheduleView>("mo");
@@ -104,8 +112,21 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [data, setData] = useState<ProductionScheduleResponse | null>(null);
   const [loading, setLoading] = useState(false);
-  const [editingMoUuid, setEditingMoUuid] = useState<string | null>(null);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [dragPreview, setDragPreview] = useState<{
+    cursorX: number;
+    cursorY: number;
+    durationSeconds: number;
+    kind: "project" | "mo";
+  } | null>(null);
   const [, startTransition] = useTransition();
+
+  // The canvas DOM ref + a live cursor ref let us turn a drag-end
+  // event into a calendar drop time. dnd-kit's event object doesn't
+  // carry the cursor position by itself, so we track it via a
+  // pointermove listener that's only active during drag.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const cursorRef = useRef<{ x: number; y: number } | null>(null);
 
   // Restore persisted prefs on mount.
   useEffect(() => {
@@ -198,10 +219,206 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
     return projectRowsFromOps(data.operations, parentIds, meta);
   }, [data]);
 
+  function handleDragStart(event: DragStartEvent) {
+    const id = String(event.active.id);
+    setActiveDragId(id);
+
+    // Seed the cursor from the dnd-kit activator event so the
+    // ghost has a real position immediately — without this,
+    // ghosts flash at (0, 0) until the first pointermove fires,
+    // which the user perceives as the block teleporting to the
+    // very left of the viewport.
+    const activator = event.activatorEvent as PointerEvent | MouseEvent | undefined;
+    const startX =
+      activator && "clientX" in activator
+        ? activator.clientX
+        : cursorRef.current?.x ?? 0;
+    const startY =
+      activator && "clientY" in activator
+        ? activator.clientY
+        : cursorRef.current?.y ?? 0;
+    cursorRef.current = { x: startX, y: startY };
+
+    // For backlog drags, prime the preview ghost with the block's
+    // duration so it can be drawn at the right width even before
+    // the first pointer-move (e.g. if the cursor stays still).
+    const data = event.active.data?.current as
+      | { kind?: "project" | "mo"; durationSeconds?: number }
+      | undefined;
+    const kind = id.startsWith("backlog-project-")
+      ? "project"
+      : id.startsWith("backlog-mo-") || id.startsWith("backlog-op-")
+        ? "mo"
+        : null;
+    if (kind) {
+      setDragPreview({
+        cursorX: startX,
+        cursorY: startY,
+        durationSeconds: data?.durationSeconds ?? 0,
+        kind,
+      });
+    }
+
+    function onMove(e: PointerEvent) {
+      cursorRef.current = { x: e.clientX, y: e.clientY };
+      if (kind) {
+        setDragPreview((prev) =>
+          prev ? { ...prev, cursorX: e.clientX, cursorY: e.clientY } : prev,
+        );
+      }
+    }
+    window.addEventListener("pointermove", onMove);
+    // Clean up when drag completes — bound here so we don't have to
+    // unsubscribe inside handleDragEnd and risk an early return path
+    // leaving the listener attached.
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+    };
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+
+    // Auto-switch the view to match what's being dragged so the
+    // user sees the right row layout when their cursor lands on
+    // the canvas. Backlog drags: project → project view, MO → MO
+    // view. Calendar-side block drags don't switch.
+    if (id.startsWith("backlog-project-") && view !== "project") {
+      chooseView("project");
+    } else if (id.startsWith("backlog-mo-") && view !== "mo") {
+      chooseView("mo");
+    } else if (id.startsWith("backlog-op-") && view !== "workstation") {
+      // Op-level drag → planner wants to slot it into a station.
+      chooseView("workstation");
+    }
+  }
+
   function handleDragEnd(event: DragEndEvent) {
+    setActiveDragId(null);
+    setDragPreview(null);
     if (!canEditSteps || !data) return;
     const { active, delta, over } = event;
     const idStr = String(active.id);
+    const overId = over ? String(over.id) : null;
+
+    // ----- Canvas → backlog rail: unschedule the MO/project.
+    if (overId === "backlog-zone") {
+      if (idStr.startsWith("mo-")) {
+        const uuid = idStr.slice("mo-".length);
+        startTransition(async () => {
+          const res = await unscheduleManufacturingOrderAction(uuid);
+          if (res.ok) {
+            toast.success("Returned to backlog");
+            invalidateAudit("manufacturing_order", res.mo.id);
+            router.refresh();
+            await reload();
+          } else {
+            toast.error(res.detail);
+          }
+        });
+        return;
+      }
+      if (idStr.startsWith("project-")) {
+        const uuid = idStr.slice("project-".length);
+        startTransition(async () => {
+          const res = await unscheduleProjectAction(uuid);
+          if (res.ok) {
+            toast.success("Project returned to backlog");
+            invalidateAudit("manufacturing_order", res.mo.id);
+            router.refresh();
+            await reload();
+          } else {
+            toast.error(res.detail);
+          }
+        });
+        return;
+      }
+      if (idStr.startsWith("op-")) {
+        const opId = Number(idStr.slice("op-".length));
+        const op = data.operations.find((o) => o.id === opId);
+        const moUuid = op?.manufacturing_order?.uuid;
+        if (!moUuid) return;
+        startTransition(async () => {
+          const res = await unscheduleManufacturingOrderAction(moUuid);
+          if (res.ok) {
+            toast.success("Returned to backlog");
+            invalidateAudit("manufacturing_order", res.mo.id);
+            router.refresh();
+            await reload();
+          } else {
+            toast.error(res.detail);
+          }
+        });
+        return;
+      }
+      // Backlog item dropped back on itself — no-op.
+      return;
+    }
+
+    // ----- Backlog → canvas: schedule the MO or project at the
+    // drop point. If the drop landed on a specific WSG row (in
+    // workstation view), pin the MO's first step to that station.
+    // `backlog-op-<uuid>` comes from dragging an individual op row
+    // inside the expanded backlog — same payload, same handler.
+    if (
+      idStr.startsWith("backlog-project-") ||
+      idStr.startsWith("backlog-mo-") ||
+      idStr.startsWith("backlog-op-")
+    ) {
+      const isProject = idStr.startsWith("backlog-project-");
+      const uuid = isProject
+        ? idStr.slice("backlog-project-".length)
+        : idStr.startsWith("backlog-op-")
+          ? idStr.slice("backlog-op-".length)
+          : idStr.slice("backlog-mo-".length);
+
+      const dropTime = cursorToScheduleTime();
+      if (!dropTime) {
+        toast.error("Drop the MO onto the calendar area.");
+        return;
+      }
+
+      // Past-time guard — don't bother the server.
+      if (isPast(dropTime)) {
+        toast.error("Can't schedule before the current time.");
+        return;
+      }
+
+      // Out-of-hours warning fires regardless of whether the BE
+      // ends up relocating the block.
+      warnIfDropOutsideHours(dropTime);
+
+      // Workstation view drop on a WSG row → schedule + pin first
+      // step to that WSG. Project drag ignores WSG (children get
+      // their routing-defined stations).
+      const wsgId =
+        !isProject && overId && overId.startsWith("wsg-")
+          ? Number(overId.slice("wsg-".length))
+          : undefined;
+
+      startTransition(async () => {
+        const res = isProject
+          ? await scheduleProjectAction(uuid, dropTime.toISOString())
+          : await scheduleManufacturingOrderAction(
+              uuid,
+              dropTime.toISOString(),
+              wsgId !== undefined
+                ? { workstationGroupId: wsgId }
+                : undefined,
+            );
+        if (res.ok) {
+          toast.success(isProject ? "Project scheduled" : "Scheduled");
+          warnIfOutsideHours(res.outsideHoursSeconds ?? 0);
+          invalidateAudit("manufacturing_order", res.mo.id);
+          router.refresh();
+          await reload();
+        } else {
+          toast.error(res.detail);
+          await reload();
+        }
+      });
+      return;
+    }
 
     // Pixels → milliseconds via the active zoom level.
     const msDelta = Math.round(delta.x / scale.preset.pxPerMs);
@@ -212,16 +429,35 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
       const row = moRows.find((r) => r.moUuid === uuid);
       if (!row || secondsDelta === 0) return;
 
+      // Past-time guard — earliest step's new start can't be < now.
+      const newFirstStart = new Date(
+        new Date(row.start).getTime() + msDelta,
+      );
+      if (isPast(newFirstStart)) {
+        toast.error("Can't drag the block before the current time.");
+        return;
+      }
+      warnIfDropOutsideHours(newFirstStart);
+
+      const snapshot = data;
+      // Optimistic: shift every op belonging to this MO by msDelta
+      // so the block visually lands at the drop point with no wait.
+      setData((cur) =>
+        cur ? shiftOpsForMOs(cur, new Set([uuid]), msDelta) : cur,
+      );
+
       startTransition(async () => {
         const res = await shiftManufacturingOrderAction(uuid, secondsDelta);
         if (res.ok) {
           toast.success("Schedule updated");
           invalidateAudit("manufacturing_order", row.moId);
           router.refresh();
+          // Light sync from server (in case BE clamped to working
+          // hours or anything else our naive shift didn't predict).
           await reload();
         } else {
+          setData(snapshot);
           toast.error(res.detail);
-          await reload();
         }
       });
       return;
@@ -232,6 +468,24 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
       const row = projectRows.find((r) => r.rootMoUuid === uuid);
       if (!row || secondsDelta === 0) return;
 
+      // Earliest step in the WHOLE chain after the shift.
+      const newFirstStart = new Date(
+        new Date(row.start).getTime() + msDelta,
+      );
+      if (isPast(newFirstStart)) {
+        toast.error("Can't drag the project before the current time.");
+        return;
+      }
+      warnIfDropOutsideHours(newFirstStart);
+
+      const snapshot = data;
+      // Build the set of MO UUIDs in this project (from the same
+      // root-walking the project view uses) and shift them all.
+      const chainUuids = chainUuidsForRoot(data, row.rootMoId);
+      setData((cur) =>
+        cur ? shiftOpsForMOs(cur, chainUuids, msDelta) : cur,
+      );
+
       startTransition(async () => {
         const res = await shiftProjectAction(uuid, secondsDelta);
         if (res.ok) {
@@ -240,8 +494,8 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
           router.refresh();
           await reload();
         } else {
+          setData(snapshot);
           toast.error(res.detail);
-          await reload();
         }
       });
       return;
@@ -251,9 +505,15 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
       const opId = Number(idStr.slice("op-".length));
       const op = data.operations.find((o) => o.id === opId);
       if (!op || !op.planned_start || !op.planned_finish) return;
-      const newStart = new Date(
+      const newStartDate = new Date(
         new Date(op.planned_start).getTime() + msDelta,
-      ).toISOString();
+      );
+      if (isPast(newStartDate)) {
+        toast.error("Can't drag the operation before the current time.");
+        return;
+      }
+      warnIfDropOutsideHours(newStartDate);
+      const newStart = newStartDate.toISOString();
       const newFinish = new Date(
         new Date(op.planned_finish).getTime() + msDelta,
       ).toISOString();
@@ -269,6 +529,26 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
       const moUuid = op.manufacturing_order?.uuid;
       if (!moUuid) return;
 
+      const snapshot = data;
+      // Optimistic: update this one op in place.
+      setData((cur) =>
+        cur
+          ? {
+              ...cur,
+              operations: cur.operations.map((o) =>
+                o.id === opId
+                  ? {
+                      ...o,
+                      planned_start: newStart,
+                      planned_finish: newFinish,
+                      workstation_group_id: newWsgId,
+                    }
+                  : o,
+              ),
+            }
+          : cur,
+      );
+
       startTransition(async () => {
         const res = await updateManufacturingOrderStepAction(moUuid, op.uuid, {
           planned_start: newStart,
@@ -281,17 +561,79 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
           router.refresh();
           await reload();
         } else {
+          setData(snapshot);
           toast.error(res.detail);
-          await reload();
         }
       });
     }
   }
 
-  const editingRow = useMemo(
-    () => moRows.find((r) => r.moUuid === editingMoUuid) ?? null,
-    [moRows, editingMoUuid],
-  );
+  // Turn the last-known cursor position into a calendar time. Returns
+  // null if the cursor never entered the canvas (drop landed back on
+  // the backlog or somewhere off-screen).
+  // Fire a warning toast when the BE reports the placed block
+  // spilled past available working windows. Lets the planner
+  // know "yes it's scheduled, but you're booking off-shift time"
+  // without blocking the drop (sometimes you really do need it).
+  function warnIfOutsideHours(seconds: number) {
+    if (seconds <= 0) return;
+    const hours = Math.round(seconds / 360) / 10;
+    toast.warning(
+      `Schedule includes ${hours}h outside working hours. Check the calendar before committing.`,
+    );
+  }
+
+  // True if `time` lands inside ANY working window in the response
+  // (we use the union across WSGs since most factories share
+  // warehouse hours — the BE walker does the same).
+  function isInsideWorkingHours(time: Date): boolean {
+    if (!data) return true;
+    const ms = time.getTime();
+    for (const grp of data.working_windows) {
+      for (const day of grp.days) {
+        for (const iv of day.intervals) {
+          const open = new Date(iv.open).getTime();
+          const close = new Date(iv.close).getTime();
+          if (ms >= open && ms < close) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Frontend pre-flight: don't even fire the request if the
+  // requested time is in the past. BE rejects too, but a toast
+  // before the round-trip is friendlier (no optimistic flash).
+  function isPast(time: Date): boolean {
+    return time.getTime() < Date.now();
+  }
+
+  function warnIfDropOutsideHours(time: Date) {
+    if (!isInsideWorkingHours(time)) {
+      toast.warning(
+        "Drop time is outside working hours. The schedule walker will move the block to the next available window.",
+      );
+    }
+  }
+
+  function cursorToScheduleTime(): Date | null {
+    const cursor = cursorRef.current;
+    const canvas = canvasRef.current;
+    if (!cursor || !canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    // Account for the row-label gutter — the grid columns inside
+    // each view start AFTER a sticky 14-16rem label column. We
+    // can't read that here without view-specific knowledge, so we
+    // clamp on the canvas left edge + use scrollLeft of the
+    // nearest scrolling parent. The label gutter is sticky inside
+    // the scrolling container, so as the user scrolls the column
+    // travels with them — the time axis still maps cleanly from
+    // the canvas's content-x.
+    const localX = cursor.x - rect.left + canvas.scrollLeft;
+    if (localX < 0) return null;
+    const ms = localX / scale.preset.pxPerMs;
+    return new Date(scale.rangeStart.getTime() + ms);
+  }
 
   // Navigation step depends on the zoom — prev/next moves by the
   // range's width so the next page shows the next 1/7/28 days.
@@ -305,129 +647,365 @@ export function ScheduleWorkspace({ sites, canEditSteps }: Props) {
   }
 
   return (
-    <section className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">Site</span>
-          <Select
-            value={String(siteId)}
-            onValueChange={(v) => setSiteId(Number(v))}
-          >
-            <SelectTrigger className="h-9 w-[18rem]">
-              <SelectValue placeholder="Pick a site" />
-            </SelectTrigger>
-            <SelectContent>
-              {sites.map((s) => (
-                <SelectItem key={s.id} value={String(s.id)}>
-                  {s.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      // Disable dnd-kit's auto-scroll: combined with the canvas's
+      // own overflow-auto it jerks the dragged block's transform
+      // mid-drag, which looks like the block teleporting off-cursor.
+      // The planner navigates the calendar with the on-screen
+      // controls; no need for drag-to-edge scrolling.
+      autoScroll={false}
+    >
+      <ScheduleScaleContext.Provider value={scale}>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* Sticky control bar */}
+          <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border/60 bg-card px-3 py-2 shadow-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-medium text-muted-foreground">
+                Site
+              </span>
+              <Select
+                value={String(siteId)}
+                onValueChange={(v) => setSiteId(Number(v))}
+              >
+                <SelectTrigger className="h-8 w-[14rem] text-xs">
+                  <SelectValue placeholder="Pick a site" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sites.map((s) => (
+                    <SelectItem key={s.id} value={String(s.id)}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-        <ViewPicker view={view} onChange={chooseView} />
+            <ViewPicker view={view} onChange={chooseView} />
+            <ZoomPicker zoom={zoom} onChange={chooseZoom} />
 
-        <ZoomPicker zoom={zoom} onChange={chooseZoom} />
+            <div className="ml-auto flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => stepRange(-1)}
+                aria-label="Previous range"
+              >
+                <ChevronLeft className="size-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={goToday}
+              >
+                Today
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => stepRange(1)}
+                aria-label="Next range"
+              >
+                <ChevronRight className="size-3.5" />
+              </Button>
+              <span className="ml-3 text-xs font-medium text-foreground">
+                {fmtRangeLabel(scale)}
+              </span>
+              {loading && (
+                <Loader2 className="ml-2 size-3.5 animate-spin text-muted-foreground" />
+              )}
+            </div>
+          </div>
 
-        <div className="ml-auto flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => stepRange(-1)}
-            aria-label="Previous range"
-          >
-            <ChevronLeft className="size-3.5" />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={goToday}
-          >
-            Today
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => stepRange(1)}
-            aria-label="Next range"
-          >
-            <ChevronRight className="size-3.5" />
-          </Button>
-          <span className="ml-3 text-sm font-medium text-foreground">
-            {fmtRangeLabel(scale)}
-          </span>
-          {loading && (
-            <Loader2 className="ml-2 size-3.5 animate-spin text-muted-foreground" />
+          {/* Body: backlog rail + scrollable canvas */}
+          <div className="flex min-h-0 flex-1">
+            <ScheduleBacklog
+              items={data?.backlog ?? []}
+              canEdit={canEditSteps}
+              company={company}
+            />
+
+            <CanvasArea
+              canvasRef={canvasRef}
+              activeDragId={activeDragId}
+            >
+              {!data ? (
+                <div className="m-6 rounded-md border border-border/60 bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
+                  {loading ? "Loading…" : "No data yet."}
+                </div>
+              ) : (
+                <div className="relative flex flex-1 flex-col p-2">
+                  {/* Always render the view's grid — even with zero
+                      rows the day axis + spacer cells are present so
+                      the user has a real drop target during drag and
+                      can see the time position before they let go. */}
+                  {view === "mo" && (
+                    <MOView
+                      data={data}
+                      rows={moRows}
+                      canEditSteps={canEditSteps}
+                    />
+                  )}
+                  {view === "workstation" &&
+                    (data.workstation_groups.length === 0 ? (
+                      <CanvasEmpty message="No workstation groups configured." />
+                    ) : (
+                      <WorkstationView
+                        data={data}
+                        canEditSteps={canEditSteps}
+                      />
+                    ))}
+                  {view === "project" && (
+                    <ProjectView
+                      data={data}
+                      rows={projectRows}
+                      canEditSteps={canEditSteps}
+                    />
+                  )}
+
+                  {/* Hint overlay when the active view has nothing
+                      scheduled — sits above the empty grid so the
+                      time axis stays visible behind it. */}
+                  {view === "mo" && moRows.length === 0 && (
+                    <DropHintOverlay
+                      message={
+                        activeDragId?.startsWith("backlog-")
+                          ? "Drop anywhere on the time axis to schedule."
+                          : "Drag an approved MO from the backlog onto the calendar."
+                      }
+                    />
+                  )}
+                  {view === "project" && projectRows.length === 0 && (
+                    <DropHintOverlay
+                      message={
+                        activeDragId?.startsWith("backlog-")
+                          ? "Drop anywhere on the time axis to schedule the project."
+                          : "Drag a project from the backlog onto the calendar."
+                      }
+                    />
+                  )}
+                </div>
+              )}
+            </CanvasArea>
+          </div>
+
+          {dragPreview && (
+            <DragPreviewGhost
+              cursorX={dragPreview.cursorX}
+              cursorY={dragPreview.cursorY}
+              durationSeconds={dragPreview.durationSeconds}
+              kind={dragPreview.kind}
+              scale={scale}
+              canvasRef={canvasRef}
+            />
           )}
         </div>
-      </div>
-
-      {!data ? (
-        <div className="rounded-md border border-border/60 bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
-          {loading ? "Loading…" : "No data yet."}
-        </div>
-      ) : (
-        <ScheduleScaleContext.Provider value={scale}>
-          <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-            {view === "mo" &&
-              (moRows.length === 0 ? (
-                <EmptyState message="No approved manufacturing orders scheduled in this range." />
-              ) : (
-                <MOView
-                  data={data}
-                  rows={moRows}
-                  canEditSteps={canEditSteps}
-                  onEdit={(uuid) => setEditingMoUuid(uuid)}
-                />
-              ))}
-            {view === "workstation" &&
-              (data.workstation_groups.length === 0 ? (
-                <EmptyState message="No workstation groups configured." />
-              ) : (
-                <WorkstationView
-                  data={data}
-                  canEditSteps={canEditSteps}
-                  onEdit={(uuid) => setEditingMoUuid(uuid)}
-                />
-              ))}
-            {view === "project" &&
-              (projectRows.length === 0 ? (
-                <EmptyState message="No active projects in this range." />
-              ) : (
-                <ProjectView
-                  data={data}
-                  rows={projectRows}
-                  canEditSteps={canEditSteps}
-                  onEdit={(uuid) => setEditingMoUuid(uuid)}
-                />
-              ))}
-          </DndContext>
-        </ScheduleScaleContext.Provider>
-      )}
-
-      {editingRow && data && (
-        <MODurationEditor
-          row={editingRow}
-          workstationGroups={data.workstation_groups}
-          onClose={() => setEditingMoUuid(null)}
-          onSaved={async () => {
-            setEditingMoUuid(null);
-            await reload();
-            router.refresh();
-          }}
-        />
-      )}
-    </section>
+      </ScheduleScaleContext.Provider>
+    </DndContext>
   );
 }
 
-function EmptyState({ message }: { message: string }) {
+/** Canvas wrapper — the brand-color glow during backlog drags is
+ *  driven entirely by `activeDragId`, not by useDroppable. We
+ *  deliberately do NOT make the canvas a dnd-kit droppable: when
+ *  combined with `overflow-auto`, dnd-kit's auto-scroll kicks in
+ *  during drag and jerks the transform of any block being moved,
+ *  which the user sees as the block teleporting off the cursor.
+ *  Drop coordinates are computed from cursor position regardless,
+ *  so no droppable is needed. */
+function CanvasArea({
+  canvasRef,
+  activeDragId,
+  children,
+}: {
+  canvasRef: React.MutableRefObject<HTMLDivElement | null>;
+  activeDragId: string | null;
+  children: React.ReactNode;
+}) {
+  const isBacklogDrag = activeDragId?.startsWith("backlog-") ?? false;
+
   return (
-    <div className="rounded-md border border-border/60 bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
+    <div
+      ref={canvasRef}
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1 flex-col overflow-auto bg-background transition-shadow",
+        isBacklogDrag &&
+          "shadow-[inset_0_0_0_2px_color-mix(in_oklab,var(--color-brand)_45%,transparent)]",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Return a new ProductionScheduleResponse with every operation
+ *  whose MO uuid is in `moUuids` shifted by `msDelta` milliseconds.
+ *  Used to drive the optimistic update — the BE applies the exact
+ *  same shift, so a clean refetch afterwards is a no-op. */
+function shiftOpsForMOs(
+  data: ProductionScheduleResponse,
+  moUuids: Set<string>,
+  msDelta: number,
+): ProductionScheduleResponse {
+  return {
+    ...data,
+    operations: data.operations.map((op) => {
+      const uuid = op.manufacturing_order?.uuid;
+      if (!uuid || !moUuids.has(uuid)) return op;
+      return {
+        ...op,
+        planned_start: op.planned_start
+          ? new Date(new Date(op.planned_start).getTime() + msDelta).toISOString()
+          : null,
+        planned_finish: op.planned_finish
+          ? new Date(new Date(op.planned_finish).getTime() + msDelta).toISOString()
+          : null,
+      };
+    }),
+  };
+}
+
+/** Walk `data.operations` to find every MO uuid whose chain root
+ *  (via parent_mo_id) is `rootMoId`. Used for optimistic project
+ *  shifts so we know which ops to move together. Mirrors the
+ *  rootOf walk in projectRowsFromOps. */
+function chainUuidsForRoot(
+  data: ProductionScheduleResponse,
+  rootMoId: number,
+): Set<string> {
+  const parentIds = new Map<number, number | null>();
+  const uuidById = new Map<number, string>();
+  for (const op of data.operations) {
+    const mo = op.manufacturing_order;
+    if (!mo) continue;
+    parentIds.set(mo.id, mo.parent_mo_id ?? null);
+    uuidById.set(mo.id, mo.uuid);
+  }
+
+  function rootOf(moId: number): number {
+    let cur = moId;
+    const seen = new Set<number>();
+    while (true) {
+      if (seen.has(cur)) return cur;
+      seen.add(cur);
+      const pid = parentIds.get(cur);
+      if (pid == null) return cur;
+      cur = pid;
+    }
+  }
+
+  const out = new Set<string>();
+  for (const [moId, uuid] of uuidById) {
+    if (rootOf(moId) === rootMoId) out.add(uuid);
+  }
+  return out;
+}
+
+/** Ghost preview that follows the cursor while a backlog item is
+ *  being dragged. Shows the block at its real width (durationSeconds
+ *  × scale.pxPerMs) anchored to the cursor's clientX so the planner
+ *  can see exactly which time-axis position they're targeting. Fixed
+ *  positioning so it floats above the calendar without interfering
+ *  with the canvas scroll. */
+function DragPreviewGhost({
+  cursorX,
+  cursorY,
+  durationSeconds,
+  kind,
+  scale,
+  canvasRef,
+}: {
+  cursorX: number;
+  cursorY: number;
+  durationSeconds: number;
+  kind: "project" | "mo";
+  scale: ReturnType<typeof buildTimeScale>;
+  canvasRef: React.MutableRefObject<HTMLDivElement | null>;
+}) {
+  // Don't render until we have a real cursor — otherwise the ghost
+  // appears glued to the top-left of the viewport for one frame
+  // before the first pointer-move event lands.
+  if (cursorX <= 0 || cursorY <= 0) return null;
+
+  const widthPx = Math.max(durationSeconds * scale.preset.pxPerMs, 24);
+  const heightPx = 44;
+
+  // Compute the proposed drop time so we can label the ghost with
+  // something readable ("Mon · 14:30") — same math as
+  // cursorToScheduleTime() in the workspace.
+  let timeLabel = "";
+  const canvas = canvasRef.current;
+  if (canvas) {
+    const rect = canvas.getBoundingClientRect();
+    if (cursorX >= rect.left && cursorX <= rect.right) {
+      const localX = cursorX - rect.left + canvas.scrollLeft;
+      const ms = localX / scale.preset.pxPerMs;
+      const dt = new Date(scale.rangeStart.getTime() + ms);
+      timeLabel = dt.toLocaleString(undefined, {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        "pointer-events-none fixed z-[100] rounded-md border-2 border-dashed shadow-lg",
+        kind === "project"
+          ? "border-indigo-500 bg-indigo-100/60"
+          : "border-brand bg-brand/15",
+      )}
+      style={{
+        left: cursorX,
+        top: cursorY - heightPx / 2,
+        width: widthPx,
+        height: heightPx,
+      }}
+    >
+      <div className="flex h-full items-center justify-between gap-2 px-2 text-[10px] font-semibold">
+        <span
+          className={cn(
+            "truncate uppercase tracking-wide",
+            kind === "project" ? "text-indigo-700" : "text-brand",
+          )}
+        >
+          {kind === "project" ? "Project" : "MO"}
+        </span>
+        {timeLabel && (
+          <span className="shrink-0 rounded bg-card px-1 py-0.5 text-[10px] font-medium text-foreground shadow-sm">
+            {timeLabel}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Floating hint banner shown when the current view has no rows.
+ *  Sits inside the canvas's `relative` wrapper so it stays
+ *  centered over the empty grid without blocking drop events. */
+function DropHintOverlay({ message }: { message: string }) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-16 z-20 flex justify-center">
+      <div className="max-w-md rounded-md border border-dashed border-border/70 bg-card/90 px-4 py-2 text-center text-xs text-muted-foreground shadow-sm backdrop-blur">
+        {message}
+      </div>
+    </div>
+  );
+}
+
+function CanvasEmpty({ message }: { message: string }) {
+  return (
+    <div className="rounded-md border border-dashed border-border/60 bg-card/40 px-4 py-10 text-center text-sm text-muted-foreground">
       {message}
     </div>
   );

@@ -27,11 +27,12 @@ const DEFAULT_SORT: SortSpec = { field: "inserted_at", direction: "desc" };
 
 const STATUS_TONE: Record<
   ManufacturingOrderStatus,
-  "muted" | "amber" | "emerald" | "destructive" | "indigo"
+  "muted" | "amber" | "emerald" | "destructive" | "indigo" | "sky"
 > = {
   draft: "muted",
   prepared: "amber",
   approved: "indigo",
+  scheduled: "sky",
   in_progress: "amber",
   completed: "emerald",
   cancelled: "destructive",
@@ -41,6 +42,7 @@ const STATUS_LABEL: Record<ManufacturingOrderStatus, string> = {
   draft: "Draft",
   prepared: "Awaiting approval",
   approved: "Approved",
+  scheduled: "Scheduled",
   in_progress: "In progress",
   completed: "Completed",
   cancelled: "Cancelled",
@@ -54,6 +56,7 @@ const FILTERS: FilterDef[] = [
       { label: "Draft", value: "draft" },
       { label: "Awaiting approval", value: "prepared" },
       { label: "Approved", value: "approved" },
+      { label: "Scheduled", value: "scheduled" },
       { label: "In progress", value: "in_progress" },
       { label: "Completed", value: "completed" },
       { label: "Cancelled", value: "cancelled" },
@@ -161,23 +164,21 @@ export function ManufacturingOrdersLedger({ initialPage }: Props) {
       },
       {
         id: "start_at",
-        header: "Start",
-        sortField: "start_at",
+        header: "Scheduled",
         widthClassName: "w-32",
         cell: (m) => (
           <span className="text-xs text-muted-foreground">
-            {formatCompanyDate(m.start_at, prefs)}
+            {m.start_at ? formatCompanyDate(m.start_at, prefs) : "—"}
           </span>
         ),
       },
       {
         id: "finish_at",
-        header: "Finish",
-        sortField: "finish_at",
+        header: "Finishes",
         widthClassName: "w-32",
         cell: (m) => (
           <span className="text-xs text-muted-foreground">
-            {formatCompanyDate(m.finish_at, prefs)}
+            {m.finish_at ? formatCompanyDate(m.finish_at, prefs) : "—"}
           </span>
         ),
       },

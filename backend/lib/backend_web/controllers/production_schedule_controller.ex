@@ -42,6 +42,8 @@ defmodule BackendWeb.ProductionScheduleController do
       working_windows =
         Production.resolve_working_windows(groups, warehouse, company, from_date, to_date)
 
+      backlog = Production.list_backlog_manufacturing_orders(actor, warehouse)
+
       json(conn, %{
         warehouse: %{
           id: warehouse.id,
@@ -53,7 +55,8 @@ defmodule BackendWeb.ProductionScheduleController do
         range: %{from: from_date, to: to_date},
         workstation_groups: Enum.map(groups, &Payloads.workstation_group_summary/1),
         operations: Enum.map(operations, &Payloads.schedule_operation/1),
-        working_windows: Enum.map(working_windows, &windows_payload/1)
+        working_windows: Enum.map(working_windows, &windows_payload/1),
+        backlog: Enum.map(backlog, &Payloads.backlog_mo/1)
       })
     else
       {:error, :warehouse_required} ->

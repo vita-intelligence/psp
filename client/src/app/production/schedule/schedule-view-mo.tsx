@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ExternalLink } from "lucide-react";
+import {
+  AlertTriangle,
+  ExternalLink,
+} from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import type {
@@ -16,59 +19,65 @@ import {
   rangeDays as rangeDaysList,
   useTimeScale,
   type DayWindow,
+  type TimeScale,
 } from "./schedule-shared";
+
+// Layout constants — kept in this file so every view stacks
+// consistently. Day header sticks to the top, label gutter
+// sticks to the left, every other layer derives from these.
+export const DAY_HEADER_HEIGHT_PX = 56;
+export const LABEL_GUTTER_PX = 224; // 14rem — used by all views
 
 export interface MORow {
   moId: number;
   moUuid: string;
   moCode: string | null;
   itemName: string;
+  qty: string;
   status: string;
   start: string;
   finish: string;
-  qty: string;
   steps: ScheduleOperation[];
 }
 
 export function rowsFromOps(operations: ScheduleOperation[]): MORow[] {
-  const byMo = new Map<number, ScheduleOperation[]>();
+  const grouped = new Map<number, MORow>();
   for (const op of operations) {
-    const k = op.manufacturing_order_id;
-    const arr = byMo.get(k) ?? [];
-    arr.push(op);
-    byMo.set(k, arr);
-  }
+    const mo = op.manufacturing_order;
+    if (!mo || !op.planned_start || !op.planned_finish) continue;
 
-  return Array.from(byMo.entries())
-    .map(([_, steps]) => {
-      const sorted = [...steps].sort(
-        (a, b) =>
-          new Date(a.planned_start ?? 0).getTime() -
-          new Date(b.planned_start ?? 0).getTime(),
-      );
-      const first = sorted[0];
-      const last = sorted[sorted.length - 1];
-      const mo = first?.manufacturing_order;
-      return {
-        moId: mo?.id ?? 0,
-        moUuid: mo?.uuid ?? "",
-        moCode: mo?.code ?? null,
-        itemName: mo?.item?.name ?? "—",
-        status: mo?.status ?? "draft",
-        start: first?.planned_start ?? "",
-        finish: last?.planned_finish ?? "",
-        qty: mo?.quantity ?? "0",
-        steps: sorted,
-      } as MORow;
-    })
-    .filter((r) => r.start && r.finish)
-    .sort(
-      (a, b) =>
-        new Date(a.start).getTime() - new Date(b.start).getTime() ||
-        a.moId - b.moId,
-    );
+    const cur = grouped.get(mo.id);
+    if (!cur) {
+      grouped.set(mo.id, {
+        moId: mo.id,
+        moUuid: mo.uuid,
+        moCode: mo.code,
+        itemName: mo.item?.name ?? "—",
+        qty: mo.quantity,
+        status: mo.status,
+        start: op.planned_start,
+        finish: op.planned_finish,
+        steps: [op],
+      });
+    } else {
+      cur.steps.push(op);
+      if (new Date(op.planned_start).getTime() < new Date(cur.start).getTime()) {
+        cur.start = op.planned_start;
+      }
+      if (new Date(op.planned_finish).getTime() > new Date(cur.finish).getTime()) {
+        cur.finish = op.planned_finish;
+      }
+    }
+  }
+  return Array.from(grouped.values()).sort(
+    (a, b) =>
+      new Date(a.start).getTime() - new Date(b.start).getTime() ||
+      a.moId - b.moId,
+  );
 }
 
+/** Build per-day windows for the SITE (warehouse-level). Used by
+ *  MO + project views which don't differentiate per-WSG hours. */
 export function dayWindowsForSite(
   windows: ProductionScheduleResponse["working_windows"],
   days: Date[],
@@ -88,200 +97,22 @@ export function dayWindowsForSite(
 
     const allHoliday =
       groupDays.length > 0 && groupDays.every((g) => g.holiday_label != null);
-
     const intervals = groupDays.flatMap((g) => g.intervals);
     const holiday_label = allHoliday
       ? (groupDays.find((g) => g.holiday_label)?.holiday_label ?? null)
       : null;
-
     return { date: dIso, holiday_label, intervals };
   });
 }
 
-interface MOViewProps {
-  data: ProductionScheduleResponse;
-  rows: MORow[];
-  canEditSteps: boolean;
-  onEdit: (moUuid: string) => void;
-}
+// ────────────────────────────────────────────────────────────────
+// Shared overlays — positioned by the parent (no grid placement)
+// ────────────────────────────────────────────────────────────────
 
-export function MOView({
-  data,
-  rows,
-  canEditSteps,
-  onEdit,
-}: MOViewProps) {
-  const scale = useTimeScale();
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  // Auto-scroll to roughly 06:00 on the first day in the range — most
-  // production floors start there. Recomputes when zoom/range changes.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (scale.zoom === "month") {
-      el.scrollLeft = 0;
-      return;
-    }
-    const sixAm = new Date(scale.rangeStart);
-    sixAm.setUTCHours(6, 0, 0, 0);
-    el.scrollLeft = Math.max(0, scale.pxAt(sixAm) - 24);
-  }, [scale]);
-
-  const days = useMemo(() => rangeDaysList(scale), [scale]);
-  const dayWindows = useMemo(
-    () => dayWindowsForSite(data.working_windows, days),
-    [data.working_windows, days],
-  );
-
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm">
-      <div className="overflow-x-auto" ref={scrollRef}>
-        <div
-          className="relative grid"
-          style={{ gridTemplateColumns: `16rem ${scale.rangeWidthPx}px` }}
-        >
-          <CornerLabel>Manufacturing order</CornerLabel>
-          <DayHeaderStrip days={days} dayWindows={dayWindows} />
-
-          {rows.map((row) => (
-            <MOrow
-              key={row.moId}
-              row={row}
-              dayWindows={dayWindows}
-              canEditSteps={canEditSteps}
-              workstationGroups={data.workstation_groups}
-              onEdit={onEdit}
-            />
-          ))}
-        </div>
-      </div>
-      <Legend>
-        Drag a block to reschedule. Click to edit step durations.
-      </Legend>
-    </div>
-  );
-}
-
-export function CornerLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="sticky left-0 z-30 border-b border-r border-border/60 bg-card px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground shadow-[1px_0_0_0_rgba(0,0,0,0.06)]">
-      {children}
-    </div>
-  );
-}
-
-export function DayHeaderStrip({
-  days,
-  dayWindows,
-}: {
-  days: Date[];
-  dayWindows: DayWindow[];
-}) {
-  const scale = useTimeScale();
-
-  return (
-    <div
-      className="relative h-12 border-b border-border/60 bg-muted"
-      style={{ width: scale.rangeWidthPx }}
-    >
-      {/* Day boundaries */}
-      {days.map((d) => {
-        const left = scale.pxAt(d);
-        const next = new Date(d);
-        next.setUTCDate(next.getUTCDate() + 1);
-        const right = scale.pxAt(next);
-        const width = right - left;
-        const { primary, secondary } = dayLabel(d, scale.zoom);
-        const window = dayWindows.find((w) => w.date === isoDate(d));
-
-        return (
-          <div
-            key={d.toISOString()}
-            className={cn(
-              "absolute top-0 bottom-0 border-r border-border/60 px-2 py-1.5",
-              window?.holiday_label && "bg-destructive/10",
-            )}
-            style={{ left, width }}
-          >
-            <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {primary}
-              {secondary && (
-                <span className="ml-1 font-normal text-muted-foreground/70">
-                  · {secondary}
-                </span>
-              )}
-            </p>
-            {window?.holiday_label && (
-              <p className="mt-0.5 inline-flex items-center gap-1 truncate text-[10px] font-medium text-destructive">
-                <AlertTriangle className="size-2.5" />
-                {window.holiday_label}
-              </p>
-            )}
-          </div>
-        );
-      })}
-
-      {/* Hour ticks inside each day, only when zoom is fine enough */}
-      {scale.zoom === "day" && (
-        <HourTicks topOffset={20} stride={3 * 3600 * 1000} />
-      )}
-    </div>
-  );
-}
-
-/** Renders text ticks every `stride` ms along the day-header strip,
- *  positioned by scale.pxAt(). Used only in Day zoom (hours labels). */
-function HourTicks({
-  topOffset,
-  stride,
-}: {
-  topOffset: number;
-  stride: number;
-}) {
-  const scale = useTimeScale();
-  const ticks: { left: number; label: string }[] = [];
-  for (
-    let t = scale.rangeStart.getTime();
-    t < scale.rangeEnd.getTime();
-    t += stride
-  ) {
-    const d = new Date(t);
-    const label = d
-      .toISOString()
-      .slice(11, 16); // HH:MM
-    ticks.push({ left: scale.pxAt(d), label });
-  }
-  return (
-    <>
-      {ticks.map((t) => (
-        <span
-          key={t.left}
-          className="absolute font-mono text-[9px] text-muted-foreground/70"
-          style={{ left: t.left + 2, top: topOffset }}
-        >
-          {t.label}
-        </span>
-      ))}
-    </>
-  );
-}
-
-export function Legend({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">
-      <span className="inline-flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-sm bg-emerald-200 ring-1 ring-inset ring-emerald-300" />
-        Working hours
-      </span>
-      <span className="inline-flex items-center gap-1.5">
-        <span className="inline-block size-2 rounded-sm bg-destructive/20 ring-1 ring-inset ring-destructive/30" />
-        Holiday / closed
-      </span>
-      <span className="text-[11px] text-muted-foreground">{children}</span>
-    </div>
-  );
-}
-
+/** Green working-hours bands + gray closed-time stripes for every
+ *  day in the visible range. Renders absolute children that fill
+ *  their nearest positioned ancestor; place inside a div sized to
+ *  `rangeWidthPx` × full row stack height. */
 export function WorkingHoursOverlay({
   dayWindows,
 }: {
@@ -301,7 +132,7 @@ export function WorkingHoursOverlay({
           return (
             <div
               key={day.date}
-              className="absolute top-0 bottom-0 bg-destructive/[0.04]"
+              className="pointer-events-none absolute top-0 bottom-0 bg-destructive/[0.04]"
               style={{
                 left: dayLeft,
                 width: dayWidth,
@@ -311,36 +142,52 @@ export function WorkingHoursOverlay({
             />
           );
         }
-        return day.intervals.map((iv, ii) => {
-          const left = scale.pxAt(iv.open);
-          const width = scale.pxAt(iv.close) - left;
-          if (width <= 0) return null;
-          return (
+
+        // Closed-time base + green working-hour bands on top.
+        return (
+          <div key={day.date} className="pointer-events-none">
             <div
-              key={`${day.date}-${ii}`}
-              className="absolute top-0 bottom-0 bg-emerald-50/60 dark:bg-emerald-950/15"
-              style={{ left, width }}
+              className="absolute top-0 bottom-0 bg-muted/25"
+              style={{
+                left: dayLeft,
+                width: dayWidth,
+                backgroundImage:
+                  "repeating-linear-gradient(135deg, transparent 0 6px, rgba(100,116,139,0.08) 6px 12px)",
+              }}
             />
-          );
-        });
+            {day.intervals.map((iv, ii) => {
+              const left = scale.pxAt(iv.open);
+              const width = scale.pxAt(iv.close) - left;
+              if (width <= 0) return null;
+              return (
+                <div
+                  key={`${day.date}-${ii}`}
+                  className="absolute top-0 bottom-0 bg-emerald-50/80 dark:bg-emerald-950/20"
+                  style={{ left, width }}
+                />
+              );
+            })}
+          </div>
+        );
       })}
     </>
   );
 }
 
+/** Faint vertical lines at every minor tick of the time scale.
+ *  Place inside the same absolute container as WorkingHoursOverlay. */
 export function Gridlines() {
   const scale = useTimeScale();
   const lines: { left: number; major: boolean }[] = [];
-
   for (
     let t = scale.rangeStart.getTime();
     t <= scale.rangeEnd.getTime();
     t += scale.preset.minorTickMs
   ) {
-    const major = (t - scale.rangeStart.getTime()) % scale.preset.majorTickMs === 0;
+    const major =
+      (t - scale.rangeStart.getTime()) % scale.preset.majorTickMs === 0;
     lines.push({ left: scale.pxAt(new Date(t)), major });
   }
-
   return (
     <>
       {lines.map((l, i) => (
@@ -357,57 +204,454 @@ export function Gridlines() {
   );
 }
 
-interface MOrowProps {
-  row: MORow;
-  dayWindows: DayWindow[];
-  canEditSteps: boolean;
-  workstationGroups: ProductionScheduleResponse["workstation_groups"];
-  onEdit: (moUuid: string) => void;
+function useNowEveryMinute(): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return now;
 }
 
-function MOrow({
-  row,
-  dayWindows,
-  canEditSteps,
-  workstationGroups,
-  onEdit,
-}: MOrowProps) {
+/** Striped gray overlay covering the PAST portion of the visible
+ *  range. Place inside the same absolute container as the working
+ *  hours / gridlines overlay (NOT its own grid item). */
+export function PastZoneOverlay() {
   const scale = useTimeScale();
+  const now = useNowEveryMinute();
+  const nowMs = now.getTime();
+  const startMs = scale.rangeStart.getTime();
+  if (nowMs <= startMs) return null;
+  const pastWidth = Math.min(scale.pxAt(now), scale.rangeWidthPx);
+  return (
+    <div
+      className="pointer-events-none absolute top-0 bottom-0 left-0 bg-muted/15"
+      style={{
+        width: pastWidth,
+        backgroundImage:
+          "repeating-linear-gradient(45deg, transparent 0 8px, rgba(100,116,139,0.10) 8px 14px)",
+      }}
+    />
+  );
+}
+
+/** Vertical NOW line + "NOW" pill. Renders on its OWN absolute
+ *  layer so callers can position it at a high z-index (above the
+ *  day header). */
+export function NowLineMarker() {
+  const scale = useTimeScale();
+  const now = useNowEveryMinute();
+  const nowMs = now.getTime();
+  const startMs = scale.rangeStart.getTime();
+  const endMs = scale.rangeEnd.getTime();
+  if (nowMs <= startMs || nowMs >= endMs) return null;
+  const left = scale.pxAt(now);
   return (
     <>
       <div
-        className="sticky left-0 z-20 border-b border-r border-border/60 bg-card px-3 py-2 shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
-        style={{ height: ROW_HEIGHT_PX }}
+        className="pointer-events-none absolute top-0 bottom-0 w-px bg-destructive"
+        style={{ left }}
+      />
+      {/* Pill at the top of the day header, anchored to the right
+          of the NOW line so it doesn't bleed into the sticky label
+          column. Sits at z-40 (the NOW container) — sticky labels
+          + corner are z-50, so when the user scrolls horizontally
+          and "now" drifts behind the labels, the labels cover the
+          pill cleanly. */}
+      <div
+        className="pointer-events-none absolute top-1 ml-0.5 whitespace-nowrap rounded bg-destructive px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-destructive-foreground shadow"
+        style={{ left }}
       >
-        <div className="flex h-full min-w-0 flex-col justify-center">
-          <Link
-            href={`/production/manufacturing-orders/${row.moUuid}`}
-            className="inline-flex min-w-0 items-center gap-1 font-mono text-[10px] font-semibold text-brand hover:underline"
-            title={row.moCode ?? `MO #${row.moId}`}
+        Now
+      </div>
+    </>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Day header strip — sticky top, draws inside the time-axis area
+// ────────────────────────────────────────────────────────────────
+
+export function DayHeaderStrip({
+  days,
+  dayWindows,
+}: {
+  days: Date[];
+  dayWindows: DayWindow[];
+}) {
+  const scale = useTimeScale();
+  return (
+    <div
+      className="relative bg-muted"
+      style={{ width: scale.rangeWidthPx, height: DAY_HEADER_HEIGHT_PX }}
+    >
+      {days.map((d) => {
+        const left = scale.pxAt(d);
+        const next = new Date(d);
+        next.setUTCDate(next.getUTCDate() + 1);
+        const width = scale.pxAt(next) - left;
+        const { primary, secondary } = dayLabel(d, scale.zoom);
+        const win = dayWindows.find((w) => w.date === isoDate(d));
+        const isDayOff =
+          !win?.holiday_label && (win?.intervals.length ?? 0) === 0;
+        return (
+          <div
+            key={d.toISOString()}
+            className={cn(
+              "absolute top-0 bottom-0 border-r border-border/60 px-2 py-1.5",
+              win?.holiday_label && "bg-destructive/10",
+              isDayOff && "bg-muted/40",
+            )}
+            style={{ left, width }}
           >
-            <span className="truncate">{row.moCode ?? `MO #${row.moId}`}</span>
-            <ExternalLink className="size-2.5 shrink-0" />
-          </Link>
-          <p className="truncate text-xs" title={row.itemName}>
-            {row.itemName}
-          </p>
+            <p className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {primary}
+              {secondary && (
+                <span className="ml-1 font-normal text-muted-foreground/70">
+                  · {secondary}
+                </span>
+              )}
+            </p>
+            {win?.holiday_label && (
+              <p className="mt-0.5 inline-flex items-center gap-1 truncate text-[10px] font-medium text-destructive">
+                <AlertTriangle className="size-2.5" />
+                {win.holiday_label}
+              </p>
+            )}
+          </div>
+        );
+      })}
+      {scale.zoom === "day" && (
+        <HourTicks topOffset={20} stride={3 * 3600 * 1000} />
+      )}
+    </div>
+  );
+}
+
+function HourTicks({
+  topOffset,
+  stride,
+}: {
+  topOffset: number;
+  stride: number;
+}) {
+  const scale = useTimeScale();
+  const ticks: { left: number; label: string }[] = [];
+  for (
+    let t = scale.rangeStart.getTime();
+    t < scale.rangeEnd.getTime();
+    t += stride
+  ) {
+    const d = new Date(t);
+    if (d.getUTCMinutes() !== 0) continue;
+    ticks.push({
+      left: scale.pxAt(d),
+      label: d
+        .toISOString()
+        .slice(11, 16),
+    });
+  }
+  return (
+    <>
+      {ticks.map((tk, i) => (
+        <span
+          key={i}
+          className="absolute text-[10px] tabular-nums text-muted-foreground/70"
+          style={{ left: tk.left + 2, top: topOffset }}
+        >
+          {tk.label}
+        </span>
+      ))}
+    </>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Legend
+// ────────────────────────────────────────────────────────────────
+
+export function Legend({ children }: { children?: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-t border-border/60 bg-card px-3 py-2 text-[11px] text-muted-foreground">
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block size-2 rounded-sm bg-emerald-200 ring-1 ring-inset ring-emerald-300" />
+        Working hours
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block size-2 rounded-sm bg-destructive/20 ring-1 ring-inset ring-destructive/30" />
+        Holiday
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block size-2 rounded-sm bg-muted ring-1 ring-inset ring-border" />
+        Day off
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="inline-block h-2 w-px bg-destructive" />
+        Now (past is locked)
+      </span>
+      {children && (
+        <span className="text-[11px] text-muted-foreground">{children}</span>
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Reusable calendar shell
+// ────────────────────────────────────────────────────────────────
+
+/** The shared layout for every calendar view. Renders:
+ *  - sticky day header at top with sticky corner label
+ *  - background overlays (working hours + past zone) anchored
+ *    behind the rows
+ *  - the rows themselves (flex-row layout per row)
+ *  - NOW line painted on the very top layer
+ *  - footer legend
+ *
+ *  No CSS Grid — each row is a self-contained flex container with
+ *  a sticky-left label and a flex-1 content area. Overlays are
+ *  absolute siblings of the row stack so they never fight with
+ *  grid auto-placement again. */
+export function CalendarShell({
+  cornerLabel,
+  days,
+  dayWindows,
+  rowLabelWidth = LABEL_GUTTER_PX,
+  scrollRef,
+  legend,
+  children,
+}: {
+  cornerLabel: React.ReactNode;
+  days: Date[];
+  dayWindows: DayWindow[];
+  rowLabelWidth?: number;
+  scrollRef?: React.RefObject<HTMLDivElement | null>;
+  legend?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const scale = useTimeScale();
+  const totalWidth = rowLabelWidth + scale.rangeWidthPx;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-card shadow-sm">
+      {/* Outer card uses relative positioning so the corner cell
+          can be hoisted OUTSIDE the scroll container as an overlay.
+          The corner needs its own stacking context above the NOW
+          container — nested z-index inside the day header's z-30
+          context can't escape that context, which is why earlier
+          attempts had the NOW pill bleeding over the corner. */}
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          className="absolute inset-0 overflow-auto"
+        >
+          <div
+            className="relative flex flex-col bg-card"
+            style={{ width: totalWidth, minHeight: "100%" }}
+          >
+            {/* Layer 0 — background overlays. Anchored under the
+                day header, behind everything else via DOM order. */}
+            <div
+              className="pointer-events-none absolute"
+              style={{
+                top: DAY_HEADER_HEIGHT_PX,
+                left: rowLabelWidth,
+                width: scale.rangeWidthPx,
+                bottom: 0,
+              }}
+            >
+              <WorkingHoursOverlay dayWindows={dayWindows} />
+              <Gridlines />
+              <PastZoneOverlay />
+            </div>
+
+            {/* Layer 30 — sticky day header. Empty transparent
+                spacer where the corner overlay will sit on top. */}
+            <div
+              className="sticky top-0 z-30 flex border-b border-border/60 bg-muted"
+              style={{ height: DAY_HEADER_HEIGHT_PX }}
+            >
+              <div
+                className="shrink-0"
+                style={{ width: rowLabelWidth }}
+                aria-hidden
+              />
+              <DayHeaderStrip days={days} dayWindows={dayWindows} />
+            </div>
+
+            {/* Layer 10 — rows. Each row hosts a sticky-left
+                label and a flex-1 content area. */}
+            {children}
+
+            {/* Tail spacer — flex-1 row that fills the rest of the
+                vertical space. Its left cell carries the same
+                sticky bg-card as the row labels, so the white
+                gutter continues to the bottom of the calendar. */}
+            <div className="flex flex-1">
+              <div
+                className="sticky left-0 z-50 shrink-0 border-r border-border/60 bg-card shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
+                style={{ width: rowLabelWidth }}
+              />
+              <div className="flex-1" />
+            </div>
+
+            {/* Layer 40 — NOW line + pill (inside scroll, scrolls
+                with the time axis). pointer-events-none so drag
+                events reach the blocks underneath. */}
+            <div
+              className="pointer-events-none absolute"
+              style={{
+                top: 0,
+                left: rowLabelWidth,
+                width: scale.rangeWidthPx,
+                bottom: 0,
+                zIndex: 40,
+              }}
+            >
+              <NowLineMarker />
+            </div>
+          </div>
+        </div>
+
+        {/* Corner cell — OVERLAY outside the scroll container.
+            Always sits at top-left of the card. Doesn't scroll.
+            Lives in the outer card's stacking context, so it
+            paints above everything inside the scroll — including
+            the NOW container's z-40 pill that drifts into the
+            label gutter as the user scrolls horizontally. */}
+        <div
+          className="absolute top-0 left-0 z-50 flex border-b border-r border-border/60 bg-card shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
+          style={{
+            width: rowLabelWidth,
+            height: DAY_HEADER_HEIGHT_PX,
+          }}
+        >
+          <div className="flex h-full items-center px-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {cornerLabel}
+          </div>
         </div>
       </div>
 
+      {legend ?? <Legend />}
+    </div>
+  );
+}
+
+/** Single calendar row — sticky-left label + flex-1 content area.
+ *  Children render inside the content area (typically blocks). */
+export function CalendarRow({
+  labelWidth = LABEL_GUTTER_PX,
+  height,
+  label,
+  contentRef,
+  contentClassName,
+  children,
+}: {
+  labelWidth?: number;
+  height: number;
+  label: React.ReactNode;
+  contentRef?: React.RefCallback<HTMLDivElement>;
+  contentClassName?: string;
+  children?: React.ReactNode;
+}) {
+  const scale = useTimeScale();
+  return (
+    <div className="flex border-b border-border/60" style={{ height }}>
+      {/* z-50 so the sticky label always covers the NOW line +
+          past-zone (z-40) when the user scrolls horizontally and
+          the NOW container's anchored position drifts into the
+          left gutter. */}
       <div
-        className="relative border-b border-border/60"
-        style={{ width: scale.rangeWidthPx, height: ROW_HEIGHT_PX }}
+        className="sticky left-0 z-50 shrink-0 border-r border-border/60 bg-card shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
+        style={{ width: labelWidth }}
       >
-        <WorkingHoursOverlay dayWindows={dayWindows} />
-        <Gridlines />
-        <MOblock
-          row={row}
-          canEditSteps={canEditSteps}
-          workstationGroups={workstationGroups}
-          onEdit={onEdit}
-        />
+        {label}
       </div>
-    </>
+      <div
+        ref={contentRef}
+        className={cn("relative shrink-0", contentClassName)}
+        style={{ width: scale.rangeWidthPx, height }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// MO view
+// ────────────────────────────────────────────────────────────────
+
+interface MOViewProps {
+  data: ProductionScheduleResponse;
+  rows: MORow[];
+  canEditSteps: boolean;
+}
+
+export function MOView({ data, rows, canEditSteps }: MOViewProps) {
+  const scale = useTimeScale();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll to the working-hours portion of the day on first
+  // render so the operator isn't staring at 00:00 dead time.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (scale.zoom === "month") {
+      el.scrollLeft = 0;
+      return;
+    }
+    const sixAm = new Date(scale.rangeStart);
+    sixAm.setUTCHours(6, 0, 0, 0);
+    el.scrollLeft = Math.max(0, scale.pxAt(sixAm) - 24);
+  }, [scale]);
+
+  const days = useMemo(() => rangeDaysList(scale), [scale]);
+  const dayWindows = useMemo(
+    () => dayWindowsForSite(data.working_windows, days),
+    [data.working_windows, days],
+  );
+
+  return (
+    <CalendarShell
+      cornerLabel="Manufacturing order"
+      days={days}
+      dayWindows={dayWindows}
+      scrollRef={scrollRef}
+      legend={<Legend>Drag a block to reschedule.</Legend>}
+    >
+      {rows.map((row) => (
+        <CalendarRow
+          key={row.moId}
+          height={ROW_HEIGHT_PX}
+          label={<MORowLabel row={row} />}
+        >
+          <MOblock
+            row={row}
+            canEditSteps={canEditSteps}
+            workstationGroups={data.workstation_groups}
+          />
+        </CalendarRow>
+      ))}
+    </CalendarShell>
+  );
+}
+
+function MORowLabel({ row }: { row: MORow }) {
+  return (
+    <div className="flex h-full min-w-0 flex-col justify-center px-3 py-2">
+      <Link
+        href={`/production/manufacturing-orders/${row.moUuid}`}
+        className="inline-flex min-w-0 items-center gap-1 font-mono text-[10px] font-semibold text-brand hover:underline"
+        title={row.moCode ?? `MO #${row.moId}`}
+      >
+        <span className="truncate">{row.moCode ?? `MO #${row.moId}`}</span>
+        <ExternalLink className="size-2.5 shrink-0" />
+      </Link>
+      <p className="truncate text-xs" title={row.itemName}>
+        {row.itemName}
+      </p>
+    </div>
   );
 }
 
@@ -415,61 +659,36 @@ interface MOblockProps {
   row: MORow;
   canEditSteps: boolean;
   workstationGroups: ProductionScheduleResponse["workstation_groups"];
-  onEdit: (moUuid: string) => void;
 }
 
-function MOblock({
-  row,
-  canEditSteps,
-  workstationGroups,
-  onEdit,
-}: MOblockProps) {
-  // Hooks before any early returns — React enforces hook order.
+function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
   const scale = useTimeScale();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `mo-${row.moUuid}`,
       disabled: !canEditSteps,
     });
-  const dragMoved = useRef(false);
 
   const startMs = new Date(row.start).getTime();
   const endMs = new Date(row.finish).getTime();
-  const rangeStartMs = scale.rangeStart.getTime();
-  const rangeEndMs = scale.rangeEnd.getTime();
+  if (endMs <= scale.rangeStart.getTime() || startMs >= scale.rangeEnd.getTime())
+    return null;
 
-  if (endMs <= rangeStartMs || startMs >= rangeEndMs) return null;
-
-  const visibleStart = Math.max(startMs, rangeStartMs);
-  const visibleEnd = Math.min(endMs, rangeEndMs);
+  const visibleStart = Math.max(startMs, scale.rangeStart.getTime());
+  const visibleEnd = Math.min(endMs, scale.rangeEnd.getTime());
   const left = scale.pxAt(new Date(visibleStart));
   const width = Math.max(scale.pxAt(new Date(visibleEnd)) - left, 48);
-
   const totalDurationMs = endMs - startMs;
 
   const dragStyle: React.CSSProperties = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : {};
-
   const wsgColor = (id: number | null) =>
     workstationGroups.find((g) => g.id === id)?.color ?? "var(--brand)";
-
   const statusColor =
     row.status === "in_progress"
-      ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30"
-      : "border-indigo-300 bg-indigo-50 dark:bg-indigo-950/30";
-
-  function onPointerDownCapture() {
-    dragMoved.current = false;
-  }
-  function onPointerMoveCapture(e: React.PointerEvent) {
-    if (e.buttons === 1) dragMoved.current = true;
-  }
-  function onClick(e: React.MouseEvent) {
-    if (dragMoved.current) return;
-    e.stopPropagation();
-    onEdit(row.moUuid);
-  }
+      ? "border-amber-500 bg-amber-100/70 dark:bg-amber-950/30"
+      : "border-indigo-400 bg-indigo-100/70 dark:bg-indigo-950/30";
 
   return (
     <div
@@ -484,15 +703,15 @@ function MOblock({
         ...dragStyle,
       }}
       className={cn(
-        "group absolute select-none overflow-hidden rounded-md border text-[11px] shadow-sm transition-shadow",
+        "absolute z-10 select-none overflow-hidden rounded-md border-2 text-[11px] shadow-sm transition-shadow",
         statusColor,
-        canEditSteps ? "cursor-grab" : "cursor-pointer",
+        canEditSteps ? "cursor-grab" : "cursor-default",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
-      onPointerDownCapture={onPointerDownCapture}
-      onPointerMoveCapture={onPointerMoveCapture}
-      onClick={onClick}
+      title={`${row.moCode ?? `MO #${row.moId}`} · ${row.itemName}`}
     >
+      {/* Per-step color bars — subtle bg hint for the WSGs that
+          run this MO. */}
       <div className="absolute inset-0 flex" aria-hidden>
         {row.steps.map((step) => {
           const sMs = new Date(step.planned_start ?? row.start).getTime();
@@ -504,7 +723,7 @@ function MOblock({
               style={{
                 width: `${Math.max(span * 100, 1)}%`,
                 backgroundColor: wsgColor(step.workstation_group_id),
-                opacity: 0.18,
+                opacity: 0.22,
               }}
             />
           );

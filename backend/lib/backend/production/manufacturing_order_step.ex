@@ -34,6 +34,10 @@ defmodule Backend.Production.ManufacturingOrderStep do
 
     field :planned_start, :utc_datetime
     field :planned_finish, :utc_datetime
+    # Independent of planned_start/finish — preserved across
+    # unschedule so dragging an MO back onto the calendar keeps
+    # each step's intended length.
+    field :planned_duration_seconds, :integer, default: 0
     field :actual_start, :utc_datetime
     field :actual_finish, :utc_datetime
 
@@ -63,7 +67,8 @@ defmodule Backend.Production.ManufacturingOrderStep do
     company_id manufacturing_order_id workstation_group_id routing_step_id
     sort_order operation_description
     setup_time_min cycle_time_min fixed_cost variable_cost capacity
-    planned_start planned_finish actual_start actual_finish
+    planned_start planned_finish planned_duration_seconds
+    actual_start actual_finish
     applied_overhead_cost labor_cost quantity notes
     created_by_id updated_by_id
   )a

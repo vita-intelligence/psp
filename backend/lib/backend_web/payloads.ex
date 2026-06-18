@@ -868,6 +868,7 @@ defmodule BackendWeb.Payloads do
   def manufacturing_order(%Backend.Production.ManufacturingOrder{} = mo) do
     {parts, materials_cost} = mo_parts_breakdown(mo)
     operations = mo_operations_breakdown(mo)
+    {start_at, finish_at} = mo_planned_bounds(mo)
 
     %{
       id: mo.id,
@@ -877,8 +878,11 @@ defmodule BackendWeb.Payloads do
       revision: mo.revision,
       quantity: decimal_to_string(mo.quantity),
       due_date: mo.due_date,
-      start_at: mo.start_at,
-      finish_at: mo.finish_at,
+      # Derived from steps — null when the MO is unscheduled.
+      # Kept on the payload so existing FE callers don't have to
+      # walk the steps themselves.
+      start_at: start_at,
+      finish_at: finish_at,
       expiry_date: mo.expiry_date,
       notes: mo.notes,
       warehouse_id: mo.warehouse_id,
@@ -935,6 +939,8 @@ defmodule BackendWeb.Payloads do
 
   @doc "Slim MO for the ledger."
   def manufacturing_order_summary(%Backend.Production.ManufacturingOrder{} = mo) do
+    {start_at, finish_at} = mo_planned_bounds(mo)
+
     %{
       id: mo.id,
       uuid: mo.uuid,
@@ -943,8 +949,8 @@ defmodule BackendWeb.Payloads do
       revision: mo.revision,
       quantity: decimal_to_string(mo.quantity),
       due_date: mo.due_date,
-      start_at: mo.start_at,
-      finish_at: mo.finish_at,
+      start_at: start_at,
+      finish_at: finish_at,
       item: maybe_item_summary(mo.item),
       bom: bom_summary(mo.bom),
       warehouse: mo_site_summary(mo.warehouse),
@@ -1000,6 +1006,8 @@ defmodule BackendWeb.Payloads do
     list
     |> Enum.sort_by(& &1.inserted_at, NaiveDateTime)
     |> Enum.map(fn child ->
+      {start_at, finish_at} = mo_planned_bounds(child)
+
       %{
         id: child.id,
         uuid: child.uuid,
@@ -1007,14 +1015,31 @@ defmodule BackendWeb.Payloads do
         status: child.status,
         quantity: decimal_to_string(child.quantity),
         revision: child.revision,
-        start_at: child.start_at,
-        finish_at: child.finish_at,
+        start_at: start_at,
+        finish_at: finish_at,
         item: maybe_item_summary(child.item)
       }
     end)
   end
 
   defp mo_children_summary(_), do: []
+
+  # Walk loaded steps for min(planned_start) + max(planned_finish).
+  # Returns {nil, nil} when steps aren't loaded or all step times
+  # are nil (unscheduled MO).
+  defp mo_planned_bounds(%Backend.Production.ManufacturingOrder{steps: steps})
+       when is_list(steps) and steps != [] do
+    starts = for s <- steps, s.planned_start, do: s.planned_start
+    finishes = for s <- steps, s.planned_finish, do: s.planned_finish
+
+    case {starts, finishes} do
+      {[], _} -> {nil, nil}
+      {_, []} -> {nil, nil}
+      {ss, fs} -> {Enum.min(ss, DateTime), Enum.max(fs, DateTime)}
+    end
+  end
+
+  defp mo_planned_bounds(_), do: {nil, nil}
 
   defp mo_consumer_links_payload(list) when is_list(list) do
     Enum.map(list, fn link ->
@@ -1375,10 +1400,8 @@ defmodule BackendWeb.Payloads do
 
   defp mo_operations_breakdown(%Backend.Production.ManufacturingOrder{
          routing: %Backend.Production.Routing{} = routing,
-         quantity: qty,
-         start_at: start_at
-       })
-       when not is_nil(start_at) do
+         quantity: qty
+       }) do
     steps =
       case routing.steps do
         %Ecto.Association.NotLoaded{} ->
@@ -1392,40 +1415,36 @@ defmodule BackendWeb.Payloads do
       end
       |> Enum.sort_by(& &1.sort_order)
 
-    {ops, _cursor} =
-      Enum.reduce(steps, {[], start_at}, fn step, {acc, cursor} ->
-        duration_seconds = step_duration_seconds(step, qty)
-        finish = DateTime.add(cursor, duration_seconds, :second)
-
-        op = %{
-          id: step.id,
-          uuid: step.uuid,
-          sort_order: step.sort_order,
-          operation_description: step.operation_description,
-          setup_time_min: decimal_to_string(step.setup_time_min),
-          cycle_time_min: decimal_to_string(step.cycle_time_min),
-          fixed_cost: decimal_to_string(step.fixed_cost),
-          variable_cost: decimal_to_string(step.variable_cost),
-          capacity: decimal_to_string(step.capacity),
-          workstation_group: workstation_group_summary(step.workstation_group),
-          workstation: nil,
-          workers: routing_step_workers(step),
-          planned_start: cursor,
-          planned_finish: finish,
-          actual_start: nil,
-          actual_finish: nil,
-          applied_overhead_cost: nil,
-          labor_cost: nil,
-          quantity: decimal_to_string(qty),
-          # Sentinel: the row hasn't been snapshotted yet so the
-          # pencil-edit affordance hides on the FE.
-          editable: false
-        }
-
-        {[op | acc], finish}
-      end)
-
-    Enum.reverse(ops)
+    # Routing preview — used when the MO doesn't have its own
+    # snapshotted steps yet. Times are nil because the MO hasn't
+    # been scheduled; FE shows the routing layout without timing.
+    Enum.map(steps, fn step ->
+      %{
+        id: step.id,
+        uuid: step.uuid,
+        sort_order: step.sort_order,
+        operation_description: step.operation_description,
+        setup_time_min: decimal_to_string(step.setup_time_min),
+        cycle_time_min: decimal_to_string(step.cycle_time_min),
+        fixed_cost: decimal_to_string(step.fixed_cost),
+        variable_cost: decimal_to_string(step.variable_cost),
+        capacity: decimal_to_string(step.capacity),
+        workstation_group: workstation_group_summary(step.workstation_group),
+        workstation: nil,
+        workers: routing_step_workers(step),
+        planned_start: nil,
+        planned_finish: nil,
+        planned_duration_seconds: step_duration_seconds(step, qty),
+        actual_start: nil,
+        actual_finish: nil,
+        applied_overhead_cost: nil,
+        labor_cost: nil,
+        quantity: decimal_to_string(qty),
+        # Sentinel: the row hasn't been snapshotted yet so the
+        # pencil-edit affordance hides on the FE.
+        editable: false
+      }
+    end)
   end
 
   defp mo_operations_breakdown(_), do: []
@@ -1447,6 +1466,7 @@ defmodule BackendWeb.Payloads do
       capacity: decimal_to_string(s.capacity),
       planned_start: s.planned_start,
       planned_finish: s.planned_finish,
+      planned_duration_seconds: s.planned_duration_seconds,
       actual_start: s.actual_start,
       actual_finish: s.actual_finish,
       applied_overhead_cost: decimal_to_string(s.applied_overhead_cost),
@@ -1486,6 +1506,7 @@ defmodule BackendWeb.Payloads do
       operation_description: s.operation_description,
       planned_start: s.planned_start,
       planned_finish: s.planned_finish,
+      planned_duration_seconds: s.planned_duration_seconds,
       actual_start: s.actual_start,
       actual_finish: s.actual_finish,
       quantity: decimal_to_string(s.quantity),
@@ -1494,6 +1515,58 @@ defmodule BackendWeb.Payloads do
   end
 
   def schedule_operation(_), do: nil
+
+  @doc """
+  Backlog payload — the planner's left-rail feed of approved-but-
+  unscheduled MOs. Carries enough context to render the rail row +
+  decide where on the calendar to drop it (total duration = sum of
+  step durations).
+  """
+  def backlog_mo(%Backend.Production.ManufacturingOrder{} = mo) do
+    steps =
+      case mo.steps do
+        %Ecto.Association.NotLoaded{} -> []
+        list when is_list(list) -> list
+      end
+
+    total_duration =
+      Enum.reduce(steps, 0, fn s, acc ->
+        acc + (s.planned_duration_seconds || 0)
+      end)
+
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status,
+      revision: mo.revision,
+      quantity: decimal_to_string(mo.quantity),
+      due_date: mo.due_date,
+      item: maybe_item_summary(mo.item),
+      bom: bom_summary(mo.bom),
+      assigned_to: actor(mo, :assigned_to),
+      planned_duration_seconds: total_duration,
+      step_count: length(steps),
+      # Chain context so the FE backlog can group rows as
+      # project > MO > op. parent_mo_id may point outside the
+      # backlog (parent already scheduled / in-progress) — the FE
+      # treats those as roots-of-what-it-can-see.
+      parent_mo_id: mo.parent_mo_id,
+      steps_summary:
+        Enum.map(steps, fn s ->
+          %{
+            id: s.id,
+            uuid: s.uuid,
+            sort_order: s.sort_order,
+            operation_description: s.operation_description,
+            planned_duration_seconds: s.planned_duration_seconds || 0,
+            workstation_group: workstation_group_summary(s.workstation_group)
+          }
+        end)
+    }
+  end
+
+  def backlog_mo(_), do: nil
 
   defp schedule_mo_summary(%Backend.Production.ManufacturingOrder{} = mo) do
     %{

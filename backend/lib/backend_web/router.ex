@@ -411,6 +411,22 @@ defmodule BackendWeb.Router do
            ManufacturingOrderController,
            :shift_chain
 
+      post "/manufacturing-orders/:id/schedule",
+           ManufacturingOrderController,
+           :schedule
+
+      post "/manufacturing-orders/:id/schedule-chain",
+           ManufacturingOrderController,
+           :schedule_chain
+
+      post "/manufacturing-orders/:id/unschedule",
+           ManufacturingOrderController,
+           :unschedule
+
+      post "/manufacturing-orders/:id/unschedule-chain",
+           ManufacturingOrderController,
+           :unschedule_chain
+
       get "/manufacturing-orders/:id/merge-candidates",
           ManufacturingOrderController,
           :merge_candidates

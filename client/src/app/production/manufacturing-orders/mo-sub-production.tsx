@@ -36,6 +36,12 @@ const STATUS_TONE: Record<
     dot: "bg-indigo-500",
     label: "Approved",
   },
+  scheduled: {
+    bg: "bg-sky-50 dark:bg-sky-950/30",
+    text: "text-sky-700 dark:text-sky-300",
+    dot: "bg-sky-500",
+    label: "Scheduled",
+  },
   in_progress: {
     bg: "bg-amber-50 dark:bg-amber-950/30",
     text: "text-amber-800 dark:text-amber-300",

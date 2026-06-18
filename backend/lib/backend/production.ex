@@ -40,6 +40,7 @@ defmodule Backend.Production do
     Routing,
     RoutingStep,
     RoutingStepWorker,
+    ScheduleWalker,
     Workstation,
     WorkstationDefaultWorker,
     WorkstationGroup
@@ -1272,18 +1273,20 @@ defmodule Backend.Production do
   #   cancelled   → (terminal)
 
   @mo_search [:revision, :notes]
-  @mo_sortable [:inserted_at, :updated_at, :start_at, :finish_at, :due_date]
+  @mo_sortable [:inserted_at, :updated_at, :due_date]
   @mo_default_sort {:inserted_at, :desc}
 
   # Status-change pairs that the generic transition endpoint accepts.
-  # Approval-flow transitions (prepare / approve / reject / amend) go
-  # through their own context functions so the side effects (cascade,
-  # 4-eyes rule, required reason) can be enforced cleanly.
+  # Approval-flow transitions (prepare / approve / reject / amend) and
+  # scheduling (schedule_mo / unschedule_mo) go through their own
+  # context functions so the side effects (cascade, 4-eyes rule,
+  # required reason, step time writes) can be enforced cleanly.
   @mo_transitions %{
     {"draft", "cancelled"} => "production.mo_execute",
     {"prepared", "cancelled"} => "production.mo_execute",
-    {"approved", "in_progress"} => "production.mo_execute",
     {"approved", "cancelled"} => "production.mo_execute",
+    {"scheduled", "cancelled"} => "production.mo_execute",
+    {"scheduled", "in_progress"} => "production.mo_execute",
     {"in_progress", "completed"} => "production.mo_execute",
     {"in_progress", "cancelled"} => "production.mo_execute"
   }
@@ -1519,10 +1522,9 @@ defmodule Backend.Production do
             "bom_id" => bom_id,
             "parent_mo_id" => mo.id,
             "quantity" => gap,
-            # Child must finish before parent starts; planner can
-            # adjust the schedule.
-            "start_at" => mo.start_at,
-            "finish_at" => mo.start_at,
+            # Child lands in the backlog without a schedule — the
+            # planner places it on the calendar before the parent's
+            # start when they're ready.
             "assigned_to_id" => mo.assigned_to_id,
             "revision" => mo.revision,
             "created_by_id" => actor.id,
@@ -1627,54 +1629,54 @@ defmodule Backend.Production do
       true ->
         routing_steps = mo.routing.steps |> Enum.sort_by(& &1.sort_order)
 
-        {snapshots, _cursor} =
-          Enum.reduce(routing_steps, {[], mo.start_at}, fn rstep, {acc, cursor} ->
-            duration = step_duration_seconds_for_snapshot(rstep, mo.quantity)
-            finish = if cursor, do: DateTime.add(cursor, duration, :second), else: nil
+        Enum.each(routing_steps, fn rstep ->
+          duration = step_duration_seconds_for_snapshot(rstep, mo.quantity)
 
-            attrs = %{
-              "company_id" => mo.company_id,
-              "manufacturing_order_id" => mo.id,
-              "workstation_group_id" => rstep.workstation_group_id,
-              "routing_step_id" => rstep.id,
-              "sort_order" => rstep.sort_order,
-              "operation_description" =>
-                resolve_operation_description(rstep),
-              "setup_time_min" => rstep.setup_time_min,
-              "cycle_time_min" => rstep.cycle_time_min,
-              "fixed_cost" => rstep.fixed_cost,
-              "variable_cost" => rstep.variable_cost,
-              "capacity" => rstep.capacity,
-              "planned_start" => cursor,
-              "planned_finish" => finish,
-              "quantity" => mo.quantity,
-              "created_by_id" => actor.id,
-              "updated_by_id" => actor.id
-            }
+          attrs = %{
+            "company_id" => mo.company_id,
+            "manufacturing_order_id" => mo.id,
+            "workstation_group_id" => rstep.workstation_group_id,
+            "routing_step_id" => rstep.id,
+            "sort_order" => rstep.sort_order,
+            "operation_description" =>
+              resolve_operation_description(rstep),
+            "setup_time_min" => rstep.setup_time_min,
+            "cycle_time_min" => rstep.cycle_time_min,
+            "fixed_cost" => rstep.fixed_cost,
+            "variable_cost" => rstep.variable_cost,
+            "capacity" => rstep.capacity,
+            # Steps are created with the planned LENGTH baked in
+            # but NO position on the calendar. The planner schedules
+            # them later via `schedule_mo/3` — that walks the steps
+            # forward from a start time using these durations.
+            "planned_duration_seconds" => duration,
+            "planned_start" => nil,
+            "planned_finish" => nil,
+            "quantity" => mo.quantity,
+            "created_by_id" => actor.id,
+            "updated_by_id" => actor.id
+          }
 
-            case %ManufacturingOrderStep{}
-                 |> ManufacturingOrderStep.changeset(attrs)
-                 |> Repo.insert() do
-              {:ok, step} ->
-                # Carry over the template's default workers.
-                Enum.each(rstep.worker_assignments, fn wa ->
-                  %ManufacturingOrderStepWorker{}
-                  |> ManufacturingOrderStepWorker.changeset(%{
-                    "manufacturing_order_step_id" => step.id,
-                    "user_id" => wa.user_id,
-                    "company_id" => mo.company_id
-                  })
-                  |> Repo.insert!()
-                end)
+          case %ManufacturingOrderStep{}
+               |> ManufacturingOrderStep.changeset(attrs)
+               |> Repo.insert() do
+            {:ok, step} ->
+              # Carry over the template's default workers.
+              Enum.each(rstep.worker_assignments, fn wa ->
+                %ManufacturingOrderStepWorker{}
+                |> ManufacturingOrderStepWorker.changeset(%{
+                  "manufacturing_order_step_id" => step.id,
+                  "user_id" => wa.user_id,
+                  "company_id" => mo.company_id
+                })
+                |> Repo.insert!()
+              end)
 
-                {[step | acc], finish}
+            {:error, changeset} ->
+              throw({:snapshot_failed, changeset})
+          end
+        end)
 
-              {:error, changeset} ->
-                throw({:snapshot_failed, changeset})
-            end
-          end)
-
-        _ = snapshots
         :ok
     end
   catch
@@ -2486,8 +2488,6 @@ defmodule Backend.Production do
       routing_id: mo.routing_id,
       quantity: mo.quantity,
       due_date: mo.due_date,
-      start_at: mo.start_at,
-      finish_at: mo.finish_at,
       expiry_date: mo.expiry_date,
       assigned_to_id: mo.assigned_to_id,
       revision: mo.revision,
@@ -3072,6 +3072,10 @@ defmodule Backend.Production do
   Shift an MO chain (root + every descendant via parent_mo_id) by
   `delta_seconds`. One transaction so the calendar never shows a
   half-shifted project. Used by the project-view drag handler.
+
+  Timing lives on the steps — there's nothing on the MO row to
+  update — so this is purely "shift every step's planned_start +
+  planned_finish across every node in the chain".
   """
   def shift_mo_chain(%User{} = actor, %ManufacturingOrder{} = root, delta_seconds)
       when is_integer(delta_seconds) do
@@ -3082,13 +3086,7 @@ defmodule Backend.Production do
         chain_nodes = mo_chain(root)
 
         Enum.each(chain_nodes, fn node ->
-          case shift_mo_only(actor, node, delta_seconds) do
-            {:ok, updated} ->
-              shift_mo_steps(actor, updated, delta_seconds)
-
-            {:error, reason} ->
-              Repo.rollback(reason)
-          end
+          shift_mo_steps(actor, node, delta_seconds)
         end)
 
         Repo.get!(ManufacturingOrder, root.id)
@@ -3101,70 +3099,73 @@ defmodule Backend.Production do
   end
 
   @doc """
-  Shift an MO's whole schedule by `delta_seconds`. Updates MO.start_at
-  + MO.finish_at AND every step's planned_start + planned_finish in
-  one transaction so the calendar never shows a half-shifted run.
+  Shift one MO's schedule by `delta_seconds`. Walks every step and
+  rewrites planned_start + planned_finish in one transaction.
 
-  Atomic side-effect of dragging an MO block on the schedule. The FE
-  fires this once per drop instead of N step PATCHes.
+  Reschedule does NOT touch status — a scheduled MO stays scheduled.
+  The drag handler is "move where on the calendar", not "unscheduling".
   """
   def shift_mo_schedule(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds)
       when is_integer(delta_seconds) do
     if delta_seconds == 0 do
       {:ok, reload_manufacturing_order(mo)}
     else
-      Repo.transaction(fn ->
-        case shift_mo_only(actor, mo, delta_seconds) do
-          {:ok, updated} ->
-            shift_mo_steps(actor, updated, delta_seconds)
-            updated
-
-          {:error, reason} ->
-            Repo.rollback(reason)
+      # Pre-flight: where would the steps land after shift?
+      # Reject up-front so we don't run an Audit-noisy transaction
+      # that we're about to roll back.
+      with :ok <- check_shift_not_past(mo, delta_seconds),
+           :ok <- check_shift_chain_order(mo, delta_seconds) do
+        Repo.transaction(fn ->
+          shift_mo_steps(actor, mo, delta_seconds)
+          Repo.get!(ManufacturingOrder, mo.id)
+        end)
+        |> case do
+          {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
+          err -> err
         end
-      end)
-      |> case do
-        {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
-        err -> err
       end
     end
   end
 
-  defp shift_mo_only(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds) do
-    before = mo_snapshot(mo)
+  defp check_shift_not_past(%ManufacturingOrder{id: id}, delta_seconds) do
+    earliest =
+      from(s in ManufacturingOrderStep,
+        where: s.manufacturing_order_id == ^id and not is_nil(s.planned_start),
+        select: min(s.planned_start)
+      )
+      |> Repo.one()
 
-    new_start = mo.start_at && DateTime.add(mo.start_at, delta_seconds, :second)
-    new_finish = mo.finish_at && DateTime.add(mo.finish_at, delta_seconds, :second)
+    cond do
+      is_nil(earliest) ->
+        :ok
 
-    attrs = %{
-      "start_at" => new_start,
-      "finish_at" => new_finish,
-      "updated_by_id" => actor.id
-    }
+      DateTime.compare(DateTime.add(earliest, delta_seconds, :second), now()) == :lt ->
+        {:error, :past_time}
 
-    mo
-    |> ManufacturingOrder.changeset(attrs)
-    |> Repo.update()
-    |> case do
-      {:ok, updated} ->
-        Audit.record_updated(
-          actor,
-          "manufacturing_order",
-          updated,
-          before,
-          mo_snapshot(updated)
-        )
+      true ->
+        :ok
+    end
+  end
 
-        # Rescheduling does NOT demote approval — start/finish are
-        # timing-only fields. Approval is about WHAT we're making
-        # (BOM, qty, item, routing), not WHEN. Operators drag
-        # approved blocks around the calendar all day to balance
-        # the floor without needing a re-sign.
+  defp check_shift_chain_order(%ManufacturingOrder{id: id} = mo, delta_seconds) do
+    bounds =
+      from(s in ManufacturingOrderStep,
+        where:
+          s.manufacturing_order_id == ^id and
+            not is_nil(s.planned_start) and
+            not is_nil(s.planned_finish),
+        select: %{first: min(s.planned_start), last: max(s.planned_finish)}
+      )
+      |> Repo.one()
 
-        {:ok, updated}
+    case bounds do
+      %{first: nil} ->
+        :ok
 
-      err ->
-        err
+      %{first: first, last: last} ->
+        new_first = DateTime.add(first, delta_seconds, :second)
+        new_last = DateTime.add(last, delta_seconds, :second)
+        check_chain_order(mo, new_first, new_last)
     end
   end
 
@@ -3205,13 +3206,479 @@ defmodule Backend.Production do
     end)
   end
 
+  @doc """
+  Place an approved MO on the calendar at `start_dt`. Walks the
+  steps in `sort_order` and assigns each one a planned_start +
+  planned_finish using the working-hour-aware schedule walker —
+  so a 10-hour op dropped at Mon 14:00 with hours 06:00-16:00
+  spills cleanly into Tue morning instead of running through the
+  closed evening.
+
+  Optional `workstation_group_id` overrides the first step's WSG —
+  used when the planner drops a backlog item onto a specific
+  station row in the workstation view. The override only applies
+  to the first step; later steps keep their routing-defined WSGs
+  unless reassigned individually.
+
+  Returns `{:ok, mo, %{outside_hours_seconds: N}}`. Non-zero
+  `outside_hours_seconds` means the requested duration couldn't
+  fit inside available working windows over the next 90 days; the
+  FE surfaces this as a warning toast.
+  """
+  def schedule_mo(actor, mo, start_dt, opts \\ [])
+
+  def schedule_mo(%User{} = actor, %ManufacturingOrder{} = mo, %DateTime{} = start_dt, opts) do
+    wsg_override = Keyword.get(opts, :workstation_group_id)
+
+    cond do
+      mo.status not in ["approved", "scheduled"] ->
+        {:error, :wrong_status}
+
+      DateTime.compare(start_dt, now()) == :lt ->
+        {:error, :past_time}
+
+      true ->
+        do_schedule_mo(actor, mo, start_dt, wsg_override)
+    end
+  end
+
+  defp do_schedule_mo(actor, mo, start_dt, wsg_override) do
+    intervals = working_intervals_for_mo(mo, start_dt)
+
+    Repo.transaction(fn ->
+      steps =
+        from(s in ManufacturingOrderStep,
+          where: s.manufacturing_order_id == ^mo.id,
+          order_by: [asc: s.sort_order, asc: s.id]
+        )
+        |> Repo.all()
+
+      {_cursor, outside_total, _index, first_start, last_finish} =
+        Enum.reduce(steps, {start_dt, 0, 0, nil, nil}, fn step, {cursor, off_acc, idx, first, _last} ->
+          duration = step.planned_duration_seconds || 0
+
+          {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
+            ScheduleWalker.walk_forward(intervals, cursor, duration)
+
+          before = mo_step_snapshot(step)
+
+          attrs = %{
+            "planned_start" => s_start,
+            "planned_finish" => s_finish,
+            "updated_by_id" => actor.id
+          }
+
+          # First step gets the WSG override if the planner dropped
+          # the MO on a specific station row in workstation view.
+          attrs =
+            if idx == 0 and is_integer(wsg_override) do
+              Map.put(attrs, "workstation_group_id", wsg_override)
+            else
+              attrs
+            end
+
+          case step
+               |> ManufacturingOrderStep.changeset(attrs)
+               |> Repo.update() do
+            {:ok, updated} ->
+              Audit.record_updated(
+                actor,
+                "manufacturing_order_step",
+                updated,
+                before,
+                mo_step_snapshot(updated)
+              )
+
+              {s_finish, off_acc + off, idx + 1, first || s_start, s_finish}
+
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
+
+      # Chain-order guard. Must finish before parent's first step
+      # starts; must start after every scheduled child's last finish.
+      case check_chain_order(mo, first_start, last_finish) do
+        :ok -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+      updated_mo =
+        if mo.status != "scheduled" do
+          case do_transition(actor, mo, "scheduled") do
+            {:ok, u} -> u
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        else
+          reload_manufacturing_order(mo)
+        end
+
+      {updated_mo, outside_total}
+    end)
+    |> case do
+      {:ok, {updated, outside}} ->
+        {:ok, reload_manufacturing_order(updated),
+         %{outside_hours_seconds: outside}}
+
+      err ->
+        err
+    end
+  end
+
+  @doc """
+  Schedule an entire MO chain (root + every approved descendant)
+  from a single drop time.
+
+  Root goes forward from `start_dt`. Each child walks BACKWARD
+  from the root's first step's start so the child finishes before
+  the parent begins — honouring the parent-needs-child dependency
+  the chain was set up for. All inside one transaction so a
+  partial chain never reaches the calendar.
+
+  Returns the same shape as `schedule_mo/3` plus the chain-wide
+  `outside_hours_seconds` total.
+  """
+  def schedule_mo_chain(%User{} = actor, %ManufacturingOrder{} = root, %DateTime{} = start_dt) do
+    if DateTime.compare(start_dt, now()) == :lt do
+      {:error, :past_time}
+    else
+      do_schedule_mo_chain(actor, root, start_dt)
+    end
+  end
+
+  defp do_schedule_mo_chain(actor, root, start_dt) do
+    Repo.transaction(fn ->
+      intervals = working_intervals_for_mo(root, start_dt)
+
+      {root_mo, root_outside, root_start} =
+        case do_schedule_one_forward(actor, root, start_dt, intervals) do
+          {:ok, mo, off, first_start} -> {mo, off, first_start}
+          {:error, :wrong_status} -> Repo.rollback(:wrong_status)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      # Walk descendants level by level so grandchildren are also
+      # scheduled. Each child finishes before its IMMEDIATE parent
+      # starts — not before the root. So MO17 (grandchild of root,
+      # child of MO16) is backward-scheduled from MO16's start, not
+      # from the root's start.
+      descendant_outside =
+        schedule_descendants_backward(actor, root.id, root_start, intervals)
+
+      {root_mo, root_outside + descendant_outside}
+    end)
+    |> case do
+      {:ok, {updated, outside}} ->
+        {:ok, reload_manufacturing_order(updated),
+         %{outside_hours_seconds: outside}}
+
+      err ->
+        err
+    end
+  end
+
+  defp schedule_descendants_backward(actor, parent_id, parent_start_dt, intervals) do
+    children =
+      from(c in ManufacturingOrder,
+        where:
+          c.parent_mo_id == ^parent_id and
+            c.status in ["approved", "scheduled"]
+      )
+      |> Repo.all()
+
+    Enum.reduce(children, 0, fn child, off_acc ->
+      case do_schedule_one_backward(actor, child, parent_start_dt, intervals) do
+        {:ok, _mo, off, child_start_dt} ->
+          # Recurse: this child's own descendants must finish before
+          # THIS child starts, not before the root.
+          grand_off =
+            schedule_descendants_backward(actor, child.id, child_start_dt, intervals)
+
+          off_acc + off + grand_off
+
+        {:error, _reason} ->
+          off_acc
+      end
+    end)
+  end
+
+  # ----- Internal scheduling helpers ------------------------------
+
+  # Resolve working intervals over a 90-day window starting from
+  # `from_dt`. We resolve at WAREHOUSE level (not per-WSG) so all
+  # of an MO's steps share one calendar — matches operators' mental
+  # model of "the factory's hours". WSG-specific overrides land in
+  # a future pass.
+  defp working_intervals_for_mo(%ManufacturingOrder{} = mo, %DateTime{} = from_dt) do
+    company = Repo.get!(Company, mo.company_id)
+    warehouse = Repo.get!(Warehouse, mo.warehouse_id)
+    groups = list_workstation_groups_for_schedule_company(mo.company_id)
+
+    from_date = DateTime.to_date(from_dt)
+    to_date = Date.add(from_date, 90)
+
+    resolved =
+      resolve_working_windows(groups, warehouse, company, from_date, to_date)
+
+    ScheduleWalker.flatten_windows(resolved, nil)
+  end
+
+  defp list_workstation_groups_for_schedule_company(company_id)
+       when is_integer(company_id) do
+    from(g in WorkstationGroup,
+      where: g.company_id == ^company_id and g.is_active == true
+    )
+    |> Repo.all()
+  end
+
+  defp do_schedule_one_forward(actor, %ManufacturingOrder{} = mo, %DateTime{} = start_dt, intervals) do
+    if mo.status not in ["approved", "scheduled"] do
+      {:error, :wrong_status}
+    else
+      steps =
+        from(s in ManufacturingOrderStep,
+          where: s.manufacturing_order_id == ^mo.id,
+          order_by: [asc: s.sort_order, asc: s.id]
+        )
+        |> Repo.all()
+
+      {cursor, first_start, off_total} =
+        Enum.reduce(steps, {start_dt, nil, 0}, fn step, {cursor, first, off_acc} ->
+          duration = step.planned_duration_seconds || 0
+
+          {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
+            ScheduleWalker.walk_forward(intervals, cursor, duration)
+
+          write_step_times!(actor, step, s_start, s_finish)
+          {s_finish, first || s_start, off_acc + off}
+        end)
+
+      _ = cursor
+
+      updated =
+        if mo.status != "scheduled" do
+          {:ok, u} = do_transition(actor, mo, "scheduled")
+          u
+        else
+          reload_manufacturing_order(mo)
+        end
+
+      {:ok, updated, off_total, first_start || start_dt}
+    end
+  end
+
+  defp do_schedule_one_backward(actor, %ManufacturingOrder{} = mo, %DateTime{} = finish_dt, intervals) do
+    if mo.status not in ["approved", "scheduled"] do
+      {:error, :wrong_status}
+    else
+      # Place steps RIGHT-to-LEFT: last step finishes at finish_dt,
+      # step before that ends where the last one started, etc.
+      steps =
+        from(s in ManufacturingOrderStep,
+          where: s.manufacturing_order_id == ^mo.id,
+          order_by: [desc: s.sort_order, desc: s.id]
+        )
+        |> Repo.all()
+
+      # `cursor` ends up holding the EARLIEST start_at — that's
+      # what grandchildren need to finish before. (We were
+      # previously returning `last_finish` which is actually the
+      # MO's finish time, so grandchildren got scheduled on top of
+      # their parent.)
+      {earliest_start, off_total} =
+        Enum.reduce(steps, {finish_dt, 0}, fn step, {cursor, off_acc} ->
+          duration = step.planned_duration_seconds || 0
+
+          {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
+            ScheduleWalker.walk_backward(intervals, cursor, duration)
+
+          write_step_times!(actor, step, s_start, s_finish)
+          {s_start, off_acc + off}
+        end)
+
+      updated =
+        if mo.status != "scheduled" do
+          {:ok, u} = do_transition(actor, mo, "scheduled")
+          u
+        else
+          reload_manufacturing_order(mo)
+        end
+
+      {:ok, updated, off_total, earliest_start}
+    end
+  end
+
+  # Validate that placing `mo` with steps spanning [first_start,
+  # last_finish] doesn't break the parent/child invariant of the
+  # MO chain. Returns :ok or {:error, reason} suitable for
+  # Repo.rollback. Children that aren't scheduled (no step times)
+  # are ignored — they'll be checked when they're scheduled later.
+  defp check_chain_order(%ManufacturingOrder{} = mo, %DateTime{} = first_start, %DateTime{} = last_finish) do
+    with :ok <- check_parent_starts_after(mo, last_finish),
+         :ok <- check_children_finish_before(mo, first_start) do
+      :ok
+    end
+  end
+
+  defp check_chain_order(_, _, _), do: :ok
+
+  defp check_parent_starts_after(%ManufacturingOrder{parent_mo_id: nil}, _last_finish), do: :ok
+
+  defp check_parent_starts_after(%ManufacturingOrder{parent_mo_id: parent_id}, last_finish) do
+    parent_first_start =
+      from(s in ManufacturingOrderStep,
+        where: s.manufacturing_order_id == ^parent_id and not is_nil(s.planned_start),
+        select: min(s.planned_start)
+      )
+      |> Repo.one()
+
+    cond do
+      is_nil(parent_first_start) -> :ok
+      DateTime.compare(last_finish, parent_first_start) != :gt -> :ok
+      true -> {:error, :must_finish_before_parent}
+    end
+  end
+
+  defp check_children_finish_before(%ManufacturingOrder{id: id}, first_start) do
+    children_last_finish =
+      from(s in ManufacturingOrderStep,
+        join: mo in ManufacturingOrder,
+        on: mo.id == s.manufacturing_order_id,
+        where:
+          mo.parent_mo_id == ^id and
+            mo.status in ["scheduled", "in_progress"] and
+            not is_nil(s.planned_finish),
+        select: max(s.planned_finish)
+      )
+      |> Repo.one()
+
+    cond do
+      is_nil(children_last_finish) -> :ok
+      DateTime.compare(children_last_finish, first_start) != :gt -> :ok
+      true -> {:error, :must_start_after_children}
+    end
+  end
+
+  defp write_step_times!(actor, %ManufacturingOrderStep{} = step, start_dt, finish_dt) do
+    before = mo_step_snapshot(step)
+
+    attrs = %{
+      "planned_start" => start_dt,
+      "planned_finish" => finish_dt,
+      "updated_by_id" => actor.id
+    }
+
+    case step
+         |> ManufacturingOrderStep.changeset(attrs)
+         |> Repo.update() do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_step",
+          updated,
+          before,
+          mo_step_snapshot(updated)
+        )
+
+        updated
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  @doc """
+  Unschedule an entire MO chain (root + every descendant via
+  parent_mo_id). Nodes that aren't currently scheduled are
+  skipped; everything that IS scheduled goes back to the backlog.
+  One transaction so a half-unscheduled project never reaches the
+  calendar.
+  """
+  def unschedule_mo_chain(%User{} = actor, %ManufacturingOrder{} = root) do
+    Repo.transaction(fn ->
+      chain_nodes = mo_chain(root)
+
+      Enum.each(chain_nodes, fn node ->
+        if node.status == "scheduled" do
+          case unschedule_mo(actor, node) do
+            {:ok, _} -> :ok
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end
+      end)
+
+      Repo.get!(ManufacturingOrder, root.id)
+    end)
+    |> case do
+      {:ok, mo} -> {:ok, reload_manufacturing_order(mo)}
+      err -> err
+    end
+  end
+
+  @doc """
+  Send a scheduled MO back to the backlog. Clears every step's
+  planned_start + planned_finish (durations stay intact) and
+  reverts status to `approved`.
+  """
+  def unschedule_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    if mo.status != "scheduled" do
+      {:error, :wrong_status}
+    else
+      Repo.transaction(fn ->
+        steps =
+          from(s in ManufacturingOrderStep,
+            where: s.manufacturing_order_id == ^mo.id
+          )
+          |> Repo.all()
+
+        Enum.each(steps, fn step ->
+          before = mo_step_snapshot(step)
+
+          attrs = %{
+            "planned_start" => nil,
+            "planned_finish" => nil,
+            "updated_by_id" => actor.id
+          }
+
+          case step
+               |> ManufacturingOrderStep.changeset(attrs)
+               |> Repo.update() do
+            {:ok, updated} ->
+              Audit.record_updated(
+                actor,
+                "manufacturing_order_step",
+                updated,
+                before,
+                mo_step_snapshot(updated)
+              )
+
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
+
+        case do_transition(actor, mo, "approved") do
+          {:ok, updated} -> updated
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
+        err -> err
+      end
+    end
+  end
+
   # ----- Production schedule ---------------------------------------
 
   @doc """
   Operations to render on the production schedule for `warehouse`
   between `from_date` and `to_date` (inclusive). Returns the MO
-  steps from any approved or in_progress MO whose
+  steps from any scheduled or in_progress MO whose
   planned_start/planned_finish intersects the window.
+
+  `approved` MOs without a schedule sit in the backlog instead —
+  see `list_backlog_manufacturing_orders/2`.
   """
   def list_schedule_operations(%User{} = actor, %Warehouse{} = warehouse, from_date, to_date) do
     from_dt = DateTime.new!(from_date, ~T[00:00:00], "Etc/UTC")
@@ -3223,13 +3690,33 @@ defmodule Backend.Production do
       where:
         s.company_id == ^actor.company_id and
           mo.warehouse_id == ^warehouse.id and
-          mo.status in ["approved", "in_progress"] and
+          mo.status in ["scheduled", "in_progress"] and
           not is_nil(s.planned_start) and
           not is_nil(s.planned_finish) and
           s.planned_finish >= ^from_dt and
           s.planned_start <= ^to_dt,
       preload: [:workstation_group, manufacturing_order: [:item, :warehouse]],
       order_by: [asc: s.planned_start, asc: s.id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Approved-but-unscheduled MOs for `warehouse`, sorted by due_date
+  ascending (nulls last) — the planner's backlog feed. Includes
+  parent + child MOs (children can be scheduled independently).
+  """
+  def list_backlog_manufacturing_orders(%User{} = actor, %Warehouse{} = warehouse) do
+    from(mo in ManufacturingOrder,
+      where:
+        mo.company_id == ^actor.company_id and
+          mo.warehouse_id == ^warehouse.id and
+          mo.status == "approved",
+      preload: [:item, :warehouse, :bom, :assigned_to, steps: :workstation_group],
+      order_by: [
+        asc_nulls_last: mo.due_date,
+        asc: mo.inserted_at
+      ]
     )
     |> Repo.all()
   end

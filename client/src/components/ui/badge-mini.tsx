@@ -6,7 +6,8 @@ type Tone =
   | "emerald"
   | "amber"
   | "destructive"
-  | "indigo";
+  | "indigo"
+  | "sky";
 
 const TONE_CLASS: Record<Tone, string> = {
   muted: "bg-muted text-muted-foreground",
@@ -18,6 +19,7 @@ const TONE_CLASS: Record<Tone, string> = {
   destructive: "bg-destructive/10 text-destructive",
   indigo:
     "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400",
+  sky: "bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-400",
 };
 
 interface BadgeProps {

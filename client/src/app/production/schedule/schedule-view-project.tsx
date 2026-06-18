@@ -10,19 +10,18 @@ import type {
   ScheduleOperation,
 } from "@/lib/production/types";
 import {
-  ROW_HEIGHT_PX,
   rangeDays as rangeDaysList,
   useTimeScale,
-  type DayWindow,
 } from "./schedule-shared";
 import {
-  CornerLabel,
-  DayHeaderStrip,
-  Gridlines,
+  CalendarRow,
+  CalendarShell,
+  LABEL_GUTTER_PX,
   Legend,
-  WorkingHoursOverlay,
   dayWindowsForSite,
 } from "./schedule-view-mo";
+
+const PROJECT_ROW_HEIGHT_PX = 76;
 
 export interface ProjectRow {
   rootMoId: number;
@@ -94,7 +93,6 @@ export function projectRowsFromOps(
       moCount: moIds.size,
     });
   }
-
   return rows.sort(
     (a, b) =>
       new Date(a.start).getTime() - new Date(b.start).getTime() ||
@@ -106,17 +104,12 @@ interface ProjectViewProps {
   data: ProductionScheduleResponse;
   rows: ProjectRow[];
   canEditSteps: boolean;
-  onEdit: (moUuid: string) => void;
 }
 
-export function ProjectView({
-  data,
-  rows,
-  canEditSteps,
-  onEdit,
-}: ProjectViewProps) {
+export function ProjectView({ data, rows, canEditSteps }: ProjectViewProps) {
   const scale = useTimeScale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -136,140 +129,83 @@ export function ProjectView({
   );
 
   return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm">
-      <div className="overflow-x-auto" ref={scrollRef}>
-        <div
-          className="relative grid"
-          style={{ gridTemplateColumns: `16rem ${scale.rangeWidthPx}px` }}
+    <CalendarShell
+      cornerLabel="Project"
+      days={days}
+      dayWindows={dayWindows}
+      scrollRef={scrollRef}
+      legend={
+        <Legend>
+          Drag a project block to shift the whole chain (root + every sub-MO).
+        </Legend>
+      }
+    >
+      {rows.map((row) => (
+        <CalendarRow
+          key={row.rootMoId}
+          height={PROJECT_ROW_HEIGHT_PX}
+          labelWidth={LABEL_GUTTER_PX}
+          label={<ProjectRowLabel row={row} />}
         >
-          <CornerLabel>Project</CornerLabel>
-          <DayHeaderStrip days={days} dayWindows={dayWindows} />
-
-          {rows.map((row) => (
-            <ProjectRowEl
-              key={row.rootMoId}
-              row={row}
-              dayWindows={dayWindows}
-              canEditSteps={canEditSteps}
-              onEdit={onEdit}
-            />
-          ))}
-        </div>
-      </div>
-      <Legend>
-        Drag a project block to shift the whole chain (root + every sub-MO).
-      </Legend>
-    </div>
+          <ProjectBlock row={row} canEditSteps={canEditSteps} />
+        </CalendarRow>
+      ))}
+    </CalendarShell>
   );
 }
 
-interface ProjectRowProps {
-  row: ProjectRow;
-  dayWindows: DayWindow[];
-  canEditSteps: boolean;
-  onEdit: (moUuid: string) => void;
-}
-
-function ProjectRowEl({
-  row,
-  dayWindows,
-  canEditSteps,
-  onEdit,
-}: ProjectRowProps) {
-  const scale = useTimeScale();
+function ProjectRowLabel({ row }: { row: ProjectRow }) {
   return (
-    <>
-      <div
-        className="sticky left-0 z-20 border-b border-r border-border/60 bg-card px-3 py-2 shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
-        style={{ height: ROW_HEIGHT_PX }}
+    <div className="flex h-full min-w-0 flex-col justify-center px-3 py-2">
+      <Link
+        href={`/production/manufacturing-orders/${row.rootMoUuid}`}
+        className="inline-flex min-w-0 items-center gap-1 font-mono text-[10px] font-semibold text-brand hover:underline"
+        title={row.rootMoCode ?? `MO #${row.rootMoId}`}
       >
-        <div className="flex h-full min-w-0 flex-col justify-center">
-          <Link
-            href={`/production/manufacturing-orders/${row.rootMoUuid}`}
-            className="inline-flex min-w-0 items-center gap-1 font-mono text-[10px] font-semibold text-brand hover:underline"
-            title={row.rootMoCode ?? `MO #${row.rootMoId}`}
-          >
-            <span className="truncate">
-              {row.rootMoCode ?? `MO #${row.rootMoId}`}
-            </span>
-            <ExternalLink className="size-2.5 shrink-0" />
-          </Link>
-          <p className="truncate text-xs" title={row.itemName}>
-            {row.itemName}
-          </p>
-          <p className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-            <GitBranch className="size-2.5" />
-            {row.moCount} MO{row.moCount === 1 ? "" : "s"}
-          </p>
-        </div>
-      </div>
-
-      <div
-        className="relative border-b border-border/60"
-        style={{ width: scale.rangeWidthPx, height: ROW_HEIGHT_PX }}
-      >
-        <WorkingHoursOverlay dayWindows={dayWindows} />
-        <Gridlines />
-        <ProjectBlock
-          row={row}
-          canEditSteps={canEditSteps}
-          onEdit={onEdit}
-        />
-      </div>
-    </>
+        <span className="truncate">{row.rootMoCode ?? `MO #${row.rootMoId}`}</span>
+        <ExternalLink className="size-2.5 shrink-0" />
+      </Link>
+      <p className="truncate text-xs" title={row.itemName}>
+        {row.itemName}
+      </p>
+      <p className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+        <GitBranch className="size-2.5" />
+        {row.moCount} MO{row.moCount === 1 ? "" : "s"}
+      </p>
+    </div>
   );
 }
 
 interface ProjectBlockProps {
   row: ProjectRow;
   canEditSteps: boolean;
-  onEdit: (moUuid: string) => void;
 }
 
-function ProjectBlock({
-  row,
-  canEditSteps,
-  onEdit,
-}: ProjectBlockProps) {
+function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
   const scale = useTimeScale();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `project-${row.rootMoUuid}`,
       disabled: !canEditSteps,
     });
-  const dragMoved = useRef(false);
 
   const startMs = new Date(row.start).getTime();
   const endMs = new Date(row.finish).getTime();
-  const rangeStartMs = scale.rangeStart.getTime();
-  const rangeEndMs = scale.rangeEnd.getTime();
-  if (endMs <= rangeStartMs || startMs >= rangeEndMs) return null;
+  if (endMs <= scale.rangeStart.getTime() || startMs >= scale.rangeEnd.getTime())
+    return null;
 
-  const visibleStart = Math.max(startMs, rangeStartMs);
-  const visibleEnd = Math.min(endMs, rangeEndMs);
+  const visibleStart = Math.max(startMs, scale.rangeStart.getTime());
+  const visibleEnd = Math.min(endMs, scale.rangeEnd.getTime());
   const left = scale.pxAt(new Date(visibleStart));
   const width = Math.max(scale.pxAt(new Date(visibleEnd)) - left, 48);
 
   const dragStyle: React.CSSProperties = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : {};
-
   const statusColor =
     row.status === "in_progress"
-      ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30"
-      : "border-indigo-300 bg-indigo-50 dark:bg-indigo-950/30";
-
-  function onPointerDownCapture() {
-    dragMoved.current = false;
-  }
-  function onPointerMoveCapture(e: React.PointerEvent) {
-    if (e.buttons === 1) dragMoved.current = true;
-  }
-  function onClick(e: React.MouseEvent) {
-    if (dragMoved.current) return;
-    e.stopPropagation();
-    onEdit(row.rootMoUuid);
-  }
+      ? "border-amber-500 bg-amber-100/75 dark:bg-amber-950/30"
+      : "border-indigo-400 bg-indigo-100/75 dark:bg-indigo-950/30";
 
   return (
     <div
@@ -280,18 +216,16 @@ function ProjectBlock({
         left,
         width,
         top: 4,
-        height: ROW_HEIGHT_PX - 8,
+        height: PROJECT_ROW_HEIGHT_PX - 8,
         ...dragStyle,
       }}
       className={cn(
-        "absolute select-none rounded-md border px-2 py-1 text-[11px] shadow-sm",
+        "absolute z-10 select-none rounded-md border-2 px-2 py-1 text-[11px] shadow-sm",
         statusColor,
-        canEditSteps ? "cursor-grab" : "cursor-pointer",
+        canEditSteps ? "cursor-grab" : "cursor-default",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
-      onPointerDownCapture={onPointerDownCapture}
-      onPointerMoveCapture={onPointerMoveCapture}
-      onClick={onClick}
+      title={`${row.rootMoCode ?? `MO #${row.rootMoId}`} · ${row.itemName} · ${row.moCount} MO${row.moCount === 1 ? "" : "s"}`}
     >
       <div className="flex h-full items-center gap-2">
         <div className="min-w-0 flex-1">
@@ -302,7 +236,7 @@ function ProjectBlock({
             {row.itemName} · {row.qty}
           </p>
         </div>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-background/60 px-1.5 py-0.5 text-[9px] font-medium">
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-background/70 px-1.5 py-0.5 text-[9px] font-medium">
           <GitBranch className="size-2.5" />
           {row.moCount}
         </span>

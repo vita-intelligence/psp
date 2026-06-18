@@ -10,31 +10,23 @@ import type {
 } from "@/lib/production/types";
 import {
   ROW_HEIGHT_PX,
-  isoDate,
   rangeDays as rangeDaysList,
   useTimeScale,
-  type DayWindow,
 } from "./schedule-shared";
 import {
-  CornerLabel,
-  DayHeaderStrip,
-  Gridlines,
+  CalendarRow,
+  CalendarShell,
   Legend,
-  WorkingHoursOverlay,
+  LABEL_GUTTER_PX,
   dayWindowsForSite,
 } from "./schedule-view-mo";
 
 interface WorkstationViewProps {
   data: ProductionScheduleResponse;
   canEditSteps: boolean;
-  onEdit: (moUuid: string) => void;
 }
 
-export function WorkstationView({
-  data,
-  canEditSteps,
-  onEdit,
-}: WorkstationViewProps) {
+export function WorkstationView({ data, canEditSteps }: WorkstationViewProps) {
   const scale = useTimeScale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -51,7 +43,13 @@ export function WorkstationView({
   }, [scale]);
 
   const days = useMemo(() => rangeDaysList(scale), [scale]);
+  const dayWindows = useMemo(
+    () => dayWindowsForSite(data.working_windows, days),
+    [data.working_windows, days],
+  );
 
+  // Detect overlapping ops on the same WSG so we can outline them
+  // in red.
   const conflictIds = useMemo(() => {
     const set = new Set<number>();
     const byGroup = new Map<number, ScheduleOperation[]>();
@@ -83,78 +81,52 @@ export function WorkstationView({
   }, [data.operations]);
 
   return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm">
-      <div className="overflow-x-auto" ref={scrollRef}>
-        <div
-          className="relative grid"
-          style={{ gridTemplateColumns: `14rem ${scale.rangeWidthPx}px` }}
-        >
-          <CornerLabel>Workstation group</CornerLabel>
-          <DayHeaderStrip
-            days={days}
-            dayWindows={dayWindowsForSite([], days)}
+    <CalendarShell
+      cornerLabel="Workstation group"
+      days={days}
+      dayWindows={dayWindows}
+      scrollRef={scrollRef}
+      legend={
+        <Legend>
+          Drag an operation to reschedule. Drop it on a different WSG row to
+          reassign.
+        </Legend>
+      }
+    >
+      {data.workstation_groups.map((group) => {
+        const opsHere = data.operations.filter(
+          (op) => op.workstation_group_id === group.id,
+        );
+        return (
+          <WSGRow
+            key={group.id}
+            group={group}
+            opsHere={opsHere}
+            conflictIds={conflictIds}
+            canEditSteps={canEditSteps}
           />
-
-          {data.workstation_groups.map((g) => {
-            const groupDays =
-              data.working_windows.find((w) => w.group_id === g.id)?.days ?? [];
-            const dayWindows =
-              groupDays.length > 0
-                ? groupDays
-                : dayWindowsForSite([], days);
-
-            const opsHere = data.operations.filter(
-              (op) => op.workstation_group_id === g.id,
-            );
-
-            return (
-              <WSGrowPair
-                key={g.id}
-                group={g}
-                opsHere={opsHere}
-                dayWindows={dayWindows}
-                conflictIds={conflictIds}
-                canEditSteps={canEditSteps}
-                onEdit={onEdit}
-              />
-            );
-          })}
-        </div>
-      </div>
-      <Legend>
-        Drag an operation to reschedule. Drop it on a different WSG row to
-        reassign.
-      </Legend>
-    </div>
+        );
+      })}
+    </CalendarShell>
   );
 }
 
-interface WSGrowPairProps {
+interface WSGRowProps {
   group: ProductionScheduleResponse["workstation_groups"][number];
   opsHere: ScheduleOperation[];
-  dayWindows: DayWindow[];
   conflictIds: Set<number>;
   canEditSteps: boolean;
-  onEdit: (moUuid: string) => void;
 }
 
-function WSGrowPair({
-  group,
-  opsHere,
-  dayWindows,
-  conflictIds,
-  canEditSteps,
-  onEdit,
-}: WSGrowPairProps) {
-  const scale = useTimeScale();
+function WSGRow({ group, opsHere, conflictIds, canEditSteps }: WSGRowProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `wsg-${group.id}` });
+
   return (
-    <>
-      <div
-        className="sticky left-0 z-20 border-b border-r border-border/60 bg-card px-3 py-2 shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
-        style={{ height: ROW_HEIGHT_PX }}
-      >
-        <div className="flex h-full items-center gap-2">
+    <CalendarRow
+      labelWidth={LABEL_GUTTER_PX}
+      height={ROW_HEIGHT_PX}
+      label={
+        <div className="flex h-full items-center gap-2 px-3">
           {group.color && (
             <span
               aria-hidden
@@ -166,30 +138,23 @@ function WSGrowPair({
             {group.name}
           </p>
         </div>
-      </div>
-
-      <div
-        ref={setNodeRef}
-        className={cn(
-          "relative border-b border-border/60",
-          isOver && "bg-brand/[0.04]",
-        )}
-        style={{ width: scale.rangeWidthPx, height: ROW_HEIGHT_PX }}
-      >
-        <WorkingHoursOverlay dayWindows={dayWindows} />
-        <Gridlines />
-        {opsHere.map((op) => (
-          <OperationBlock
-            key={op.id}
-            op={op}
-            conflict={conflictIds.has(op.id)}
-            canEditSteps={canEditSteps}
-            groupColor={group.color}
-            onEdit={onEdit}
-          />
-        ))}
-      </div>
-    </>
+      }
+      contentRef={setNodeRef}
+      contentClassName={cn(
+        "transition-colors",
+        isOver && "bg-brand/15 ring-2 ring-inset ring-brand/50",
+      )}
+    >
+      {opsHere.map((op) => (
+        <OperationBlock
+          key={op.id}
+          op={op}
+          conflict={conflictIds.has(op.id)}
+          canEditSteps={canEditSteps}
+          groupColor={group.color}
+        />
+      ))}
+    </CalendarRow>
   );
 }
 
@@ -198,7 +163,6 @@ interface OperationBlockProps {
   conflict: boolean;
   canEditSteps: boolean;
   groupColor: string | null;
-  onEdit: (moUuid: string) => void;
 }
 
 function OperationBlock({
@@ -206,7 +170,6 @@ function OperationBlock({
   conflict,
   canEditSteps,
   groupColor,
-  onEdit,
 }: OperationBlockProps) {
   const scale = useTimeScale();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
@@ -214,39 +177,23 @@ function OperationBlock({
       id: `op-${op.id}`,
       disabled: !canEditSteps,
     });
-  const dragMoved = useRef(false);
 
   if (!op.planned_start || !op.planned_finish) return null;
-
   const startMs = new Date(op.planned_start).getTime();
   const endMs = new Date(op.planned_finish).getTime();
-  const rangeStartMs = scale.rangeStart.getTime();
-  const rangeEndMs = scale.rangeEnd.getTime();
-  if (endMs <= rangeStartMs || startMs >= rangeEndMs) return null;
+  if (endMs <= scale.rangeStart.getTime() || startMs >= scale.rangeEnd.getTime())
+    return null;
 
-  const visibleStart = Math.max(startMs, rangeStartMs);
-  const visibleEnd = Math.min(endMs, rangeEndMs);
+  const visibleStart = Math.max(startMs, scale.rangeStart.getTime());
+  const visibleEnd = Math.min(endMs, scale.rangeEnd.getTime());
   const left = scale.pxAt(new Date(visibleStart));
   const width = Math.max(scale.pxAt(new Date(visibleEnd)) - left, 24);
 
   const dragStyle: React.CSSProperties = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : {};
-
   const mo = op.manufacturing_order;
   const moHref = mo ? `/production/manufacturing-orders/${mo.uuid}` : "#";
-
-  function onPointerDownCapture() {
-    dragMoved.current = false;
-  }
-  function onPointerMoveCapture(e: React.PointerEvent) {
-    if (e.buttons === 1) dragMoved.current = true;
-  }
-  function onClick(e: React.MouseEvent) {
-    if (dragMoved.current) return;
-    e.stopPropagation();
-    if (mo) onEdit(mo.uuid);
-  }
 
   return (
     <div
@@ -261,16 +208,18 @@ function OperationBlock({
         ...dragStyle,
       }}
       className={cn(
-        "group absolute select-none rounded-md border px-2 py-1 text-[11px] shadow-sm transition-shadow",
+        "group absolute z-10 select-none rounded-md border px-2 py-1 text-[11px] shadow-sm transition-shadow",
         isDragging && "z-30 cursor-grabbing shadow-lg",
-        canEditSteps ? "cursor-grab" : "cursor-pointer",
+        canEditSteps ? "cursor-grab" : "cursor-default",
         conflict
           ? "border-destructive bg-destructive/10 text-destructive ring-1 ring-destructive/60"
           : "border-border/70 bg-card text-foreground hover:shadow-md",
       )}
-      onPointerDownCapture={onPointerDownCapture}
-      onPointerMoveCapture={onPointerMoveCapture}
-      onClick={onClick}
+      title={
+        canEditSteps
+          ? "Drag to reschedule or drop on another workstation to reassign."
+          : `${mo?.code ?? `Op #${op.id}`} (read-only)`
+      }
     >
       <div
         aria-hidden
@@ -280,7 +229,7 @@ function OperationBlock({
       <div className="ml-1.5 flex h-full flex-col justify-center overflow-hidden">
         <Link
           href={moHref}
-          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
           className="truncate text-[10px] font-mono font-semibold hover:underline"
         >
           {mo?.code ?? `MO #${op.manufacturing_order_id}`}

@@ -395,6 +395,7 @@ export type ManufacturingOrderStatus =
   | "draft"
   | "prepared"
   | "approved"
+  | "scheduled"
   | "in_progress"
   | "completed"
   | "cancelled";
@@ -433,10 +434,44 @@ export interface ScheduleOperation {
   operation_description: string | null;
   planned_start: string | null;
   planned_finish: string | null;
+  /** Preserved across unschedule — the calendar uses this to lay
+   *  out steps when an MO is dropped from the backlog. */
+  planned_duration_seconds: number;
   actual_start: string | null;
   actual_finish: string | null;
   quantity: string | null;
   sort_order: number;
+}
+
+export interface BacklogMOStep {
+  id: number;
+  uuid: string;
+  sort_order: number;
+  operation_description: string | null;
+  planned_duration_seconds: number;
+  workstation_group: WorkstationGroupSummary | null;
+}
+
+export interface BacklogMO {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: ManufacturingOrderStatus;
+  revision: string;
+  quantity: string;
+  due_date: string | null;
+  item: BOMPartSummary | null;
+  bom: BOMSummary | null;
+  assigned_to: AuditActor | null;
+  /** Sum of step durations — how wide the block will be on the
+   *  calendar once dropped. */
+  planned_duration_seconds: number;
+  step_count: number;
+  /** Lets the FE group rows as project > MO. May point to an MO
+   *  that's already scheduled (not in the backlog) — in that
+   *  case the FE treats this MO as a root of its own subtree. */
+  parent_mo_id: number | null;
+  steps_summary: BacklogMOStep[];
 }
 
 export interface ScheduleWindowInterval {
@@ -467,6 +502,7 @@ export interface ProductionScheduleResponse {
   workstation_groups: WorkstationGroupSummary[];
   operations: ScheduleOperation[];
   working_windows: ScheduleGroupWindows[];
+  backlog: BacklogMO[];
 }
 
 export interface ManufacturingOrderSiteSummary {
@@ -484,8 +520,10 @@ export interface ManufacturingOrderRelation {
   status: ManufacturingOrderStatus;
   quantity: string;
   revision?: string;
-  start_at?: string;
-  finish_at?: string;
+  /** Derived from step times — null when the MO is unscheduled. */
+  start_at?: string | null;
+  /** Derived from step times — null when the MO is unscheduled. */
+  finish_at?: string | null;
   item: BOMPartSummary | null;
 }
 
@@ -668,9 +706,13 @@ export interface ManufacturingOrderOperation {
   /** Assigned workers — defaults snapshotted from the routing
    *  template's per-step defaults, then editable per-MO. */
   workers: Array<{ id: number; uuid: string; name: string; email: string }>;
-  /** Computed default at snapshot time; editable per-MO. */
+  /** Computed default at snapshot time; editable per-MO. Null
+   *  while the MO is in the backlog (not yet scheduled). */
   planned_start: string | null;
   planned_finish: string | null;
+  /** Preserved across unschedule. Routing-preview rows expose
+   *  the routing duration here. */
+  planned_duration_seconds?: number;
   /** Filled in via the operator's modify-operation page (or by
    *  the execution layer once it ships). */
   actual_start: string | null;
@@ -725,8 +767,10 @@ export interface ManufacturingOrder {
   revision: string;
   quantity: string;
   due_date: string | null;
-  start_at: string;
-  finish_at: string;
+  /** Derived from min(steps.planned_start) — null when unscheduled. */
+  start_at: string | null;
+  /** Derived from max(steps.planned_finish) — null when unscheduled. */
+  finish_at: string | null;
   expiry_date: string | null;
   notes: string | null;
   warehouse_id: number;
@@ -788,8 +832,10 @@ export interface ManufacturingOrderSummary {
   revision: string;
   quantity: string;
   due_date: string | null;
-  start_at: string;
-  finish_at: string;
+  /** Derived from steps; null when unscheduled. */
+  start_at: string | null;
+  /** Derived from steps; null when unscheduled. */
+  finish_at: string | null;
   item: BOMPartSummary | null;
   bom: BOMSummary | null;
   warehouse: ManufacturingOrderSiteSummary | null;
@@ -819,8 +865,6 @@ export interface ManufacturingOrderUpsertInput {
   parent_mo_id?: number | null;
   quantity?: string | number;
   due_date?: string | null;
-  start_at?: string;
-  finish_at?: string;
   expiry_date?: string | null;
   assigned_to_id?: number;
   revision?: string;

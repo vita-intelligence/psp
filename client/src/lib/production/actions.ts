@@ -406,7 +406,7 @@ export async function deleteRoutingAction(
 // ---------------------------------------------------------------
 
 export type ManufacturingOrderResult =
-  | { ok: true; mo: ManufacturingOrder }
+  | { ok: true; mo: ManufacturingOrder; outsideHoursSeconds?: number }
   | (ErrorResult & { ok: false });
 
 export async function createManufacturingOrderAction(
@@ -595,6 +595,164 @@ export async function shiftManufacturingOrderAction(
       ...toErrorResult(err, {
         source: "shiftManufacturingOrderAction",
         fallbackDetail: "Couldn't reschedule the MO.",
+      }),
+    };
+  }
+}
+
+/**
+ * Place an approved MO onto the calendar at `startAt` (ISO datetime).
+ * The BE walks the steps forward from that point using each step's
+ * planned_duration_seconds. Flips MO status to "scheduled".
+ */
+export async function scheduleManufacturingOrderAction(
+  uuid: string,
+  startAt: string,
+  opts?: { workstationGroupId?: number },
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("scheduleManufacturingOrderAction"),
+    };
+  try {
+    const body: Record<string, unknown> = { start_at: startAt };
+    if (opts?.workstationGroupId !== undefined) {
+      body.workstation_group_id = opts.workstationGroupId;
+    }
+
+    const { mo, outside_hours_seconds } = await api<{
+      mo: ManufacturingOrder;
+      outside_hours_seconds: number;
+    }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/schedule`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify(body),
+      },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, mo, outsideHoursSeconds: outside_hours_seconds ?? 0 };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "scheduleManufacturingOrderAction",
+        fallbackDetail: "Couldn't schedule the MO.",
+      }),
+    };
+  }
+}
+
+/**
+ * Schedule an entire MO chain — root forward from `startAt`, then
+ * each child backward from the root's first step so children finish
+ * before the parent begins. BE walks both directions through
+ * working-hour-aware windows.
+ */
+export async function scheduleProjectAction(
+  rootUuid: string,
+  startAt: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("scheduleProjectAction"),
+    };
+  try {
+    const { mo, outside_hours_seconds } = await api<{
+      mo: ManufacturingOrder;
+      outside_hours_seconds: number;
+    }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(rootUuid)}/schedule-chain`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ start_at: startAt }),
+      },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${rootUuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, mo, outsideHoursSeconds: outside_hours_seconds ?? 0 };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "scheduleProjectAction",
+        fallbackDetail: "Couldn't schedule the project.",
+      }),
+    };
+  }
+}
+
+/**
+ * Send an entire MO chain (root + every scheduled descendant) back
+ * to the backlog. Used by the project-view drag-to-backlog so the
+ * planner can unschedule the whole project in one shot.
+ */
+export async function unscheduleProjectAction(
+  rootUuid: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("unscheduleProjectAction"),
+    };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(rootUuid)}/unschedule-chain`,
+      { method: "POST", token },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${rootUuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "unscheduleProjectAction",
+        fallbackDetail: "Couldn't unschedule the project.",
+      }),
+    };
+  }
+}
+
+/**
+ * Send a scheduled MO back to the backlog. Clears every step's
+ * planned_start + planned_finish; status returns to "approved".
+ */
+export async function unscheduleManufacturingOrderAction(
+  uuid: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return {
+      ok: false,
+      ...unauthorizedResult("unscheduleManufacturingOrderAction"),
+    };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/unschedule`,
+      { method: "POST", token },
+    );
+    revalidatePath("/production/manufacturing-orders");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    revalidatePath("/production/schedule");
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "unscheduleManufacturingOrderAction",
+        fallbackDetail: "Couldn't unschedule the MO.",
       }),
     };
   }

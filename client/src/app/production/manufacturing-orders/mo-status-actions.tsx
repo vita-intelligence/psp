@@ -80,6 +80,12 @@ const STATUS_STYLES: Record<
     text: "text-indigo-700 dark:text-indigo-300",
     dot: "bg-indigo-500",
   },
+  scheduled: {
+    ring: "ring-sky-200 dark:ring-sky-900/50",
+    bg: "bg-sky-50 dark:bg-sky-950/30",
+    text: "text-sky-700 dark:text-sky-300",
+    dot: "bg-sky-500",
+  },
   in_progress: {
     ring: "ring-amber-200 dark:ring-amber-900/50",
     bg: "bg-amber-50 dark:bg-amber-950/30",
@@ -104,6 +110,7 @@ const STATUS_LABEL: Record<ManufacturingOrderStatus, string> = {
   draft: "Draft",
   prepared: "Awaiting approval",
   approved: "Approved",
+  scheduled: "Scheduled",
   in_progress: "In progress",
   completed: "Completed",
   cancelled: "Cancelled",

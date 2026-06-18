@@ -4,13 +4,21 @@ defmodule Backend.Production.ManufacturingOrder do
   of truth for where the order sits on the floor:
 
     * `draft` — operator is still building it. Free to edit.
-    * `approved` — the approver has signed off; schedule reserves
-      capacity. Header is mostly frozen (quantity / dates change
-      via amend).
+    * `prepared` — 1st signature (planner).
+    * `approved` — 2nd signature (scientist). The MO is committed
+      but not yet on the calendar — it sits in the scheduler's
+      backlog.
+    * `scheduled` — derived from steps: every step has a
+      `planned_start`. Set automatically when the planner drags
+      the MO onto the calendar, cleared when they drag it back
+      to the backlog.
     * `in_progress` — operators have started running it.
-    * `completed` — output lot is in the system (stock effect lands
-      in a future pass; today this is just a status flip).
+    * `completed` — output lot is in the system.
     * `cancelled` — aborted; no stock effect.
+
+  Timing intentionally lives on the steps, NOT on the MO.
+  Approval is about WHAT we're making (item, qty, BOM, routing);
+  scheduling is about WHEN. The two are separate workflow phases.
 
   Transitions are gated server-side. See
   `Backend.Production.transition_mo/3` for the allowed pairs.
@@ -32,7 +40,7 @@ defmodule Backend.Production.ManufacturingOrder do
 
   alias Backend.Warehouses.Warehouse
 
-  @statuses ~w(draft prepared approved in_progress completed cancelled)
+  @statuses ~w(draft prepared approved scheduled in_progress completed cancelled)
   def statuses, do: @statuses
 
   schema "manufacturing_orders" do
@@ -40,8 +48,6 @@ defmodule Backend.Production.ManufacturingOrder do
 
     field :quantity, :decimal
     field :due_date, :date
-    field :start_at, :utc_datetime
-    field :finish_at, :utc_datetime
     field :expiry_date, :date
 
     field :revision, :string, default: "V00"
@@ -112,8 +118,6 @@ defmodule Backend.Production.ManufacturingOrder do
       :parent_mo_id,
       :quantity,
       :due_date,
-      :start_at,
-      :finish_at,
       :expiry_date,
       :assigned_to_id,
       :revision,
@@ -127,14 +131,11 @@ defmodule Backend.Production.ManufacturingOrder do
       :item_id,
       :bom_id,
       :quantity,
-      :start_at,
-      :finish_at,
       :assigned_to_id
     ])
     |> validate_length(:revision, max: 16)
     |> validate_length(:notes, max: 4000)
     |> validate_number(:quantity, greater_than: 0)
-    |> validate_finish_after_start()
     |> assoc_constraint(:company)
     |> assoc_constraint(:warehouse)
     |> assoc_constraint(:item)
@@ -144,10 +145,6 @@ defmodule Backend.Production.ManufacturingOrder do
     |> check_constraint(:quantity,
       name: :manufacturing_orders_quantity_positive,
       message: "must be greater than zero"
-    )
-    |> check_constraint(:finish_at,
-      name: :manufacturing_orders_finish_after_start,
-      message: "must be on or after the start"
     )
   end
 
@@ -175,19 +172,4 @@ defmodule Backend.Production.ManufacturingOrder do
     )
   end
 
-  defp validate_finish_after_start(cs) do
-    start_at = get_field(cs, :start_at)
-    finish_at = get_field(cs, :finish_at)
-
-    cond do
-      is_nil(start_at) or is_nil(finish_at) ->
-        cs
-
-      DateTime.compare(finish_at, start_at) == :lt ->
-        add_error(cs, :finish_at, "must be on or after the start")
-
-      true ->
-        cs
-    end
-  end
 end

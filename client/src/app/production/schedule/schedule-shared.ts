@@ -50,19 +50,21 @@ export const ZOOM_PRESETS: Record<ZoomLevel, ZoomPreset> = {
     minorTickMs: 15 * MS_PER_MIN,
     majorTickMs: MS_PER_HOUR,
   },
-  // 7 days × 960 px/day = 6720 px wide. Day-level major labels,
-  // hourly minor ticks. This is the default planner view.
+  // 14 days × 240 px/day = 3360 px wide. Two weeks of horizontal
+  // scroll inside one view — feels like a continuous strip rather
+  // than a single page. Day-level majors, 6-hour minors.
   week: {
-    rangeDays: 7,
-    pxPerMs: 960 / MS_PER_DAY,
-    minorTickMs: MS_PER_HOUR,
+    rangeDays: 14,
+    pxPerMs: 240 / MS_PER_DAY,
+    minorTickMs: 6 * MS_PER_HOUR,
     majorTickMs: MS_PER_DAY,
   },
-  // 28 days × 100 px/day = 2800 px wide. Week-boundary majors,
-  // daily minors for long-range capacity look-ahead.
+  // 84 days (≈ 3 months) × 60 px/day = 5040 px wide. Wide enough
+  // that horizontal scroll covers a whole quarter; week boundaries
+  // are the natural major guides.
   month: {
-    rangeDays: 28,
-    pxPerMs: 100 / MS_PER_DAY,
+    rangeDays: 84,
+    pxPerMs: 60 / MS_PER_DAY,
     minorTickMs: MS_PER_DAY,
     majorTickMs: 7 * MS_PER_DAY,
   },

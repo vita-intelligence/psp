@@ -82,8 +82,6 @@ interface FormState {
   bom: BOMOption | null;
   quantity: string;
   due_date: string;
-  start_at: string;
-  finish_at: string;
   expiry_date: string;
   assigned_to: UserOption | null;
   revision: string;
@@ -101,36 +99,14 @@ interface Props {
   onSavedSuccess?: () => void;
 }
 
-/** "2026-06-16T13:41" — the value type for `<input type="datetime-local">`.
- *  We swap to UTC ISO on submit. */
-function toLocalInput(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function toIso(local: string): string | null {
-  if (!local) return null;
-  const d = new Date(local);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
 function initialFrom(mo: ManufacturingOrder | null): FormState {
   if (!mo) {
-    const now = new Date();
-    const start = new Date(now.getTime() + 60 * 60 * 1000);
-    const finish = new Date(start.getTime() + 4 * 60 * 60 * 1000);
     return {
       site: null,
       product: null,
       bom: null,
       quantity: "",
       due_date: "",
-      start_at: toLocalInput(start.toISOString()),
-      finish_at: toLocalInput(finish.toISOString()),
       expiry_date: "",
       assigned_to: null,
       revision: "V00",
@@ -161,8 +137,6 @@ function initialFrom(mo: ManufacturingOrder | null): FormState {
       : null,
     quantity: mo.quantity,
     due_date: mo.due_date ?? "",
-    start_at: toLocalInput(mo.start_at),
-    finish_at: toLocalInput(mo.finish_at),
     expiry_date: mo.expiry_date ?? "",
     assigned_to: mo.assigned_to
       ? {
@@ -382,21 +356,12 @@ export function ManufacturingOrderForm({
       setFieldErrors({ quantity: ["Quantity must be greater than zero."] });
       return;
     }
-    const startIso = toIso(state.start_at);
-    const finishIso = toIso(state.finish_at);
-    if (!startIso || !finishIso) {
-      setFieldErrors({ start_at: ["Set start + finish."] });
-      return;
-    }
-
     const payload: ManufacturingOrderUpsertInput = {
       warehouse_id: state.site.id,
       item_id: state.product.id,
       bom_id: state.bom.id,
       quantity: String(qty),
       due_date: state.due_date || null,
-      start_at: startIso,
-      finish_at: finishIso,
       expiry_date: state.expiry_date || null,
       assigned_to_id: state.assigned_to.id,
       revision: state.revision.trim() || "V00",
@@ -597,36 +562,6 @@ export function ManufacturingOrderForm({
                   value={state.due_date}
                   onChange={(e) => setField("due_date", e.target.value)}
                 />
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
-              <Label htmlFor="start_at" className="pt-2.5 text-sm font-medium">
-                Start <span className="text-destructive">*</span>
-              </Label>
-              <div className="max-w-[16rem]">
-                <Input
-                  id="start_at"
-                  type="datetime-local"
-                  value={state.start_at}
-                  onChange={(e) => setField("start_at", e.target.value)}
-                />
-                <FieldError messages={fieldErrors.start_at} />
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
-              <Label htmlFor="finish_at" className="pt-2.5 text-sm font-medium">
-                Finish <span className="text-destructive">*</span>
-              </Label>
-              <div className="max-w-[16rem]">
-                <Input
-                  id="finish_at"
-                  type="datetime-local"
-                  value={state.finish_at}
-                  onChange={(e) => setField("finish_at", e.target.value)}
-                />
-                <FieldError messages={fieldErrors.finish_at} />
               </div>
             </div>
 

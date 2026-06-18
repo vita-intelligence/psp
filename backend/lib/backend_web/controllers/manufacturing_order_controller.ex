@@ -197,6 +197,27 @@ defmodule BackendWeb.ManufacturingOrderController do
             {:ok, updated} ->
               json(conn, %{mo: Payloads.manufacturing_order(updated)})
 
+            {:error, :past_time} ->
+              unprocessable(
+                conn,
+                "past_time",
+                "Can't drag the block before the current time."
+              )
+
+            {:error, :must_finish_before_parent} ->
+              unprocessable(
+                conn,
+                "chain_order",
+                "This MO must finish before its parent MO starts."
+              )
+
+            {:error, :must_start_after_children} ->
+              unprocessable(
+                conn,
+                "chain_order",
+                "This MO must start after every sub-MO finishes."
+              )
+
             {:error, %Ecto.Changeset{} = cs} ->
               changeset_error(conn, cs)
           end
@@ -236,6 +257,191 @@ defmodule BackendWeb.ManufacturingOrderController do
 
   def shift_chain(conn, _),
     do: unprocessable(conn, "invalid_payload", "Pass delta_seconds as an integer.")
+
+  # POST /api/production/manufacturing-orders/:id/schedule
+  # Body: %{"start_at" => ISO datetime}. Places an approved MO on
+  # the calendar starting at `start_at` — walks the steps forward
+  # respecting working hours. Flips status to "scheduled". Returns
+  # `outside_hours_seconds` so the FE can warn when the placement
+  # spilled past available working windows.
+  def schedule(conn, %{"id" => uuid, "start_at" => start_raw} = params) when is_binary(start_raw) do
+    actor = conn.assigns.current_user
+
+    opts =
+      case params["workstation_group_id"] do
+        nil -> []
+        wsg when is_integer(wsg) -> [workstation_group_id: wsg]
+        wsg when is_binary(wsg) ->
+          case Integer.parse(wsg) do
+            {n, ""} -> [workstation_group_id: n]
+            _ -> []
+          end
+        _ -> []
+      end
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_edit") do
+          with {:ok, dt, _offset} <- DateTime.from_iso8601(start_raw),
+               {:ok, updated, meta} <-
+                 Production.schedule_mo(
+                   actor,
+                   mo,
+                   DateTime.shift_zone!(dt, "Etc/UTC"),
+                   opts
+                 ) do
+            json(conn, %{
+              mo: Payloads.manufacturing_order(updated),
+              outside_hours_seconds: meta.outside_hours_seconds
+            })
+          else
+            {:error, :wrong_status} ->
+              unprocessable(conn, "wrong_status", "MO must be approved or scheduled to schedule.")
+
+            {:error, :past_time} ->
+              unprocessable(
+                conn,
+                "past_time",
+                "Can't schedule before the current time."
+              )
+
+            {:error, :must_finish_before_parent} ->
+              unprocessable(
+                conn,
+                "chain_order",
+                "This MO must finish before its parent MO starts. Reschedule the parent later or this MO earlier."
+              )
+
+            {:error, :must_start_after_children} ->
+              unprocessable(
+                conn,
+                "chain_order",
+                "This MO must start after every sub-MO finishes — the sub-MOs make inputs this run consumes."
+              )
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+
+            _ ->
+              unprocessable(conn, "invalid_payload", "Pass start_at as an ISO datetime.")
+          end
+        else
+          forbidden(conn, "Missing production.mo_edit permission.")
+        end
+    end
+  end
+
+  def schedule(conn, _),
+    do: unprocessable(conn, "invalid_payload", "Pass start_at as an ISO datetime.")
+
+  # POST /api/production/manufacturing-orders/:id/schedule-chain
+  # Body: %{"start_at" => ISO datetime}. Schedules the entire chain:
+  # root forward from start_at, then each child backward from the
+  # root's first step so the child finishes before the parent begins.
+  def schedule_chain(conn, %{"id" => uuid, "start_at" => start_raw}) when is_binary(start_raw) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_edit") do
+          with {:ok, dt, _offset} <- DateTime.from_iso8601(start_raw),
+               {:ok, updated, meta} <-
+                 Production.schedule_mo_chain(
+                   actor,
+                   mo,
+                   DateTime.shift_zone!(dt, "Etc/UTC")
+                 ) do
+            json(conn, %{
+              mo: Payloads.manufacturing_order(updated),
+              outside_hours_seconds: meta.outside_hours_seconds
+            })
+          else
+            {:error, :wrong_status} ->
+              unprocessable(conn, "wrong_status", "Root MO must be approved or scheduled.")
+
+            {:error, :past_time} ->
+              unprocessable(
+                conn,
+                "past_time",
+                "Can't schedule the project before the current time."
+              )
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+
+            _ ->
+              unprocessable(conn, "invalid_payload", "Pass start_at as an ISO datetime.")
+          end
+        else
+          forbidden(conn, "Missing production.mo_edit permission.")
+        end
+    end
+  end
+
+  def schedule_chain(conn, _),
+    do: unprocessable(conn, "invalid_payload", "Pass start_at as an ISO datetime.")
+
+  # POST /api/production/manufacturing-orders/:id/unschedule-chain
+  # Sends an entire MO chain back to the backlog. Walks every
+  # scheduled descendant. Used by the project view's drag-to-backlog.
+  def unschedule_chain(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_edit") do
+          case Production.unschedule_mo_chain(actor, mo) do
+            {:ok, updated} ->
+              json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+
+            {:error, reason} ->
+              unprocessable(conn, "unschedule_failed", inspect(reason))
+          end
+        else
+          forbidden(conn, "Missing production.mo_edit permission.")
+        end
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/unschedule
+  # Sends a scheduled MO back to the backlog. Clears every step's
+  # planned_start + planned_finish. Status returns to "approved".
+  def unschedule(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_edit") do
+          case Production.unschedule_mo(actor, mo) do
+            {:ok, updated} ->
+              json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+            {:error, :wrong_status} ->
+              unprocessable(conn, "wrong_status", "Only scheduled MOs can be unscheduled.")
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+        else
+          forbidden(conn, "Missing production.mo_edit permission.")
+        end
+    end
+  end
 
   # GET /api/production/manufacturing-orders/:id/merge-candidates
   # Open sub-MOs that produce the same item — picker source for the
