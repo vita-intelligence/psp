@@ -84,6 +84,7 @@ export type PermissionCode =
   | "production.mo_approve"
   | "production.mo_execute"
   | "production.mo_release"
+  | "production.preflight"
   | "production.mo_delete"
   | "warehouse.pick";
 

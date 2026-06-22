@@ -196,6 +196,8 @@ defmodule Backend.RBAC.Permissions do
      "Start, complete, or cancel a manufacturing order (run on the floor)"},
     {"production.mo_release",
      "Release a scheduled MO to the warehouse for ingredient pickup"},
+    {"production.preflight",
+     "Confirm receipt of picked materials at the production line (qty + quality sign-off)"},
     {"production.mo_delete", "Delete manufacturing orders"}
   ]
 

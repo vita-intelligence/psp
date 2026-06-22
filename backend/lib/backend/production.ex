@@ -2135,12 +2135,23 @@ defmodule Backend.Production do
         # Block the approved → in_progress hop specifically; other
         # transitions (cancel, amend) stay open so the planner isn't
         # painted into a corner if a child stalls.
-        case ensure_children_complete(mo, to) do
-          :ok -> transactional_transition(actor, mo, to)
-          {:error, _} = err -> err
+        with :ok <- ensure_children_complete(mo, to),
+             :ok <- ensure_preflight_complete_for_transition(mo, to) do
+          transactional_transition(actor, mo, to)
         end
     end
   end
+
+  # Pre-production receipt gate. `scheduled → in_progress` is only
+  # legal once the production operator has signed off every raw
+  # material / packaging booking (`received_at IS NOT NULL`). Mirrors
+  # the existing children-complete gate above — both block the same
+  # transition for compliance reasons, neither touches cancel/amend.
+  defp ensure_preflight_complete_for_transition(%ManufacturingOrder{} = mo, "in_progress") do
+    if mo_preflight_complete?(mo), do: :ok, else: {:error, :preflight_incomplete}
+  end
+
+  defp ensure_preflight_complete_for_transition(_mo, _to), do: :ok
 
   # Wraps the transition so cancel-side effects (releasing bookings,
   # cascade-cancelling open children) are atomic with the status flip
@@ -3220,7 +3231,11 @@ defmodule Backend.Production do
       status: b.status,
       note: b.note,
       picked_at: b.picked_at,
-      picked_by_id: b.picked_by_id
+      picked_by_id: b.picked_by_id,
+      received_at: b.received_at,
+      received_by_id: b.received_by_id,
+      received_qty: b.received_qty,
+      received_notes: b.received_notes
     }
   end
 
@@ -4885,6 +4900,212 @@ defmodule Backend.Production do
     )
     |> Repo.all()
   end
+
+  # ----- Pre-production receipt check ----------------------------
+
+  @doc """
+  Production operator's queue. MOs whose warehouse pickup is complete
+  (lots on the production-feed cell) but at least one
+  raw_material / packaging booking hasn't been physically verified
+  yet (`received_at IS NULL`). Sorted by `pickup_completed_at` so the
+  oldest hand-offs surface first.
+  """
+  def list_preflight_queue(company_id) when is_integer(company_id) do
+    # IDs of MOs that still have at least one raw-material / packaging
+    # booking awaiting the production operator's sign-off. Computed as
+    # a subquery (rather than an inline EXISTS) so the outer query
+    # stays simple + Ecto-aliasable.
+    pending_mo_ids =
+      from(b in ManufacturingOrderBooking,
+        join: it in Item,
+        on: it.id == b.item_id,
+        where:
+          b.status == "requested" and
+            it.item_type in ["raw_material", "packaging"] and
+            is_nil(b.received_at),
+        select: b.manufacturing_order_id,
+        distinct: true
+      )
+
+    pending_mos =
+      from(mo in ManufacturingOrder,
+        where:
+          mo.company_id == ^company_id and
+            mo.status == "scheduled" and
+            not is_nil(mo.pickup_completed_at) and
+            mo.id in subquery(pending_mo_ids),
+        order_by: [asc: mo.pickup_completed_at, asc: mo.id],
+        preload: [:item, :warehouse, :pickup_completed_by, steps: []]
+      )
+      |> Repo.all()
+
+    Enum.map(pending_mos, fn mo ->
+      planned_start = earliest_step_start(mo)
+      %{mo: mo, planned_start: planned_start}
+    end)
+  end
+
+  @doc """
+  Full per-MO preflight detail — MO header + raw/packaging bookings
+  with current received state. Mirrors the picker's detail endpoint
+  shape so the FE can reuse the booking row layout.
+  """
+  def get_preflight_detail(company_id, mo_uuid)
+      when is_integer(company_id) and is_binary(mo_uuid) do
+    case get_manufacturing_order(company_id, mo_uuid) do
+      nil ->
+        nil
+
+      %ManufacturingOrder{} = mo ->
+        bookings = list_pickup_bookings(mo)
+        %{mo: mo, bookings: bookings}
+    end
+  end
+
+  @doc """
+  Production operator action — confirm a single booking has arrived
+  at the production-feed cell. Stamps `received_at` / `received_by_id`
+  + the measured qty + free-text quality notes. `received_qty` is
+  required and must be > 0. Idempotent: re-confirming an already-
+  received booking succeeds without re-stamping the actor/time.
+
+  Refuses if the MO's pickup hasn't completed (`pickup_completed_at`
+  must be set first — picker needs to physically transfer before
+  production can receive).
+  """
+  def confirm_booking_received(
+        %User{} = actor,
+        %ManufacturingOrderBooking{} = booking,
+        attrs
+      )
+      when is_map(attrs) do
+    mo = Repo.get!(ManufacturingOrder, booking.manufacturing_order_id)
+
+    cond do
+      is_nil(mo.pickup_completed_at) ->
+        {:error, :pickup_not_completed}
+
+      not is_nil(booking.received_at) ->
+        # Idempotent re-confirm. Updates notes / qty only when the
+        # operator passes them; never overwrites the actor stamp.
+        update_attrs =
+          %{}
+          |> maybe_put_received_qty(attrs)
+          |> maybe_put_received_notes(attrs)
+          |> Map.put("updated_by_id", actor.id)
+
+        if update_attrs == %{"updated_by_id" => actor.id} do
+          {:ok, Repo.preload(booking, [:item, :stock_lot, :picked_by, :received_by])}
+        else
+          apply_booking_changeset(actor, booking, update_attrs)
+        end
+
+      true ->
+        with {:ok, qty} <- parse_received_qty(attrs) do
+          update_attrs =
+            %{
+              "received_at" => now(),
+              "received_by_id" => actor.id,
+              "received_qty" => qty,
+              "updated_by_id" => actor.id
+            }
+            |> maybe_put_received_notes(attrs)
+
+          apply_booking_changeset(actor, booking, update_attrs)
+        end
+    end
+  end
+
+  defp parse_received_qty(attrs) do
+    raw = Map.get(attrs, "received_qty") || Map.get(attrs, :received_qty)
+
+    case raw do
+      %Decimal{} = d ->
+        if Decimal.compare(d, Decimal.new("0")) == :gt, do: {:ok, d}, else: {:error, :bad_qty}
+
+      n when is_integer(n) and n > 0 ->
+        {:ok, Decimal.new(n)}
+
+      n when is_float(n) and n > 0 ->
+        {:ok, Decimal.from_float(n)}
+
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} ->
+            if Decimal.compare(d, Decimal.new("0")) == :gt do
+              {:ok, d}
+            else
+              {:error, :bad_qty}
+            end
+
+          _ ->
+            {:error, :bad_qty}
+        end
+
+      _ ->
+        {:error, :bad_qty}
+    end
+  end
+
+  defp maybe_put_received_qty(attrs_out, attrs_in) do
+    case parse_received_qty(attrs_in) do
+      {:ok, d} -> Map.put(attrs_out, "received_qty", d)
+      {:error, _} -> attrs_out
+    end
+  end
+
+  defp maybe_put_received_notes(attrs_out, attrs_in) do
+    case Map.get(attrs_in, "received_notes") || Map.get(attrs_in, :received_notes) do
+      s when is_binary(s) -> Map.put(attrs_out, "received_notes", s)
+      _ -> attrs_out
+    end
+  end
+
+  defp apply_booking_changeset(%User{} = actor, %ManufacturingOrderBooking{} = booking, attrs) do
+    booking
+    |> ManufacturingOrderBooking.changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_booking",
+          updated,
+          booking_snapshot(booking),
+          booking_snapshot(updated)
+        )
+
+        {:ok, Repo.preload(updated, [:item, :stock_lot, :picked_by, :received_by])}
+
+      err ->
+        err
+    end
+  end
+
+  @doc """
+  True when every raw_material / packaging booking on the MO has been
+  received. Used to gate `do_transition(mo, "in_progress")` — the
+  production operator's sign-off is the precondition for starting
+  work.
+  """
+  def mo_preflight_complete?(%ManufacturingOrder{id: id}) do
+    pending =
+      from(b in ManufacturingOrderBooking,
+        join: it in Item,
+        on: it.id == b.item_id,
+        where:
+          b.manufacturing_order_id == ^id and
+            b.status == "requested" and
+            it.item_type in ["raw_material", "packaging"] and
+            is_nil(b.received_at),
+        select: count(b.id)
+      )
+      |> Repo.one()
+
+    pending == 0
+  end
+
+  def mo_preflight_complete?(_), do: false
 
   # ----- pickup helpers ------------------------------------------
 

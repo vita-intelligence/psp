@@ -1339,6 +1339,14 @@ defmodule BackendWeb.Payloads do
       # final confirm-transfer emits the actual move movement).
       picked_at: b.picked_at,
       picked_by: actor(b, :picked_by),
+      # Pre-production receipt sign-off. The production operator
+      # weighs / counts the lot at the production-feed cell and
+      # records any quality remarks; nothing about consumption yet
+      # (that's a separate step on MO start).
+      received_at: b.received_at,
+      received_by: actor(b, :received_by),
+      received_qty: decimal_to_string(b.received_qty),
+      received_notes: b.received_notes,
       inserted_at: b.inserted_at,
       updated_at: b.updated_at
     }
@@ -1371,6 +1379,25 @@ defmodule BackendWeb.Payloads do
   end
 
   def pickup_queue_entry(_), do: nil
+
+  @doc """
+  One row of the production-operator's preflight queue. Slim shape:
+  MO header + planned_start (so the operator sees how soon production
+  is supposed to fire) + pickup_completed snapshot.
+  """
+  def preflight_queue_entry(%{
+        mo: %Backend.Production.ManufacturingOrder{} = mo,
+        planned_start: planned_start
+      }) do
+    %{
+      mo: manufacturing_order_summary(mo),
+      planned_start: planned_start,
+      pickup_completed_at: mo.pickup_completed_at,
+      pickup_completed_by: actor(mo, :pickup_completed_by)
+    }
+  end
+
+  def preflight_queue_entry(_), do: nil
 
   defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot) do
     %{

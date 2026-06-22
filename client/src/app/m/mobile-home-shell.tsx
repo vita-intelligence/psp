@@ -87,6 +87,15 @@ export const MOBILE_HOME_TILES = [
     badgeKey: null,
   },
   {
+    key: "preflight",
+    href: "/m/preflight",
+    label: "Pre-production",
+    description: "Verify ingredient qty + quality before start",
+    icon: ClipboardCheck,
+    permission: "production.preflight",
+    badgeKey: null,
+  },
+  {
     key: "scan",
     href: "/m/scan",
     label: "Scan QR",

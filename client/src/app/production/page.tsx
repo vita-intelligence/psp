@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   CalendarDays,
+  ClipboardCheck,
   Factory,
   ListChecks,
   Network,
@@ -41,6 +42,13 @@ const SECTIONS: ProdSection[] = [
     description:
       "Calendar view of every MO across workstations and groups. Drag to re-plan.",
     Icon: CalendarDays,
+  },
+  {
+    href: "/production/preflight",
+    label: "Pre-production",
+    description:
+      "Verify ingredient qty + quality after warehouse pickup. Each MO must be signed off line-by-line before it can flip to In progress.",
+    Icon: ClipboardCheck,
   },
   {
     href: "/production/mps",

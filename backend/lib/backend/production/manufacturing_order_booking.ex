@@ -37,12 +37,24 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     # confirm-transfer emits the actual move movement.
     field :picked_at, :utc_datetime
 
+    # Pre-production receipt check. Stamped by a PRODUCTION operator
+    # (different role from the picker) after they weigh / count the
+    # physical lot at the production-feed cell. `received_qty` is the
+    # actually-measured value — usually equal to `quantity` but stored
+    # separately so qty drift is queryable for traceability. The MO
+    # can't transition to "in_progress" until every raw-material /
+    # packaging booking has `received_at` set.
+    field :received_at, :utc_datetime
+    field :received_qty, :decimal
+    field :received_notes, :string
+
     belongs_to :company, Company
     belongs_to :manufacturing_order, ManufacturingOrder
     belongs_to :item, Item
     belongs_to :stock_lot, StockLot
     belongs_to :storage_cell, StorageCell
     belongs_to :picked_by, User
+    belongs_to :received_by, User
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -53,6 +65,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     company_id manufacturing_order_id item_id stock_lot_id storage_cell_id
     quantity consumed_quantity status note
     picked_at picked_by_id
+    received_at received_by_id received_qty received_notes
     created_by_id updated_by_id
   )a
 
@@ -71,6 +84,8 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     |> validate_consumed_le_quantity()
     |> validate_inclusion(:status, @statuses)
     |> validate_length(:note, max: 500)
+    |> validate_length(:received_notes, max: 2000)
+    |> validate_received_qty()
     |> assoc_constraint(:company)
     |> assoc_constraint(:manufacturing_order)
     |> assoc_constraint(:item)
@@ -98,6 +113,26 @@ defmodule Backend.Production.ManufacturingOrderBooking do
       %Decimal{} = d ->
         if Decimal.compare(d, Decimal.new("0")) == :lt do
           add_error(cs, field, "must be zero or greater")
+        else
+          cs
+        end
+
+      _ ->
+        cs
+    end
+  end
+
+  # `received_qty` must be > 0 when set. Allowing zero would mean the
+  # operator marked the booking received but counted nothing — that's
+  # always a mistake (use status="cancelled" for "didn't arrive").
+  defp validate_received_qty(cs) do
+    case get_field(cs, :received_qty) do
+      nil ->
+        cs
+
+      %Decimal{} = d ->
+        if Decimal.compare(d, Decimal.new("0")) != :gt do
+          add_error(cs, :received_qty, "must be greater than zero")
         else
           cs
         end

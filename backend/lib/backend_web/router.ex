@@ -599,6 +599,18 @@ defmodule BackendWeb.Router do
       post "/pickup/:mo_uuid/confirm-transfer",
            WarehousePickupController,
            :confirm_transfer
+
+      # Pre-production receipt check. After the picker confirms
+      # transfer, the production operator signs off each booking
+      # (received qty + quality notes). MO can't transition to
+      # `in_progress` until every raw-material/packaging booking is
+      # received. Gated by `production.preflight` in the controller.
+      get "/preflight-queue", ProductionPreflightController, :queue
+      get "/preflight/:mo_uuid", ProductionPreflightController, :show
+
+      post "/preflight/:mo_uuid/bookings/:booking_uuid/receive",
+           ProductionPreflightController,
+           :receive_booking
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

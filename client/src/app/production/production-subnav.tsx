@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   CalendarDays,
+  ClipboardCheck,
   Factory,
   Home,
   ListChecks,
@@ -44,6 +45,11 @@ const ITEMS: SubnavItem[] = [
     href: "/production/schedule",
     label: "Production schedule",
     Icon: CalendarDays,
+  },
+  {
+    href: "/production/preflight",
+    label: "Pre-production",
+    Icon: ClipboardCheck,
   },
   {
     href: "/production/mps",
@@ -93,7 +99,7 @@ export function ProductionSubnav() {
       aria-label="Production sections"
       className="sticky top-16 z-[5] border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60"
     >
-      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 px-4 py-2 sm:grid-cols-4 sm:px-8 lg:grid-cols-9">
+      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 px-4 py-2 sm:grid-cols-4 sm:px-8 lg:grid-cols-10">
         {ITEMS.map((item) => {
           const active = isActive(item.href);
 

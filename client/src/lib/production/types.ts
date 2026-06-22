@@ -714,6 +714,14 @@ export interface ManufacturingOrderBooking {
    *  final confirm-transfer emits the actual move movement. */
   picked_at: string | null;
   picked_by: AuditActor | null;
+  /** Pre-production receipt sign-off. The production operator weighs
+   *  / counts the lot at the production-feed cell and signs off; the
+   *  MO can't transition to `in_progress` until every raw-material /
+   *  packaging booking is received. */
+  received_at: string | null;
+  received_by: AuditActor | null;
+  received_qty: string | null;
+  received_notes: string | null;
   inserted_at: string;
   updated_at: string;
 }
@@ -929,6 +937,16 @@ export interface PickupQueueEntry {
   pickup_started_by: AuditActor | null;
   released_to_warehouse_at: string;
   released_to_warehouse_by_id: number | null;
+}
+
+/** Row of the production operator's preflight queue. Surfaces MOs
+ *  whose warehouse pickup is complete (lots are at the production-feed
+ *  cell) but the per-booking qty + quality sign-off is still pending. */
+export interface PreflightQueueEntry {
+  mo: ManufacturingOrderSummary;
+  planned_start: string | null;
+  pickup_completed_at: string | null;
+  pickup_completed_by: AuditActor | null;
 }
 
 export interface ManufacturingOrderLedgerPage {
