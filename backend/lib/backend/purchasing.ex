@@ -1172,7 +1172,10 @@ defmodule Backend.Purchasing do
          {:ok, width_mm} <- parse_positive_integer(pack["package_width_mm"]) |> remap_err(:non_positive_dim),
          {:ok, height_mm} <- parse_positive_integer(pack["package_height_mm"]) |> remap_err(:non_positive_dim),
          {:ok, weight_kg} <- parse_positive_decimal(pack["package_weight_kg"]) |> remap_err(:non_positive_dim),
-         {:ok, units_per} <- parse_positive_integer(pack["units_per_package"]) |> remap_err(:non_positive_dim),
+         # `units_per_package` is decimal — a continuous-UoM item
+         # (powder in kg, liquid in L) can legitimately have a
+         # fractional value (e.g. 4.4 kg per bag).
+         {:ok, units_per} <- parse_positive_decimal(pack["units_per_package"]) |> remap_err(:non_positive_dim),
          {:ok, stack} <- parse_positive_integer(pack["stack_factor"]) |> remap_err(:non_positive_dim) do
       {:ok,
        %{

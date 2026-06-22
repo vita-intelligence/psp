@@ -71,7 +71,11 @@ defmodule Backend.Stock.Lot do
     field :package_width_mm, :integer
     field :package_height_mm, :integer
     field :package_weight_kg, :decimal
-    field :units_per_package, :integer, default: 1
+    # Decimal (numeric(10,3)) so continuous-UoM items can store
+    # fractional values — e.g. a 4.4 kg produced bag has
+    # units_per_package=4.4. Integer-only values (24 cans, 100
+    # capsules) cast losslessly into the same column.
+    field :units_per_package, :decimal, default: 1
     field :stack_factor, :integer, default: 1
 
     belongs_to :company, Company

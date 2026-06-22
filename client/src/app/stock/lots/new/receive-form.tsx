@@ -590,25 +590,20 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
     // endpoint validates per-pack so a half-row would 422 the whole
     // transaction. `completePacks` is the same predicate used for the
     // qtyValid gate above, so what we send is exactly what we counted.
-    // One row = one pack = one lot, so `units_per_package` is set to
-    // the qty itself (ceiled to integer) — the BE computes
-    // `packages = qty / units_per_package` and we want that to be 1
-    // per lot. The footprint stays correct because the per-pack
-    // dimensions describe this one physical pack.
-    const submitPacks: ManualLotPack[] = completePacks.map((p) => {
-      const qtyNum = Number(p.qty_received);
-      const upp = Math.max(1, Math.ceil(qtyNum));
-      return {
-        qty_received: p.qty_received,
-        package_length_mm: Number(p.package_length_mm),
-        package_width_mm: Number(p.package_width_mm),
-        package_height_mm: Number(p.package_height_mm),
-        package_weight_kg: p.package_weight_kg,
-        units_per_package: upp,
-        stack_factor: Number(p.stack_factor),
-        supplier_batch_no: p.supplier_batch_no.trim() || null,
-      };
-    });
+    // One row = one pack = one lot, so `units_per_package` equals the
+    // pack's qty so the BE computes `packages = qty / units_per_package
+    // = 1` per lot. The column is now decimal so fractional kg-per-pack
+    // values like 4.4 round-trip natively — no more ceiling hack.
+    const submitPacks: ManualLotPack[] = completePacks.map((p) => ({
+      qty_received: p.qty_received,
+      package_length_mm: Number(p.package_length_mm),
+      package_width_mm: Number(p.package_width_mm),
+      package_height_mm: Number(p.package_height_mm),
+      package_weight_kg: p.package_weight_kg,
+      units_per_package: p.qty_received,
+      stack_factor: Number(p.stack_factor),
+      supplier_batch_no: p.supplier_batch_no.trim() || null,
+    }));
 
     const input: BulkManualLotInput = {
       item_id: Number(draft.item_id),

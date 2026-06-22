@@ -198,6 +198,8 @@ defmodule Backend.RBAC.Permissions do
      "Release a scheduled MO to the warehouse for ingredient pickup"},
     {"production.preflight",
      "Confirm receipt of picked materials at the production line (qty + quality sign-off)"},
+    {"production.qc_output",
+     "Sign off the quality of a manufactured output lot (pass / fail) before it transfers to the warehouse"},
     {"production.mo_delete", "Delete manufacturing orders"}
   ]
 
@@ -568,11 +570,86 @@ defmodule Backend.RBAC.Permissions do
             key: "manufacturing_orders",
             label: "Manufacturing orders",
             description:
-              "Planned production runs. Update covers the header form; the separate `mo_approve` / `mo_execute` perms gate status transitions (approve / start / complete / cancel).",
+              "Planned production runs. Update covers the header form; the workflow rows below gate the lifecycle transitions.",
             read: "production.mo_view",
             create: "production.mo_create",
             update: "production.mo_edit",
             delete: "production.mo_delete"
+          },
+          # ---- MO lifecycle (workflow) ----
+          # One single-checkbox row per workflow capability. The matrix
+          # grid still renders the four canonical columns; rows that
+          # only fill one column show "—" for the rest. Keeping these
+          # in the same section makes the role-editor self-documenting.
+          %{
+            key: "mo_prepare",
+            label: "Prepare MO",
+            description:
+              "Sign off as the preparer — first of the two-eyes approval before formal approval.",
+            read: nil,
+            create: nil,
+            update: "production.mo_prepare",
+            delete: nil
+          },
+          %{
+            key: "mo_approve",
+            label: "Approve MO",
+            description:
+              "Approve a prepared MO. Approver must differ from the preparer (4-eyes rule).",
+            read: nil,
+            create: nil,
+            update: "production.mo_approve",
+            delete: nil
+          },
+          %{
+            key: "mo_release",
+            label: "Release MO to warehouse",
+            description:
+              "Send a scheduled MO into the warehouse picker queue (sets the visibility window + flips status to `scheduled`).",
+            read: nil,
+            create: nil,
+            update: "production.mo_release",
+            delete: nil
+          },
+          %{
+            key: "warehouse_pick",
+            label: "Pick MO from warehouse (mobile)",
+            description:
+              "Start, scan, abort, and confirm-transfer warehouse pickup. Head-of-picker lock applies.",
+            read: nil,
+            create: nil,
+            update: "warehouse.pick",
+            delete: nil
+          },
+          %{
+            key: "production_preflight",
+            label: "Confirm receipt at production line",
+            description:
+              "Sign off each booked lot (received qty + quality notes) once it lands at the production-feed cell. Hard gate before in_progress.",
+            read: nil,
+            create: nil,
+            update: "production.preflight",
+            delete: nil
+          },
+          %{
+            key: "mo_execute",
+            label: "Run production (Start / Finish)",
+            description:
+              "Start + Finish a preflight-cleared MO. Finish stamps actual times, captures produced qty, and creates the output stock lot.",
+            read: nil,
+            create: nil,
+            update: "production.mo_execute",
+            delete: nil
+          },
+          %{
+            key: "qc_output",
+            label: "Quality-check finished output",
+            description:
+              "Sign off a manufactured output lot as pass / fail. Until this clears, the output stays in `received` status and can't be transferred to the warehouse.",
+            read: nil,
+            create: nil,
+            update: "production.qc_output",
+            delete: nil
           }
         ]
       }

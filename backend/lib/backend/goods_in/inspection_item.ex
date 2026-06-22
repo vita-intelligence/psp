@@ -38,7 +38,7 @@ defmodule Backend.GoodsIn.InspectionItem do
     #     "package_width_mm"  => integer,
     #     "package_height_mm" => integer,
     #     "package_weight_kg" => decimal-string,
-    #     "units_per_package" => integer,
+    #     "units_per_package" => decimal-string,
     #     "supplier_batch_no" => string (optional)
     #   }
     # Sum of `qty` is reconciled into `qty_received` server-side so the
@@ -146,7 +146,9 @@ defmodule Backend.GoodsIn.InspectionItem do
          {:ok, _} <- require_non_negative_int(pack, "package_width_mm"),
          {:ok, _} <- require_non_negative_int(pack, "package_height_mm"),
          {:ok, _} <- require_non_negative_decimal(pack, "package_weight_kg"),
-         {:ok, _} <- require_positive_int(pack, "units_per_package") do
+         # `units_per_package` accepts decimals — continuous-UoM lots
+         # (kg, L) need fractional values like 4.4 kg/bag.
+         {:ok, _} <- require_positive_decimal(pack, "units_per_package") do
       {:cont, :ok}
     else
       {:error, field, msg} -> {:halt, {:error, idx, field, msg}}

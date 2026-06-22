@@ -31,7 +31,9 @@ export interface ManualLotInput {
   package_width_mm: number;
   package_height_mm: number;
   package_weight_kg: string;
-  units_per_package: number;
+  /** Decimal on the server — accepts string for fractional values
+   *  (4.4 kg/bag) or number for whole units (24 cans/box). */
+  units_per_package: number | string;
   stack_factor: number;
   // optional metadata. `source_kind` is forced to "manual" by the
   // backend — callers don't need to send it.
@@ -91,7 +93,11 @@ export interface ManualLotPack {
   package_width_mm: number;
   package_height_mm: number;
   package_weight_kg: string;
-  units_per_package: number;
+  /** Decimal-typed on the server (numeric(10,3)) so continuous-UoM
+   *  items can carry fractional pack contents (e.g. 4.4 kg/bag).
+   *  Accepts a string for decimal precision or a number for whole
+   *  units like 24 cans per box. */
+  units_per_package: number | string;
   stack_factor: number;
   supplier_batch_no?: string | null;
 }

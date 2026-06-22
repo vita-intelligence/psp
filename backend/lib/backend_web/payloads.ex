@@ -938,6 +938,14 @@ defmodule BackendWeb.Payloads do
       pickup_completed_at: mo.pickup_completed_at,
       pickup_completed_by: actor(mo, :pickup_completed_by),
       production_cell_id: mo.production_cell_id,
+      production_cell: mo_production_cell_payload(Map.get(mo, :production_cell)),
+      # Production-run sign-off. Surfaced on the payload so the
+      # Production runs tab can show the live progress without an
+      # extra fetch.
+      actual_start: mo.actual_start,
+      actual_finish: mo.actual_finish,
+      quantity_produced: decimal_to_string(mo.quantity_produced),
+      produced_lot_id: mo.produced_lot_id,
       approximate_cost: decimal_to_string(materials_cost),
       materials_cost: decimal_to_string(materials_cost),
       cost_per_unit: mo_cost_per_unit(materials_cost, mo.quantity),
@@ -1398,6 +1406,146 @@ defmodule BackendWeb.Payloads do
   end
 
   def preflight_queue_entry(_), do: nil
+
+  @doc """
+  One row of the production-run queue. Slim shape so the desk operator
+  can scan dozens of MOs at a glance; per-MO detail is fetched on
+  click.
+  """
+  def production_run_entry(%Backend.Production.ManufacturingOrder{} = mo) do
+    {start_at, finish_at} = mo_planned_bounds(mo)
+
+    %{
+      mo: manufacturing_order_summary(mo),
+      planned_start: start_at,
+      planned_finish: finish_at,
+      actual_start: mo.actual_start,
+      actual_finish: mo.actual_finish,
+      quantity_produced: decimal_to_string(mo.quantity_produced),
+      pickup_completed_at: mo.pickup_completed_at,
+      pickup_completed_by: actor(mo, :pickup_completed_by)
+    }
+  end
+
+  def production_run_entry(_), do: nil
+
+  @doc """
+  One row of the Output QC queue. Surfaces a manufactured lot still
+  in `received` status + its source MO context so the QC operator
+  can verify which production run produced it.
+  """
+  def output_qc_entry(%{lot: %Backend.Stock.Lot{} = lot, mo: mo}) do
+    cell =
+      case lot.placements do
+        [%{storage_cell: %Backend.Warehouses.StorageCell{} = c} | _] -> c
+        _ -> nil
+      end
+
+    %{
+      lot: %{
+        id: lot.id,
+        uuid: lot.uuid,
+        code: render_code(lot, "stock_lot"),
+        qty_received: decimal_to_string(lot.qty_received),
+        status: lot.status,
+        package_length_mm: lot.package_length_mm,
+        package_width_mm: lot.package_width_mm,
+        package_height_mm: lot.package_height_mm,
+        package_weight_kg: decimal_to_string(lot.package_weight_kg),
+        units_per_package: decimal_to_string(lot.units_per_package),
+        stack_factor: lot.stack_factor,
+        received_at: lot.received_at,
+        item: maybe_item_summary(lot.item),
+        uom:
+          lot.unit_of_measurement &&
+            %{
+              id: lot.unit_of_measurement.id,
+              symbol: lot.unit_of_measurement.symbol,
+              name: lot.unit_of_measurement.name
+            },
+        production_cell:
+          cell &&
+            %{
+              id: cell.id,
+              uuid: cell.uuid,
+              name: cell.name,
+              storage_location:
+                cell.storage_location &&
+                  %{
+                    code: cell.storage_location.code,
+                    name: cell.storage_location.name,
+                    floor:
+                      cell.storage_location.floor &&
+                        %{
+                          name: cell.storage_location.floor.name,
+                          warehouse:
+                            cell.storage_location.floor.warehouse &&
+                              %{name: cell.storage_location.floor.warehouse.name}
+                        }
+                  }
+            }
+      },
+      mo:
+        mo &&
+          %{
+            id: mo.id,
+            uuid: mo.uuid,
+            code: render_code(mo, "manufacturing_order"),
+            item: maybe_item_summary(mo.item),
+            quantity: decimal_to_string(mo.quantity),
+            quantity_produced: decimal_to_string(mo.quantity_produced),
+            actual_finish: mo.actual_finish,
+            pickup_completed_by: actor(mo, :pickup_completed_by)
+          }
+    }
+  end
+
+  def output_qc_entry(_), do: nil
+
+  # Production-feed cell breadcrumb — fed into the run detail screen
+  # so the floor operator sees the highlighted rack on the floor plan
+  # without an extra fetch. Mirrors `mo_booking_cell_summary`.
+  defp mo_production_cell_payload(%Backend.Warehouses.StorageCell{} = c) do
+    base = %{
+      id: c.id,
+      uuid: c.uuid,
+      name: c.name,
+      purpose: c.purpose,
+      ordinal: c.ordinal,
+      system_kind: c.system_kind
+    }
+
+    case Map.get(c, :storage_location) do
+      %Ecto.Association.NotLoaded{} ->
+        base
+
+      nil ->
+        base
+
+      %Backend.Warehouses.StorageLocation{} = loc ->
+        floor = Ecto.assoc_loaded?(loc.floor) && loc.floor
+        warehouse = floor && Ecto.assoc_loaded?(floor.warehouse) && floor.warehouse
+
+        Map.put(base, :storage_location, %{
+          id: loc.id,
+          uuid: loc.uuid,
+          name: loc.name,
+          code: loc.code,
+          floor:
+            floor &&
+              %{
+                id: floor.id,
+                uuid: floor.uuid,
+                name: floor.name,
+                warehouse:
+                  warehouse &&
+                    %{id: warehouse.id, uuid: warehouse.uuid, name: warehouse.name}
+              }
+        })
+    end
+  end
+
+  defp mo_production_cell_payload(_), do: nil
 
   defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot) do
     %{

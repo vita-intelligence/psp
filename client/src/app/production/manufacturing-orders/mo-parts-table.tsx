@@ -490,7 +490,33 @@ function BookingRow({
         <BookingStatusBadge status={booking.status} />
       </td>
       <td className="px-2 py-1.5">
-        {booking.storage_location?.name ?? "—"}
+        {(() => {
+          const cell = booking.storage_location;
+          if (!cell) return "—";
+          // Lead with the rack code (or location name) so the operator
+          // can find the physical rack at a glance — "Level 0" alone
+          // doesn't say WHERE. Suffix the cell label underneath.
+          const rack =
+            cell.storage_location?.code ??
+            cell.storage_location?.name ??
+            null;
+          const shelf =
+            cell.name ??
+            (cell.ordinal !== null && cell.ordinal !== undefined
+              ? `Level ${cell.ordinal + 1}`
+              : null);
+          if (rack && shelf) {
+            return (
+              <div className="leading-tight">
+                <div className="font-mono text-[11px]">{rack}</div>
+                <div className="text-[10px] text-muted-foreground">
+                  {shelf}
+                </div>
+              </div>
+            );
+          }
+          return rack ?? shelf ?? "—";
+        })()}
       </td>
       <td className="px-2 py-1.5">
         {booking.stock_lot?.available_from

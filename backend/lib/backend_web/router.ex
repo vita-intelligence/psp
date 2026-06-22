@@ -452,6 +452,29 @@ defmodule BackendWeb.Router do
              ManufacturingOrderController,
              :unrelease
 
+      # Production-run sign-off (the desktop /production/runs tab). The
+      # production operator hits Start when they begin work, then Finish
+      # at the end (date/time + actual produced qty). Finish auto-
+      # creates the output stock_lot at the production-feed cell.
+      get "/runs", ManufacturingOrderController, :runs
+
+      # Output QC — production-side quality sign-off on a manufactured
+      # lot before it can transfer to the warehouse. Distinct from the
+      # `stock.qc` flow that covers incoming PO receives.
+      get "/output-qc", ManufacturingOrderController, :output_qc_queue
+
+      post "/output-qc/:lot_uuid",
+           ManufacturingOrderController,
+           :output_qc_sign_off
+
+      post "/manufacturing-orders/:id/start-production",
+           ManufacturingOrderController,
+           :start_production
+
+      post "/manufacturing-orders/:id/finish-production",
+           ManufacturingOrderController,
+           :finish_production
+
       # Per-MO operation steps — snapshot of the routing template,
       # editable per-MO. Pencil-on-row → edit page.
       get "/manufacturing-orders/:mo_id/steps/:id",

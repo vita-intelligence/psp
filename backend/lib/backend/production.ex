@@ -1366,6 +1366,11 @@ defmodule Backend.Production do
       :prepared_by,
       :created_by,
       :updated_by,
+      :released_to_warehouse_by,
+      :pickup_started_by,
+      :pickup_completed_by,
+      :produced_lot,
+      production_cell: [storage_location: [floor: [:warehouse]]],
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
       bookings: [:item, :storage_cell, stock_lot: [placements: :storage_cell]],
       bom: [lines: [:part, :unit_of_measurement]],
@@ -2686,7 +2691,11 @@ defmodule Backend.Production do
       pickup_started_by_id: mo.pickup_started_by_id,
       pickup_completed_at: mo.pickup_completed_at,
       pickup_completed_by_id: mo.pickup_completed_by_id,
-      production_cell_id: mo.production_cell_id
+      production_cell_id: mo.production_cell_id,
+      actual_start: mo.actual_start,
+      actual_finish: mo.actual_finish,
+      quantity_produced: mo.quantity_produced,
+      produced_lot_id: mo.produced_lot_id
     }
   end
 
@@ -4901,6 +4910,74 @@ defmodule Backend.Production do
     |> Repo.all()
   end
 
+  # ----- Output QC (finished product quality sign-off) -----------
+
+  @doc """
+  Pending output-QC queue. Returns the manufactured `stock_lot`s that
+  still have `status = "received"` — every Finish call inserts the
+  output lots in that state, and they stay there until a production
+  QC operator passes (`qc_passed` → `available`) or fails them
+  (`qc_failed` → `qc_failed`).
+  """
+  def list_pending_output_qc(company_id) when is_integer(company_id) do
+    from(l in StockLot,
+      where:
+        l.company_id == ^company_id and
+          l.source_kind == "manufacturing_order" and
+          l.status == "received",
+      preload: [
+        :item,
+        :unit_of_measurement,
+        placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+      ],
+      order_by: [asc: l.inserted_at, asc: l.id]
+    )
+    |> Repo.all()
+    |> Enum.map(fn lot ->
+      mo =
+        case Repo.get_by(ManufacturingOrder, uuid: lot.source_ref) do
+          nil -> nil
+          mo -> Repo.preload(mo, [:item, :pickup_completed_by])
+        end
+
+      %{lot: lot, mo: mo}
+    end)
+  end
+
+  @doc """
+  Production QC sign-off on a single output lot. Wraps
+  `Backend.Stock.record_lot_event` so the lot's lifecycle ledger
+  remains the single source of truth — but only accepts the two
+  verdicts an output QC operator can render. Refuses any lot that
+  isn't a manufacturing_order source (gates the new
+  production.qc_output permission to the artifacts it's intended
+  for; stock.qc still governs incoming PO lots).
+  """
+  def sign_off_output_qc(%User{} = actor, lot_uuid, verdict, attrs)
+      when is_binary(lot_uuid) and verdict in ["pass", "fail"] do
+    kind = if verdict == "pass", do: "qc_passed", else: "qc_failed"
+
+    with %StockLot{source_kind: "manufacturing_order"} = lot <-
+           Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+         {:ok, _result} <-
+           Backend.Stock.Lifecycle.record_event(lot, kind, %{
+             actor: actor,
+             actor_kind: "user",
+             reason: attrs["reason"] || attrs[:reason],
+             metadata: %{}
+           }) do
+      {:ok, Repo.preload(Backend.Stock.get_for_company(actor.company_id, lot_uuid), [:item])}
+    else
+      nil -> {:error, :lot_not_found}
+      %StockLot{} -> {:error, :not_a_manufactured_lot}
+      {:error, _} = err -> err
+      {:error, :illegal_transition, info} -> {:error, {:illegal_transition, info}}
+      other -> other
+    end
+  end
+
+  def sign_off_output_qc(_actor, _uuid, _verdict, _attrs), do: {:error, :bad_verdict}
+
   # ----- Pre-production receipt check ----------------------------
 
   @doc """
@@ -5106,6 +5183,538 @@ defmodule Backend.Production do
   end
 
   def mo_preflight_complete?(_), do: false
+
+  # ----- Production run (Start / Finish) -------------------------
+
+  @doc """
+  Production operator's queue. MOs that are preflight-cleared and
+  either ready-to-start (`scheduled` + every raw/packaging booking
+  received) or actively in_progress. Sorted with in-progress first
+  so the line operator sees the active run on top.
+  """
+  def list_production_runs(company_id) when is_integer(company_id) do
+    mos =
+      from(mo in ManufacturingOrder,
+        where:
+          mo.company_id == ^company_id and
+            mo.status in ["scheduled", "in_progress"] and
+            not is_nil(mo.pickup_completed_at),
+        preload: [
+          :item,
+          :warehouse,
+          :production_cell,
+          :produced_lot,
+          :pickup_completed_by,
+          steps: []
+        ],
+        order_by: [
+          desc: mo.status == "in_progress",
+          asc: mo.actual_start,
+          asc: mo.pickup_completed_at
+        ]
+      )
+      |> Repo.all()
+
+    # `scheduled` MOs only qualify if every booking is received —
+    # preflight is the gate. Done in Elixir off the preloaded rows
+    # so we keep the SQL simple.
+    Enum.filter(mos, fn mo ->
+      mo.status == "in_progress" or mo_preflight_complete?(mo)
+    end)
+  end
+
+  @doc """
+  Operator action — flips a preflight-cleared MO to `in_progress`
+  and stamps `actual_start = now()`. Idempotent: re-pressing Start
+  on an already-running MO is a no-op.
+  """
+  def start_mo_production(%User{} = actor, %ManufacturingOrder{} = mo) do
+    cond do
+      mo.status == "in_progress" ->
+        {:ok, reload_manufacturing_order(mo)}
+
+      mo.status != "scheduled" ->
+        {:error, {:invalid_status, mo.status}}
+
+      is_nil(mo.pickup_completed_at) ->
+        {:error, :pickup_not_completed}
+
+      not mo_preflight_complete?(mo) ->
+        {:error, :preflight_incomplete}
+
+      true ->
+        apply_run_changeset(actor, mo, %{
+          "status" => "in_progress",
+          "actual_start" => now(),
+          "updated_by_id" => actor.id
+        })
+    end
+  end
+
+  @doc """
+  Operator action — closes a running MO. Stamps `actual_finish` +
+  `quantity_produced`, creates a `stock_lot` for the manufactured
+  output at the production-feed cell (status `received`, source
+  `manufacturing_order`), then transitions to `completed`. The
+  post-production return flow picks the lot up from there.
+
+  Opts:
+    * `:actual_finish` — DateTime or ISO8601 binary, defaults to now().
+    * `:quantity_produced` — Decimal | binary | number (required, >= 0).
+    * `:actual_start` — operator override if they forgot to press Start
+      (defaults to the existing stamp, then `finish_dt`).
+    * `:operation_times` — optional list of
+      `%{step_uuid: ..., actual_start: ..., actual_finish: ...}`
+      stamped per MO step. UI builds these by dividing the total run
+      span across operations on the Finish dialog. Each datetime can
+      be a DateTime or ISO8601 binary. Validated to live inside the
+      MO's overall start/finish window.
+    * `:packs` — required non-empty list. Each entry describes ONE
+      physical package the operator filled. Map keys:
+      `qty, length_mm, width_mm, height_mm, weight_kg, stack_factor`.
+      Each pack becomes its own `stock_lot`; the sum of pack qtys
+      must equal `:quantity_produced`. Matches the PO-receive shape
+      so a "25 kg blend that ended up in 1 sack + 1 sample drum" can
+      be recorded as two distinct lots.
+  """
+  def finish_mo_production(%User{} = actor, %ManufacturingOrder{} = mo, opts) do
+    with :ok <- ensure_status_in(mo, ["in_progress"]),
+         {:ok, qty} <- parse_quantity_produced(Keyword.get(opts, :quantity_produced)),
+         {:ok, finish_dt} <- coerce_datetime(Keyword.get(opts, :actual_finish), now()),
+         {:ok, start_dt} <-
+           coerce_datetime(
+             Keyword.get(opts, :actual_start),
+             mo.actual_start || finish_dt
+           ),
+         :ok <- ensure_finish_after_start(start_dt, finish_dt),
+         {:ok, op_times} <-
+           parse_operation_times(
+             Keyword.get(opts, :operation_times, []),
+             start_dt,
+             finish_dt
+           ),
+         {:ok, packs} <- parse_packs(Keyword.get(opts, :packs), qty) do
+      Repo.transaction(fn ->
+        with {:ok, lots} <- create_produced_lots(actor, mo, packs),
+             :ok <- write_operation_times(actor, mo, op_times),
+             {:ok, mo_updated} <-
+               apply_run_changeset(actor, mo, %{
+                 "status" => "completed",
+                 "actual_start" => start_dt,
+                 "actual_finish" => finish_dt,
+                 "quantity_produced" => qty,
+                 # `produced_lot_id` stays as the FIRST output lot — a
+                 # convenience pointer for the singleton case. Multi-
+                 # pack runs are still queryable via
+                 # source_kind=manufacturing_order, source_ref=mo.uuid.
+                 "produced_lot_id" => List.first(lots).id,
+                 "updated_by_id" => actor.id
+               }) do
+          mo_updated
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  # Packs — one row per physical package. Each pack becomes a lot.
+  # `units_per_package` is set to the pack's own qty so the volume
+  # math always reads `packages = qty / units_per_package = 1` (the
+  # bug from the old per-package multiplier that surprised operators
+  # who entered a 25 kg sack and got a 600 kg volume estimate).
+  defp parse_packs(list, total_qty) when is_list(list) and list != [] do
+    parsed =
+      Enum.reduce_while(list, {:ok, []}, fn entry, {:ok, acc} ->
+        case parse_pack_entry(entry) do
+          {:ok, pack} -> {:cont, {:ok, [pack | acc]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    with {:ok, packs} <- parsed,
+         packs <- Enum.reverse(packs),
+         :ok <- ensure_pack_qty_matches_total(packs, total_qty) do
+      {:ok, packs}
+    end
+  end
+
+  defp parse_packs(_, _), do: {:error, :missing_packs}
+
+  defp parse_pack_entry(entry) when is_map(entry) do
+    # Type per field so the lot insert downstream sees ints for the
+    # integer DB columns (mm dims, stack_factor) and decimals for
+    # the decimal ones (qty, weight). Ecto's :integer cast refuses
+    # %Decimal{} structs, so mixing was failing the changeset.
+    int_fields = ~w(length_mm width_mm height_mm stack_factor)
+    decimal_fields = ~w(qty weight_kg)
+
+    with {:ok, ints} <-
+           parse_pack_fields(entry, int_fields, &parse_positive_integer/1),
+         {:ok, decs} <-
+           parse_pack_fields(entry, decimal_fields, &parse_positive_decimal/1) do
+      {:ok, Map.merge(ints, decs)}
+    end
+  end
+
+  defp parse_pack_entry(_), do: {:error, :bad_pack_entry}
+
+  defp parse_pack_fields(entry, keys, parser) do
+    Enum.reduce_while(keys, {:ok, %{}}, fn key, {:ok, acc} ->
+      raw = Map.get(entry, key) || Map.get(entry, String.to_atom(key))
+
+      case parser.(raw) do
+        {:ok, v} -> {:cont, {:ok, Map.put(acc, key, v)}}
+        :error -> {:halt, {:error, {:bad_pack_field, key}}}
+      end
+    end)
+  end
+
+  defp parse_positive_integer(n) when is_integer(n) and n > 0, do: {:ok, n}
+
+  defp parse_positive_integer(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp parse_positive_integer(_), do: :error
+
+  # Sum of pack qtys must equal the MO's produced qty so the audit
+  # ledger balances. Tolerates a tiny float rounding window
+  # (0.0001 of the stock UoM) — that's smaller than the
+  # `precision: 4` lot qty column resolves.
+  defp ensure_pack_qty_matches_total(packs, total_qty) do
+    sum = Enum.reduce(packs, Decimal.new(0), fn p, acc -> Decimal.add(acc, p["qty"]) end)
+    diff = Decimal.abs(Decimal.sub(sum, total_qty))
+
+    if Decimal.compare(diff, Decimal.new("0.0001")) in [:lt, :eq] do
+      :ok
+    else
+      {:error, {:pack_qty_mismatch, %{sum: sum, total: total_qty}}}
+    end
+  end
+
+  defp parse_positive_decimal(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new("0")) == :gt, do: {:ok, d}, else: :error
+  end
+
+  defp parse_positive_decimal(n) when is_integer(n) and n > 0, do: {:ok, Decimal.new(n)}
+
+  defp parse_positive_decimal(n) when is_float(n) and n > 0, do: {:ok, Decimal.from_float(n)}
+
+  defp parse_positive_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, ""} -> parse_positive_decimal(d)
+      _ -> :error
+    end
+  end
+
+  defp parse_positive_decimal(_), do: :error
+
+  # Create one `stock_lot` per pack — each placed at the MO's
+  # production-feed cell with status `received`. Returns the list of
+  # inserted lots in the original pack order so the caller can stamp
+  # the first one onto `mo.produced_lot_id`.
+  defp create_produced_lots(%User{} = actor, %ManufacturingOrder{} = mo, packs) do
+    if is_nil(mo.production_cell_id) do
+      {:error, :no_production_cell}
+    else
+      # Preload the per-type compliance row so we can read the item's
+      # `shelf_life_months` for expiry — finished products spec'd in
+      # `finished_product_spec`, raw materials in `raw_material_compliance`.
+      # Semi-finished + packaging items don't carry a shelf life (they're
+      # intermediate / inert) so the lot's expiry stays nil for those.
+      item =
+        Repo.get!(Item, mo.item_id)
+        |> Repo.preload([:finished_product_spec, :raw_material_compliance])
+
+      manufactured_at = mo.actual_finish || now()
+      expiry_at = compute_lot_expiry(item, manufactured_at)
+
+      Enum.reduce_while(packs, {:ok, []}, fn pack, {:ok, acc} ->
+        case create_produced_lot(actor, mo, item, pack, manufactured_at, expiry_at) do
+          {:ok, lot} -> {:cont, {:ok, [lot | acc]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, lots} -> {:ok, Enum.reverse(lots)}
+        err -> err
+      end
+    end
+  end
+
+  # `manufactured_at` is naturally the MO's actual_finish — the lot
+  # came into existence at the moment the run closed. `expiry_at`
+  # follows MRPEasy's convention: manufactured_at + the item's
+  # shelf-life setting on its per-type compliance row.
+  defp compute_lot_expiry(%Item{} = item, %DateTime{} = manufactured_at) do
+    months =
+      cond do
+        item.item_type == "finished_product" and item.finished_product_spec ->
+          item.finished_product_spec.shelf_life_months
+
+        item.item_type == "raw_material" and item.raw_material_compliance ->
+          item.raw_material_compliance.shelf_life_months
+
+        true ->
+          nil
+      end
+
+    case months do
+      n when is_integer(n) and n > 0 ->
+        # Months are calendar-aware; convert to a date by stepping the
+        # calendar forward, then back to a UTC datetime at the same
+        # wall time so the lot's expiry reads naturally to the operator
+        # ("manufactured Jan 1 → expires Jul 1" instead of "184 days").
+        manufactured_at
+        |> DateTime.shift(month: n)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp create_produced_lot(
+         %User{} = actor,
+         %ManufacturingOrder{} = mo,
+         %Item{} = item,
+         pack,
+         manufactured_at,
+         expiry_at
+       ) do
+    qty = pack["qty"]
+
+    lot_attrs = %{
+      "company_id" => mo.company_id,
+      "item_id" => mo.item_id,
+      "unit_of_measurement_id" => item.stock_uom_id,
+      "qty_received" => qty,
+      "status" => "received",
+      "source_kind" => "manufacturing_order",
+      "source_ref" => mo.uuid,
+      "received_at" => now(),
+      # Production output: manufactured_at is when the run closed,
+      # expiry_at is derived from the item's shelf life (nil for
+      # semi-finished / packaging which have no spec'd shelf life —
+      # operator can edit on the lot detail page if needed).
+      "manufactured_at" => manufactured_at,
+      "expiry_at" => expiry_at,
+      "package_length_mm" => pack["length_mm"],
+      "package_width_mm" => pack["width_mm"],
+      "package_height_mm" => pack["height_mm"],
+      "package_weight_kg" => pack["weight_kg"],
+      # `units_per_package` = the pack's own qty so the downstream
+      # volume math reads `packages = qty / units_per_package = 1`
+      # regardless of UoM. A 4.4 kg bag stays one bag. The column is
+      # numeric(10,3) so fractional UoMs (kg, L) work natively.
+      "units_per_package" => qty,
+      "stack_factor" => pack["stack_factor"],
+      "created_by_id" => actor.id,
+      "updated_by_id" => actor.id
+    }
+
+    with {:ok, lot} <-
+           %StockLot{}
+           |> StockLot.changeset(lot_attrs)
+           |> Repo.insert(),
+         {:ok, _placement} <-
+           %Backend.Stock.Placement{}
+           |> Backend.Stock.Placement.changeset(%{
+             "company_id" => mo.company_id,
+             "stock_lot_id" => lot.id,
+             "storage_cell_id" => mo.production_cell_id,
+             "qty" => qty
+           })
+           |> Repo.insert() do
+      Audit.record_created(actor, "stock_lot", lot, %{
+        item_id: lot.item_id,
+        qty_received: lot.qty_received,
+        status: lot.status,
+        source_kind: lot.source_kind,
+        source_ref: lot.source_ref
+      })
+
+      {:ok, lot}
+    end
+  end
+
+  defp apply_run_changeset(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do
+    before = mo_snapshot(mo)
+
+    mo
+    |> ManufacturingOrder.run_changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order",
+          updated,
+          before,
+          mo_snapshot(updated)
+        )
+
+        {:ok, reload_manufacturing_order(updated)}
+
+      err ->
+        err
+    end
+  end
+
+  defp parse_quantity_produced(raw) do
+    case raw do
+      %Decimal{} = d ->
+        if Decimal.compare(d, Decimal.new("0")) == :lt do
+          {:error, :bad_qty}
+        else
+          {:ok, d}
+        end
+
+      n when is_integer(n) and n >= 0 ->
+        {:ok, Decimal.new(n)}
+
+      n when is_float(n) and n >= 0 ->
+        {:ok, Decimal.from_float(n)}
+
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} ->
+            if Decimal.compare(d, Decimal.new("0")) == :lt do
+              {:error, :bad_qty}
+            else
+              {:ok, d}
+            end
+
+          _ ->
+            {:error, :bad_qty}
+        end
+
+      _ ->
+        {:error, :bad_qty}
+    end
+  end
+
+  defp coerce_datetime(nil, default), do: {:ok, default}
+  defp coerce_datetime(%DateTime{} = dt, _default), do: {:ok, dt}
+
+  defp coerce_datetime(s, _default) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _offset} -> {:ok, DateTime.shift_zone!(dt, "Etc/UTC")}
+      _ -> {:error, :bad_datetime}
+    end
+  end
+
+  defp coerce_datetime(_, _default), do: {:error, :bad_datetime}
+
+  defp ensure_finish_after_start(%DateTime{} = start_dt, %DateTime{} = finish_dt) do
+    if DateTime.compare(finish_dt, start_dt) == :lt do
+      {:error, :finish_before_start}
+    else
+      :ok
+    end
+  end
+
+  # Validate + normalise the per-operation time list the FE divider
+  # produces on the Finish dialog. Each entry has step_uuid + ISO
+  # actual_start/finish. We assert finish ≥ start per row and that
+  # every stamp lives inside the MO's overall [start_dt, finish_dt]
+  # window — sliders shouldn't be able to point at times before the
+  # run started or after it ended.
+  defp parse_operation_times([], _start_dt, _finish_dt), do: {:ok, []}
+
+  defp parse_operation_times(list, start_dt, finish_dt) when is_list(list) do
+    parsed =
+      Enum.reduce_while(list, {:ok, []}, fn entry, {:ok, acc} ->
+        with {:ok, uuid} <- fetch_step_uuid(entry),
+             {:ok, s} <- coerce_datetime(entry_field(entry, "actual_start"), start_dt),
+             {:ok, f} <- coerce_datetime(entry_field(entry, "actual_finish"), finish_dt),
+             :ok <- ensure_finish_after_start(s, f),
+             :ok <- ensure_within(s, start_dt, finish_dt),
+             :ok <- ensure_within(f, start_dt, finish_dt) do
+          {:cont, {:ok, [%{step_uuid: uuid, actual_start: s, actual_finish: f} | acc]}}
+        else
+          err -> {:halt, err}
+        end
+      end)
+
+    case parsed do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      err -> err
+    end
+  end
+
+  defp parse_operation_times(_, _, _), do: {:error, :bad_operation_times}
+
+  defp fetch_step_uuid(entry) do
+    case entry_field(entry, "step_uuid") do
+      s when is_binary(s) and byte_size(s) > 0 -> {:ok, s}
+      _ -> {:error, :missing_step_uuid}
+    end
+  end
+
+  defp entry_field(entry, key) when is_map(entry) do
+    Map.get(entry, key) || Map.get(entry, String.to_atom(key))
+  end
+
+  defp ensure_within(%DateTime{} = dt, lo, hi) do
+    case {DateTime.compare(dt, lo), DateTime.compare(dt, hi)} do
+      {:lt, _} -> {:error, :operation_time_outside_run}
+      {_, :gt} -> {:error, :operation_time_outside_run}
+      _ -> :ok
+    end
+  end
+
+  # Write each operation's actual_start/finish on its step row. Steps
+  # not in the list are left untouched (the FE always submits the
+  # full set, but partial submits are safe). Done inside the Finish
+  # transaction so a bad step rolls back the MO finish too.
+  defp write_operation_times(_actor, _mo, []), do: :ok
+
+  defp write_operation_times(%User{} = actor, %ManufacturingOrder{} = mo, op_times) do
+    steps_by_uuid =
+      from(s in ManufacturingOrderStep,
+        where: s.manufacturing_order_id == ^mo.id
+      )
+      |> Repo.all()
+      |> Map.new(fn s -> {s.uuid, s} end)
+
+    Enum.reduce_while(op_times, :ok, fn %{step_uuid: uuid} = entry, _ ->
+      case Map.get(steps_by_uuid, uuid) do
+        nil ->
+          {:halt, {:error, {:step_not_in_mo, uuid}}}
+
+        %ManufacturingOrderStep{} = step ->
+          before = mo_step_snapshot(step)
+
+          attrs = %{
+            "actual_start" => entry.actual_start,
+            "actual_finish" => entry.actual_finish,
+            "updated_by_id" => actor.id
+          }
+
+          case step
+               |> ManufacturingOrderStep.changeset(attrs)
+               |> Repo.update() do
+            {:ok, updated} ->
+              Audit.record_updated(
+                actor,
+                "manufacturing_order_step",
+                updated,
+                before,
+                mo_step_snapshot(updated)
+              )
+
+              {:cont, :ok}
+
+            {:error, cs} ->
+              {:halt, {:error, cs}}
+          end
+      end
+    end)
+  end
 
   # ----- pickup helpers ------------------------------------------
 

@@ -517,14 +517,16 @@ defmodule Backend.GoodsIn do
     end
   end
 
+  # Preserve fractional values — `units_per_package` is decimal now,
+  # so a 4.4 kg-per-bag row must round-trip without truncation.
   defp coerce_numeric(nil), do: nil
 
   defp coerce_numeric(n) when is_integer(n) and n > 0, do: n
-  defp coerce_numeric(n) when is_float(n) and n > 0, do: trunc(n)
+  defp coerce_numeric(n) when is_float(n) and n > 0, do: Decimal.from_float(n)
 
   defp coerce_numeric(%Decimal{} = d) do
     case Decimal.compare(d, Decimal.new(0)) do
-      :gt -> Decimal.to_integer(Decimal.round(d, 0, :down))
+      :gt -> d
       _ -> nil
     end
   end

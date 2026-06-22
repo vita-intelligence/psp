@@ -887,6 +887,35 @@ export interface ManufacturingOrder {
   pickup_completed_at: string | null;
   pickup_completed_by: AuditActor | null;
   production_cell_id: number | null;
+  /** Production-feed cell breadcrumb — set when the picker confirmed
+   *  transfer. Drives the FloorPlanMini on the run detail page. */
+  production_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    purpose: string;
+    ordinal: number | null;
+    system_kind: string | null;
+    storage_location?: {
+      id: number;
+      uuid: string;
+      name: string | null;
+      code: string | null;
+      floor: {
+        id: number;
+        uuid: string;
+        name: string | null;
+        warehouse: { id: number; uuid: string; name: string | null } | null;
+      } | null;
+    } | null;
+  } | null;
+  /** Production-run sign-off. Stamped by the operator hitting Start /
+   *  Finish on the desktop /production/runs tab. `produced_lot_id`
+   *  points at the auto-created output stock_lot. */
+  actual_start: string | null;
+  actual_finish: string | null;
+  quantity_produced: string | null;
+  produced_lot_id: number | null;
   /** Materials cost = sum(bom_line × MO qty × unit_cost). */
   approximate_cost: string | null;
   materials_cost: string | null;
@@ -945,6 +974,64 @@ export interface PickupQueueEntry {
 export interface PreflightQueueEntry {
   mo: ManufacturingOrderSummary;
   planned_start: string | null;
+  pickup_completed_at: string | null;
+  pickup_completed_by: AuditActor | null;
+}
+
+/** Row of the production output-QC queue — a manufactured stock_lot
+ *  awaiting pass / fail sign-off before it transfers to the
+ *  warehouse. */
+export interface OutputQcEntry {
+  lot: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    qty_received: string;
+    status: string;
+    package_length_mm: number | null;
+    package_width_mm: number | null;
+    package_height_mm: number | null;
+    package_weight_kg: string | null;
+    units_per_package: string | null;
+    stack_factor: number | null;
+    received_at: string | null;
+    item: BOMPartSummary | null;
+    uom: { id: number; symbol: string; name: string } | null;
+    production_cell: {
+      id: number;
+      uuid: string;
+      name: string | null;
+      storage_location: {
+        code: string | null;
+        name: string | null;
+        floor: {
+          name: string | null;
+          warehouse: { name: string | null } | null;
+        } | null;
+      } | null;
+    } | null;
+  };
+  mo: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    item: BOMPartSummary | null;
+    quantity: string;
+    quantity_produced: string | null;
+    actual_finish: string | null;
+    pickup_completed_by: AuditActor | null;
+  } | null;
+}
+
+/** Row of the production-run queue. Preflight-cleared MOs ready to
+ *  Start or actively in_progress. */
+export interface ProductionRunEntry {
+  mo: ManufacturingOrderSummary;
+  planned_start: string | null;
+  planned_finish: string | null;
+  actual_start: string | null;
+  actual_finish: string | null;
+  quantity_produced: string | null;
   pickup_completed_at: string | null;
   pickup_completed_by: AuditActor | null;
 }

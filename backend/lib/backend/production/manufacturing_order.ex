@@ -68,6 +68,14 @@ defmodule Backend.Production.ManufacturingOrder do
     field :pickup_started_at, :utc_datetime
     field :pickup_completed_at, :utc_datetime
 
+    # Production-run sign-off. Set by the operator hitting Start (now)
+    # and Finish (date/time + actual produced qty). `produced_lot_id`
+    # points at the auto-created output stock_lot that lands at the
+    # production-feed cell pending the post-production return.
+    field :actual_start, :utc_datetime
+    field :actual_finish, :utc_datetime
+    field :quantity_produced, :decimal
+
     # Virtual — count of raw_material / packaging bookings whose lot is
     # not yet "available" (i.e. still in quarantine / received, awaiting
     # Goods-In Inspection). Populated by Production.with_qc_pending_count
@@ -87,6 +95,7 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :pickup_started_by, User
     belongs_to :pickup_completed_by, User
     belongs_to :production_cell, Backend.Warehouses.StorageCell
+    belongs_to :produced_lot, Backend.Stock.Lot
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -222,4 +231,31 @@ defmodule Backend.Production.ManufacturingOrder do
     )
   end
 
+  @doc """
+  Production-run sign-off changeset. Stamps Start (actual_start +
+  status transition to in_progress) and Finish (actual_finish +
+  quantity_produced + produced_lot_id + status → completed) without
+  re-validating the form-level identity fields — the run flow only
+  touches operator-stamped columns.
+  """
+  def run_changeset(mo, attrs) do
+    mo
+    |> cast(attrs, [
+      :status,
+      :actual_start,
+      :actual_finish,
+      :quantity_produced,
+      :produced_lot_id,
+      :updated_by_id
+    ])
+    |> validate_number(:quantity_produced, greater_than_or_equal_to: 0)
+    |> check_constraint(:quantity_produced,
+      name: :mo_quantity_produced_non_negative,
+      message: "must be zero or greater"
+    )
+    |> check_constraint(:actual_finish,
+      name: :mo_actual_finish_after_start,
+      message: "must be on or after actual_start"
+    )
+  end
 end

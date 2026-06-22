@@ -8,11 +8,13 @@ import {
   useState,
   useTransition,
 } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   AlertCircle,
   Box,
+  ExternalLink,
   FileText,
   Loader2,
   Lock,
@@ -491,6 +493,79 @@ interface SectionProps {
   blurField: (field: string) => void;
 }
 
+/**
+ * Read-only render of `source_ref` with a deep-link to the source
+ * record when the kind has a routable detail page in the app. For
+ * the two routable kinds the ref IS the source's UUID, so we link
+ * straight there + show a short label ("Open MO →" / "Open PO →")
+ * instead of pasting the raw UUID in mono — the long string was
+ * unreadable AND clickable-but-not-obvious.
+ *
+ * Non-routable kinds (opening_balance, manual, adjustment, return)
+ * keep the original mono-text style — those refs are free-form
+ * descriptions like "Q1-2026 audit" that don't deep-link anywhere.
+ */
+function SourceRefDisplay({
+  sourceKind,
+  sourceRef,
+}: {
+  sourceKind: string;
+  sourceRef: string;
+}) {
+  if (!sourceRef) {
+    return (
+      <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm text-muted-foreground">
+        —
+      </div>
+    );
+  }
+
+  const link = resolveSourceLink(sourceKind, sourceRef);
+
+  if (link) {
+    return (
+      <Link
+        href={link.href}
+        className="group flex h-9 items-center justify-between gap-2 rounded-md border border-border/60 bg-card px-3 text-sm transition-colors hover:border-primary/40 hover:bg-primary/5"
+      >
+        <span className="truncate">
+          <span className="font-medium">{link.label}</span>
+          <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">
+            {sourceRef.slice(0, 8)}…
+          </span>
+        </span>
+        <ExternalLink className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+      </Link>
+    );
+  }
+
+  return (
+    <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 font-mono text-sm text-muted-foreground">
+      <span className="truncate">{sourceRef}</span>
+    </div>
+  );
+}
+
+function resolveSourceLink(
+  sourceKind: string,
+  sourceRef: string,
+): { href: string; label: string } | null {
+  switch (sourceKind) {
+    case "purchase_order":
+      return {
+        href: `/procurement/purchase-orders/${encodeURIComponent(sourceRef)}`,
+        label: "Open PO",
+      };
+    case "manufacturing_order":
+      return {
+        href: `/production/manufacturing-orders/${encodeURIComponent(sourceRef)}`,
+        label: "Open MO",
+      };
+    default:
+      return null;
+  }
+}
+
 function labelSourceKind(value: string): string | null {
   switch (value) {
     case "purchase_order":
@@ -611,11 +686,10 @@ function IdentitySection({
           label="Source reference"
           editor={fieldEditors.source_ref}
         >
-          <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 font-mono text-sm text-muted-foreground">
-            {draft.source_ref || (
-              <span className="not-italic">—</span>
-            )}
-          </div>
+          <SourceRefDisplay
+            sourceKind={draft.source_kind}
+            sourceRef={draft.source_ref}
+          />
         </Field>
 
         <Field

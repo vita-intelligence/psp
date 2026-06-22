@@ -5,7 +5,9 @@ import {
   ClipboardCheck,
   Factory,
   ListChecks,
+  Microscope,
   Network,
+  Play,
   Route,
   Settings2,
   TrendingUp,
@@ -49,6 +51,20 @@ const SECTIONS: ProdSection[] = [
     description:
       "Verify ingredient qty + quality after warehouse pickup. Each MO must be signed off line-by-line before it can flip to In progress.",
     Icon: ClipboardCheck,
+  },
+  {
+    href: "/production/runs",
+    label: "Production runs",
+    description:
+      "Start + finish active MOs. Captures actual start / finish times + produced quantity, and auto-creates the output stock lot.",
+    Icon: Play,
+  },
+  {
+    href: "/production/output-qc",
+    label: "Output QC",
+    description:
+      "Pass / fail manufactured output lots. Until cleared, output stays in `received` status and can't be transferred to the warehouse.",
+    Icon: Microscope,
   },
   {
     href: "/production/mps",

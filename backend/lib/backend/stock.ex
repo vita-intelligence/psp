@@ -1520,7 +1520,14 @@ defmodule Backend.Stock do
         :unknown
 
       true ->
-        units_per_package = Decimal.new(lot.units_per_package)
+        # `units_per_package` is now `decimal` (was integer) — accept
+        # a %Decimal{} as-is; convert other shapes through Decimal.new.
+        units_per_package =
+          case lot.units_per_package do
+            %Decimal{} = d -> d
+            other -> Decimal.new(other)
+          end
+
         qty = lot.qty_received || Decimal.new(0)
         packages = qty |> Decimal.div(units_per_package) |> Decimal.round(0, :up)
         packages_int = Decimal.to_integer(packages)
@@ -1766,7 +1773,10 @@ defmodule Backend.Stock do
       "width_mm" => integer_median(lots, & &1.package_width_mm),
       "height_mm" => integer_median(lots, & &1.package_height_mm),
       "weight_kg" => decimal_median(lots, & &1.package_weight_kg),
-      "units_per_package" => integer_median(lots, & &1.units_per_package),
+      # `units_per_package` is decimal now — use the decimal median so
+      # fractional kg-per-bag values aren't truncated when computing a
+      # historical average across lots.
+      "units_per_package" => decimal_median(lots, & &1.units_per_package),
       "stack_factor" => integer_median(lots, & &1.stack_factor)
     }
   end

@@ -742,6 +742,273 @@ defmodule BackendWeb.ManufacturingOrderController do
     end
   end
 
+  # GET /api/production/output-qc
+  # Output stock lots awaiting production-QC sign-off. Gated by the
+  # dedicated `production.qc_output` perm so a finished-goods QC role
+  # can be granted without also handing out `stock.qc` (which covers
+  # incoming PO inspections).
+  def output_qc_queue(conn, _params) do
+    actor = conn.assigns.current_user
+
+    if RBAC.has_permission?(actor, "production.qc_output") do
+      entries = Production.list_pending_output_qc(actor.company_id)
+      json(conn, %{items: Enum.map(entries, &Payloads.output_qc_entry/1)})
+    else
+      forbidden(conn, "Missing production.qc_output permission.")
+    end
+  end
+
+  # POST /api/production/output-qc/:lot_uuid
+  # Body: %{"verdict" => "pass" | "fail", "reason" => string (optional)}
+  def output_qc_sign_off(conn, %{"lot_uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    if RBAC.has_permission?(actor, "production.qc_output") do
+      verdict = params["verdict"]
+
+      case Production.sign_off_output_qc(actor, uuid, verdict, params) do
+        {:ok, lot} ->
+          json(conn, %{lot: Payloads.stock_lot(lot)})
+
+        {:error, :bad_verdict} ->
+          unprocessable(
+            conn,
+            "bad_verdict",
+            "verdict must be `pass` or `fail`."
+          )
+
+        {:error, :lot_not_found} ->
+          not_found(conn)
+
+        {:error, :not_a_manufactured_lot} ->
+          unprocessable(
+            conn,
+            "not_a_manufactured_lot",
+            "Output QC only applies to manufacturing-order lots — incoming PO lots use the Goods-In Inspection flow."
+          )
+
+        {:error, {:illegal_transition, info}} ->
+          unprocessable(
+            conn,
+            "illegal_transition",
+            "Can't transition to #{info.kind} from #{info.from}."
+          )
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+
+        {:error, reason} ->
+          unprocessable(conn, "qc_sign_off_failed", inspect(reason))
+      end
+    else
+      forbidden(conn, "Missing production.qc_output permission.")
+    end
+  end
+
+  # GET /api/production/runs
+  # Preflight-cleared MOs the production operator can start or finish.
+  def runs(conn, _params) do
+    actor = conn.assigns.current_user
+
+    if RBAC.has_permission?(actor, "production.mo_execute") do
+      entries = Production.list_production_runs(actor.company_id)
+      json(conn, %{items: Enum.map(entries, &Payloads.production_run_entry/1)})
+    else
+      forbidden(conn, "Missing production.mo_execute permission.")
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/start-production
+  # Flips a preflight-cleared MO to in_progress + stamps actual_start.
+  def start_production(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_execute") do
+          case Production.start_mo_production(actor, mo) do
+            {:ok, updated} ->
+              json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+            {:error, {:invalid_status, current}} ->
+              unprocessable(
+                conn,
+                "wrong_status",
+                "MO is #{current}; only scheduled MOs can be started."
+              )
+
+            {:error, :pickup_not_completed} ->
+              unprocessable(
+                conn,
+                "pickup_not_completed",
+                "Warehouse pickup isn't done — picker needs to confirm transfer first."
+              )
+
+            {:error, :preflight_incomplete} ->
+              unprocessable(
+                conn,
+                "preflight_incomplete",
+                "Sign off every booking under Pre-production before starting."
+              )
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+        else
+          forbidden(conn, "Missing production.mo_execute permission.")
+        end
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/finish-production
+  # Body: %{
+  #   "actual_finish" => ISO datetime (optional, defaults to now),
+  #   "actual_start"  => ISO datetime (optional, override if Start was skipped),
+  #   "quantity_produced" => string | number (required, >= 0)
+  # }
+  def finish_production(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        if RBAC.has_permission?(actor, "production.mo_execute") do
+          opts = build_finish_opts(params)
+
+          case Production.finish_mo_production(actor, mo, opts) do
+            {:ok, updated} ->
+              json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+            {:error, {:invalid_status, current}} ->
+              unprocessable(
+                conn,
+                "wrong_status",
+                "MO is #{current}; Finish requires an in-progress run."
+              )
+
+            {:error, :bad_qty} ->
+              unprocessable(
+                conn,
+                "bad_qty",
+                "Produced quantity must be a non-negative number."
+              )
+
+            {:error, :bad_datetime} ->
+              unprocessable(
+                conn,
+                "bad_datetime",
+                "Date / time inputs must be valid ISO timestamps."
+              )
+
+            {:error, :finish_before_start} ->
+              unprocessable(
+                conn,
+                "finish_before_start",
+                "Finish time can't be earlier than start time."
+              )
+
+            {:error, :no_production_cell} ->
+              unprocessable(
+                conn,
+                "no_production_cell",
+                "MO has no production-feed cell — picker never confirmed transfer."
+              )
+
+            {:error, :missing_step_uuid} ->
+              unprocessable(
+                conn,
+                "missing_step_uuid",
+                "Each operation_time entry needs a step_uuid."
+              )
+
+            {:error, :operation_time_outside_run} ->
+              unprocessable(
+                conn,
+                "operation_time_outside_run",
+                "Operation times must fall between the MO's start and finish."
+              )
+
+            {:error, {:step_not_in_mo, uuid}} ->
+              unprocessable(
+                conn,
+                "step_not_in_mo",
+                "Step #{uuid} doesn't belong to this MO."
+              )
+
+            {:error, :bad_operation_times} ->
+              unprocessable(
+                conn,
+                "bad_operation_times",
+                "operation_times must be a list of step time entries."
+              )
+
+            {:error, :missing_packs} ->
+              unprocessable(
+                conn,
+                "missing_packs",
+                "At least one package must be recorded when finishing production."
+              )
+
+            {:error, :bad_pack_entry} ->
+              unprocessable(
+                conn,
+                "bad_pack_entry",
+                "Each pack must be a map with qty + dimensions."
+              )
+
+            {:error, {:bad_pack_field, field}} ->
+              unprocessable(
+                conn,
+                "bad_pack_field",
+                "Pack field `#{field}` must be a positive number."
+              )
+
+            {:error, {:pack_qty_mismatch, %{sum: sum, total: total}}} ->
+              unprocessable(
+                conn,
+                "pack_qty_mismatch",
+                "Pack quantities sum to #{Decimal.to_string(sum)} but produced quantity is #{Decimal.to_string(total)}."
+              )
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+        else
+          forbidden(conn, "Missing production.mo_execute permission.")
+        end
+    end
+  end
+
+  defp build_finish_opts(params) do
+    base =
+      Enum.reduce(
+        [{"actual_start", :actual_start}, {"actual_finish", :actual_finish}, {"quantity_produced", :quantity_produced}],
+        [],
+        fn {key, opt}, acc ->
+          case Map.get(params, key) do
+            nil -> acc
+            val -> [{opt, val} | acc]
+          end
+        end
+      )
+
+    base =
+      case Map.get(params, "operation_times") do
+        list when is_list(list) -> [{:operation_times, list} | base]
+        _ -> base
+      end
+
+    case Map.get(params, "packs") do
+      list when is_list(list) -> [{:packs, list} | base]
+      _ -> base
+    end
+  end
+
   # ----- helpers ---------------------------------------------------
 
   defp creation_error(conn, code) do
