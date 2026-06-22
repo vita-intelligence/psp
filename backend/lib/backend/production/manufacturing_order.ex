@@ -68,6 +68,13 @@ defmodule Backend.Production.ManufacturingOrder do
     field :pickup_started_at, :utc_datetime
     field :pickup_completed_at, :utc_datetime
 
+    # Virtual — count of raw_material / packaging bookings whose lot is
+    # not yet "available" (i.e. still in quarantine / received, awaiting
+    # Goods-In Inspection). Populated by Production.with_qc_pending_count
+    # so the planner sees QC progress on the calendar block + edit
+    # dialog before clicking Release. Not persisted.
+    field :qc_pending_count, :integer, virtual: true, default: 0
+
     belongs_to :company, Company
     belongs_to :warehouse, Warehouse
     belongs_to :item, Item
@@ -197,6 +204,7 @@ defmodule Backend.Production.ManufacturingOrder do
   def pickup_changeset(mo, attrs) do
     mo
     |> cast(attrs, [
+      :status,
       :released_to_warehouse_at,
       :released_to_warehouse_by_id,
       :pickup_window_hours,

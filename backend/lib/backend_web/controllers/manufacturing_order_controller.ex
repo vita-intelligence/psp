@@ -249,8 +249,18 @@ defmodule BackendWeb.ManufacturingOrderController do
             {:ok, updated} ->
               json(conn, %{mo: Payloads.manufacturing_order(updated)})
 
+            {:error, :past_time} ->
+              unprocessable(
+                conn,
+                "past_time",
+                "Can't shift the chain into the past — pick a future time."
+              )
+
             {:error, %Ecto.Changeset{} = cs} ->
               changeset_error(conn, cs)
+
+            {:error, reason} when is_atom(reason) ->
+              unprocessable(conn, Atom.to_string(reason), "Couldn't shift the chain: #{reason}.")
           end
         else
           forbidden(conn, "Missing production.mo_edit permission.")
@@ -435,7 +445,10 @@ defmodule BackendWeb.ManufacturingOrderController do
               json(conn, %{mo: Payloads.manufacturing_order(updated)})
 
             {:error, :wrong_status} ->
-              unprocessable(conn, "wrong_status", "Only scheduled MOs can be unscheduled.")
+              unprocessable(conn, "wrong_status", "MO can't be unscheduled in its current status.")
+
+            {:error, :not_on_calendar} ->
+              unprocessable(conn, "not_on_calendar", "MO isn't on the calendar.")
 
             {:error, %Ecto.Changeset{} = cs} ->
               changeset_error(conn, cs)
@@ -659,7 +672,14 @@ defmodule BackendWeb.ManufacturingOrderController do
             unprocessable(
               conn,
               "wrong_status",
-              "MO is #{current}; release requires a scheduled MO."
+              "MO is #{current}; release requires an approved MO that's on the calendar."
+            )
+
+          {:error, :not_on_calendar} ->
+            unprocessable(
+              conn,
+              "not_on_calendar",
+              "Place the MO on the calendar before releasing it to the warehouse."
             )
 
           {:error, :stale_bookings, list} ->
@@ -669,6 +689,17 @@ defmodule BackendWeb.ManufacturingOrderController do
               Errors.payload(
                 "stale_bookings",
                 "One or more booked lots aren't available — resolve QC before release.",
+                %{bookings: list}
+              )
+            )
+
+          {:error, :lots_on_trolley, list} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "lots_on_trolley",
+                "One or more booked lots are currently on another MO's trolley — wait for that pickup to finish or abort.",
                 %{bookings: list}
               )
             )

@@ -1006,6 +1006,7 @@ defmodule Backend.Stock do
   """
   def move_placement(%User{} = actor, lot_uuid, attrs) when is_binary(lot_uuid) do
     with {:ok, lot} <- fetch_lot_by_uuid(actor.company_id, lot_uuid),
+         :ok <- ensure_not_locked_by_pickup(lot),
          {:ok, to_cell} <-
            fetch_cell_by_uuid(actor.company_id, attrs["to_cell_uuid"]),
          {:ok, from_placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
@@ -1071,6 +1072,7 @@ defmodule Backend.Stock do
   def adjust_placement(%Backend.Accounts.User{} = actor, lot_uuid, attrs)
       when is_binary(lot_uuid) and is_map(attrs) do
     with {:ok, lot} <- fetch_lot_by_uuid(actor.company_id, lot_uuid),
+         :ok <- ensure_not_locked_by_pickup(lot),
          {:ok, placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
          {:ok, delta} <- parse_signed_decimal(attrs["delta_qty"]),
          {:ok, kind} <- adjust_kind(delta),
@@ -1231,6 +1233,20 @@ defmodule Backend.Stock do
     do: {:error, :same_cell}
 
   defp ensure_distinct_cells(_, _), do: :ok
+
+  # Trolley guard — refuse physical placement mutations on a lot that
+  # is currently booked to a pickup-in-progress MO. Matches the QC
+  # event guard in Stock.Lifecycle so both lot-status and lot-quantity
+  # paths agree: once the picker has the lot on the trolley, no one
+  # else can move it or write off qty until the pickup completes or
+  # aborts.
+  defp ensure_not_locked_by_pickup(%Lot{id: lot_id}) do
+    if Backend.Production.lot_locked_by_pickup?(lot_id) do
+      {:error, :locked_by_pickup_in_progress}
+    else
+      :ok
+    end
+  end
 
   defp decrement_placement(%Placement{} = p, qty) do
     new_qty = Decimal.sub(p.qty, qty)

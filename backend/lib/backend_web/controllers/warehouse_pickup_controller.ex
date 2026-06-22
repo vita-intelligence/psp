@@ -62,6 +62,8 @@ defmodule BackendWeb.WarehousePickupController do
       items:
         Enum.map(cells, fn cell ->
           loc = cell.storage_location
+          floor = loc && Ecto.assoc_loaded?(loc.floor) && loc.floor
+          warehouse = floor && Ecto.assoc_loaded?(floor.warehouse) && floor.warehouse
 
           %{
             id: cell.id,
@@ -72,7 +74,28 @@ defmodule BackendWeb.WarehousePickupController do
                 do: loc.code || loc.name || cell.name || "Cell ##{cell.id}",
                 else: cell.name || "Cell ##{cell.id}"
               ),
-            location: loc && %{id: loc.id, uuid: loc.uuid, name: loc.name, code: loc.code}
+            location:
+              loc &&
+                %{
+                  id: loc.id,
+                  uuid: loc.uuid,
+                  name: loc.name,
+                  code: loc.code,
+                  floor:
+                    floor &&
+                      %{
+                        id: floor.id,
+                        uuid: floor.uuid,
+                        name: floor.name,
+                        warehouse:
+                          warehouse &&
+                            %{
+                              id: warehouse.id,
+                              uuid: warehouse.uuid,
+                              name: warehouse.name
+                            }
+                      }
+                }
           }
         end)
     })
@@ -132,6 +155,17 @@ defmodule BackendWeb.WarehousePickupController do
               conn,
               "pickup_already_completed",
               "Pickup has already been transferred to production."
+            )
+
+          {:error, :lots_on_trolley, list} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              BackendWeb.Errors.payload(
+                "lots_on_trolley",
+                "One or more booked lots are on another MO's trolley right now. Wait for that pickup to finish or abort first.",
+                %{bookings: list}
+              )
             )
 
           {:error, %Ecto.Changeset{} = cs} ->

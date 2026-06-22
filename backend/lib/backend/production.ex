@@ -3265,22 +3265,66 @@ defmodule Backend.Production do
     if delta_seconds == 0 do
       {:ok, reload_manufacturing_order(root)}
     else
-      # Re-run the forward-topological scheduler from (current
-      # chain earliest + delta). The walker handles working hours
-      # so each step lands inside a valid working interval —
-      # never floating in the night / weekend after a drag.
-      case chain_earliest_start(root) do
-        nil ->
-          {:ok, reload_manufacturing_order(root)}
+      # Pure delta shift — add delta_seconds to every step's
+      # planned_start / planned_finish across the whole chain. No
+      # rescheduler re-walk: the user dragged by exactly delta and
+      # expects every step to move by exactly delta. Re-running the
+      # walker off `chain_earliest_start` is hostile when a hidden
+      # descendant step lives weeks in the past (drag would teleport
+      # the whole chain back to that ancient earliest).
+      chain_mos = mo_chain(root)
+      chain_ids = Enum.map(chain_mos, & &1.id)
 
-        earliest ->
-          new_start = DateTime.add(earliest, delta_seconds, :second)
-
-          case schedule_mo_chain(actor, root, new_start) do
-            {:ok, updated, _meta} -> {:ok, updated}
-            err -> err
-          end
+      case do_shift_steps_by_delta(actor, chain_ids, delta_seconds) do
+        {:ok, _count} -> {:ok, reload_manufacturing_order(root)}
+        {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  defp do_shift_steps_by_delta(%User{} = actor, mo_ids, delta_seconds) do
+    Repo.transaction(fn ->
+      steps =
+        from(s in ManufacturingOrderStep,
+          where:
+            s.manufacturing_order_id in ^mo_ids and
+              not is_nil(s.planned_start) and
+              not is_nil(s.planned_finish)
+        )
+        |> Repo.all()
+
+      Enum.each(steps, fn step ->
+        before = mo_step_snapshot(step)
+        new_start = DateTime.add(step.planned_start, delta_seconds, :second)
+        new_finish = DateTime.add(step.planned_finish, delta_seconds, :second)
+
+        cs =
+          ManufacturingOrderStep.changeset(step, %{
+            "planned_start" => new_start,
+            "planned_finish" => new_finish,
+            "updated_by_id" => actor.id
+          })
+
+        case Repo.update(cs) do
+          {:ok, updated} ->
+            Audit.record_updated(
+              actor,
+              "manufacturing_order_step",
+              updated,
+              before,
+              mo_step_snapshot(updated)
+            )
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+      end)
+
+      length(steps)
+    end)
+    |> case do
+      {:ok, count} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -3309,23 +3353,13 @@ defmodule Backend.Production do
     if delta_seconds == 0 do
       {:ok, reload_manufacturing_order(mo)}
     else
-      # Re-run the walker-aware scheduler from (current first
-      # step start + delta). schedule_mo internally walks forward
-      # through working windows and enforces past_time / chain
-      # order — so the dragged block always lands inside working
-      # hours, never floating in closed time.
-      case mo_first_step_start(mo) do
-        nil ->
-          # Nothing scheduled yet — nothing to shift.
-          {:ok, reload_manufacturing_order(mo)}
-
-        first_start ->
-          new_start = DateTime.add(first_start, delta_seconds, :second)
-
-          case schedule_mo(actor, mo, new_start) do
-            {:ok, updated, _meta} -> {:ok, updated}
-            err -> err
-          end
+      # Pure delta shift — every step moves by exactly delta_seconds.
+      # No walker re-run: the user dragged by exactly delta and expects
+      # an exact delta, not a re-snap that can teleport the block to
+      # an unrelated earliest if any step happens to be in the past.
+      case do_shift_steps_by_delta(actor, [mo.id], delta_seconds) do
+        {:ok, _count} -> {:ok, reload_manufacturing_order(mo)}
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -3443,15 +3477,11 @@ defmodule Backend.Production do
         {:error, reason} -> Repo.rollback(reason)
       end
 
-      updated_mo =
-        if mo.status != "scheduled" do
-          case do_transition(actor, mo, "scheduled") do
-            {:ok, u} -> u
-            {:error, reason} -> Repo.rollback(reason)
-          end
-        else
-          reload_manufacturing_order(mo)
-        end
+      # Calendar placement no longer auto-flips status to "scheduled".
+      # The Release-to-warehouse button is the only path from "approved"
+      # to "scheduled" — dropping on the calendar just records
+      # planned_start/finish on the steps, status stays put.
+      updated_mo = reload_manufacturing_order(mo)
 
       {updated_mo, outside_total}
     end)
@@ -3624,13 +3654,9 @@ defmodule Backend.Production do
           {s_finish, first || s_start, off_acc + off}
         end)
 
-      updated =
-        if mo.status != "scheduled" do
-          {:ok, u} = do_transition(actor, mo, "scheduled")
-          u
-        else
-          reload_manufacturing_order(mo)
-        end
+      # Calendar placement is now status-neutral (see do_schedule_mo
+      # comment) — only Release-to-warehouse flips to "scheduled".
+      updated = reload_manufacturing_order(mo)
 
       # Tuple grew a 5th element (last_finish) so the chain walker
       # can chain MOs forward — parent's earliest_start =
@@ -3668,13 +3694,9 @@ defmodule Backend.Production do
           {s_start, off_acc + off}
         end)
 
-      updated =
-        if mo.status != "scheduled" do
-          {:ok, u} = do_transition(actor, mo, "scheduled")
-          u
-        else
-          reload_manufacturing_order(mo)
-        end
+      # Calendar placement is now status-neutral (see do_schedule_mo
+      # comment) — only Release-to-warehouse flips to "scheduled".
+      updated = reload_manufacturing_order(mo)
 
       {:ok, updated, off_total, earliest_start}
     end
@@ -3771,9 +3793,14 @@ defmodule Backend.Production do
       chain_nodes = mo_chain(root)
 
       Enum.each(chain_nodes, fn node ->
-        if node.status == "scheduled" do
+        # Calendar-placed MOs are now "approved" (status only flips to
+        # "scheduled" via Release-to-warehouse), so we unschedule any
+        # node that has planned step times — status alone is no longer
+        # enough to know whether an MO sits on the calendar.
+        if node.status in ["approved", "scheduled"] do
           case unschedule_mo(actor, node) do
             {:ok, _} -> :ok
+            {:error, :not_on_calendar} -> :ok
             {:error, reason} -> Repo.rollback(reason)
           end
         end
@@ -3793,52 +3820,74 @@ defmodule Backend.Production do
   reverts status to `approved`.
   """
   def unschedule_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
-    if mo.status != "scheduled" do
-      {:error, :wrong_status}
-    else
-      Repo.transaction(fn ->
-        steps =
-          from(s in ManufacturingOrderStep,
-            where: s.manufacturing_order_id == ^mo.id
-          )
-          |> Repo.all()
+    cond do
+      mo.status not in ["approved", "scheduled"] ->
+        {:error, :wrong_status}
 
-        Enum.each(steps, fn step ->
-          before = mo_step_snapshot(step)
+      not has_planned_steps?(mo) ->
+        {:error, :not_on_calendar}
 
-          attrs = %{
-            "planned_start" => nil,
-            "planned_finish" => nil,
-            "updated_by_id" => actor.id
-          }
+      true ->
+        Repo.transaction(fn ->
+          steps =
+            from(s in ManufacturingOrderStep,
+              where: s.manufacturing_order_id == ^mo.id
+            )
+            |> Repo.all()
 
-          case step
-               |> ManufacturingOrderStep.changeset(attrs)
-               |> Repo.update() do
-            {:ok, updated} ->
-              Audit.record_updated(
-                actor,
-                "manufacturing_order_step",
-                updated,
-                before,
-                mo_step_snapshot(updated)
-              )
+          Enum.each(steps, fn step ->
+            before = mo_step_snapshot(step)
 
-            {:error, reason} ->
-              Repo.rollback(reason)
+            attrs = %{
+              "planned_start" => nil,
+              "planned_finish" => nil,
+              "updated_by_id" => actor.id
+            }
+
+            case step
+                 |> ManufacturingOrderStep.changeset(attrs)
+                 |> Repo.update() do
+              {:ok, updated} ->
+                Audit.record_updated(
+                  actor,
+                  "manufacturing_order_step",
+                  updated,
+                  before,
+                  mo_step_snapshot(updated)
+                )
+
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
+          end)
+
+          # If the MO is "scheduled" (released path — shouldn't really
+          # happen for unschedule since release locks it, but stays
+          # idempotent), flip back to "approved". Otherwise it's
+          # already approved — just reload.
+          if mo.status == "scheduled" do
+            case do_transition(actor, mo, "approved") do
+              {:ok, updated} -> updated
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          else
+            reload_manufacturing_order(mo)
           end
         end)
-
-        case do_transition(actor, mo, "approved") do
-          {:ok, updated} -> updated
-          {:error, reason} -> Repo.rollback(reason)
+        |> case do
+          {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
+          err -> err
         end
-      end)
-      |> case do
-        {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
-        err -> err
-      end
     end
+  end
+
+  defp has_planned_steps?(%ManufacturingOrder{id: id}) do
+    from(s in ManufacturingOrderStep,
+      where: s.manufacturing_order_id == ^id and not is_nil(s.planned_start),
+      select: count(s.id)
+    )
+    |> Repo.one()
+    |> Kernel.>(0)
   end
 
   # ----- Production schedule ---------------------------------------
@@ -3856,34 +3905,95 @@ defmodule Backend.Production do
     from_dt = DateTime.new!(from_date, ~T[00:00:00], "Etc/UTC")
     to_dt = DateTime.new!(to_date, ~T[23:59:59], "Etc/UTC")
 
-    from(s in ManufacturingOrderStep,
-      join: mo in ManufacturingOrder,
-      on: mo.id == s.manufacturing_order_id,
+    ops =
+      from(s in ManufacturingOrderStep,
+        join: mo in ManufacturingOrder,
+        on: mo.id == s.manufacturing_order_id,
+        where:
+          s.company_id == ^actor.company_id and
+            mo.warehouse_id == ^warehouse.id and
+            mo.status in ["approved", "scheduled", "in_progress"] and
+            not is_nil(s.planned_start) and
+            not is_nil(s.planned_finish) and
+            s.planned_finish >= ^from_dt and
+            s.planned_start <= ^to_dt,
+        preload: [:workstation_group, manufacturing_order: [:item, :warehouse]],
+        order_by: [asc: s.planned_start, asc: s.id]
+      )
+      |> Repo.all()
+
+    # Stamp each operation's preloaded MO with qc_pending_count so the
+    # planner sees QC progress on the calendar block without an extra
+    # per-MO query.
+    mo_ids = ops |> Enum.map(& &1.manufacturing_order_id) |> Enum.uniq()
+    counts = qc_pending_counts_for(mo_ids)
+
+    Enum.map(ops, fn op ->
+      mo = op.manufacturing_order
+      count = Map.get(counts, mo.id, 0)
+      %{op | manufacturing_order: %{mo | qc_pending_count: count}}
+    end)
+  end
+
+  @doc """
+  Count of bookings whose lot is not yet `available`, keyed by MO id.
+  Only counts raw_material / packaging bookings (semi-finished come
+  from child MOs, not stock QC). Used by the schedule view + edit
+  dialog to surface QC status before the planner clicks Release.
+  """
+  def qc_pending_counts_for([]), do: %{}
+
+  def qc_pending_counts_for(mo_ids) when is_list(mo_ids) do
+    from(b in ManufacturingOrderBooking,
+      join: l in StockLot,
+      on: l.id == b.stock_lot_id,
+      join: it in Item,
+      on: it.id == b.item_id,
       where:
-        s.company_id == ^actor.company_id and
-          mo.warehouse_id == ^warehouse.id and
-          mo.status in ["scheduled", "in_progress"] and
-          not is_nil(s.planned_start) and
-          not is_nil(s.planned_finish) and
-          s.planned_finish >= ^from_dt and
-          s.planned_start <= ^to_dt,
-      preload: [:workstation_group, manufacturing_order: [:item, :warehouse]],
-      order_by: [asc: s.planned_start, asc: s.id]
+        b.manufacturing_order_id in ^mo_ids and
+          b.status == "requested" and
+          it.item_type in ["raw_material", "packaging"] and
+          l.status != "available",
+      group_by: b.manufacturing_order_id,
+      select: {b.manufacturing_order_id, count(b.id)}
     )
     |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
+  Same as `qc_pending_counts_for/1` but for a single MO. Used by the
+  release section + the manufacturing_order payload.
+  """
+  def qc_pending_count_for(%ManufacturingOrder{id: id}) do
+    Map.get(qc_pending_counts_for([id]), id, 0)
   end
 
   @doc """
   Approved-but-unscheduled MOs for `warehouse`, sorted by due_date
-  ascending (nulls last) — the planner's backlog feed. Includes
-  parent + child MOs (children can be scheduled independently).
+  ascending (nulls last) — the planner's backlog feed. An MO counts as
+  backlog only when **no step has a planned_start** (i.e. it hasn't
+  been placed on the calendar yet). Once any step is scheduled, the MO
+  belongs on the calendar even if its status is still "approved" (the
+  status only flips to "scheduled" via the Release-to-warehouse
+  button).
   """
   def list_backlog_manufacturing_orders(%User{} = actor, %Warehouse{} = warehouse) do
+    scheduled_mo_ids =
+      from(s in ManufacturingOrderStep,
+        where:
+          s.company_id == ^actor.company_id and
+            not is_nil(s.planned_start),
+        select: s.manufacturing_order_id,
+        distinct: true
+      )
+
     from(mo in ManufacturingOrder,
       where:
         mo.company_id == ^actor.company_id and
           mo.warehouse_id == ^warehouse.id and
-          mo.status == "approved",
+          mo.status == "approved" and
+          mo.id not in subquery(scheduled_mo_ids),
       preload: [:item, :warehouse, :bom, :assigned_to, steps: :workstation_group],
       order_by: [
         asc_nulls_last: mo.due_date,
@@ -4233,9 +4343,16 @@ defmodule Backend.Production do
   def release_mo_to_warehouse(%User{} = actor, %ManufacturingOrder{} = mo, opts \\ []) do
     window = Keyword.get(opts, :pickup_window_hours)
 
-    with :ok <- ensure_status_in(mo, ["scheduled"]),
-         :ok <- ensure_all_booked_lots_available(mo) do
+    # Release is the ONLY path from "approved" → "scheduled". Calendar
+    # placement no longer auto-flips status. We also accept "scheduled"
+    # as a no-op re-release (e.g. legacy MOs already in "scheduled"
+    # from the old semantic) so the planner isn't blocked.
+    with :ok <- ensure_status_in(mo, ["approved", "scheduled"]),
+         :ok <- ensure_has_planned_start(mo),
+         :ok <- ensure_all_booked_lots_available(mo),
+         :ok <- ensure_no_booked_lots_on_trolley(mo) do
       attrs = %{
+        "status" => "scheduled",
         "released_to_warehouse_at" => now(),
         "released_to_warehouse_by_id" => actor.id,
         "updated_by_id" => actor.id
@@ -4249,6 +4366,51 @@ defmodule Backend.Production do
         end
 
       apply_pickup_changeset(actor, mo, attrs)
+    end
+  end
+
+  defp ensure_has_planned_start(%ManufacturingOrder{id: id}) do
+    has_any? =
+      from(s in ManufacturingOrderStep,
+        where: s.manufacturing_order_id == ^id and not is_nil(s.planned_start),
+        select: count(s.id)
+      )
+      |> Repo.one()
+      |> Kernel.>(0)
+
+    if has_any?, do: :ok, else: {:error, :not_on_calendar}
+  end
+
+  # Cross-MO trolley guard. If any booked lot is currently sitting on
+  # ANOTHER MO's trolley (different MO with pickup_started_at set,
+  # not completed), refuse to release / start_pickup on this MO. The
+  # ALL-`available` lot-status check upstream doesn't catch this
+  # because picking doesn't change lot.status — only consume does.
+  defp ensure_no_booked_lots_on_trolley(%ManufacturingOrder{id: id}) do
+    busy =
+      from(b in ManufacturingOrderBooking,
+        join: other_b in ManufacturingOrderBooking,
+        on: other_b.stock_lot_id == b.stock_lot_id and other_b.id != b.id,
+        join: other_mo in ManufacturingOrder,
+        on: other_mo.id == other_b.manufacturing_order_id,
+        where:
+          b.manufacturing_order_id == ^id and
+            b.status == "requested" and
+            other_b.status == "requested" and
+            not is_nil(other_mo.pickup_started_at) and
+            is_nil(other_mo.pickup_completed_at),
+        select: %{
+          booking_uuid: b.uuid,
+          lot_uuid: b.stock_lot_id,
+          other_mo_uuid: other_mo.uuid
+        },
+        limit: 25
+      )
+      |> Repo.all()
+
+    case busy do
+      [] -> :ok
+      list -> {:error, :lots_on_trolley, list}
     end
   end
 
@@ -4266,7 +4428,11 @@ defmodule Backend.Production do
         {:error, :pickup_in_progress}
 
       true ->
+        # Reverse release: drop the timestamp + actor and flip status
+        # back to "approved" so the MO is no longer in the picker queue
+        # and the planner can re-edit the schedule freely.
         apply_pickup_changeset(actor, mo, %{
+          "status" => "approved",
           "released_to_warehouse_at" => nil,
           "released_to_warehouse_by_id" => nil,
           "updated_by_id" => actor.id
@@ -4292,11 +4458,19 @@ defmodule Backend.Production do
         {:error, :pickup_already_completed}
 
       true ->
-        apply_pickup_changeset(actor, mo, %{
-          "pickup_started_at" => now(),
-          "pickup_started_by_id" => actor.id,
-          "updated_by_id" => actor.id
-        })
+        # Cross-MO trolley guard at start time too — another picker
+        # may have grabbed a shared lot AFTER this MO was released.
+        case ensure_no_booked_lots_on_trolley(mo) do
+          :ok ->
+            apply_pickup_changeset(actor, mo, %{
+              "pickup_started_at" => now(),
+              "pickup_started_by_id" => actor.id,
+              "updated_by_id" => actor.id
+            })
+
+          {:error, :lots_on_trolley, list} ->
+            {:error, :lots_on_trolley, list}
+        end
     end
   end
 
@@ -4595,7 +4769,7 @@ defmodule Backend.Production do
       where:
         b.manufacturing_order_id == ^mo.id and
           b.status == "requested" and
-          it.type in ["raw_material", "packaging"],
+          it.item_type in ["raw_material", "packaging"],
       order_by: [asc: it.name, asc: b.id],
       preload: [
         :item,
@@ -4747,7 +4921,7 @@ defmodule Backend.Production do
         where:
           b.manufacturing_order_id == ^mo.id and
             b.status == "requested" and
-            it.type in ["raw_material", "packaging"] and
+            it.item_type in ["raw_material", "packaging"] and
             l.status != "available",
         select: %{booking_uuid: b.uuid, lot_uuid: l.uuid, lot_status: l.status}
       )

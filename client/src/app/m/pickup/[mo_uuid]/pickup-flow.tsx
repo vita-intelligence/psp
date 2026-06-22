@@ -31,13 +31,18 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
+  Building2,
   Camera,
   Check,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Clock,
   ImagePlus,
+  Layers,
   Loader2,
+  MapPin,
+  Package,
   PackageCheck,
   RefreshCw,
   ScanLine,
@@ -70,6 +75,8 @@ import type {
   ManufacturingOrderBooking,
 } from "@/lib/production/types";
 import { UuidScanStep } from "./uuid-scan-step";
+import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
+import type { ManufacturingOrderBookingCellSummary } from "@/lib/production/types";
 
 interface Props {
   initialMo: ManufacturingOrder;
@@ -79,15 +86,30 @@ interface Props {
 
 type FlowStep =
   | { kind: "overview" }
+  | { kind: "directions"; bookingUuid: string }
   | { kind: "scan_cell"; bookingUuid: string }
   | { kind: "scan_lot"; bookingUuid: string }
   | { kind: "transfer_overview" }
+  | { kind: "transfer_directions" }
   | { kind: "transfer_scan_cell" }
   | { kind: "transfer_photos" };
 
 interface ProductionCellChoice {
   uuid: string;
   code: string;
+  name?: string | null;
+  /** Full breadcrumb so the transfer directions step can render the
+   *  warehouse → floor → location row stack + floor-plan mini. */
+  location?: {
+    uuid: string;
+    name: string | null;
+    code: string | null;
+    floor: {
+      uuid: string;
+      name: string | null;
+      warehouse: { uuid: string; name: string | null } | null;
+    } | null;
+  } | null;
 }
 
 export function PickupFlow({
@@ -313,12 +335,37 @@ export function PickupFlow({
         onStartPickup={() => setConfirmStart(true)}
         onAbort={() => setConfirmAbort(true)}
         onScanBooking={(bookingUuid) =>
-          setStep({ kind: "scan_cell", bookingUuid })
+          setStep({ kind: "directions", bookingUuid })
         }
         onConfirmTransfer={() => setStep({ kind: "transfer_overview" })}
         pending={pending}
       />
     );
+  } else if (step.kind === "directions") {
+    const booking = bookings.find((b) => b.uuid === step.bookingUuid);
+    if (!booking || !booking.storage_location) {
+      body = (
+        <div className="px-4 py-4">
+          <p className="text-sm text-destructive">
+            Booking has no pinned cell. Abort and let the planner re-FEFO.
+          </p>
+        </div>
+      );
+    } else {
+      body = (
+        <DirectionsBody
+          headline="Walk to the lot"
+          cell={booking.storage_location}
+          lotCode={booking.stock_lot?.code ?? null}
+          qty={booking.quantity}
+          itemName={booking.item?.name ?? null}
+          onContinue={() =>
+            setStep({ kind: "scan_cell", bookingUuid: booking.uuid })
+          }
+          onBack={() => setStep({ kind: "overview" })}
+        />
+      );
+    }
   } else if (step.kind === "scan_cell") {
     const booking = bookings.find((b) => b.uuid === step.bookingUuid);
     if (!booking || !booking.storage_location?.uuid) {
@@ -388,11 +435,40 @@ export function PickupFlow({
         companyDateFormat={companyDateFormat}
         productionCell={productionCell}
         onPickCell={(cell) => setProductionCell(cell)}
-        onScanCell={() => setStep({ kind: "transfer_scan_cell" })}
+        onScanCell={() => setStep({ kind: "transfer_directions" })}
         onContinue={() => setStep({ kind: "transfer_photos" })}
         onBack={() => setStep({ kind: "overview" })}
       />
     );
+  } else if (step.kind === "transfer_directions") {
+    if (!productionCell?.location) {
+      body = (
+        <div className="px-4 py-4">
+          <p className="text-sm text-destructive">
+            No production-feed cell selected yet.
+          </p>
+        </div>
+      );
+    } else {
+      body = (
+        <DirectionsBody
+          headline="Walk to production-feed cell"
+          cell={{
+            id: 0,
+            uuid: productionCell.uuid,
+            name: productionCell.name ?? productionCell.code,
+            purpose: "production_feed",
+            ordinal: null,
+            storage_location: productionCell.location,
+          }}
+          lotCode={null}
+          qty={null}
+          itemName={null}
+          onContinue={() => setStep({ kind: "transfer_scan_cell" })}
+          onBack={() => setStep({ kind: "transfer_overview" })}
+        />
+      );
+    }
   } else if (step.kind === "transfer_scan_cell") {
     body = (
       <div className="px-4 py-4">
@@ -402,7 +478,7 @@ export function PickupFlow({
             kind="cell"
             expectedLabel={productionCell.code}
             onConfirmed={() => setStep({ kind: "transfer_photos" })}
-            onCancel={() => setStep({ kind: "transfer_overview" })}
+            onCancel={() => setStep({ kind: "transfer_directions" })}
           />
         ) : (
           <p className="text-sm text-destructive">No production cell chosen.</p>
@@ -520,6 +596,205 @@ interface OverviewBodyProps {
   onScanBooking: (bookingUuid: string) => void;
   onConfirmTransfer: () => void;
   pending: boolean;
+}
+
+/**
+ * "Walk to this cell" card with the same shape used by the put-away
+ * flow: floor-plan mini with the target rack highlighted, then a
+ * top-down breadcrumb (warehouse → floor → location → cell), then a
+ * big "I'm there — scan now" button. Used for both the lot's source
+ * cell and the production-feed target cell during transfer.
+ */
+function DirectionsBody({
+  headline,
+  cell,
+  lotCode,
+  qty,
+  itemName,
+  onContinue,
+  onBack,
+}: {
+  headline: string;
+  cell: ManufacturingOrderBookingCellSummary;
+  lotCode: string | null;
+  qty: string | null;
+  itemName: string | null;
+  onContinue: () => void;
+  onBack: () => void;
+}) {
+  const loc = cell.storage_location;
+  const isSystemCell = !!cell.system_kind;
+  const rackCode = loc?.code?.trim() || null;
+  const rackName = loc?.name?.trim() || null;
+  const cellName = cell.name?.trim() || null;
+  const shelfLabel =
+    cellName ??
+    (cell.ordinal !== undefined && cell.ordinal !== null
+      ? `Level ${cell.ordinal + 1}`
+      : `Cell ${cell.uuid.slice(0, 8)}`);
+
+  const rackPrimary = rackCode ?? rackName ?? "—";
+  const rackSuffix = rackCode && rackName ? rackName : null;
+  const cellPrimary = cellName ?? shelfLabel;
+  const cellSuffix = cellName && cellName !== shelfLabel ? shelfLabel : null;
+
+  return (
+    <>
+      <main className="flex-1 space-y-4 overflow-y-auto px-4 py-5">
+        <div>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">
+            {headline}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {isSystemCell ? (
+              <>
+                This lot hasn&apos;t been put away to a shelf yet — find
+                it in the <span className="font-medium">{cellPrimary}</span>{" "}
+                zone. Tap{" "}
+                <span className="font-medium">Scan now</span> when you
+                have it.
+              </>
+            ) : (
+              <>
+                Find the highlighted rack on the floor plan. The label on
+                the shelf will read the same code below. Tap{" "}
+                <span className="font-medium">Scan now</span> when
+                you&apos;re there and point the camera at the QR.
+              </>
+            )}
+          </p>
+        </div>
+
+        {(lotCode || itemName || qty) && (
+          <div className="rounded-xl border border-border/60 bg-card px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Picking
+            </p>
+            <p className="text-sm font-medium">
+              {itemName ?? "—"}
+              {qty ? ` · ${qty} units` : ""}
+            </p>
+            {lotCode && (
+              <p className="font-mono text-[11px] text-muted-foreground">
+                {lotCode}
+              </p>
+            )}
+          </div>
+        )}
+
+        {isSystemCell ? (
+          <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-900 dark:text-amber-200">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <p className="font-medium">No shelf assigned</p>
+              <p className="text-[12px] opacity-80">
+                System cells (receiving / quarantine / hold) aren&apos;t on
+                the floor plan. Locate the lot at the receiving zone or
+                the cage by name, then continue.
+              </p>
+            </div>
+          </div>
+        ) : (
+          loc?.floor?.uuid &&
+          loc?.uuid && (
+            <FloorPlanMini
+              floorUuid={loc.floor.uuid}
+              targetLocationUuid={loc.uuid}
+            />
+          )
+        )}
+
+        <ol className="space-y-2">
+          <DirectionsRow
+            icon={Building2}
+            label="Warehouse"
+            value={loc?.floor?.warehouse?.name ?? "—"}
+          />
+          <DirectionsRow
+            icon={Layers}
+            label="Floor"
+            value={loc?.floor?.name ?? "—"}
+          />
+          <DirectionsRow
+            icon={MapPin}
+            label="Location"
+            value={rackPrimary}
+            suffix={rackSuffix}
+            hero
+          />
+          <DirectionsRow
+            icon={Package}
+            label="Cell"
+            value={cellPrimary}
+            suffix={cellSuffix}
+            hero
+          />
+        </ol>
+      </main>
+
+      <footer className="flex gap-2 border-t border-border/60 px-4 py-3">
+        <Button
+          type="button"
+          variant="ghost"
+          size="lg"
+          className="h-14 px-4"
+          onClick={onBack}
+        >
+          <ChevronLeft className="size-5" />
+        </Button>
+        <Button
+          type="button"
+          size="lg"
+          className="h-14 flex-1 text-base"
+          onClick={onContinue}
+        >
+          <ScanLine className="mr-2 size-5" />
+          I&apos;m there — scan now
+        </Button>
+      </footer>
+    </>
+  );
+}
+
+function DirectionsRow({
+  icon: Icon,
+  label,
+  value,
+  suffix,
+  hero,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  suffix?: string | null;
+  hero?: boolean;
+}) {
+  return (
+    <li
+      className={cn(
+        "flex items-start gap-3 rounded-xl border border-border/60 bg-card px-3 py-2",
+        hero && "bg-primary/5 border-primary/30",
+      )}
+    >
+      <Icon className={cn("mt-0.5 size-4", hero ? "text-primary" : "text-muted-foreground")} />
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p
+          className={cn(
+            "truncate",
+            hero ? "text-base font-semibold" : "text-sm",
+          )}
+        >
+          {value}
+        </p>
+        {suffix && (
+          <p className="truncate text-xs text-muted-foreground">{suffix}</p>
+        )}
+      </div>
+    </li>
+  );
 }
 
 function OverviewBody({
@@ -812,7 +1087,12 @@ function TransferOverviewBody({
           return;
         }
         const data = (await res.json()) as {
-          items: Array<{ uuid: string; code: string; name: string | null }>;
+          items: Array<{
+            uuid: string;
+            code: string;
+            name: string | null;
+            location: ProductionCellChoice["location"];
+          }>;
         };
         if (cancelled) return;
         const first = data.items[0];
@@ -820,6 +1100,8 @@ function TransferOverviewBody({
           onPickCell({
             uuid: first.uuid,
             code: first.code ?? first.name ?? first.uuid.slice(0, 8),
+            name: first.name,
+            location: first.location ?? null,
           });
         } else {
           setError(

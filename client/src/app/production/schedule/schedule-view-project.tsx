@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
-import { ExternalLink, GitBranch } from "lucide-react";
+import { AlertTriangle, ExternalLink, GitBranch } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import type {
@@ -39,6 +39,10 @@ export interface ProjectRow {
   status: string;
   qty: string;
   moCount: number;
+  /** Sum of `qc_pending_count` across every MO in the chain that has
+   *  steps in the current view. Drives the amber "N QC pending" badge
+   *  on the project block. */
+  qcPending: number;
   /** Every operation in this chain — used by the block overlay to
    *  derive manual pause gaps when any step has stored segments. */
   ops: ScheduleOperation[];
@@ -49,7 +53,14 @@ export function projectRowsFromOps(
   parentIdByMoId: Map<number, number | null>,
   moMetaByMoId: Map<
     number,
-    { code: string | null; uuid: string; itemName: string; status: string; qty: string }
+    {
+      code: string | null;
+      uuid: string;
+      itemName: string;
+      status: string;
+      qty: string;
+      qcPending: number;
+    }
   >,
 ): ProjectRow[] {
   function rootOf(moId: number): number {
@@ -98,6 +109,10 @@ export function projectRowsFromOps(
     if (starts.length === 0 || finishes.length === 0) continue;
 
     const meta = moMetaByMoId.get(rootId);
+    let qcPending = 0;
+    for (const moId of moIds) {
+      qcPending += moMetaByMoId.get(moId)?.qcPending ?? 0;
+    }
     rows.push({
       rootMoId: rootId,
       rootMoUuid: meta?.uuid ?? "",
@@ -108,6 +123,7 @@ export function projectRowsFromOps(
       status: meta?.status ?? "draft",
       qty: meta?.qty ?? "0",
       moCount: moIds.size,
+      qcPending,
       ops,
     });
   }
@@ -287,10 +303,21 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
             {row.itemName} · {row.qty}
           </p>
         </div>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-background/70 px-1.5 py-0.5 text-[9px] font-medium">
-          <GitBranch className="size-2.5" />
-          {row.moCount}
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span className="inline-flex items-center gap-1 rounded-full bg-background/70 px-1.5 py-0.5 text-[9px] font-medium">
+            <GitBranch className="size-2.5" />
+            {row.moCount}
+          </span>
+          {row.qcPending > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-amber-900 dark:text-amber-200"
+              title={`${row.qcPending} booked lot${row.qcPending === 1 ? "" : "s"} awaiting QC — Release is blocked until cleared.`}
+            >
+              <AlertTriangle className="size-2.5" />
+              {row.qcPending}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

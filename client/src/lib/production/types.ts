@@ -428,6 +428,11 @@ export interface ScheduleOperationMOSummary {
   pickup_window_hours: number | null;
   pickup_started_at: string | null;
   pickup_completed_at: string | null;
+  /** Count of booked raw_material / packaging lots that are still in
+   *  quarantine (not yet "available"). Surfaced on the calendar block
+   *  + edit dialog so the planner knows what blocks Release before
+   *  clicking it. 0 means every booked lot is QC-cleared. */
+  qc_pending_count: number;
 }
 
 export interface PlannedSegment {
@@ -656,6 +661,33 @@ export interface ManufacturingOrderBookingCellSummary {
   uuid: string;
   name: string | null;
   purpose: string;
+  /** Non-null on system cells (`unregistered` = receiving zone) — the
+   *  pickup directions UI uses it to skip the floor plan + show a
+   *  "find at receiving" hint instead, because system floors aren't
+   *  laid out on the canvas. */
+  system_kind?: string | null;
+  /** 0-based shelf level inside the rack — when only `name` is null,
+   *  the FE derives the label as `Level <ordinal+1>`. Set on payloads
+   *  served from the warehouse-pickup detail endpoint; older callers
+   *  may omit it. */
+  ordinal?: number | null;
+  /** Full breadcrumb when the BE preloaded the storage chain
+   *  (warehouse-pickup detail + production_feed cells endpoints).
+   *  Drives the directions card + FloorPlanMini in the pickup flow.
+   *  `id` is only set when the row comes from a booking payload —
+   *  the production_feed cells endpoint trims it. */
+  storage_location?: {
+    id?: number;
+    uuid: string;
+    name: string | null;
+    code: string | null;
+    floor: {
+      id?: number;
+      uuid: string;
+      name: string | null;
+      warehouse: { id?: number; uuid: string; name: string | null } | null;
+    } | null;
+  } | null;
 }
 
 export type ManufacturingOrderBookingStatus =

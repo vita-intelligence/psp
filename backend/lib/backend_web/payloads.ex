@@ -1386,12 +1386,52 @@ defmodule BackendWeb.Payloads do
   defp mo_booking_lot_summary(_), do: nil
 
   defp mo_booking_cell_summary(%Backend.Warehouses.StorageCell{} = c) do
-    %{
+    base = %{
       id: c.id,
       uuid: c.uuid,
       name: c.name,
-      purpose: c.purpose
+      purpose: c.purpose,
+      ordinal: c.ordinal,
+      # Receiving / quarantine / hold cells are flagged here so the
+      # pickup directions UI knows the lot isn't on a real shelf yet
+      # (no floor plan to render).
+      system_kind: c.system_kind
     }
+
+    # When the controller preloaded the full storage chain (e.g. the
+    # warehouse-pickup detail endpoint), surface the breadcrumb so the
+    # mobile flow can render the directions card + floor-plan mini.
+    # Falls back gracefully when the assoc isn't loaded (other
+    # consumers don't pay the cost).
+    case Map.get(c, :storage_location) do
+      %Ecto.Association.NotLoaded{} ->
+        base
+
+      nil ->
+        base
+
+      %Backend.Warehouses.StorageLocation{} = loc ->
+        floor = if Ecto.assoc_loaded?(loc.floor), do: loc.floor
+        warehouse =
+          floor && Ecto.assoc_loaded?(floor.warehouse) && floor.warehouse
+
+        Map.put(base, :storage_location, %{
+          id: loc.id,
+          uuid: loc.uuid,
+          name: loc.name,
+          code: loc.code,
+          floor:
+            floor &&
+              %{
+                id: floor.id,
+                uuid: floor.uuid,
+                name: floor.name,
+                warehouse:
+                  warehouse &&
+                    %{id: warehouse.id, uuid: warehouse.uuid, name: warehouse.name}
+              }
+        })
+    end
   end
 
   defp mo_booking_cell_summary(_), do: nil
@@ -1631,7 +1671,11 @@ defmodule BackendWeb.Payloads do
       released_to_warehouse_at: mo.released_to_warehouse_at,
       pickup_window_hours: mo.pickup_window_hours,
       pickup_started_at: mo.pickup_started_at,
-      pickup_completed_at: mo.pickup_completed_at
+      pickup_completed_at: mo.pickup_completed_at,
+      # Pre-release QC status: how many booked raw_material / packaging
+      # lots are still in quarantine (not yet "available"). Populated by
+      # Production.list_schedule_operations in one grouped query.
+      qc_pending_count: mo.qc_pending_count || 0
     }
   end
 

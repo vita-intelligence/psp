@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import QrScanner from "qr-scanner";
-import { Camera, ImagePlus, Pencil, X } from "lucide-react";
+import { Camera, FastForward, ImagePlus, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -153,17 +153,38 @@ export function UuidScanStep({
             playsInline
           />
         ) : mode === "file" ? (
-          <div className="grid aspect-square w-full place-items-center bg-muted text-muted-foreground">
-            <label className="flex cursor-pointer flex-col items-center gap-2 text-xs">
-              <ImagePlus className="size-6" />
-              <span>Pick a photo of the QR</span>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={onFile}
-                className="hidden"
-              />
-            </label>
+          <div className="grid aspect-square w-full place-items-center gap-2 bg-zinc-900 px-6 py-6 text-center text-white">
+            <Camera className="size-10 text-white/70" />
+            <p className="text-base font-medium text-white">
+              Camera unavailable
+            </p>
+            <p className="text-xs text-white/70">
+              Grant camera permission in your browser settings, or use one
+              of the options below.
+            </p>
+            <div className="flex flex-col items-center gap-2">
+              <label className="cursor-pointer rounded-md bg-white px-4 py-2 text-sm font-medium text-black shadow">
+                <Camera className="mr-1.5 inline size-4" />
+                Take a photo
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={onFile}
+                  className="hidden"
+                />
+              </label>
+              <label className="cursor-pointer text-xs text-white/80 underline underline-offset-2">
+                <ImagePlus className="mr-1 inline size-3.5" />
+                Pick from gallery
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={onFile}
+                  className="hidden"
+                />
+              </label>
+            </div>
           </div>
         ) : (
           <div className="grid aspect-square w-full place-items-center bg-muted px-4 text-sm">
@@ -221,7 +242,7 @@ export function UuidScanStep({
             onClick={() => setMode("camera")}
           >
             <Camera className="mr-1.5 size-3.5" />
-            Use camera
+            {mode === "file" ? "Try camera again" : "Use camera"}
           </Button>
         )}
         {mode !== "file" && (
@@ -232,7 +253,7 @@ export function UuidScanStep({
             onClick={() => setMode("file")}
           >
             <ImagePlus className="mr-1.5 size-3.5" />
-            From a photo
+            Use media
           </Button>
         )}
         {mode !== "manual" && (
@@ -257,6 +278,30 @@ export function UuidScanStep({
           Cancel
         </Button>
       </div>
+
+      {process.env.NODE_ENV !== "production" && (
+        <div className="rounded-lg border border-dashed border-amber-500/40 bg-amber-500/10 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-300">
+            Dev bypass
+          </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground">
+              Skip the physical scan and pretend the {kind} matched.
+              Hidden in production builds.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => handle(expectedUuid)}
+            >
+              <FastForward className="mr-1.5 size-3.5" />
+              Skip scan
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

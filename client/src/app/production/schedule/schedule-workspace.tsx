@@ -237,6 +237,7 @@ export function ScheduleWorkspace({
         itemName: string;
         status: string;
         qty: string;
+        qcPending: number;
       }
     >();
     for (const op of data.operations) {
@@ -249,6 +250,7 @@ export function ScheduleWorkspace({
         itemName: mo.item?.name ?? "—",
         status: mo.status,
         qty: mo.quantity,
+        qcPending: mo.qc_pending_count ?? 0,
       });
     }
     return projectRowsFromOps(data.operations, parentIds, meta);

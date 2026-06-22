@@ -723,6 +723,13 @@ defmodule BackendWeb.StockLotController do
           "Delta must be a non-zero number."
         )
 
+      {:error, :locked_by_pickup_in_progress} ->
+        unprocessable(
+          conn,
+          "locked_by_pickup_in_progress",
+          "Lot is on a picker's trolley right now — wait for that pickup to finish or abort before adjusting qty."
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
@@ -771,6 +778,13 @@ defmodule BackendWeb.StockLotController do
 
       {:error, :bad_qty} ->
         unprocessable(conn, "bad_qty", "Quantity must be a positive number.")
+
+      {:error, :locked_by_pickup_in_progress} ->
+        unprocessable(
+          conn,
+          "locked_by_pickup_in_progress",
+          "Lot is on a picker's trolley right now — wait for that pickup to finish or abort before moving it."
+        )
 
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
