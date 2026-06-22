@@ -722,8 +722,65 @@ export interface ManufacturingOrderBooking {
   received_by: AuditActor | null;
   received_qty: string | null;
   received_notes: string | null;
+  /** Production closeout — stamped once the operator has scanned the
+   *  booked lot at the production-feed cell after the run, recorded
+   *  consumption (0 = fully used), and (if any qty remains) handed
+   *  the remainder to a production-side dispatch cell. */
+  consumed_at: string | null;
+  consumed_by: AuditActor | null;
   inserted_at: string;
   updated_at: string;
+}
+
+/** Row of the production-closeout queue. Slim shape for the mobile
+ *  list. */
+export interface CloseoutQueueEntry {
+  mo: ManufacturingOrderSummary;
+  actual_finish: string | null;
+  production_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+  } | null;
+}
+
+/** Produced output lot still sitting at the production-feed cell —
+ *  shaped like a booking row so the mobile flow can render them in
+ *  one mixed list with the same scan / photo / qty pattern. */
+export interface CloseoutOutputLot {
+  id: number;
+  uuid: string;
+  code: string | null;
+  qty_on_hand: string;
+  status: string;
+  item: BOMPartSummary | null;
+  uom: { id: number; symbol: string; name: string } | null;
+  current_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+  } | null;
+}
+
+/** Production-side dispatch cell shown in the destination picker. */
+export interface DispatchCell {
+  id: number;
+  uuid: string;
+  name: string | null;
+  ordinal: number | null;
+  code: string;
+  location: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    code: string | null;
+    floor: {
+      id: number;
+      uuid: string;
+      name: string | null;
+      warehouse: { id: number; uuid: string; name: string | null } | null;
+    } | null;
+  } | null;
 }
 
 export interface BookableLot {

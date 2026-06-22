@@ -126,12 +126,32 @@ function QcCard({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"idle" | "fail">("idle");
+  const [scope, setScope] = useState<"full" | "partial">("full");
+  // Partial-fail state: how much to reject + new packaging for both
+  // halves of the split. Pre-fill the parent dims with the lot's
+  // current measurements (operator usually only adjusts a few),
+  // child stays blank because that pack didn't exist before now.
+  const [rejectQty, setRejectQty] = useState<string>("");
+  const [parentPkg, setParentPkg] = useState({
+    length_mm: String(lot.package_length_mm ?? ""),
+    width_mm: String(lot.package_width_mm ?? ""),
+    height_mm: String(lot.package_height_mm ?? ""),
+    weight_kg: lot.package_weight_kg ?? "",
+    stack_factor: String(lot.stack_factor ?? "1"),
+  });
+  const [childPkg, setChildPkg] = useState({
+    length_mm: "",
+    width_mm: "",
+    height_mm: "",
+    weight_kg: "",
+    stack_factor: "1",
+  });
   const uomSymbol = lot.uom?.symbol ?? "ea";
 
   function pass() {
     setError(null);
     startTransition(async () => {
-      const res = await signOffOutputQcAction(lot.uuid, "pass", null);
+      const res = await signOffOutputQcAction(lot.uuid, "pass", { reason: null });
       if (res.ok) {
         toast.success("QC passed — lot now available");
         onSignedOff();
@@ -150,11 +170,70 @@ function QcCard({
       setError("Add a reason before failing the lot.");
       return;
     }
+
+    if (scope === "partial") {
+      const qtyNum = Number(rejectQty.trim());
+      const fullQty = Number(lot.qty_received);
+      if (!rejectQty.trim() || Number.isNaN(qtyNum) || qtyNum <= 0) {
+        setError("Reject qty must be a positive number.");
+        return;
+      }
+      if (qtyNum >= fullQty) {
+        setError(
+          `Reject qty must be less than the lot's ${fullQty} ${uomSymbol} — switch to Fail all to reject everything.`,
+        );
+        return;
+      }
+      // Both packagings required + positive.
+      const pkgs: Array<[string, typeof parentPkg]> = [
+        ["remainder", parentPkg],
+        ["rejected", childPkg],
+      ];
+      for (const [label, pkg] of pkgs) {
+        for (const [field, val] of Object.entries(pkg)) {
+          const n = Number(val.toString().trim());
+          if (val.toString().trim() === "" || Number.isNaN(n) || n <= 0) {
+            setError(
+              `${label} packaging: ${field.replace("_", " ")} must be a positive number.`,
+            );
+            return;
+          }
+        }
+      }
+    }
+
     setError(null);
     startTransition(async () => {
-      const res = await signOffOutputQcAction(lot.uuid, "fail", reason);
+      const res = await signOffOutputQcAction(lot.uuid, "fail", {
+        reason,
+        reject_qty: scope === "partial" ? rejectQty.trim() : null,
+        parent_packaging:
+          scope === "partial"
+            ? {
+                length_mm: parentPkg.length_mm.trim(),
+                width_mm: parentPkg.width_mm.trim(),
+                height_mm: parentPkg.height_mm.trim(),
+                weight_kg: parentPkg.weight_kg.toString().trim(),
+                stack_factor: parentPkg.stack_factor.trim(),
+              }
+            : undefined,
+        child_packaging:
+          scope === "partial"
+            ? {
+                length_mm: childPkg.length_mm.trim(),
+                width_mm: childPkg.width_mm.trim(),
+                height_mm: childPkg.height_mm.trim(),
+                weight_kg: childPkg.weight_kg.trim(),
+                stack_factor: childPkg.stack_factor.trim(),
+              }
+            : undefined,
+      });
       if (res.ok) {
-        toast.success("QC failed — lot flagged");
+        toast.success(
+          scope === "partial"
+            ? "Partial fail recorded — lot split, remainder still in QC"
+            : "QC failed — lot flagged",
+        );
         onSignedOff();
       } else {
         setError(res.detail);
@@ -258,24 +337,71 @@ function QcCard({
       </div>
 
       {mode === "fail" && (
-        <div className="space-y-1.5 rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-3">
-          <Label htmlFor={`qc-reason-${lot.uuid}`} className="text-xs">
-            Reason for failing this lot
-          </Label>
-          <Textarea
-            id={`qc-reason-${lot.uuid}`}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            rows={3}
-            maxLength={2000}
-            placeholder="e.g. off-colour, contamination suspected, out-of-spec assay"
-            className="text-sm"
-          />
+        <div className="space-y-3 rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-3">
+          {/* Scope toggle — "all" is the common case (whole batch
+              contaminated). "partial" exposes the split flow with
+              qty + repackage fields. */}
+          <div className="flex items-center gap-1 rounded-md border border-rose-500/30 bg-background p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setScope("full")}
+              className={cn(
+                "flex-1 rounded px-2 py-1 transition-colors",
+                scope === "full"
+                  ? "bg-rose-500/20 font-medium text-rose-900 dark:text-rose-100"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Fail entire lot ({lot.qty_received} {uomSymbol})
+            </button>
+            <button
+              type="button"
+              onClick={() => setScope("partial")}
+              className={cn(
+                "flex-1 rounded px-2 py-1 transition-colors",
+                scope === "partial"
+                  ? "bg-rose-500/20 font-medium text-rose-900 dark:text-rose-100"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Reject part — split lot
+            </button>
+          </div>
+
+          {scope === "partial" && (
+            <PartialSplitPanel
+              lot={lot}
+              uomSymbol={uomSymbol}
+              rejectQty={rejectQty}
+              onRejectQtyChange={setRejectQty}
+              parentPkg={parentPkg}
+              onParentPkgChange={setParentPkg}
+              childPkg={childPkg}
+              onChildPkgChange={setChildPkg}
+            />
+          )}
+
+          <div className="space-y-1">
+            <Label htmlFor={`qc-reason-${lot.uuid}`} className="text-xs">
+              Reason
+            </Label>
+            <Textarea
+              id={`qc-reason-${lot.uuid}`}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              maxLength={2000}
+              placeholder="e.g. off-colour, contamination suspected, out-of-spec assay"
+              className="text-sm"
+            />
+          </div>
+
           <button
             type="button"
             className="text-[11px] text-muted-foreground hover:text-foreground"
             onClick={() => {
               setMode("idle");
+              setScope("full");
               setReason("");
             }}
           >
@@ -286,6 +412,225 @@ function QcCard({
 
       {error && <ErrorBanner detail={error} />}
     </li>
+  );
+}
+
+type PartialPkg = {
+  length_mm: string;
+  width_mm: string;
+  height_mm: string;
+  weight_kg: string;
+  stack_factor: string;
+};
+
+/**
+ * The whole partial-fail block — qty math at the top so the operator
+ * sees `Reject + Remainder = Total` live, then two repackage cards
+ * (remainder + rejected) with the packaging-weight label clarified
+ * so it isn't confused with the contents qty.
+ */
+function PartialSplitPanel({
+  lot,
+  uomSymbol,
+  rejectQty,
+  onRejectQtyChange,
+  parentPkg,
+  onParentPkgChange,
+  childPkg,
+  onChildPkgChange,
+}: {
+  lot: OutputQcEntry["lot"];
+  uomSymbol: string;
+  rejectQty: string;
+  onRejectQtyChange: (v: string) => void;
+  parentPkg: PartialPkg;
+  onParentPkgChange: (next: PartialPkg) => void;
+  childPkg: PartialPkg;
+  onChildPkgChange: (next: PartialPkg) => void;
+}) {
+  const total = Number(lot.qty_received) || 0;
+  const reject = Number(rejectQty) || 0;
+  const remainder = total - reject;
+  const validReject = reject > 0 && reject < total;
+
+  return (
+    <div className="space-y-3 rounded-md border border-rose-500/30 bg-background/40 p-3">
+      {/* Qty math — read-only on the right, editable on the left.
+          Live arithmetic so the operator never has to mental-math the
+          remainder. */}
+      <div className="space-y-2">
+        <Label className="text-xs">
+          How much to reject (contents only, in {uomSymbol})
+        </Label>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <div className="space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Total in lot
+            </p>
+            <div className="flex h-9 items-center rounded-md border border-border/60 bg-muted/30 px-3 font-mono text-sm">
+              {total} {uomSymbol}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label
+              htmlFor={`qc-reject-qty-${lot.uuid}`}
+              className="text-[10px] uppercase tracking-wider"
+            >
+              Reject
+            </Label>
+            <Input
+              id={`qc-reject-qty-${lot.uuid}`}
+              type="number"
+              step="any"
+              min={0}
+              max={total}
+              inputMode="decimal"
+              value={rejectQty}
+              onChange={(e) => onRejectQtyChange(e.target.value)}
+              placeholder={`< ${total}`}
+              className="h-9 font-mono"
+            />
+          </div>
+          <div className="space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Remainder = total − reject
+            </p>
+            <div
+              className={cn(
+                "flex h-9 items-center rounded-md border px-3 font-mono text-sm",
+                validReject
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"
+                  : "border-border/60 bg-muted/30 text-muted-foreground",
+              )}
+            >
+              {validReject
+                ? `${remainder.toLocaleString(undefined, {
+                    maximumFractionDigits: 4,
+                  })} ${uomSymbol}`
+                : "—"}
+            </div>
+          </div>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Reject must be greater than 0 and less than the total. The
+          kept portion stays in QC awaiting a separate verdict; the
+          rejected portion becomes its own `rejected` lot.
+        </p>
+      </div>
+
+      <PartialPackagingBlock
+        title={`Remainder package — kept portion${
+          validReject
+            ? ` (${remainder.toLocaleString(undefined, {
+                maximumFractionDigits: 4,
+              })} ${uomSymbol})`
+            : ""
+        }`}
+        pkg={parentPkg}
+        onChange={onParentPkgChange}
+      />
+      <PartialPackagingBlock
+        title={`Rejected package — failed portion${
+          validReject
+            ? ` (${reject.toLocaleString(undefined, {
+                maximumFractionDigits: 4,
+              })} ${uomSymbol})`
+            : ""
+        }`}
+        pkg={childPkg}
+        onChange={onChildPkgChange}
+      />
+    </div>
+  );
+}
+
+/**
+ * 6-field packaging mini-form used inside the partial-fail panel.
+ * Operator re-measures the kept and the rejected portions before
+ * the split lands — physical dims differ for both because they're
+ * literally new packages.
+ */
+function PartialPackagingBlock({
+  title,
+  pkg,
+  onChange,
+}: {
+  title: string;
+  pkg: {
+    length_mm: string;
+    width_mm: string;
+    height_mm: string;
+    weight_kg: string;
+    stack_factor: string;
+  };
+  onChange: (next: typeof pkg) => void;
+}) {
+  function patch(field: keyof typeof pkg, value: string) {
+    onChange({ ...pkg, [field]: value });
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-background px-3 py-2">
+      <Label className="text-xs">{title}</Label>
+      <p className="text-[10px] text-muted-foreground">
+        Physical dimensions of the bag / drum / box — these drive the
+        warehouse fit-check on the next move. Package weight is the
+        gross weight (container + contents), separate from the
+        contents qty above.
+      </p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <PackInput
+          label="Length (mm)"
+          value={pkg.length_mm}
+          onChange={(v) => patch("length_mm", v)}
+        />
+        <PackInput
+          label="Width (mm)"
+          value={pkg.width_mm}
+          onChange={(v) => patch("width_mm", v)}
+        />
+        <PackInput
+          label="Height (mm)"
+          value={pkg.height_mm}
+          onChange={(v) => patch("height_mm", v)}
+        />
+        <PackInput
+          label="Package weight, gross (kg)"
+          value={pkg.weight_kg}
+          onChange={(v) => patch("weight_kg", v)}
+        />
+        <PackInput
+          label="Stack factor"
+          value={pkg.stack_factor}
+          onChange={(v) => patch("stack_factor", v)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PackInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-[10px]">{label}</Label>
+      <Input
+        type="number"
+        step="any"
+        min={0}
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-9"
+      />
+    </div>
   );
 }
 

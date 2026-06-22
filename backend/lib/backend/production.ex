@@ -4953,10 +4953,53 @@ defmodule Backend.Production do
   production.qc_output permission to the artifacts it's intended
   for; stock.qc still governs incoming PO lots).
   """
-  def sign_off_output_qc(%User{} = actor, lot_uuid, verdict, attrs)
-      when is_binary(lot_uuid) and verdict in ["pass", "fail"] do
-    kind = if verdict == "pass", do: "qc_passed", else: "qc_failed"
+  def sign_off_output_qc(%User{} = actor, lot_uuid, "pass", attrs)
+      when is_binary(lot_uuid) do
+    do_full_qc(actor, lot_uuid, "qc_passed", attrs)
+  end
 
+  def sign_off_output_qc(%User{} = actor, lot_uuid, "fail", attrs)
+      when is_binary(lot_uuid) do
+    case Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
+      nil ->
+        {:error, :lot_not_found}
+
+      %StockLot{source_kind: "manufacturing_order"} = lot ->
+        reject_qty_raw = attrs["reject_qty"] || attrs[:reject_qty]
+
+        case classify_fail_qty(reject_qty_raw, lot.qty_received) do
+          :full -> do_full_qc(actor, lot_uuid, "qc_failed", attrs)
+          {:partial, reject_qty} -> do_partial_fail(actor, lot, reject_qty, attrs)
+          {:error, reason} -> {:error, reason}
+        end
+
+      %StockLot{} ->
+        {:error, :not_a_manufactured_lot}
+    end
+  end
+
+  def sign_off_output_qc(_actor, _uuid, _verdict, _attrs), do: {:error, :bad_verdict}
+
+  # No reject_qty (or matching the full lot) → full pass / fail via
+  # the existing lifecycle event. Anything in between → partial split.
+  defp classify_fail_qty(nil, _full), do: :full
+  defp classify_fail_qty("", _full), do: :full
+
+  defp classify_fail_qty(raw, full) do
+    case parse_positive_decimal(raw) do
+      {:ok, d} ->
+        cond do
+          Decimal.compare(d, full) == :gt -> {:error, :reject_qty_exceeds_lot}
+          Decimal.compare(d, full) == :eq -> :full
+          Decimal.compare(d, full) == :lt -> {:partial, d}
+        end
+
+      :error ->
+        {:error, :bad_reject_qty}
+    end
+  end
+
+  defp do_full_qc(%User{} = actor, lot_uuid, kind, attrs) do
     with %StockLot{source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          {:ok, _result} <-
@@ -4970,13 +5013,554 @@ defmodule Backend.Production do
     else
       nil -> {:error, :lot_not_found}
       %StockLot{} -> {:error, :not_a_manufactured_lot}
-      {:error, _} = err -> err
       {:error, :illegal_transition, info} -> {:error, {:illegal_transition, info}}
-      other -> other
+      {:error, _} = err -> err
     end
   end
 
-  def sign_off_output_qc(_actor, _uuid, _verdict, _attrs), do: {:error, :bad_verdict}
+  # Partial fail: split the lot into two. Child carries the rejected
+  # qty + status=qc_failed; parent's qty drops by that amount and it
+  # stays in `received` so the operator can pass / fail the remainder
+  # separately. Repackaging is mandatory — both lots get new physical
+  # dimensions captured at split time.
+  #
+  # Required attrs:
+  #   * reject_qty (validated upstream — already a positive Decimal less than parent qty)
+  #   * reason (free text)
+  #   * parent_packaging — %{length_mm, width_mm, height_mm, weight_kg, stack_factor}
+  #   * child_packaging  — same shape
+  defp do_partial_fail(%User{} = actor, %StockLot{} = parent, reject_qty, attrs) do
+    with {:ok, parent_pkg} <- parse_partial_pkg(attrs["parent_packaging"]),
+         {:ok, child_pkg} <- parse_partial_pkg(attrs["child_packaging"]),
+         {:ok, parent_placement} <- locate_parent_placement(parent) do
+      reason = attrs["reason"] || attrs[:reason]
+      remainder = Decimal.sub(parent.qty_received, reject_qty)
+
+      Repo.transaction(fn ->
+        with {:ok, parent_updated} <- shrink_parent_lot(actor, parent, remainder, parent_pkg),
+             {:ok, _shrunk_placement} <-
+               shrink_parent_placement(actor, parent_placement, remainder),
+             {:ok, child_lot} <-
+               insert_child_failed_lot(actor, parent, reject_qty, child_pkg),
+             {:ok, _child_placement} <-
+               insert_child_placement(actor, child_lot, parent_placement.storage_cell_id, reject_qty),
+             {:ok, _event} <-
+               record_partial_fail_event(actor, parent, child_lot, reject_qty, reason) do
+          %{parent: parent_updated, child: child_lot}
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, %{parent: parent_updated}} ->
+          {:ok, Repo.preload(parent_updated, [:item])}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp parse_partial_pkg(input) when is_map(input) do
+    int_fields = ~w(length_mm width_mm height_mm stack_factor)
+    decimal_fields = ~w(weight_kg)
+
+    with {:ok, ints} <-
+           parse_pack_fields(input, int_fields, &parse_positive_integer/1),
+         {:ok, decs} <-
+           parse_pack_fields(input, decimal_fields, &parse_positive_decimal/1) do
+      {:ok, Map.merge(ints, decs)}
+    end
+  end
+
+  defp parse_partial_pkg(_), do: {:error, :missing_partial_packaging}
+
+  defp locate_parent_placement(%StockLot{id: lot_id}) do
+    case Repo.all(
+           from p in Backend.Stock.Placement,
+             where: p.stock_lot_id == ^lot_id and p.qty > 0,
+             limit: 2
+         ) do
+      [placement] -> {:ok, placement}
+      [] -> {:error, :no_active_placement}
+      _ -> {:error, :ambiguous_placement}
+    end
+  end
+
+  defp shrink_parent_lot(%User{} = actor, %StockLot{} = parent, new_qty, pkg) do
+    before_attrs = %{
+      qty_received: parent.qty_received,
+      package_length_mm: parent.package_length_mm,
+      package_width_mm: parent.package_width_mm,
+      package_height_mm: parent.package_height_mm,
+      package_weight_kg: parent.package_weight_kg,
+      stack_factor: parent.stack_factor,
+      units_per_package: parent.units_per_package
+    }
+
+    parent
+    |> StockLot.changeset(%{
+      "qty_received" => new_qty,
+      "package_length_mm" => pkg["length_mm"],
+      "package_width_mm" => pkg["width_mm"],
+      "package_height_mm" => pkg["height_mm"],
+      "package_weight_kg" => pkg["weight_kg"],
+      "stack_factor" => pkg["stack_factor"],
+      # Keep `units_per_package = qty` so the volume math stays at 1
+      # package per lot — same invariant as the original Finish flow.
+      "units_per_package" => new_qty,
+      "updated_by_id" => actor.id
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "stock_lot",
+          updated,
+          before_attrs,
+          %{
+            qty_received: updated.qty_received,
+            package_length_mm: updated.package_length_mm,
+            package_width_mm: updated.package_width_mm,
+            package_height_mm: updated.package_height_mm,
+            package_weight_kg: updated.package_weight_kg,
+            stack_factor: updated.stack_factor,
+            units_per_package: updated.units_per_package
+          }
+        )
+
+        {:ok, updated}
+
+      err ->
+        err
+    end
+  end
+
+  defp shrink_parent_placement(%User{} = _actor, %Backend.Stock.Placement{} = placement, new_qty) do
+    placement
+    |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+    |> Repo.update()
+  end
+
+  # Child inherits item / UoM / source from the parent so traceability
+  # back to the MO is preserved. Inserts at `received` first because
+  # the lifecycle's `qc_failed` event needs a transition source —
+  # then the caller flips it via `record_partial_fail_event` so the
+  # status projects to `rejected` through the same code path the full-
+  # lot fail uses. (The schema's status enum has `rejected`, not
+  # `qc_failed` — that's an event kind.)
+  defp insert_child_failed_lot(%User{} = actor, %StockLot{} = parent, qty, pkg) do
+    %StockLot{}
+    |> StockLot.changeset(%{
+      "company_id" => parent.company_id,
+      "item_id" => parent.item_id,
+      "unit_of_measurement_id" => parent.unit_of_measurement_id,
+      "qty_received" => qty,
+      "status" => "received",
+      "source_kind" => parent.source_kind,
+      "source_ref" => parent.source_ref,
+      "received_at" => parent.received_at,
+      "manufactured_at" => parent.manufactured_at,
+      "expiry_at" => parent.expiry_at,
+      "package_length_mm" => pkg["length_mm"],
+      "package_width_mm" => pkg["width_mm"],
+      "package_height_mm" => pkg["height_mm"],
+      "package_weight_kg" => pkg["weight_kg"],
+      "stack_factor" => pkg["stack_factor"],
+      "units_per_package" => qty,
+      "created_by_id" => actor.id,
+      "updated_by_id" => actor.id
+    })
+    |> Repo.insert()
+    |> case do
+      {:ok, child} ->
+        Audit.record_created(actor, "stock_lot", child, %{
+          item_id: child.item_id,
+          qty_received: child.qty_received,
+          status: child.status,
+          source_kind: child.source_kind,
+          source_ref: child.source_ref,
+          split_from_lot_id: parent.id
+        })
+
+        {:ok, child}
+
+      err ->
+        err
+    end
+  end
+
+  defp insert_child_placement(_actor, %StockLot{} = child, cell_id, qty) do
+    %Backend.Stock.Placement{}
+    |> Backend.Stock.Placement.changeset(%{
+      "company_id" => child.company_id,
+      "stock_lot_id" => child.id,
+      "storage_cell_id" => cell_id,
+      "qty" => qty
+    })
+    |> Repo.insert()
+  end
+
+  # Emit a `qc_failed` lifecycle event AGAINST THE CHILD lot (not the
+  # parent — parent is still `received`). This is the audit-trail row
+  # that the lot history view will surface ("Failed QC at 14:32 by …,
+  # reason: contamination").
+  defp record_partial_fail_event(%User{} = actor, %StockLot{} = parent, %StockLot{} = child, reject_qty, reason) do
+    Backend.Stock.Lifecycle.record_event(child, "qc_failed", %{
+      actor: actor,
+      actor_kind: "user",
+      reason: reason,
+      metadata: %{
+        "split_from_lot_id" => parent.id,
+        "split_from_lot_uuid" => parent.uuid,
+        "reject_qty" => Decimal.to_string(reject_qty)
+      }
+    })
+  end
+
+  # ----- Production closeout (post-Finish hand-off) --------------
+
+  @doc """
+  Mobile closeout queue. Returns MOs that are `completed` and still
+  have at least one open closeout-item — either a booking whose
+  `consumed_at` is null OR a produced output lot still placed at the
+  production-feed cell with status=available.
+  """
+  def list_closeout_queue(company_id) when is_integer(company_id) do
+    open_booking_mos =
+      from(b in ManufacturingOrderBooking,
+        join: it in Item,
+        on: it.id == b.item_id,
+        where:
+          b.status == "requested" and
+            it.item_type in ["raw_material", "packaging"] and
+            is_nil(b.consumed_at),
+        select: b.manufacturing_order_id,
+        distinct: true
+      )
+
+    # source_ref is varchar; m.uuid is uuid — cast to text on the
+    # MO side so PG accepts the equality without an implicit
+    # cross-type comparison error.
+    output_at_feed =
+      from(p in Backend.Stock.Placement,
+        join: l in StockLot,
+        on: l.id == p.stock_lot_id,
+        join: m in ManufacturingOrder,
+        on: fragment("?::text", m.uuid) == l.source_ref,
+        where:
+          l.company_id == ^company_id and
+            l.source_kind == "manufacturing_order" and
+            l.status == "available" and
+            p.qty > 0 and
+            p.storage_cell_id == m.production_cell_id,
+        select: m.id,
+        distinct: true
+      )
+
+    from(mo in ManufacturingOrder,
+      where:
+        mo.company_id == ^company_id and
+          mo.status == "completed" and
+          (mo.id in subquery(open_booking_mos) or mo.id in subquery(output_at_feed)),
+      preload: [:item, :warehouse, :production_cell, steps: []],
+      order_by: [asc: mo.actual_finish, asc: mo.id]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Closeout-detail loader — booking rows that still need consuming +
+  produced output lots still sitting at the production-feed cell.
+  Refuses non-completed MOs.
+  """
+  def get_closeout_detail(company_id, mo_uuid)
+      when is_integer(company_id) and is_binary(mo_uuid) do
+    case get_manufacturing_order(company_id, mo_uuid) do
+      nil ->
+        nil
+
+      %ManufacturingOrder{status: "completed"} = mo ->
+        bookings =
+          list_pickup_bookings(mo)
+          |> Enum.filter(&is_nil(&1.consumed_at))
+
+        output_lots = list_open_output_lots(mo)
+
+        %{mo: mo, bookings: bookings, output_lots: output_lots}
+
+      %ManufacturingOrder{} ->
+        {:error, :not_completed}
+    end
+  end
+
+  defp list_open_output_lots(%ManufacturingOrder{} = mo) do
+    from(l in StockLot,
+      join: p in Backend.Stock.Placement,
+      on: p.stock_lot_id == l.id,
+      where:
+        l.company_id == ^mo.company_id and
+          l.source_kind == "manufacturing_order" and
+          l.source_ref == ^mo.uuid and
+          l.status == "available" and
+          p.qty > 0 and
+          p.storage_cell_id == ^mo.production_cell_id,
+      preload: [
+        :item,
+        :unit_of_measurement,
+        placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+      ],
+      distinct: true
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Empty production-side dispatch cells the FE picks the destination
+  from. Filters on the MO's production facility so an MO running on
+  Unit 11 doesn't accidentally hand off to Unit 12's dispatch lane.
+  """
+  def list_dispatch_cells_for_mo(company_id, mo_uuid)
+      when is_integer(company_id) and is_binary(mo_uuid) do
+    case get_manufacturing_order(company_id, mo_uuid) do
+      %ManufacturingOrder{warehouse_id: warehouse_id}
+      when is_integer(warehouse_id) ->
+        from(c in Backend.Warehouses.StorageCell,
+          join: l in Backend.Warehouses.StorageLocation,
+          on: l.id == c.storage_location_id,
+          join: f in Backend.Warehouses.Floor,
+          on: f.id == l.floor_id,
+          where:
+            c.company_id == ^company_id and
+              c.purpose == "dispatch" and
+              f.warehouse_id == ^warehouse_id,
+          preload: [storage_location: [floor: [:warehouse]]],
+          order_by: [asc: l.code, asc: c.ordinal]
+        )
+        |> Repo.all()
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  Production-worker action — close out one booking. Stamps
+  `consumed_at` + `consumed_quantity` + flips `status` to `consumed`,
+  drops the production-feed placement, and (if any qty remains)
+  moves the remainder to the operator-scanned dispatch cell via a
+  `move` Stock.Movement carrying the photo URL.
+
+  Required attrs:
+    * `remaining_qty` (decimal ≥ 0; default 0 = fully consumed)
+    * `scanned_cell_uuid` — production-dispatch cell uuid the
+      operator scanned, REQUIRED when remaining_qty > 0
+    * `photo_url` — optional but recommended (move-flow convention)
+  """
+  def closeout_booking(%User{} = actor, %ManufacturingOrderBooking{} = booking, attrs) do
+    with :ok <- ensure_booking_not_closed(booking),
+         {:ok, remaining} <- parse_remaining_qty(attrs, booking.quantity),
+         consumed = Decimal.sub(booking.quantity, remaining),
+         {:ok, dest_cell} <-
+           maybe_resolve_dispatch_cell(actor.company_id, attrs, remaining) do
+      Repo.transaction(fn ->
+        with {:ok, updated_booking} <-
+               stamp_booking_consumed(actor, booking, consumed),
+             :ok <-
+               apply_booking_movement(
+                 actor,
+                 booking,
+                 remaining,
+                 dest_cell,
+                 attrs["photo_url"]
+               ) do
+          updated_booking
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  defp ensure_booking_not_closed(%ManufacturingOrderBooking{consumed_at: nil}), do: :ok
+  defp ensure_booking_not_closed(_), do: {:error, :already_closed}
+
+  defp parse_remaining_qty(attrs, booked_qty) do
+    raw = attrs["remaining_qty"] || attrs[:remaining_qty]
+
+    case raw do
+      nil -> {:ok, Decimal.new(0)}
+      "" -> {:ok, Decimal.new(0)}
+      _ -> parse_non_negative_decimal_in_range(raw, booked_qty)
+    end
+  end
+
+  defp parse_non_negative_decimal_in_range(raw, max) do
+    case parse_non_negative_decimal(raw) do
+      {:ok, d} ->
+        if Decimal.compare(d, max) == :gt do
+          {:error, :remaining_exceeds_booked}
+        else
+          {:ok, d}
+        end
+
+      :error ->
+        {:error, :bad_remaining_qty}
+    end
+  end
+
+  defp parse_non_negative_decimal(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new("0")) in [:gt, :eq], do: {:ok, d}, else: :error
+  end
+
+  defp parse_non_negative_decimal(n) when is_integer(n) and n >= 0,
+    do: {:ok, Decimal.new(n)}
+
+  defp parse_non_negative_decimal(n) when is_float(n) and n >= 0,
+    do: {:ok, Decimal.from_float(n)}
+
+  defp parse_non_negative_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, ""} -> parse_non_negative_decimal(d)
+      _ -> :error
+    end
+  end
+
+  defp parse_non_negative_decimal(_), do: :error
+
+  # When the operator's leaving 0 behind, no destination is needed —
+  # the placement just drops to 0. Anything > 0 must land in a real,
+  # dispatch-purpose cell.
+  defp maybe_resolve_dispatch_cell(_company_id, _attrs, %Decimal{coef: 0}), do: {:ok, nil}
+
+  defp maybe_resolve_dispatch_cell(company_id, attrs, _remaining) do
+    case attrs["scanned_cell_uuid"] || attrs[:scanned_cell_uuid] do
+      uuid when is_binary(uuid) and byte_size(uuid) > 0 ->
+        case Repo.get_by(Backend.Warehouses.StorageCell, uuid: uuid, company_id: company_id) do
+          %Backend.Warehouses.StorageCell{purpose: "dispatch"} = cell -> {:ok, cell}
+          %Backend.Warehouses.StorageCell{} -> {:error, :dispatch_cell_required}
+          _ -> {:error, :cell_not_found}
+        end
+
+      _ ->
+        {:error, :missing_dispatch_cell}
+    end
+  end
+
+  defp stamp_booking_consumed(%User{} = actor, %ManufacturingOrderBooking{} = booking, consumed) do
+    before = booking_snapshot(booking)
+
+    booking
+    |> ManufacturingOrderBooking.changeset(%{
+      "consumed_quantity" => consumed,
+      "consumed_at" => now(),
+      "consumed_by_id" => actor.id,
+      "status" => "consumed",
+      "updated_by_id" => actor.id
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_booking",
+          updated,
+          before,
+          booking_snapshot(updated)
+        )
+
+        {:ok, updated}
+
+      err ->
+        err
+    end
+  end
+
+  # Two physical-stock side effects:
+  #   * remaining = 0 → just drop the lot's placement at the
+  #     production-feed cell (full consumption).
+  #   * remaining > 0 → move that remainder to the scanned dispatch
+  #     cell via Stock.move_placement (reuses the existing movement
+  #     + audit + photo plumbing).
+  defp apply_booking_movement(
+         %User{} = actor,
+         %ManufacturingOrderBooking{} = booking,
+         remaining,
+         dest_cell,
+         photo_url
+       ) do
+    lot = Repo.get!(StockLot, booking.stock_lot_id)
+    placement = locate_lot_placement(lot, booking.storage_cell_id)
+
+    cond do
+      placement == nil ->
+        :ok
+
+      Decimal.compare(remaining, Decimal.new(0)) == :eq ->
+        case Backend.Stock.Placement.changeset(placement, %{"qty" => Decimal.new(0)})
+             |> Repo.update() do
+          {:ok, _} -> :ok
+          err -> err
+        end
+
+      true ->
+        case Backend.Stock.move_placement(actor, lot.uuid, %{
+               "from_cell_uuid" => placement.storage_cell.uuid,
+               "to_cell_uuid" => dest_cell.uuid,
+               "qty" => Decimal.to_string(remaining),
+               "photo_url" => photo_url,
+               "reference_kind" => "manufacturing_order",
+               "reference_uuid" => booking.manufacturing_order_id
+             }) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, {:move_failed, reason}}
+        end
+    end
+  end
+
+  defp locate_lot_placement(%StockLot{id: lot_id}, expected_cell_id) do
+    candidates =
+      from(p in Backend.Stock.Placement,
+        where: p.stock_lot_id == ^lot_id and p.qty > 0,
+        preload: [:storage_cell]
+      )
+      |> Repo.all()
+
+    Enum.find(candidates, &(&1.storage_cell_id == expected_cell_id)) ||
+      List.first(candidates)
+  end
+
+  @doc """
+  Move a produced output lot off the production-feed cell to a
+  scanned production-dispatch cell. No consume here — production
+  output isn't a booking, it's a fresh stock_lot the warehouse will
+  pick up next.
+  """
+  def closeout_output_lot(%User{} = actor, lot_uuid, attrs)
+      when is_binary(lot_uuid) and is_map(attrs) do
+    with %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
+           Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+         {:ok, dest_cell} <-
+           maybe_resolve_dispatch_cell(actor.company_id, attrs, Decimal.new(1)),
+         placement when not is_nil(placement) <- locate_lot_placement(lot, nil) do
+      case Backend.Stock.move_placement(actor, lot.uuid, %{
+             "from_cell_uuid" => placement.storage_cell.uuid,
+             "to_cell_uuid" => dest_cell.uuid,
+             "qty" => Decimal.to_string(placement.qty),
+             "photo_url" => attrs["photo_url"],
+             "reference_kind" => "manufacturing_order",
+             "reference_uuid" => lot.source_ref
+           }) do
+        {:ok, moved_lot} -> {:ok, moved_lot}
+        {:error, reason} -> {:error, {:move_failed, reason}}
+      end
+    else
+      nil -> {:error, :lot_not_found}
+      %StockLot{status: status} -> {:error, {:wrong_status, status}}
+      {:error, _} = err -> err
+    end
+  end
 
   # ----- Pre-production receipt check ----------------------------
 

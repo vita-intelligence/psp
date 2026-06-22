@@ -787,6 +787,48 @@ defmodule BackendWeb.ManufacturingOrderController do
             "Output QC only applies to manufacturing-order lots — incoming PO lots use the Goods-In Inspection flow."
           )
 
+        {:error, :bad_reject_qty} ->
+          unprocessable(
+            conn,
+            "bad_reject_qty",
+            "reject_qty must be a positive number."
+          )
+
+        {:error, :reject_qty_exceeds_lot} ->
+          unprocessable(
+            conn,
+            "reject_qty_exceeds_lot",
+            "reject_qty can't be larger than the lot's current quantity."
+          )
+
+        {:error, :missing_partial_packaging} ->
+          unprocessable(
+            conn,
+            "missing_partial_packaging",
+            "Partial fail requires new packaging dimensions for both the remainder and the rejected portion."
+          )
+
+        {:error, {:bad_pack_field, field}} ->
+          unprocessable(
+            conn,
+            "bad_pack_field",
+            "Packaging field `#{field}` must be a positive number."
+          )
+
+        {:error, :no_active_placement} ->
+          unprocessable(
+            conn,
+            "no_active_placement",
+            "Lot has no active placement — can't determine the cell to split on."
+          )
+
+        {:error, :ambiguous_placement} ->
+          unprocessable(
+            conn,
+            "ambiguous_placement",
+            "Lot is split across multiple cells — can't auto-split. Move the lot into a single cell first."
+          )
+
         {:error, {:illegal_transition, info}} ->
           unprocessable(
             conn,

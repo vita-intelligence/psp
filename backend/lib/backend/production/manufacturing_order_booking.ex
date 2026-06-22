@@ -48,6 +48,16 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     field :received_qty, :decimal
     field :received_notes, :string
 
+    # Production closeout — the production worker's hand-off step.
+    # `consumed_at` is stamped once they've scanned the booked lot at
+    # the production-feed cell, recorded how much was actually used
+    # (0 = fully consumed, any remainder is physically moved to a
+    # production-side dispatch cell via a `move` movement), photo'd
+    # the lot, and submitted. The warehouse team's "pickup from
+    # production" flow takes it from the dispatch cell back to
+    # warehouse storage — that's a separate step, not this one.
+    field :consumed_at, :utc_datetime
+
     belongs_to :company, Company
     belongs_to :manufacturing_order, ManufacturingOrder
     belongs_to :item, Item
@@ -55,6 +65,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     belongs_to :storage_cell, StorageCell
     belongs_to :picked_by, User
     belongs_to :received_by, User
+    belongs_to :consumed_by, User
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -66,6 +77,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     quantity consumed_quantity status note
     picked_at picked_by_id
     received_at received_by_id received_qty received_notes
+    consumed_at consumed_by_id
     created_by_id updated_by_id
   )a
 

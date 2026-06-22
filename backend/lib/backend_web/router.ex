@@ -634,6 +634,24 @@ defmodule BackendWeb.Router do
       post "/preflight/:mo_uuid/bookings/:booking_uuid/receive",
            ProductionPreflightController,
            :receive_booking
+
+      # Production closeout — post-Finish hand-off to the production-
+      # side dispatch cell. Gated by `production.closeout`; warehouse
+      # pickup-from-production is a separate slice owned by warehouse
+      # operators.
+      get "/closeout-queue", ProductionCloseoutController, :queue
+      get "/closeout/:mo_uuid", ProductionCloseoutController, :show
+      get "/closeout/:mo_uuid/dispatch-cells",
+          ProductionCloseoutController,
+          :dispatch_cells
+
+      post "/closeout/:mo_uuid/bookings/:booking_uuid",
+           ProductionCloseoutController,
+           :close_booking
+
+      post "/closeout/:mo_uuid/output-lots/:lot_uuid",
+           ProductionCloseoutController,
+           :close_output
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

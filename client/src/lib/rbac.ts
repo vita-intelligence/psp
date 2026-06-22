@@ -86,6 +86,7 @@ export type PermissionCode =
   | "production.mo_release"
   | "production.preflight"
   | "production.qc_output"
+  | "production.closeout"
   | "production.mo_delete"
   | "warehouse.pick";
 

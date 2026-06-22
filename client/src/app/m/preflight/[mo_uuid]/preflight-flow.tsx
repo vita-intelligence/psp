@@ -344,13 +344,12 @@ function BookingRow({
             </Label>
             <Input
               id={`qty-${booking.uuid}`}
-              type="number"
-              step="any"
-              min={0}
+              type="text"
               inputMode="decimal"
+              autoComplete="off"
               value={qty}
-              onChange={(e) => setQty(e.target.value)}
-              className="h-11 text-base"
+              onChange={(e) => setQty(e.target.value.replace(",", "."))}
+              className="h-11 font-mono text-base"
             />
             <p className="text-[11px] text-muted-foreground">
               Booked {booking.quantity} {uomSymbol}

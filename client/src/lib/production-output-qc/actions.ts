@@ -15,6 +15,31 @@ export type OutputQcResult =
   | { ok: true; status: string }
   | ErrorResult;
 
+/** Packaging measured at QC time. Required for both halves of a
+ *  partial-fail split — the parent's remainder and the child's
+ *  rejected portion typically need different physical dimensions. */
+export interface OutputQcPackaging {
+  length_mm: string;
+  width_mm: string;
+  height_mm: string;
+  weight_kg: string;
+  stack_factor: string;
+}
+
+export interface FailQcInput {
+  reason: string | null;
+  /** Omit (or pass null) to fail the full lot. When set + smaller than
+   *  the lot's current qty, the BE splits the lot into a parent (kept,
+   *  status=received) and a child (rejected, status=rejected). */
+  reject_qty?: string | null;
+  /** Required when reject_qty is set and partial. New physical
+   *  dimensions of the parent lot after the split. */
+  parent_packaging?: OutputQcPackaging;
+  /** Required when reject_qty is set and partial. Physical dimensions
+   *  of the rejected child lot. */
+  child_packaging?: OutputQcPackaging;
+}
+
 /**
  * Pass / fail an output stock_lot. Wraps the BE endpoint that lives
  * under /api/production/output-qc/:lot_uuid, gated by the dedicated
@@ -23,7 +48,7 @@ export type OutputQcResult =
 export async function signOffOutputQcAction(
   lotUuid: string,
   verdict: OutputQcVerdict,
-  reason: string | null,
+  input: FailQcInput,
 ): Promise<OutputQcResult> {
   const token = await getSessionToken();
   if (!token) {
@@ -33,14 +58,19 @@ export async function signOffOutputQcAction(
       detail: "Sign in again to QC output lots.",
     });
   }
+
+  const body: Record<string, unknown> = {
+    verdict,
+    reason: input.reason?.trim() || null,
+  };
+  if (input.reject_qty) body.reject_qty = input.reject_qty;
+  if (input.parent_packaging) body.parent_packaging = input.parent_packaging;
+  if (input.child_packaging) body.child_packaging = input.child_packaging;
+
   try {
     const { lot } = await api<{ lot: { status: string } }>(
       `/api/production/output-qc/${encodeURIComponent(lotUuid)}`,
-      {
-        method: "POST",
-        token,
-        body: JSON.stringify({ verdict, reason: reason?.trim() || null }),
-      },
+      { method: "POST", token, body: JSON.stringify(body) },
     );
     revalidatePath("/production/output-qc");
     return { ok: true, status: lot.status };

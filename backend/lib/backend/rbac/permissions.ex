@@ -200,6 +200,8 @@ defmodule Backend.RBAC.Permissions do
      "Confirm receipt of picked materials at the production line (qty + quality sign-off)"},
     {"production.qc_output",
      "Sign off the quality of a manufactured output lot (pass / fail) before it transfers to the warehouse"},
+    {"production.closeout",
+     "Close out a completed MO from the production line — scan + record how much of each booked material was consumed, hand the leftovers + produced output to the production-side dispatch cell"},
     {"production.mo_delete", "Delete manufacturing orders"}
   ]
 
@@ -649,6 +651,16 @@ defmodule Backend.RBAC.Permissions do
             read: nil,
             create: nil,
             update: "production.qc_output",
+            delete: nil
+          },
+          %{
+            key: "closeout",
+            label: "Close out production run (mobile)",
+            description:
+              "Mobile-only — scan each booked material at the production-feed cell, record how much was consumed (0 = fully used), photo any leftovers + the produced output, and hand them off to a production-side dispatch cell for warehouse pickup.",
+            read: nil,
+            create: nil,
+            update: "production.closeout",
             delete: nil
           }
         ]

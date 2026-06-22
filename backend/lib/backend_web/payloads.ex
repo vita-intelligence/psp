@@ -1502,6 +1502,119 @@ defmodule BackendWeb.Payloads do
 
   def output_qc_entry(_), do: nil
 
+  @doc """
+  One row of the production-closeout queue. Slim — just enough for
+  the mobile list to render. Per-MO detail is fetched on click.
+  """
+  def closeout_queue_entry(%Backend.Production.ManufacturingOrder{} = mo) do
+    %{
+      mo: manufacturing_order_summary(mo),
+      actual_finish: mo.actual_finish,
+      production_cell:
+        mo.production_cell &&
+          %{
+            id: mo.production_cell.id,
+            uuid: mo.production_cell.uuid,
+            name: mo.production_cell.name
+          }
+    }
+  end
+
+  def closeout_queue_entry(_), do: nil
+
+  @doc """
+  One produced output lot still sitting at the production-feed cell.
+  Shaped like a slimmed booking row so the mobile flow can render
+  them in the same list as bookings (same scan-photo-qty pattern).
+  """
+  def closeout_output_lot(%Backend.Stock.Lot{} = lot) do
+    cell =
+      case lot.placements do
+        [%{storage_cell: %Backend.Warehouses.StorageCell{} = c} | _] -> c
+        _ -> nil
+      end
+
+    qty_on_hand =
+      case lot.placements do
+        list when is_list(list) ->
+          Enum.reduce(list, Decimal.new(0), fn p, acc ->
+            Decimal.add(acc, p.qty || Decimal.new(0))
+          end)
+
+        _ ->
+          Decimal.new(0)
+      end
+
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      qty_on_hand: decimal_to_string(qty_on_hand),
+      status: lot.status,
+      item: maybe_item_summary(lot.item),
+      uom:
+        lot.unit_of_measurement &&
+          %{
+            id: lot.unit_of_measurement.id,
+            symbol: lot.unit_of_measurement.symbol,
+            name: lot.unit_of_measurement.name
+          },
+      current_cell:
+        cell &&
+          %{
+            id: cell.id,
+            uuid: cell.uuid,
+            name: cell.name
+          }
+    }
+  end
+
+  def closeout_output_lot(_), do: nil
+
+  @doc """
+  Production-dispatch cell row for the closeout flow's
+  destination picker. Includes the breadcrumb so the operator can
+  identify which dispatch lane on the floor they're sending the
+  hand-off to.
+  """
+  def dispatch_cell(%Backend.Warehouses.StorageCell{} = c) do
+    loc = c.storage_location
+    floor = loc && Ecto.assoc_loaded?(loc.floor) && loc.floor
+    warehouse = floor && Ecto.assoc_loaded?(floor.warehouse) && floor.warehouse
+
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      name: c.name,
+      ordinal: c.ordinal,
+      code:
+        if(loc,
+          do: loc.code || loc.name || c.name || "Cell ##{c.id}",
+          else: c.name || "Cell ##{c.id}"
+        ),
+      location:
+        loc &&
+          %{
+            id: loc.id,
+            uuid: loc.uuid,
+            name: loc.name,
+            code: loc.code,
+            floor:
+              floor &&
+                %{
+                  id: floor.id,
+                  uuid: floor.uuid,
+                  name: floor.name,
+                  warehouse:
+                    warehouse &&
+                      %{id: warehouse.id, uuid: warehouse.uuid, name: warehouse.name}
+                }
+          }
+    }
+  end
+
+  def dispatch_cell(_), do: nil
+
   # Production-feed cell breadcrumb — fed into the run detail screen
   # so the floor operator sees the highlighted rack on the floor plan
   # without an extra fetch. Mirrors `mo_booking_cell_summary`.

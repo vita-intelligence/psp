@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   LogOut,
   Package,
+  PackageCheck,
   PackageOpen,
   Truck,
   Wifi,
@@ -93,6 +94,15 @@ export const MOBILE_HOME_TILES = [
     description: "Verify ingredient qty + quality before start",
     icon: ClipboardCheck,
     permission: "production.preflight",
+    badgeKey: null,
+  },
+  {
+    key: "closeout",
+    href: "/m/closeout",
+    label: "Closeout",
+    description: "Hand off after production — scan, photo, qty",
+    icon: PackageCheck,
+    permission: "production.closeout",
     badgeKey: null,
   },
   {
