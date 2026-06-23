@@ -269,6 +269,21 @@ defmodule BackendWeb.PurchaseOrderController do
         {:ok, updated} -> json(conn, %{purchase_order: Payloads.purchase_order(updated)})
         {:error, :bad_status} -> conflict(conn, "bad_status", "Only draft POs can be submitted.")
         {:error, :no_lines} -> unprocessable(conn, "no_lines", "Add at least one line first.")
+
+        {:error, :default_warehouse_required} ->
+          unprocessable(
+            conn,
+            "default_warehouse_required",
+            "Pick a default delivery warehouse on the PO before submitting — lots can't land at Goods-In Inspection without it."
+          )
+
+        {:error, :line_warehouse_required, n} ->
+          unprocessable(
+            conn,
+            "line_warehouse_required",
+            "#{n} line#{if n == 1, do: "", else: "s"} #{if n == 1, do: "is", else: "are"} missing a destination warehouse. Set it per line or set a default on the PO header."
+          )
+
         {:error, :vendor_not_approved} ->
           unprocessable(
             conn,

@@ -47,6 +47,14 @@ export interface MORow {
   start: string;
   finish: string;
   steps: ScheduleOperation[];
+  /** Sum of `broken_bookings_count` + `under_booked_count` for this
+   *  MO — drives the urgent red corner badge on the calendar block.
+   *  Both categories collapse to one user-facing chip since the
+   *  planner action for either is the same (pull back + re-book). */
+  brokenCount: number;
+  /** Sum of `qc_pending_count` for this MO — drives the existing
+   *  amber QC chip. */
+  qcPending: number;
 }
 
 export function rowsFromOps(operations: ScheduleOperation[]): MORow[] {
@@ -67,6 +75,9 @@ export function rowsFromOps(operations: ScheduleOperation[]): MORow[] {
         start: op.planned_start,
         finish: op.planned_finish,
         steps: [op],
+        brokenCount:
+          (mo.broken_bookings_count ?? 0) + (mo.under_booked_count ?? 0),
+        qcPending: mo.qc_pending_count ?? 0,
       });
     } else {
       cur.steps.push(op);
@@ -951,6 +962,28 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
             {row.itemName}
           </p>
         </div>
+        {(row.brokenCount > 0 || row.qcPending > 0) && (
+          <div className="flex shrink-0 flex-col items-end gap-0.5">
+            {row.brokenCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-red-500/25 px-1.5 py-0.5 text-[9px] font-semibold text-red-900 dark:text-red-200"
+                title={`${row.brokenCount} bookings or BOM lines can't satisfy this MO — open it to fix (re-book, spawn a child MO, or pull back from the warehouse).`}
+              >
+                <AlertTriangle className="size-2.5" />
+                issues
+              </span>
+            )}
+            {row.qcPending > 0 && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-amber-500/25 px-1.5 py-0.5 text-[9px] font-semibold text-amber-900 dark:text-amber-200"
+                title={`${row.qcPending} booked lot${row.qcPending === 1 ? "" : "s"} awaiting QC — release is gated until cleared.`}
+              >
+                <AlertTriangle className="size-2.5" />
+                QC
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

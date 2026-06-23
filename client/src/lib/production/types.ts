@@ -404,8 +404,11 @@ export type MOSignatureAction =
   | "prepare"
   | "unprepare"
   | "approve"
+  | "unapprove"
   | "reject"
-  | "amend";
+  | "amend"
+  | "request_purchases"
+  | "cancel_purchase_request";
 
 // ---------------------------------------------------------------
 // Production schedule
@@ -433,6 +436,22 @@ export interface ScheduleOperationMOSummary {
    *  + edit dialog so the planner knows what blocks Release before
    *  clicking it. 0 means every booked lot is QC-cleared. */
   qc_pending_count: number;
+  /** Count of bookings the system can no longer satisfy — lot fell
+   *  out of `available` after release, or peer MO consumed more than
+   *  expected (lot is over-allocated). > 0 → planner needs to pull
+   *  the MO back and re-book. */
+  broken_bookings_count: number;
+  /** Count of BOM lines that aren't fully covered by bookings
+   *  (booked < required). Catches MOs scheduled before the
+   *  release-time line-coverage gate landed. > 0 → planner needs
+   *  to book more lots or spawn a child MO. */
+  under_booked_count: number;
+  /** True when the MO has bounced back from scheduled/in-progress
+   *  because the plan broke (Output QC fail, lot rejected,
+   *  over-consumption). Release is gated until the planner calls
+   *  /clear-replan after fixing the bookings. */
+  needs_replan: boolean;
+  needs_replan_reason: string | null;
 }
 
 export interface PlannedSegment {
@@ -630,7 +649,11 @@ export interface ManufacturingOrderPart {
     | "booked"
     | "sub_mo_in_progress"
     | "partial"
+    | "expecting"
     | "not_booked"
+    | "consumed"
+    | "consumed_short"
+    | "consumed_none"
     | "unknown";
   /** Real bookings against existing lots. Render with status
    *  label "Booked". */
@@ -704,8 +727,14 @@ export interface ManufacturingOrderBooking {
   note: string | null;
   item_id: number;
   item: BOMPartSummary | null;
-  stock_lot_id: number;
+  stock_lot_id: number | null;
   stock_lot: ManufacturingOrderBookingLotSummary | null;
+  /** Placeholder booking — reserves qty against an open PO line that
+   *  hasn't yet produced a stock lot. Mutually exclusive with
+   *  `stock_lot_id`. Auto-upgrades to a real lot booking when the
+   *  related PO is received + QC-passed. */
+  purchase_order_line_id: number | null;
+  purchase_order_line: BookingPurchaseOrderLine | null;
   storage_cell_id: number | null;
   storage_location: ManufacturingOrderBookingCellSummary | null;
   manufacturing_order_id: number;
@@ -730,6 +759,24 @@ export interface ManufacturingOrderBooking {
   consumed_by: AuditActor | null;
   inserted_at: string;
   updated_at: string;
+}
+
+/** Placeholder-booking link to its parent PO line. Surfaces the PO
+ *  code + expected delivery so the parts table can render
+ *  "Expecting from PO00xxx · arriving 17 Jul" without a lookup. */
+export interface BookingPurchaseOrderLine {
+  id: number;
+  uuid: string;
+  qty_ordered: string;
+  qty_received: string;
+  expected_delivery_date: string | null;
+  purchase_order: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+    expected_delivery_date: string | null;
+  } | null;
 }
 
 /** Row of the production-closeout queue. Slim shape for the mobile
@@ -1044,10 +1091,44 @@ export interface ManufacturingOrder {
   cost_per_unit: string | null;
   parts: ManufacturingOrderPart[];
   operations: ManufacturingOrderOperation[];
+  /** Bookings the system can no longer satisfy. Empty = clean.
+   *  Non-empty = planner must pull back & re-book / spawn a child MO. */
+  broken_bookings: BrokenBooking[];
+  /** Same counts the schedule view sees — surfaced on the full MO
+   *  so the detail page can render the same red badges + gate the
+   *  Release button without an extra query. */
+  broken_bookings_count: number;
+  under_booked_count: number;
+  /** Replan regression — set when the MO bounced back from
+   *  scheduled/in-progress because something broke its plan. UI
+   *  shows a banner with the reason + a "Mark replanned" CTA. */
+  needs_replan: boolean;
+  needs_replan_reason: string | null;
+  needs_replan_at: string | null;
+  /** Planner has marked this MO for procurement — bookings are
+   *  locked, and the MO's shortages surface on the procurement
+   *  Shortages page. Cleared when the MO is prepared (or explicitly
+   *  cancelled by the planner). */
+  purchasing_requested_at: string | null;
+  purchasing_requested_by: AuditActor | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;
   updated_at: string;
+}
+
+export interface BrokenBooking {
+  booking_uuid: string;
+  item_id: number;
+  item_name: string;
+  lot_uuid: string;
+  lot_status: string;
+  booked_qty: string;
+  on_hand_qty: string;
+  total_booked_qty: string;
+  /** "lot_unavailable" (QC rejected / quarantine) or "over_allocated"
+   *  (sum of bookings exceeds on-hand qty across all MOs). */
+  reason: "lot_unavailable" | "over_allocated";
 }
 
 export interface ManufacturingOrderSummary {
@@ -1070,6 +1151,11 @@ export interface ManufacturingOrderSummary {
   prepared_at: string | null;
   approved_by: AuditActor | null;
   approved_at: string | null;
+  /** Broken-booking count carried on the summary so list pages can
+   *  render the warning chip without a full MO fetch. 0 = clean. */
+  broken_bookings_count: number;
+  /** Under-booked BOM lines (booked < required). Same warning chip. */
+  under_booked_count: number;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;

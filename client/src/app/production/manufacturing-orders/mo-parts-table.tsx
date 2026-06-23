@@ -421,10 +421,30 @@ const COVERAGE_STYLE: Record<
     label: "Partial",
     dot: "bg-amber-500",
   },
+  expecting: {
+    text: "text-sky-700 dark:text-sky-300",
+    label: "Expecting (PO out)",
+    dot: "bg-sky-500",
+  },
   not_booked: {
     text: "text-destructive",
     label: "Not booked",
     dot: "bg-destructive",
+  },
+  consumed: {
+    text: "text-emerald-700 dark:text-emerald-300",
+    label: "Consumed",
+    dot: "bg-emerald-500",
+  },
+  consumed_short: {
+    text: "text-muted-foreground",
+    label: "Consumed (less than planned)",
+    dot: "bg-muted-foreground",
+  },
+  consumed_none: {
+    text: "text-muted-foreground/60",
+    label: "Not consumed",
+    dot: "bg-muted-foreground/40",
   },
   unknown: {
     text: "text-muted-foreground/60",
@@ -484,10 +504,26 @@ function BookingRow({
         {lineTotal ? formatCompanyMoney(lineTotal, company) : "—"}
       </td>
       <td className="px-2 py-1.5 font-mono">
-        {booking.stock_lot?.code ?? "—"}
+        {booking.stock_lot?.code ??
+          (booking.purchase_order_line?.purchase_order?.code
+            ? `↺ ${booking.purchase_order_line.purchase_order.code}`
+            : "—")}
       </td>
       <td className="px-2 py-1.5">
-        <BookingStatusBadge status={booking.status} />
+        {booking.purchase_order_line_id != null ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300"
+            title={
+              booking.purchase_order_line?.expected_delivery_date
+                ? `Arriving ${booking.purchase_order_line.expected_delivery_date}`
+                : "Reserved against an in-flight PO"
+            }
+          >
+            Expecting
+          </span>
+        ) : (
+          <BookingStatusBadge status={booking.status} />
+        )}
       </td>
       <td className="px-2 py-1.5">
         {(() => {

@@ -118,7 +118,7 @@ export function POWorkflowCard({
   }
 
   function onMarkOrdered() {
-    runDirect(markOrderedAction(po.uuid), "Marked as ordered");
+    runDirect(markOrderedAction(po.uuid), "Order placed");
   }
 
   function onCancel() {
@@ -179,7 +179,7 @@ export function POWorkflowCard({
       <StepRow
         status={po.status}
         step="ordered"
-        label="Sent to vendor"
+        label="Order placed with vendor"
         actor={po.ordered_by}
         timestamp={po.ordered_at}
       />
@@ -251,7 +251,7 @@ export function POWorkflowCard({
           >
             {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
             <Truck className="mr-1.5 size-4" />
-            Mark as ordered
+            Confirm order placed
           </Button>
         )}
         {canCancel &&
@@ -396,18 +396,29 @@ function StepRow({
 }) {
   const currentIdx = STEP_ORDER.indexOf(status);
   const stepIdx = STEP_ORDER.indexOf(step);
-  // "Received" is the terminal step + has an in-flight `partially_received`
-  // sibling status. Treat the pair explicitly so the row turns emerald
-  // once the PO is fully received (no later step exists to flip
-  // `done` via the default rule) and amber while partial.
+  // "Order placed with vendor" is an ACTION (the team paid /
+  // committed the order to the supplier). Once the PO is in any
+  // post-send status (ordered / partially_received / received) this
+  // step is done — the operator's no longer placing it. The
+  // remaining work sits on the Received row.
+  //
+  // "Received" itself is the terminal step + has an in-flight
+  // `partially_received` sibling status. Treat both pairs explicitly
+  // so the rows colour correctly through the late stages.
   const done =
     step === "received"
       ? status === "received"
-      : currentIdx >= 0 && currentIdx >= stepIdx + 1;
+      : step === "ordered"
+        ? status === "ordered" ||
+          status === "partially_received" ||
+          status === "received"
+        : currentIdx >= 0 && currentIdx >= stepIdx + 1;
   const current =
     step === "received"
-      ? status === "partially_received"
-      : status === step;
+      ? status === "ordered" || status === "partially_received"
+      : step === "ordered"
+        ? false
+        : status === step;
 
   return (
     <div

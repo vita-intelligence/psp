@@ -277,6 +277,33 @@ export function CellScanStep({ onResult, onError, expected }: Props) {
         </div>
       )}
 
+      {/* Dev bypass — pretend the operator scanned the expected cell
+          so the move flow can roll through without a physical QR.
+          Hidden in production builds. Only available when an expected
+          cell is set (otherwise there's nothing to bypass to). */}
+      {process.env.NODE_ENV !== "production" && expected && !overriding && (
+        <div className="z-10 border-t border-amber-500/30 bg-amber-500/15 px-4 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-amber-100">
+              Dev bypass — skip the physical scan.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="shrink-0 bg-transparent text-white"
+              onClick={() => {
+                setStatus({ kind: "confirmed" });
+                scannerRef.current?.stop();
+                setTimeout(() => onResult(expected), 200);
+              }}
+            >
+              Skip scan
+            </Button>
+          </div>
+        </div>
+      )}
+
       {mode === "camera" && (
         <button
           type="button"

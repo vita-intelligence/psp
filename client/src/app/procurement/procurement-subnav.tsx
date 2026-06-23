@@ -37,10 +37,9 @@ const ITEMS: SubnavItem[] = [
     Icon: Receipt,
   },
   {
-    href: "/procurement/requirements",
-    label: "Requirements",
+    href: "/procurement/shortages",
+    label: "Shortages",
     Icon: FileText,
-    comingSoon: true,
   },
   {
     href: "/procurement/inspections",

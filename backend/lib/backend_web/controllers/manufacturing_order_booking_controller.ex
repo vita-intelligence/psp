@@ -85,7 +85,23 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
         not_found(conn, "Manufacturing order not found.")
 
       %ManufacturingOrder{} = mo ->
-        case Production.create_booking(actor, mo, params) do
+        # One endpoint handles two booking flavours:
+        #
+        #   * `stock_lot_id` set → real booking against an existing lot
+        #     (`Production.create_booking/3`).
+        #   * `purchase_order_line_id` set → placeholder booking against
+        #     an in-flight PO line (`create_placeholder_booking/3`).
+        #
+        # Mutually exclusive by virtue of the booking schema's XOR
+        # constraint — the controller routes; the context fn validates.
+        result =
+          if present?(params["purchase_order_line_id"]) do
+            Production.create_placeholder_booking(actor, mo, params)
+          else
+            Production.create_booking(actor, mo, params)
+          end
+
+        case result do
           {:ok, booking} ->
             conn
             |> put_status(:created)
@@ -97,11 +113,18 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
           {:error, {:insufficient_stock, available}} ->
             booking_error(conn, :insufficient_stock, available)
 
+          {:error, {:over_reservation, free}} ->
+            booking_error(conn, :over_reservation, free)
+
           {:error, %Ecto.Changeset{} = cs} ->
             changeset_error(conn, cs)
         end
     end
   end
+
+  defp present?(nil), do: false
+  defp present?(""), do: false
+  defp present?(_), do: true
 
   def update(conn, %{"mo_id" => mo_uuid, "id" => uuid} = params) do
     actor = conn.assigns.current_user
@@ -137,6 +160,7 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
            Production.get_booking(actor.company_id, uuid) do
       case Production.delete_booking(actor, booking) do
         {:ok, _} -> send_resp(conn, :no_content, "")
+        {:error, code} when is_atom(code) -> booking_error(conn, code, nil)
         {:error, cs} -> changeset_error(conn, cs)
       end
     else
@@ -211,6 +235,26 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
         :insufficient_stock ->
           {:unprocessable_entity, "insufficient_stock",
            "Lot doesn't have enough free stock. Available: #{inspect(extra)}."}
+
+        :bookings_locked_for_purchasing ->
+          {:unprocessable_entity, "bookings_locked_for_purchasing",
+           "Bookings are locked while procurement is sourcing the missing items. Cancel the procurement request first if you need to edit."}
+
+        :po_line_not_found ->
+          {:unprocessable_entity, "po_line_not_found",
+           "That PO line doesn't exist or belongs to another company."}
+
+        :po_line_already_received ->
+          {:unprocessable_entity, "po_line_already_received",
+           "That PO line is closed (fully received or cancelled) — pick a still-open PO to reserve against."}
+
+        :item_mismatch ->
+          {:unprocessable_entity, "item_mismatch",
+           "The PO line's item doesn't match the booking line."}
+
+        :over_reservation ->
+          {:unprocessable_entity, "over_reservation",
+           "Reservation exceeds the remaining qty on that PO line (free: #{inspect(extra)})."}
 
         other ->
           {:unprocessable_entity, to_string(other), "Validation failed: #{other}"}

@@ -1369,10 +1369,16 @@ defmodule Backend.Production do
       :released_to_warehouse_by,
       :pickup_started_by,
       :pickup_completed_by,
+      :purchasing_requested_by,
       :produced_lot,
       production_cell: [storage_location: [floor: [:warehouse]]],
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
-      bookings: [:item, :storage_cell, stock_lot: [placements: :storage_cell]],
+      bookings: [
+        :item,
+        storage_cell: [storage_location: [floor: [:warehouse]]],
+        stock_lot: [placements: :storage_cell],
+        purchase_order_line: :purchase_order
+      ],
       bom: [lines: [:part, :unit_of_measurement]],
       routing: [steps: [:workstation_group, worker_assignments: :user]],
       parent_mo: [:item],
@@ -2260,12 +2266,25 @@ defmodule Backend.Production do
   MOs (the tree is signed at the root).
   """
   def prepare_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
-    with :ok <- ensure_root(mo),
-         :ok <- ensure_status_in(mo, ["draft"]) do
-      cascade_approval_transition(actor, mo, "prepared", %{
+    with :ok <- ensure_status_in(mo, ["draft"]),
+         :ok <- ensure_all_lines_fully_booked(mo) do
+      # Per-MO signature — does not cascade to children. Planner
+      # prepares each MO in the tree independently (typically leaves
+      # first so sub-MOs are ready by the time the parent rolls
+      # forward). Refuses if any BOM line is short: prepare is the
+      # first commitment in the workflow, and committing with
+      # missing ingredients defeats the planning gate.
+      #
+      # Clears any open procurement request in the same transition —
+      # preparing implies the planner is satisfied with the bookings
+      # (either fully sourced from stock or the missing items have
+      # been booked from a delivered PO).
+      do_transition(actor, mo, "prepared", %{
         "prepared_by_id" => actor.id,
         "prepared_at" => now(),
-        "rejection_reason" => nil
+        "rejection_reason" => nil,
+        "purchasing_requested_at" => nil,
+        "purchasing_requested_by_id" => nil
       })
     end
   end
@@ -2276,9 +2295,8 @@ defmodule Backend.Production do
   records a fresh timestamp.
   """
   def unprepare_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
-    with :ok <- ensure_root(mo),
-         :ok <- ensure_status_in(mo, ["prepared"]) do
-      cascade_approval_transition(actor, mo, "draft", %{
+    with :ok <- ensure_status_in(mo, ["prepared"]) do
+      do_transition(actor, mo, "draft", %{
         "prepared_by_id" => nil,
         "prepared_at" => nil
       })
@@ -2286,16 +2304,103 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Scientist's amend — bounce an `approved` (but not yet released)
+  MO back to `draft`, clearing both signatures so the team can edit
+  bookings + re-sign. Refuses on MOs that are already released to
+  the warehouse — those go through `unrelease_mo_from_warehouse`
+  (which itself uses this regression internally when `needs_replan`
+  is set).
+  """
+  def unapprove_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_status_in(mo, ["approved"]),
+         :ok <- ensure_not_released(mo) do
+      do_transition(actor, mo, "draft", %{
+        "approved_by_id" => nil,
+        "approved_at" => nil,
+        "prepared_by_id" => nil,
+        "prepared_at" => nil
+      })
+    end
+  end
+
+  defp ensure_not_released(%ManufacturingOrder{released_to_warehouse_at: nil}), do: :ok
+  defp ensure_not_released(_), do: {:error, :already_released}
+
+  @doc """
+  Planner action — flag the MO as having unbooked items that need
+  procurement. From this point:
+
+    * Existing bookings on this MO are locked (no add/edit/delete)
+    * The shortages page surfaces this MO's gaps to procurement
+    * Status badge reads "Purchasing" instead of "Draft"
+
+  Only valid on a draft MO with at least one under-booked line.
+  Cleared automatically when the planner calls `prepare_mo/2`.
+  """
+  def request_purchases(%User{} = actor, %ManufacturingOrder{} = mo) do
+    # Per-MO action (no root requirement). Each MO in the tree has
+    # its own BOM that procurement may need to fulfil — flagging one
+    # MO doesn't drag the rest along.
+    with :ok <- ensure_status_in(mo, ["draft"]),
+         :ok <- ensure_under_booked(mo) do
+      mo
+      |> ManufacturingOrder.transition_changeset(%{
+        "purchasing_requested_at" => now(),
+        "purchasing_requested_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      })
+      |> Repo.update()
+    end
+  end
+
+  @doc """
+  Planner action — undo the procurement request while still in draft.
+  Removes the lock + drops the MO from the shortages page.
+  """
+  def cancel_purchase_request(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_status_in(mo, ["draft"]) do
+      mo
+      |> ManufacturingOrder.transition_changeset(%{
+        "purchasing_requested_at" => nil,
+        "purchasing_requested_by_id" => nil,
+        "updated_by_id" => actor.id
+      })
+      |> Repo.update()
+    end
+  end
+
+  defp ensure_under_booked(%ManufacturingOrder{} = mo) do
+    case ensure_all_lines_fully_booked(mo) do
+      {:error, :lines_under_booked, _} -> :ok
+      :ok -> {:error, :nothing_to_request}
+    end
+  end
+
+  defp ensure_bookings_not_locked(%ManufacturingOrder{purchasing_requested_at: nil}), do: :ok
+
+  defp ensure_bookings_not_locked(_),
+    do: {:error, :bookings_locked_for_purchasing}
+
+  @doc """
   2nd signature — scientist approves the prepared root + every
   descendant. Enforces the 4-eyes rule (approver != preparer).
   """
   def approve_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
-    with :ok <- ensure_root(mo),
-         :ok <- ensure_status_in(mo, ["prepared"]),
+    with :ok <- ensure_status_in(mo, ["prepared"]),
          :ok <- ensure_different_signer(mo, actor) do
-      cascade_approval_transition(actor, mo, "approved", %{
+      # Per-MO approval (no cascade). Each MO in the tree is signed
+      # individually — leaves first so children are ready by the time
+      # the planner approves their parents. The user picks the order;
+      # the only enforced gate is 4-eyes (approver != preparer).
+      # Re-approval closes a replan cycle — once the planner has
+      # walked the MO back through prepare + approve, the
+      # `needs_replan` flag clears automatically.
+      do_transition(actor, mo, "approved", %{
         "approved_by_id" => actor.id,
-        "approved_at" => now()
+        "approved_at" => now(),
+        "needs_replan" => false,
+        "needs_replan_reason" => nil,
+        "needs_replan_at" => nil
       })
     end
   end
@@ -2883,7 +2988,8 @@ defmodule Backend.Production do
       |> Map.put_new("status", "requested")
       |> snapshot_storage_cell_from_lot()
 
-    with :ok <- ensure_lot_belongs_to_company(actor, attrs["stock_lot_id"]),
+    with :ok <- ensure_bookings_not_locked(mo),
+         :ok <- ensure_lot_belongs_to_company(actor, attrs["stock_lot_id"]),
          :ok <- ensure_item_matches_lot(attrs["item_id"], attrs["stock_lot_id"]),
          :ok <-
            ensure_capacity(
@@ -2913,6 +3019,618 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Create a placeholder booking — a reservation against an open PO
+  line for which no `stock_lot` exists yet (goods haven't landed).
+  Mutually exclusive with the lot-side `create_booking/3` —
+  placeholders carry `purchase_order_line_id` instead of
+  `stock_lot_id`.
+
+  Capacity rule: sum of all open placeholder bookings against the
+  same PO line ≤ remaining qty on the line (qty_ordered - qty_received).
+  This stops procurement from over-promising an inbound delivery.
+
+  On QC pass of the lot produced by this PO line's receipt, the
+  placeholder auto-upgrades — see
+  `upgrade_placeholder_bookings_for_lot/2`.
+
+  Error tuples: `:bookings_locked_for_purchasing | :po_line_not_found
+  | :po_line_already_received | :item_mismatch | :over_reservation |
+  :quantity_required | %Ecto.Changeset{}`.
+  """
+  def create_placeholder_booking(%User{} = actor, %ManufacturingOrder{} = mo, attrs) do
+    attrs = stringify_keys(attrs)
+
+    # Placeholders are how procurement FULFILS the purchasing request,
+    # so we deliberately skip `ensure_bookings_not_locked/1` (which
+    # only guards against the planner editing the same MO while a
+    # request is open). The lock keeps stock_lot bookings stable
+    # while procurement is sourcing; reserving against an in-flight
+    # PO is exactly what unblocks the request.
+    with {:ok, po_line} <-
+           fetch_po_line_for_company(actor.company_id, attrs["purchase_order_line_id"]),
+         :ok <- ensure_po_line_open(po_line),
+         :ok <- ensure_item_matches_po_line(attrs["item_id"], po_line),
+         {:ok, qty} <-
+           (case parse_positive_decimal(attrs["quantity"]) do
+              {:ok, d} -> {:ok, d}
+              :error -> {:error, :quantity_required}
+            end),
+         :ok <- ensure_po_line_capacity(po_line, qty, nil) do
+      booking_attrs = %{
+        "company_id" => mo.company_id,
+        "manufacturing_order_id" => mo.id,
+        "item_id" => po_line.item_id,
+        "purchase_order_line_id" => po_line.id,
+        "quantity" => qty,
+        "status" => "requested",
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id,
+        "note" => attrs["note"]
+      }
+
+      %ManufacturingOrderBooking{}
+      |> ManufacturingOrderBooking.changeset(booking_attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, booking} ->
+          Audit.record_created(
+            actor,
+            "manufacturing_order_booking",
+            booking,
+            booking_snapshot(booking)
+          )
+
+          _ = demote_root_if_signed(actor, mo)
+          {:ok, reload_booking(booking)}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  defp fetch_po_line_for_company(company_id, uuid_or_id) do
+    cond do
+      is_nil(uuid_or_id) ->
+        {:error, :po_line_not_found}
+
+      is_binary(uuid_or_id) and byte_size(uuid_or_id) >= 32 ->
+        case Repo.get_by(Backend.Purchasing.PurchaseOrderLine,
+               uuid: uuid_or_id,
+               company_id: company_id
+             ) do
+          nil -> {:error, :po_line_not_found}
+          line -> {:ok, Repo.preload(line, :purchase_order)}
+        end
+
+      true ->
+        id = if is_binary(uuid_or_id), do: String.to_integer(uuid_or_id), else: uuid_or_id
+
+        case Repo.get(Backend.Purchasing.PurchaseOrderLine, id) do
+          nil ->
+            {:error, :po_line_not_found}
+
+          line ->
+            if line.company_id == company_id do
+              {:ok, Repo.preload(line, :purchase_order)}
+            else
+              {:error, :po_line_not_found}
+            end
+        end
+    end
+  end
+
+  defp ensure_po_line_open(%Backend.Purchasing.PurchaseOrderLine{} = line) do
+    cond do
+      is_nil(line.purchase_order) ->
+        {:error, :po_line_not_found}
+
+      line.purchase_order.status == "cancelled" ->
+        {:error, :po_line_already_received}
+
+      true ->
+        remaining = Decimal.sub(line.qty_ordered || Decimal.new(0), line.qty_received || Decimal.new(0))
+
+        if Decimal.compare(remaining, Decimal.new(0)) == :gt do
+          :ok
+        else
+          {:error, :po_line_already_received}
+        end
+    end
+  end
+
+  defp ensure_item_matches_po_line(nil, _line), do: :ok
+
+  defp ensure_item_matches_po_line(item_id, %Backend.Purchasing.PurchaseOrderLine{item_id: po_item_id}) do
+    case coerce_int(item_id) do
+      ^po_item_id -> :ok
+      _ -> {:error, :item_mismatch}
+    end
+  end
+
+  defp ensure_po_line_capacity(
+         %Backend.Purchasing.PurchaseOrderLine{} = line,
+         %Decimal{} = qty,
+         exclude_booking_id
+       ) do
+    remaining = Decimal.sub(line.qty_ordered || Decimal.new(0), line.qty_received || Decimal.new(0))
+
+    booked_subquery =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.purchase_order_line_id == ^line.id and
+            b.status == "requested"
+      )
+
+    booked_subquery =
+      if exclude_booking_id do
+        from(b in booked_subquery, where: b.id != ^exclude_booking_id)
+      else
+        booked_subquery
+      end
+
+    already_reserved =
+      booked_subquery
+      |> Repo.aggregate(:sum, :quantity)
+      |> case do
+        nil -> Decimal.new(0)
+        %Decimal{} = d -> d
+      end
+
+    free = Decimal.sub(remaining, already_reserved)
+
+    if Decimal.compare(qty, free) in [:eq, :lt] do
+      :ok
+    else
+      {:error, {:over_reservation, Decimal.to_string(free)}}
+    end
+  end
+
+  # parse_positive_decimal/1 already exists later in this module
+  # (handles %Decimal{}, integer, float, binary inputs). The
+  # placeholder-booking flow reuses it.
+  defp coerce_int(n) when is_integer(n), do: n
+  defp coerce_int(s) when is_binary(s), do: String.to_integer(s)
+  defp coerce_int(_), do: nil
+
+  @doc """
+  Auto-upgrade placeholder bookings → real bookings for a freshly
+  available lot. Called from the Goods-In Inspection approver
+  sign-off after the lifecycle event flips the lot to `available`.
+
+  Walks placeholder bookings against the same PO line (the one this
+  lot was received against) FIFO by inserted_at and applies the
+  lot's available qty until either the lot is exhausted or every
+  placeholder has been upgraded.
+
+  Split behaviour: if a placeholder asks for more than the lot can
+  provide, the placeholder is shrunk to the lot's qty and a new
+  remainder-placeholder is left on the same PO line for the next
+  receipt to upgrade.
+
+  Returns `{:ok, %{upgraded: n, lot_qty_used: dec}}`. Idempotent —
+  re-running on the same lot is a no-op once every placeholder
+  against that PO line is satisfied.
+  """
+  def upgrade_placeholder_bookings_for_lot(%User{} = actor, %StockLot{} = lot) do
+    case lot_po_line_id(lot) do
+      nil ->
+        {:ok, %{upgraded: 0, lot_qty_used: Decimal.new(0)}}
+
+      po_line_id ->
+        # Capture which MOs had placeholders against this PO line
+        # BEFORE the upgrade so we can re-check their procurement
+        # state after the upgrade lands. The upgrade flips
+        # purchase_order_line_id → null so we can't query for them
+        # afterwards.
+        affected_mo_ids =
+          from(b in ManufacturingOrderBooking,
+            where:
+              b.purchase_order_line_id == ^po_line_id and
+                is_nil(b.stock_lot_id) and
+                b.status == "requested",
+            select: b.manufacturing_order_id,
+            distinct: true
+          )
+          |> Repo.all()
+
+        with {:ok, summary} <- do_upgrade_for_po_line(actor, lot, po_line_id) do
+          # Auto-clear `purchasing_requested_at` on any affected MO
+          # that no longer has open placeholder bookings. The
+          # planner doesn't have to click "Cancel purchase request"
+          # — once procurement has delivered everything they
+          # promised, the MO comes off the procurement queue
+          # automatically.
+          Enum.each(affected_mo_ids, &maybe_clear_purchasing_requested(actor, &1))
+
+          {:ok, summary}
+        end
+    end
+  end
+
+  # If the MO has no open placeholder bookings left (everything
+  # procurement promised has landed + been QC-passed), clear the
+  # `purchasing_requested_at` flag so the MO drops off the
+  # procurement queue and the FE no longer shows the "Purchasing"
+  # chip. Real lot-backed bookings are unaffected — only the
+  # "Expecting" state ends.
+  defp maybe_clear_purchasing_requested(%User{} = actor, mo_id) do
+    mo = Repo.get(ManufacturingOrder, mo_id)
+
+    cond do
+      is_nil(mo) ->
+        :ok
+
+      is_nil(mo.purchasing_requested_at) ->
+        :ok
+
+      true ->
+        outstanding =
+          Repo.aggregate(
+            from(b in ManufacturingOrderBooking,
+              where:
+                b.manufacturing_order_id == ^mo.id and
+                  not is_nil(b.purchase_order_line_id) and
+                  is_nil(b.stock_lot_id) and
+                  b.status == "requested"
+            ),
+            :count,
+            :id
+          )
+
+        if outstanding == 0 do
+          mo
+          |> ManufacturingOrder.transition_changeset(%{
+            "purchasing_requested_at" => nil,
+            "purchasing_requested_by_id" => nil,
+            "updated_by_id" => actor.id
+          })
+          |> Repo.update()
+        else
+          :ok
+        end
+    end
+  end
+
+  # Look up the PO line a lot was received against. Two pathways:
+  #
+  #   1. The lot has a `goods_in_inspection_id` set (PO-receive flow);
+  #      walk inspection items → purchase_order_line_id → match against
+  #      the lot's item_id (one inspection can cover multiple lines).
+  #
+  #   2. The lot's source_kind is "purchase_order" with a source_ref
+  #      pointing at a PO code; resolve to a PO and find a line for
+  #      the same item.
+  defp lot_po_line_id(%StockLot{goods_in_inspection_id: gid, item_id: item_id})
+       when is_integer(gid) do
+    case Repo.get(Backend.GoodsIn.Inspection, gid) do
+      nil ->
+        nil
+
+      inspection ->
+        items =
+          inspection
+          |> Repo.preload(items: :purchase_order_line)
+          |> Map.get(:items, [])
+
+        items
+        |> Enum.find(fn it ->
+          case it.purchase_order_line do
+            nil -> false
+            line -> line.item_id == item_id
+          end
+        end)
+        |> case do
+          nil -> nil
+          %{purchase_order_line: line} -> line.id
+        end
+    end
+  end
+
+  defp lot_po_line_id(_), do: nil
+
+  defp do_upgrade_for_po_line(%User{} = actor, %StockLot{} = lot, po_line_id) do
+    placeholders =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.purchase_order_line_id == ^po_line_id and
+            is_nil(b.stock_lot_id) and
+            b.status == "requested",
+        order_by: [asc: b.inserted_at, asc: b.id]
+      )
+      |> Repo.all()
+
+    lot_free = lot_free_qty(lot)
+
+    {result, _remaining} =
+      Enum.reduce(placeholders, {{:ok, %{upgraded: 0, lot_qty_used: Decimal.new(0)}}, lot_free}, fn
+        _placeholder, {{:error, _} = err, remaining} ->
+          {err, remaining}
+
+        placeholder,
+        {{:ok, %{upgraded: count, lot_qty_used: used}}, remaining} ->
+          if Decimal.compare(remaining, Decimal.new(0)) != :gt do
+            {{:ok, %{upgraded: count, lot_qty_used: used}}, remaining}
+          else
+            qty = placeholder.quantity
+
+            cond do
+              Decimal.compare(qty, remaining) in [:eq, :lt] ->
+                # Lot can fully cover this placeholder — flip
+                # purchase_order_line_id → stock_lot_id atomically.
+                case upgrade_placeholder(actor, placeholder, lot, qty) do
+                  {:ok, _} ->
+                    {
+                      {:ok,
+                       %{
+                         upgraded: count + 1,
+                         lot_qty_used: Decimal.add(used, qty)
+                       }},
+                      Decimal.sub(remaining, qty)
+                    }
+
+                  {:error, reason} ->
+                    {{:error, reason}, remaining}
+                end
+
+              true ->
+                # Partial: shrink placeholder + insert remainder.
+                case split_and_upgrade(actor, placeholder, lot, remaining) do
+                  {:ok, _} ->
+                    {
+                      {:ok,
+                       %{
+                         upgraded: count + 1,
+                         lot_qty_used: Decimal.add(used, remaining)
+                       }},
+                      Decimal.new(0)
+                    }
+
+                  {:error, reason} ->
+                    {{:error, reason}, remaining}
+                end
+            end
+          end
+      end)
+
+    result
+  end
+
+  # Live free qty on a lot — qty_received minus what's already booked
+  # via real bookings on it. Placeholders don't count (they're against
+  # the PO line, not the lot).
+  defp lot_free_qty(%StockLot{} = lot) do
+    on_hand = lot.qty_received || Decimal.new(0)
+
+    booked =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.stock_lot_id == ^lot.id and
+            b.status == "requested"
+      )
+      |> Repo.aggregate(:sum, :quantity)
+      |> case do
+        nil -> Decimal.new(0)
+        %Decimal{} = d -> d
+      end
+
+    Decimal.sub(on_hand, booked)
+  end
+
+  defp upgrade_placeholder(%User{} = actor, %ManufacturingOrderBooking{} = b, %StockLot{} = lot, _qty) do
+    before = booking_snapshot(b)
+
+    attrs = %{
+      "stock_lot_id" => lot.id,
+      "purchase_order_line_id" => nil,
+      "storage_cell_id" => primary_storage_cell_id(lot),
+      "updated_by_id" => actor.id
+    }
+
+    b
+    |> ManufacturingOrderBooking.changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_booking",
+          updated,
+          before,
+          booking_snapshot(updated)
+        )
+
+        {:ok, updated}
+
+      err ->
+        err
+    end
+  end
+
+  defp split_and_upgrade(%User{} = actor, %ManufacturingOrderBooking{} = b, %StockLot{} = lot, lot_qty) do
+    remainder = Decimal.sub(b.quantity, lot_qty)
+    before = booking_snapshot(b)
+
+    Repo.transaction(fn ->
+      # Shrink the placeholder to the lot qty + upgrade to real lot booking.
+      shrunk_attrs = %{
+        "stock_lot_id" => lot.id,
+        "purchase_order_line_id" => nil,
+        "storage_cell_id" => primary_storage_cell_id(lot),
+        "quantity" => lot_qty,
+        "updated_by_id" => actor.id
+      }
+
+      with {:ok, upgraded} <-
+             b
+             |> ManufacturingOrderBooking.changeset(shrunk_attrs)
+             |> Repo.update(),
+           {:ok, _remainder} <-
+             %ManufacturingOrderBooking{}
+             |> ManufacturingOrderBooking.changeset(%{
+               "company_id" => b.company_id,
+               "manufacturing_order_id" => b.manufacturing_order_id,
+               "item_id" => b.item_id,
+               "purchase_order_line_id" => b.purchase_order_line_id,
+               "quantity" => remainder,
+               "status" => "requested",
+               "created_by_id" => actor.id,
+               "updated_by_id" => actor.id
+             })
+             |> Repo.insert() do
+        Audit.record_updated(
+          actor,
+          "manufacturing_order_booking",
+          upgraded,
+          before,
+          booking_snapshot(upgraded)
+        )
+
+        upgraded
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc """
+  Allocate a fresh PO line's qty across MOs that have already raised
+  a procurement request for the same item. FIFO by the earliest
+  planned_start (then by MO id).
+
+  Each interested MO gets ONE placeholder booking for
+  `min(remaining_line_qty, mo_shortage)`. Unmet shortage on the MO
+  rolls over to the next PO that procurement creates.
+
+  Best-effort: errors creating individual placeholders are swallowed
+  (logged via audit) so a partial allocation can still proceed —
+  the planner sees what landed on their parts table and can
+  manually book any gap.
+
+  Returns `{:ok, %{placed: count, qty_used: dec}}`.
+  """
+  def allocate_po_line_to_requested_mos(%User{} = actor, %Backend.Purchasing.PurchaseOrderLine{} = line) do
+    candidates = find_candidate_mos_for_item(actor.company_id, line.item_id)
+    remaining = Decimal.sub(line.qty_ordered || Decimal.new(0), line.qty_received || Decimal.new(0))
+
+    Enum.reduce_while(candidates, {:ok, %{placed: 0, qty_used: Decimal.new(0)}, remaining}, fn
+      {_mo, _gap}, {:ok, summary, rem} when rem == %Decimal{coef: 0, exp: 0, sign: 1} ->
+        {:halt, {:ok, summary, rem}}
+
+      {mo, gap}, {:ok, %{placed: placed, qty_used: used}, rem} ->
+        slice =
+          if Decimal.compare(gap, rem) == :gt do
+            rem
+          else
+            gap
+          end
+
+        if Decimal.compare(slice, Decimal.new(0)) != :gt do
+          {:cont, {:ok, %{placed: placed, qty_used: used}, rem}}
+        else
+          case create_placeholder_booking(actor, mo, %{
+                 "purchase_order_line_id" => line.id,
+                 "item_id" => line.item_id,
+                 "quantity" => Decimal.to_string(slice)
+               }) do
+            {:ok, _booking} ->
+              {:cont,
+               {:ok,
+                %{placed: placed + 1, qty_used: Decimal.add(used, slice)},
+                Decimal.sub(rem, slice)}}
+
+            {:error, _reason} ->
+              # Best-effort — keep going, planner can clean up.
+              {:cont, {:ok, %{placed: placed, qty_used: used}, rem}}
+          end
+        end
+    end)
+    |> case do
+      {:ok, summary, _rem} -> {:ok, summary}
+      {:halt, {:ok, summary, _rem}} -> {:ok, summary}
+      other -> other
+    end
+  end
+
+  # Open MOs that are short on the given item AND have been flagged
+  # for procurement (`purchasing_requested_at` set). FIFO by earliest
+  # planned_start, then MO id (deterministic tiebreaker).
+  defp find_candidate_mos_for_item(company_id, item_id) do
+    from(mo in ManufacturingOrder,
+      where:
+        mo.company_id == ^company_id and
+          mo.status in ["draft", "approved", "scheduled", "in_progress"] and
+          not is_nil(mo.purchasing_requested_at),
+      preload: [:bookings, bom: [lines: :part], steps: []]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn mo ->
+      gap = mo_item_shortage(mo, item_id)
+
+      if Decimal.compare(gap, Decimal.new(0)) == :gt do
+        [{mo, gap, earliest_step_start(mo)}]
+      else
+        []
+      end
+    end)
+    |> Enum.sort_by(fn {_mo, _gap, start} -> start || ~U[2099-01-01 00:00:00Z] end, DateTime)
+    |> Enum.map(fn {mo, gap, _start} -> {mo, gap} end)
+  end
+
+  # Per-item shortage on a single MO: required_qty - booked_qty (incl.
+  # any existing placeholders). Mirrors the shortages calc but at the
+  # per-MO grain.
+  defp mo_item_shortage(%ManufacturingOrder{} = mo, item_id) do
+    line =
+      case mo.bom do
+        %BOM{lines: lines} when is_list(lines) ->
+          Enum.find(lines, fn l -> l.part_id == item_id end)
+
+        _ ->
+          nil
+      end
+
+    required =
+      case line do
+        nil ->
+          Decimal.new(0)
+
+        %BOMLine{is_fixed: true, qty: q} ->
+          q || Decimal.new(0)
+
+        %BOMLine{qty: q} ->
+          Decimal.mult(q || Decimal.new(0), mo.quantity || Decimal.new(0))
+      end
+
+    booked =
+      mo.bookings
+      |> Enum.filter(fn b -> b.item_id == item_id and b.status == "requested" end)
+      |> Enum.reduce(Decimal.new(0), fn b, acc -> Decimal.add(acc, b.quantity || Decimal.new(0)) end)
+
+    Decimal.sub(required, booked)
+  end
+
+  defp primary_storage_cell_id(%StockLot{} = lot) do
+    case lot do
+      %StockLot{placements: list} when is_list(list) ->
+        Enum.find_value(list, fn p ->
+          if Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt do
+            p.storage_cell_id
+          end
+        end)
+
+      _ ->
+        Repo.one(
+          from(p in Backend.Stock.Placement,
+            where: p.stock_lot_id == ^lot.id and p.qty > 0,
+            select: p.storage_cell_id,
+            limit: 1
+          )
+        )
+    end
+  end
+
+  @doc """
   Update booking qty (partial release). Re-validates capacity so
   raising a qty can't overflow the lot.
   """
@@ -2935,7 +3653,8 @@ defmodule Backend.Production do
 
     new_qty = attrs["quantity"] || booking.quantity
 
-    with :ok <- ensure_capacity(booking.stock_lot_id, new_qty, booking.id) do
+    with :ok <- ensure_booking_mo_not_locked(booking),
+         :ok <- ensure_capacity(booking.stock_lot_id, new_qty, booking.id) do
       booking
       |> ManufacturingOrderBooking.changeset(attrs)
       |> Repo.update()
@@ -2966,20 +3685,29 @@ defmodule Backend.Production do
   def delete_booking(%User{} = actor, %ManufacturingOrderBooking{} = booking) do
     before = booking_snapshot(booking)
 
-    case Repo.delete(booking) do
-      {:ok, deleted} ->
-        Audit.record_deleted(
-          actor,
-          "manufacturing_order_booking",
-          deleted,
-          before
-        )
+    with :ok <- ensure_booking_mo_not_locked(booking) do
+      case Repo.delete(booking) do
+        {:ok, deleted} ->
+          Audit.record_deleted(
+            actor,
+            "manufacturing_order_booking",
+            deleted,
+            before
+          )
 
-        maybe_demote_via_booking(actor, booking)
-        {:ok, deleted}
+          maybe_demote_via_booking(actor, booking)
+          {:ok, deleted}
 
-      err ->
-        err
+        err ->
+          err
+      end
+    end
+  end
+
+  defp ensure_booking_mo_not_locked(%ManufacturingOrderBooking{manufacturing_order_id: mo_id}) do
+    case Repo.get(ManufacturingOrder, mo_id) do
+      %ManufacturingOrder{} = mo -> ensure_bookings_not_locked(mo)
+      _ -> :ok
     end
   end
 
@@ -3224,7 +3952,14 @@ defmodule Backend.Production do
   defp reload_booking(%ManufacturingOrderBooking{} = b) do
     Repo.preload(
       b,
-      [:item, :storage_cell, :created_by, :updated_by, stock_lot: [placements: :storage_cell]],
+      [
+        :item,
+        :storage_cell,
+        :created_by,
+        :updated_by,
+        stock_lot: [placements: :storage_cell],
+        purchase_order_line: :purchase_order
+      ],
       force: true
     )
   end
@@ -3946,16 +4681,28 @@ defmodule Backend.Production do
       )
       |> Repo.all()
 
-    # Stamp each operation's preloaded MO with qc_pending_count so the
-    # planner sees QC progress on the calendar block without an extra
+    # Stamp each operation's preloaded MO with qc_pending_count +
+    # broken_bookings_count + under_booked_count so the planner sees
+    # every issue category on the calendar block without an extra
     # per-MO query.
     mo_ids = ops |> Enum.map(& &1.manufacturing_order_id) |> Enum.uniq()
-    counts = qc_pending_counts_for(mo_ids)
+    qc_counts = qc_pending_counts_for(mo_ids)
+    broken_counts = broken_booking_counts_for(mo_ids)
+    under_counts = under_booked_line_counts_for(mo_ids)
 
     Enum.map(ops, fn op ->
       mo = op.manufacturing_order
-      count = Map.get(counts, mo.id, 0)
-      %{op | manufacturing_order: %{mo | qc_pending_count: count}}
+      qc = Map.get(qc_counts, mo.id, 0)
+      broken = Map.get(broken_counts, mo.id, 0)
+      under = Map.get(under_counts, mo.id, 0)
+
+      stamped =
+        mo
+        |> Map.put(:qc_pending_count, qc)
+        |> Map.put(:broken_bookings_count, broken)
+        |> Map.put(:under_booked_count, under)
+
+      %{op | manufacturing_order: stamped}
     end)
   end
 
@@ -3976,7 +4723,7 @@ defmodule Backend.Production do
       where:
         b.manufacturing_order_id in ^mo_ids and
           b.status == "requested" and
-          it.item_type in ["raw_material", "packaging"] and
+          it.item_type in ["raw_material", "packaging", "semi_finished"] and
           l.status != "available",
       group_by: b.manufacturing_order_id,
       select: {b.manufacturing_order_id, count(b.id)}
@@ -3992,6 +4739,148 @@ defmodule Backend.Production do
   def qc_pending_count_for(%ManufacturingOrder{id: id}) do
     Map.get(qc_pending_counts_for([id]), id, 0)
   end
+
+  @doc """
+  Broken-booking detection. A booking is "broken" when its lot can no
+  longer satisfy it — either the lot fell out of `available` (QC
+  rejected / quarantine / hold) OR the lot's on-hand qty is now less
+  than the sum of all `requested` bookings against it (over-allocation
+  — e.g. a peer MO consumed more than expected, or stock shrunk).
+
+  Returns a list of maps `%{mo_id, booking_uuid, item_id, item_name,
+  lot_uuid, lot_code, lot_status, booked_qty, available_qty, reason}`
+  where reason is `:lot_unavailable | :over_allocated`.
+
+  This is computed lazily at page-load time — there's no background
+  job. The cost is one Repo query per call (MO list pages batch by
+  passing the full id list).
+  """
+  def list_broken_bookings_for([]), do: []
+
+  def list_broken_bookings_for(mo_ids) when is_list(mo_ids) do
+    # Pull every requested booking on the requested MOs, alongside
+    # the lot's current state and the TOTAL of all open bookings on
+    # that lot (across all MOs, not just the ones we're inspecting).
+    # The total tells us whether the lot is over-allocated; the lot
+    # status tells us whether QC made it unusable.
+    total_booked_subq =
+      from(b2 in ManufacturingOrderBooking,
+        where: b2.status == "requested",
+        group_by: b2.stock_lot_id,
+        select: %{stock_lot_id: b2.stock_lot_id, total: sum(b2.quantity)}
+      )
+
+    from(b in ManufacturingOrderBooking,
+      join: it in Item,
+      on: it.id == b.item_id,
+      join: l in StockLot,
+      on: l.id == b.stock_lot_id,
+      left_join: t in subquery(total_booked_subq),
+      on: t.stock_lot_id == b.stock_lot_id,
+      left_join: p in Backend.Stock.Placement,
+      on: p.stock_lot_id == l.id,
+      where:
+        b.manufacturing_order_id in ^mo_ids and
+          b.status == "requested" and
+          it.item_type in ["raw_material", "packaging", "semi_finished"],
+      group_by: [b.id, b.uuid, b.manufacturing_order_id, b.quantity, it.id, it.name, l.uuid, l.status, t.total],
+      select: %{
+        mo_id: b.manufacturing_order_id,
+        booking_uuid: b.uuid,
+        item_id: it.id,
+        item_name: it.name,
+        lot_uuid: l.uuid,
+        lot_status: l.status,
+        booked_qty: b.quantity,
+        # Sum across all placements; empty placements default to 0.
+        on_hand_qty: coalesce(sum(p.qty), 0),
+        total_booked_qty: coalesce(t.total, 0)
+      }
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn row ->
+      cond do
+        row.lot_status != "available" ->
+          [
+            row
+            |> Map.put(:reason, :lot_unavailable)
+            |> Map.update!(:booked_qty, &Decimal.to_string/1)
+            |> Map.update!(:on_hand_qty, &decimal_to_string/1)
+            |> Map.update!(:total_booked_qty, &decimal_to_string/1)
+          ]
+
+        Decimal.compare(
+          to_decimal(row.total_booked_qty),
+          to_decimal(row.on_hand_qty)
+        ) == :gt ->
+          [
+            row
+            |> Map.put(:reason, :over_allocated)
+            |> Map.update!(:booked_qty, &Decimal.to_string/1)
+            |> Map.update!(:on_hand_qty, &decimal_to_string/1)
+            |> Map.update!(:total_booked_qty, &decimal_to_string/1)
+          ]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  @doc """
+  Per-MO count of broken bookings, keyed by MO id. Shaped for the
+  schedule grid / picker queue / MO list — same access pattern as
+  `qc_pending_counts_for/1`.
+  """
+  def broken_booking_counts_for([]), do: %{}
+
+  def broken_booking_counts_for(mo_ids) when is_list(mo_ids) do
+    list_broken_bookings_for(mo_ids)
+    |> Enum.group_by(& &1.mo_id)
+    |> Map.new(fn {id, list} -> {id, length(list)} end)
+  end
+
+  @doc """
+  Per-MO count of BOM lines that aren't fully covered by bookings
+  (required > sum of requested bookings). Drives the same "MO has
+  issues" calendar chip as `broken_booking_counts_for/1` — released
+  MOs that slipped through before the line-coverage release gate
+  existed still surface here so the planner can see the gap.
+  """
+  def under_booked_line_counts_for([]), do: %{}
+
+  def under_booked_line_counts_for(mo_ids) when is_list(mo_ids) do
+    mos =
+      from(mo in ManufacturingOrder,
+        where: mo.id in ^mo_ids,
+        preload: [:bookings, bom: [lines: :part]]
+      )
+      |> Repo.all()
+
+    mos
+    |> Enum.map(fn mo ->
+      shortages =
+        case ensure_all_lines_fully_booked(mo) do
+          :ok -> []
+          {:error, :lines_under_booked, list} -> list
+        end
+
+      {mo.id, length(shortages)}
+    end)
+    |> Map.new()
+  end
+
+  defp to_decimal(%Decimal{} = d), do: d
+  defp to_decimal(n) when is_integer(n), do: Decimal.new(n)
+  defp to_decimal(n) when is_float(n), do: Decimal.from_float(n)
+  defp to_decimal(s) when is_binary(s), do: Decimal.new(s)
+  defp to_decimal(_), do: Decimal.new(0)
+
+  defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d)
+  defp decimal_to_string(n) when is_integer(n), do: Integer.to_string(n)
+  defp decimal_to_string(n) when is_float(n), do: Float.to_string(n)
+  defp decimal_to_string(s) when is_binary(s), do: s
+  defp decimal_to_string(_), do: "0"
 
   @doc """
   Approved-but-unscheduled MOs for `warehouse`, sorted by due_date
@@ -4372,7 +5261,9 @@ defmodule Backend.Production do
     # as a no-op re-release (e.g. legacy MOs already in "scheduled"
     # from the old semantic) so the planner isn't blocked.
     with :ok <- ensure_status_in(mo, ["approved", "scheduled"]),
+         :ok <- ensure_not_needing_replan(mo),
          :ok <- ensure_has_planned_start(mo),
+         :ok <- ensure_all_lines_fully_booked(mo),
          :ok <- ensure_all_booked_lots_available(mo),
          :ok <- ensure_no_booked_lots_on_trolley(mo) do
       attrs = %{
@@ -4392,6 +5283,11 @@ defmodule Backend.Production do
       apply_pickup_changeset(actor, mo, attrs)
     end
   end
+
+  defp ensure_not_needing_replan(%ManufacturingOrder{needs_replan: true, needs_replan_reason: reason}),
+    do: {:error, :needs_replan, reason}
+
+  defp ensure_not_needing_replan(_), do: :ok
 
   defp ensure_has_planned_start(%ManufacturingOrder{id: id}) do
     has_any? =
@@ -4443,7 +5339,10 @@ defmodule Backend.Production do
   once `pickup_started_at` is set, the planner must wait or have the
   picker abort first.
   """
-  def unrelease_mo_from_warehouse(%User{} = actor, %ManufacturingOrder{} = mo) do
+  def unrelease_mo_from_warehouse(%User{} = actor, %ManufacturingOrder{} = mo, opts \\ []) do
+    needs_replan = Keyword.get(opts, :needs_replan, false)
+    reason = Keyword.get(opts, :reason)
+
     cond do
       is_nil(mo.released_to_warehouse_at) ->
         {:error, :not_released}
@@ -4452,15 +5351,82 @@ defmodule Backend.Production do
         {:error, :pickup_in_progress}
 
       true ->
-        # Reverse release: drop the timestamp + actor and flip status
-        # back to "approved" so the MO is no longer in the picker queue
-        # and the planner can re-edit the schedule freely.
-        apply_pickup_changeset(actor, mo, %{
+        # Clear the release stamps so the picker queue drops the row.
+        # Status regression is two-stage: always step down to approved
+        # (drops the MO out of the picker queue). When the caller
+        # flags `needs_replan: true` — the "Pull back to fix" path —
+        # we then cascade down to `draft` so the planner can edit
+        # bookings again. Approved is a frozen state; editing
+        # bookings is a draft-only action. Going all the way back
+        # also clears both signatures so the planner re-prepares +
+        # re-approves the corrected MO (4-eyes audit trail stays
+        # intact via the audit log).
+        base = %{
           "status" => "approved",
           "released_to_warehouse_at" => nil,
           "released_to_warehouse_by_id" => nil,
           "updated_by_id" => actor.id
-        })
+        }
+
+        with {:ok, approved} <- apply_pickup_changeset(actor, mo, base) do
+          if needs_replan do
+            with {:ok, demoted} <-
+                   cascade_approval_transition(actor, approved, "draft", %{
+                     "approved_by_id" => nil,
+                     "approved_at" => nil,
+                     "prepared_by_id" => nil,
+                     "prepared_at" => nil
+                   }) do
+              mark_needs_replan(actor, demoted, reason)
+            end
+          else
+            {:ok, approved}
+          end
+        end
+    end
+  end
+
+  @doc """
+  Mark an MO as needing replan. Sets the `needs_replan` flag with a
+  reason + timestamp so the planner sees WHY on the detail page.
+  Idempotent — overwrites the existing reason/timestamp. Used by:
+
+    * Output QC fail (auto)
+    * Planner pull-back with an explicit reason
+    * `:broken_bookings_detected` regression once we wire it
+  """
+  def mark_needs_replan(%User{} = actor, %ManufacturingOrder{} = mo, reason) do
+    attrs = %{
+      "needs_replan" => true,
+      "needs_replan_reason" => reason,
+      "needs_replan_at" => now(),
+      "updated_by_id" => actor.id
+    }
+
+    mo
+    |> ManufacturingOrder.transition_changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
+  Planner action — clear the `needs_replan` flag once they've
+  re-confirmed the bookings cover what's required. Refuses if the
+  MO is still under-booked (the existing
+  `ensure_all_lines_fully_booked` invariant) so the planner can't
+  accidentally unflag a still-broken MO.
+  """
+  def clear_replan(%User{} = actor, %ManufacturingOrder{} = mo) do
+    with :ok <- ensure_all_lines_fully_booked(mo) do
+      attrs = %{
+        "needs_replan" => false,
+        "needs_replan_reason" => nil,
+        "needs_replan_at" => nil,
+        "updated_by_id" => actor.id
+      }
+
+      mo
+      |> ManufacturingOrder.transition_changeset(attrs)
+      |> Repo.update()
     end
   end
 
@@ -4793,7 +5759,7 @@ defmodule Backend.Production do
       where:
         b.manufacturing_order_id == ^mo.id and
           b.status == "requested" and
-          it.item_type in ["raw_material", "packaging"],
+          it.item_type in ["raw_material", "packaging", "semi_finished"],
       order_by: [asc: it.name, asc: b.id],
       preload: [
         :item,
@@ -4837,6 +5803,14 @@ defmodule Backend.Production do
       )
       |> Repo.all()
 
+    # Stamp broken_bookings_count + under_booked_count on each MO so
+    # the picker queue card can show "bookings broken — planner is
+    # fixing" instead of a green Pick CTA whenever the planner needs
+    # to intervene.
+    mo_ids = Enum.map(mos, & &1.id)
+    broken_counts = broken_booking_counts_for(mo_ids)
+    under_counts = under_booked_line_counts_for(mo_ids)
+
     mos
     |> Enum.map(fn mo ->
       window_hours =
@@ -4855,8 +5829,13 @@ defmodule Backend.Production do
           true -> pickup_by
         end
 
+      mo_with_count =
+        mo
+        |> Map.put(:broken_bookings_count, Map.get(broken_counts, mo.id, 0))
+        |> Map.put(:under_booked_count, Map.get(under_counts, mo.id, 0))
+
       %{
-        mo: mo,
+        mo: mo_with_count,
         pickup_by: pickup_by,
         visible_from: visible_from,
         window_hours: window_hours
@@ -5009,6 +5988,14 @@ defmodule Backend.Production do
              reason: attrs["reason"] || attrs[:reason],
              metadata: %{}
            }) do
+      # On QC fail, propagate the regression up the chain — any MO
+      # that's booked this lot as an input can no longer satisfy its
+      # plan. Flag them as needing replan so the planner sees the
+      # downstream impact immediately.
+      if kind == "qc_failed" do
+        propagate_replan_to_consumers(actor, lot)
+      end
+
       {:ok, Repo.preload(Backend.Stock.get_for_company(actor.company_id, lot_uuid), [:item])}
     else
       nil -> {:error, :lot_not_found}
@@ -5016,6 +6003,36 @@ defmodule Backend.Production do
       {:error, :illegal_transition, info} -> {:error, {:illegal_transition, info}}
       {:error, _} = err -> err
     end
+  end
+
+  # When a lot fails QC, every open MO that booked it as an input
+  # gets `needs_replan = true` with a reason. Doesn't touch the MO's
+  # status — the planner still owns the regression decision (unrelease
+  # / amend / spawn another child). The flag is the signal that the
+  # current plan no longer works.
+  defp propagate_replan_to_consumers(%User{} = actor, %StockLot{} = failed_lot) do
+    affected_mos =
+      from(b in ManufacturingOrderBooking,
+        join: m in ManufacturingOrder,
+        on: m.id == b.manufacturing_order_id,
+        where:
+          b.stock_lot_id == ^failed_lot.id and
+            b.status == "requested" and
+            m.status not in ["completed", "cancelled"],
+        select: m
+      )
+      |> Repo.all()
+
+    reason =
+      "Booked lot " <>
+        (failed_lot.supplier_batch_no || "##{failed_lot.id}") <>
+        " failed QC. Re-book a replacement lot or spawn another child MO."
+
+    Enum.each(affected_mos, fn mo ->
+      mark_needs_replan(actor, mo, reason)
+    end)
+
+    :ok
   end
 
   # Partial fail: split the lot into two. Child carries the rejected
@@ -5234,7 +6251,7 @@ defmodule Backend.Production do
         on: it.id == b.item_id,
         where:
           b.status == "requested" and
-            it.item_type in ["raw_material", "packaging"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished"] and
             is_nil(b.consumed_at),
         select: b.manufacturing_order_id,
         distinct: true
@@ -5618,7 +6635,7 @@ defmodule Backend.Production do
         on: it.id == b.item_id,
         where:
           b.status == "requested" and
-            it.item_type in ["raw_material", "packaging"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished"] and
             is_nil(b.received_at),
         select: b.manufacturing_order_id,
         distinct: true
@@ -5793,7 +6810,7 @@ defmodule Backend.Production do
         where:
           b.manufacturing_order_id == ^id and
             b.status == "requested" and
-            it.item_type in ["raw_material", "packaging"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished"] and
             is_nil(b.received_at),
         select: count(b.id)
       )
@@ -6361,6 +7378,71 @@ defmodule Backend.Production do
     end
   end
 
+  # Hard release gate: every BOM line must have bookings covering the
+  # line's required qty (BOM qty × MO qty, or the fixed amount when
+  # `line.is_fixed`). Releasing a partially-booked MO sent it to the
+  # picker with red "Not booked" rows on the parts table — confusing
+  # the operator and breaking traceability (the missing raw material
+  # was silently absent from picking). Refuse instead, with the list
+  # of short lines so the planner knows exactly what to fix.
+  defp ensure_all_lines_fully_booked(%ManufacturingOrder{} = mo) do
+    mo = Repo.preload(mo, [:bookings, bom: [lines: :part]])
+
+    lines =
+      case mo.bom do
+        %BOM{lines: lines} when is_list(lines) -> lines
+        _ -> []
+      end
+
+    mo_qty = mo.quantity || Decimal.new(0)
+
+    shortages =
+      lines
+      |> Enum.flat_map(fn line ->
+        case line.part do
+          %Item{id: part_id, name: name, item_type: t}
+          when t in ["raw_material", "packaging", "semi_finished"] ->
+            required =
+              if line.is_fixed do
+                line.qty || Decimal.new(0)
+              else
+                Decimal.mult(line.qty || Decimal.new(0), mo_qty)
+              end
+
+            booked =
+              mo.bookings
+              |> Enum.filter(fn b ->
+                b.item_id == part_id and b.status == "requested"
+              end)
+              |> Enum.reduce(Decimal.new(0), fn b, acc ->
+                Decimal.add(acc, b.quantity || Decimal.new(0))
+              end)
+
+            if Decimal.compare(required, booked) == :gt do
+              [
+                %{
+                  item_id: part_id,
+                  item_name: name,
+                  required: Decimal.to_string(required),
+                  booked: Decimal.to_string(booked),
+                  short: Decimal.to_string(Decimal.sub(required, booked))
+                }
+              ]
+            else
+              []
+            end
+
+          _ ->
+            []
+        end
+      end)
+
+    case shortages do
+      [] -> :ok
+      list -> {:error, :lines_under_booked, list}
+    end
+  end
+
   defp ensure_all_booked_lots_available(%ManufacturingOrder{} = mo) do
     stale =
       from(b in ManufacturingOrderBooking,
@@ -6371,7 +7453,7 @@ defmodule Backend.Production do
         where:
           b.manufacturing_order_id == ^mo.id and
             b.status == "requested" and
-            it.item_type in ["raw_material", "packaging"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished"] and
             l.status != "available",
         select: %{booking_uuid: b.uuid, lot_uuid: l.uuid, lot_status: l.status}
       )

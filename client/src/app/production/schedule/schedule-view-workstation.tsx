@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   ProductionScheduleResponse,
@@ -262,17 +263,37 @@ function OperationBlock({
         className="absolute left-0 top-0 h-full w-1 rounded-l-md"
         style={{ backgroundColor: groupColor ?? "var(--brand)" }}
       />
-      <div className="ml-1.5 flex h-full flex-col justify-center overflow-hidden">
-        <Link
-          href={moHref}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="truncate text-[10px] font-mono font-semibold hover:underline"
-        >
-          {mo?.code ?? `MO #${op.manufacturing_order_id}`}
-        </Link>
-        <p className="truncate text-[11px]" title={mo?.item?.name ?? ""}>
-          {mo?.item?.name ?? "—"}
-        </p>
+      <div className="ml-1.5 flex h-full items-center gap-1.5 overflow-hidden">
+        <div className="min-w-0 flex-1 flex flex-col justify-center">
+          <Link
+            href={moHref}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="truncate text-[10px] font-mono font-semibold hover:underline"
+          >
+            {mo?.code ?? `MO #${op.manufacturing_order_id}`}
+          </Link>
+          <p className="truncate text-[11px]" title={mo?.item?.name ?? ""}>
+            {mo?.item?.name ?? "—"}
+          </p>
+        </div>
+        {mo &&
+          ((mo.broken_bookings_count ?? 0) > 0 ||
+            (mo.under_booked_count ?? 0) > 0) && (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-red-500/25 px-1 py-0.5 text-[9px] font-semibold text-red-900 dark:text-red-200"
+              title={`${(mo.broken_bookings_count ?? 0) + (mo.under_booked_count ?? 0)} bookings or BOM lines can't satisfy this MO — open it to pull back and re-book.`}
+            >
+              <AlertTriangle className="size-2.5" />
+            </span>
+          )}
+        {mo && (mo.qc_pending_count ?? 0) > 0 && (
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/25 px-1 py-0.5 text-[9px] font-semibold text-amber-900 dark:text-amber-200"
+            title={`${mo.qc_pending_count} booked lot${mo.qc_pending_count === 1 ? "" : "s"} awaiting QC.`}
+          >
+            <AlertTriangle className="size-2.5" />
+          </span>
+        )}
       </div>
     </div>
   );

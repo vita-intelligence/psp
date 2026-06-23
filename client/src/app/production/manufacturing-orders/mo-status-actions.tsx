@@ -15,6 +15,7 @@ import {
   Play,
   RotateCcw,
   ShieldCheck,
+  ShoppingCart,
   Undo2,
   XCircle,
 } from "lucide-react";
@@ -164,7 +165,14 @@ export function MOStatusActions({
 
   function runSignature(
     label: string,
-    action: "prepare" | "unprepare" | "approve" | "amend",
+    action:
+      | "prepare"
+      | "unprepare"
+      | "approve"
+      | "unapprove"
+      | "amend"
+      | "request_purchases"
+      | "cancel_purchase_request",
   ) {
     setActionError(null);
     setPendingLabel(label);
@@ -216,6 +224,16 @@ export function MOStatusActions({
           {STATUS_LABEL[mo.status]}
         </span>
 
+        {mo.purchasing_requested_at && (
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-200 dark:bg-sky-950/30 dark:text-sky-300 dark:ring-sky-900/50"
+            title="Sent to procurement — bookings locked until the planner prepares the MO."
+          >
+            <ShoppingCart className="size-3" />
+            Purchasing
+          </span>
+        )}
+
         {mo.blocking_children_count > 0 && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:ring-amber-900/50">
             <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" aria-hidden />
@@ -264,8 +282,15 @@ export function MOStatusActions({
           onPrepare={() => runSignature("Mark prepared", "prepare")}
           onUnprepare={() => runSignature("Unprepare", "unprepare")}
           onApprove={() => runSignature("Approve", "approve")}
+          onUnapprove={() => runSignature("Unapprove", "unapprove")}
           onReject={() => setRejectOpen(true)}
           onAmend={() => runSignature("Amend", "amend")}
+          onRequestPurchases={() =>
+            runSignature("Request purchases", "request_purchases")
+          }
+          onCancelPurchaseRequest={() =>
+            runSignature("Cancel purchase request", "cancel_purchase_request")
+          }
           onStart={() => runStatus("Start", "in_progress")}
           onComplete={() => runStatus("Complete", "completed")}
           onCancel={() =>
@@ -381,8 +406,11 @@ interface ActionStripProps {
   onPrepare: () => void;
   onUnprepare: () => void;
   onApprove: () => void;
+  onUnapprove: () => void;
   onReject: () => void;
   onAmend: () => void;
+  onRequestPurchases: () => void;
+  onCancelPurchaseRequest: () => void;
   onStart: () => void;
   onComplete: () => void;
   onCancel: () => void;
@@ -443,15 +471,59 @@ function ActionStrip(props: ActionStripProps) {
     );
   }
 
-  if (mo.status === "draft" && !isChild && canPrepare) {
-    actionButton({
-      label: "Mark prepared",
-      icon: ClipboardCheck,
-      onClick: props.onPrepare,
-    });
+  if (mo.status === "draft") {
+    const requested = mo.purchasing_requested_at != null;
+    const underBooked = (mo.under_booked_count ?? 0) > 0;
+
+    if (canPrepare && !requested) {
+      // Mark prepared is per-MO — each MO in the tree (root + every
+      // sub-MO) goes through prepare + approve independently. The
+      // planner typically signs leaves first so children are ready
+      // by the time the parent rolls forward.
+      //
+      // Disabled when any BOM line is short: prepare is the first
+      // commitment in the workflow, and committing with missing
+      // ingredients defeats the planning gate. Operator must either
+      // book the gap from existing stock OR send it to procurement
+      // via "Request purchases" and wait.
+      actionButton({
+        label: "Mark prepared",
+        icon: ClipboardCheck,
+        onClick: props.onPrepare,
+        disabled: underBooked,
+        title: underBooked
+          ? "Some BOM lines aren't fully booked — book the missing items or request purchases first."
+          : undefined,
+      });
+
+      // Procurement request flow — when the planner has BOM lines
+      // they can't satisfy from existing stock, this routes the gaps
+      // to procurement instead of forcing them to dummy-book.
+      if (underBooked) {
+        actionButton({
+          label: "Request purchases",
+          icon: ShoppingCart,
+          onClick: props.onRequestPurchases,
+          variant: "outline",
+          title:
+            "Send the unbooked items to procurement. Bookings on this MO will be locked until you prepare it.",
+        });
+      }
+    }
+
+    // While in purchasing-requested state: surface a Cancel action
+    // so the planner can pull back if needed.
+    if (canPrepare && requested) {
+      actionButton({
+        label: "Cancel purchase request",
+        icon: Undo2,
+        onClick: props.onCancelPurchaseRequest,
+        variant: "outline",
+      });
+    }
   }
 
-  if (mo.status === "prepared" && !isChild) {
+  if (mo.status === "prepared") {
     if (canApprove) {
       actionButton({
         label: "Approve",
@@ -481,24 +553,64 @@ function ActionStrip(props: ActionStripProps) {
   }
 
   if (mo.status === "approved") {
-    if (canExecute) {
+    if (canApprove) {
+      // Unapprove bounces back to draft (clears both signatures) so
+      // the planner can edit bookings again. Blocked once the MO is
+      // released to the warehouse — at that point the planner uses
+      // "Pull back to fix" on the schedule release section instead.
       actionButton({
-        label: "Start",
-        icon: Play,
-        onClick: props.onStart,
-        disabled: mo.blocking_children_count > 0,
+        label: "Unapprove",
+        icon: Undo2,
+        onClick: props.onUnapprove,
+        variant: "outline",
+        disabled: mo.released_to_warehouse_at != null,
         title:
-          mo.blocking_children_count > 0
-            ? "Finish or cancel every sub-MO before starting."
-            : undefined,
+          mo.released_to_warehouse_at != null
+            ? "MO is released to the warehouse — pull it back from the schedule first."
+            : "Bounce back to draft so bookings can be edited.",
       });
-    }
-    if (canApprove && !isChild) {
+
       actionButton({
         label: "Amend",
         icon: RotateCcw,
         onClick: props.onAmend,
         variant: "outline",
+      });
+    }
+  }
+
+  // Start is valid only when the MO has been released to the warehouse,
+  // the pickup is complete (lots are at the production-feed cell), AND
+  // every booking has been preflight-signed by the production operator
+  // — the BE's `scheduled → in_progress` transition is gated by these
+  // server-side. We surface the same gate on the FE so the button only
+  // appears when it can actually fire, and never on a still-approved
+  // (not-yet-scheduled) MO. The dedicated production-run page is the
+  // primary place to start; this button is a desktop shortcut.
+  if (mo.status === "scheduled" && canExecute) {
+    const pickupDone = mo.pickup_completed_at != null;
+    const preflightDone =
+      pickupDone &&
+      mo.parts.every((p) =>
+        p.bookings.every(
+          (b) => b.received_at != null || b.status !== "requested",
+        ),
+      );
+
+    if (pickupDone) {
+      actionButton({
+        label: "Start",
+        icon: Play,
+        onClick: props.onStart,
+        disabled:
+          mo.blocking_children_count > 0 ||
+          !preflightDone,
+        title:
+          mo.blocking_children_count > 0
+            ? "Finish or cancel every sub-MO before starting."
+            : !preflightDone
+              ? "Run pre-production sign-off at /m/preflight first — every booked lot needs the operator's received_at stamp."
+              : undefined,
       });
     }
   }

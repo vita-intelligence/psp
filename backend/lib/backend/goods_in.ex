@@ -680,9 +680,28 @@ defmodule Backend.GoodsIn do
                  reason: "Goods-In Inspection sign-off — decision=#{i.quality_decision}",
                  metadata: %{"inspection_id" => i.id}
                }) do
-            {:ok, _} -> {:cont, :ok}
-            {:error, :illegal_transition, info} -> {:halt, {:error, {:illegal_transition, info}}}
-            {:error, reason} -> {:halt, {:error, reason}}
+            {:ok, %{lot: updated_lot, status: "available"}} when event_kind == "qc_passed" ->
+              # Lot just became available — upgrade any placeholder
+              # bookings reserving qty against the PO line this lot
+              # came in for. Placeholders flip from
+              # "Expecting from PO00xxx" to "Booked Lxxx" without
+              # planner intervention.
+              case Backend.Production.upgrade_placeholder_bookings_for_lot(
+                     actor,
+                     updated_lot
+                   ) do
+                {:ok, _} -> {:cont, :ok}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
+
+            {:ok, _} ->
+              {:cont, :ok}
+
+            {:error, :illegal_transition, info} ->
+              {:halt, {:error, {:illegal_transition, info}}}
+
+            {:error, reason} ->
+              {:halt, {:error, reason}}
           end
       end
     end)

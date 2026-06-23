@@ -191,6 +191,11 @@ defmodule Backend.Purchasing do
       # We're already inside a Repo.transaction; insert directly so a
       # bad line bubbles a real changeset back up the with-chain rather
       # than nesting a transaction-in-transaction.
+      # Fall back to the PO's default warehouse if the operator left
+      # the per-line override empty. Both fields are required at
+      # insert time (`PurchaseOrderLine.changeset` validates) so the
+      # fallback covers the common "use the same WH everywhere" case
+      # without forcing the user to retype it per line.
       attrs =
         line_attrs
         |> stringify_keys()
@@ -198,6 +203,11 @@ defmodule Backend.Purchasing do
           "purchase_order_id" => po.id,
           "company_id" => po.company_id
         })
+        |> Map.update("warehouse_id", po.default_warehouse_id, fn
+          nil -> po.default_warehouse_id
+          "" -> po.default_warehouse_id
+          other -> other
+        end)
         |> compute_line_subtotal()
 
       case %PurchaseOrderLine{}
@@ -210,6 +220,14 @@ defmodule Backend.Purchasing do
             unit_price: line.unit_price
           })
 
+          # Auto-reserve the new line's qty against any MO that's
+          # been flagged "purchasing_requested" for this item. FIFO
+          # by planned_start (the earliest run gets first dibs).
+          # Failure here doesn't roll back the line — placeholder
+          # creation is best-effort; the planner can manually book
+          # later via the MO if it slipped through.
+          _ = auto_reserve_for_mos(actor, line)
+
           {:cont, {:ok, [line | acc]}}
 
         {:error, cs} ->
@@ -220,6 +238,16 @@ defmodule Backend.Purchasing do
       {:ok, lines} -> {:ok, Enum.reverse(lines)}
       other -> other
     end
+  end
+
+  # FIFO-allocate the new PO line's qty across MOs that have already
+  # raised a "Request purchases" flag for this item. Each MO gets one
+  # placeholder booking for `min(remaining_line_qty, mo_shortage)`
+  # until the line is fully reserved or every interested MO is
+  # satisfied. Unreserved qty stays as headroom procurement can give
+  # to a future MO that flags the same item.
+  defp auto_reserve_for_mos(%User{} = actor, %PurchaseOrderLine{} = line) do
+    Backend.Production.allocate_po_line_to_requested_mos(actor, line)
   end
 
   # Pull vendor's standing tax_rate + currency onto the create attrs
@@ -534,6 +562,8 @@ defmodule Backend.Purchasing do
         po = preload(po)
 
         with :ok <- ensure_lines_present(po),
+             :ok <- ensure_default_warehouse(po),
+             :ok <- ensure_lines_have_warehouse(po),
              :ok <- ensure_vendor_approved(po),
              :ok <- ensure_lines_approved_by_vendor(po),
              :ok <- ensure_lines_items_ready(po) do
@@ -767,13 +797,46 @@ defmodule Backend.Purchasing do
     else
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      transition(actor, po, %{
-        "status" => "cancelled",
-        "cancelled_at" => now,
-        "cancelled_by_id" => actor.id,
-        "cancellation_reason" => reason,
-        "updated_by_id" => actor.id
-      })
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               transition_db(actor, po, %{
+                 "status" => "cancelled",
+                 "cancelled_at" => now,
+                 "cancelled_by_id" => actor.id,
+                 "cancellation_reason" => reason,
+                 "updated_by_id" => actor.id
+               }),
+             :ok <- drop_placeholder_bookings_for_po(actor, po) do
+          preload(updated)
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  # When a PO is cancelled, every open placeholder booking that
+  # reserved against one of its lines becomes invalid — the goods
+  # are never arriving. Wipe them so the affected MOs re-surface
+  # their shortage and the planner can re-route via another PO.
+  # Real (lot-backed) bookings are unaffected.
+  defp drop_placeholder_bookings_for_po(%User{} = _actor, %PurchaseOrder{id: po_id}) do
+    line_ids =
+      from(l in PurchaseOrderLine, where: l.purchase_order_id == ^po_id, select: l.id)
+      |> Repo.all()
+
+    if line_ids == [] do
+      :ok
+    else
+      from(b in Backend.Production.ManufacturingOrderBooking,
+        where:
+          b.purchase_order_line_id in ^line_ids and
+            is_nil(b.stock_lot_id)
+      )
+      |> Repo.delete_all()
+
+      :ok
     end
   end
 
@@ -807,6 +870,23 @@ defmodule Backend.Purchasing do
     do: :ok
 
   defp ensure_lines_present(_), do: {:error, :no_lines}
+
+  # Goods-In Inspection sign-off auto-receives lots against this PO,
+  # which needs a destination warehouse. Both the header default AND
+  # every line warehouse must be set before submission so the worker
+  # never gets stuck mid-sign-off with a 500.
+  defp ensure_default_warehouse(%PurchaseOrder{default_warehouse_id: id})
+       when is_integer(id) and id > 0,
+       do: :ok
+
+  defp ensure_default_warehouse(_), do: {:error, :default_warehouse_required}
+
+  defp ensure_lines_have_warehouse(%PurchaseOrder{lines: lines}) when is_list(lines) do
+    missing = Enum.filter(lines, &is_nil(&1.warehouse_id))
+    if missing == [], do: :ok, else: {:error, :line_warehouse_required, length(missing)}
+  end
+
+  defp ensure_lines_have_warehouse(_), do: :ok
 
   defp ensure_vendor_approved(%PurchaseOrder{vendor: %{approval_status: "approved", is_active: true}}),
     do: :ok

@@ -17,6 +17,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
   alias Backend.Companies.Company
   alias Backend.Items.Item
   alias Backend.Production.ManufacturingOrder
+  alias Backend.Purchasing.PurchaseOrderLine
   alias Backend.Stock.Lot, as: StockLot
   alias Backend.Warehouses.StorageCell
 
@@ -62,6 +63,15 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     belongs_to :manufacturing_order, ManufacturingOrder
     belongs_to :item, Item
     belongs_to :stock_lot, StockLot
+    # Placeholder booking — reservation against an in-flight PO line
+    # for which no lot exists yet (goods haven't landed). Mutually
+    # exclusive with `stock_lot_id`: a booking is either a real
+    # reservation against a lot OR a forward reservation against a
+    # PO line. On QC pass of the lot produced by that PO receipt,
+    # the placeholder auto-upgrades: stock_lot_id set,
+    # purchase_order_line_id cleared. See
+    # `Backend.Production.upgrade_placeholder_bookings_for_lot/2`.
+    belongs_to :purchase_order_line, PurchaseOrderLine
     belongs_to :storage_cell, StorageCell
     belongs_to :picked_by, User
     belongs_to :received_by, User
@@ -74,6 +84,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
 
   @cast_fields ~w(
     company_id manufacturing_order_id item_id stock_lot_id storage_cell_id
+    purchase_order_line_id
     quantity consumed_quantity status note
     picked_at picked_by_id
     received_at received_by_id received_qty received_notes
@@ -88,9 +99,9 @@ defmodule Backend.Production.ManufacturingOrderBooking do
       :company_id,
       :manufacturing_order_id,
       :item_id,
-      :stock_lot_id,
       :quantity
     ])
+    |> validate_lot_xor_po_line()
     |> validate_number(:quantity, greater_than: 0)
     |> validate_non_negative(:consumed_quantity)
     |> validate_consumed_le_quantity()
@@ -102,6 +113,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     |> assoc_constraint(:manufacturing_order)
     |> assoc_constraint(:item)
     |> assoc_constraint(:stock_lot)
+    |> assoc_constraint(:purchase_order_line)
     |> assoc_constraint(:storage_cell)
     |> check_constraint(:quantity,
       name: :mo_bookings_quantity_positive,
@@ -115,6 +127,30 @@ defmodule Backend.Production.ManufacturingOrderBooking do
       name: :mo_bookings_status_known,
       message: "must be requested, consumed, or cancelled"
     )
+    |> check_constraint(:stock_lot_id,
+      name: :mo_bookings_lot_xor_po_line,
+      message:
+        "booking must point at either a stock lot or an open PO line (never both, never neither)"
+    )
+  end
+
+  # XOR — exactly one of stock_lot_id / purchase_order_line_id must be
+  # set. Mirrors the DB check constraint so the operator gets a clean
+  # validation message instead of a 500.
+  defp validate_lot_xor_po_line(cs) do
+    lot = get_field(cs, :stock_lot_id)
+    po_line = get_field(cs, :purchase_order_line_id)
+
+    cond do
+      not is_nil(lot) and not is_nil(po_line) ->
+        add_error(cs, :stock_lot_id, "can't be set at the same time as purchase_order_line_id")
+
+      is_nil(lot) and is_nil(po_line) ->
+        add_error(cs, :stock_lot_id, "must reference either a stock lot or an open PO line")
+
+      true ->
+        cs
+    end
   end
 
   defp validate_non_negative(cs, field) do

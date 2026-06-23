@@ -43,6 +43,10 @@ export interface ProjectRow {
    *  steps in the current view. Drives the amber "N QC pending" badge
    *  on the project block. */
   qcPending: number;
+  /** Sum of `broken_bookings_count` across every MO in the chain.
+   *  Drives the urgent red "N broken" badge — planner needs to pull
+   *  back + re-book before this MO can run. */
+  brokenCount: number;
   /** Every operation in this chain — used by the block overlay to
    *  derive manual pause gaps when any step has stored segments. */
   ops: ScheduleOperation[];
@@ -60,6 +64,7 @@ export function projectRowsFromOps(
       status: string;
       qty: string;
       qcPending: number;
+      brokenCount: number;
     }
   >,
 ): ProjectRow[] {
@@ -110,8 +115,11 @@ export function projectRowsFromOps(
 
     const meta = moMetaByMoId.get(rootId);
     let qcPending = 0;
+    let brokenCount = 0;
     for (const moId of moIds) {
-      qcPending += moMetaByMoId.get(moId)?.qcPending ?? 0;
+      const m = moMetaByMoId.get(moId);
+      qcPending += m?.qcPending ?? 0;
+      brokenCount += m?.brokenCount ?? 0;
     }
     rows.push({
       rootMoId: rootId,
@@ -124,6 +132,7 @@ export function projectRowsFromOps(
       qty: meta?.qty ?? "0",
       moCount: moIds.size,
       qcPending,
+      brokenCount,
       ops,
     });
   }
@@ -315,6 +324,15 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
             >
               <AlertTriangle className="size-2.5" />
               {row.qcPending}
+            </span>
+          )}
+          {row.brokenCount > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-red-500/25 px-1.5 py-0.5 text-[9px] font-semibold text-red-900 dark:text-red-200"
+              title={`${row.brokenCount} bookings or BOM lines can't satisfy this MO — pull back to fix.`}
+            >
+              <AlertTriangle className="size-2.5" />
+              issues
             </span>
           )}
         </div>

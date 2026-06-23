@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   CalendarDays,
   CalendarRange,
   CalendarSearch,
@@ -238,6 +239,7 @@ export function ScheduleWorkspace({
         status: string;
         qty: string;
         qcPending: number;
+        brokenCount: number;
       }
     >();
     for (const op of data.operations) {
@@ -251,6 +253,8 @@ export function ScheduleWorkspace({
         status: mo.status,
         qty: mo.quantity,
         qcPending: mo.qc_pending_count ?? 0,
+        brokenCount:
+          (mo.broken_bookings_count ?? 0) + (mo.under_booked_count ?? 0),
       });
     }
     return projectRowsFromOps(data.operations, parentIds, meta);
@@ -1108,6 +1112,43 @@ export function ScheduleWorkspace({
               )}
             </div>
           </div>
+
+          {/* Broken-bookings header — surfaces when any scheduled MO
+              in view has at least one booking the system can no longer
+              satisfy (QC flipped a lot, peer consumed too much, etc).
+              Planner needs to act before the picker tries to start. */}
+          {data &&
+            (() => {
+              const brokenMos = new Set<number>();
+              for (const op of data.operations) {
+                const mo = op.manufacturing_order;
+                if (
+                  mo &&
+                  ((mo.broken_bookings_count ?? 0) > 0 ||
+                    (mo.under_booked_count ?? 0) > 0)
+                ) {
+                  brokenMos.add(mo.id);
+                }
+              }
+              const count = brokenMos.size;
+              if (count === 0) return null;
+              return (
+                <div className="flex items-start gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  <div className="space-y-0.5">
+                    <p className="font-semibold">
+                      {count} MO{count === 1 ? "" : "s"} need attention
+                    </p>
+                    <p className="text-[11px] opacity-80">
+                      One or more booked lots can no longer satisfy these MOs
+                      (QC rejected the lot, sent it back to quarantine, or a
+                      peer MO consumed more than expected). Click an MO with
+                      the red <b>broken</b> chip to pull it back and re-book.
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
 
           {/* Body: backlog rail + scrollable canvas */}
           <div className="flex min-h-0 flex-1">

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowLeft,
   CheckCheck,
   ChevronRight,
@@ -179,6 +180,8 @@ interface PickupCardProps {
 
 function PickupCard({ entry, onTap, companyDateFormat }: PickupCardProps) {
   const { mo, pickup_by, pickup_started_by } = entry;
+  const brokenCount = mo.broken_bookings_count ?? 0;
+  const isBroken = brokenCount > 0;
   const badge = computeBadge(entry);
   const startedByMe = pickup_started_by !== null;
 
@@ -187,19 +190,32 @@ function PickupCard({ entry, onTap, companyDateFormat }: PickupCardProps) {
       <button
         type="button"
         onClick={onTap}
-        className="flex w-full items-center gap-3 rounded-xl border border-border/60 bg-card px-3 py-3 text-left active:bg-muted"
+        disabled={isBroken}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left",
+          isBroken
+            ? "border-amber-500/40 bg-amber-500/5 cursor-not-allowed"
+            : "border-border/60 bg-card active:bg-muted",
+        )}
       >
         <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                badge.className,
-              )}
-            >
-              {badge.label}
-            </span>
-            {startedByMe && pickup_started_by && (
+            {isBroken ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="size-2.5" />
+                Planner is fixing
+              </span>
+            ) : (
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                  badge.className,
+                )}
+              >
+                {badge.label}
+              </span>
+            )}
+            {startedByMe && pickup_started_by && !isBroken && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
                 <UserCircle2 className="size-2.5" />
                 {pickup_started_by.name}
@@ -227,16 +243,24 @@ function PickupCard({ entry, onTap, companyDateFormat }: PickupCardProps) {
                 Pick by {formatCompanyDate(pickup_by, companyDateFormat)}
               </span>
             )}
-            {mo.start_at && (
+            {mo.start_at && !isBroken && (
               <span className="inline-flex items-center gap-1">
                 <Truck className="size-3" />
                 MO starts {formatCompanyDate(mo.start_at, companyDateFormat)}
               </span>
             )}
           </div>
+          {isBroken && (
+            <p className="text-[11px] text-amber-800 dark:text-amber-300">
+              {brokenCount} booked {brokenCount === 1 ? "lot is" : "lots are"}{" "}
+              broken — the planner is reviewing. Picking is paused.
+            </p>
+          )}
         </div>
 
-        <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+        {!isBroken && (
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+        )}
       </button>
     </li>
   );

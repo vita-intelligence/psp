@@ -64,6 +64,7 @@ import {
   type POHeaderInput,
   type POLineInput,
 } from "@/lib/purchase-orders/actions";
+import type { ShortageRow } from "@/lib/procurement-shortages/server";
 
 /** Vendor option — carries the picker label + the metadata the form
  *  derives off (currency_code, lead time) so we don't need a second
@@ -154,8 +155,21 @@ interface PendingFile {
  *   - Tax rate defaults from vendor.tax_rate; user override allowed but
  *     starts read-only.
  */
-export function NewPOForm() {
+interface NewPOFormProps {
+  /** Deep-link prefill from the shortages page. The page reads the
+   *  search params server-side and passes them through so the form
+   *  can hydrate the prefill on first render without a Suspense
+   *  dance around `useSearchParams`. */
+  prefillItemUuid?: string | null;
+  prefillQty?: string | null;
+}
+
+export function NewPOForm({
+  prefillItemUuid = null,
+  prefillQty = null,
+}: NewPOFormProps = {}) {
   const router = useRouter();
+  const prefillAppliedRef = useRef(false);
   const resource = "purchase-order:new";
   useFormPresenceBeacon(resource);
 
@@ -405,6 +419,114 @@ export function NewPOForm() {
     setField("lines", [...state.lines, next]);
   }
 
+  /** Add a line pre-filled with an item + qty. Used by:
+   *   * Deep-link prefill (`?item_uuid=…&qty=…` from the shortages page)
+   *   * "Add" quick-action on the shortage suggestions panel */
+  function addLineWithItem(item: ItemOption, qtyOrdered: string) {
+    const tempId = crypto.randomUUID();
+    const next: POLineDraft = {
+      tempId,
+      item_id: String(item.id),
+      qty_ordered: qtyOrdered,
+      unit_price: "",
+      vendor_part_no: "",
+      warehouse_id: state.default_warehouse_id,
+      expected_delivery_date: "",
+      notes: "",
+    };
+    setField("lines", [...state.lines, next]);
+    setPickedItems((prev) => ({ ...prev, [tempId]: item }));
+  }
+
+  // ── Deep-link prefill (from the shortages page) ─────────────────
+  // Reads `?item_uuid=…&qty=…` once on mount. Fetches the item by
+  // uuid to populate the picker label, then drops a pre-filled line
+  // into state.
+  //
+  // The ref flips only AFTER the line is committed so React
+  // StrictMode's double-mount in dev can't lose the prefill (cleanup
+  // would abort the first fetch, second mount re-enters and the ref
+  // is still false → fetch retries; once a line lands the ref locks).
+  useEffect(() => {
+    if (!prefillItemUuid) return;
+    if (prefillAppliedRef.current) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    fetch(`/api/items/${encodeURIComponent(prefillItemUuid)}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(
+        (body: {
+          item?: {
+            id: number;
+            uuid: string;
+            name: string;
+            code?: string | null;
+            external_sku?: string | null;
+          };
+        } | null) => {
+          if (cancelled) return;
+          if (!body?.item) return;
+          if (prefillAppliedRef.current) return;
+          prefillAppliedRef.current = true;
+          addLineWithItem(itemRowToOption(body.item), prefillQty ?? "");
+        },
+      )
+      .catch(() => {
+        /* aborted or transient — second mount will retry */
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillItemUuid]);
+
+  // ── Shortage suggestions panel ──────────────────────────────────
+  // One fetch on mount of the procurement-side shortages list.
+  // Cached locally; refresh button on the panel re-runs the fetch.
+  const [shortages, setShortages] = useState<ShortageRow[] | null>(null);
+  const [shortagesLoading, setShortagesLoading] = useState(true);
+
+  const loadShortages = useCallback(async () => {
+    setShortagesLoading(true);
+    try {
+      const res = await fetch(
+        "/api/procurement/shortages?limit=200&sort=shortage_qty:desc",
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        setShortages([]);
+        return;
+      }
+      const body = (await res.json()) as { items?: ShortageRow[] };
+      setShortages(body.items ?? []);
+    } catch {
+      setShortages([]);
+    } finally {
+      setShortagesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadShortages();
+  }, [loadShortages]);
+
+  // Item ids already on the form's lines — used to gray out the
+  // "Add" button in the suggestions panel for items already added.
+  const itemIdsOnLines = useMemo(() => {
+    const set = new Set<number>();
+    for (const l of state.lines) {
+      if (l.item_id) set.add(Number(l.item_id));
+    }
+    return set;
+  }, [state.lines]);
+
   function patchLine(tempId: string, patch: Partial<POLineDraft>) {
     setField(
       "lines",
@@ -474,6 +596,11 @@ export function NewPOForm() {
   }
 
   // ── Validation ──────────────────────────────────────────────────────
+  // A line needs an item, a positive qty, a positive price, AND a
+  // destination warehouse — the warehouse is what the Goods-In
+  // Inspection lands the lot on at sign-off, so missing it means the
+  // PO can't actually be received. Mirrors the BE
+  // `PurchaseOrderLine.changeset` validate_required.
   const lineValidity = useMemo(() => {
     return state.lines.map((line) => {
       const issues: string[] = [];
@@ -482,13 +609,21 @@ export function NewPOForm() {
         issues.push("qty");
       if (!line.unit_price || parseFloat(line.unit_price) <= 0)
         issues.push("price");
+      // Effective warehouse — the per-line override OR the PO's
+      // default. The BE applies the same fallback in
+      // `Purchasing.insert_lines_for`, so the FE validates against
+      // the resolved value to keep the gate honest.
+      const effectiveWarehouse =
+        line.warehouse_id || state.default_warehouse_id;
+      if (!effectiveWarehouse) issues.push("warehouse");
       return { tempId: line.tempId, issues };
     });
-  }, [state.lines]);
+  }, [state.lines, state.default_warehouse_id]);
 
   const canSaveDraft = Boolean(state.vendorId);
   const canSubmit =
     canSaveDraft &&
+    Boolean(state.default_warehouse_id) &&
     state.lines.length > 0 &&
     lineValidity.every((v) => v.issues.length === 0);
 
@@ -902,6 +1037,28 @@ export function NewPOForm() {
         </CardContent>
       </Card>
 
+      {/* SECTION 2b: suggested shortages — quick-add items still
+          short across open MOs so procurement can build a multi-line
+          PO without bouncing back to the shortages page. */}
+      <ShortageSuggestions
+        rows={shortages ?? []}
+        loading={shortagesLoading}
+        itemIdsOnLines={itemIdsOnLines}
+        onAdd={(row) =>
+          addLineWithItem(
+            {
+              id: row.item?.id ?? 0,
+              uuid: row.item?.uuid ?? "",
+              label: row.item?.name ?? "Item",
+              code: null,
+              externalSku: null,
+            },
+            row.shortage_qty,
+          )
+        }
+        onRefresh={() => void loadShortages()}
+      />
+
       {/* SECTION 3: lines editor */}
       <Card className="border-border/60">
         <CardHeader>
@@ -1261,7 +1418,7 @@ function ActionBar({
           disabled={!isCreator || !canSubmit || pending}
           title={
             !canSubmit
-              ? "Pick a vendor and at least one valid line first."
+              ? "Pick a vendor, a delivery warehouse, and at least one valid line (with item + qty + price + destination warehouse) first."
               : undefined
           }
         >
@@ -1475,4 +1632,137 @@ function itemRowToOption(i: {
     code: i.code ?? i.external_sku ?? null,
     externalSku: i.external_sku ?? null,
   };
+}
+
+/**
+ * Quick-add panel for items still short across open MOs. Sits above
+ * the lines editor on the New PO page so procurement can build a
+ * multi-line order without bouncing back to /procurement/shortages.
+ *
+ * One row per shortage; "Add" button drops a pre-filled line into the
+ * form (item + shortage qty). Items already on the form's lines show
+ * a "On PO" badge instead of the Add button so the same row can't be
+ * added twice.
+ */
+function ShortageSuggestions({
+  rows,
+  loading,
+  itemIdsOnLines,
+  onAdd,
+  onRefresh,
+}: {
+  rows: ShortageRow[];
+  loading: boolean;
+  itemIdsOnLines: Set<number>;
+  onAdd: (row: ShortageRow) => void;
+  onRefresh: () => void;
+}) {
+  const visible = rows.slice(0, 12);
+  const hidden = Math.max(rows.length - visible.length, 0);
+
+  return (
+    <Card className="border-border/60">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="size-4 text-amber-600" />
+              Shortages — suggested items
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Items still short across open MOs after subtracting
+              bookings and qty on other open POs. Click <b>Add</b> to
+              drop a pre-filled line into this PO.
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onRefresh}
+            disabled={loading}
+            className="h-8 text-[11px]"
+          >
+            {loading ? "Loading…" : "Refresh"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading && rows.length === 0 ? (
+          <p className="rounded-md border border-dashed border-border/60 px-4 py-4 text-center text-xs text-muted-foreground">
+            Loading shortages…
+          </p>
+        ) : rows.length === 0 ? (
+          <p className="rounded-md border border-dashed border-border/60 px-4 py-4 text-center text-xs text-muted-foreground">
+            Nothing short right now. Every open MO has its booked or
+            on-order qty covered.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border/40 rounded-md border border-border/60">
+            {visible.map((row) => {
+              const onPO = row.item ? itemIdsOnLines.has(row.item.id) : false;
+              const uom = row.item?.stock_uom?.symbol ?? "";
+              return (
+                <li
+                  key={row.item?.id ?? row.item?.uuid ?? row.shortage_qty}
+                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <p className="truncate text-sm font-medium">
+                      {row.item?.name ?? "Unknown item"}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Short by{" "}
+                      <span className="font-mono font-semibold text-red-700 dark:text-red-300">
+                        {row.shortage_qty} {uom}
+                      </span>
+                      {Number(row.expecting_qty) > 0 && (
+                        <span className="ml-2">
+                          ·{" "}
+                          <span className="text-sky-700 dark:text-sky-300">
+                            {row.expecting_qty} {uom} on open PO
+                          </span>
+                        </span>
+                      )}
+                      {row.dependent_mos.length > 0 && (
+                        <span className="ml-2">
+                          · {row.dependent_mos.length} MO
+                          {row.dependent_mos.length === 1 ? "" : "s"} waiting
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  {onPO ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                      On this PO
+                    </span>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      onClick={() => onAdd(row)}
+                      disabled={!row.item}
+                    >
+                      <Plus className="mr-1 size-3" />
+                      Add
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+            {hidden > 0 && (
+              <li className="px-3 py-2 text-center text-[11px] text-muted-foreground">
+                +{hidden} more on{" "}
+                <a href="/procurement/shortages" className="underline">
+                  the full shortages list
+                </a>
+              </li>
+            )}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
 }

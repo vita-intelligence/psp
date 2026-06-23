@@ -1122,9 +1122,15 @@ export async function releaseManufacturingOrderToWarehouseAction(
  * Planner action — pull an MO back from the warehouse picker queue.
  * BE refuses if pickup is already in progress (picker has to abort
  * first or finish).
+ *
+ * When `replanReason` is passed, the MO is also stamped with
+ * `needs_replan = true` + the reason — this is the "Pull back to fix"
+ * path that surfaces a banner + blocks re-release until the planner
+ * explicitly clears the flag via `clearReplanAction`.
  */
 export async function unreleaseManufacturingOrderFromWarehouseAction(
   uuid: string,
+  replanReason?: string,
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
@@ -1133,9 +1139,13 @@ export async function unreleaseManufacturingOrderFromWarehouseAction(
       ...unauthorizedResult("unreleaseManufacturingOrderFromWarehouseAction"),
     };
   try {
+    const body =
+      typeof replanReason === "string" && replanReason.trim().length > 0
+        ? JSON.stringify({ needs_replan: true, reason: replanReason.trim() })
+        : undefined;
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/release-to-warehouse`,
-      { method: "DELETE", token },
+      { method: "DELETE", token, body },
     );
     revalidatePath("/production/schedule");
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
@@ -1146,6 +1156,35 @@ export async function unreleaseManufacturingOrderFromWarehouseAction(
       ...toErrorResult(err, {
         source: "unreleaseManufacturingOrderFromWarehouseAction",
         fallbackDetail: "Couldn't unrelease this MO.",
+      }),
+    };
+  }
+}
+
+/**
+ * Planner action — clear the `needs_replan` flag once they've fixed
+ * the bookings. BE refuses if the BOM lines still aren't fully booked.
+ */
+export async function clearReplanAction(
+  uuid: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("clearReplanAction") };
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/clear-replan`,
+      { method: "POST", token },
+    );
+    revalidatePath("/production/schedule");
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "clearReplanAction",
+        fallbackDetail: "Couldn't clear the replan flag.",
       }),
     };
   }

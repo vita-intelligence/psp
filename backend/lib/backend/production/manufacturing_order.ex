@@ -58,6 +58,21 @@ defmodule Backend.Production.ManufacturingOrder do
     field :rejection_reason, :string
     field :notes, :string
 
+    # Replan regression — set when an MO that's already past
+    # `approved` is bounced back because something broke its plan
+    # (Output QC fail, peer MO over-consumed a booked lot, lot
+    # rejected after release). When true, the MO renders as "Needs
+    # replan" and `release_mo_to_warehouse` refuses until the
+    # planner re-confirms the bookings via `clear_replan/2`.
+    field :needs_replan, :boolean, default: false
+    field :needs_replan_reason, :string
+    field :needs_replan_at, :utc_datetime
+
+    # Procurement request gate. While set, the MO is in "Purchasing"
+    # mode — existing bookings are locked and the shortages page
+    # surfaces this MO's unbooked items to procurement.
+    field :purchasing_requested_at, :utc_datetime
+
     # Warehouse pickup workflow. The planner releases a scheduled MO
     # to the warehouse; the picker walks the bookings, scans each lot
     # at its cell, then transfers the load to a production_feed cell.
@@ -83,6 +98,22 @@ defmodule Backend.Production.ManufacturingOrder do
     # dialog before clicking Release. Not persisted.
     field :qc_pending_count, :integer, virtual: true, default: 0
 
+    # Virtual — count of bookings whose lot can no longer satisfy
+    # them: lot status fell out of `available` (QC rejected /
+    # quarantine / hold) OR lot is over-allocated (sum of bookings
+    # exceeds the on-hand qty, e.g. a peer MO consumed more than
+    # expected). Populated by Production.list_schedule_operations +
+    # mo_broken_bookings_payload. Drives the "Bookings need attention"
+    # banner + picker-queue warning. Not persisted.
+    field :broken_bookings_count, :integer, virtual: true, default: 0
+
+    # Virtual — count of BOM lines that aren't fully covered by
+    # bookings (sum of `requested` bookings < required qty). Catches
+    # under-booked MOs that slipped through before the release-time
+    # `ensure_all_lines_fully_booked` gate existed. Drives the same
+    # calendar warning chip as broken_bookings_count.
+    field :under_booked_count, :integer, virtual: true, default: 0
+
     belongs_to :company, Company
     belongs_to :warehouse, Warehouse
     belongs_to :item, Item
@@ -94,6 +125,7 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :released_to_warehouse_by, User
     belongs_to :pickup_started_by, User
     belongs_to :pickup_completed_by, User
+    belongs_to :purchasing_requested_by, User
     belongs_to :production_cell, Backend.Warehouses.StorageCell
     belongs_to :produced_lot, Backend.Stock.Lot
     belongs_to :created_by, User
@@ -194,10 +226,16 @@ defmodule Backend.Production.ManufacturingOrder do
       :prepared_at,
       :prepared_by_id,
       :rejection_reason,
+      :needs_replan,
+      :needs_replan_reason,
+      :needs_replan_at,
+      :purchasing_requested_at,
+      :purchasing_requested_by_id,
       :updated_by_id
     ])
     |> validate_inclusion(:status, @statuses)
     |> validate_length(:rejection_reason, max: 2_000)
+    |> validate_length(:needs_replan_reason, max: 2_000)
     |> check_constraint(:status,
       name: :manufacturing_orders_status_known,
       message: "must be a known status"

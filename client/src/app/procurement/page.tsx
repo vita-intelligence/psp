@@ -49,12 +49,11 @@ const SECTIONS: ProcSection[] = [
     Icon: Receipt,
   },
   {
-    href: "/procurement/requirements",
-    label: "Requirements",
+    href: "/procurement/shortages",
+    label: "Shortages",
     description:
-      "What needs ordering next, derived from reorder points and forecast demand.",
+      "What needs ordering next — raw-material and packaging items still short across open MOs after subtracting bookings and qty on open POs.",
     Icon: FileText,
-    comingSoon: true,
   },
   {
     href: "/procurement/inspections",

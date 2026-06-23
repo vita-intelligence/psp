@@ -11,11 +11,25 @@ import { NewPOForm } from "./new-po-form";
 
 export const metadata = { title: "New PO · Procurement · PSP" };
 
-export default async function NewPOPage() {
+interface SearchParams {
+  item_uuid?: string;
+  qty?: string;
+}
+
+export default async function NewPOPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
   const user = await requireUser();
   if (!hasPermission(user, "procurement.po_create")) {
     redirect("/procurement/purchase-orders");
   }
+
+  // Deep-link prefill from the shortages page — read on the server
+  // so the form mounts with the prefill in its initial state, no
+  // post-mount fetch + insert dance required.
+  const { item_uuid, qty } = await searchParams;
 
   // Eager vendor + item + warehouse fetches dropped — the form's
   // pickers hit /api/vendors?search&limit=50 etc. on demand, so the
@@ -57,7 +71,10 @@ export default async function NewPOPage() {
             </p>
           </header>
 
-          <NewPOForm />
+          <NewPOForm
+            prefillItemUuid={item_uuid ?? null}
+            prefillQty={qty ?? null}
+          />
         </div>
       </main>
     </div>

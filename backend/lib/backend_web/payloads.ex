@@ -932,6 +932,19 @@ defmodule BackendWeb.Payloads do
       # pickup_completed_at == nil, handed-off = pickup_completed_at != nil.
       released_to_warehouse_at: mo.released_to_warehouse_at,
       released_to_warehouse_by: actor(mo, :released_to_warehouse_by),
+      # Replan flag — when set, this MO bounced back from
+      # scheduled/in-progress because something broke the plan
+      # (Output QC fail, peer over-consumed, lot rejected). UI shows
+      # a "Needs replan" badge + banner; release is blocked until
+      # the planner calls /clear-replan after fixing the bookings.
+      needs_replan: mo.needs_replan,
+      needs_replan_reason: mo.needs_replan_reason,
+      needs_replan_at: mo.needs_replan_at,
+      # Procurement request flag — when set, this MO has been sent
+      # to procurement for missing items. Bookings are locked until
+      # the planner prepares the MO or cancels the request.
+      purchasing_requested_at: mo.purchasing_requested_at,
+      purchasing_requested_by: actor(mo, :purchasing_requested_by),
       pickup_window_hours: mo.pickup_window_hours,
       pickup_started_at: mo.pickup_started_at,
       pickup_started_by: actor(mo, :pickup_started_by),
@@ -951,6 +964,20 @@ defmodule BackendWeb.Payloads do
       cost_per_unit: mo_cost_per_unit(materials_cost, mo.quantity),
       parts: parts,
       operations: operations,
+      # Broken-booking detection. Empty list = clean. Non-empty =
+      # planner needs to either pass QC on the affected lot OR pull
+      # the MO back to `approved` and re-book / spawn a child MO.
+      # The list shape mirrors what `Production.list_broken_bookings_for/1`
+      # returns so the FE can render the table row-by-row without a
+      # second fetch.
+      broken_bookings: mo_broken_bookings_payload(mo),
+      # Counts so the detail page can drive the same red chips +
+      # release gating as the schedule view, without a separate
+      # fetch. Computed live; cheap.
+      broken_bookings_count:
+        Backend.Production.broken_booking_counts_for([mo.id]) |> Map.get(mo.id, 0),
+      under_booked_count:
+        Backend.Production.under_booked_line_counts_for([mo.id]) |> Map.get(mo.id, 0),
       created_by: actor(mo, :created_by),
       updated_by: actor(mo, :updated_by),
       inserted_at: mo.inserted_at,
@@ -959,6 +986,23 @@ defmodule BackendWeb.Payloads do
   end
 
   def manufacturing_order(_), do: nil
+
+  defp mo_broken_bookings_payload(%Backend.Production.ManufacturingOrder{id: id}) do
+    Backend.Production.list_broken_bookings_for([id])
+    |> Enum.map(fn r ->
+      %{
+        booking_uuid: r.booking_uuid,
+        item_id: r.item_id,
+        item_name: r.item_name,
+        lot_uuid: r.lot_uuid,
+        lot_status: r.lot_status,
+        booked_qty: r.booked_qty,
+        on_hand_qty: r.on_hand_qty,
+        total_booked_qty: r.total_booked_qty,
+        reason: Atom.to_string(r.reason)
+      }
+    end)
+  end
 
   @doc "Slim MO for the ledger."
   def manufacturing_order_summary(%Backend.Production.ManufacturingOrder{} = mo) do
@@ -982,6 +1026,15 @@ defmodule BackendWeb.Payloads do
       prepared_at: mo.prepared_at,
       approved_by: actor(mo, :approved_by),
       approved_at: mo.approved_at,
+      # Surfaced on the summary so list pages (pickup queue, schedule)
+      # can render a warning chip without fetching the full MO. The
+      # MO must be stamped with this virtual field upstream
+      # (Production.list_pickup_queue / list_schedule_operations do
+      # this); raw MOs without a stamp report 0.
+      broken_bookings_count: Map.get(mo, :broken_bookings_count) || 0,
+      under_booked_count: Map.get(mo, :under_booked_count) || 0,
+      needs_replan: mo.needs_replan,
+      needs_replan_reason: mo.needs_replan_reason,
       created_by: actor(mo, :created_by),
       updated_by: actor(mo, :updated_by),
       inserted_at: mo.inserted_at,
@@ -1186,6 +1239,15 @@ defmodule BackendWeb.Payloads do
     part_ids = lines |> Enum.map(& &1.part_id) |> Enum.reject(&is_nil/1)
     costs = Backend.Production.average_unit_costs(company_id, part_ids)
 
+    # Items with at least one open PO line — used to surface
+    # "Expecting" instead of "Not booked" on shortage rows. An open PO
+    # line is one whose parent PO is sent to the supplier
+    # (`ordered`) or has only partially landed (`partially_received`)
+    # AND still has un-received qty. This lets the operator see at a
+    # glance "no PO yet" vs "PO out, waiting on supplier."
+    items_with_open_po =
+      items_with_open_purchase_orders(company_id, part_ids)
+
     {parts, total} =
       Enum.reduce(lines, {[], Decimal.new("0")}, fn line, {acc_parts, acc_total} ->
         unit_cost = Map.get(costs, line.part_id)
@@ -1205,9 +1267,21 @@ defmodule BackendWeb.Payloads do
             true -> Decimal.mult(required_qty, unit_cost)
           end
 
+        # Once an MO is `completed`, requested+consumed bookings stop
+        # signalling "shortage" — the run is over, what was actually
+        # used is the truth. Include consumed-status bookings in the
+        # rollup so the row reads as fully satisfied even after the
+        # closeout stamped them.
         line_bookings =
-          Map.get(bookings_by_item, line.part_id, [])
-          |> Enum.filter(&(&1.status == "requested"))
+          case mo.status do
+            "completed" ->
+              Map.get(bookings_by_item, line.part_id, [])
+              |> Enum.filter(&(&1.status in ["requested", "consumed"]))
+
+            _ ->
+              Map.get(bookings_by_item, line.part_id, [])
+              |> Enum.filter(&(&1.status == "requested"))
+          end
 
         booked_sum =
           Enum.reduce(line_bookings, Decimal.new(0), fn b, acc ->
@@ -1231,15 +1305,31 @@ defmodule BackendWeb.Payloads do
 
         coverage = Decimal.add(booked_sum, pending_sum)
 
-        coverage_status =
-          coverage_state_for(required_qty, booked_sum, pending_sum, coverage)
+        has_open_po = MapSet.member?(items_with_open_po, line.part_id)
 
+        coverage_status =
+          coverage_state_for(
+            mo.status,
+            required_qty,
+            booked_sum,
+            consumed_sum,
+            pending_sum,
+            coverage,
+            has_open_po
+          )
+
+        # On completed MOs there's no shortage concept — the run is
+        # over and nothing else can be procured for it. Surface nil
+        # so the red "Not booked" sub-row stops rendering.
         unbooked_qty =
-          case required_qty do
-            nil ->
+          cond do
+            mo.status == "completed" ->
               nil
 
-            %Decimal{} ->
+            is_nil(required_qty) ->
+              nil
+
+            true ->
               gap = Decimal.sub(required_qty, coverage)
               if Decimal.compare(gap, Decimal.new("0")) == :gt, do: gap, else: nil
           end
@@ -1288,9 +1378,36 @@ defmodule BackendWeb.Payloads do
 
   # Derive the master-row badge state from booked + sub-MO pending vs
   # required. `nil` required (no qty on the line) leaves it `unknown`.
-  defp coverage_state_for(nil, _booked, _pending, _coverage), do: "unknown"
+  # For completed MOs the badge tells the post-run truth: how much
+  # was actually consumed, not what was booked at scheduling time.
+  defp coverage_state_for(_status, nil, _booked, _consumed, _pending, _coverage, _has_open_po),
+    do: "unknown"
 
-  defp coverage_state_for(%Decimal{} = required, booked, pending, coverage) do
+  defp coverage_state_for(
+         "completed",
+         %Decimal{} = required,
+         _booked,
+         consumed,
+         _pending,
+         _coverage,
+         _has_open_po
+       ) do
+    cond do
+      Decimal.compare(consumed, required) in [:eq, :gt] -> "consumed"
+      Decimal.compare(consumed, Decimal.new("0")) == :gt -> "consumed_short"
+      true -> "consumed_none"
+    end
+  end
+
+  defp coverage_state_for(
+         _status,
+         %Decimal{} = required,
+         booked,
+         _consumed,
+         pending,
+         coverage,
+         has_open_po
+       ) do
     cond do
       Decimal.compare(coverage, required) in [:eq, :gt] ->
         # Fully covered. Pick the dominant source so the badge tells
@@ -1307,9 +1424,40 @@ defmodule BackendWeb.Payloads do
       Decimal.compare(coverage, Decimal.new("0")) == :gt ->
         "partial"
 
+      has_open_po ->
+        # No booking yet but a PO is out — operator should wait for
+        # the delivery + Goods-In Inspection rather than chasing
+        # procurement again.
+        "expecting"
+
       true ->
         "not_booked"
     end
+  end
+
+  # Items with at least one open PO line that still has un-received
+  # qty. PO status filter narrows to lines that are physically out at
+  # the supplier (`ordered`) or partially landed
+  # (`partially_received`). `qty_received < qty_ordered` ensures
+  # fully-landed lines don't count.
+  defp items_with_open_purchase_orders(_company_id, []), do: MapSet.new()
+
+  defp items_with_open_purchase_orders(company_id, item_ids) do
+    import Ecto.Query
+
+    from(l in Backend.Purchasing.PurchaseOrderLine,
+      join: po in Backend.Purchasing.PurchaseOrder,
+      on: po.id == l.purchase_order_id,
+      where:
+        l.company_id == ^company_id and
+          l.item_id in ^item_ids and
+          po.status in ["ordered", "partially_received"] and
+          l.qty_received < l.qty_ordered,
+      select: l.item_id,
+      distinct: true
+    )
+    |> Backend.Repo.all()
+    |> MapSet.new()
   end
 
   defp mo_pending_sub_mo_row(%Backend.Production.ManufacturingOrder{} = child) do
@@ -1339,6 +1487,13 @@ defmodule BackendWeb.Payloads do
       item: maybe_item_summary(b.item),
       stock_lot_id: b.stock_lot_id,
       stock_lot: mo_booking_lot_summary(b.stock_lot),
+      # Placeholder booking link — set when the booking reserves qty
+      # against an open PO line instead of a real lot. Mutually
+      # exclusive with stock_lot_id. The FE labels these rows
+      # "Expecting from POxxxxx" so the planner knows the lot is in
+      # flight (not yet on the shelf).
+      purchase_order_line_id: b.purchase_order_line_id,
+      purchase_order_line: mo_booking_po_line_summary(b.purchase_order_line),
       storage_cell_id: b.storage_cell_id,
       storage_location: mo_booking_cell_summary(b.storage_cell),
       manufacturing_order_id: b.manufacturing_order_id,
@@ -1878,6 +2033,38 @@ defmodule BackendWeb.Payloads do
 
   defp mo_booking_lot_summary(_), do: nil
 
+  # Summary for a placeholder booking — links it back to the PO line
+  # it reserves against. Surfaces the parent PO code so the FE can
+  # render "Expecting from PO00xxx" without an extra fetch.
+  defp mo_booking_po_line_summary(%Backend.Purchasing.PurchaseOrderLine{} = line) do
+    %{
+      id: line.id,
+      uuid: line.uuid,
+      qty_ordered: decimal_to_string(line.qty_ordered),
+      qty_received: decimal_to_string(line.qty_received),
+      expected_delivery_date: line.expected_delivery_date,
+      purchase_order:
+        case Map.get(line, :purchase_order) do
+          %Ecto.Association.NotLoaded{} ->
+            nil
+
+          %Backend.Purchasing.PurchaseOrder{} = po ->
+            %{
+              id: po.id,
+              uuid: po.uuid,
+              code: render_entity_code(po, "purchase_order"),
+              status: po.status,
+              expected_delivery_date: po.expected_delivery_date
+            }
+
+          _ ->
+            nil
+        end
+    }
+  end
+
+  defp mo_booking_po_line_summary(_), do: nil
+
   defp mo_booking_cell_summary(%Backend.Warehouses.StorageCell{} = c) do
     base = %{
       id: c.id,
@@ -1908,11 +2095,15 @@ defmodule BackendWeb.Payloads do
         warehouse =
           floor && Ecto.assoc_loaded?(floor.warehouse) && floor.warehouse
 
+        # Use the rendered code (e.g. SL00022) when no manual code
+        # was set on the location row. The FE leads with this in the
+        # Storage column so the operator sees the rack identifier the
+        # QR label carries, not just "Level 0".
         Map.put(base, :storage_location, %{
           id: loc.id,
           uuid: loc.uuid,
           name: loc.name,
-          code: loc.code,
+          code: loc.code || render_code(loc, "storage_location"),
           floor:
             floor &&
               %{
@@ -2168,7 +2359,16 @@ defmodule BackendWeb.Payloads do
       # Pre-release QC status: how many booked raw_material / packaging
       # lots are still in quarantine (not yet "available"). Populated by
       # Production.list_schedule_operations in one grouped query.
-      qc_pending_count: mo.qc_pending_count || 0
+      qc_pending_count: mo.qc_pending_count || 0,
+      # Bookings that can no longer satisfy this MO — either lot
+      # fell out of `available` (QC rejected / quarantine / hold) or
+      # the lot is over-allocated across MOs (peer ate more than
+      # expected). Drives the "Bookings need attention" banner +
+      # picker queue warning.
+      broken_bookings_count: Map.get(mo, :broken_bookings_count) || 0,
+      under_booked_count: Map.get(mo, :under_booked_count) || 0,
+      needs_replan: mo.needs_replan,
+      needs_replan_reason: mo.needs_replan_reason
     }
   end
 

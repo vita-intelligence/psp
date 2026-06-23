@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  clearReplanAction,
   releaseManufacturingOrderToWarehouseAction,
   unreleaseManufacturingOrderFromWarehouseAction,
 } from "@/lib/production/actions";
@@ -79,6 +80,16 @@ export function ScheduleReleaseSection({
   const state = projectState(mo);
   const qcPending = mo.qc_pending_count ?? 0;
   const qcBlocked = state === "not_released" && qcPending > 0;
+  const brokenCount = mo.broken_bookings_count ?? 0;
+  const underBookedCount = mo.under_booked_count ?? 0;
+  const issuesCount = brokenCount + underBookedCount;
+  const needsReplan = mo.needs_replan ?? false;
+  // After release, bookings can go bad — peer MO consumed more than
+  // expected (over-allocation) or QC flipped a previously-available
+  // lot. The banner stays visible until the planner pulls the MO back
+  // and re-books.
+  const brokenAfterRelease =
+    issuesCount > 0 && (state === "released" || state === "picking_in_progress");
 
   function handleRelease() {
     if (!canRelease || !isCreator) return;
@@ -102,12 +113,19 @@ export function ScheduleReleaseSection({
     });
   }
 
-  function handleUnrelease() {
+  function handleUnrelease(replanReason?: string) {
     if (!canRelease || !isCreator) return;
     startTransition(async () => {
-      const res = await unreleaseManufacturingOrderFromWarehouseAction(mo.uuid);
+      const res = await unreleaseManufacturingOrderFromWarehouseAction(
+        mo.uuid,
+        replanReason,
+      );
       if (res.ok) {
-        toast.success("Pulled back from warehouse");
+        toast.success(
+          replanReason
+            ? "Pulled back — bookings need rework"
+            : "Pulled back from warehouse",
+        );
         onChanged();
       } else if (res.code === "pickup_in_progress") {
         toast.error("Picker is on the floor", {
@@ -116,6 +134,23 @@ export function ScheduleReleaseSection({
         });
       } else {
         toast.error(res.detail ?? "Couldn't unrelease this MO.");
+      }
+    });
+  }
+
+  function handleClearReplan() {
+    if (!canRelease || !isCreator) return;
+    startTransition(async () => {
+      const res = await clearReplanAction(mo.uuid);
+      if (res.ok) {
+        toast.success("Replan cleared — MO is releasable again");
+        onChanged();
+      } else if (res.code === "lines_under_booked") {
+        toast.error("BOM still under-booked", {
+          description: res.detail,
+        });
+      } else {
+        toast.error(res.detail ?? "Couldn't clear replan.");
       }
     });
   }
@@ -138,25 +173,84 @@ export function ScheduleReleaseSection({
                 {qcPending} QC pending
               </span>
             )}
+            {brokenCount > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="size-2.5" />
+                {brokenCount} broken
+              </span>
+            )}
+            {needsReplan && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
+                <AlertTriangle className="size-2.5" />
+                Needs replan
+              </span>
+            )}
           </div>
-          {state === "not_released" && qcPending === 0 && (
+          {needsReplan && (
+            <div className="mt-1 flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs text-red-900 dark:text-red-200">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="font-medium">Replan required</p>
+                <p className="text-[11px] opacity-80">
+                  {mo.needs_replan_reason ??
+                    "Something broke this MO's plan — review bookings, then click Mark replanned."}
+                </p>
+                {canRelease && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-1 h-7 text-[11px]"
+                    disabled={!isCreator || pending}
+                    onClick={handleClearReplan}
+                  >
+                    {pending && (
+                      <Loader2 className="mr-1.5 size-3 animate-spin" />
+                    )}
+                    <CheckCircle2 className="mr-1.5 size-3" />
+                    Mark replanned
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          {state === "not_released" && qcPending === 0 && issuesCount === 0 && (
             <p className="text-xs text-muted-foreground">
               Release this MO to the warehouse picker queue. Pickers will see
               it from the start of the visibility window onward.
             </p>
+          )}
+          {state === "not_released" && issuesCount > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs text-red-900 dark:text-red-200">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <div className="space-y-0.5">
+                <p className="font-medium">
+                  {issuesCount} booking{issuesCount === 1 ? "" : "s"} or BOM
+                  line{issuesCount === 1 ? "" : "s"} short / broken
+                </p>
+                <p className="text-[11px] opacity-80">
+                  Open the MO and fix the shortages first — either book more
+                  lots, spawn a child MO for the missing semi-finished, or
+                  wait for QC on the affected lot. Release is gated until
+                  every line is fully covered.
+                </p>
+              </div>
+            </div>
           )}
           {state === "not_released" && qcPending > 0 && (
             <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
               <div className="space-y-0.5">
                 <p className="font-medium">
-                  {qcPending} booked {qcPending === 1 ? "lot" : "lots"} awaiting
-                  QC
+                  {qcPending} booked {qcPending === 1 ? "lot" : "lots"} not yet
+                  available
                 </p>
                 <p className="text-[11px] opacity-80">
-                  Run Goods-In Inspection at <code>/m/inspections</code> to
-                  clear them. Release stays gated until every booked lot is
-                  available.
+                  Each booked lot has to be in status <code>available</code>{" "}
+                  before release. PO-receipt lots clear via Goods-In Inspection
+                  at <code>/m/inspections</code>; manually-received or
+                  opening-balance lots clear by opening the lot and recording a
+                  Pass-QC event.
                 </p>
               </div>
             </div>
@@ -167,6 +261,22 @@ export function ScheduleReleaseSection({
               {formatCompanyDate(mo.released_to_warehouse_at, companyDateFormat)}{" "}
               · {mo.pickup_window_hours ?? defaultWindowHours}h window
             </p>
+          )}
+          {brokenAfterRelease && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <div className="space-y-0.5">
+                <p className="font-medium">
+                  {brokenCount} booked {brokenCount === 1 ? "lot" : "lots"} need
+                  attention
+                </p>
+                <p className="text-[11px] opacity-80">
+                  A booked lot was rejected, sent back to quarantine, or
+                  over-consumed by another MO. Pull this MO back to{" "}
+                  <code>approved</code> to re-book or spawn a child MO.
+                </p>
+              </div>
+            </div>
           )}
           {state === "picking_in_progress" && mo.pickup_started_at && (
             <p className="text-xs text-muted-foreground">
@@ -187,14 +297,24 @@ export function ScheduleReleaseSection({
           <Button
             type="button"
             size="sm"
-            disabled={!isCreator || pending || qcBlocked}
+            disabled={
+              !isCreator ||
+              pending ||
+              qcBlocked ||
+              needsReplan ||
+              issuesCount > 0
+            }
             onClick={() => setShowConfirm(true)}
             title={
-              qcBlocked
-                ? `${qcPending} booked lot${qcPending === 1 ? "" : "s"} still in QC — clear before releasing.`
-                : !isCreator
-                  ? "Only the head of this edit room can release."
-                  : undefined
+              issuesCount > 0
+                ? `${issuesCount} booking${issuesCount === 1 ? " or BOM line is" : "s or BOM lines are"} short or broken — fix on the MO detail page first.`
+                : needsReplan
+                  ? "MO needs replan — re-prepare + re-approve after editing bookings."
+                  : qcBlocked
+                    ? `${qcPending} booked lot${qcPending === 1 ? "" : "s"} still in QC — clear before releasing.`
+                    : !isCreator
+                      ? "Only the head of this edit room can release."
+                      : undefined
             }
           >
             <Truck className="mr-1.5 size-3.5" />
@@ -206,12 +326,18 @@ export function ScheduleReleaseSection({
           <Button
             type="button"
             size="sm"
-            variant="outline"
+            variant={brokenAfterRelease ? "default" : "outline"}
             disabled={!isCreator || pending}
-            onClick={handleUnrelease}
+            onClick={() =>
+              handleUnrelease(
+                brokenAfterRelease
+                  ? "Pulled back to fix broken bookings"
+                  : undefined,
+              )
+            }
           >
             {pending && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-            Unrelease
+            {brokenAfterRelease ? "Pull back to fix" : "Unrelease"}
           </Button>
         )}
       </div>

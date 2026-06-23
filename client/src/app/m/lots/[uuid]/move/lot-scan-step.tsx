@@ -215,6 +215,33 @@ export function LotScanStep({ expected, onResult, onError, onOverride }: Props) 
         >
           Can&apos;t scan the lot — proceed anyway
         </Button>
+
+        {process.env.NODE_ENV !== "production" && (
+          <div className="rounded-lg border border-dashed border-amber-500/40 bg-amber-500/10 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-amber-300">
+              Dev bypass
+            </p>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <p className="text-[11px] text-white/70">
+                Skip the physical scan and pretend the lot matched.
+                Hidden in production builds.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="shrink-0 bg-transparent text-white"
+                onClick={() => {
+                  setStatus({ kind: "confirmed" });
+                  scannerRef.current?.stop();
+                  setTimeout(() => onResult(expected), 200);
+                }}
+              >
+                Skip scan
+              </Button>
+            </div>
+          </div>
+        )}
       </footer>
     </main>
   );

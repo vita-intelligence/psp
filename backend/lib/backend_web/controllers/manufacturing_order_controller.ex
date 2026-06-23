@@ -32,7 +32,8 @@ defmodule BackendWeb.ManufacturingOrderController do
   plug RequirePermission, "production.mo_delete" when action in [:delete]
 
   plug RequirePermission,
-       "production.mo_release" when action in [:release, :unrelease]
+       "production.mo_release"
+       when action in [:release, :unrelease, :clear_replan]
 
   def index(conn, params) do
     actor = conn.assigns.current_user
@@ -598,6 +599,33 @@ defmodule BackendWeb.ManufacturingOrderController do
           "Rejection needs a reason — type one in the dialog."
         )
 
+      {:error, :already_released} ->
+        unprocessable(
+          conn,
+          "already_released",
+          "MO is already released to the warehouse — pull it back from the schedule before unapproving."
+        )
+
+      {:error, :nothing_to_request} ->
+        unprocessable(
+          conn,
+          "nothing_to_request",
+          "Every BOM line is already fully booked — nothing to send to procurement."
+        )
+
+      {:error, :lines_under_booked, list} ->
+        short =
+          list
+          |> Enum.map(fn s -> "#{s.item_name} short by #{s.short}" end)
+          |> Enum.join("; ")
+
+        unprocessable(
+          conn,
+          "lines_under_booked",
+          "MO can't be prepared — these BOM lines aren't fully booked: #{short}. Book the missing qty (or wait for the procurement request to land + book then) before preparing.",
+          %{lines: list}
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
@@ -606,6 +634,9 @@ defmodule BackendWeb.ManufacturingOrderController do
   defp perm_for_action("prepare"), do: {:ok, "production.mo_prepare"}
   defp perm_for_action("unprepare"), do: {:ok, "production.mo_prepare"}
   defp perm_for_action("approve"), do: {:ok, "production.mo_approve"}
+  defp perm_for_action("unapprove"), do: {:ok, "production.mo_approve"}
+  defp perm_for_action("request_purchases"), do: {:ok, "production.mo_prepare"}
+  defp perm_for_action("cancel_purchase_request"), do: {:ok, "production.mo_prepare"}
   defp perm_for_action("reject"), do: {:ok, "production.mo_approve"}
   defp perm_for_action("amend"), do: {:ok, "production.mo_approve"}
   defp perm_for_action(_), do: {:error, :unknown_action}
@@ -617,6 +648,9 @@ defmodule BackendWeb.ManufacturingOrderController do
   defp run_signature(actor, mo, "prepare", _params), do: Production.prepare_mo(actor, mo)
   defp run_signature(actor, mo, "unprepare", _params), do: Production.unprepare_mo(actor, mo)
   defp run_signature(actor, mo, "approve", _params), do: Production.approve_mo(actor, mo)
+  defp run_signature(actor, mo, "unapprove", _params), do: Production.unapprove_mo(actor, mo)
+  defp run_signature(actor, mo, "request_purchases", _params), do: Production.request_purchases(actor, mo)
+  defp run_signature(actor, mo, "cancel_purchase_request", _params), do: Production.cancel_purchase_request(actor, mo)
   defp run_signature(actor, mo, "amend", _params), do: Production.amend_mo(actor, mo)
 
   defp run_signature(actor, mo, "reject", %{"reason" => reason}),
@@ -693,6 +727,24 @@ defmodule BackendWeb.ManufacturingOrderController do
               )
             )
 
+          {:error, :lines_under_booked, list} ->
+            short =
+              list
+              |> Enum.map(fn s ->
+                "#{s.item_name}: short by #{s.short} (need #{s.required}, booked #{s.booked})"
+              end)
+              |> Enum.join("; ")
+
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "lines_under_booked",
+                "MO isn't ready to release — these BOM lines aren't fully booked: #{short}. Book the missing qty, or wait for the child MO that produces it to finish.",
+                %{lines: list}
+              )
+            )
+
           {:error, :lots_on_trolley, list} ->
             conn
             |> put_status(:unprocessable_entity)
@@ -714,7 +766,7 @@ defmodule BackendWeb.ManufacturingOrderController do
   #
   # Planner action — pull an MO back from the warehouse queue. Only
   # allowed if pickup hasn't started yet.
-  def unrelease(conn, %{"id" => uuid}) do
+  def unrelease(conn, %{"id" => uuid} = params) do
     actor = conn.assigns.current_user
 
     case Production.get_manufacturing_order(actor.company_id, uuid) do
@@ -722,7 +774,20 @@ defmodule BackendWeb.ManufacturingOrderController do
         not_found(conn)
 
       %ManufacturingOrder{} = mo ->
-        case Production.unrelease_mo_from_warehouse(actor, mo) do
+        # Optional replan annotation — set by the planner when
+        # they're pulling back to fix something rather than just
+        # rescheduling. Stamps `needs_replan = true` so the MO
+        # can't be released again until they explicitly clear it.
+        opts =
+          case params do
+            %{"needs_replan" => true, "reason" => reason} when is_binary(reason) ->
+              [needs_replan: true, reason: reason]
+
+            _ ->
+              []
+          end
+
+        case Production.unrelease_mo_from_warehouse(actor, mo, opts) do
           {:ok, updated} ->
             json(conn, %{mo: Payloads.manufacturing_order(updated)})
 
@@ -734,6 +799,43 @@ defmodule BackendWeb.ManufacturingOrderController do
               conn,
               "pickup_in_progress",
               "Picker has started — wait for them to finish or abort first."
+            )
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
+        end
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/clear-replan
+  #
+  # Planner action — clear the `needs_replan` flag after they've
+  # reviewed + fixed the bookings. Refuses if the MO is still
+  # under-booked (ensure_all_lines_fully_booked guard) so the flag
+  # can't be cleared while the underlying problem still exists.
+  def clear_replan(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        case Production.clear_replan(actor, mo) do
+          {:ok, updated} ->
+            json(conn, %{mo: Payloads.manufacturing_order(updated)})
+
+          {:error, :lines_under_booked, list} ->
+            short =
+              list
+              |> Enum.map(fn s -> "#{s.item_name} short by #{s.short}" end)
+              |> Enum.join("; ")
+
+            unprocessable(
+              conn,
+              "lines_under_booked",
+              "Bookings still don't cover the BOM: #{short}. Add bookings or spawn a child MO before clearing replan.",
+              %{lines: list}
             )
 
           {:error, %Ecto.Changeset{} = cs} ->
@@ -1105,10 +1207,10 @@ defmodule BackendWeb.ManufacturingOrderController do
     |> json(Errors.payload("not_found", "Manufacturing order not found.", %{}))
   end
 
-  defp unprocessable(conn, code, detail) do
+  defp unprocessable(conn, code, detail, extras \\ %{}) do
     conn
     |> put_status(:unprocessable_entity)
-    |> json(Errors.payload(code, detail, %{}))
+    |> json(Errors.payload(code, detail, extras))
   end
 
   defp forbidden(conn, detail) do

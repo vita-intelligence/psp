@@ -452,6 +452,14 @@ defmodule BackendWeb.Router do
              ManufacturingOrderController,
              :unrelease
 
+      # Replan housekeeping — planner clears the `needs_replan` flag
+      # after fixing the bookings. Refuses if the MO is still under-
+      # booked so the flag can't be cleared while the underlying
+      # shortage exists.
+      post "/manufacturing-orders/:id/clear-replan",
+           ManufacturingOrderController,
+           :clear_replan
+
       # Production-run sign-off (the desktop /production/runs tab). The
       # production operator hits Start when they begin work, then Finish
       # at the end (date/time + actual produced qty). Finish auto-
@@ -540,6 +548,12 @@ defmodule BackendWeb.Router do
     # desktop tables feel the same. Per-inspection show / update /
     # sign still live under `/goods-in-inspections/:id`.
     get "/procurement/inspections", GoodsInInspectionController, :index_global
+
+    # Shortages table — every raw_material / packaging item still
+    # short across open MOs after subtracting bookings + open-PO
+    # qty. Drives the /procurement/shortages page so procurement
+    # has a single list of "what to order next".
+    get "/procurement/shortages", ProcurementShortagesController, :index
 
     # AP ledger — vendor invoices. Index is the global "Incoming
     # invoices" feed (MRPEasy parity); :show / :update / :delete and

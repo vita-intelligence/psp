@@ -62,6 +62,12 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
       :purchase_order_id,
       :company_id,
       :item_id,
+      # Without a warehouse the auto-receive at Goods-In Inspection
+      # sign-off can't land the lot anywhere — every line MUST name
+      # the warehouse it's destined for. Falls back from the form's
+      # per-line picker or the PO's default if the operator didn't
+      # override; never nil at create time.
+      :warehouse_id,
       :qty_ordered,
       :unit_price
     ])
