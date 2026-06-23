@@ -1388,23 +1388,32 @@ function DragPreviewGhost({
   const heightPx = 44;
 
   // Compute the proposed drop time so we can label the ghost with
-  // something readable ("Mon · 14:30") — same math as
-  // cursorToScheduleTime() in the workspace.
+  // something readable ("Mon · 14:30"). MUST mirror
+  // cursorToScheduleTime() exactly — using the inner scroll element
+  // and subtracting the label gutter. Skipping either step makes the
+  // tooltip overshoot by the gutter width (~4 days in Month zoom),
+  // so the operator sees "Jun 29" while pointing at column 25.
   let timeLabel = "";
   const canvas = canvasRef.current;
   if (canvas) {
-    const rect = canvas.getBoundingClientRect();
+    const scrollEl =
+      (canvas.querySelector("[data-schedule-scroll]") as HTMLElement | null) ??
+      canvas;
+    const rect = scrollEl.getBoundingClientRect();
     if (cursorX >= rect.left && cursorX <= rect.right) {
-      const localX = cursorX - rect.left + canvas.scrollLeft;
-      const ms = localX / scale.preset.pxPerMs;
-      const dt = new Date(scale.rangeStart.getTime() + ms);
-      timeLabel = dt.toLocaleString(undefined, {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      const contentX = cursorX - rect.left + scrollEl.scrollLeft;
+      const timeAxisX = contentX - LABEL_GUTTER_PX;
+      if (timeAxisX >= 0) {
+        const ms = timeAxisX / scale.preset.pxPerMs;
+        const dt = new Date(scale.rangeStart.getTime() + ms);
+        timeLabel = dt.toLocaleString(undefined, {
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
     }
   }
 

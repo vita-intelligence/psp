@@ -4478,9 +4478,19 @@ defmodule Backend.Production do
   defp check_parent_starts_after(%ManufacturingOrder{parent_mo_id: nil}, _last_finish), do: :ok
 
   defp check_parent_starts_after(%ManufacturingOrder{parent_mo_id: parent_id}, last_finish) do
+    # Only an approved/scheduled/in-progress parent locks the child's
+    # placement. A draft parent's planned_start is stale auto-prefill
+    # data — not a committed schedule — so it shouldn't block the
+    # child. Symmetrical to check_children_finish_before which filters
+    # children by status too.
     parent_first_start =
       from(s in ManufacturingOrderStep,
-        where: s.manufacturing_order_id == ^parent_id and not is_nil(s.planned_start),
+        join: mo in ManufacturingOrder,
+        on: mo.id == s.manufacturing_order_id,
+        where:
+          s.manufacturing_order_id == ^parent_id and
+            mo.status in ["scheduled", "in_progress"] and
+            not is_nil(s.planned_start),
         select: min(s.planned_start)
       )
       |> Repo.one()
@@ -7386,7 +7396,7 @@ defmodule Backend.Production do
   # was silently absent from picking). Refuse instead, with the list
   # of short lines so the planner knows exactly what to fix.
   defp ensure_all_lines_fully_booked(%ManufacturingOrder{} = mo) do
-    mo = Repo.preload(mo, [:bookings, bom: [lines: :part]])
+    mo = Repo.preload(mo, [:bookings, :children, bom: [lines: :part]])
 
     lines =
       case mo.bom do
@@ -7395,6 +7405,14 @@ defmodule Backend.Production do
       end
 
     mo_qty = mo.quantity || Decimal.new(0)
+
+    # Output of open child MOs counts as in-flight coverage — same rule
+    # the parts-table coverage badge uses. Once a child MO is approved,
+    # its planned output is committed to this parent.
+    children_by_item =
+      mo.children
+      |> Enum.filter(&(&1.status not in ["completed", "cancelled"]))
+      |> Enum.group_by(& &1.item_id)
 
     shortages =
       lines
@@ -7418,14 +7436,23 @@ defmodule Backend.Production do
                 Decimal.add(acc, b.quantity || Decimal.new(0))
               end)
 
-            if Decimal.compare(required, booked) == :gt do
+            pending_from_children =
+              children_by_item
+              |> Map.get(part_id, [])
+              |> Enum.reduce(Decimal.new(0), fn c, acc ->
+                Decimal.add(acc, c.quantity || Decimal.new(0))
+              end)
+
+            coverage = Decimal.add(booked, pending_from_children)
+
+            if Decimal.compare(required, coverage) == :gt do
               [
                 %{
                   item_id: part_id,
                   item_name: name,
                   required: Decimal.to_string(required),
-                  booked: Decimal.to_string(booked),
-                  short: Decimal.to_string(Decimal.sub(required, booked))
+                  booked: Decimal.to_string(coverage),
+                  short: Decimal.to_string(Decimal.sub(required, coverage))
                 }
               ]
             else
