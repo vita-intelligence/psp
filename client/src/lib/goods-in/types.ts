@@ -50,6 +50,11 @@ export interface InspectionItemPack {
   package_height_mm: number;
   package_weight_kg: string;
   units_per_package: number;
+  /** Operator-set vertical-stacking cap — max units the warehouse can
+   *  safely stack on top of each other for this pack. Drives cell
+   *  suitability + the resulting lot's `stack_factor`. Defaults to 1
+   *  (no vertical stacking) when omitted. */
+  stack_factor?: number;
   /** Optional per-pack override of the line's batch number. */
   supplier_batch_no?: string | null;
   /** ISO 3166-1 alpha-2 country code (e.g. "IT", "GB") — from the

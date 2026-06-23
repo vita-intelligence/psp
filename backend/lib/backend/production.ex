@@ -1359,7 +1359,6 @@ defmodule Backend.Production do
     ManufacturingOrder
     |> where([m], m.company_id == ^company_id and m.uuid == ^uuid)
     |> preload([
-      :item,
       :warehouse,
       :assigned_to,
       :approved_by,
@@ -1371,20 +1370,27 @@ defmodule Backend.Production do
       :pickup_completed_by,
       :purchasing_requested_by,
       :produced_lot,
+      # The Finish dialog + parts table read item.stock_uom for the
+      # "Produced quantity (kg)" label and UoM symbol — without this
+      # preload the FE falls back to "ea" even for kg / pcs items.
+      item: :stock_uom,
       production_cell: [storage_location: [floor: [:warehouse]]],
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
       bookings: [
         :item,
+        :picked_by,
+        :received_by,
+        :consumed_by,
         storage_cell: [storage_location: [floor: [:warehouse]]],
         stock_lot: [placements: :storage_cell],
         purchase_order_line: :purchase_order
       ],
       bom: [lines: [:part, :unit_of_measurement]],
       routing: [steps: [:workstation_group, worker_assignments: :user]],
-      parent_mo: [:item],
-      children: [:item],
-      consumer_links: [consumer_mo: [:item]],
-      supplier_links: [batch_mo: [:item]]
+      parent_mo: [item: :stock_uom],
+      children: [item: :stock_uom],
+      consumer_links: [consumer_mo: [item: :stock_uom]],
+      supplier_links: [batch_mo: [item: :stock_uom]]
     ])
     |> Repo.one()
   end
@@ -4674,7 +4680,9 @@ defmodule Backend.Production do
     from_dt = DateTime.new!(from_date, ~T[00:00:00], "Etc/UTC")
     to_dt = DateTime.new!(to_date, ~T[23:59:59], "Etc/UTC")
 
-    ops =
+    # Live MOs in the visible window — planned-but-not-finished work
+    # the planner actively manages.
+    live_ops =
       from(s in ManufacturingOrderStep,
         join: mo in ManufacturingOrder,
         on: mo.id == s.manufacturing_order_id,
@@ -4690,6 +4698,41 @@ defmodule Backend.Production do
         order_by: [asc: s.planned_start, asc: s.id]
       )
       |> Repo.all()
+
+    # Most recently completed MOs (10) — kept on the calendar for
+    # context so the planner can see what just ran on the lines.
+    # Without this, a `completed` MO disappears the moment Finish is
+    # tapped, leaving the calendar feeling amnesiac.
+    recent_completed_mo_ids =
+      from(mo in ManufacturingOrder,
+        where:
+          mo.company_id == ^actor.company_id and
+            mo.warehouse_id == ^warehouse.id and
+            mo.status == "completed",
+        order_by: [
+          desc_nulls_last: mo.actual_finish,
+          desc: mo.updated_at,
+          desc: mo.id
+        ],
+        limit: 10,
+        select: mo.id
+      )
+      |> Repo.all()
+
+    completed_ops =
+      from(s in ManufacturingOrderStep,
+        join: mo in ManufacturingOrder,
+        on: mo.id == s.manufacturing_order_id,
+        where:
+          mo.id in ^recent_completed_mo_ids and
+            not is_nil(s.planned_start) and
+            not is_nil(s.planned_finish),
+        preload: [:workstation_group, manufacturing_order: [:item, :warehouse]],
+        order_by: [asc: s.planned_start, asc: s.id]
+      )
+      |> Repo.all()
+
+    ops = live_ops ++ completed_ops
 
     # Stamp each operation's preloaded MO with qc_pending_count +
     # broken_bookings_count + under_booked_count so the planner sees
@@ -4780,6 +4823,9 @@ defmodule Backend.Production do
         select: %{stock_lot_id: b2.stock_lot_id, total: sum(b2.quantity)}
       )
 
+    # Resolve the lot's producing MO (when source_kind = manufacturing_order)
+    # in the same query so the FE can name "from MO00017" instead of a
+    # raw uuid. source_ref holds the MO uuid for MO-output lots.
     from(b in ManufacturingOrderBooking,
       join: it in Item,
       on: it.id == b.item_id,
@@ -4789,18 +4835,44 @@ defmodule Backend.Production do
       on: t.stock_lot_id == b.stock_lot_id,
       left_join: p in Backend.Stock.Placement,
       on: p.stock_lot_id == l.id,
+      left_join: src_mo in ManufacturingOrder,
+      on:
+        l.source_kind == "manufacturing_order" and
+          fragment("?::text", src_mo.uuid) == l.source_ref,
       where:
         b.manufacturing_order_id in ^mo_ids and
           b.status == "requested" and
           it.item_type in ["raw_material", "packaging", "semi_finished"],
-      group_by: [b.id, b.uuid, b.manufacturing_order_id, b.quantity, it.id, it.name, l.uuid, l.status, t.total],
+      group_by: [
+        b.id,
+        b.uuid,
+        b.manufacturing_order_id,
+        b.quantity,
+        it.id,
+        it.name,
+        l.id,
+        l.uuid,
+        l.status,
+        l.source_kind,
+        l.source_ref,
+        src_mo.id,
+        src_mo.uuid,
+        src_mo.status,
+        t.total
+      ],
       select: %{
         mo_id: b.manufacturing_order_id,
         booking_uuid: b.uuid,
         item_id: it.id,
         item_name: it.name,
+        lot_id: l.id,
         lot_uuid: l.uuid,
         lot_status: l.status,
+        lot_source_kind: l.source_kind,
+        lot_source_ref: l.source_ref,
+        producing_mo_id: src_mo.id,
+        producing_mo_uuid: src_mo.uuid,
+        producing_mo_status: src_mo.status,
         booked_qty: b.quantity,
         # Sum across all placements; empty placements default to 0.
         on_hand_qty: coalesce(sum(p.qty), 0),
@@ -4860,24 +4932,89 @@ defmodule Backend.Production do
   def under_booked_line_counts_for([]), do: %{}
 
   def under_booked_line_counts_for(mo_ids) when is_list(mo_ids) do
+    list_under_booked_lines_for(mo_ids)
+    |> Enum.group_by(& &1.mo_id)
+    |> Map.new(fn {id, list} -> {id, length(list)} end)
+  end
+
+  @doc """
+  Detailed list of under-booked BOM lines for the given MOs. Each
+  row carries the item + required/booked qtys so the release banner
+  can render specific guidance ("Vitamin C blend — short by 2 kg")
+  instead of a generic count. Same coverage rule as
+  `ensure_all_lines_fully_booked/1`: pending output from open child
+  MOs counts as in-flight coverage.
+  """
+  def list_under_booked_lines_for([]), do: []
+
+  def list_under_booked_lines_for(mo_ids) when is_list(mo_ids) do
+    from(mo in ManufacturingOrder,
+      where: mo.id in ^mo_ids,
+      preload: [:bookings, :children, bom: [lines: :part]]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn mo ->
+      case ensure_all_lines_fully_booked(mo) do
+        :ok ->
+          []
+
+        {:error, :lines_under_booked, list} ->
+          Enum.map(list, fn s -> Map.put(s, :mo_id, mo.id) end)
+      end
+    end)
+  end
+
+  @doc """
+  Detailed list of BOM lines that have a child MO producing the gap
+  but no real lot booking yet. These pass the prepare gate (because
+  pending output covers the gap) but fail the release gate (picker
+  needs real lots). Surfaced to the planner so they can wait for
+  the child to finish + pass QC, then book the new lot here.
+  """
+  def list_lines_awaiting_child_output_for([]), do: []
+
+  def list_lines_awaiting_child_output_for(mo_ids) when is_list(mo_ids) do
+    from(mo in ManufacturingOrder,
+      where: mo.id in ^mo_ids,
+      preload: [:bookings, :children, bom: [lines: :part]]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn mo ->
+      case ensure_all_lines_have_real_bookings(mo) do
+        :ok ->
+          []
+
+        {:error, :lines_not_lot_booked, list} ->
+          Enum.map(list, fn s -> Map.put(s, :mo_id, mo.id) end)
+      end
+    end)
+  end
+
+  @doc """
+  Bookings whose lot isn't fully placed in a `regular` warehouse
+  cell — typically because the lot is still sitting at a
+  production_feed / dispatch cell from a previous run and hasn't
+  been pulled back yet. Drives the same per-row release-blocked
+  banner as broken bookings.
+  """
+  def list_bookings_with_lot_off_warehouse_for([]), do: []
+
+  def list_bookings_with_lot_off_warehouse_for(mo_ids) when is_list(mo_ids) do
     mos =
       from(mo in ManufacturingOrder,
-        where: mo.id in ^mo_ids,
-        preload: [:bookings, bom: [lines: :part]]
+        where: mo.id in ^mo_ids
       )
       |> Repo.all()
 
-    mos
-    |> Enum.map(fn mo ->
-      shortages =
-        case ensure_all_lines_fully_booked(mo) do
-          :ok -> []
-          {:error, :lines_under_booked, list} -> list
-        end
+    Enum.flat_map(mos, fn mo ->
+      case ensure_all_booked_lots_in_warehouse(mo) do
+        :ok ->
+          []
 
-      {mo.id, length(shortages)}
+        {:error, :lots_not_in_warehouse, list} ->
+          Enum.map(list, fn s -> Map.put(s, :mo_id, mo.id) end)
+      end
     end)
-    |> Map.new()
   end
 
   defp to_decimal(%Decimal{} = d), do: d
@@ -5274,7 +5411,9 @@ defmodule Backend.Production do
          :ok <- ensure_not_needing_replan(mo),
          :ok <- ensure_has_planned_start(mo),
          :ok <- ensure_all_lines_fully_booked(mo),
+         :ok <- ensure_all_lines_have_real_bookings(mo),
          :ok <- ensure_all_booked_lots_available(mo),
+         :ok <- ensure_all_booked_lots_in_warehouse(mo),
          :ok <- ensure_no_booked_lots_on_trolley(mo) do
       attrs = %{
         "status" => "scheduled",
@@ -5772,10 +5911,17 @@ defmodule Backend.Production do
           it.item_type in ["raw_material", "packaging", "semi_finished"],
       order_by: [asc: it.name, asc: b.id],
       preload: [
-        :item,
         :picked_by,
+        :received_by,
+        :consumed_by,
+        # item.stock_uom needed so the closeout / pickup mobile pages
+        # render "kg" / "pcs" instead of the "ea" fallback when
+        # operators type a remaining quantity.
+        item: :stock_uom,
         storage_cell: [storage_location: [floor: [:warehouse]]],
-        stock_lot: [:item, :unit_of_measurement]
+        # Placements feed `qty_on_hand` on the lot summary — without
+        # this the closeout page's "on hand" info row stays blank.
+        stock_lot: [:item, :unit_of_measurement, placements: :storage_cell]
       ]
     )
     |> Repo.all()
@@ -6006,12 +6152,133 @@ defmodule Backend.Production do
         propagate_replan_to_consumers(actor, lot)
       end
 
+      # On QC pass, auto-book the freshly-available output onto the
+      # parent MO that was waiting for it. Mirrors the PO placeholder
+      # upgrade — keeps the chain self-healing so the planner doesn't
+      # have to manually re-book after the child finishes.
+      if kind == "qc_passed" do
+        auto_book_output_to_parent_mo(actor, lot)
+      end
+
       {:ok, Repo.preload(Backend.Stock.get_for_company(actor.company_id, lot_uuid), [:item])}
     else
       nil -> {:error, :lot_not_found}
       %StockLot{} -> {:error, :not_a_manufactured_lot}
       {:error, :illegal_transition, info} -> {:error, {:illegal_transition, info}}
       {:error, _} = err -> err
+    end
+  end
+
+  @doc """
+  Self-healing chain: when a child MO's output lot lands in
+  `available`, find the parent MO's BOM line waiting on this item
+  and create a real lot booking that closes the gap. The booking is
+  sized to `min(lot_free_qty, parent_line_shortage)` so we never
+  over-book the parent or the lot.
+
+  Without this hook the parent's line stayed at "Not booked" even
+  though the child had just delivered the missing qty — the planner
+  had to spot the gap and manually book the new lot. Public so a
+  one-off backfill can re-run it for lots that passed QC before the
+  hook landed.
+  """
+  def auto_book_output_to_parent_mo(%User{} = actor, %StockLot{} = lot) do
+    with %ManufacturingOrder{} = child_mo <-
+           Repo.get_by(ManufacturingOrder,
+             company_id: actor.company_id,
+             uuid: lot.source_ref
+           ),
+         parent_id when is_integer(parent_id) <- child_mo.parent_mo_id,
+         %ManufacturingOrder{} = parent_mo <-
+           Repo.get(ManufacturingOrder, parent_id) do
+      parent_mo =
+        Repo.preload(parent_mo, [:bookings, bom: [lines: :part]])
+
+      # The parent's shortage on this item, minus what's already
+      # booked from real lots. If the planner already booked the
+      # missing qty against another lot in the meantime, this is
+      # zero and we no-op.
+      shortage = parent_line_shortage(parent_mo, lot.item_id)
+      free = lot_free_qty(lot)
+
+      qty_to_book =
+        cond do
+          Decimal.compare(shortage, Decimal.new(0)) != :gt -> Decimal.new(0)
+          Decimal.compare(free, Decimal.new(0)) != :gt -> Decimal.new(0)
+          Decimal.compare(shortage, free) == :gt -> free
+          true -> shortage
+        end
+
+      if Decimal.compare(qty_to_book, Decimal.new(0)) == :gt do
+        create_auto_child_booking(actor, parent_mo, lot, qty_to_book)
+      else
+        :ok
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp parent_line_shortage(%ManufacturingOrder{} = parent_mo, item_id) do
+    mo_qty = parent_mo.quantity || Decimal.new(0)
+
+    line =
+      case parent_mo.bom do
+        %BOM{lines: lines} when is_list(lines) ->
+          Enum.find(lines, fn l -> l.part_id == item_id end)
+
+        _ ->
+          nil
+      end
+
+    case line do
+      nil ->
+        Decimal.new(0)
+
+      l ->
+        required =
+          if l.is_fixed do
+            l.qty || Decimal.new(0)
+          else
+            Decimal.mult(l.qty || Decimal.new(0), mo_qty)
+          end
+
+        booked =
+          parent_mo.bookings
+          |> Enum.filter(fn b ->
+            b.item_id == item_id and b.status == "requested" and
+              not is_nil(b.stock_lot_id)
+          end)
+          |> Enum.reduce(Decimal.new(0), fn b, acc ->
+            Decimal.add(acc, b.quantity || Decimal.new(0))
+          end)
+
+        Decimal.sub(required, booked)
+    end
+  end
+
+  defp create_auto_child_booking(%User{} = actor, %ManufacturingOrder{} = parent_mo, %StockLot{} = lot, qty) do
+    attrs = %{
+      "company_id" => parent_mo.company_id,
+      "manufacturing_order_id" => parent_mo.id,
+      "item_id" => lot.item_id,
+      "stock_lot_id" => lot.id,
+      "quantity" => qty,
+      "status" => "requested",
+      "created_by_id" => actor.id,
+      "updated_by_id" => actor.id
+    }
+
+    %ManufacturingOrderBooking{}
+    |> ManufacturingOrderBooking.changeset(attrs)
+    |> Repo.insert()
+    |> case do
+      {:ok, _booking} -> :ok
+      # Don't bubble the failure — auto-booking is a best-effort
+      # convenience. If it fails (e.g. integrity hiccup) the planner
+      # can still manually book the lot; the "Awaiting child output"
+      # banner will stay until they do.
+      {:error, _cs} -> :ok
     end
   end
 
@@ -6334,8 +6601,8 @@ defmodule Backend.Production do
           p.qty > 0 and
           p.storage_cell_id == ^mo.production_cell_id,
       preload: [
-        :item,
-        :unit_of_measurement,
+        item: :stock_uom,
+        unit_of_measurement: [],
         placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
       ],
       distinct: true
@@ -7470,6 +7737,92 @@ defmodule Backend.Production do
     end
   end
 
+  # Release-only gate: every BOM line must be covered by REAL lot
+  # bookings — pending output from a child MO doesn't count because
+  # the picker walks the floor NOW and the child's lot doesn't exist
+  # yet. Symmetric structure to ensure_all_lines_fully_booked but
+  # without the children_by_item term. Returns the per-line gap so
+  # the FE can render "Vitamin C blend — short by 2 kg, waiting on
+  # MO00018 to finish + pass QC."
+  defp ensure_all_lines_have_real_bookings(%ManufacturingOrder{} = mo) do
+    mo = Repo.preload(mo, [:bookings, :children, bom: [lines: :part]])
+
+    lines =
+      case mo.bom do
+        %BOM{lines: lines} when is_list(lines) -> lines
+        _ -> []
+      end
+
+    mo_qty = mo.quantity || Decimal.new(0)
+
+    # Open child MOs still hint what's pending so the error message
+    # can name the producing MO ("waiting on MO00018"). Used only
+    # for the error payload — does NOT add coverage.
+    children_by_item =
+      mo.children
+      |> Enum.filter(&(&1.status not in ["completed", "cancelled"]))
+      |> Enum.group_by(& &1.item_id)
+
+    shortages =
+      lines
+      |> Enum.flat_map(fn line ->
+        case line.part do
+          %Item{id: part_id, name: name, item_type: t}
+          when t in ["raw_material", "packaging", "semi_finished"] ->
+            required =
+              if line.is_fixed do
+                line.qty || Decimal.new(0)
+              else
+                Decimal.mult(line.qty || Decimal.new(0), mo_qty)
+              end
+
+            booked =
+              mo.bookings
+              |> Enum.filter(fn b ->
+                b.item_id == part_id and b.status == "requested"
+              end)
+              |> Enum.reduce(Decimal.new(0), fn b, acc ->
+                Decimal.add(acc, b.quantity || Decimal.new(0))
+              end)
+
+            if Decimal.compare(required, booked) == :gt do
+              waiting_on =
+                children_by_item
+                |> Map.get(part_id, [])
+                |> Enum.map(fn c ->
+                  %{
+                    id: c.id,
+                    uuid: c.uuid,
+                    status: c.status,
+                    quantity: Decimal.to_string(c.quantity || Decimal.new(0))
+                  }
+                end)
+
+              [
+                %{
+                  item_id: part_id,
+                  item_name: name,
+                  required: Decimal.to_string(required),
+                  booked: Decimal.to_string(booked),
+                  short: Decimal.to_string(Decimal.sub(required, booked)),
+                  waiting_on_children: waiting_on
+                }
+              ]
+            else
+              []
+            end
+
+          _ ->
+            []
+        end
+      end)
+
+    case shortages do
+      [] -> :ok
+      list -> {:error, :lines_not_lot_booked, list}
+    end
+  end
+
   defp ensure_all_booked_lots_available(%ManufacturingOrder{} = mo) do
     stale =
       from(b in ManufacturingOrderBooking,
@@ -7489,6 +7842,74 @@ defmodule Backend.Production do
     case stale do
       [] -> :ok
       list -> {:error, :stale_bookings, list}
+    end
+  end
+
+  # Release-only gate. Every booked lot must have at least
+  # `booking.quantity` worth of physical placement in a `regular`
+  # warehouse cell. If a lot is sitting at a production_feed /
+  # dispatch / quarantine / hold / rejected cell, release is
+  # blocked — the picker walks the warehouse, not the production
+  # floor. Child-MO outputs that just finished have to go through
+  # warehouse return-pickup before the parent can release.
+  defp ensure_all_booked_lots_in_warehouse(%ManufacturingOrder{} = mo) do
+    # Conditional sum: count placement.qty only when the joined cell
+    # has purpose=regular. A plain `sum(p.qty)` would double-count any
+    # placement (including production_feed / dispatch ones) because
+    # the LEFT JOIN keeps the placement row even when the cell join
+    # misses — we'd think a lot at production_feed was "in warehouse".
+    mis =
+      from(b in ManufacturingOrderBooking,
+        join: it in Item,
+        on: it.id == b.item_id,
+        join: l in StockLot,
+        on: l.id == b.stock_lot_id,
+        left_join: p in Backend.Stock.Placement,
+        on: p.stock_lot_id == l.id,
+        left_join: c in Backend.Warehouses.StorageCell,
+        on: c.id == p.storage_cell_id and c.purpose == "regular",
+        where:
+          b.manufacturing_order_id == ^mo.id and
+            b.status == "requested" and
+            it.item_type in ["raw_material", "packaging", "semi_finished"],
+        group_by: [b.id, b.uuid, b.quantity, it.name, l.uuid],
+        select: %{
+          booking_uuid: b.uuid,
+          item_name: it.name,
+          lot_uuid: l.uuid,
+          booked_qty: b.quantity,
+          in_warehouse_qty:
+            coalesce(
+              sum(
+                fragment(
+                  "CASE WHEN ? IS NOT NULL THEN ? ELSE 0 END",
+                  c.id,
+                  p.qty
+                )
+              ),
+              0
+            )
+        }
+      )
+      |> Repo.all()
+      |> Enum.flat_map(fn row ->
+        booked = to_decimal(row.booked_qty)
+        in_wh = to_decimal(row.in_warehouse_qty)
+
+        if Decimal.compare(in_wh, booked) == :lt do
+          [
+            row
+            |> Map.update!(:booked_qty, &decimal_to_string/1)
+            |> Map.update!(:in_warehouse_qty, &decimal_to_string/1)
+          ]
+        else
+          []
+        end
+      end)
+
+    case mis do
+      [] -> :ok
+      list -> {:error, :lots_not_in_warehouse, list}
     end
   end
 

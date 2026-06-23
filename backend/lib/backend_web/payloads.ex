@@ -989,19 +989,37 @@ defmodule BackendWeb.Payloads do
 
   defp mo_broken_bookings_payload(%Backend.Production.ManufacturingOrder{id: id}) do
     Backend.Production.list_broken_bookings_for([id])
-    |> Enum.map(fn r ->
-      %{
-        booking_uuid: r.booking_uuid,
-        item_id: r.item_id,
-        item_name: r.item_name,
-        lot_uuid: r.lot_uuid,
-        lot_status: r.lot_status,
-        booked_qty: r.booked_qty,
-        on_hand_qty: r.on_hand_qty,
-        total_booked_qty: r.total_booked_qty,
-        reason: Atom.to_string(r.reason)
-      }
-    end)
+    |> Enum.map(&broken_booking_row/1)
+  end
+
+  defp broken_booking_row(r) do
+    producing_mo =
+      if r.producing_mo_id do
+        %{
+          id: r.producing_mo_id,
+          uuid: r.producing_mo_uuid,
+          code: render_code(%{id: r.producing_mo_id}, "manufacturing_order"),
+          status: r.producing_mo_status
+        }
+      else
+        nil
+      end
+
+    %{
+      booking_uuid: r.booking_uuid,
+      item_id: r.item_id,
+      item_name: r.item_name,
+      lot_uuid: r.lot_uuid,
+      lot_code: render_code(%{id: r.lot_id}, "stock_lot"),
+      lot_status: r.lot_status,
+      lot_source_kind: r.lot_source_kind,
+      lot_source_ref: r.lot_source_ref,
+      producing_mo: producing_mo,
+      booked_qty: r.booked_qty,
+      on_hand_qty: r.on_hand_qty,
+      total_booked_qty: r.total_booked_qty,
+      reason: Atom.to_string(r.reason)
+    }
   end
 
   @doc "Slim MO for the ledger."
@@ -1510,6 +1528,12 @@ defmodule BackendWeb.Payloads do
       received_by: actor(b, :received_by),
       received_qty: decimal_to_string(b.received_qty),
       received_notes: b.received_notes,
+      # Production closeout — stamped when the operator hits Finish
+      # and records how much was actually used. Surfaces alongside the
+      # picker + receiver stamps on the parts-table "Sign-offs" column
+      # so the room sees full traceability for each booking.
+      consumed_at: b.consumed_at,
+      consumed_by: actor(b, :consumed_by),
       inserted_at: b.inserted_at,
       updated_at: b.updated_at
     }
@@ -1700,6 +1724,17 @@ defmodule BackendWeb.Payloads do
           Decimal.new(0)
       end
 
+    # Fall back to the parent item's stock_uom when the lot itself
+    # has no UoM stamped — opening-balance + manual-lot rows skip
+    # the dedicated UoM column and inherit from the item. Without
+    # this fallback the closeout page rendered "ea" for kg lots.
+    uom_source =
+      lot.unit_of_measurement ||
+        case lot.item do
+          %Backend.Items.Item{stock_uom: %Backend.Units.UnitOfMeasurement{} = u} -> u
+          _ -> nil
+        end
+
     %{
       id: lot.id,
       uuid: lot.uuid,
@@ -1708,11 +1743,11 @@ defmodule BackendWeb.Payloads do
       status: lot.status,
       item: maybe_item_summary(lot.item),
       uom:
-        lot.unit_of_measurement &&
+        uom_source &&
           %{
-            id: lot.unit_of_measurement.id,
-            symbol: lot.unit_of_measurement.symbol,
-            name: lot.unit_of_measurement.name
+            id: uom_source.id,
+            symbol: uom_source.symbol,
+            name: uom_source.name
           },
       current_cell:
         cell &&
@@ -2021,13 +2056,28 @@ defmodule BackendWeb.Payloads do
   defp mo_production_cell_payload(_), do: nil
 
   defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot) do
+    # Surface qty_on_hand alongside the lot identity so the mobile
+    # closeout page can show "booked 1.0 / on hand 2.5 kg" without
+    # a second fetch. Sums every placement (cross-cell totals).
+    qty_on_hand =
+      case lot.placements do
+        list when is_list(list) ->
+          Enum.reduce(list, Decimal.new(0), fn p, acc ->
+            Decimal.add(acc, p.qty || Decimal.new(0))
+          end)
+
+        _ ->
+          nil
+      end
+
     %{
       id: lot.id,
       uuid: lot.uuid,
       code: render_code(lot, "stock_lot"),
       status: lot.status,
       expiry_at: lot.expiry_at,
-      available_from: lot.available_from
+      available_from: lot.available_from,
+      qty_on_hand: decimal_to_string(qty_on_hand)
     }
   end
 
@@ -2367,8 +2417,69 @@ defmodule BackendWeb.Payloads do
       # picker queue warning.
       broken_bookings_count: Map.get(mo, :broken_bookings_count) || 0,
       under_booked_count: Map.get(mo, :under_booked_count) || 0,
+      # Detail lists for the release dialog so the planner sees
+      # which item / lot is blocking instead of a generic count.
+      # Lazy-loaded per summary — cheap for the small set of MOs
+      # in a single schedule view.
+      broken_bookings:
+        Backend.Production.list_broken_bookings_for([mo.id])
+        |> Enum.map(&broken_booking_row/1),
+      under_booked_lines:
+        Backend.Production.list_under_booked_lines_for([mo.id])
+        |> Enum.map(&under_booked_line_row/1),
+      # Lines covered by an open child MO but missing a real lot —
+      # blocks Release (picker needs real lots) but not Prepare.
+      lines_awaiting_child_output:
+        Backend.Production.list_lines_awaiting_child_output_for([mo.id])
+        |> Enum.map(&awaiting_child_line_row/1),
+      # Bookings whose lot isn't fully in a `regular` warehouse cell
+      # — sitting at production_feed / dispatch after a previous
+      # run and waiting on return-pickup back to the warehouse.
+      bookings_lot_off_warehouse:
+        Backend.Production.list_bookings_with_lot_off_warehouse_for([mo.id])
+        |> Enum.map(&off_warehouse_booking_row/1),
       needs_replan: mo.needs_replan,
       needs_replan_reason: mo.needs_replan_reason
+    }
+  end
+
+  defp under_booked_line_row(r) do
+    %{
+      item_id: r.item_id,
+      item_name: r.item_name,
+      required: r.required,
+      booked: r.booked,
+      short: r.short
+    }
+  end
+
+  defp off_warehouse_booking_row(r) do
+    %{
+      booking_uuid: r.booking_uuid,
+      item_name: r.item_name,
+      lot_uuid: r.lot_uuid,
+      booked_qty: r.booked_qty,
+      in_warehouse_qty: r.in_warehouse_qty
+    }
+  end
+
+  defp awaiting_child_line_row(r) do
+    %{
+      item_id: r.item_id,
+      item_name: r.item_name,
+      required: r.required,
+      booked: r.booked,
+      short: r.short,
+      waiting_on_children:
+        Enum.map(r.waiting_on_children || [], fn c ->
+          %{
+            id: c.id,
+            uuid: c.uuid,
+            code: render_code(%{id: c.id}, "manufacturing_order"),
+            status: c.status,
+            quantity: c.quantity
+          }
+        end)
     }
   end
 

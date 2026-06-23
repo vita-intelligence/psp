@@ -80,6 +80,11 @@ interface CloseoutItem {
   lotCode: string | null;
   itemName: string;
   bookedQty: string;
+  /** Current qty across all placements on this lot — shown next to
+   *  bookedQty so the operator can sanity-check before recording
+   *  what's left. Null when the lot has no placement (shouldn't
+   *  happen in practice). */
+  onHandQty: string | null;
   uomSymbol: string;
   bookingUuid?: string;
 }
@@ -115,6 +120,7 @@ export function CloseoutFlow({
       lotCode: b.stock_lot?.code ?? null,
       itemName: b.item?.name ?? "Unknown item",
       bookedQty: b.quantity,
+      onHandQty: b.stock_lot?.qty_on_hand ?? null,
       uomSymbol: b.item?.stock_uom?.symbol ?? "ea",
       bookingUuid: b.uuid,
     }));
@@ -125,6 +131,9 @@ export function CloseoutFlow({
       lotCode: l.code,
       itemName: l.item?.name ?? "Manufactured output",
       bookedQty: l.qty_on_hand,
+      // Output lots ARE the qty on hand — same number, so no extra
+      // "/ on hand" suffix on the info row.
+      onHandQty: null,
       uomSymbol: l.uom?.symbol ?? "ea",
     }));
     return [...bookingItems, ...outputItems];
@@ -366,7 +375,7 @@ export function CloseoutFlow({
                         <p className="text-[11px] text-muted-foreground">
                           {item.kind === "output"
                             ? `${item.bookedQty} ${item.uomSymbol} produced, awaiting hand-off`
-                            : `${item.bookedQty} ${item.uomSymbol} booked — confirm what's left`}
+                            : `Booked ${item.bookedQty}${item.onHandQty != null ? ` · on hand ${item.onHandQty}` : ""} ${item.uomSymbol} — confirm what's left`}
                         </p>
                       </div>
                       <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
@@ -436,8 +445,23 @@ export function CloseoutFlow({
                 }
                 className="h-11 font-mono text-base"
               />
+              <div className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-[11px] leading-tight">
+                <div className="flex items-center justify-between gap-3 font-mono">
+                  <span className="text-muted-foreground">Booked</span>
+                  <span className="font-medium text-foreground">
+                    {activeItem.bookedQty} {activeItem.uomSymbol}
+                  </span>
+                </div>
+                {activeItem.onHandQty != null && (
+                  <div className="mt-0.5 flex items-center justify-between gap-3 font-mono">
+                    <span className="text-muted-foreground">On hand</span>
+                    <span className="font-medium text-foreground">
+                      {activeItem.onHandQty} {activeItem.uomSymbol}
+                    </span>
+                  </div>
+                )}
+              </div>
               <p className="text-[11px] text-muted-foreground">
-                Booked: {activeItem.bookedQty} {activeItem.uomSymbol}.
                 Type 0 if you used it all. Any leftover gets moved to
                 the dispatch cell you scan next.
               </p>

@@ -166,6 +166,7 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
               <th className="px-2 py-1.5 text-right">Total cost</th>
               <th className="px-2 py-1.5 text-left">Lot</th>
               <th className="px-2 py-1.5 text-left">Status</th>
+              <th className="px-2 py-1.5 text-left">Sign-offs</th>
               <th className="px-2 py-1.5 text-left">Storage</th>
               <th className="px-2 py-1.5 text-left">Available from</th>
               <th className="w-10 px-2 py-1.5" aria-label="Actions" />
@@ -330,6 +331,7 @@ function PartRows({
         <td className="px-2 py-2">
           <UnderBookedBadge p={p} />
         </td>
+        <td className="px-2 py-2 text-muted-foreground/60">—</td>
         <td className="px-2 py-2 text-muted-foreground/60">—</td>
         <td className="px-2 py-2 text-muted-foreground/60">—</td>
         <td className="px-1 py-1 text-right">
@@ -526,6 +528,9 @@ function BookingRow({
         )}
       </td>
       <td className="px-2 py-1.5">
+        <BookingSignOffs booking={booking} company={company} />
+      </td>
+      <td className="px-2 py-1.5">
         {(() => {
           const cell = booking.storage_location;
           if (!cell) return "—";
@@ -623,6 +628,60 @@ function BookingStatusBadge({
   );
 }
 
+/** Three-step traceability for the booking lifecycle: warehouse
+ *  picker (picked_at), production operator pre-production check
+ *  (received_at), production operator closeout (consumed_at). Each
+ *  stamp shows actor + date so the room sees who confirmed what
+ *  without leaving the page. Empty when no stamp set. */
+function BookingSignOffs({
+  booking,
+  company,
+}: {
+  booking: ManufacturingOrderBooking;
+  company: CompanyDefaults;
+}) {
+  const stamps: Array<{
+    label: string;
+    at: string | null;
+    by: { name: string } | null;
+  }> = [
+    {
+      label: "Picked",
+      at: booking.picked_at,
+      by: booking.picked_by ?? null,
+    },
+    {
+      label: "Confirmed",
+      at: booking.received_at,
+      by: booking.received_by ?? null,
+    },
+    {
+      label: "Consumed",
+      at: booking.consumed_at ?? null,
+      by: booking.consumed_by ?? null,
+    },
+  ];
+
+  const filled = stamps.filter((s) => s.at);
+  if (filled.length === 0) {
+    return <span className="text-muted-foreground/60">—</span>;
+  }
+
+  return (
+    <div className="space-y-0.5 text-[10px] leading-tight">
+      {filled.map((s) => (
+        <div key={s.label}>
+          <span className="font-medium text-foreground">{s.label}</span>{" "}
+          <span className="text-muted-foreground">
+            by {s.by?.name ?? "—"} ·{" "}
+            {s.at ? formatCompanyDate(s.at, company) : ""}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface NotBookedRowProps {
   part: ManufacturingOrderPart;
   uom: string;
@@ -678,6 +737,7 @@ function NotBookedRow({
           Not booked
         </span>
       </td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-1 py-1 text-right">
@@ -770,6 +830,7 @@ function PendingSubMoRow({
           Awaiting production
         </span>
       </td>
+      <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-1 py-1 text-right">

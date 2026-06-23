@@ -446,6 +446,22 @@ export interface ScheduleOperationMOSummary {
    *  release-time line-coverage gate landed. > 0 → planner needs
    *  to book more lots or spawn a child MO. */
   under_booked_count: number;
+  /** Detail rows for broken bookings — drives the per-row "what's
+   *  wrong + where to fix" guidance in the release dialog instead
+   *  of a generic count. Length equals broken_bookings_count. */
+  broken_bookings: BrokenBooking[];
+  /** Detail rows for under-booked BOM lines (item + shortage qty).
+   *  Length equals under_booked_count. */
+  under_booked_lines: UnderBookedLine[];
+  /** BOM lines covered by an open child MO but missing a real lot
+   *  booking. Passes the prepare gate (because pending child output
+   *  closes the gap), but BLOCKS release (picker needs real lots).
+   *  Empty for MOs without sub-MOs. */
+  lines_awaiting_child_output: AwaitingChildLine[];
+  /** Bookings whose lot isn't fully placed in a `regular` warehouse
+   *  cell — typically still sitting at production_feed after the
+   *  child MO finished. Picker can't grab it from there. */
+  bookings_lot_off_warehouse: LotOffWarehouseRow[];
   /** True when the MO has bounced back from scheduled/in-progress
    *  because the plan broke (Output QC fail, lot rejected,
    *  over-consumption). Release is gated until the planner calls
@@ -677,6 +693,10 @@ export interface ManufacturingOrderBookingLotSummary {
   status: string;
   expiry_at: string | null;
   available_from: string | null;
+  /** Total qty across all placements — drives the closeout page's
+   *  "booked 1.0 / on hand 2.5 kg" info row so operators can verify
+   *  the lot still has enough to consume against. */
+  qty_on_hand: string;
 }
 
 export interface ManufacturingOrderBookingCellSummary {
@@ -1122,13 +1142,70 @@ export interface BrokenBooking {
   item_id: number;
   item_name: string;
   lot_uuid: string;
+  lot_code: string | null;
   lot_status: string;
+  /** "manufacturing_order" → produced by a previous MO. Pass-QC at
+   *  /m/inspections or open the lot to record a Pass-QC event.
+   *  "purchase_order" → received from a vendor. Goods-In Inspection.
+   *  "opening_balance" → seeded; pass-QC by opening the lot.
+   *  "manual" → manually-received; pass-QC by opening the lot. */
+  lot_source_kind: string;
+  lot_source_ref: string | null;
+  /** Set when lot_source_kind = "manufacturing_order" — the upstream
+   *  MO whose output this lot represents. Lets the UI deep-link to
+   *  it ("from MO00017"). */
+  producing_mo: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+  } | null;
   booked_qty: string;
   on_hand_qty: string;
   total_booked_qty: string;
   /** "lot_unavailable" (QC rejected / quarantine) or "over_allocated"
    *  (sum of bookings exceeds on-hand qty across all MOs). */
   reason: "lot_unavailable" | "over_allocated";
+}
+
+export interface UnderBookedLine {
+  item_id: number;
+  item_name: string;
+  required: string;
+  booked: string;
+  short: string;
+}
+
+export interface LotOffWarehouseRow {
+  booking_uuid: string;
+  item_name: string;
+  lot_uuid: string;
+  /** Qty booked for this MO. */
+  booked_qty: string;
+  /** Qty currently in a `regular` warehouse cell. Less than booked
+   *  means the rest is sitting at production_feed / dispatch and
+   *  needs return-pickup back to a warehouse rack. */
+  in_warehouse_qty: string;
+}
+
+export interface AwaitingChildLine {
+  item_id: number;
+  item_name: string;
+  required: string;
+  /** Real lot bookings only — does NOT include pending child output. */
+  booked: string;
+  /** required - booked. The qty the child MO must produce + QC to
+   *  unblock release. */
+  short: string;
+  /** Open child MOs producing this item. Each one's planned qty
+   *  contributes to closing the gap once it finishes + passes QC. */
+  waiting_on_children: Array<{
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+    quantity: string;
+  }>;
 }
 
 export interface ManufacturingOrderSummary {

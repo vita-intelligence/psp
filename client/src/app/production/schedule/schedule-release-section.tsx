@@ -16,6 +16,7 @@
  */
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -32,7 +33,13 @@ import {
   releaseManufacturingOrderToWarehouseAction,
   unreleaseManufacturingOrderFromWarehouseAction,
 } from "@/lib/production/actions";
-import type { ScheduleOperationMOSummary } from "@/lib/production/types";
+import type {
+  AwaitingChildLine,
+  BrokenBooking,
+  LotOffWarehouseRow,
+  ScheduleOperationMOSummary,
+  UnderBookedLine,
+} from "@/lib/production/types";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 
 interface Props {
@@ -82,7 +89,10 @@ export function ScheduleReleaseSection({
   const qcBlocked = state === "not_released" && qcPending > 0;
   const brokenCount = mo.broken_bookings_count ?? 0;
   const underBookedCount = mo.under_booked_count ?? 0;
-  const issuesCount = brokenCount + underBookedCount;
+  const awaitingChildCount = mo.lines_awaiting_child_output?.length ?? 0;
+  const offWarehouseCount = mo.bookings_lot_off_warehouse?.length ?? 0;
+  const issuesCount =
+    brokenCount + underBookedCount + awaitingChildCount + offWarehouseCount;
   const needsReplan = mo.needs_replan ?? false;
   // After release, bookings can go bad — peer MO consumed more than
   // expected (over-allocation) or QC flipped a previously-available
@@ -221,39 +231,12 @@ export function ScheduleReleaseSection({
             </p>
           )}
           {state === "not_released" && issuesCount > 0 && (
-            <div className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs text-red-900 dark:text-red-200">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <div className="space-y-0.5">
-                <p className="font-medium">
-                  {issuesCount} booking{issuesCount === 1 ? "" : "s"} or BOM
-                  line{issuesCount === 1 ? "" : "s"} short / broken
-                </p>
-                <p className="text-[11px] opacity-80">
-                  Open the MO and fix the shortages first — either book more
-                  lots, spawn a child MO for the missing semi-finished, or
-                  wait for QC on the affected lot. Release is gated until
-                  every line is fully covered.
-                </p>
-              </div>
-            </div>
-          )}
-          {state === "not_released" && qcPending > 0 && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <div className="space-y-0.5">
-                <p className="font-medium">
-                  {qcPending} booked {qcPending === 1 ? "lot" : "lots"} not yet
-                  available
-                </p>
-                <p className="text-[11px] opacity-80">
-                  Each booked lot has to be in status <code>available</code>{" "}
-                  before release. PO-receipt lots clear via Goods-In Inspection
-                  at <code>/m/inspections</code>; manually-received or
-                  opening-balance lots clear by opening the lot and recording a
-                  Pass-QC event.
-                </p>
-              </div>
-            </div>
+            <ReleaseBlockedDetails
+              brokenBookings={mo.broken_bookings ?? []}
+              underBookedLines={mo.under_booked_lines ?? []}
+              awaitingChildLines={mo.lines_awaiting_child_output ?? []}
+              offWarehouseRows={mo.bookings_lot_off_warehouse ?? []}
+            />
           )}
           {state === "released" && mo.released_to_warehouse_at && (
             <p className="text-xs text-muted-foreground">
@@ -391,6 +374,174 @@ export function ScheduleReleaseSection({
         </div>
       )}
     </div>
+  );
+}
+
+/** Row-per-issue blocker list rendered when release is blocked. Each
+ *  row names the item + lot and links to the right place to fix
+ *  ("Pass QC on /m/inspections", "Open lot to record Pass-QC",
+ *  "Pull back to fix bookings"). Replaces the old generic
+ *  "X bookings short/broken" banner that left the planner guessing.
+ */
+function ReleaseBlockedDetails({
+  brokenBookings,
+  underBookedLines,
+  awaitingChildLines,
+  offWarehouseRows,
+}: {
+  brokenBookings: BrokenBooking[];
+  underBookedLines: UnderBookedLine[];
+  awaitingChildLines: AwaitingChildLine[];
+  offWarehouseRows: LotOffWarehouseRow[];
+}) {
+  const total =
+    brokenBookings.length +
+    underBookedLines.length +
+    awaitingChildLines.length +
+    offWarehouseRows.length;
+  if (total === 0) return null;
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs text-red-900 dark:text-red-200">
+      <div className="flex items-center gap-2">
+        <AlertTriangle className="size-3.5 shrink-0" />
+        <p className="font-medium">
+          Release blocked — {total} issue{total === 1 ? "" : "s"} to fix
+        </p>
+      </div>
+      <ul className="space-y-1.5 pl-5">
+        {brokenBookings.map((b) => (
+          <li key={b.booking_uuid} className="list-disc text-[11px]">
+            <BrokenBookingRow booking={b} />
+          </li>
+        ))}
+        {underBookedLines.map((l) => (
+          <li key={`under-${l.item_id}`} className="list-disc text-[11px]">
+            <UnderBookedLineRow line={l} />
+          </li>
+        ))}
+        {awaitingChildLines.map((l) => (
+          <li key={`awaiting-${l.item_id}`} className="list-disc text-[11px]">
+            <AwaitingChildLineRow line={l} />
+          </li>
+        ))}
+        {offWarehouseRows.map((r) => (
+          <li key={`off-${r.booking_uuid}`} className="list-disc text-[11px]">
+            <OffWarehouseRow row={r} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function OffWarehouseRow({ row }: { row: LotOffWarehouseRow }) {
+  return (
+    <span>
+      <strong>{row.item_name}</strong> · only {row.in_warehouse_qty} of{" "}
+      {row.booked_qty} is in a warehouse cell — the rest is still at
+      production. Run the warehouse return-pickup flow at{" "}
+      <Link href="/m/return-pickup" className="underline underline-offset-2">
+        /m/return-pickup
+      </Link>{" "}
+      to move it back, then release.
+    </span>
+  );
+}
+
+function AwaitingChildLineRow({ line }: { line: AwaitingChildLine }) {
+  const children = line.waiting_on_children;
+  return (
+    <span>
+      <strong>{line.item_name}</strong> · short by {line.short} (booked{" "}
+      {line.booked} of {line.required}). Waiting on{" "}
+      {children.length === 0 ? (
+        <em>a child MO that produces this part</em>
+      ) : (
+        children.map((c, i) => (
+          <span key={c.uuid}>
+            {i > 0 && ", "}
+            <Link
+              href={`/production/manufacturing-orders/${c.uuid}`}
+              className="underline underline-offset-2 hover:text-red-700 dark:hover:text-red-100"
+            >
+              {c.code ?? `MO #${c.id}`}
+            </Link>
+            {" "}({c.status})
+          </span>
+        ))
+      )}{" "}
+      to finish + pass Output QC, then book the new lot here before
+      releasing.
+    </span>
+  );
+}
+
+function BrokenBookingRow({ booking }: { booking: BrokenBooking }) {
+  const lotLabel = booking.lot_code ?? `lot ${booking.lot_uuid.slice(0, 6)}…`;
+
+  if (booking.reason === "over_allocated") {
+    return (
+      <span>
+        <strong>{booking.item_name}</strong> · {lotLabel} is over-allocated
+        (booked {booking.total_booked_qty}, on hand {booking.on_hand_qty}).
+        Pull this MO back and re-book against a different lot.
+      </span>
+    );
+  }
+
+  // reason = lot_unavailable. Branch on source so the fix path is
+  // exact: MO-output → Output QC; PO-receipt → Goods-In; manual /
+  // opening-balance → open the lot and record Pass-QC.
+  if (booking.lot_source_kind === "manufacturing_order" && booking.producing_mo) {
+    return (
+      <span>
+        <strong>{booking.item_name}</strong> · {lotLabel} (from{" "}
+        <Link
+          href={`/production/manufacturing-orders/${booking.producing_mo.uuid}`}
+          className="underline underline-offset-2 hover:text-red-700 dark:hover:text-red-100"
+        >
+          {booking.producing_mo.code ?? `MO #${booking.producing_mo.id}`}
+        </Link>
+        ) is {booking.lot_status}. Run Output QC on the producing MO at{" "}
+        <Link href="/m/inspections" className="underline underline-offset-2">
+          /m/inspections
+        </Link>
+        .
+      </span>
+    );
+  }
+
+  if (booking.lot_source_kind === "purchase_order") {
+    return (
+      <span>
+        <strong>{booking.item_name}</strong> · {lotLabel} is{" "}
+        {booking.lot_status}. Clear via Goods-In Inspection at{" "}
+        <Link href="/m/inspections" className="underline underline-offset-2">
+          /m/inspections
+        </Link>
+        .
+      </span>
+    );
+  }
+
+  return (
+    <span>
+      <strong>{booking.item_name}</strong> · {lotLabel} is{" "}
+      {booking.lot_status}. Open the lot and record a Pass-QC event to mark
+      it available.
+    </span>
+  );
+}
+
+function UnderBookedLineRow({ line }: { line: UnderBookedLine }) {
+  return (
+    <span>
+      <strong>{line.item_name}</strong> · short by {line.short} (booked{" "}
+      {line.booked} of {line.required}). Book more lots, spawn a child MO,
+      or click <em>Request purchases</em> on the MO to send the shortage
+      to procurement.
+    </span>
   );
 }
 

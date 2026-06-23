@@ -148,10 +148,36 @@ defmodule Backend.GoodsIn.InspectionItem do
          {:ok, _} <- require_non_negative_decimal(pack, "package_weight_kg"),
          # `units_per_package` accepts decimals — continuous-UoM lots
          # (kg, L) need fractional values like 4.4 kg/bag.
-         {:ok, _} <- require_positive_decimal(pack, "units_per_package") do
+         {:ok, _} <- require_positive_decimal(pack, "units_per_package"),
+         # `stack_factor` is the operator's vertical-stacking safety
+         # cap. Must be a positive integer; omitted = defaults to 1
+         # downstream in normalise_pack_for_receive.
+         {:ok, _} <- require_positive_int_when_present(pack, "stack_factor") do
       {:cont, :ok}
     else
       {:error, field, msg} -> {:halt, {:error, idx, field, msg}}
+    end
+  end
+
+  defp require_positive_int_when_present(pack, key) do
+    case Map.get(pack, key, Map.get(pack, String.to_atom(key))) do
+      nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      v when is_integer(v) and v > 0 ->
+        {:ok, v}
+
+      v when is_binary(v) ->
+        case Integer.parse(v) do
+          {n, ""} when n > 0 -> {:ok, n}
+          _ -> {:error, key, "must be a positive integer"}
+        end
+
+      _ ->
+        {:error, key, "must be a positive integer"}
     end
   end
 

@@ -745,6 +745,42 @@ defmodule BackendWeb.ManufacturingOrderController do
               )
             )
 
+          {:error, :lines_not_lot_booked, list} ->
+            short =
+              list
+              |> Enum.map(fn s ->
+                "#{s.item_name}: short by #{s.short}"
+              end)
+              |> Enum.join("; ")
+
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "lines_not_lot_booked",
+                "Some BOM lines are still waiting on a child MO's output (#{short}). Finish + pass QC on the child MO so its lot exists, then book it here before releasing.",
+                %{lines: list}
+              )
+            )
+
+          {:error, :lots_not_in_warehouse, list} ->
+            short =
+              list
+              |> Enum.map(fn s ->
+                "#{s.item_name} (lot #{String.slice(s.lot_uuid, 0, 8)}…): only #{s.in_warehouse_qty} of #{s.booked_qty} in a warehouse cell"
+              end)
+              |> Enum.join("; ")
+
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "lots_not_in_warehouse",
+                "One or more booked lots aren't fully back in the warehouse yet: #{short}. Run the return-pickup flow so the picker can move them from production into a regular cell, then release.",
+                %{lots: list}
+              )
+            )
+
           {:error, :lots_on_trolley, list} ->
             conn
             |> put_status(:unprocessable_entity)

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  CheckCircle2,
   ExternalLink,
 } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
@@ -880,9 +881,11 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
   const wsgColor = (id: number | null) =>
     workstationGroups.find((g) => g.id === id)?.color ?? "var(--brand)";
   const statusColor =
-    row.status === "in_progress"
-      ? "border-amber-500 bg-amber-100/70 dark:bg-amber-950/30"
-      : "border-indigo-400 bg-indigo-100/70 dark:bg-indigo-950/30";
+    row.status === "completed"
+      ? "border-emerald-500 bg-emerald-100/60 dark:bg-emerald-950/30 opacity-80"
+      : row.status === "in_progress"
+        ? "border-amber-500 bg-amber-100/70 dark:bg-amber-950/30"
+        : "border-indigo-400 bg-indigo-100/70 dark:bg-indigo-950/30";
 
   return (
     <div
@@ -956,12 +959,23 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
       <div className="relative flex h-full items-center gap-2 px-2 py-1">
         <div className="min-w-0 flex-1">
           <p className="truncate font-mono text-[10px] font-semibold">
+            {row.status === "completed" && (
+              <CheckCircle2 className="mr-1 inline size-3 -translate-y-0.5 text-emerald-700 dark:text-emerald-300" />
+            )}
             {row.moCode ?? `MO #${row.moId}`}
           </p>
           <p className="truncate text-[11px]" title={row.itemName}>
             {row.itemName}
           </p>
         </div>
+        {row.status === "completed" && (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/25 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200"
+            title="Run completed — kept on the calendar for context."
+          >
+            Done
+          </span>
+        )}
         {(row.brokenCount > 0 || row.qcPending > 0) && (
           <div className="flex shrink-0 flex-col items-end gap-0.5">
             {row.brokenCount > 0 && (

@@ -933,6 +933,12 @@ interface PackDraft {
   package_height_mm: string;
   package_weight_kg: string;
   units_per_package: string;
+  /** Max number of identical packs the warehouse may stack on top of
+   *  each other for safety. Defaults to "1" (no vertical stacking)
+   *  for fragile / non-stackable goods. Persisted on the produced
+   *  stock_lot so cell-suitability + cell-fill use the operator's
+   *  safety cap. */
+  stack_factor: string;
   supplier_batch_no: string;
   /** ISO 3166-1 alpha-2. Empty until the operator picks. */
   country_of_origin: string;
@@ -969,6 +975,10 @@ function makeDefaultPack(qty: string = ""): PackDraft {
     // qty IS the pack's capacity. Server-side reconciles this when
     // the operator just types a qty (see `packDraftToWire`).
     units_per_package: "",
+    // Default to "no vertical stacking" — the safest assumption for
+    // an unknown product. Operator bumps this up for stackable goods
+    // (sacks, boxes) once they've measured the pack.
+    stack_factor: "1",
     supplier_batch_no: "",
     country_of_origin: "",
     revision: "",
@@ -988,7 +998,9 @@ function isPackComplete(p: PackDraft): boolean {
     Number(p.package_length_mm) > 0 &&
     Number(p.package_width_mm) > 0 &&
     Number(p.package_height_mm) > 0 &&
-    Number(p.package_weight_kg) > 0
+    Number(p.package_weight_kg) > 0 &&
+    Number.isInteger(Number(p.stack_factor)) &&
+    Number(p.stack_factor) > 0
   );
 }
 
@@ -1008,6 +1020,7 @@ function packDraftToWire(p: PackDraft): InspectionItemPack {
   const unitsPerPackage =
     Number.isFinite(explicitUpp) && explicitUpp > 0 ? explicitUpp : qty;
 
+  const stackFactor = Number(p.stack_factor);
   return {
     qty: String(qty),
     package_length_mm: Number(p.package_length_mm),
@@ -1015,6 +1028,8 @@ function packDraftToWire(p: PackDraft): InspectionItemPack {
     package_height_mm: Number(p.package_height_mm),
     package_weight_kg: String(Number(p.package_weight_kg)),
     units_per_package: unitsPerPackage,
+    stack_factor:
+      Number.isInteger(stackFactor) && stackFactor > 0 ? stackFactor : 1,
     supplier_batch_no: p.supplier_batch_no.trim() || null,
     country_of_origin: p.country_of_origin.trim().toUpperCase() || null,
     revision: p.revision.trim() || null,
@@ -1043,6 +1058,7 @@ function hydratePacks(item: InspectionItem | undefined): PackDraft[] {
         p.package_weight_kg != null ? String(p.package_weight_kg) : "",
       units_per_package:
         p.units_per_package != null ? String(p.units_per_package) : "1",
+      stack_factor: p.stack_factor != null ? String(p.stack_factor) : "1",
       supplier_batch_no: p.supplier_batch_no ?? "",
       country_of_origin: p.country_of_origin ?? "",
       revision: p.revision ?? "",
@@ -1343,6 +1359,19 @@ function PackEditor({
           onChange={(v) => onPatch({ package_height_mm: v.replace(/\D/g, "") })}
           placeholder="250"
           mode="integer"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-2">
+        <PackInput
+          label="Stack factor"
+          value={pack.stack_factor}
+          onChange={(v) =>
+            onPatch({ stack_factor: v.replace(/\D/g, "") || "" })
+          }
+          placeholder="1"
+          mode="integer"
+          helper="Max packs that can be safely stacked on top of each other (1 = no vertical stacking)"
         />
       </div>
 
