@@ -2857,6 +2857,7 @@ defmodule BackendWeb.Payloads do
     %{
       id: i.id,
       uuid: i.uuid,
+      code: render_code(i, "goods_in_inspection"),
       status: i.status,
       delivery_date: i.delivery_date,
       delivery_time: i.delivery_time,
@@ -3311,10 +3312,90 @@ defmodule BackendWeb.Payloads do
       package_weight_kg: l.package_weight_kg,
       units_per_package: l.units_per_package,
       stack_factor: l.stack_factor,
+      # Goods-In Inspection that produced this lot (when applicable).
+      # Carries the full QA story so the lot detail page can render
+      # vehicle/paperwork/physical sections + sign-offs + photos
+      # without a second fetch.
+      goods_in_inspection:
+        preloaded_or_nil(l, :goods_in_inspection, &goods_in_inspection/1),
+      # Direct lot file attachments (CoA, QC reports, photos that
+      # weren't part of the inspection bundle).
+      files: preloaded_list(l, :files, &lot_file_payload/1),
+      # MO bookings referencing this lot — every pick + confirm +
+      # consume sign-off across every MO that consumed from it.
+      mo_bookings: preloaded_list(l, :mo_bookings, &lot_mo_booking_summary/1),
+      # Return picks (production → warehouse) for this lot.
+      return_picks:
+        preloaded_list(l, :return_picks, &lot_return_pick_summary/1),
       inserted_at: l.inserted_at,
       updated_at: l.updated_at,
       created_by: actor(l, :created_by),
       updated_by: actor(l, :updated_by)
+    }
+  end
+
+  defp lot_file_payload(%Backend.Stock.LotFile{} = f) do
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      # No serve route wired yet — direct lot-file uploads aren't
+      # exposed in any UI today (files mostly come through inspection
+      # uploads). The FE renders the metadata as a read-only list.
+      url: nil,
+      uploaded_by: actor(f, :uploaded_by),
+      inserted_at: f.inserted_at
+    }
+  end
+
+  defp lot_mo_booking_summary(%Backend.Production.ManufacturingOrderBooking{} = b) do
+    %{
+      id: b.id,
+      uuid: b.uuid,
+      quantity: decimal_to_string(b.quantity),
+      consumed_quantity: decimal_to_string(b.consumed_quantity),
+      status: b.status,
+      mo: lot_mo_booking_mo(b.manufacturing_order),
+      picked_at: b.picked_at,
+      picked_by: actor(b, :picked_by),
+      received_at: b.received_at,
+      received_by: actor(b, :received_by),
+      received_qty: decimal_to_string(b.received_qty),
+      received_notes: b.received_notes,
+      consumed_at: b.consumed_at,
+      consumed_by: actor(b, :consumed_by)
+    }
+  end
+
+  defp lot_mo_booking_mo(%Backend.Production.ManufacturingOrder{} = mo) do
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: render_code(mo, "manufacturing_order"),
+      status: mo.status
+    }
+  end
+
+  defp lot_mo_booking_mo(_), do: nil
+
+  defp lot_return_pick_summary(%Backend.Warehouses.ReturnPick{} = r) do
+    %{
+      id: r.id,
+      uuid: r.uuid,
+      qty: decimal_to_string(r.qty),
+      picked_at: r.picked_at,
+      picked_by: actor(r, :picked_by),
+      picked_photo_url: r.picked_photo_url,
+      placed_at: r.placed_at,
+      placed_by: actor(r, :placed_by),
+      placed_photo_url: r.placed_photo_url,
+      picked_from_cell:
+        preloaded_or_nil(r, :picked_from_cell, &storage_cell_summary/1),
+      placed_to_cell:
+        preloaded_or_nil(r, :placed_to_cell, &storage_cell_summary/1)
     }
   end
 

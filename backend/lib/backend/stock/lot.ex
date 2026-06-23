@@ -91,6 +91,22 @@ defmodule Backend.Stock.Lot do
     has_many :placements, Placement, foreign_key: :stock_lot_id
     has_many :movements, Movement, foreign_key: :stock_lot_id
     has_many :events, LotEvent, foreign_key: :stock_lot_id
+    # Direct lot attachments (CoA, QC reports, disposal certs, photos).
+    # Separate from goods_in_inspection.files — those belong to the
+    # inspection record; these can be uploaded any time during the
+    # lot's lifecycle.
+    has_many :files, Backend.Stock.LotFile, foreign_key: :stock_lot_id
+    # Every MO that booked this lot, with the full pick → confirm →
+    # consume chain of sign-offs. The reverse view of the chain shown
+    # on MO detail.
+    has_many :mo_bookings,
+             Backend.Production.ManufacturingOrderBooking,
+             foreign_key: :stock_lot_id
+    # Return picks that moved this lot from production back to the
+    # warehouse. Only meaningful for MO-produced lots.
+    has_many :return_picks,
+             Backend.Warehouses.ReturnPick,
+             foreign_key: :stock_lot_id
 
     timestamps(type: :utc_datetime)
   end

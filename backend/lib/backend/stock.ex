@@ -129,6 +129,36 @@ defmodule Backend.Stock do
               :unit_of_measurement,
               :created_by,
               :updated_by,
+              # The Goods-In Inspection that produced this lot (PO
+              # receives). Carrying it inline lets the lot detail page
+              # render the full QA story — section checks, decision,
+              # operator + approver signatures, attached photos / CoA.
+              goods_in_inspection: [
+                :goods_in_operator,
+                :quality_approver,
+                :purchase_order,
+                items: [],
+                files: [:uploaded_by]
+              ],
+              # Direct lot attachments (CoA, QC reports, disposal
+              # certs, ad-hoc photos) — separate from inspection files.
+              files: [:uploaded_by],
+              # Every MO booking that references this lot, with the
+              # full pickup → confirm → consume chain of sign-offs.
+              mo_bookings: [
+                :manufacturing_order,
+                :picked_by,
+                :received_by,
+                :consumed_by
+              ],
+              # Return picks (production → warehouse) on output lots.
+              # Lots can have multiple return picks if split.
+              return_picks: [
+                :picked_by,
+                :placed_by,
+                picked_from_cell: ^cell_with_breadcrumb,
+                placed_to_cell: ^cell_with_breadcrumb
+              ],
               placements: [storage_cell: ^cell_with_breadcrumb],
               movements:
                 ^from(m in Movement,

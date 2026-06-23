@@ -14,16 +14,24 @@ import type {
  * /stock/lots server component for an SSR-first render — the
  * DataTable then takes over pagination + filtering on the client.
  */
-export async function listStockLotsPage(): Promise<{
+export async function listStockLotsPage(
+  filters: { item_id?: number } = {},
+): Promise<{
   items: StockLot[];
   next_cursor: string | null;
 } | null> {
   const token = await getSessionToken();
   if (!token) return null;
 
+  const qs = new URLSearchParams();
+  if (typeof filters.item_id === "number") {
+    qs.set("item_id", String(filters.item_id));
+  }
+  const suffix = qs.toString();
+
   try {
     return await api<{ items: StockLot[]; next_cursor: string | null }>(
-      "/api/stock/lots",
+      `/api/stock/lots${suffix ? `?${suffix}` : ""}`,
       { token, cache: "no-store" },
     );
   } catch {

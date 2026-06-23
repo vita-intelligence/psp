@@ -17,6 +17,12 @@ import { LotHeader } from "./lot-header";
 import { LotEditForm } from "./lot-edit-form";
 import { LotPlacementsCard } from "./lot-placements-card";
 import { LotMovementTimeline } from "./lot-movement-timeline";
+import { LotInspectionCard } from "./lot-inspection-card";
+import { LotMoBookingsCard } from "./lot-mo-bookings-card";
+import {
+  LotFilesCard,
+  LotReturnPicksCard,
+} from "./lot-extras-card";
 
 export const metadata = { title: "Lot detail · Stock · PSP" };
 
@@ -76,6 +82,34 @@ export default async function StockLotDetailPage({
           />
 
           <LotPlacementsCard lot={lot} />
+
+          {lot.goods_in_inspection && prefs && (
+            <LotInspectionCard
+              inspection={lot.goods_in_inspection}
+              prefs={prefs}
+            />
+          )}
+
+          {lot.mo_bookings && lot.mo_bookings.length > 0 && prefs && (
+            <LotMoBookingsCard
+              bookings={lot.mo_bookings}
+              uomSymbol={lot.unit_of_measurement?.symbol ?? ""}
+              prefs={prefs}
+            />
+          )}
+
+          {lot.return_picks && lot.return_picks.length > 0 && prefs && (
+            <LotReturnPicksCard
+              picks={lot.return_picks}
+              uomSymbol={lot.unit_of_measurement?.symbol ?? ""}
+              holdingName={holdingName}
+              prefs={prefs}
+            />
+          )}
+
+          {lot.files && lot.files.length > 0 && prefs && (
+            <LotFilesCard files={lot.files} prefs={prefs} />
+          )}
 
           <LotMovementTimeline
             movements={movements}

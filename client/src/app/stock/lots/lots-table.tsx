@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { FilePlus, Printer } from "lucide-react";
+import { Filter, FilePlus, Printer, X } from "lucide-react";
 import { PrintLabelDialog } from "./print-label-dialog";
 import { DataTable } from "@/components/data-table";
 import type {
@@ -27,6 +27,13 @@ interface LotsTableProps {
   initialPage: PageResult<StockLot>;
   warehouses: Warehouse[];
   canReceive: boolean;
+  /** Server-resolved deep-link filter from `?item_id=<n>`. The lot
+   *  list scopes to this item until the user clears the chip. */
+  itemFilter: {
+    id: number;
+    name: string | null;
+    code: string | null;
+  } | null;
 }
 
 const DEFAULT_SORT: SortSpec = { field: "id", direction: "desc" };
@@ -69,47 +76,63 @@ const STATUS_FILTER: FilterDef = {
   ).map((s) => ({ label: STATUS_LABEL[s], value: s })),
 };
 
-async function fetchLotsPage(params: {
-  cursor: string | null;
-  limit: number;
-  sort: SortSpec | null;
-  filters: Record<string, string | boolean | number>;
-  search: string;
-}): Promise<PageResult<StockLot>> {
-  const qs = new URLSearchParams();
-  qs.set("limit", String(params.limit));
-  if (params.cursor) qs.set("cursor", params.cursor);
-  if (params.sort)
-    qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
-  if (params.search) qs.set("search", params.search);
-  for (const [k, v] of Object.entries(params.filters)) {
-    qs.set(k, String(v));
-  }
-
-  const res = await fetch(`/api/stock/lots?${qs.toString()}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body?.detail) detail = body.detail;
-    } catch {
-      /* leave detail */
+function makeFetchLotsPage(itemFilterId: number | null) {
+  return async function fetchLotsPage(params: {
+    cursor: string | null;
+    limit: number;
+    sort: SortSpec | null;
+    filters: Record<string, string | boolean | number>;
+    search: string;
+  }): Promise<PageResult<StockLot>> {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit));
+    if (params.cursor) qs.set("cursor", params.cursor);
+    if (params.sort)
+      qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
+    if (params.search) qs.set("search", params.search);
+    for (const [k, v] of Object.entries(params.filters)) {
+      qs.set(k, String(v));
     }
-    throw new Error(detail);
-  }
-  return (await res.json()) as PageResult<StockLot>;
+    // Deep-link filter is server-pinned — it stays applied on every
+    // paginated fetch until the user clears the chip in the banner.
+    if (itemFilterId !== null) {
+      qs.set("item_id", String(itemFilterId));
+    }
+
+    const res = await fetch(`/api/stock/lots?${qs.toString()}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = (await res.json()) as { detail?: string };
+        if (body?.detail) detail = body.detail;
+      } catch {
+        /* leave detail */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as PageResult<StockLot>;
+  };
 }
 
 export function LotsTable({
   initialPage,
   warehouses,
   canReceive,
+  itemFilter,
 }: LotsTableProps) {
   const router = useRouter();
   const prefs = useFormatPrefs();
   const [printLot, setPrintLot] = useState<StockLot | null>(null);
+
+  // Memo the fetcher so its identity is stable across re-renders for
+  // the same itemFilterId — otherwise the DataTable's query key
+  // changes every render and refetches in a loop.
+  const fetchLotsPage = useMemo(
+    () => makeFetchLotsPage(itemFilter?.id ?? null),
+    [itemFilter?.id],
+  );
 
   // Warehouses are dynamic per-company so the FilterDef is built at
   // render time rather than statically. Stable identity via useMemo so
@@ -314,6 +337,33 @@ export function LotsTable({
         filters={filters}
         defaultSort={DEFAULT_SORT}
         onRowClick={(l) => router.push(`/stock/lots/${l.uuid}`)}
+        beforeTable={
+          itemFilter ? (
+            <div className="flex items-center justify-between gap-3 rounded-md border border-brand/40 bg-brand/5 px-3 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <Filter className="size-3.5 text-brand" />
+                <span className="text-muted-foreground">
+                  Filtered to item
+                </span>
+                <span className="font-medium">
+                  {itemFilter.name ?? `#${itemFilter.id}`}
+                </span>
+                {itemFilter.code && (
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {itemFilter.code}
+                  </span>
+                )}
+              </div>
+              <Link
+                href="/stock/lots"
+                className="inline-flex items-center gap-1 text-brand hover:underline"
+              >
+                <X className="size-3" />
+                Clear
+              </Link>
+            </div>
+          ) : undefined
+        }
         toolbarActions={
           canReceive ? (
             <Button asChild size="sm">

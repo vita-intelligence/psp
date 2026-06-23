@@ -1541,10 +1541,113 @@ export interface StockLot {
   package_weight_kg: string | null;
   units_per_package: number | null;
   stack_factor: number | null;
+  /** Goods-In Inspection that produced this lot (PO receives only).
+   *  Null for manual lots, opening balance, and MO output. */
+  goods_in_inspection?: GoodsInInspectionFull | null;
+  /** Direct lot attachments — CoA, QC reports, photos uploaded any
+   *  time during the lot's life. Separate from inspection files. */
+  files?: StockLotFile[];
+  /** Every MO that's booked this lot, with picker → confirm →
+   *  consume sign-off chain. */
+  mo_bookings?: StockLotMoBooking[];
+  /** Return picks (production_feed → warehouse) for output lots. */
+  return_picks?: StockLotReturnPick[];
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;
   updated_by?: AuditActor | null;
+}
+
+export interface StockLotFile {
+  id: number;
+  uuid: string;
+  kind: "qc_report" | "disposal_certificate" | "hold_notice" | "photo" | "other";
+  filename: string;
+  mime: string;
+  byte_size: number;
+  url: string | null;
+  uploaded_by: AuditActor | null;
+  inserted_at: string;
+}
+
+export interface StockLotMoBooking {
+  id: number;
+  uuid: string;
+  quantity: string;
+  consumed_quantity: string;
+  status: string;
+  mo: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+  } | null;
+  picked_at: string | null;
+  picked_by: AuditActor | null;
+  received_at: string | null;
+  received_by: AuditActor | null;
+  received_qty: string | null;
+  received_notes: string | null;
+  consumed_at: string | null;
+  consumed_by: AuditActor | null;
+}
+
+export interface StockLotReturnPick {
+  id: number;
+  uuid: string;
+  qty: string;
+  picked_at: string | null;
+  picked_by: AuditActor | null;
+  picked_photo_url: string | null;
+  placed_at: string | null;
+  placed_by: AuditActor | null;
+  placed_photo_url: string | null;
+  picked_from_cell: StockLotCellSummary | null;
+  placed_to_cell: StockLotCellSummary | null;
+}
+
+/** Slim GoodsIn inspection shape rendered on the lot detail page —
+ *  matches `Payloads.goods_in_inspection/1`. Section bags are kept as
+ *  loose maps (the FE just shows the boolean check pattern). */
+export interface GoodsInInspectionFull {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: string;
+  delivery_date: string | null;
+  delivery_time: string | null;
+  transport_company: string | null;
+  vehicle_registration: string | null;
+  seal_number: string | null;
+  vehicle_inspection: Record<string, unknown>;
+  documentation_verification: Record<string, unknown>;
+  physical_inspection: Record<string, unknown>;
+  food_safety_checks: Record<string, unknown>;
+  storage_verification: Record<string, unknown>;
+  quality_decision: string | null;
+  quality_decision_reason: string | null;
+  goods_in_operator: AuditActor | null;
+  goods_in_operator_signed_at: string | null;
+  goods_in_operator_signature_image: string | null;
+  quality_approver: AuditActor | null;
+  quality_approver_signed_at: string | null;
+  quality_approver_signature_image: string | null;
+  purchase_order_id: number | null;
+  purchase_order_uuid: string | null;
+  items?: Array<Record<string, unknown>>;
+  files?: Array<{
+    id: number;
+    uuid: string;
+    kind: string;
+    filename: string;
+    mime: string;
+    byte_size: number;
+    url: string | null;
+    uploaded_at: string;
+    uploaded_by: AuditActor | null;
+  }>;
+  inserted_at: string;
+  updated_at: string;
 }
 
 /** Picker row from /api/stock/cells — flat cell with warehouse +
