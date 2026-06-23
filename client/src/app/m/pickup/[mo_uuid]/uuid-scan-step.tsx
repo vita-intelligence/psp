@@ -14,7 +14,10 @@ type ScanStatus =
   | { kind: "confirmed" };
 
 interface Props {
-  /** UUID that the scanned QR must match. */
+  /** UUID that the scanned QR must match. Use `"*"` to accept any
+   *  well-formed UUID — required for surfaces like return-pickup's
+   *  destination-rack step where the operator is free to scan any
+   *  warehouse cell. */
   expectedUuid: string;
   /** Which kind of label is expected — drives URL parsing + copy. */
   kind: "lot" | "cell";
@@ -23,6 +26,9 @@ interface Props {
   expectedLabel: string;
   onConfirmed: () => void;
   onCancel: () => void;
+  /** When `expectedUuid === "*"` (freeform mode), fires with the
+   *  parsed UUID so the parent can take that value forward. */
+  onScanned?: (uuid: string) => void;
 }
 
 /**
@@ -38,6 +44,7 @@ export function UuidScanStep({
   expectedLabel,
   onConfirmed,
   onCancel,
+  onScanned,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerRef = useRef<QrScanner | null>(null);
@@ -65,15 +72,16 @@ export function UuidScanStep({
         });
         return;
       }
-      if (uuid !== expectedUuid) {
+      if (expectedUuid !== "*" && uuid !== expectedUuid) {
         setStatus({ kind: "wrong", scanned: uuid });
         return;
       }
       setStatus({ kind: "confirmed" });
       scannerRef.current?.stop();
+      if (expectedUuid === "*") onScanned?.(uuid);
       setTimeout(() => onConfirmed(), 350);
     },
-    [expectedUuid, kind, onConfirmed],
+    [expectedUuid, kind, onConfirmed, onScanned],
   );
 
   useEffect(() => {
@@ -294,7 +302,14 @@ export function UuidScanStep({
               size="sm"
               variant="outline"
               className="shrink-0"
-              onClick={() => handle(expectedUuid)}
+              onClick={() =>
+                handle(
+                  expectedUuid === "*"
+                    ? "00000000-0000-0000-0000-000000000000"
+                    : expectedUuid,
+                )
+              }
+              disabled={expectedUuid === "*"}
             >
               <FastForward className="mr-1.5 size-3.5" />
               Skip scan

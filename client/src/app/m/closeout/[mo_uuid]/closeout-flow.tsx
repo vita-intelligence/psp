@@ -22,15 +22,19 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
+  Building2,
   CheckCircle2,
   Camera,
   ChevronRight,
   ImagePlus,
+  Layers,
   Loader2,
+  MapPin,
   PackageCheck,
   PackageOpen,
   RefreshCw,
   ScanLine,
+  Sparkles,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -51,6 +55,7 @@ import type {
   ManufacturingOrderBooking,
 } from "@/lib/production/types";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
+import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 
 type Step =
   | { kind: "overview" }
@@ -531,49 +536,26 @@ export function CloseoutFlow({
       )}
 
       {step.kind === "scan_cell" && activeItem && (
-        <main className="flex-1 px-4 py-4 space-y-3">
+        <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
           <div className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
             <p className="text-[10px] uppercase tracking-wider">
-              Step 3 of 3 — scan dispatch cell
+              Step 3 of 3 — drop at dispatch cell
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
-              Hand off to a production-side dispatch cell
+              {scannedCell
+                ? "Walk to the highlighted cell below, then confirm"
+                : "Pick a production-side dispatch cell to hand off to"}
             </p>
           </div>
 
           {scannedCell ? (
-            <div className="space-y-2">
-              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-200">
-                <p className="font-medium">{scannedCell.code}</p>
-                <p className="text-[11px] opacity-80">
-                  {scannedCell.location?.floor?.warehouse?.name ?? "—"} ·{" "}
-                  {scannedCell.location?.floor?.name ?? "—"}
-                </p>
-              </div>
-              {errorDetail && <ErrorBanner detail={errorDetail} />}
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="flex-1"
-                  onClick={() => setScannedCell(null)}
-                >
-                  Re-scan
-                </Button>
-                <Button
-                  type="button"
-                  className="flex-1"
-                  onClick={submit}
-                  disabled={pending}
-                >
-                  {pending && (
-                    <Loader2 className="mr-1.5 size-4 animate-spin" />
-                  )}
-                  <CheckCircle2 className="mr-1.5 size-4" />
-                  Confirm hand-off
-                </Button>
-              </div>
-            </div>
+            <DispatchDirections
+              cell={scannedCell}
+              onReselect={() => setScannedCell(null)}
+              onConfirm={submit}
+              pending={pending}
+              errorDetail={errorDetail}
+            />
           ) : (
             <CellPicker
               cells={dispatchCells}
@@ -656,6 +638,141 @@ function CellPicker({
         Back
       </Button>
     </div>
+  );
+}
+
+function DispatchDirections({
+  cell,
+  onReselect,
+  onConfirm,
+  pending,
+  errorDetail,
+}: {
+  cell: DispatchCell;
+  onReselect: () => void;
+  onConfirm: () => void;
+  pending: boolean;
+  errorDetail: string | null;
+}) {
+  const rackCode = cell.location?.code?.trim() || null;
+  const rackName = cell.location?.name?.trim() || null;
+  const cellCode = cell.code?.trim() || null;
+  const shelfLabel =
+    cell.name?.trim() ||
+    (cell.ordinal !== null && cell.ordinal !== undefined
+      ? `Level ${cell.ordinal + 1}`
+      : `Cell ${cell.id}`);
+
+  return (
+    <div className="space-y-3">
+      {cell.location?.floor?.uuid && cell.location?.uuid && (
+        <FloorPlanMini
+          floorUuid={cell.location.floor.uuid}
+          targetLocationUuid={cell.location.uuid}
+        />
+      )}
+
+      <ul className="space-y-2">
+        <DirectionsRow
+          icon={Building2}
+          label="Warehouse"
+          value={cell.location?.floor?.warehouse?.name ?? "—"}
+        />
+        <DirectionsRow
+          icon={Layers}
+          label="Floor"
+          value={cell.location?.floor?.name ?? "—"}
+        />
+        <DirectionsRow
+          icon={MapPin}
+          label="Rack"
+          value={rackName ?? rackCode ?? "—"}
+          suffix={rackCode && rackName ? rackCode : null}
+        />
+        <DirectionsRow
+          icon={Sparkles}
+          label="Shelf"
+          value={cellCode ?? shelfLabel}
+          suffix={cellCode ? shelfLabel : null}
+          hero
+        />
+      </ul>
+
+      {errorDetail && <ErrorBanner detail={errorDetail} />}
+
+      <div className="flex gap-2 pt-1">
+        <Button
+          type="button"
+          variant="ghost"
+          className="flex-1"
+          onClick={onReselect}
+          disabled={pending}
+        >
+          Re-pick
+        </Button>
+        <Button
+          type="button"
+          className="flex-1"
+          onClick={onConfirm}
+          disabled={pending}
+        >
+          {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+          <CheckCircle2 className="mr-1.5 size-4" />
+          Confirm hand-off
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function DirectionsRow({
+  icon: Icon,
+  label,
+  value,
+  suffix,
+  hero,
+}: {
+  icon: typeof Building2;
+  label: string;
+  value: string;
+  suffix?: string | null;
+  hero?: boolean;
+}) {
+  return (
+    <li
+      className={
+        hero
+          ? "flex items-center gap-3 rounded-lg border-2 border-brand/40 bg-brand/[0.06] px-3 py-3"
+          : "flex items-center gap-3 rounded-lg border border-border/60 bg-card px-3 py-2"
+      }
+    >
+      <span
+        className={
+          hero
+            ? "grid size-9 shrink-0 place-items-center rounded-full bg-brand/15 text-brand"
+            : "grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground"
+        }
+      >
+        <Icon className={hero ? "size-4" : "size-3.5"} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p
+          className={
+            hero ? "truncate text-base font-semibold" : "truncate text-sm"
+          }
+        >
+          {value}
+          {suffix && (
+            <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">
+              {suffix}
+            </span>
+          )}
+        </p>
+      </div>
+    </li>
   );
 }
 

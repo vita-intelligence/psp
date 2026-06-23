@@ -9,6 +9,7 @@ import {
   Package,
   PackageCheck,
   PackageOpen,
+  PackagePlus,
   Truck,
   Wifi,
   WifiOff,
@@ -103,6 +104,15 @@ export const MOBILE_HOME_TILES = [
     description: "Hand off after production — scan, photo, qty",
     icon: PackageCheck,
     permission: "production.closeout",
+    badgeKey: null,
+  },
+  {
+    key: "return_pickup",
+    href: "/m/return-pickup",
+    label: "Return pickup",
+    description: "Pull closed-out stock back to warehouse storage",
+    icon: PackagePlus,
+    permission: "warehouse.return_pickup",
     badgeKey: null,
   },
   {

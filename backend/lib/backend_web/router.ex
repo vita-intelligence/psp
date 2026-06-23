@@ -652,6 +652,31 @@ defmodule BackendWeb.Router do
       post "/closeout/:mo_uuid/output-lots/:lot_uuid",
            ProductionCloseoutController,
            :close_output
+
+      # Warehouse return pickup — Phase C. Warehouse worker walks
+      # the production-side dispatch cells, scans lots onto the
+      # trolley, then places every lot back into warehouse storage.
+      # Gated by `warehouse.return_pickup`.
+      get "/return-pickup-queue", WarehouseReturnPickupController, :queue
+      get "/return-pickup/loose", WarehouseReturnPickupController, :loose
+      get "/return-pickup/trolley", WarehouseReturnPickupController, :trolley
+      get "/return-pickup/:mo_uuid", WarehouseReturnPickupController, :show
+
+      post "/return-pickup/lots/:lot_uuid/pick",
+           WarehouseReturnPickupController,
+           :pick
+
+      get "/return-pickup/picks/:pick_uuid/recommendations",
+          WarehouseReturnPickupController,
+          :recommendations
+
+      post "/return-pickup/picks/:pick_uuid/place",
+           WarehouseReturnPickupController,
+           :place
+
+      post "/return-pickup/picks/:pick_uuid/abort",
+           WarehouseReturnPickupController,
+           :abort
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

@@ -5490,14 +5490,26 @@ defmodule Backend.Production do
          dest_cell,
          photo_url
        ) do
+    # The lot sits at the MO's production-feed cell after the warehouse
+    # picker's confirm-transfer step. `booking.storage_cell_id` is the
+    # ORIGINAL warehouse cell it was picked from (audit trail) — NOT
+    # where the lot lives now. Source the closeout move from the
+    # production-feed cell directly so we don't accidentally move from
+    # the lot's main warehouse stock.
     lot = Repo.get!(StockLot, booking.stock_lot_id)
-    placement = locate_lot_placement(lot, booking.storage_cell_id)
+    mo = Repo.get!(ManufacturingOrder, booking.manufacturing_order_id)
+    placement = locate_production_feed_placement(lot, mo.production_cell_id)
 
     cond do
       placement == nil ->
+        # Nothing to move — either the lot was already fully consumed
+        # mid-run (booking.consumed_quantity reached qty during
+        # production) or the picker bypassed the standard flow. Either
+        # way, no movement to emit.
         :ok
 
       Decimal.compare(remaining, Decimal.new(0)) == :eq ->
+        # Consumed everything → drop the production-feed placement to 0.
         case Backend.Stock.Placement.changeset(placement, %{"qty" => Decimal.new(0)})
              |> Repo.update() do
           {:ok, _} -> :ok
@@ -5505,6 +5517,7 @@ defmodule Backend.Production do
         end
 
       true ->
+        # Leftover → move the production-feed placement to dispatch.
         case Backend.Stock.move_placement(actor, lot.uuid, %{
                "from_cell_uuid" => placement.storage_cell.uuid,
                "to_cell_uuid" => dest_cell.uuid,
@@ -5519,16 +5532,39 @@ defmodule Backend.Production do
     end
   end
 
-  defp locate_lot_placement(%StockLot{id: lot_id}, expected_cell_id) do
-    candidates =
-      from(p in Backend.Stock.Placement,
-        where: p.stock_lot_id == ^lot_id and p.qty > 0,
-        preload: [:storage_cell]
-      )
-      |> Repo.all()
+  # Looks up the lot's placement at the MO's production-feed cell.
+  # Returns nil if no such placement exists or its qty is 0 — both
+  # mean "nothing to move" and closeout treats that as a no-op.
+  defp locate_production_feed_placement(_lot, nil), do: nil
 
-    Enum.find(candidates, &(&1.storage_cell_id == expected_cell_id)) ||
-      List.first(candidates)
+  defp locate_production_feed_placement(%StockLot{id: lot_id}, production_cell_id) do
+    case Repo.get_by(Backend.Stock.Placement,
+           stock_lot_id: lot_id,
+           storage_cell_id: production_cell_id
+         ) do
+      %Backend.Stock.Placement{qty: qty} = p ->
+        if Decimal.compare(qty, Decimal.new(0)) == :gt do
+          Repo.preload(p, :storage_cell)
+        else
+          nil
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  # Output lots are produced into a single placement at the MO's
+  # production-feed cell, so we just pick the only non-zero
+  # placement. No risk of confusing a warehouse-stored variant since
+  # produced output lots are born here.
+  defp locate_output_lot_placement(%StockLot{id: lot_id}) do
+    from(p in Backend.Stock.Placement,
+      where: p.stock_lot_id == ^lot_id and p.qty > 0,
+      preload: [:storage_cell],
+      limit: 1
+    )
+    |> Repo.one()
   end
 
   @doc """
@@ -5543,7 +5579,7 @@ defmodule Backend.Production do
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          {:ok, dest_cell} <-
            maybe_resolve_dispatch_cell(actor.company_id, attrs, Decimal.new(1)),
-         placement when not is_nil(placement) <- locate_lot_placement(lot, nil) do
+         placement when not is_nil(placement) <- locate_output_lot_placement(lot) do
       case Backend.Stock.move_placement(actor, lot.uuid, %{
              "from_cell_uuid" => placement.storage_cell.uuid,
              "to_cell_uuid" => dest_cell.uuid,

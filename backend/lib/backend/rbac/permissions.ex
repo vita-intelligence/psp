@@ -211,7 +211,9 @@ defmodule Backend.RBAC.Permissions do
   # the freeform between-cell move stock.move covers.
   @warehouse [
     {"warehouse.pick",
-     "Start, scan, abort, and confirm-transfer warehouse pickup for a released MO"}
+     "Start, scan, abort, and confirm-transfer warehouse pickup for a released MO"},
+    {"warehouse.return_pickup",
+     "Pick up closed-out MO materials + produced output from the production-side dispatch cell and place them back into warehouse storage"}
   ]
 
   def all do
@@ -661,6 +663,16 @@ defmodule Backend.RBAC.Permissions do
             read: nil,
             create: nil,
             update: "production.closeout",
+            delete: nil
+          },
+          %{
+            key: "warehouse_return_pickup",
+            label: "Pick up from production (mobile)",
+            description:
+              "Mobile-only — walk the production-side dispatch cells after closeout, scan each lot onto the trolley, then place every lot into the warehouse on a scanned target rack + photo. Re-makes lots available in storage.",
+            read: nil,
+            create: nil,
+            update: "warehouse.return_pickup",
             delete: nil
           }
         ]

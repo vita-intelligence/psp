@@ -783,6 +783,70 @@ export interface DispatchCell {
   } | null;
 }
 
+/** Warehouse return-pickup queue card (Phase C). */
+export interface ReturnPickupQueueEntry {
+  mo: ManufacturingOrderSummary;
+  actual_finish: string | null;
+  lots_at_dispatch: number;
+  production_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+  } | null;
+}
+
+/** Lot sitting at a production-side dispatch cell, awaiting pickup. */
+export interface ReturnPickupLot {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: string;
+  qty_on_hand: string;
+  item: BOMPartSummary | null;
+  uom: { id: number; symbol: string; name: string } | null;
+  source_kind: string;
+  source_ref: string | null;
+  dispatch_cell: DispatchCell | null;
+}
+
+/** A warehouse worker's open trolley row — lot is off the dispatch
+ *  cell logically but not yet placed at a warehouse rack. */
+export interface ReturnPickRow {
+  id: number;
+  uuid: string;
+  qty: string;
+  picked_at: string;
+  picked_photo_url: string | null;
+  placed_at: string | null;
+  placed_photo_url: string | null;
+  stock_lot: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+    item: BOMPartSummary | null;
+    uom: { id: number; symbol: string; name: string } | null;
+  } | null;
+  picked_from_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    purpose: string | null;
+  } | null;
+  placed_to_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    purpose: string | null;
+  } | null;
+  picked_by: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string;
+  } | null;
+}
+
 export interface BookableLot {
   id: number;
   uuid: string;

@@ -1615,6 +1615,211 @@ defmodule BackendWeb.Payloads do
 
   def dispatch_cell(_), do: nil
 
+  # ----- Warehouse return pickup (Phase C) ----------------------
+
+  @doc """
+  Queue row for the warehouse-side return pickup tab. Mirrors
+  `closeout_queue_entry/1` but framed around the lot count waiting
+  in dispatch instead of the closeout state.
+  """
+  def return_pickup_queue_entry(
+        %Backend.Production.ManufacturingOrder{} = mo,
+        lot_count
+      )
+      when is_integer(lot_count) do
+    %{
+      mo: manufacturing_order_summary(mo),
+      actual_finish: mo.actual_finish,
+      lots_at_dispatch: lot_count,
+      production_cell:
+        mo.production_cell &&
+          %{
+            id: mo.production_cell.id,
+            uuid: mo.production_cell.uuid,
+            name: mo.production_cell.name
+          }
+    }
+  end
+
+  def return_pickup_queue_entry(_, _), do: nil
+
+  @doc """
+  One lot sitting at a production-side dispatch cell, ready for the
+  warehouse worker to scan onto their trolley. Only the dispatch
+  placement is surfaced — the lot may also live at its original
+  warehouse rack (e.g. partial-consume remainder), but that portion
+  isn't relevant to the return pickup.
+  """
+  def return_pickup_lot(%Backend.Stock.Lot{} = lot) do
+    placement = first_dispatch_placement(lot)
+
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      status: lot.status,
+      qty_on_hand:
+        case placement do
+          nil -> "0"
+          p -> decimal_to_string(p.qty)
+        end,
+      item: maybe_item_summary(lot.item),
+      uom:
+        lot.unit_of_measurement &&
+          %{
+            id: lot.unit_of_measurement.id,
+            symbol: lot.unit_of_measurement.symbol,
+            name: lot.unit_of_measurement.name
+          },
+      source_kind: lot.source_kind,
+      source_ref: lot.source_ref,
+      dispatch_cell:
+        case placement do
+          nil -> nil
+          p -> dispatch_cell(p.storage_cell)
+        end
+    }
+  end
+
+  def return_pickup_lot(_), do: nil
+
+  @doc """
+  Trolley row — warehouse worker currently holding the lot in flight
+  between the dispatch cell and the warehouse rack.
+  """
+  def return_pick_row(%Backend.Warehouses.ReturnPick{} = pick) do
+    %{
+      id: pick.id,
+      uuid: pick.uuid,
+      qty: decimal_to_string(pick.qty),
+      picked_at: pick.picked_at,
+      picked_photo_url: pick.picked_photo_url,
+      placed_at: pick.placed_at,
+      placed_photo_url: pick.placed_photo_url,
+      picked_by:
+        case pick.picked_by do
+          %Backend.Accounts.User{} = u ->
+            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+          _ ->
+            nil
+        end,
+      stock_lot:
+        case pick.stock_lot do
+          %Backend.Stock.Lot{} = lot ->
+            %{
+              id: lot.id,
+              uuid: lot.uuid,
+              code: render_code(lot, "stock_lot"),
+              status: lot.status,
+              item: maybe_item_summary(lot.item),
+              uom:
+                lot.unit_of_measurement &&
+                  %{
+                    id: lot.unit_of_measurement.id,
+                    symbol: lot.unit_of_measurement.symbol,
+                    name: lot.unit_of_measurement.name
+                  }
+            }
+
+          _ ->
+            nil
+        end,
+      picked_from_cell:
+        case pick.picked_from_cell do
+          %Backend.Warehouses.StorageCell{} = c ->
+            %{id: c.id, uuid: c.uuid, name: c.name, purpose: c.purpose}
+
+          _ ->
+            nil
+        end,
+      placed_to_cell:
+        case pick.placed_to_cell do
+          %Backend.Warehouses.StorageCell{} = c ->
+            %{id: c.id, uuid: c.uuid, name: c.name, purpose: c.purpose}
+
+          _ ->
+            nil
+        end
+    }
+  end
+
+  def return_pick_row(_), do: nil
+
+  @doc """
+  Recommendation row shaped for the mobile place-step. Mirrors the
+  payload `StockLotController.move_recommendations` builds inline —
+  extracted here so the return-pickup controller can reuse it
+  verbatim.
+  """
+  def move_recommendation(%{row: r, score: score, base_score: base_score}) do
+    %{
+      score: score,
+      reason: move_recommendation_reason(base_score),
+      fit: %{
+        free_pct: r.fit.free_pct,
+        percent_used: r.fit.percent_used,
+        current_percent_used: Map.get(r.fit, :current_percent_used, 0),
+        projected_percent_used:
+          Map.get(r.fit, :projected_percent_used, r.fit.percent_used)
+      },
+      cell: %{
+        id: r.cell.id,
+        uuid: r.cell.uuid,
+        name: r.cell.name,
+        code:
+          if(r.cell.system_kind,
+            do: nil,
+            else: render_entity_code(r.cell, "storage_cell")
+          ),
+        ordinal: r.cell.ordinal,
+        tags: r.cell.tags || [],
+        storage_location: %{
+          id: r.location.id,
+          uuid: r.location.uuid,
+          name: r.location.name,
+          code: render_entity_code(r.location, "storage_location"),
+          tags: r.location.tags || []
+        },
+        floor: %{id: r.floor.id, uuid: r.floor.uuid, name: r.floor.name},
+        warehouse: %{
+          id: r.warehouse.id,
+          uuid: r.warehouse.uuid,
+          name: r.warehouse.name
+        }
+      }
+    }
+  end
+
+  def move_recommendation(_), do: nil
+
+  defp move_recommendation_reason(10), do: "Same item already here"
+  defp move_recommendation_reason(8), do: "Matches all storage tags"
+  defp move_recommendation_reason(4), do: "Matches some storage tags"
+  defp move_recommendation_reason(1), do: "Untagged item — any cell works"
+  defp move_recommendation_reason(_), do: "Available"
+
+  defp first_placement(%Backend.Stock.Lot{placements: list}) when is_list(list) do
+    Enum.find(list, fn p -> Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt end)
+  end
+
+  defp first_placement(_), do: nil
+
+  # Return-pickup payload helper — narrows to placements whose cell
+  # is a dispatch cell with qty > 0. A lot may live at multiple
+  # cells (its original warehouse rack + a dispatch cell after
+  # closeout's partial hand-off); the return pickup only cares about
+  # the dispatch portion.
+  defp first_dispatch_placement(%Backend.Stock.Lot{placements: list})
+       when is_list(list) do
+    Enum.find(list, fn p ->
+      Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt and
+        match?(%Backend.Warehouses.StorageCell{purpose: "dispatch"}, p.storage_cell)
+    end)
+  end
+
+  defp first_dispatch_placement(_), do: nil
+
   # Production-feed cell breadcrumb — fed into the run detail screen
   # so the floor operator sees the highlighted rack on the floor plan
   # without an extra fetch. Mirrors `mo_booking_cell_summary`.

@@ -88,7 +88,8 @@ export type PermissionCode =
   | "production.qc_output"
   | "production.closeout"
   | "production.mo_delete"
-  | "warehouse.pick";
+  | "warehouse.pick"
+  | "warehouse.return_pickup";
 
 /**
  * Server-side / RSC-safe permission check. Server components and
