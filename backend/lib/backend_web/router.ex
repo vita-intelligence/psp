@@ -22,6 +22,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "customer"
   end
 
+  pipeline :comments_pricelist do
+    plug :put_entity_type, "pricelist"
+  end
+
   pipeline :comments_purchase_order do
     plug :put_entity_type, "purchase_order"
   end
@@ -329,6 +333,22 @@ defmodule BackendWeb.Router do
       post "/files", CustomerController, :upload_file
       get "/files/:id/serve", CustomerController, :serve_file
       delete "/files/:id", CustomerController, :remove_file
+    end
+
+    # Pricelists — sell-side selling-price quotes. Header + tiered
+    # line items (multiple rows per item × min-qty so 1-99 / 100-999
+    # / 1000+ pricing falls out without extra schema). Read by the
+    # future Customer Order line form via Pricelists.price_for/3.
+    resources "/pricelists", PricelistController, except: [:new, :edit] do
+      # Flip the company-wide default. Wrapped server-side in a tx
+      # so the partial unique index never sees two defaults.
+      post "/set-default", PricelistController, :set_default
+
+      # Line-item writes. Nested so a UUID typo can't land on the
+      # wrong pricelist.
+      post "/lines", PricelistController, :add_line
+      put "/lines/:id", PricelistController, :update_line
+      delete "/lines/:id", PricelistController, :remove_line
     end
 
     # Purchase orders. Two-tier ESIGN approval + per-line state
@@ -827,6 +847,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/customers/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_customer]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/pricelists/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_pricelist]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

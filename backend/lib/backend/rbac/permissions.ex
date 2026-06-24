@@ -142,6 +142,18 @@ defmodule Backend.RBAC.Permissions do
      "Approve / reject customers (4-eyes gate — must differ from creator)"}
   ]
 
+  # Pricelists — sell-side price quotes. View is the read baseline.
+  # Edit covers the line items (per-item tiered selling prices) and
+  # the header. Delete is split out so admins can hand it off without
+  # giving edit. No approve gate by design — pricelists are "save =
+  # live"; audit history captures who changed what.
+  @pricelists [
+    {"pricelists.view", "View pricelists + per-pricelist line items"},
+    {"pricelists.create", "Add new pricelists"},
+    {"pricelists.edit", "Edit pricelist header + line items"},
+    {"pricelists.delete", "Delete pricelists"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -246,6 +258,7 @@ defmodule Backend.RBAC.Permissions do
         @stock ++
         @vendors ++
         @customers ++
+        @pricelists ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -270,6 +283,7 @@ defmodule Backend.RBAC.Permissions do
       stock: @stock,
       vendors: @vendors,
       customers: @customers,
+      pricelists: @pricelists,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -466,6 +480,16 @@ defmodule Backend.RBAC.Permissions do
             create: nil,
             update: "customers.approve",
             delete: nil
+          },
+          %{
+            key: "pricelists",
+            label: "Pricelists",
+            description:
+              "Sell-side selling-price quotes. Tiered pricing per (pricelist × item × min-qty). Customers point at one pricelist; a company default catches everything else. Save = live, no approval gate.",
+            read: "pricelists.view",
+            create: "pricelists.create",
+            update: "pricelists.edit",
+            delete: "pricelists.delete"
           }
         ]
       },

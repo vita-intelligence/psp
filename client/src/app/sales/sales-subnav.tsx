@@ -6,6 +6,7 @@ import {
   BarChart3,
   CalendarClock,
   Gift,
+  Home,
   PackageCheck,
   Receipt,
   ShoppingBag,
@@ -32,6 +33,7 @@ interface SubnavItem {
  * placeholders so the operator can see the planned shape.
  */
 const ITEMS: SubnavItem[] = [
+  { href: "/sales", label: "Overview", Icon: Home },
   { href: "/sales/customers", label: "Customers", Icon: Users },
   {
     href: "/sales/orders",
@@ -55,7 +57,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/pricelists",
     label: "Pricelists",
     Icon: Tags,
-    comingSoon: true,
   },
   {
     href: "/sales/cash-flow",
@@ -95,6 +96,9 @@ export function SalesSubnav() {
   const pathname = usePathname();
 
   function isActive(href: string): boolean {
+    // Overview is /sales exactly — without this special case it would
+    // match /sales/customers, /sales/pricelists, etc.
+    if (href === "/sales") return pathname === "/sales";
     return pathname === href || pathname.startsWith(`${href}/`);
   }
 
@@ -103,7 +107,7 @@ export function SalesSubnav() {
       aria-label="Sales sections"
       className="sticky top-16 z-[5] border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60"
     >
-      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 px-4 py-2 sm:grid-cols-5 sm:px-8 lg:grid-cols-10">
+      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 px-4 py-2 sm:grid-cols-6 sm:px-8 lg:grid-cols-11">
         {ITEMS.map((item) => {
           const active = isActive(item.href);
 

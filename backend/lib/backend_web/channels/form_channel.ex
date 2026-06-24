@@ -279,6 +279,11 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "customers.edit") or
         RBAC.has_permission?(user, "customers.create")
 
+  defp can_edit_resource?(user, "pricelist"),
+    do:
+      RBAC.has_permission?(user, "pricelists.edit") or
+        RBAC.has_permission?(user, "pricelists.create")
+
   defp can_edit_resource?(user, "purchase-order"),
     do: RBAC.has_permission?(user, "procurement.po_create")
 

@@ -5,6 +5,7 @@ import type { AuditActor } from "../types";
 export type CommentEntityType =
   | "vendor"
   | "customer"
+  | "pricelist"
   | "purchase_order"
   | "stock_lot"
   | "purchase_order_line"

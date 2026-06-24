@@ -1,36 +1,26 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ChevronLeft, Users } from "lucide-react";
+import { ChevronLeft, Tags } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { listUsersFirstPage } from "@/lib/users/server";
-import { listPricelistsForPicker } from "@/lib/pricelists/server";
 import { SalesSubnav } from "../../sales-subnav";
-import { CustomerForm } from "../customer-form";
+import { PricelistForm } from "../pricelist-form";
 
-export const metadata = { title: "New customer · Sales · PSP" };
+export const metadata = { title: "New pricelist · Sales · PSP" };
 
-export default async function NewCustomerPage() {
+export default async function NewPricelistPage() {
   const user = await requireUser();
-  if (!hasPermission(user, "customers.create")) {
-    redirect("/sales/customers");
+  if (!hasPermission(user, "pricelists.create")) {
+    redirect("/sales/pricelists");
   }
 
-  const [company, userListPage, pricelists] = await Promise.all([
-    getCompanyDefaults(),
-    listUsersFirstPage(100),
-    listPricelistsForPicker(),
-  ]);
-
+  const company = await getCompanyDefaults();
   if (!company) {
-    // No defaults ⇒ something is very wrong with the company endpoint;
-    // bounce back to the safe list page rather than render a broken
-    // form. (CompanyDefaults seeds currency / locale / dates.)
-    redirect("/sales/customers");
+    redirect("/sales/pricelists");
   }
 
   return (
@@ -48,30 +38,27 @@ export default async function NewCustomerPage() {
               size="sm"
               className="text-muted-foreground"
             >
-              <Link href="/sales/customers">
+              <Link href="/sales/pricelists">
                 <ChevronLeft className="mr-1 size-4" />
-                Back to customers
+                Back to pricelists
               </Link>
             </Button>
           </div>
 
           <header className="space-y-1.5">
             <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-              <Users className="size-6 text-brand sm:size-7" />
-              New customer
+              <Tags className="size-6 text-brand sm:size-7" />
+              New pricelist
             </h1>
             <p className="text-sm text-muted-foreground">
-              Lands as <strong>draft</strong> — approval (4-eyes) is a
-              separate gate downstream and unlocks Customer Order
-              creation against this account.
+              Create the header first. Line items can be added once the
+              pricelist exists.
             </p>
           </header>
 
-          <CustomerForm
-            customer={null}
+          <PricelistForm
+            pricelist={null}
             company={company}
-            users={userListPage.items}
-            pricelists={pricelists ?? []}
             canEdit={true}
           />
         </div>

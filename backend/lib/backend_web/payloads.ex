@@ -611,6 +611,69 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_customer_file(_, _), do: nil
 
+  # ---------------------------------------------------------------
+  # Pricelists.
+  # ---------------------------------------------------------------
+
+  @doc """
+  Full pricelist payload — list rows + detail page. Preloads line
+  items (with their item summary + stock UoM) so the FE detail page
+  renders in one round-trip.
+  """
+  def pricelist(p) do
+    %{
+      id: p.id,
+      uuid: p.uuid,
+      code: render_code(p, "pricelist"),
+      name: p.name,
+      currency_code: p.currency_code,
+      is_default: p.is_default,
+      is_active: p.is_active,
+      valid_from: p.valid_from,
+      valid_until: p.valid_until,
+      notes: p.notes,
+      items: preloaded_list(p, :items, &pricelist_item/1),
+      inserted_at: p.inserted_at,
+      updated_at: p.updated_at,
+      created_by: actor(p, :created_by),
+      updated_by: actor(p, :updated_by)
+    }
+  end
+
+  @doc """
+  Picker-shaped pricelist — id/uuid/name/code + the bits a customer
+  form / future CO form needs to surface the right pricelist to the
+  right line.
+  """
+  def pricelist_summary(p) do
+    %{
+      id: p.id,
+      uuid: p.uuid,
+      code: render_code(p, "pricelist"),
+      name: p.name,
+      currency_code: p.currency_code,
+      is_default: p.is_default,
+      is_active: p.is_active
+    }
+  end
+
+  @doc """
+  One pricelist line — the (pricelist × item × min_qty) tier row.
+  """
+  def pricelist_item(row) do
+    %{
+      uuid: row.uuid,
+      pricelist_id: row.pricelist_id,
+      item_id: row.item_id,
+      item: maybe_item_summary(row.item),
+      selling_price: row.selling_price,
+      min_quantity: row.min_quantity,
+      notes: row.notes,
+      inserted_at: row.inserted_at,
+      updated_at: row.updated_at
+    }
+  end
+
   @doc """
   Picker-shaped summary — id/uuid/name/code + the bits Customer Order
   forms will need to surface the right customer to the right line:

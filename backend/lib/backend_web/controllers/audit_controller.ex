@@ -65,6 +65,9 @@ defmodule BackendWeb.AuditController do
     "customer_contact" => "customers.view",
     "customer_file" => "customers.view",
     "customer_contact_event" => "customers.view",
+    # Pricelist domain — header + tiered line items.
+    "pricelist" => "pricelists.view",
+    "pricelist_item" => "pricelists.view",
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
@@ -383,6 +386,20 @@ defmodule BackendWeb.AuditController do
 
   defp check_parent_customer(actor, customer_id) do
     case Backend.Repo.get(Backend.Customers.Customer, customer_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "pricelist", entity_id) do
+    case Backend.Repo.get(Backend.Pricelists.Pricelist, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "pricelist_item", entity_id) do
+    case Backend.Repo.get(Backend.Pricelists.PricelistItem, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

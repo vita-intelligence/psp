@@ -39,6 +39,8 @@ type EntityType =
   | "customer_contact"
   | "customer_file"
   | "customer_contact_event"
+  | "pricelist"
+  | "pricelist_item"
   | "purchase_order"
   | "purchase_order_line"
   | "purchase_order_approval"

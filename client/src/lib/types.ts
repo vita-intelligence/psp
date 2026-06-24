@@ -168,6 +168,8 @@ export interface AuditEvent {
     | "customer_contact"
     | "customer_file"
     | "customer_contact_event"
+    | "pricelist"
+    | "pricelist_item"
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
@@ -698,6 +700,66 @@ export interface Customer {
   updated_at: string;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
+}
+
+// ---------------------------------------------------------------
+// Pricelists (sell-side selling-price quotes).
+// ---------------------------------------------------------------
+
+interface ItemSummaryRef {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  item_type: string;
+  external_sku: string | null;
+  stock_uom: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    symbol: string;
+  } | null;
+}
+
+export interface PricelistItemRow {
+  uuid: string;
+  pricelist_id: number;
+  item_id: number;
+  item: ItemSummaryRef | null;
+  selling_price: string;
+  min_quantity: string;
+  notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface Pricelist {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  currency_code: string;
+  is_default: boolean;
+  is_active: boolean;
+  valid_from: string | null;
+  valid_until: string | null;
+  notes: string | null;
+  items: PricelistItemRow[];
+  inserted_at: string;
+  updated_at: string;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+}
+
+export interface PricelistSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  currency_code: string;
+  is_default: boolean;
+  is_active: boolean;
 }
 
 /** Picker-shaped customer for CO / invoice forms etc. */

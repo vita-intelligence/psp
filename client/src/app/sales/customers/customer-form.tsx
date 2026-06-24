@@ -53,6 +53,7 @@ import type {
   Customer,
   CustomerPaymentBasis,
   CustomerStatus,
+  PricelistSummary,
   UserListEntry,
 } from "@/lib/types";
 import type { FieldErrors } from "@/lib/auth/actions";
@@ -73,6 +74,8 @@ interface CustomerFormProps {
   company: CompanyDefaults;
   /** Team list for the Account Manager picker. */
   users: UserListEntry[];
+  /** Active pricelists for the pricelist picker. */
+  pricelists: PricelistSummary[];
   canEdit: boolean;
   /** Fired on successful save so the EditModeToggle wrapper can flip
    *  the page back to view mode. */
@@ -98,6 +101,7 @@ interface FormState {
   payment_terms_basis: CustomerPaymentBasis;
   trade_credit_limit: string;
   contact_frequency_months: number;
+  pricelist_id: number | null;
   // Relationship
   account_manager_id: number | null;
   is_active: boolean;
@@ -163,6 +167,7 @@ function initialFrom(
       payment_terms_basis: "invoice_date",
       trade_credit_limit: "",
       contact_frequency_months: 3,
+      pricelist_id: null,
       account_manager_id: null,
       is_active: true,
     };
@@ -184,6 +189,7 @@ function initialFrom(
     payment_terms_basis: customer.payment_terms_basis,
     trade_credit_limit: customer.trade_credit_limit ?? "",
     contact_frequency_months: customer.contact_frequency_months ?? 3,
+    pricelist_id: customer.pricelist_id ?? null,
     account_manager_id: customer.account_manager?.id ?? null,
     is_active: customer.is_active,
   };
@@ -193,6 +199,7 @@ export function CustomerForm({
   customer,
   company,
   users,
+  pricelists,
   canEdit,
   onSavedSuccess,
 }: CustomerFormProps) {
@@ -310,6 +317,8 @@ export function CustomerForm({
           typeof r.contact_frequency_months === "number"
             ? r.contact_frequency_months
             : 3,
+        pricelist_id:
+          typeof r.pricelist_id === "number" ? r.pricelist_id : null,
         account_manager_id:
           typeof r.account_manager_id === "number"
             ? r.account_manager_id
@@ -375,6 +384,7 @@ export function CustomerForm({
       payment_terms_basis: state.payment_terms_basis,
       trade_credit_limit: state.trade_credit_limit.trim() || null,
       contact_frequency_months: state.contact_frequency_months,
+      pricelist_id: state.pricelist_id,
       account_manager_id: state.account_manager_id,
       is_active: state.is_active,
     };
@@ -754,6 +764,48 @@ export function CustomerForm({
                       </SelectContent>
                     </Select>
                   </div>
+                </FieldRow>
+
+                <FieldRow
+                  id="pricelist_id"
+                  label="Pricelist"
+                  editor={fieldEditors.pricelist_id}
+                  errors={fieldErrors.pricelist_id}
+                >
+                  <Select
+                    value={
+                      state.pricelist_id !== null
+                        ? String(state.pricelist_id)
+                        : "none"
+                    }
+                    onValueChange={(v) =>
+                      setField(
+                        "pricelist_id",
+                        v === "none" ? null : Number(v),
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      onFocus={() => focusField("pricelist_id")}
+                      onBlur={() => blurField("pricelist_id")}
+                      className="h-11"
+                    >
+                      <SelectValue placeholder="Use company default" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">
+                        — Company default —
+                      </SelectItem>
+                      {pricelists.map((p) => (
+                        <SelectItem key={p.id} value={String(p.id)}>
+                          {p.name}
+                          {p.is_default && " ★"}
+                          {" · "}
+                          {p.currency_code}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </FieldRow>
 
                 <CollabRow

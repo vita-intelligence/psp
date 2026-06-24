@@ -14,6 +14,7 @@ import { listCommentsForEntity } from "@/lib/comments/server";
 import { getCustomer } from "@/lib/customers/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { listUsersFirstPage } from "@/lib/users/server";
+import { listPricelistsForPicker } from "@/lib/pricelists/server";
 import type { CustomerApprovalStatus, CustomerStatus } from "@/lib/types";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { SalesSubnav } from "../../sales-subnav";
@@ -72,12 +73,14 @@ export default async function CustomerDetailPage({
   }
 
   const { uuid } = await params;
-  const [customer, company, userList, initialComments] = await Promise.all([
-    getCustomer(uuid),
-    getCompanyDefaults(),
-    listUsersFirstPage(100),
-    listCommentsForEntity("customer", uuid),
-  ]);
+  const [customer, company, userList, pricelists, initialComments] =
+    await Promise.all([
+      getCustomer(uuid),
+      getCompanyDefaults(),
+      listUsersFirstPage(100),
+      listPricelistsForPicker(),
+      listCommentsForEntity("customer", uuid),
+    ]);
   if (!customer || !company) notFound();
 
   const canEdit = hasPermission(user, "customers.edit");
@@ -168,6 +171,7 @@ export default async function CustomerDetailPage({
               customer={customer}
               company={company}
               users={userList.items}
+              pricelists={pricelists ?? []}
               canEdit={canEdit}
             />
           </EditModeToggle>
