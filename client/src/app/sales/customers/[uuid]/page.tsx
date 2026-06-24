@@ -20,6 +20,7 @@ import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { SalesSubnav } from "../../sales-subnav";
 import { CustomerForm } from "../customer-form";
 import { CustomerOnboardingCard } from "./customer-onboarding-card";
+import { CustomerApprovedItemsCard } from "./customer-approved-items-card";
 import { CustomerContactsCard } from "./customer-contacts-card";
 import { CustomerContactEventsCard } from "./customer-contact-events-card";
 import { CustomerFilesCard } from "./customer-files-card";
@@ -175,6 +176,8 @@ export default async function CustomerDetailPage({
               canEdit={canEdit}
             />
           </EditModeToggle>
+
+          <CustomerApprovedItemsCard customer={customer} canEdit={canEdit} />
 
           <CustomerContactsCard customer={customer} canEdit={canEdit} />
 

@@ -284,6 +284,12 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "pricelists.edit") or
         RBAC.has_permission?(user, "pricelists.create")
 
+  # Customer orders — sell-side mirror of POs. Either create perm
+  # lets you join a draft; HTTP gates approve/director-approve
+  # signatures.
+  defp can_edit_resource?(user, "customer-order"),
+    do: RBAC.has_permission?(user, "customer_orders.create")
+
   defp can_edit_resource?(user, "purchase-order"),
     do: RBAC.has_permission?(user, "procurement.po_create")
 

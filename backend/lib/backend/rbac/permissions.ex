@@ -154,6 +154,21 @@ defmodule Backend.RBAC.Permissions do
     {"pricelists.delete", "Delete pricelists"}
   ]
 
+  # Customer orders — sell-side mirror of PO. Two-tier ESIGN
+  # (approver + director) before a CO can be confirmed. Customer
+  # approval + credit limit + per-customer approved-items list are
+  # the gates enforced at submit time.
+  @customer_orders [
+    {"customer_orders.view", "View customer orders"},
+    {"customer_orders.create",
+     "Create + edit draft customer orders; cancel non-confirmed"},
+    {"customer_orders.submit", "Submit a draft CO for approval"},
+    {"customer_orders.approve", "Sign off as approver tier (1st of 2)"},
+    {"customer_orders.director_approve",
+     "Sign off as director tier (2nd of 2) + mark approved COs as confirmed"},
+    {"customer_orders.delete", "Delete draft customer orders"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -259,6 +274,7 @@ defmodule Backend.RBAC.Permissions do
         @vendors ++
         @customers ++
         @pricelists ++
+        @customer_orders ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -284,6 +300,7 @@ defmodule Backend.RBAC.Permissions do
       vendors: @vendors,
       customers: @customers,
       pricelists: @pricelists,
+      customer_orders: @customer_orders,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -490,6 +507,26 @@ defmodule Backend.RBAC.Permissions do
             create: "pricelists.create",
             update: "pricelists.edit",
             delete: "pricelists.delete"
+          },
+          %{
+            key: "customer_orders",
+            label: "Customer orders",
+            description:
+              "Sell-side mirror of POs. Two-tier ESIGN approval. Gates at submit: customer is approved, items sellable to that customer, trade-credit-limit not breached.",
+            read: "customer_orders.view",
+            create: "customer_orders.create",
+            update: "customer_orders.create",
+            delete: "customer_orders.delete"
+          },
+          %{
+            key: "customer_order_approval",
+            label: "CO approval",
+            description:
+              "Approver-tier signature, director-tier signature, and mark-confirmed action. Director must differ from approver (segregation of duties).",
+            read: "customer_orders.view",
+            create: "customer_orders.approve",
+            update: "customer_orders.director_approve",
+            delete: nil
           }
         ]
       },

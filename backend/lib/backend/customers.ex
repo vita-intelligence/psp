@@ -36,6 +36,8 @@ defmodule Backend.Customers do
     CustomerFile
   }
 
+  alias Backend.CustomerOrders.CustomerApprovedItem
+
   @customer_audit_fields ~w(name legal_name contact_name website legal_address
                             country_code registration_number tax_number
                             currency_code tax_rate default_discount_percent
@@ -416,7 +418,7 @@ defmodule Backend.Customers do
 
   @doc """
   Gate for "can this customer place a sales order?" — what the
-  downstream Customer-Order module will read once we ship it.
+  downstream Customer-Order module reads.
 
   Active iff effective approval is `approved` AND no manual suspend
   and not overdue. This is the only place the rule should live; the
@@ -425,6 +427,102 @@ defmodule Backend.Customers do
   def approval_active?(%Customer{} = customer) do
     {status, _reason} = effective_approval_status(customer)
     status == "approved"
+  end
+
+  # ----- per-customer approved-items (sell-side restriction) ------
+
+  @doc """
+  Add an item to the customer's approved-products list. Empty list ⇒
+  customer can buy anything; once any row exists the list is the
+  whitelist enforced at CO submit time.
+  """
+  def add_approved_item(%User{} = actor, %Customer{} = customer, item_id, attrs \\ %{}) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.merge(%{
+        "customer_id" => customer.id,
+        "item_id" => item_id,
+        "company_id" => customer.company_id,
+        "approved_by_id" => actor.id,
+        "approved_at" => now
+      })
+
+    %CustomerApprovedItem{}
+    |> CustomerApprovedItem.changeset(attrs)
+    |> Repo.insert()
+    |> case do
+      {:ok, row} ->
+        Audit.record_created(actor, "customer_approved_item", row, %{
+          customer_id: row.customer_id,
+          item_id: row.item_id
+        })
+
+        {:ok, Repo.preload(row, [:item, :approved_by])}
+
+      other ->
+        other
+    end
+  end
+
+  def remove_approved_item(%User{} = actor, %CustomerApprovedItem{} = row) do
+    case Repo.delete(row) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "customer_approved_item", row, %{
+          customer_id: row.customer_id,
+          item_id: row.item_id
+        })
+
+        {:ok, deleted}
+
+      other ->
+        other
+    end
+  end
+
+  def get_approved_item(customer_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} -> Repo.get_by(CustomerApprovedItem, customer_id: customer_id, uuid: cast)
+      :error -> nil
+    end
+  end
+
+  def get_approved_item(_, _), do: nil
+
+  def list_approved_items_for(customer_id) when is_integer(customer_id) do
+    Repo.all(
+      from(r in CustomerApprovedItem,
+        where: r.customer_id == ^customer_id,
+        preload: [:item, :approved_by],
+        order_by: [asc: r.id]
+      )
+    )
+  end
+
+  @doc """
+  Return the subset of `item_ids` that are NOT sellable to the
+  customer. Used by CO submit to flag which lines need attention.
+
+  Rule: a customer with NO approved-items rows can be sold anything
+  (open shop). A customer with at least one row is restricted to the
+  listed items.
+  """
+  def items_not_sellable(customer_id, item_ids)
+      when is_integer(customer_id) and is_list(item_ids) do
+    approved_ids =
+      Repo.all(
+        from(r in CustomerApprovedItem,
+          where: r.customer_id == ^customer_id,
+          select: r.item_id
+        )
+      )
+
+    case approved_ids do
+      [] -> []
+      _ -> item_ids -- approved_ids
+    end
   end
 
   # ----- approval transition ---------------------------------------
@@ -898,7 +996,8 @@ defmodule Backend.Customers do
       :contract_file,
       :contacts,
       files: [:uploaded_by],
-      contact_events: [:logged_by]
+      contact_events: [:logged_by],
+      approved_items: [:item, :approved_by]
     ])
     |> sort_associations()
   end

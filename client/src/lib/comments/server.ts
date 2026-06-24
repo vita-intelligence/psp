@@ -8,6 +8,9 @@ import type { Comment, CommentEntityType } from "./types";
  *  truth — adding a new entity type means editing this map once. */
 export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   vendor: "vendors",
+  customer: "customers",
+  pricelist: "pricelists",
+  customer_order: "customer-orders",
   purchase_order: "purchase-orders",
   stock_lot: "stock/lots",
   purchase_order_line: "purchase-order-lines",

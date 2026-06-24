@@ -599,6 +599,8 @@ defmodule BackendWeb.Payloads do
       files: preloaded_list(c, :files, fn f -> customer_file(f, c) end),
       contact_events:
         preloaded_list(c, :contact_events, &customer_contact_event/1),
+      approved_items:
+        preloaded_list(c, :approved_items, &customer_approved_item/1),
       inserted_at: c.inserted_at,
       updated_at: c.updated_at,
       created_by: actor(c, :created_by),
@@ -671,6 +673,189 @@ defmodule BackendWeb.Payloads do
       notes: row.notes,
       inserted_at: row.inserted_at,
       updated_at: row.updated_at
+    }
+  end
+
+  # ---------------------------------------------------------------
+  # Customer orders.
+  # ---------------------------------------------------------------
+
+  @doc """
+  Full customer-order payload — list rows + detail page. Preloads
+  customer + lines + approvals + files + actor stamps so the FE
+  detail page renders in one round-trip.
+  """
+  def customer_order(co) do
+    %{
+      id: co.id,
+      uuid: co.uuid,
+      code: render_code(co, "customer_order"),
+      status: co.status,
+      customer: maybe_customer_compact(co.customer),
+      customer_id: co.customer_id,
+      currency_code: co.currency_code,
+      subtotal: co.subtotal,
+      discount_pct: co.discount_pct,
+      discount_amount: co.discount_amount,
+      tax_rate: co.tax_rate,
+      tax_amount: co.tax_amount,
+      shipping_fees: co.shipping_fees,
+      additional_fees: co.additional_fees,
+      grand_total: co.grand_total,
+      expected_ship_date: co.expected_ship_date,
+      delivery_address: co.delivery_address,
+      customer_reference: co.customer_reference,
+      notes: co.notes,
+      default_warehouse_id: co.default_warehouse_id,
+      default_warehouse: maybe_warehouse_compact(co.default_warehouse),
+      submitted_at: co.submitted_at,
+      submitted_by: actor(co, :submitted_by),
+      confirmed_at: co.confirmed_at,
+      confirmed_by: actor(co, :confirmed_by),
+      cancelled_at: co.cancelled_at,
+      cancelled_by: actor(co, :cancelled_by),
+      cancellation_reason: co.cancellation_reason,
+      lines: preloaded_list(co, :lines, &customer_order_line/1),
+      approvals: preloaded_list(co, :approvals, &customer_order_approval/1),
+      files: preloaded_list(co, :files, fn f -> customer_order_file(f, co) end),
+      inserted_at: co.inserted_at,
+      updated_at: co.updated_at,
+      created_by: actor(co, :created_by),
+      updated_by: actor(co, :updated_by)
+    }
+  end
+
+  defp maybe_customer_compact(%Backend.Customers.Customer{} = c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      code: render_code(c, "customer"),
+      name: c.name,
+      currency_code: c.currency_code,
+      payment_terms_days: c.payment_terms_days,
+      payment_terms_basis: c.payment_terms_basis,
+      trade_credit_limit: c.trade_credit_limit,
+      approval_status: c.approval_status,
+      effective_approval_status:
+        elem(Backend.Customers.effective_approval_status(c), 0)
+    }
+  end
+
+  defp maybe_customer_compact(_), do: nil
+
+  defp maybe_warehouse_compact(%Backend.Warehouses.Warehouse{} = w) do
+    %{id: w.id, uuid: w.uuid, name: w.name}
+  end
+
+  defp maybe_warehouse_compact(_), do: nil
+
+  @doc """
+  One CO line — item + quoted price + tier (line_subtotal already
+  carries discount applied).
+  """
+  def customer_order_line(line) do
+    %{
+      uuid: line.uuid,
+      customer_order_id: line.customer_order_id,
+      item_id: line.item_id,
+      item: maybe_item_summary(line.item),
+      qty_ordered: line.qty_ordered,
+      unit_price: line.unit_price,
+      discount_pct: line.discount_pct,
+      line_subtotal: line.line_subtotal,
+      expected_ship_date: line.expected_ship_date,
+      customer_part_no: line.customer_part_no,
+      notes: line.notes,
+      warehouse_id: line.warehouse_id,
+      warehouse: maybe_warehouse_compact(line.warehouse),
+      pricelist_id: line.pricelist_id,
+      pricelist:
+        case Map.get(line, :pricelist) do
+          %Backend.Pricelists.Pricelist{} = p ->
+            %{id: p.id, uuid: p.uuid, name: p.name, currency_code: p.currency_code}
+
+          _ ->
+            nil
+        end,
+      inserted_at: line.inserted_at,
+      updated_at: line.updated_at
+    }
+  end
+
+  @doc """
+  One ESIGN signature on a CO. Same shape as PO approvals.
+  """
+  def customer_order_approval(row) do
+    %{
+      uuid: row.uuid,
+      customer_order_id: row.customer_order_id,
+      kind: row.kind,
+      signed_at: row.signed_at,
+      notes: row.notes,
+      signed_by: actor(row, :signed_by),
+      inserted_at: row.inserted_at
+    }
+  end
+
+  @doc """
+  CO file metadata + serve URL.
+  """
+  def customer_order_file(%Backend.CustomerOrders.CustomerOrderFile{} = f, co) do
+    co_uuid = co && Map.get(co, :uuid)
+
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        co_uuid &&
+          "/api/customer-orders/" <>
+            co_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
+  @doc """
+  Pricelist suggestion shape for the CO line auto-price endpoint.
+  """
+  def customer_order_price_suggestion(nil), do: nil
+
+  def customer_order_price_suggestion(%{
+        unit_price: unit_price,
+        currency_code: currency_code,
+        min_quantity: min_quantity,
+        pricelist_id: pricelist_id,
+        pricelist_uuid: pricelist_uuid,
+        pricelist_name: pricelist_name,
+        source: source
+      }) do
+    %{
+      unit_price: unit_price,
+      currency_code: currency_code,
+      min_quantity: min_quantity,
+      pricelist_id: pricelist_id,
+      pricelist_uuid: pricelist_uuid,
+      pricelist_name: pricelist_name,
+      source: Atom.to_string(source)
+    }
+  end
+
+  @doc """
+  Per-customer approved-item row payload.
+  """
+  def customer_approved_item(row) do
+    %{
+      uuid: row.uuid,
+      customer_id: row.customer_id,
+      item_id: row.item_id,
+      item: maybe_item_summary(row.item),
+      approved_at: row.approved_at,
+      approved_by: actor(row, :approved_by),
+      notes: row.notes
     }
   end
 

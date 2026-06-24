@@ -170,6 +170,11 @@ export interface AuditEvent {
     | "customer_contact_event"
     | "pricelist"
     | "pricelist_item"
+    | "customer_order"
+    | "customer_order_line"
+    | "customer_order_approval"
+    | "customer_order_file"
+    | "customer_approved_item"
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
@@ -696,6 +701,7 @@ export interface Customer {
   contacts: CustomerContact[];
   files: CustomerFile[];
   contact_events: CustomerContactEvent[];
+  approved_items: CustomerApprovedItemRow[];
   inserted_at: string;
   updated_at: string;
   created_by: AuditActor | null;
@@ -1984,4 +1990,146 @@ export interface DevicePairingCode {
 export interface DeviceClaimResponse {
   device: LinkedDevice;
   token: string;
+}
+
+// ---------------------------------------------------------------
+// Customer orders (sell-side mirror of POs).
+// ---------------------------------------------------------------
+
+export type CustomerOrderStatus =
+  | "draft"
+  | "pending_approver"
+  | "pending_director"
+  | "approved"
+  | "confirmed"
+  | "cancelled";
+
+export type CustomerOrderApprovalKind = "approver" | "director";
+
+export interface CustomerOrderLine {
+  uuid: string;
+  customer_order_id: number;
+  item_id: number;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    stock_uom: { id: number; symbol: string; name: string } | null;
+  } | null;
+  qty_ordered: string;
+  unit_price: string;
+  discount_pct: string;
+  line_subtotal: string;
+  expected_ship_date: string | null;
+  customer_part_no: string | null;
+  notes: string | null;
+  warehouse_id: number | null;
+  warehouse: { id: number; uuid: string; name: string } | null;
+  pricelist_id: number | null;
+  pricelist: {
+    id: number;
+    uuid: string;
+    name: string;
+    currency_code: string;
+  } | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface CustomerOrderApprovalRow {
+  uuid: string;
+  customer_order_id: number;
+  kind: CustomerOrderApprovalKind;
+  signed_at: string;
+  notes: string | null;
+  signed_by: AuditActor | null;
+  inserted_at: string;
+}
+
+export interface CustomerOrderFile {
+  id: number;
+  uuid: string;
+  kind: "quote" | "proforma" | "shipping_doc" | "acknowledgement" | "other";
+  filename: string;
+  mime: string;
+  byte_size: number;
+  url: string;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
+export interface CustomerOrder {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: CustomerOrderStatus;
+  customer: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    currency_code: string;
+    payment_terms_days: number;
+    payment_terms_basis: CustomerPaymentBasis;
+    trade_credit_limit: string | null;
+    approval_status: CustomerApprovalStatus;
+    effective_approval_status: CustomerApprovalStatus;
+  } | null;
+  customer_id: number;
+  currency_code: string;
+  subtotal: string;
+  discount_pct: string;
+  discount_amount: string;
+  tax_rate: string;
+  tax_amount: string;
+  shipping_fees: string;
+  additional_fees: string;
+  grand_total: string;
+  expected_ship_date: string | null;
+  delivery_address: string | null;
+  customer_reference: string | null;
+  notes: string | null;
+  default_warehouse_id: number | null;
+  default_warehouse: { id: number; uuid: string; name: string } | null;
+  submitted_at: string | null;
+  submitted_by: AuditActor | null;
+  confirmed_at: string | null;
+  confirmed_by: AuditActor | null;
+  cancelled_at: string | null;
+  cancelled_by: AuditActor | null;
+  cancellation_reason: string | null;
+  lines: CustomerOrderLine[];
+  approvals: CustomerOrderApprovalRow[];
+  files: CustomerOrderFile[];
+  inserted_at: string;
+  updated_at: string;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+}
+
+export interface PriceSuggestion {
+  unit_price: string;
+  currency_code: string;
+  min_quantity: string;
+  pricelist_id: number;
+  pricelist_uuid: string;
+  pricelist_name: string;
+  source: "customer" | "company_default";
+}
+
+export interface CustomerApprovedItemRow {
+  uuid: string;
+  customer_id: number;
+  item_id: number;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    stock_uom: { id: number; symbol: string; name: string } | null;
+  } | null;
+  approved_at: string | null;
+  approved_by: AuditActor | null;
+  notes: string | null;
 }

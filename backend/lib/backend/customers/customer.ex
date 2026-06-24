@@ -124,6 +124,10 @@ defmodule Backend.Customers.Customer do
     has_many :files, CustomerFile, foreign_key: :customer_id
     has_many :contact_events, CustomerContactEvent, foreign_key: :customer_id
 
+    has_many :approved_items,
+             Backend.CustomerOrders.CustomerApprovedItem,
+             foreign_key: :customer_id
+
     timestamps(type: :utc_datetime)
   end
 

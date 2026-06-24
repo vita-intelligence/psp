@@ -26,6 +26,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "pricelist"
   end
 
+  pipeline :comments_customer_order do
+    plug :put_entity_type, "customer_order"
+  end
+
   pipeline :comments_purchase_order do
     plug :put_entity_type, "purchase_order"
   end
@@ -333,6 +337,38 @@ defmodule BackendWeb.Router do
       post "/files", CustomerController, :upload_file
       get "/files/:id/serve", CustomerController, :serve_file
       delete "/files/:id", CustomerController, :remove_file
+
+      # Per-customer approved-items list (sell-side restriction).
+      # Empty list = customer can buy anything; non-empty = the gate
+      # at CO submit only lets through listed items.
+      post "/approved-items", CustomerController, :add_approved_item
+      delete "/approved-items/:id", CustomerController, :remove_approved_item
+    end
+
+    # Customer orders — sell-side mirror of POs. Two-tier ESIGN
+    # approval. Lines auto-priced from pricelists at line create
+    # time (price is snapshot on the line so later pricelist edits
+    # don't retroactively re-quote).
+    resources "/customer-orders", CustomerOrderController,
+      except: [:new, :edit] do
+      post "/lines", CustomerOrderController, :add_line
+      put "/lines/:id", CustomerOrderController, :update_line
+      delete "/lines/:id", CustomerOrderController, :delete_line
+
+      # Pricelist lookup for the line-form auto-price.
+      get "/lines/suggest-price", CustomerOrderController, :suggest_price
+
+      # State transitions.
+      post "/submit", CustomerOrderController, :submit
+      post "/approve", CustomerOrderController, :sign_approver
+      post "/director-approve", CustomerOrderController, :sign_director
+      post "/mark-confirmed", CustomerOrderController, :mark_confirmed
+      post "/cancel", CustomerOrderController, :cancel
+
+      # File attachments (quotes, proformas, shipping docs).
+      post "/files", CustomerOrderController, :upload_file
+      delete "/files/:id", CustomerOrderController, :remove_file
+      get "/files/:id/serve", CustomerOrderController, :serve_file
     end
 
     # Pricelists — sell-side selling-price quotes. Header + tiered
@@ -856,6 +892,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/pricelists/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_pricelist]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/customer-orders/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_customer_order]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

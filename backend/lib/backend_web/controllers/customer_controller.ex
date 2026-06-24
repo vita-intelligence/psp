@@ -40,7 +40,9 @@ defmodule BackendWeb.CustomerController do
               :add_contact,
               :update_contact,
               :remove_contact,
-              :log_contact_event
+              :log_contact_event,
+              :add_approved_item,
+              :remove_approved_item
             ]
   plug RequirePermission, "customers.approve" when action in [:update_approval]
   plug RequirePermission, "customers.delete" when action in [:delete, :remove_file]
@@ -339,6 +341,42 @@ defmodule BackendWeb.CustomerController do
     with %{} = customer <- Customers.get_for_company(actor.company_id, customer_uuid),
          %{} = file <- Customers.get_file(customer.id, file_uuid),
          {:ok, _} <- Customers.remove_file(actor, file) do
+      send_resp(conn, :no_content, "")
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # ----- approved-items (per-customer sellable-items list) ---------
+
+  def add_approved_item(conn, %{"customer_id" => uuid, "item_id" => raw_item_id} = params) do
+    actor = conn.assigns.current_user
+
+    with %{} = customer <- Customers.get_for_company(actor.company_id, uuid),
+         {item_id, _} <- Integer.parse(to_string(raw_item_id)),
+         {:ok, row} <-
+           Customers.add_approved_item(
+             actor,
+             customer,
+             item_id,
+             Map.drop(params, ["customer_id", "item_id"])
+           ) do
+      conn
+      |> put_status(:created)
+      |> json(%{approved_item: Payloads.customer_approved_item(row)})
+    else
+      :error -> unprocessable(conn, "bad_item_id", "Invalid item id.")
+      {:error, %Ecto.Changeset{} = cs} -> changeset_error(conn, cs)
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def remove_approved_item(conn, %{"customer_id" => customer_uuid, "id" => row_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = customer <- Customers.get_for_company(actor.company_id, customer_uuid),
+         %{} = row <- Customers.get_approved_item(customer.id, row_uuid),
+         {:ok, _} <- Customers.remove_approved_item(actor, row) do
       send_resp(conn, :no_content, "")
     else
       _ -> {:error, :not_found}

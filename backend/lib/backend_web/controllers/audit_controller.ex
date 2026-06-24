@@ -68,6 +68,12 @@ defmodule BackendWeb.AuditController do
     # Pricelist domain — header + tiered line items.
     "pricelist" => "pricelists.view",
     "pricelist_item" => "pricelists.view",
+    # Customer-order domain — header + lines + ESIGN approvals + files.
+    "customer_order" => "customer_orders.view",
+    "customer_order_line" => "customer_orders.view",
+    "customer_order_approval" => "customer_orders.view",
+    "customer_order_file" => "customer_orders.view",
+    "customer_approved_item" => "customers.view",
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
@@ -400,6 +406,48 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "pricelist_item", entity_id) do
     case Backend.Repo.get(Backend.Pricelists.PricelistItem, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_order", entity_id) do
+    case Backend.Repo.get(Backend.CustomerOrders.CustomerOrder, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_order_line", entity_id) do
+    case Backend.Repo.get(Backend.CustomerOrders.CustomerOrderLine, entity_id) do
+      %{customer_order_id: co_id} -> check_parent_customer_order(actor, co_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_order_approval", entity_id) do
+    case Backend.Repo.get(Backend.CustomerOrders.CustomerOrderApproval, entity_id) do
+      %{customer_order_id: co_id} -> check_parent_customer_order(actor, co_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_order_file", entity_id) do
+    case Backend.Repo.get(Backend.CustomerOrders.CustomerOrderFile, entity_id) do
+      %{customer_order_id: co_id} -> check_parent_customer_order(actor, co_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_approved_item", entity_id) do
+    case Backend.Repo.get(Backend.CustomerOrders.CustomerApprovedItem, entity_id) do
+      %{customer_id: cid} -> check_parent_customer(actor, cid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_customer_order(actor, customer_order_id) do
+    case Backend.Repo.get(Backend.CustomerOrders.CustomerOrder, customer_order_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

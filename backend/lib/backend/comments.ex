@@ -38,6 +38,7 @@ defmodule Backend.Comments do
     "vendor" => ["vendors.edit", "vendors.create"],
     "customer" => ["customers.edit", "customers.create"],
     "pricelist" => ["pricelists.edit", "pricelists.create"],
+    "customer_order" => ["customer_orders.create"],
     "purchase_order" => ["procurement.po_create"],
     "stock_lot" => ["stock.edit", "stock.receive"],
     "purchase_order_line" => ["procurement.po_create"],

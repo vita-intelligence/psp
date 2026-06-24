@@ -39,7 +39,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/orders",
     label: "Customer orders",
     Icon: ShoppingBag,
-    comingSoon: true,
   },
   {
     href: "/sales/todays-contacts",
