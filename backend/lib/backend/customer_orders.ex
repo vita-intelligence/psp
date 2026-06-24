@@ -629,7 +629,17 @@ defmodule Backend.CustomerOrders do
         :ok
 
       true ->
-        outstanding = outstanding_ar_for(co.customer_id, exclude_co_id: co.id)
+        # Outstanding A/R lives in CustomerInvoices now — it's the
+        # invoices-first definition (unpaid invoice totals + not-yet-
+        # invoiced portion of confirmed COs). Falls back to the old
+        # "sum of confirmed CO totals" behaviour when no invoices
+        # exist for the customer because the unbilled portion equals
+        # the full CO total.
+        outstanding =
+          Backend.CustomerInvoices.outstanding_ar_for(co.customer_id,
+            exclude_co_id: co.id
+          )
+
         total = Decimal.add(outstanding, incoming)
 
         if Decimal.compare(total, limit) == :gt do
@@ -641,37 +651,11 @@ defmodule Backend.CustomerOrders do
   end
 
   @doc """
-  Outstanding A/R for a customer — sum of `grand_total` across all
-  non-cancelled COs except the one being submitted (passed via
-  `exclude_co_id` so a customer that already has the current draft
-  in `confirmed` isn't double-counted at re-submit time).
-
-  V1 simplification: counts confirmed-and-beyond COs. Once invoices
-  ship, this becomes "sum of unpaid invoice totals" + the
-  not-yet-invoiced portion of confirmed COs.
+  Outstanding A/R for a customer — delegates to the invoices module
+  so the credit-limit math has a single source of truth.
   """
   def outstanding_ar_for(customer_id, opts \\ []) when is_integer(customer_id) do
-    exclude_id = Keyword.get(opts, :exclude_co_id)
-
-    query =
-      from(co in CustomerOrder,
-        where:
-          co.customer_id == ^customer_id and
-            co.status in ["confirmed"],
-        select: sum(co.grand_total)
-      )
-
-    query =
-      if is_integer(exclude_id) do
-        where(query, [co], co.id != ^exclude_id)
-      else
-        query
-      end
-
-    case Repo.one(query) do
-      nil -> Decimal.new(0)
-      %Decimal{} = d -> d
-    end
+    Backend.CustomerInvoices.outstanding_ar_for(customer_id, opts)
   end
 
   # ----- file uploads ---------------------------------------------

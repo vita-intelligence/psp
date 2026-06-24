@@ -16,6 +16,7 @@ defmodule Backend.Documents do
   """
 
   alias Backend.Companies
+  alias Backend.CustomerInvoices.CustomerInvoice
   alias Backend.Numbering
   alias Backend.Purchasing.PurchaseOrder
 
@@ -117,6 +118,21 @@ defmodule Backend.Documents do
     |> Enum.map(&Enum.map_join(&1, sep, fn cell -> csv_escape(cell, sep) end))
     |> Enum.join("\r\n")
     |> Kernel.<>("\r\n")
+  end
+
+  @doc """
+  Customer invoice PDF. Same ChromicPDF posture as PO documents —
+  EEx → HTML → headless Chrome → bytes. Caller is responsible for
+  preloading the invoice with `customer`, `customer_order`, `lines`
+  (with item), `payments` (the standard `get_for_company/2` shape
+  already does this).
+
+  Returns `{:ok, binary_pdf}`.
+  """
+  def customer_invoice_pdf(%CustomerInvoice{} = inv) do
+    company = Companies.current()
+    assigns = invoice_assigns(inv, company)
+    render_pdf("customer_invoice.html.eex", assigns)
   end
 
   @doc """
@@ -228,6 +244,43 @@ defmodule Backend.Documents do
 
   defp audience_label(:internal), do: "Internal copy"
   defp audience_label(:vendor), do: ""
+
+  defp invoice_assigns(%CustomerInvoice{} = inv, company) do
+    currency = inv.currency_code || company.currency_code || "GBP"
+    paid =
+      Enum.reduce(inv.payments || [], Decimal.new(0), fn p, acc ->
+        Decimal.add(acc, p.amount || Decimal.new(0))
+      end)
+
+    outstanding = Decimal.sub(inv.grand_total || Decimal.new(0), paid)
+
+    %{
+      invoice: inv,
+      company: company,
+      customer: inv.customer,
+      customer_order: inv.customer_order,
+      lines: inv.lines || [],
+      payments: inv.payments || [],
+      paid: paid,
+      outstanding: outstanding,
+      currency: currency,
+      invoice_code:
+        Numbering.render(inv.id, company, "customer_invoice") || "INV##{inv.id}",
+      now: Date.utc_today() |> Date.to_string(),
+      format_money: fn d -> format_money(d, currency, company) end,
+      format_qty: fn d -> decimal_to_string(d) end,
+      format_date: fn d -> date_to_string(d) end,
+      item_code: fn item -> item_code(item, company) end,
+      status_label: invoice_status_label(inv.status)
+    }
+  end
+
+  defp invoice_status_label("draft"), do: "Draft (not yet issued)"
+  defp invoice_status_label("sent"), do: "Invoice"
+  defp invoice_status_label("partially_paid"), do: "Invoice — Partially paid"
+  defp invoice_status_label("paid"), do: "Invoice — Paid"
+  defp invoice_status_label("cancelled"), do: "Invoice — Cancelled"
+  defp invoice_status_label(other), do: to_string(other)
 
   defp item_code(nil, _company), do: ""
 

@@ -74,6 +74,10 @@ defmodule BackendWeb.AuditController do
     "customer_order_approval" => "customer_orders.view",
     "customer_order_file" => "customer_orders.view",
     "customer_approved_item" => "customers.view",
+    # Customer-invoice domain — header + lines + payments.
+    "customer_invoice" => "customer_invoices.view",
+    "customer_invoice_line" => "customer_invoices.view",
+    "customer_invoice_payment" => "customer_invoices.view",
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
@@ -448,6 +452,34 @@ defmodule BackendWeb.AuditController do
 
   defp check_parent_customer_order(actor, customer_order_id) do
     case Backend.Repo.get(Backend.CustomerOrders.CustomerOrder, customer_order_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_invoice", entity_id) do
+    case Backend.Repo.get(Backend.CustomerInvoices.CustomerInvoice, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_invoice_line", entity_id) do
+    case Backend.Repo.get(Backend.CustomerInvoices.CustomerInvoiceLine, entity_id) do
+      %{customer_invoice_id: inv_id} -> check_parent_customer_invoice(actor, inv_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_invoice_payment", entity_id) do
+    case Backend.Repo.get(Backend.CustomerInvoices.CustomerInvoicePayment, entity_id) do
+      %{customer_invoice_id: inv_id} -> check_parent_customer_invoice(actor, inv_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_customer_invoice(actor, invoice_id) do
+    case Backend.Repo.get(Backend.CustomerInvoices.CustomerInvoice, invoice_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

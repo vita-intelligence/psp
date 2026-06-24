@@ -50,7 +50,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/invoices",
     label: "Invoices",
     Icon: Receipt,
-    comingSoon: true,
   },
   {
     href: "/sales/pricelists",

@@ -290,6 +290,9 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "customer-order"),
     do: RBAC.has_permission?(user, "customer_orders.create")
 
+  defp can_edit_resource?(user, "customer-invoice"),
+    do: RBAC.has_permission?(user, "customer_invoices.create")
+
   defp can_edit_resource?(user, "purchase-order"),
     do: RBAC.has_permission?(user, "procurement.po_create")
 

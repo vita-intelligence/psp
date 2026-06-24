@@ -70,6 +70,7 @@ export default async function CustomerOrderDetailPage({
     user,
     "customer_orders.director_approve",
   );
+  const canCreateInvoice = hasPermission(user, "customer_invoices.create");
 
   const isDraft = co.status === "draft";
 
@@ -119,6 +120,7 @@ export default async function CustomerOrderDetailPage({
             canSubmit={canSubmit}
             canApprove={canApprove}
             canDirectorApprove={canDirectorApprove}
+            canCreateInvoice={canCreateInvoice}
             prefs={company}
           />
 

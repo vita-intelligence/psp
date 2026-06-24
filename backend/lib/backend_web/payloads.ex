@@ -859,6 +859,114 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  # ---------------------------------------------------------------
+  # Customer invoices.
+  # ---------------------------------------------------------------
+
+  @doc """
+  Full customer-invoice payload with lines + payments + outstanding
+  computed from the live payment set. The FE workflow card reads
+  `outstanding` directly so it doesn't have to re-sum payments per
+  render.
+  """
+  def customer_invoice(inv) do
+    outstanding = Backend.CustomerInvoices.outstanding_for_invoice(inv)
+    paid_amount =
+      Enum.reduce(inv.payments || [], Decimal.new(0), fn p, acc ->
+        Decimal.add(acc, p.amount || Decimal.new(0))
+      end)
+
+    %{
+      id: inv.id,
+      uuid: inv.uuid,
+      code: render_code(inv, "customer_invoice"),
+      kind: inv.kind,
+      status: inv.status,
+      customer: maybe_customer_compact(inv.customer),
+      customer_id: inv.customer_id,
+      customer_order:
+        case inv.customer_order do
+          %Backend.CustomerOrders.CustomerOrder{} = co ->
+            %{
+              id: co.id,
+              uuid: co.uuid,
+              code: render_code(co, "customer_order"),
+              status: co.status,
+              grand_total: co.grand_total
+            }
+
+          _ ->
+            nil
+        end,
+      customer_order_id: inv.customer_order_id,
+      currency_code: inv.currency_code,
+      subtotal: inv.subtotal,
+      discount_pct: inv.discount_pct,
+      discount_amount: inv.discount_amount,
+      tax_rate: inv.tax_rate,
+      tax_amount: inv.tax_amount,
+      grand_total: inv.grand_total,
+      paid_amount: paid_amount,
+      outstanding: outstanding,
+      invoice_date: inv.invoice_date,
+      due_date: inv.due_date,
+      billing_address: inv.billing_address,
+      customer_reference: inv.customer_reference,
+      free_text: inv.free_text,
+      sent_at: inv.sent_at,
+      sent_by: actor(inv, :sent_by),
+      cancelled_at: inv.cancelled_at,
+      cancelled_by: actor(inv, :cancelled_by),
+      cancellation_reason: inv.cancellation_reason,
+      lines: preloaded_list(inv, :lines, &customer_invoice_line/1),
+      payments: preloaded_list(inv, :payments, &customer_invoice_payment/1),
+      inserted_at: inv.inserted_at,
+      updated_at: inv.updated_at,
+      created_by: actor(inv, :created_by),
+      updated_by: actor(inv, :updated_by)
+    }
+  end
+
+  @doc """
+  One invoice line, including the CO line link so the FE can render
+  "from CO00080" hyperlinks back to the source order.
+  """
+  def customer_invoice_line(line) do
+    %{
+      uuid: line.uuid,
+      customer_invoice_id: line.customer_invoice_id,
+      item_id: line.item_id,
+      item: maybe_item_summary(line.item),
+      customer_order_line_id: line.customer_order_line_id,
+      description: line.description,
+      qty: line.qty,
+      unit_price: line.unit_price,
+      discount_pct: line.discount_pct,
+      line_subtotal: line.line_subtotal,
+      delivery_date: line.delivery_date,
+      notes: line.notes,
+      inserted_at: line.inserted_at,
+      updated_at: line.updated_at
+    }
+  end
+
+  @doc """
+  One payment row.
+  """
+  def customer_invoice_payment(payment) do
+    %{
+      uuid: payment.uuid,
+      customer_invoice_id: payment.customer_invoice_id,
+      paid_at: payment.paid_at,
+      amount: payment.amount,
+      method: payment.method,
+      reference: payment.reference,
+      notes: payment.notes,
+      recorded_by: actor(payment, :recorded_by),
+      inserted_at: payment.inserted_at
+    }
+  end
+
   @doc """
   Picker-shaped summary — id/uuid/name/code + the bits Customer Order
   forms will need to surface the right customer to the right line:

@@ -24,12 +24,14 @@ import {
   CheckCircle2,
   CircleDashed,
   Loader2,
+  Receipt,
   Send,
   ShieldAlert,
   ShieldCheck,
   ShieldX,
   Truck,
 } from "lucide-react";
+import { createInvoiceFromCOAction } from "@/lib/customer-invoices/actions";
 import {
   Card,
   CardContent,
@@ -100,6 +102,7 @@ interface Props {
   canSubmit: boolean;
   canApprove: boolean;
   canDirectorApprove: boolean;
+  canCreateInvoice: boolean;
   prefs: CompanyDefaults;
 }
 
@@ -110,6 +113,7 @@ export function COWorkflowCard({
   canSubmit,
   canApprove,
   canDirectorApprove,
+  canCreateInvoice,
   prefs,
 }: Props) {
   const [openAction, setOpenAction] = useState<ActionKey | null>(null);
@@ -130,7 +134,14 @@ export function COWorkflowCard({
     co.status !== "confirmed" &&
     co.status !== "cancelled";
 
-  const isTerminal = co.status === "confirmed" || co.status === "cancelled";
+  // Generate invoice is the post-confirm action — flows into the
+  // Invoices module's create-from-CO endpoint.
+  const showGenerateInvoice = canCreateInvoice && co.status === "confirmed";
+
+  // For action-list visibility — confirmed COs ARE terminal as far
+  // as the CO state machine goes, but they're not idle (you generate
+  // invoices from them).
+  const isTerminal = co.status === "cancelled";
 
   return (
     <Card className="border-border/60">
@@ -242,6 +253,7 @@ export function COWorkflowCard({
                   Mark confirmed
                 </Button>
               )}
+              {showGenerateInvoice && <GenerateInvoiceButton co={co} />}
               {showCancel && (
                 <Button
                   size="sm"
@@ -633,5 +645,40 @@ function CancelDialog({ open, onClose, co }: DialogProps) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ============================================================
+// Generate invoice — post-confirm action that hands off to the
+// Invoices module. Calls create_from_co and redirects to the new
+// invoice detail. Server skips lines already fully billed; if every
+// line is fully billed it returns 422 and we surface a toast.
+// ============================================================
+
+function GenerateInvoiceButton({ co }: { co: CustomerOrder }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+
+  function generate() {
+    startTransition(async () => {
+      const res = await createInvoiceFromCOAction(co.uuid, {});
+      if (res.ok) {
+        toast.success("Invoice generated");
+        router.push(`/sales/invoices/${res.customer_invoice.uuid}`);
+      } else {
+        toast.error(res.detail);
+      }
+    });
+  }
+
+  return (
+    <Button size="sm" onClick={generate} disabled={pending}>
+      {pending ? (
+        <Loader2 className="mr-1.5 size-4 animate-spin" />
+      ) : (
+        <Receipt className="mr-1.5 size-3.5" />
+      )}
+      Generate invoice
+    </Button>
   );
 }

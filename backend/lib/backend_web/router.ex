@@ -30,6 +30,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "customer_order"
   end
 
+  pipeline :comments_customer_invoice do
+    plug :put_entity_type, "customer_invoice"
+  end
+
   pipeline :comments_purchase_order do
     plug :put_entity_type, "purchase_order"
   end
@@ -344,6 +348,31 @@ defmodule BackendWeb.Router do
       post "/approved-items", CustomerController, :add_approved_item
       delete "/approved-items/:id", CustomerController, :remove_approved_item
     end
+
+    # Customer invoices — sell-side back-half of order-to-cash. Lines
+    # auto-pull unbilled qty from a CO on create_from_co; multiple
+    # partial payments per invoice; status auto-flips on payment
+    # threshold crossings.
+    resources "/customer-invoices", CustomerInvoiceController,
+      except: [:new, :edit] do
+      post "/lines", CustomerInvoiceController, :add_line
+      put "/lines/:id", CustomerInvoiceController, :update_line
+      delete "/lines/:id", CustomerInvoiceController, :delete_line
+
+      post "/send", CustomerInvoiceController, :send
+      post "/cancel", CustomerInvoiceController, :cancel
+      post "/payments", CustomerInvoiceController, :record_payment
+
+      # ChromicPDF-rendered invoice document. Opens inline in the
+      # browser's PDF viewer — same pattern as the PO toolbar.
+      get "/documents/pdf", CustomerInvoiceController, :document_pdf
+    end
+
+    # Generate-from-CO is mounted under the CO's UUID so a wrong
+    # invoice can't be tied to a wrong CO via a misrouted body.
+    post "/customer-orders/:customer_order_id/generate-invoice",
+         CustomerInvoiceController,
+         :create_from_co
 
     # Customer orders — sell-side mirror of POs. Two-tier ESIGN
     # approval. Lines auto-priced from pricelists at line create
@@ -901,6 +930,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/customer-orders/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_customer_order]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/customer-invoices/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_customer_invoice]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

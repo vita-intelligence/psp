@@ -169,6 +169,21 @@ defmodule Backend.RBAC.Permissions do
     {"customer_orders.delete", "Delete draft customer orders"}
   ]
 
+  # Customer invoices — sell-side back-half of the order-to-cash flow.
+  # No approval gate (different posture from CO); the gate that matters
+  # is `send`, which validates customer approved + lines present +
+  # positive grand-total before the invoice is legally outstanding.
+  @customer_invoices [
+    {"customer_invoices.view", "View customer invoices + payments"},
+    {"customer_invoices.create",
+     "Create + edit draft customer invoices; cancel pre-payment"},
+    {"customer_invoices.send",
+     "Send a draft invoice — flips status to `sent` and locks edits"},
+    {"customer_invoices.record_payment",
+     "Record a payment against a sent invoice (or refund)"},
+    {"customer_invoices.delete", "Delete draft invoices"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -275,6 +290,7 @@ defmodule Backend.RBAC.Permissions do
         @customers ++
         @pricelists ++
         @customer_orders ++
+        @customer_invoices ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -301,6 +317,7 @@ defmodule Backend.RBAC.Permissions do
       customers: @customers,
       pricelists: @pricelists,
       customer_orders: @customer_orders,
+      customer_invoices: @customer_invoices,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -526,6 +543,26 @@ defmodule Backend.RBAC.Permissions do
             read: "customer_orders.view",
             create: "customer_orders.approve",
             update: "customer_orders.director_approve",
+            delete: nil
+          },
+          %{
+            key: "customer_invoices",
+            label: "Customer invoices",
+            description:
+              "Sell-side invoicing — generated from confirmed COs or one-off. Send gate validates customer approved + lines present + positive total. Multiple partial payments per invoice; status auto-flips to paid when outstanding hits zero.",
+            read: "customer_invoices.view",
+            create: "customer_invoices.create",
+            update: "customer_invoices.create",
+            delete: "customer_invoices.delete"
+          },
+          %{
+            key: "customer_invoice_send",
+            label: "Invoice send + payments",
+            description:
+              "Send-to-customer action + recording payments / refunds. These are distinct gates from generic edit access so finance can be delegated separately from sales.",
+            read: "customer_invoices.view",
+            create: "customer_invoices.send",
+            update: "customer_invoices.record_payment",
             delete: nil
           }
         ]

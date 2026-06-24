@@ -488,6 +488,37 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     item_id: "Item",
     notes: "Notes",
   },
+  customer_invoice: {
+    status: "Status",
+    kind: "Kind",
+    customer_id: "Customer",
+    customer_order_id: "Source CO",
+    currency_code: "Currency",
+    subtotal: "Subtotal",
+    grand_total: "Grand total",
+    invoice_date: "Invoice date",
+    due_date: "Due date",
+    billing_address: "Billing address",
+    customer_reference: "Customer ref",
+    free_text: "Free text",
+    cancellation_reason: "Cancellation reason",
+  },
+  customer_invoice_line: {
+    item_id: "Item",
+    customer_order_line_id: "CO line",
+    qty: "Qty",
+    unit_price: "Unit price",
+    discount_pct: "Discount %",
+    line_subtotal: "Line subtotal",
+    description: "Description",
+  },
+  customer_invoice_payment: {
+    paid_at: "Paid on",
+    amount: "Amount",
+    method: "Method",
+    reference: "Reference",
+    notes: "Notes",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

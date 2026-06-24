@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invoice <%= @invoice_code %></title>
+<style>
+  @page { size: A4; margin: 18mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font: 11pt/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #111; margin: 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 12px; }
+  .from { max-width: 55%; }
+  .from h1 { font-size: 13pt; margin: 0 0 4px 0; }
+  .from .meta { font-size: 9.5pt; color: #444; white-space: pre-line; }
+  .doc-block { text-align: right; }
+  .doc-block h2 { font-size: 17pt; margin: 0; letter-spacing: 1px; text-transform: uppercase; }
+  .doc-block .code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12pt; color: #111; }
+  .doc-block .status { display: inline-block; margin-top: 6px; padding: 2px 8px; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 3px; }
+  .status.draft { background: #fff7e6; border: 1px solid #f5c97a; color: #6b4a00; }
+  .status.sent, .status.partially_paid { background: #eef; color: #336; }
+  .status.paid { background: #e8f6ee; border: 1px solid #6cc28c; color: #1e5d34; }
+  .status.cancelled { background: #fbeaea; border: 1px solid #e08585; color: #7a1f1f; }
+
+  section.parties { display: flex; gap: 24px; margin-top: 18px; }
+  section.parties .col { flex: 1; }
+  section.parties h3 { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin: 0 0 6px 0; }
+  section.parties .name { font-weight: 600; }
+  section.parties .body { font-size: 10pt; color: #222; white-space: pre-line; }
+
+  section.summary { margin-top: 16px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-size: 9.5pt; }
+  section.summary .cell { border: 1px solid #ddd; padding: 6px 8px; border-radius: 3px; }
+  section.summary .label { color: #666; text-transform: uppercase; font-size: 8pt; letter-spacing: 0.6px; }
+  section.summary .value { font-weight: 600; margin-top: 2px; }
+
+  table.lines { width: 100%; margin-top: 18px; border-collapse: collapse; font-size: 10pt; }
+  table.lines th, table.lines td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+  table.lines thead th { background: #f4f4f4; text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.5px; color: #555; border-bottom: 1px solid #ccc; }
+  table.lines td.num, table.lines th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.lines tfoot td { border-bottom: none; font-weight: 600; }
+  table.lines tfoot tr.grand td { border-top: 2px solid #111; font-size: 11pt; }
+  .item-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9.5pt; color: #555; }
+
+  section.payments { margin-top: 22px; font-size: 10pt; }
+  section.payments h3 { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin: 0 0 6px 0; }
+  table.pay { width: 100%; border-collapse: collapse; }
+  table.pay th, table.pay td { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; font-size: 9.5pt; }
+  table.pay thead th { background: #fafafa; text-align: left; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.5px; color: #666; }
+  table.pay td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  section.notes { margin-top: 18px; font-size: 10pt; }
+  section.notes h3 { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin: 0 0 6px 0; }
+  section.notes .body { white-space: pre-line; }
+
+  footer { margin-top: 26px; border-top: 1px solid #ddd; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8.5pt; color: #777; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="from">
+    <h1><%= @company.name || "Company" %></h1>
+    <div class="meta"><%= @company.legal_address || "" %><%= if @company.tax_number, do: "\nVAT " <> @company.tax_number, else: "" %><%= if @company.registration_number, do: "\nReg " <> @company.registration_number, else: "" %><%= if @company.email, do: "\n" <> @company.email, else: "" %><%= if @company.phone, do: " · " <> @company.phone, else: "" %></div>
+  </div>
+  <div class="doc-block">
+    <h2>Invoice</h2>
+    <div class="code"><%= @invoice_code %></div>
+    <div class="status <%= @invoice.status %>"><%= @status_label %></div>
+  </div>
+</header>
+
+<section class="parties">
+  <div class="col">
+    <h3>Bill to</h3>
+    <div class="name"><%= (@customer && @customer.name) || "—" %></div>
+    <div class="body"><%= @invoice.billing_address || (@customer && @customer.legal_address) || "" %><%= if @customer && @customer.tax_number, do: "\nVAT " <> @customer.tax_number, else: "" %></div>
+  </div>
+  <div class="col">
+    <h3>From</h3>
+    <div class="name"><%= @company.name || "" %></div>
+    <div class="body"><%= @company.legal_address || "" %></div>
+  </div>
+</section>
+
+<section class="summary">
+  <div class="cell"><div class="label">Invoice date</div><div class="value"><%= @format_date.(@invoice.invoice_date) %></div></div>
+  <div class="cell"><div class="label">Due date</div><div class="value"><%= @format_date.(@invoice.due_date) %></div></div>
+  <div class="cell"><div class="label">Currency</div><div class="value"><%= @currency %></div></div>
+  <div class="cell"><div class="label">Customer ref</div><div class="value"><%= @invoice.customer_reference || (@customer_order && @customer_order.uuid && "CO " <> (@customer_order.uuid |> String.slice(0..7))) || "—" %></div></div>
+</section>
+
+<table class="lines">
+  <thead>
+    <tr>
+      <th class="num" style="width: 24px;">#</th>
+      <th style="width: 24%;">Item</th>
+      <th>Description</th>
+      <th class="num" style="width: 64px;">Qty</th>
+      <th class="num" style="width: 90px;">Unit price</th>
+      <th class="num" style="width: 60px;">Disc %</th>
+      <th class="num" style="width: 96px;">Subtotal</th>
+    </tr>
+  </thead>
+  <tbody>
+    <%= for {l, idx} <- Enum.with_index(@lines, 1) do %>
+      <tr>
+        <td class="num"><%= idx %></td>
+        <td>
+          <div><%= (l.item && l.item.name) || l.description || "—" %></div>
+          <%= if l.item do %><div class="item-code"><%= @item_code.(l.item) %></div><% end %>
+        </td>
+        <td><%= (l.item && l.item.description) || "" %><%= if l.notes, do: "\n— " <> l.notes, else: "" %></td>
+        <td class="num"><%= @format_qty.(l.qty) %></td>
+        <td class="num"><%= @format_money.(l.unit_price) %></td>
+        <td class="num"><%= if l.discount_pct && Decimal.compare(l.discount_pct, 0) == :gt, do: Decimal.to_string(l.discount_pct), else: "" %></td>
+        <td class="num"><%= @format_money.(l.line_subtotal) %></td>
+      </tr>
+    <% end %>
+    <%= if @lines == [] do %>
+      <tr><td colspan="7" style="color: #999; text-align: center; padding: 18px;">No lines on this invoice.</td></tr>
+    <% end %>
+  </tbody>
+  <tfoot>
+    <tr><td colspan="6" style="text-align: right;">Subtotal</td><td class="num"><%= @format_money.(@invoice.subtotal) %></td></tr>
+    <%= if @invoice.discount_amount && Decimal.compare(@invoice.discount_amount, 0) == :gt do %>
+      <tr><td colspan="6" style="text-align: right;">Discount</td><td class="num">−<%= @format_money.(@invoice.discount_amount) %></td></tr>
+    <% end %>
+    <%= if @invoice.tax_amount && Decimal.compare(@invoice.tax_amount, 0) == :gt do %>
+      <tr><td colspan="6" style="text-align: right;">Tax</td><td class="num"><%= @format_money.(@invoice.tax_amount) %></td></tr>
+    <% end %>
+    <tr class="grand"><td colspan="6" style="text-align: right;">Grand total</td><td class="num"><%= @format_money.(@invoice.grand_total) %></td></tr>
+    <%= if Decimal.compare(@paid, 0) == :gt do %>
+      <tr><td colspan="6" style="text-align: right;">Paid</td><td class="num"><%= @format_money.(@paid) %></td></tr>
+      <tr><td colspan="6" style="text-align: right;">Outstanding</td><td class="num"><%= @format_money.(@outstanding) %></td></tr>
+    <% end %>
+  </tfoot>
+</table>
+
+<%= if @payments != [] do %>
+<section class="payments">
+  <h3>Payments</h3>
+  <table class="pay">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Method</th>
+        <th>Reference</th>
+        <th class="num">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= for p <- @payments do %>
+        <tr>
+          <td><%= @format_date.(p.paid_at) %></td>
+          <td><%= p.method |> to_string() |> String.replace("_", " ") %></td>
+          <td><%= p.reference || "" %></td>
+          <td class="num"><%= @format_money.(p.amount) %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+</section>
+<% end %>
+
+<%= if @invoice.free_text && @invoice.free_text != "" do %>
+<section class="notes">
+  <h3>Notes</h3>
+  <div class="body"><%= @invoice.free_text %></div>
+</section>
+<% end %>
+
+<%= if @company.payment_details && @company.payment_details != "" do %>
+<section class="notes">
+  <h3>Payment details</h3>
+  <div class="body"><%= @company.payment_details %></div>
+</section>
+<% end %>
+
+<footer>
+  <div><%= @company.name || "" %><%= if @company.tax_number, do: " · VAT " <> @company.tax_number, else: "" %></div>
+  <div>Generated <%= @now %></div>
+</footer>
+
+</body>
+</html>

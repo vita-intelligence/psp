@@ -175,6 +175,9 @@ export interface AuditEvent {
     | "customer_order_approval"
     | "customer_order_file"
     | "customer_approved_item"
+    | "customer_invoice"
+    | "customer_invoice_line"
+    | "customer_invoice_payment"
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
@@ -2132,4 +2135,117 @@ export interface CustomerApprovedItemRow {
   approved_at: string | null;
   approved_by: AuditActor | null;
   notes: string | null;
+}
+
+// ---------------------------------------------------------------
+// Customer invoices.
+// ---------------------------------------------------------------
+
+export type CustomerInvoiceKind =
+  | "invoice"
+  | "proforma"
+  | "credit_note"
+  | "quotation";
+
+export type CustomerInvoiceStatus =
+  | "draft"
+  | "sent"
+  | "partially_paid"
+  | "paid"
+  | "cancelled";
+
+export type CustomerInvoicePaymentMethod =
+  | "bank_transfer"
+  | "card"
+  | "cash"
+  | "cheque"
+  | "other";
+
+export interface CustomerInvoiceLineRow {
+  uuid: string;
+  customer_invoice_id: number;
+  item_id: number | null;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    stock_uom: { id: number; symbol: string; name: string } | null;
+  } | null;
+  customer_order_line_id: number | null;
+  description: string | null;
+  qty: string;
+  unit_price: string;
+  discount_pct: string;
+  line_subtotal: string;
+  delivery_date: string | null;
+  notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface CustomerInvoicePaymentRow {
+  uuid: string;
+  customer_invoice_id: number;
+  paid_at: string;
+  amount: string;
+  method: CustomerInvoicePaymentMethod;
+  reference: string | null;
+  notes: string | null;
+  recorded_by: AuditActor | null;
+  inserted_at: string;
+}
+
+export interface CustomerInvoice {
+  id: number;
+  uuid: string;
+  code: string | null;
+  kind: CustomerInvoiceKind;
+  status: CustomerInvoiceStatus;
+  customer: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    currency_code: string;
+    payment_terms_days: number;
+    payment_terms_basis: CustomerPaymentBasis;
+    trade_credit_limit: string | null;
+    approval_status: CustomerApprovalStatus;
+    effective_approval_status: CustomerApprovalStatus;
+  } | null;
+  customer_id: number;
+  customer_order: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+    grand_total: string;
+  } | null;
+  customer_order_id: number | null;
+  currency_code: string;
+  subtotal: string;
+  discount_pct: string;
+  discount_amount: string;
+  tax_rate: string;
+  tax_amount: string;
+  grand_total: string;
+  paid_amount: string;
+  outstanding: string;
+  invoice_date: string;
+  due_date: string | null;
+  billing_address: string | null;
+  customer_reference: string | null;
+  free_text: string | null;
+  sent_at: string | null;
+  sent_by: AuditActor | null;
+  cancelled_at: string | null;
+  cancelled_by: AuditActor | null;
+  cancellation_reason: string | null;
+  lines: CustomerInvoiceLineRow[];
+  payments: CustomerInvoicePaymentRow[];
+  inserted_at: string;
+  updated_at: string;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
 }
