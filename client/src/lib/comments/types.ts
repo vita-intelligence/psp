@@ -4,6 +4,7 @@ import type { AuditActor } from "../types";
  *  `Backend.Comments.entity_types/0` list — keep them in sync. */
 export type CommentEntityType =
   | "vendor"
+  | "customer"
   | "purchase_order"
   | "stock_lot"
   | "purchase_order_line"

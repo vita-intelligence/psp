@@ -1,6 +1,7 @@
 import {
   Boxes,
   Factory,
+  HandCoins,
   Settings as SettingsIcon,
   ShoppingCart,
 } from "lucide-react";
@@ -32,6 +33,14 @@ export function ModuleGrid({ user }: { user: User }) {
       Icon: ShoppingCart,
       caption: "Vendors, POs, invoices",
       gate: hasPermission(user, "vendors.view"),
+    },
+    {
+      key: "sales",
+      href: "/sales/customers",
+      label: "Sales",
+      Icon: HandCoins,
+      caption: "Customers, orders, invoices",
+      gate: hasPermission(user, "customers.view"),
     },
     {
       key: "production",

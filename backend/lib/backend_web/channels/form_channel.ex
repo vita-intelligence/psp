@@ -270,6 +270,15 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "vendors.edit") or
         RBAC.has_permission?(user, "vendors.create")
 
+  # Sales — customers (sell-side mirror of vendors). Same posture:
+  # either create OR edit lets you join the draft channel; HTTP gates
+  # each save action. Approval is its own dedicated HTTP endpoint
+  # gated by `customers.approve`.
+  defp can_edit_resource?(user, "customer"),
+    do:
+      RBAC.has_permission?(user, "customers.edit") or
+        RBAC.has_permission?(user, "customers.create")
+
   defp can_edit_resource?(user, "purchase-order"),
     do: RBAC.has_permission?(user, "procurement.po_create")
 

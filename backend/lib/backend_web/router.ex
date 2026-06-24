@@ -18,6 +18,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "vendor"
   end
 
+  pipeline :comments_customer do
+    plug :put_entity_type, "customer"
+  end
+
   pipeline :comments_purchase_order do
     plug :put_entity_type, "purchase_order"
   end
@@ -290,6 +294,41 @@ defmodule BackendWeb.Router do
       post "/certificates", VendorController, :add_certificate
       put "/certificates/:id", VendorController, :update_certificate
       delete "/certificates/:id", VendorController, :remove_certificate
+    end
+
+    # Customer (sell-side) registry. Mirror of /api/vendors; carries
+    # identity + commercial terms + the 4-eyes approval gate that
+    # unblocks Customer Order creation downstream.
+    resources "/customers", CustomerController, except: [:new, :edit] do
+      # Approval transition gated by `customers.approve` so admins
+      # can delegate the gate separately from generic edit access.
+      put "/approval", CustomerController, :update_approval
+
+      # Onboarding-evidence writes (KYC / Credit / AML / Contract +
+      # review cadence). Stamps qualified_by / qualified_at so the
+      # approval gate can enforce segregation of duties.
+      put "/qualification", CustomerController, :update_qualification
+
+      # Contact rows — phones / mobiles / emails. Multiple per
+      # customer; one can be is_primary at a time (enforced
+      # server-side).
+      post "/contacts", CustomerController, :add_contact
+      put "/contacts/:id", CustomerController, :update_contact
+      delete "/contacts/:id", CustomerController, :remove_contact
+
+      # Contact-event log — calls / emails / meetings. Append-only
+      # by intent (no update/delete here); a wrong entry is corrected
+      # with a follow-up. Drives last_contact_at + the derived
+      # status projection.
+      post "/contact-events", CustomerController, :log_contact_event
+
+      # File uploads — contracts, NDAs, credit checks, logos.
+      # Bytes live in `Backend.Storage`. Mirror of vendor file
+      # uploads. RBAC: `customers.view` to fetch, `customers.edit`
+      # to upload, `customers.delete` to remove.
+      post "/files", CustomerController, :upload_file
+      get "/files/:id/serve", CustomerController, :serve_file
+      delete "/files/:id", CustomerController, :remove_file
     end
 
     # Purchase orders. Two-tier ESIGN approval + per-line state
@@ -779,6 +818,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/vendors/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_vendor]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/customers/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_customer]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

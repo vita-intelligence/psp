@@ -127,6 +127,21 @@ defmodule Backend.RBAC.Permissions do
     {"vendors.approve", "Approve / suspend / reject vendors (qualification gate)"}
   ]
 
+  # Customers (sell-side) — the buyer mirror of vendors. View is the
+  # read baseline. Edit covers identity + commercial terms + contact
+  # rows + contact-event logging. Approve is the 4-eyes gate that
+  # unblocks Customer Order creation downstream (a different user
+  # from the creator must sign off — see Backend.Customers).
+  @customers [
+    {"customers.view", "View customer registry + per-customer detail"},
+    {"customers.create", "Add new customers to the registry"},
+    {"customers.edit",
+     "Edit customer identity, contacts, commercial terms, and log contact events"},
+    {"customers.delete", "Delete customers"},
+    {"customers.approve",
+     "Approve / reject customers (4-eyes gate — must differ from creator)"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -230,6 +245,7 @@ defmodule Backend.RBAC.Permissions do
         @certificates ++
         @stock ++
         @vendors ++
+        @customers ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -253,6 +269,7 @@ defmodule Backend.RBAC.Permissions do
       certificates: @certificates,
       stock: @stock,
       vendors: @vendors,
+      customers: @customers,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -424,6 +441,31 @@ defmodule Backend.RBAC.Permissions do
             create: "stock.qc",
             update: "stock.hold",
             delete: "stock.dispose"
+          }
+        ]
+      },
+      %{
+        section: "Sales",
+        resources: [
+          %{
+            key: "customers",
+            label: "Customers",
+            description:
+              "Sell-side counterparty registry. Identity, commercial terms, account-manager assignment, contact log. Unlocks Customer Orders downstream.",
+            read: "customers.view",
+            create: "customers.create",
+            update: "customers.edit",
+            delete: "customers.delete"
+          },
+          %{
+            key: "customer_approval",
+            label: "Customer approval",
+            description:
+              "Move a customer through draft → approved → rejected. 4-eyes — the approver must differ from the creator.",
+            read: "customers.view",
+            create: nil,
+            update: "customers.approve",
+            delete: nil
           }
         ]
       },

@@ -59,6 +59,12 @@ defmodule BackendWeb.AuditController do
     "vendor" => "vendors.view",
     "vendor_approved_item" => "vendors.view",
     "vendor_certificate" => "vendors.view",
+    # Customer domain — the sell-side mirror. Identity row + edges
+    # (contacts, files, contact-event log) all ride customers.view.
+    "customer" => "customers.view",
+    "customer_contact" => "customers.view",
+    "customer_file" => "customers.view",
+    "customer_contact_event" => "customers.view",
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
@@ -343,6 +349,41 @@ defmodule BackendWeb.AuditController do
   defp check_entity_in_company(actor, "vendor_certificate", entity_id) do
     case Backend.Repo.get(Backend.Vendors.VendorCertificate, entity_id) do
       %{vendor_id: vid} -> check_parent_vendor(actor, vid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer", entity_id) do
+    case Backend.Repo.get(Backend.Customers.Customer, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_contact", entity_id) do
+    case Backend.Repo.get(Backend.Customers.CustomerContact, entity_id) do
+      %{customer_id: cid} -> check_parent_customer(actor, cid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_file", entity_id) do
+    case Backend.Repo.get(Backend.Customers.CustomerFile, entity_id) do
+      %{customer_id: cid} -> check_parent_customer(actor, cid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_contact_event", entity_id) do
+    case Backend.Repo.get(Backend.Customers.CustomerContactEvent, entity_id) do
+      %{customer_id: cid} -> check_parent_customer(actor, cid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_customer(actor, customer_id) do
+    case Backend.Repo.get(Backend.Customers.Customer, customer_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end
   end

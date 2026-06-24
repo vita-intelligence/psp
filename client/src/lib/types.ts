@@ -164,6 +164,10 @@ export interface AuditEvent {
     | "vendor"
     | "vendor_approved_item"
     | "vendor_certificate"
+    | "customer"
+    | "customer_contact"
+    | "customer_file"
+    | "customer_contact_event"
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
@@ -500,6 +504,215 @@ export interface VendorSummary {
   payment_terms_days: number;
   approval_status: VendorApprovalStatus;
   is_active: boolean;
+}
+
+// ---------------------------------------------------------------
+// Customers (sell-side mirror of Vendors).
+// ---------------------------------------------------------------
+
+export type CustomerApprovalStatus =
+  | "draft"
+  | "approved"
+  | "suspended"
+  | "rejected";
+export type CustomerCreditCheckOutcome = "pass" | "fail" | "conditional";
+export type CustomerAmlOutcome = "clean" | "flagged";
+
+export interface CustomerQualificationMissingItem {
+  key: string;
+  label: string;
+  reason: string;
+}
+
+export interface CustomerQualificationStatus {
+  "complete?": boolean;
+  missing: CustomerQualificationMissingItem[];
+}
+
+export interface CustomerApprovalSnapshot {
+  snapshot_at: string;
+  kyc: {
+    verified_at: string | null;
+    verified_by_id: number | null;
+    file_id: number | null;
+    notes: string | null;
+  };
+  credit_check: {
+    at: string | null;
+    by_id: number | null;
+    outcome: CustomerCreditCheckOutcome | null;
+    score: string | null;
+    file_id: number | null;
+    notes: string | null;
+  };
+  aml: {
+    screened_at: string | null;
+    screened_by_id: number | null;
+    outcome: CustomerAmlOutcome | null;
+    notes: string | null;
+  };
+  contract: {
+    signed_at: string | null;
+    signed_by_id: number | null;
+    file_id: number | null;
+    notes: string | null;
+  };
+  trade_credit_limit: string | null;
+  currency_code: string;
+}
+export type CustomerPaymentBasis =
+  | "invoice_date"
+  | "dispatch_date"
+  | "month_end";
+/** Read-time projection of the customer's lifecycle. Computed server
+ *  side from contact events + order rollups + `is_active`. Never a
+ *  worker-editable column. */
+export type CustomerStatus =
+  | "lead"
+  | "prospect"
+  | "active"
+  | "dormant"
+  | "inactive";
+export type CustomerContactKind =
+  | "phone"
+  | "mobile"
+  | "email"
+  | "fax"
+  | "other";
+export type CustomerContactEventKind =
+  | "call"
+  | "email"
+  | "meeting"
+  | "message"
+  | "note"
+  | "other";
+
+export interface CustomerContact {
+  uuid: string;
+  customer_id: number;
+  kind: CustomerContactKind;
+  value: string;
+  label: string | null;
+  is_primary: boolean;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface CustomerContactEvent {
+  uuid: string;
+  customer_id: number;
+  kind: CustomerContactEventKind;
+  occurred_at: string;
+  summary: string | null;
+  logged_by: AuditActor | null;
+  inserted_at: string;
+}
+
+export interface CustomerFile {
+  id: number;
+  uuid: string;
+  kind: "contract" | "nda" | "credit_check" | "photo" | "logo" | "other";
+  filename: string;
+  mime: string;
+  byte_size: number;
+  url: string;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
+export interface Customer {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  legal_name: string | null;
+  contact_name: string | null;
+  website: string | null;
+  legal_address: string | null;
+  country_code: string | null;
+  registration_number: string | null;
+  tax_number: string | null;
+  currency_code: string;
+  tax_rate: string | null;
+  default_discount_percent: string | null;
+  language_code: string | null;
+  payment_terms_days: number;
+  payment_terms_basis: CustomerPaymentBasis;
+  trade_credit_limit: string | null;
+  pricelist_id: number | null;
+  contact_frequency_months: number | null;
+  contact_started_at: string | null;
+  last_contact_at: string | null;
+  next_contact_at: string | null;
+  first_order_at: string | null;
+  last_order_at: string | null;
+  total_orders_count: number;
+  approval_status: CustomerApprovalStatus;
+  approval_notes: string | null;
+  approved_at: string | null;
+  approved_by: AuditActor | null;
+  approval_evidence_snapshot: CustomerApprovalSnapshot | null;
+  /** Stored approval folded with re-qualification cadence + is_active.
+   *  Always read this for badges + gates; the stored `approval_status`
+   *  is just the last human decision and can drift from reality when
+   *  the customer is overdue for re-qualification. */
+  effective_approval_status: CustomerApprovalStatus;
+  /** Why effective differs from stored. `"none"` when they match. */
+  effective_approval_reason:
+    | "none"
+    | "re_qualification_overdue"
+    | "inactive";
+  is_active: boolean;
+  account_manager: AuditActor | null;
+  status: CustomerStatus;
+  // Onboarding qualification (KYC / Credit / AML / Contract)
+  kyc_verified_at: string | null;
+  kyc_verified_by: AuditActor | null;
+  kyc_file: CustomerFile | null;
+  kyc_notes: string | null;
+  credit_check_at: string | null;
+  credit_check_by: AuditActor | null;
+  credit_check_outcome: CustomerCreditCheckOutcome | null;
+  credit_check_score: string | null;
+  credit_check_file: CustomerFile | null;
+  credit_check_notes: string | null;
+  aml_screened_at: string | null;
+  aml_screened_by: AuditActor | null;
+  aml_outcome: CustomerAmlOutcome | null;
+  aml_notes: string | null;
+  contract_signed_at: string | null;
+  contract_signed_by: AuditActor | null;
+  contract_file: CustomerFile | null;
+  contract_notes: string | null;
+  qualified_at: string | null;
+  qualified_by: AuditActor | null;
+  qualification: CustomerQualificationStatus;
+  review_frequency_months: number | null;
+  last_review_at: string | null;
+  next_review_at: string | null;
+  review_overdue: boolean;
+  contacts: CustomerContact[];
+  files: CustomerFile[];
+  contact_events: CustomerContactEvent[];
+  inserted_at: string;
+  updated_at: string;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+}
+
+/** Picker-shaped customer for CO / invoice forms etc. */
+export interface CustomerSummary {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  currency_code: string;
+  payment_terms_days: number;
+  payment_terms_basis: CustomerPaymentBasis;
+  approval_status: CustomerApprovalStatus;
+  effective_approval_status: CustomerApprovalStatus;
+  is_active: boolean;
+  status: CustomerStatus;
 }
 
 export type PurchaseOrderStatus =

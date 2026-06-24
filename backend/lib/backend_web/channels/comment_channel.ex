@@ -109,6 +109,9 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "vendor"),
     do: gate(user, "vendors.view")
 
+  defp check_view_perm(user, "customer"),
+    do: gate(user, "customers.view")
+
   defp check_view_perm(user, "purchase_order"),
     do: gate(user, "procurement.po_view")
 
@@ -138,6 +141,13 @@ defmodule BackendWeb.CommentChannel do
 
   defp resolve_entity_id(user, "vendor", uuid) do
     case Vendors.get_for_company(user.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "customer", uuid) do
+    case Backend.Customers.get_for_company(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
       _ -> {:error, :not_found}
     end

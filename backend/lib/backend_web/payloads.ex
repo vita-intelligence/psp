@@ -509,6 +509,187 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_vendor_file(_, _), do: nil
 
+  # ---------------------------------------------------------------
+  # Customers (sell-side).
+  # ---------------------------------------------------------------
+
+  @doc """
+  Full customer payload — list rows + detail page. Preloads contacts
+  / files / contact_events so the FE detail page renders in one
+  round-trip.
+
+  `status` is the read-time projection of the customer's lifecycle
+  (lead / prospect / active / dormant / inactive) computed from
+  contact events + order rollups — never written to a column.
+  """
+  def customer(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      code: render_code(c, "customer"),
+      name: c.name,
+      legal_name: c.legal_name,
+      contact_name: c.contact_name,
+      website: c.website,
+      legal_address: c.legal_address,
+      country_code: c.country_code,
+      registration_number: c.registration_number,
+      tax_number: c.tax_number,
+      currency_code: c.currency_code,
+      tax_rate: c.tax_rate,
+      default_discount_percent: c.default_discount_percent,
+      language_code: c.language_code,
+      payment_terms_days: c.payment_terms_days,
+      payment_terms_basis: c.payment_terms_basis,
+      trade_credit_limit: c.trade_credit_limit,
+      pricelist_id: c.pricelist_id,
+      contact_frequency_months: c.contact_frequency_months,
+      contact_started_at: c.contact_started_at,
+      last_contact_at: c.last_contact_at,
+      next_contact_at: c.next_contact_at,
+      first_order_at: c.first_order_at,
+      last_order_at: c.last_order_at,
+      total_orders_count: c.total_orders_count,
+      approval_status: c.approval_status,
+      approval_notes: c.approval_notes,
+      approved_at: c.approved_at,
+      approved_by: actor(c, :approved_by),
+      approval_evidence_snapshot: c.approval_evidence_snapshot,
+      # Effective approval state — folds in re-qualification cadence +
+      # is_active flag so the UI badge tells the truth even when the
+      # stored `approval_status` is stale (e.g. approved 13 months ago,
+      # never re-qualified ⇒ effectively suspended).
+      effective_approval_status:
+        elem(Backend.Customers.effective_approval_status(c), 0),
+      effective_approval_reason:
+        elem(Backend.Customers.effective_approval_status(c), 1)
+        |> Atom.to_string(),
+      is_active: c.is_active,
+      account_manager: actor(c, :account_manager),
+      # Derived status — computed from event history; never stored.
+      status: Backend.Customers.status_projection(c) |> Atom.to_string(),
+      # Qualification (KYC / Credit / AML / Contract) — each section
+      # carries the timestamp + actor + (where present) outcome + file.
+      kyc_verified_at: c.kyc_verified_at,
+      kyc_verified_by: actor(c, :kyc_verified_by),
+      kyc_file: maybe_customer_file(c.kyc_file, c),
+      kyc_notes: c.kyc_notes,
+      credit_check_at: c.credit_check_at,
+      credit_check_by: actor(c, :credit_check_by),
+      credit_check_outcome: c.credit_check_outcome,
+      credit_check_score: c.credit_check_score,
+      credit_check_file: maybe_customer_file(c.credit_check_file, c),
+      credit_check_notes: c.credit_check_notes,
+      aml_screened_at: c.aml_screened_at,
+      aml_screened_by: actor(c, :aml_screened_by),
+      aml_outcome: c.aml_outcome,
+      aml_notes: c.aml_notes,
+      contract_signed_at: c.contract_signed_at,
+      contract_signed_by: actor(c, :contract_signed_by),
+      contract_file: maybe_customer_file(c.contract_file, c),
+      contract_notes: c.contract_notes,
+      qualified_at: c.qualified_at,
+      qualified_by: actor(c, :qualified_by),
+      qualification: Backend.Customers.qualification_status(c),
+      review_frequency_months: c.review_frequency_months,
+      last_review_at: c.last_review_at,
+      next_review_at: c.next_review_at,
+      review_overdue: Backend.Customers.review_overdue?(c),
+      contacts: preloaded_list(c, :contacts, &customer_contact/1),
+      files: preloaded_list(c, :files, fn f -> customer_file(f, c) end),
+      contact_events:
+        preloaded_list(c, :contact_events, &customer_contact_event/1),
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at,
+      created_by: actor(c, :created_by),
+      updated_by: actor(c, :updated_by)
+    }
+  end
+
+  defp maybe_customer_file(%Backend.Customers.CustomerFile{} = f, parent),
+    do: customer_file(f, parent)
+
+  defp maybe_customer_file(_, _), do: nil
+
+  @doc """
+  Picker-shaped summary — id/uuid/name/code + the bits Customer Order
+  forms will need to surface the right customer to the right line:
+  currency, payment terms, approval status (greyed-out tile when not
+  approved).
+  """
+  def customer_summary(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      code: render_code(c, "customer"),
+      name: c.name,
+      currency_code: c.currency_code,
+      payment_terms_days: c.payment_terms_days,
+      payment_terms_basis: c.payment_terms_basis,
+      approval_status: c.approval_status,
+      effective_approval_status:
+        elem(Backend.Customers.effective_approval_status(c), 0),
+      is_active: c.is_active,
+      status: Backend.Customers.status_projection(c) |> Atom.to_string()
+    }
+  end
+
+  @doc """
+  A single phone / mobile / email / fax row on a customer.
+  """
+  def customer_contact(row) do
+    %{
+      uuid: row.uuid,
+      customer_id: row.customer_id,
+      kind: row.kind,
+      value: row.value,
+      label: row.label,
+      is_primary: row.is_primary,
+      inserted_at: row.inserted_at,
+      updated_at: row.updated_at
+    }
+  end
+
+  @doc """
+  A single touch-point event (call / email / meeting / message).
+  Append-only — there's no update payload by design.
+  """
+  def customer_contact_event(row) do
+    %{
+      uuid: row.uuid,
+      customer_id: row.customer_id,
+      kind: row.kind,
+      occurred_at: row.occurred_at,
+      summary: row.summary,
+      logged_by: actor(row, :logged_by),
+      inserted_at: row.inserted_at
+    }
+  end
+
+  @doc """
+  Public payload for a stored customer file. Includes the serve URL
+  the FE can fetch bytes from. `customer` is the parent so the URL
+  is scoped — files only resolve under their owning customer.
+  """
+  def customer_file(%Backend.Customers.CustomerFile{} = f, customer) do
+    customer_uuid = customer && Map.get(customer, :uuid)
+
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        customer_uuid &&
+          "/api/customers/" <>
+            customer_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
   @doc """
   Public payload for an item-scoped compliance file. Same shape as
   `vendor_file/2` so the FE upload widget can be re-used. `parent`
