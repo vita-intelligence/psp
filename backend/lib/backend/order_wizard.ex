@@ -393,12 +393,19 @@ defmodule Backend.OrderWizard do
     missing = Enum.filter(line_states, &(&1.needs_mo? and is_nil(&1.primary_mo)))
 
     case missing do
-      [first | _] ->
-        boms = first.available_boms || []
+      [] ->
+        %{
+          code: "next_phase",
+          title: "All lines have an MO — moving to ingredients.",
+          detail: nil,
+          primary_cta: nil,
+          secondary_ctas: []
+        }
 
-        # Auto-pick path: exactly one active BOM → one-click create.
-        # Multiple BOMs → FE pops a small picker. Zero BOMs → we
-        # surface a hard blocker (operator needs to build a BOM first).
+      [only] ->
+        # Single missing line — inline action is unambiguous.
+        boms = only.available_boms || []
+
         cta =
           case boms do
             [bom] ->
@@ -406,7 +413,7 @@ defmodule Backend.OrderWizard do
                 label: "Create MO using BOM #{bom.code || bom.name}",
                 kind: "action",
                 action: "create_mo_for_line",
-                line_uuid: first.uuid,
+                line_uuid: only.uuid,
                 bom_id: bom.id,
                 href: "/sales/orders/#{co.uuid}/wizard"
               }
@@ -416,13 +423,13 @@ defmodule Backend.OrderWizard do
                 label: "Pick a BOM and create MO",
                 kind: "action",
                 action: "create_mo_for_line",
-                line_uuid: first.uuid,
+                line_uuid: only.uuid,
                 href: "/sales/orders/#{co.uuid}/wizard"
               }
 
             [] ->
               %{
-                label: "Build a BOM for #{first.item_name}",
+                label: "Build a BOM for #{only.item_name}",
                 kind: "link",
                 href: "/production/boms"
               }
@@ -431,40 +438,42 @@ defmodule Backend.OrderWizard do
         detail =
           case boms do
             [] ->
-              "No active BOM exists for #{first.item_name}. Build one before the MO can be created."
+              "No active BOM exists for #{only.item_name}. Build one before the MO can be created."
 
             [bom] ->
-              line_summary(first) <>
+              line_summary(only) <>
                 ". This item has one active BOM (#{bom.name}); we'll use it automatically."
 
             [_, _ | _] ->
-              line_summary(first) <>
+              line_summary(only) <>
                 ". This item has #{length(boms)} active BOMs — pick which one this MO should use."
           end
 
         %{
           code: "create_mo",
-          title:
-            "Create the manufacturing order for #{first.item_name}.",
+          title: "Create the manufacturing order for #{only.item_name}.",
           detail: detail,
           primary_cta: cta,
-          secondary_ctas:
-            for line <- Enum.drop(missing, 1) do
-              %{
-                label: "Create MO for #{line.item_name}",
-                kind: "action",
-                action: "create_mo_for_line",
-                line_uuid: line.uuid
-              }
-            end
+          secondary_ctas: []
         }
 
-      [] ->
+      multiple ->
+        # Multiple lines waiting on MOs — don't duplicate the per-line
+        # buttons that already live in the Lines section. Send the
+        # operator there with a single clear CTA. Inline buttons in the
+        # Lines table are the canonical workflow.
+        count = length(multiple)
+
         %{
-          code: "next_phase",
-          title: "All lines have an MO — moving to ingredients.",
-          detail: nil,
-          primary_cta: nil,
+          code: "create_mos",
+          title: "Create one manufacturing order per line — #{count} to go.",
+          detail:
+            "Each line below needs its own MO. Open the Lines section and hit Create on each row — the system picks the active BOM automatically when there's only one.",
+          primary_cta: %{
+            label: "Go to lines",
+            kind: "scroll_to",
+            target: "[data-phase=\"production_planning\"]"
+          },
           secondary_ctas: []
         }
     end
