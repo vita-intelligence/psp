@@ -36,6 +36,14 @@ export interface POHeaderInput {
   default_warehouse_id?: number | null;
 }
 
+export interface POLineReservation {
+  /** UUID of the MO that should get the placeholder booking. */
+  mo_uuid: string;
+  /** Qty (string decimal). Will be clamped server-side to the line's
+   *  remaining qty and the MO's outstanding shortage. */
+  qty: string;
+}
+
 export interface POLineInput {
   item_id?: number;
   qty_ordered?: string;
@@ -45,6 +53,10 @@ export interface POLineInput {
   /** Per-line site override; null falls back to PO `default_warehouse_id`. */
   warehouse_id?: number | null;
   vendor_part_no?: string | null;
+  /** Optional explicit MO allocations. When set, the BE creates
+   *  placeholder bookings exactly per spec instead of auto-FIFO.
+   *  Leave undefined / empty to use the default planned_start-FIFO. */
+  reservations?: POLineReservation[];
 }
 
 /** Single-transaction create. Sends the header plus the lines array;

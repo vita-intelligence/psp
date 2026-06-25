@@ -3523,6 +3523,89 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Reserve a PO line for a specific list of MOs at caller-supplied
+  quantities. Used when procurement picks reservations manually on
+  the PO form, or when the wizard / shortages page deep-links a PO
+  that should land entirely on a specific CO's MOs.
+
+  `reservations` shape: `[%{"mo_uuid" => "...", "qty" => "12.5"}, ...]`
+  (string keys for direct passthrough from the controller). Total
+  qty across reservations is clamped to the line's remaining qty —
+  any overflow is silently dropped so a typo can't double-book the
+  line. Failures on individual MOs are skipped, not raised, so a
+  bad row doesn't lose every reservation.
+
+  Returns `{:ok, %{placed: count, qty_used: dec, skipped: count}}`.
+  """
+  def reserve_po_line_for_mos(%User{} = actor, %Backend.Purchasing.PurchaseOrderLine{} = line, reservations)
+      when is_list(reservations) do
+    remaining = Decimal.sub(line.qty_ordered || Decimal.new(0), line.qty_received || Decimal.new(0))
+
+    Enum.reduce(reservations, %{placed: 0, qty_used: Decimal.new(0), skipped: 0}, fn raw, acc ->
+      mo_uuid = Map.get(raw, "mo_uuid") || Map.get(raw, :mo_uuid)
+
+      raw_qty =
+        Map.get(raw, "qty") || Map.get(raw, :qty) ||
+          Map.get(raw, "quantity") || Map.get(raw, :quantity)
+
+      with {:ok, qty} <- parse_reservation_qty(raw_qty),
+           true <- Decimal.compare(qty, Decimal.new(0)) == :gt,
+           %ManufacturingOrder{} = mo <- fetch_company_mo(actor.company_id, mo_uuid) do
+        # Clamp to whatever's left on the line so the caller can't
+        # over-reserve via the picker.
+        line_left = Decimal.sub(remaining, acc.qty_used)
+        slice = if Decimal.compare(qty, line_left) == :gt, do: line_left, else: qty
+
+        if Decimal.compare(slice, Decimal.new(0)) != :gt do
+          %{acc | skipped: acc.skipped + 1}
+        else
+          case create_placeholder_booking(actor, mo, %{
+                 "purchase_order_line_id" => line.id,
+                 "item_id" => line.item_id,
+                 "quantity" => Decimal.to_string(slice)
+               }) do
+            {:ok, _} ->
+              %{acc | placed: acc.placed + 1, qty_used: Decimal.add(acc.qty_used, slice)}
+
+            {:error, _} ->
+              %{acc | skipped: acc.skipped + 1}
+          end
+        end
+      else
+        _ -> %{acc | skipped: acc.skipped + 1}
+      end
+    end)
+    |> then(&{:ok, &1})
+  end
+
+  defp parse_reservation_qty(nil), do: :error
+  defp parse_reservation_qty(%Decimal{} = d), do: {:ok, d}
+
+  defp parse_reservation_qty(value) when is_binary(value) do
+    case Decimal.parse(value) do
+      {d, _} -> {:ok, d}
+      :error -> :error
+    end
+  end
+
+  defp parse_reservation_qty(value) when is_number(value) do
+    {:ok, Decimal.new(to_string(value))}
+  end
+
+  defp parse_reservation_qty(_), do: :error
+
+  defp fetch_company_mo(_company_id, nil), do: nil
+  defp fetch_company_mo(_company_id, ""), do: nil
+
+  defp fetch_company_mo(company_id, uuid) when is_binary(uuid) do
+    Repo.one(
+      from mo in ManufacturingOrder,
+        where: mo.uuid == ^uuid and mo.company_id == ^company_id,
+        select: mo
+    )
+  end
+
+  @doc """
   Allocate a fresh PO line's qty across MOs that have already raised
   a procurement request for the same item. FIFO by the earliest
   planned_start (then by MO id).

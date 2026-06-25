@@ -188,16 +188,18 @@ defmodule Backend.Purchasing do
 
   defp insert_lines_for(%User{} = actor, %PurchaseOrder{} = po, lines_attrs) do
     Enum.reduce_while(lines_attrs, {:ok, []}, fn line_attrs, {:ok, acc} ->
-      # We're already inside a Repo.transaction; insert directly so a
-      # bad line bubbles a real changeset back up the with-chain rather
-      # than nesting a transaction-in-transaction.
+      # `reservations` is a virtual key — not on the schema. Pull it
+      # out before persisting so the changeset doesn't reject the
+      # field. Shape: [%{"mo_uuid" => "...", "qty" => "12.5"}].
+      {reservations, persistable_attrs} = pop_reservations(line_attrs)
+
       # Fall back to the PO's default warehouse if the operator left
       # the per-line override empty. Both fields are required at
       # insert time (`PurchaseOrderLine.changeset` validates) so the
       # fallback covers the common "use the same WH everywhere" case
       # without forcing the user to retype it per line.
       attrs =
-        line_attrs
+        persistable_attrs
         |> stringify_keys()
         |> Map.merge(%{
           "purchase_order_id" => po.id,
@@ -220,13 +222,19 @@ defmodule Backend.Purchasing do
             unit_price: line.unit_price
           })
 
-          # Auto-reserve the new line's qty against any MO that's
-          # been flagged "purchasing_requested" for this item. FIFO
-          # by planned_start (the earliest run gets first dibs).
-          # Failure here doesn't roll back the line — placeholder
-          # creation is best-effort; the planner can manually book
-          # later via the MO if it slipped through.
-          _ = auto_reserve_for_mos(actor, line)
+          # Reserve the new line's qty against MOs that have raised
+          # "Request purchases" for this item. Two paths:
+          #
+          #   1. Explicit reservations from the caller — used when
+          #      procurement picks MOs manually on the PO form or
+          #      when the wizard / shortages page deep-links with a
+          #      specific MO in mind.
+          #   2. Fall back to FIFO auto-reservation by planned_start
+          #      when nothing explicit was passed.
+          #
+          # Best-effort — placeholder creation failures don't roll
+          # back the line; the planner can manually book later.
+          _ = reserve_for_mos(actor, line, reservations)
 
           {:cont, {:ok, [line | acc]}}
 
@@ -240,14 +248,27 @@ defmodule Backend.Purchasing do
     end
   end
 
-  # FIFO-allocate the new PO line's qty across MOs that have already
-  # raised a "Request purchases" flag for this item. Each MO gets one
-  # placeholder booking for `min(remaining_line_qty, mo_shortage)`
-  # until the line is fully reserved or every interested MO is
-  # satisfied. Unreserved qty stays as headroom procurement can give
-  # to a future MO that flags the same item.
-  defp auto_reserve_for_mos(%User{} = actor, %PurchaseOrderLine{} = line) do
+  defp pop_reservations(attrs) when is_map(attrs) do
+    case Map.pop(attrs, "reservations") do
+      {nil, rest} -> Map.pop(rest, :reservations)
+      {value, rest} -> {value, rest}
+    end
+  end
+
+  defp pop_reservations(attrs), do: {nil, attrs}
+
+  # No explicit reservations → FIFO by planned_start.
+  defp reserve_for_mos(%User{} = actor, %PurchaseOrderLine{} = line, nil) do
     Backend.Production.allocate_po_line_to_requested_mos(actor, line)
+  end
+
+  defp reserve_for_mos(%User{} = actor, %PurchaseOrderLine{} = line, []) do
+    Backend.Production.allocate_po_line_to_requested_mos(actor, line)
+  end
+
+  defp reserve_for_mos(%User{} = actor, %PurchaseOrderLine{} = line, reservations)
+       when is_list(reservations) do
+    Backend.Production.reserve_po_line_for_mos(actor, line, reservations)
   end
 
   # Pull vendor's standing tax_rate + currency onto the create attrs

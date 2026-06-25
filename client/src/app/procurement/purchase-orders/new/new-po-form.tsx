@@ -88,6 +88,12 @@ interface WarehouseOption extends SearchPickerOption {
   uuid: string;
 }
 
+interface POLineDraftReservation {
+  mo_uuid: string;
+  /** String decimal — empty string means "skip this MO". */
+  qty: string;
+}
+
 interface POLineDraft {
   /** Stable client-side id for React keys + collab broadcasts. */
   tempId: string;
@@ -98,6 +104,8 @@ interface POLineDraft {
   warehouse_id: string;
   expected_delivery_date: string;
   notes: string;
+  /** Explicit per-MO reservations. Empty = auto-FIFO (BE default). */
+  reservations: POLineDraftReservation[];
   /** Sticky suggest-price metadata (not broadcast — local fetch). */
   last_paid_price?: string | null;
   last_paid_at?: string | null;
@@ -415,6 +423,7 @@ export function NewPOForm({
       warehouse_id: state.default_warehouse_id,
       expected_delivery_date: "",
       notes: "",
+      reservations: [],
     };
     setField("lines", [...state.lines, next]);
   }
@@ -433,6 +442,7 @@ export function NewPOForm({
       warehouse_id: state.default_warehouse_id,
       expected_delivery_date: "",
       notes: "",
+      reservations: [],
     };
     setField("lines", [...state.lines, next]);
     setPickedItems((prev) => ({ ...prev, [tempId]: item }));
@@ -650,15 +660,25 @@ export function NewPOForm({
           ? Number(state.default_warehouse_id)
           : null,
       };
-      const lines: POLineInput[] = state.lines.map((l) => ({
-        item_id: Number(l.item_id),
-        qty_ordered: l.qty_ordered,
-        unit_price: l.unit_price,
-        warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : null,
-        expected_delivery_date: l.expected_delivery_date || null,
-        vendor_part_no: l.vendor_part_no.trim() || null,
-        notes: l.notes.trim() || null,
-      }));
+      const lines: POLineInput[] = state.lines.map((l) => {
+        // Strip empty / zero reservations — keeps the BE FIFO
+        // fallback alive when the planner left the picker untouched.
+        const effectiveReservations = (l.reservations ?? [])
+          .map((r) => ({ mo_uuid: r.mo_uuid, qty: r.qty.trim() }))
+          .filter((r) => r.mo_uuid && r.qty && parseFloat(r.qty) > 0);
+
+        return {
+          item_id: Number(l.item_id),
+          qty_ordered: l.qty_ordered,
+          unit_price: l.unit_price,
+          warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : null,
+          expected_delivery_date: l.expected_delivery_date || null,
+          vendor_part_no: l.vendor_part_no.trim() || null,
+          notes: l.notes.trim() || null,
+          reservations:
+            effectiveReservations.length > 0 ? effectiveReservations : undefined,
+        };
+      });
 
       const createRes = await createPOWithLinesAction(header, lines);
       if (!createRes.ok) {
@@ -1116,7 +1136,7 @@ export function NewPOForm({
                       line.unit_price,
                       line.last_paid_price,
                     );
-                    return (
+                    return [
                       <tr
                         key={line.tempId}
                         className={cn(
@@ -1238,8 +1258,21 @@ export function NewPOForm({
                             <Trash2 className="size-4" />
                           </button>
                         </td>
-                      </tr>
-                    );
+                      </tr>,
+                      // Sub-row: per-MO reservation picker. Renders only
+                      // when this line's item has dependent MOs in the
+                      // shortage feed AND the buyer has typed a qty.
+                      // Default is empty (BE falls back to auto-FIFO).
+                      <ReservationPickerRow
+                        key={`${line.tempId}-reservations`}
+                        line={line}
+                        item={item}
+                        shortages={shortages ?? []}
+                        onChange={(reservations) =>
+                          patchLine(line.tempId, { reservations })
+                        }
+                      />,
+                    ];
                   })}
                 </tbody>
               </table>
@@ -1632,6 +1665,173 @@ function itemRowToOption(i: {
     code: i.code ?? i.external_sku ?? null,
     externalSku: i.external_sku ?? null,
   };
+}
+
+/**
+ * Per-line sub-row that lets procurement reserve the new PO line's
+ * qty against specific MOs. Renders inline under the line row when
+ * the item is in the shortages feed with dependent MOs. Left empty
+ * → BE falls back to auto-FIFO (earliest planned_start wins). Any
+ * qty filled → BE creates placeholder bookings exactly per spec.
+ */
+function ReservationPickerRow({
+  line,
+  item,
+  shortages,
+  onChange,
+}: {
+  line: POLineDraft;
+  item: ItemOption | null;
+  shortages: ShortageRow[];
+  onChange: (next: POLineDraftReservation[]) => void;
+}) {
+  const shortage = useMemo(() => {
+    if (!item) return null;
+    return shortages.find((r) => r.item?.id === item.id) ?? null;
+  }, [item, shortages]);
+
+  const deps = shortage?.dependent_mos ?? [];
+
+  if (!item || deps.length === 0) return null;
+
+  const orderedQty = parseFloat(line.qty_ordered) || 0;
+  const reservedTotal = (line.reservations ?? []).reduce(
+    (acc, r) => acc + (parseFloat(r.qty) || 0),
+    0,
+  );
+  const autoLeft = Math.max(orderedQty - reservedTotal, 0);
+  const reservedQty = reservedTotal;
+  const over = reservedTotal > orderedQty + 1e-6;
+
+  function qtyFor(moUuid: string): string {
+    return line.reservations.find((r) => r.mo_uuid === moUuid)?.qty ?? "";
+  }
+
+  function patchReservation(moUuid: string, qty: string) {
+    const others = (line.reservations ?? []).filter((r) => r.mo_uuid !== moUuid);
+    const trimmed = qty.trim();
+    if (trimmed === "" || parseFloat(trimmed) <= 0) {
+      onChange(others);
+    } else {
+      onChange([...others, { mo_uuid: moUuid, qty: trimmed }]);
+    }
+  }
+
+  function autoSplit() {
+    // Even-cap: walk MOs in planned_start order, drop the full MO qty
+    // onto each until the line runs out. (Mirrors the BE FIFO default
+    // — but visible so the planner sees what would happen and can
+    // tweak.)
+    let remaining = orderedQty;
+    const next: POLineDraftReservation[] = [];
+    for (const m of deps) {
+      if (remaining <= 0) break;
+      const cap = parseFloat(m.quantity) || 0;
+      const give = Math.min(cap, remaining);
+      if (give > 0) {
+        next.push({ mo_uuid: m.uuid, qty: String(give) });
+        remaining -= give;
+      }
+    }
+    onChange(next);
+  }
+
+  function clearAll() {
+    onChange([]);
+  }
+
+  const tone = over
+    ? "text-destructive"
+    : reservedQty === 0
+      ? "text-muted-foreground"
+      : "text-foreground";
+
+  return (
+    <tr className="bg-muted/10">
+      <td colSpan={9} className="px-3 py-2.5">
+        <div className="space-y-2 rounded-md border border-border/40 bg-card p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Reserve for MOs ({deps.length} waiting)
+            </p>
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className={cn("font-mono", tone)}>
+                {reservedQty.toLocaleString()} reserved
+              </span>
+              <span className="text-muted-foreground">
+                · {autoLeft.toLocaleString()} auto-FIFO
+                {orderedQty > 0 && ` of ${orderedQty.toLocaleString()}`}
+              </span>
+              <button
+                type="button"
+                onClick={autoSplit}
+                className="rounded border border-border/60 px-1.5 py-0.5 text-[11px] hover:bg-muted"
+              >
+                Fill FIFO
+              </button>
+              {reservedQty > 0 && (
+                <button
+                  type="button"
+                  onClick={clearAll}
+                  className="rounded border border-border/60 px-1.5 py-0.5 text-[11px] hover:bg-muted"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+          <table className="w-full text-[11px]">
+            <thead className="text-muted-foreground">
+              <tr className="border-b border-border/40">
+                <th className="px-1 py-1 text-left font-medium">MO</th>
+                <th className="px-1 py-1 text-left font-medium">Item</th>
+                <th className="px-1 py-1 text-right font-medium">MO qty</th>
+                <th className="px-1 py-1 text-left font-medium">Planned</th>
+                <th className="w-28 px-1 py-1 text-right font-medium">
+                  Reserve
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {deps.map((m) => (
+                <tr key={m.uuid} className="border-b border-border/20">
+                  <td className="px-1 py-1 font-mono text-[10px]">
+                    {m.code ?? m.uuid.slice(0, 8)}
+                  </td>
+                  <td className="truncate px-1 py-1 text-muted-foreground">
+                    {m.item_name}
+                  </td>
+                  <td className="px-1 py-1 text-right font-mono">
+                    {m.quantity}
+                  </td>
+                  <td className="px-1 py-1 text-muted-foreground">
+                    {m.planned_start
+                      ? new Date(m.planned_start).toLocaleDateString()
+                      : "—"}
+                  </td>
+                  <td className="px-1 py-1 text-right">
+                    <Input
+                      value={qtyFor(m.uuid)}
+                      onChange={(e) => patchReservation(m.uuid, e.target.value)}
+                      placeholder="0"
+                      inputMode="decimal"
+                      className="h-7 text-right text-[11px]"
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {over && (
+            <p className="text-[11px] text-destructive">
+              Reserved more than the ordered qty. The server will clamp the
+              overflow.
+            </p>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
 }
 
 /**
