@@ -854,15 +854,18 @@ defmodule Backend.OrderWizard do
     warehouse_lots = output_lots -- feed_lots
 
     has_placeholders = placeholder_bookings != []
-    procurement_engaged = not is_nil(mo.purchasing_requested_at)
     past_approval = mo.status in ["approved", "scheduled", "in_progress", "completed"]
+    broken_booking_count = count_broken_bookings(mo.bookings)
 
-    # "Fully sorted" = planner has finished deciding for this MO:
-    # both signatures in (approved+) AND no unresolved shortages —
-    # either every booking is real, or procurement has been engaged
-    # for the placeholders. This is the gate the CO-level phase
-    # uses to decide if production_planning is done.
-    is_fully_sorted = past_approval and (not has_placeholders or procurement_engaged)
+    # "Fully sorted" = planner is done with this MO. Two signatures
+    # in (approved+) AND no broken bookings. Placeholder bookings
+    # that point at a live PO line are fine — procurement is engaged
+    # by construction (PO cancellation deletes placeholders, so a
+    # placeholder existing IS the procurement signal). The separate
+    # `purchasing_requested_at` flag isn't a reliable test here
+    # because `prepare_mo` clears it on transition; the actual
+    # source of truth is the placeholder + its live PO line.
+    is_fully_sorted = past_approval and broken_booking_count == 0
 
     %{
       id: mo.id,
@@ -876,7 +879,7 @@ defmodule Backend.OrderWizard do
       placeholder_count: length(placeholder_bookings),
       has_placeholder_bookings?: has_placeholders,
       placeholder_po_uuids: placeholder_po_uuids,
-      broken_booking_count: count_broken_bookings(mo.bookings),
+      broken_booking_count: broken_booking_count,
       output_lots: Enum.map(output_lots, &lot_summary/1),
       output_lot_count: length(output_lots),
       output_at_feed_count: length(feed_lots),
@@ -901,9 +904,8 @@ defmodule Backend.OrderWizard do
 
   # Title + detail for an MO that's stuck in production_planning.
   # The "why" is one of: missing first signature (Prepare), missing
-  # second signature (Approve), or unresolved shortages without
-  # Request purchases. Naming it gives the operator a one-glance
-  # reason and a deep-link to the MO page.
+  # second signature (Approve), or broken bookings that need re-doing.
+  # Naming it gives the operator a one-glance reason and a deep-link.
   defp unfinished_mo_reason(mo, total_unfinished) do
     others =
       if total_unfinished > 1,
@@ -917,11 +919,11 @@ defmodule Backend.OrderWizard do
 
       mo.status == "prepared" ->
         {"MO #{mo.code} needs its second signature.",
-         "Prepare is done. Open the MO and sign Approve — that's the segregation-of-duties gate before procurement / scheduling can proceed#{others}."}
+         "Prepare is done. Open the MO and have someone other than the preparer sign Approve — that's the segregation-of-duties gate#{others}. Once approved, the MO is ready and the order can advance to Ingredients."}
 
-      mo.has_placeholder_bookings? and is_nil(mo.purchasing_requested_at) ->
-        {"MO #{mo.code} has shortages but no purchase request yet.",
-         "Some lines aren't covered by real lots. Open the MO and hit Request purchases — until you do, procurement can't act#{others}."}
+      mo.broken_booking_count > 0 ->
+        {"MO #{mo.code} has broken bookings.",
+         "#{mo.broken_booking_count} booking#{if mo.broken_booking_count == 1, do: " is", else: "s are"} no longer valid (lot moved, PO cancelled, or over-allocated). Open the MO to re-book#{others}."}
 
       true ->
         {"MO #{mo.code} isn't fully sorted yet.",

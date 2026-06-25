@@ -1431,10 +1431,21 @@ function BookingsSummary({ mo }: { mo: OrderWizardMo }) {
       </span>
     );
   }
+  // After Request purchases is fired, placeholders are awaiting their
+  // PO to land — they're "on order" rather than "unhandled". Language
+  // change is the planner's signal that procurement is in motion.
+  const procurementEngaged = !!mo.purchasing_requested_at;
   return (
     <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
-      <Hourglass className="size-3" />
-      {real}/{total} — {placeholders} on PO
+      {procurementEngaged ? (
+        <ShoppingBag className="size-3" />
+      ) : (
+        <Hourglass className="size-3" />
+      )}
+      {real}/{total} real ·{" "}
+      {procurementEngaged
+        ? `${placeholders} awaiting delivery`
+        : `${placeholders} need PO`}
     </span>
   );
 }
