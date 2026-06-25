@@ -912,10 +912,16 @@ defmodule Backend.OrderWizard do
         do: " (#{total_unfinished - 1} more MO#{if total_unfinished - 1 == 1, do: "", else: "s"} also pending)",
         else: ""
 
+    procurement_engaged = not is_nil(mo.purchasing_requested_at)
+
     cond do
+      mo.status == "draft" and procurement_engaged ->
+        {"MO #{mo.code} is ready to sign — procurement already engaged.",
+         "You've allocated what's in stock and sent the shortfall to procurement. Open the MO and sign Prepare — there's nothing else to sort here#{others}."}
+
       mo.status == "draft" ->
         {"MO #{mo.code} needs its first signature.",
-         "It's still draft. Open the MO, sort the bookings (allocate stock for what we have, Request purchases for what we don't), then sign Prepare#{others}."}
+         "It's still draft. Open the MO, allocate stock for what we have, hit Request purchases for what we don't, then sign Prepare#{others}."}
 
       mo.status == "prepared" ->
         {"MO #{mo.code} needs its second signature.",
