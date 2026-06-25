@@ -78,6 +78,9 @@ defmodule BackendWeb.AuditController do
     "customer_invoice" => "customer_invoices.view",
     "customer_invoice_line" => "customer_invoices.view",
     "customer_invoice_payment" => "customer_invoices.view",
+    "customer_return" => "customer_returns.view",
+    "customer_return_line" => "customer_returns.view",
+    "customer_return_file" => "customer_returns.view",
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
@@ -480,6 +483,34 @@ defmodule BackendWeb.AuditController do
 
   defp check_parent_customer_invoice(actor, invoice_id) do
     case Backend.Repo.get(Backend.CustomerInvoices.CustomerInvoice, invoice_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_return", entity_id) do
+    case Backend.Repo.get(Backend.CustomerReturns.CustomerReturn, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_return_line", entity_id) do
+    case Backend.Repo.get(Backend.CustomerReturns.CustomerReturnLine, entity_id) do
+      %{customer_return_id: rid} -> check_parent_customer_return(actor, rid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_return_file", entity_id) do
+    case Backend.Repo.get(Backend.CustomerReturns.CustomerReturnFile, entity_id) do
+      %{customer_return_id: rid} -> check_parent_customer_return(actor, rid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_customer_return(actor, return_id) do
+    case Backend.Repo.get(Backend.CustomerReturns.CustomerReturn, return_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

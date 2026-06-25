@@ -78,7 +78,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/returns",
     label: "Returns (RMAs)",
     Icon: PackageCheck,
-    comingSoon: true,
   },
   // Mirroring MRPEasy's last icon (the small gift); reserved for the
   // customer-loyalty / referral surface we'll build last.

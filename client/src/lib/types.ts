@@ -178,6 +178,9 @@ export interface AuditEvent {
     | "customer_invoice"
     | "customer_invoice_line"
     | "customer_invoice_payment"
+    | "customer_return"
+    | "customer_return_line"
+    | "customer_return_file"
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
@@ -2244,6 +2247,109 @@ export interface CustomerInvoice {
   cancellation_reason: string | null;
   lines: CustomerInvoiceLineRow[];
   payments: CustomerInvoicePaymentRow[];
+  inserted_at: string;
+  updated_at: string;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+}
+
+// ---------------------------------------------------------------
+// Customer returns (RMAs).
+// ---------------------------------------------------------------
+
+export type CustomerReturnStatus =
+  | "draft"
+  | "received"
+  | "accepted"
+  | "rejected"
+  | "cancelled";
+
+export type CustomerReturnReasonCode =
+  | "damaged"
+  | "wrong_item"
+  | "quality_fail"
+  | "customer_changed_mind"
+  | "short_shipment"
+  | "overshipment"
+  | "other";
+
+export type CustomerReturnFileKind = "photo" | "doc";
+
+export interface CustomerReturnLineRow {
+  uuid: string;
+  customer_return_id: number;
+  item_id: number | null;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    stock_uom: { id: number; symbol: string; name: string } | null;
+  } | null;
+  customer_invoice_line_id: number | null;
+  qty_returned: string;
+  qty_accepted: string | null;
+  reason_code: CustomerReturnReasonCode;
+  reason_notes: string | null;
+  unit_price: string;
+  line_credit_amount: string;
+  inspection_notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface CustomerReturnFileRow {
+  id: number;
+  uuid: string;
+  kind: CustomerReturnFileKind;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  url: string | null;
+  uploaded_at: string;
+  uploaded_by: AuditActor | null;
+}
+
+export interface CustomerReturn {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: CustomerReturnStatus;
+  customer: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    currency_code: string;
+    payment_terms_days: number;
+    payment_terms_basis: CustomerPaymentBasis;
+    trade_credit_limit: string | null;
+    approval_status: CustomerApprovalStatus;
+    effective_approval_status: CustomerApprovalStatus;
+  } | null;
+  customer_id: number;
+  customer_invoice: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: CustomerInvoiceStatus;
+    grand_total: string;
+    currency_code: string;
+  } | null;
+  customer_invoice_id: number | null;
+  return_date: string;
+  reason_summary: string | null;
+  notes: string | null;
+  received_at: string | null;
+  received_by: AuditActor | null;
+  resolved_at: string | null;
+  resolved_by: AuditActor | null;
+  cancelled_at: string | null;
+  cancelled_by: AuditActor | null;
+  cancellation_reason: string | null;
+  rejection_reason: string | null;
+  lines: CustomerReturnLineRow[];
+  files: CustomerReturnFileRow[];
   inserted_at: string;
   updated_at: string;
   created_by: AuditActor | null;

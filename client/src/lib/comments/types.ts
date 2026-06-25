@@ -8,6 +8,7 @@ export type CommentEntityType =
   | "pricelist"
   | "customer_order"
   | "customer_invoice"
+  | "customer_return"
   | "purchase_order"
   | "stock_lot"
   | "purchase_order_line"

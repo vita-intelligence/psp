@@ -184,6 +184,21 @@ defmodule Backend.RBAC.Permissions do
     {"customer_invoices.delete", "Delete draft invoices"}
   ]
 
+  # Customer returns (RMAs) — sell-side post-shipment workflow.
+  # Accept auto-generates a credit_note invoice; the receive +
+  # resolve gates are separated so finance (resolve) and warehouse
+  # (receive) can be delegated apart.
+  @customer_returns [
+    {"customer_returns.view", "View customer returns + inspection notes"},
+    {"customer_returns.create",
+     "Create + edit draft customer returns; cancel pre-resolution"},
+    {"customer_returns.receive",
+     "Mark customer goods as physically received (flips draft → received)"},
+    {"customer_returns.resolve",
+     "Accept or reject a received return; accept auto-issues a credit note"},
+    {"customer_returns.delete", "Delete draft customer returns"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -291,6 +306,7 @@ defmodule Backend.RBAC.Permissions do
         @pricelists ++
         @customer_orders ++
         @customer_invoices ++
+        @customer_returns ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -318,6 +334,7 @@ defmodule Backend.RBAC.Permissions do
       pricelists: @pricelists,
       customer_orders: @customer_orders,
       customer_invoices: @customer_invoices,
+      customer_returns: @customer_returns,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -563,6 +580,26 @@ defmodule Backend.RBAC.Permissions do
             read: "customer_invoices.view",
             create: "customer_invoices.send",
             update: "customer_invoices.record_payment",
+            delete: nil
+          },
+          %{
+            key: "customer_returns",
+            label: "Customer returns (RMAs)",
+            description:
+              "Post-shipment workflow: customer reports issue → mark received → accept/reject. Accept auto-generates a credit-note invoice linked back to the RMA + source invoice.",
+            read: "customer_returns.view",
+            create: "customer_returns.create",
+            update: "customer_returns.create",
+            delete: "customer_returns.delete"
+          },
+          %{
+            key: "customer_return_workflow",
+            label: "RMA receive + resolve",
+            description:
+              "Receive returned goods + accept/reject. Separated from create so warehouse and finance roles can be delegated independently.",
+            read: "customer_returns.view",
+            create: "customer_returns.receive",
+            update: "customer_returns.resolve",
             delete: nil
           }
         ]

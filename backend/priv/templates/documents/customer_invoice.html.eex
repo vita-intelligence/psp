@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Invoice <%= @invoice_code %></title>
+<title><%= @doc_title %> <%= @invoice_code %></title>
 <style>
   @page { size: A4; margin: 18mm 14mm; }
   * { box-sizing: border-box; }
@@ -61,7 +61,7 @@
     <div class="meta"><%= @company.legal_address || "" %><%= if @company.tax_number, do: "\nVAT " <> @company.tax_number, else: "" %><%= if @company.registration_number, do: "\nReg " <> @company.registration_number, else: "" %><%= if @company.email, do: "\n" <> @company.email, else: "" %><%= if @company.phone, do: " · " <> @company.phone, else: "" %></div>
   </div>
   <div class="doc-block">
-    <h2>Invoice</h2>
+    <h2><%= @doc_title %></h2>
     <div class="code"><%= @invoice_code %></div>
     <div class="status <%= @invoice.status %>"><%= @status_label %></div>
   </div>

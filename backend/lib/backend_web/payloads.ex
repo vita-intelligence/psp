@@ -967,6 +967,102 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  # ---------------------------------------------------------------
+  # Customer returns (RMAs).
+  # ---------------------------------------------------------------
+
+  @doc """
+  Full customer-return payload with lines + files + actor stamps.
+  """
+  def customer_return(rma) do
+    %{
+      id: rma.id,
+      uuid: rma.uuid,
+      code: render_code(rma, "customer_return"),
+      status: rma.status,
+      customer: maybe_customer_compact(rma.customer),
+      customer_id: rma.customer_id,
+      customer_invoice:
+        case rma.customer_invoice do
+          %Backend.CustomerInvoices.CustomerInvoice{} = inv ->
+            %{
+              id: inv.id,
+              uuid: inv.uuid,
+              code: render_code(inv, "customer_invoice"),
+              status: inv.status,
+              grand_total: inv.grand_total,
+              currency_code: inv.currency_code
+            }
+
+          _ ->
+            nil
+        end,
+      customer_invoice_id: rma.customer_invoice_id,
+      return_date: rma.return_date,
+      reason_summary: rma.reason_summary,
+      notes: rma.notes,
+      received_at: rma.received_at,
+      received_by: actor(rma, :received_by),
+      resolved_at: rma.resolved_at,
+      resolved_by: actor(rma, :resolved_by),
+      cancelled_at: rma.cancelled_at,
+      cancelled_by: actor(rma, :cancelled_by),
+      cancellation_reason: rma.cancellation_reason,
+      rejection_reason: rma.rejection_reason,
+      lines: preloaded_list(rma, :lines, &customer_return_line/1),
+      files: preloaded_list(rma, :files, fn f -> customer_return_file(f, rma) end),
+      inserted_at: rma.inserted_at,
+      updated_at: rma.updated_at,
+      created_by: actor(rma, :created_by),
+      updated_by: actor(rma, :updated_by)
+    }
+  end
+
+  @doc """
+  One RMA line — item + qty_returned + qty_accepted (set at
+  inspection) + reason + line_credit_amount.
+  """
+  def customer_return_line(line) do
+    %{
+      uuid: line.uuid,
+      customer_return_id: line.customer_return_id,
+      item_id: line.item_id,
+      item: maybe_item_summary(line.item),
+      customer_invoice_line_id: line.customer_invoice_line_id,
+      qty_returned: line.qty_returned,
+      qty_accepted: line.qty_accepted,
+      reason_code: line.reason_code,
+      reason_notes: line.reason_notes,
+      unit_price: line.unit_price,
+      line_credit_amount: line.line_credit_amount,
+      inspection_notes: line.inspection_notes,
+      inserted_at: line.inserted_at,
+      updated_at: line.updated_at
+    }
+  end
+
+  @doc """
+  RMA file metadata + serve URL.
+  """
+  def customer_return_file(%Backend.CustomerReturns.CustomerReturnFile{} = f, rma) do
+    rma_uuid = rma && Map.get(rma, :uuid)
+
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url:
+        rma_uuid &&
+          "/api/customer-returns/" <>
+            rma_uuid <> "/files/" <> f.uuid <> "/serve",
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
   @doc """
   Picker-shaped summary — id/uuid/name/code + the bits Customer Order
   forms will need to surface the right customer to the right line:

@@ -63,6 +63,9 @@ defmodule Backend.CustomerInvoices.CustomerInvoice do
     belongs_to :sent_by, User
     belongs_to :cancelled_by, User
 
+    belongs_to :linked_rma, Backend.CustomerReturns.CustomerReturn
+    belongs_to :linked_invoice, __MODULE__
+
     has_many :lines, CustomerInvoiceLine, foreign_key: :customer_invoice_id
     has_many :payments, CustomerInvoicePayment, foreign_key: :customer_invoice_id
 

@@ -34,6 +34,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "customer_invoice"
   end
 
+  pipeline :comments_customer_return do
+    plug :put_entity_type, "customer_return"
+  end
+
   pipeline :comments_purchase_order do
     plug :put_entity_type, "purchase_order"
   end
@@ -347,6 +351,25 @@ defmodule BackendWeb.Router do
       # at CO submit only lets through listed items.
       post "/approved-items", CustomerController, :add_approved_item
       delete "/approved-items/:id", CustomerController, :remove_approved_item
+    end
+
+    # Customer returns (RMAs) — sell-side post-shipment flow. Accept
+    # auto-issues a credit-note invoice linked back to the RMA + the
+    # source invoice. Photo evidence travels as file uploads.
+    resources "/customer-returns", CustomerReturnController,
+      except: [:new, :edit] do
+      post "/lines", CustomerReturnController, :add_line
+      put "/lines/:id", CustomerReturnController, :update_line
+      delete "/lines/:id", CustomerReturnController, :delete_line
+
+      post "/mark-received", CustomerReturnController, :mark_received
+      post "/accept", CustomerReturnController, :accept
+      post "/reject", CustomerReturnController, :reject
+      post "/cancel", CustomerReturnController, :cancel
+
+      post "/files", CustomerReturnController, :upload_file
+      get "/files/:id/serve", CustomerReturnController, :serve_file
+      delete "/files/:id", CustomerReturnController, :remove_file
     end
 
     # Customer invoices — sell-side back-half of order-to-cash. Lines
@@ -939,6 +962,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/customer-invoices/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_customer_invoice]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/customer-returns/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_customer_return]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

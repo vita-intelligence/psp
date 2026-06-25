@@ -57,7 +57,11 @@ defmodule Backend.CustomerInvoices.CustomerInvoiceLine do
       :notes
     ])
     |> validate_required([:customer_invoice_id, :company_id, :qty, :unit_price])
-    |> validate_number(:qty, greater_than: 0)
+    # Credit-note lines carry negative qty so the parent invoice's
+    # grand_total comes out negative (subtracting from customer A/R
+    # when summed). Regular invoices still pass positive; the only
+    # meaningless value is zero.
+    |> validate_number(:qty, not_equal_to: 0)
     |> validate_number(:unit_price, greater_than_or_equal_to: 0)
     |> validate_number(:discount_pct,
       greater_than_or_equal_to: 0,

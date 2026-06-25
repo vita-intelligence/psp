@@ -271,16 +271,24 @@ defmodule Backend.Documents do
       format_qty: fn d -> decimal_to_string(d) end,
       format_date: fn d -> date_to_string(d) end,
       item_code: fn item -> item_code(item, company) end,
-      status_label: invoice_status_label(inv.status)
+      doc_title: invoice_doc_title(inv.kind),
+      status_label: invoice_status_label(inv.kind, inv.status)
     }
   end
 
-  defp invoice_status_label("draft"), do: "Draft (not yet issued)"
-  defp invoice_status_label("sent"), do: "Invoice"
-  defp invoice_status_label("partially_paid"), do: "Invoice — Partially paid"
-  defp invoice_status_label("paid"), do: "Invoice — Paid"
-  defp invoice_status_label("cancelled"), do: "Invoice — Cancelled"
-  defp invoice_status_label(other), do: to_string(other)
+  defp invoice_doc_title("credit_note"), do: "Credit Note"
+  defp invoice_doc_title("proforma"), do: "Proforma Invoice"
+  defp invoice_doc_title("quotation"), do: "Quotation"
+  defp invoice_doc_title(_), do: "Invoice"
+
+  defp invoice_status_label("credit_note", "draft"), do: "Credit note (draft)"
+  defp invoice_status_label("credit_note", _), do: "Credit Note — Issued"
+  defp invoice_status_label(_kind, "draft"), do: "Draft (not yet issued)"
+  defp invoice_status_label(_kind, "sent"), do: "Invoice"
+  defp invoice_status_label(_kind, "partially_paid"), do: "Invoice — Partially paid"
+  defp invoice_status_label(_kind, "paid"), do: "Invoice — Paid"
+  defp invoice_status_label(_kind, "cancelled"), do: "Invoice — Cancelled"
+  defp invoice_status_label(_kind, other), do: to_string(other)
 
   defp item_code(nil, _company), do: ""
 

@@ -519,6 +519,31 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     reference: "Reference",
     notes: "Notes",
   },
+  customer_return: {
+    status: "Status",
+    customer_id: "Customer",
+    customer_invoice_id: "Source invoice",
+    return_date: "Return date",
+    reason_summary: "Reason summary",
+    notes: "Notes",
+    rejection_reason: "Rejection reason",
+    cancellation_reason: "Cancellation reason",
+  },
+  customer_return_line: {
+    item_id: "Item",
+    customer_invoice_line_id: "Invoice line",
+    qty_returned: "Qty returned",
+    qty_accepted: "Qty accepted",
+    reason_code: "Reason",
+    reason_notes: "Reason notes",
+    unit_price: "Unit price",
+    line_credit_amount: "Line credit",
+    inspection_notes: "Inspection notes",
+  },
+  customer_return_file: {
+    kind: "Kind",
+    filename: "Filename",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

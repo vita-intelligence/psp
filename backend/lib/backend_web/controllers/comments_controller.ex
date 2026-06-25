@@ -192,6 +192,13 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  defp resolve_entity_id(actor, "customer_return", uuid) do
+    case Backend.CustomerReturns.get_for_company(actor.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp resolve_entity_id(actor, "purchase_order", uuid) do
     case Purchasing.get_for_company(actor.company_id, uuid) do
       %{id: id} -> {:ok, id}
@@ -255,6 +262,7 @@ defmodule BackendWeb.CommentsController do
   defp view_perm_for("pricelist"), do: "pricelists.view"
   defp view_perm_for("customer_order"), do: "customer_orders.view"
   defp view_perm_for("customer_invoice"), do: "customer_invoices.view"
+  defp view_perm_for("customer_return"), do: "customer_returns.view"
   defp view_perm_for("purchase_order"), do: "procurement.po_view"
   defp view_perm_for("stock_lot"), do: "stock.view"
   defp view_perm_for("bom"), do: "production.bom_view"

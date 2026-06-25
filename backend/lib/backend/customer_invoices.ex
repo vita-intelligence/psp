@@ -34,6 +34,7 @@ defmodule Backend.CustomerInvoices do
   alias Backend.Customers
   alias Backend.Customers.Customer
   alias Backend.CustomerOrders.{CustomerOrder, CustomerOrderLine}
+  alias Backend.CustomerReturns.CustomerReturn
   alias Backend.CustomerInvoices.{
     CustomerInvoice,
     CustomerInvoiceLine,
@@ -210,6 +211,138 @@ defmodule Backend.CustomerInvoices do
         end)
       end
     end
+  end
+
+  @doc """
+  Create a credit-note invoice from an accepted RMA. Lines mirror
+  the RMA's accepted-qty × snapshot unit_price as NEGATIVE amounts
+  so the credit note's grand_total naturally subtracts from the
+  customer's A/R when summed.
+
+  The credit note is created as `status = "sent"` directly (no draft
+  step) because it represents an action already taken — the RMA was
+  accepted, the customer is owed the credit, and the audit log
+  reflects that immediately.
+
+  Lifts forward the source invoice's tax_rate so the credit note
+  reverses the same tax that was originally charged.
+  """
+  def create_credit_note_from_rma(%User{} = actor, %CustomerReturn{} = rma) do
+    rma = Repo.preload(rma, [:customer, :customer_invoice, lines: []])
+
+    accepted_lines =
+      Enum.filter(rma.lines, fn l ->
+        l.qty_accepted &&
+          Decimal.compare(l.qty_accepted, Decimal.new(0)) == :gt
+      end)
+
+    if accepted_lines == [] do
+      {:error, :no_accepted_lines}
+    else
+      source = rma.customer_invoice
+
+      attrs = %{
+        "company_id" => rma.company_id,
+        "customer_id" => rma.customer_id,
+        "kind" => "credit_note",
+        "currency_code" =>
+          (source && source.currency_code) ||
+            (rma.customer && rma.customer.currency_code) ||
+            "GBP",
+        # Mirror the source invoice's tax_rate so we reverse the
+        # exact tax the customer was originally charged. If there's
+        # no source (one-off RMA), default to 0.
+        "tax_rate" => (source && source.tax_rate) || Decimal.new(0),
+        "billing_address" =>
+          (source && source.billing_address) ||
+            (rma.customer && rma.customer.legal_address),
+        "customer_reference" =>
+          source && source.customer_reference,
+        "free_text" =>
+          "Credit note issued from RMA. See linked return for full inspection notes.",
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id,
+        "linked_rma_id" => rma.id,
+        "linked_invoice_id" => source && source.id
+      }
+      |> default_invoice_dates()
+
+      Repo.transaction(fn ->
+        with {:ok, cn} <-
+               %CustomerInvoice{}
+               |> CustomerInvoice.changeset(attrs)
+               |> Repo.insert(),
+             {:ok, _lines} <- copy_credit_note_lines(actor, cn, accepted_lines),
+             {:ok, totalled} <- recompute_totals(cn),
+             {:ok, sent} <- flip_credit_note_to_sent(actor, totalled) do
+          Audit.record_created(actor, "customer_invoice", sent, %{
+            kind: sent.kind,
+            customer_id: sent.customer_id,
+            linked_rma_id: sent.linked_rma_id,
+            grand_total: sent.grand_total
+          })
+
+          preload_invoice(sent)
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  defp copy_credit_note_lines(actor, %CustomerInvoice{} = cn, rma_lines) do
+    Enum.reduce_while(rma_lines, {:ok, []}, fn rma_line, {:ok, acc} ->
+      # Credit-note lines carry NEGATIVE qty so subtotals (and the
+      # rolled-up grand_total) come out negative. unit_price stays
+      # the snapshot we billed at originally.
+      negative_qty = Decimal.minus(rma_line.qty_accepted)
+
+      attrs =
+        %{
+          "customer_invoice_id" => cn.id,
+          "company_id" => cn.company_id,
+          "item_id" => rma_line.item_id,
+          # Mirror the original source line if we have one — gives
+          # the future audit a clean (CO line → invoice line → RMA
+          # line → credit note line) chain.
+          "customer_order_line_id" => nil,
+          "qty" => negative_qty,
+          "unit_price" => rma_line.unit_price,
+          "description" => "Credit for RMA line"
+        }
+        |> stamp_line_subtotal()
+
+      %CustomerInvoiceLine{}
+      |> CustomerInvoiceLine.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, line} ->
+          Audit.record_created(actor, "customer_invoice_line", line, %{
+            customer_invoice_id: line.customer_invoice_id,
+            item_id: line.item_id,
+            qty: line.qty
+          })
+
+          {:cont, {:ok, [line | acc]}}
+
+        {:error, cs} ->
+          {:halt, {:error, cs}}
+      end
+    end)
+  end
+
+  defp flip_credit_note_to_sent(actor, %CustomerInvoice{} = cn) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    cn
+    |> CustomerInvoice.transition_status_changeset(%{
+      "status" => "sent",
+      "sent_at" => now,
+      "sent_by_id" => actor.id,
+      "updated_by_id" => actor.id
+    })
+    |> Repo.update()
   end
 
   defp preload_co(%CustomerOrder{} = co) do
