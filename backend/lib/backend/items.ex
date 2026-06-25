@@ -36,12 +36,58 @@ defmodule Backend.Items do
       Item
       |> where([i], i.company_id == ^company_id)
       |> maybe_type_filter(type_filter)
-      |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> apply_item_search(company_id, opts[:search])
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:stock_uom, :product_family, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  # The DataTable search bar is a single field. Operators type whatever
+  # they're staring at — name, SKU, barcode, or the rendered code chip
+  # in the row (e.g. "MA00070"). The standard column ilike scan doesn't
+  # catch the code because the code is computed from id + numbering
+  # format, not stored as a column. Mirror the stock-lot pattern:
+  # OR a parse-as-code branch onto the regular column scan.
+  defp apply_item_search(query, _company_id, nil), do: query
+  defp apply_item_search(query, _company_id, ""), do: query
+
+  defp apply_item_search(query, company_id, term) when is_binary(term) do
+    trimmed = String.trim(term)
+
+    case trimmed do
+      "" ->
+        query
+
+      _ ->
+        needle = "%" <> escape_like(trimmed) <> "%"
+        id_from_code = parse_item_code(company_id, trimmed)
+
+        from i in query,
+          where:
+            ilike(i.name, ^needle) or
+              ilike(i.external_sku, ^needle) or
+              ilike(i.barcode, ^needle) or
+              ilike(i.description, ^needle) or
+              (^id_from_code != 0 and i.id == ^id_from_code)
+    end
+  end
+
+  defp parse_item_code(company_id, term) do
+    case Repo.get(Backend.Companies.Company, company_id) do
+      nil ->
+        0
+
+      company ->
+        case Backend.Numbering.parse_search(term, company, "item") do
+          nil -> 0
+          id when is_integer(id) -> id
+        end
+    end
+  end
+
+  defp escape_like(s),
+    do: s |> String.replace("\\", "\\\\") |> String.replace("%", "\\%") |> String.replace("_", "\\_")
 
   defp maybe_type_filter(query, nil), do: query
   defp maybe_type_filter(query, ""), do: query
