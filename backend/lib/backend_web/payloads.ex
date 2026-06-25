@@ -2425,7 +2425,8 @@ defmodule BackendWeb.Payloads do
             consumed_sum,
             pending_sum,
             coverage,
-            has_open_po
+            has_open_po,
+            mo.purchasing_requested_at != nil
           )
 
         # On completed MOs there's no shortage concept — the run is
@@ -2490,7 +2491,7 @@ defmodule BackendWeb.Payloads do
   # required. `nil` required (no qty on the line) leaves it `unknown`.
   # For completed MOs the badge tells the post-run truth: how much
   # was actually consumed, not what was booked at scheduling time.
-  defp coverage_state_for(_status, nil, _booked, _consumed, _pending, _coverage, _has_open_po),
+  defp coverage_state_for(_status, nil, _booked, _consumed, _pending, _coverage, _has_open_po, _requested),
     do: "unknown"
 
   defp coverage_state_for(
@@ -2500,7 +2501,8 @@ defmodule BackendWeb.Payloads do
          consumed,
          _pending,
          _coverage,
-         _has_open_po
+         _has_open_po,
+         _requested
        ) do
     cond do
       Decimal.compare(consumed, required) in [:eq, :gt] -> "consumed"
@@ -2516,7 +2518,8 @@ defmodule BackendWeb.Payloads do
          _consumed,
          pending,
          coverage,
-         has_open_po
+         has_open_po,
+         purchasing_requested
        ) do
     cond do
       Decimal.compare(coverage, required) in [:eq, :gt] ->
@@ -2539,6 +2542,13 @@ defmodule BackendWeb.Payloads do
         # the delivery + Goods-In Inspection rather than chasing
         # procurement again.
         "expecting"
+
+      purchasing_requested ->
+        # Planner has hit Request purchases. Procurement is on the
+        # hook — no PO yet, but the shortage is in their queue.
+        # Sky-blue badge instead of red "Not booked" so the planner
+        # knows the gap has been handed off.
+        "awaiting_po"
 
       true ->
         "not_booked"

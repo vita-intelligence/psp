@@ -350,20 +350,18 @@ export function MOStatusActions({
         </p>
       )}
 
-      {/* Child-MO approval hint */}
-      {isChild && (mo.status === "draft" || mo.status === "prepared") && (
+      {/* Sub-MO hint — surfaces the parent link so the planner can
+          jump up the chain. Signing still happens here on this MO;
+          each MO in the tree is signed independently. */}
+      {isChild && mo.parent_mo && (mo.status === "draft" || mo.status === "prepared") && (
         <p className="text-[11px] text-muted-foreground">
-          Approval is handled at{" "}
-          {mo.parent_mo ? (
-            <Link
-              href={`/production/manufacturing-orders/${mo.parent_mo.uuid}`}
-              className="font-medium text-brand hover:underline"
-            >
-              {mo.parent_mo.code ?? `MO #${mo.parent_mo.id}`}
-            </Link>
-          ) : (
-            "the root MO"
-          )}
+          Sub-MO of{" "}
+          <Link
+            href={`/production/manufacturing-orders/${mo.parent_mo.uuid}`}
+            className="font-medium text-brand hover:underline"
+          >
+            {mo.parent_mo.code ?? `MO #${mo.parent_mo.id}`}
+          </Link>
           .
         </p>
       )}
@@ -475,51 +473,55 @@ function ActionStrip(props: ActionStripProps) {
     const requested = mo.purchasing_requested_at != null;
     const underBooked = (mo.under_booked_count ?? 0) > 0;
 
-    if (canPrepare && !requested) {
+    if (canPrepare) {
       // Mark prepared is per-MO — each MO in the tree (root + every
-      // sub-MO) goes through prepare + approve independently. The
-      // planner typically signs leaves first so children are ready
-      // by the time the parent rolls forward.
+      // sub-MO) goes through prepare + approve independently. Prepare
+      // means "the planner has decided how to source this MO", not
+      // "every line has a real lot."
       //
-      // Disabled when any BOM line is short: prepare is the first
-      // commitment in the workflow, and committing with missing
-      // ingredients defeats the planning gate. Operator must either
-      // book the gap from existing stock OR send it to procurement
-      // via "Request purchases" and wait.
+      // Allowed when every line is fully booked OR procurement has
+      // been engaged for the shortfall (purchasing_requested_at set).
+      // Either way the planner has done their part. The release-time
+      // gate keeps the floor safe — pickup refuses until real lots
+      // exist.
+      const prepBlocked = underBooked && !requested;
       actionButton({
         label: "Mark prepared",
         icon: ClipboardCheck,
         onClick: props.onPrepare,
-        disabled: underBooked,
-        title: underBooked
-          ? "Some BOM lines aren't fully booked — book the missing items or request purchases first."
-          : undefined,
+        disabled: prepBlocked,
+        title: prepBlocked
+          ? "Some BOM lines aren't fully booked — book the missing items from stock OR hit Request purchases to send the gap to procurement."
+          : underBooked
+            ? "Procurement is engaged for the shortfall. Preparing locks the plan; the missing lots arrive on their POs."
+            : undefined,
       });
 
-      // Procurement request flow — when the planner has BOM lines
-      // they can't satisfy from existing stock, this routes the gaps
-      // to procurement instead of forcing them to dummy-book.
-      if (underBooked) {
+      // Procurement request flow — when shortages exist and the
+      // planner hasn't sent the gap to procurement yet. Hides once
+      // requested (the toggle is below this block).
+      if (underBooked && !requested) {
         actionButton({
           label: "Request purchases",
           icon: ShoppingCart,
           onClick: props.onRequestPurchases,
           variant: "outline",
           title:
-            "Send the unbooked items to procurement. Bookings on this MO will be locked until you prepare it.",
+            "Send the unbooked items to procurement. Once requested, you can still hit Mark prepared.",
         });
       }
-    }
 
-    // While in purchasing-requested state: surface a Cancel action
-    // so the planner can pull back if needed.
-    if (canPrepare && requested) {
-      actionButton({
-        label: "Cancel purchase request",
-        icon: Undo2,
-        onClick: props.onCancelPurchaseRequest,
-        variant: "outline",
-      });
+      // Inverse of Request purchases — pull the procurement request
+      // back if the planner changed their mind. Available alongside
+      // Mark prepared so the planner has both options on the table.
+      if (requested) {
+        actionButton({
+          label: "Cancel purchase request",
+          icon: Undo2,
+          onClick: props.onCancelPurchaseRequest,
+          variant: "outline",
+        });
+      }
     }
   }
 

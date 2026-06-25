@@ -428,6 +428,11 @@ const COVERAGE_STYLE: Record<
     label: "Expecting (PO out)",
     dot: "bg-sky-500",
   },
+  awaiting_po: {
+    text: "text-sky-700 dark:text-sky-300",
+    label: "Sent to procurement",
+    dot: "bg-sky-500",
+  },
   not_booked: {
     text: "text-destructive",
     label: "Not booked",
@@ -714,28 +719,43 @@ function NotBookedRow({
       ? String(Number(unitCost) * Number(unbookedQty))
       : null;
 
+  // If the parent row's coverage is "awaiting_po" (planner has hit
+  // Request purchases for this gap), tone down the row from red to
+  // sky-blue — the gap is handled, just waiting for procurement to
+  // open the PO.
+  const awaiting = part.coverage_status === "awaiting_po";
+  const rowTint = awaiting ? "bg-sky-50/40" : "bg-destructive/[0.04]";
+  const qtyTone = awaiting ? "text-sky-700 dark:text-sky-300" : "text-destructive";
+
   return (
-    <tr className="border-b border-border/40 bg-destructive/[0.04]">
+    <tr className={cn("border-b border-border/40", rowTint)}>
       <td className="px-2 py-1.5 pl-8 text-xs text-muted-foreground" />
       <td className="px-2 py-1.5 text-right" />
       <td className="px-2 py-1.5 text-right font-mono text-muted-foreground/60">
         —
       </td>
-      <td className="px-2 py-1.5 text-right font-mono text-destructive">
+      <td className={cn("px-2 py-1.5 text-right font-mono", qtyTone)}>
         {formatCompanyNumber(unbookedQty, company)} {uom}
       </td>
       <td className="px-2 py-1.5 text-right font-mono">
         {unitCost ? formatCompanyMoney(unitCost, company) : "—"}
       </td>
-      <td className="px-2 py-1.5 text-right font-mono text-destructive">
+      <td className={cn("px-2 py-1.5 text-right font-mono", qtyTone)}>
         {lineTotal ? formatCompanyMoney(lineTotal, company) : "—"}
       </td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-2 py-1.5">
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive ring-1 ring-inset ring-destructive/30">
-          <span className="size-1.5 rounded-full bg-destructive" aria-hidden />
-          Not booked
-        </span>
+        {awaiting ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-inset ring-sky-300 dark:text-sky-300 dark:ring-sky-700">
+            <span className="size-1.5 rounded-full bg-sky-500" aria-hidden />
+            Sent to procurement
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive ring-1 ring-inset ring-destructive/30">
+            <span className="size-1.5 rounded-full bg-destructive" aria-hidden />
+            Not booked
+          </span>
+        )}
       </td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>
       <td className="px-2 py-1.5 text-muted-foreground/60">—</td>

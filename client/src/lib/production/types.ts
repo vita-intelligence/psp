@@ -666,6 +666,7 @@ export interface ManufacturingOrderPart {
     | "sub_mo_in_progress"
     | "partial"
     | "expecting"
+    | "awaiting_po"
     | "not_booked"
     | "consumed"
     | "consumed_short"
