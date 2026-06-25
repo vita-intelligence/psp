@@ -642,13 +642,25 @@ defmodule Backend.OrderWizard do
             href: "/procurement/purchase-orders/#{next_po.uuid}"
           },
           secondary_ctas:
-            for po <- Enum.drop(pos, 1) do
+            [
+              # Quick handoff to the warehouse phone — the goods-in
+              # team scans the QR and lands on the mobile incoming list
+              # so they know what's expected. Lives next to the
+              # per-PO links so the planner can shoot it to a tablet
+              # without leaving the project board.
               %{
-                label: "Open PO ##{po.id}",
-                kind: "link",
-                href: "/procurement/purchase-orders/#{po.uuid}"
+                label: "Send expected POs to device",
+                kind: "send_to_device",
+                href: "/m/incoming"
               }
-            end,
+            ] ++
+              for po <- Enum.drop(pos, 1) do
+                %{
+                  label: "Open PO ##{po.id}",
+                  kind: "link",
+                  href: "/procurement/purchase-orders/#{po.uuid}"
+                }
+              end,
           shortages_link: %{
             label: "Open shortages page",
             href: "/procurement/shortages"
