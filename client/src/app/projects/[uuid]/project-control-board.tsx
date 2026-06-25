@@ -356,6 +356,9 @@ export function ProjectControlBoard({
               <PhaseStepper phase={phase} onClick={scrollToPhase} />
             </section>
 
+            {/* What this phase means + what to do */}
+            <PhaseExplainerCard phase={phase} />
+
             {/* Do-this-next card */}
             <NextActionCard
               nextAction={next_action}
@@ -473,10 +476,6 @@ export function ProjectControlBoard({
         onSendToDevice={(cta) => {
           setMoModalUuid(null);
           setQrModalCta(cta);
-        }}
-        onAction={async (moUuid, action) => {
-          await runMoTransition(co.uuid, moUuid, action, refreshSnapshot);
-          setMoModalUuid(null);
         }}
       />
       <PoModal
@@ -951,6 +950,60 @@ function BlockersCard({ blockers }: { blockers: OrderWizardBlocker[] }) {
 }
 
 // =============================================================================
+// Phase explainer — plain-language "what's happening, what to do".
+// =============================================================================
+
+const PHASE_EXPLAINER: Record<
+  OrderWizardPhaseKey,
+  { title: string; body: string } | null
+> = {
+  setup: {
+    title: "You're building the order.",
+    body: "Pick the customer, add the lines they want, set ship date and address. Nothing is locked yet — edit freely. When you're done, submit for approval.",
+  },
+  approval: {
+    title: "Two signatures needed.",
+    body: "Approver signs first (commercial check), then director signs second (segregation of duties — must be a different person). Once both signatures are in, hit Mark confirmed to release the order into production.",
+  },
+  production_planning: {
+    title: "Plan every MO, then we move on.",
+    body: "Open each MO, pick the BOM if there's a choice, then on the MO page allocate lots for what's in stock and Request purchases for what isn't. Once every MO is signed off AND every shortage has a PO behind it, the order rolls into Ingredients.",
+  },
+  awaiting_ingredients: {
+    title: "Waiting on POs to land.",
+    body: "Procurement is engaged. As each PO arrives and clears QC, its lot replaces the placeholder booking on the MO automatically. When all bookings are real, you can schedule the runs.",
+  },
+  in_production: {
+    title: "On the floor.",
+    body: "MOs are scheduled or running. Operators pick from booked lots, run the routing on a device, and produce output lots that land in the production-feed cell.",
+  },
+  closeout: {
+    title: "Move output to warehouse storage.",
+    body: "Runs are finished but output lots are still in production-feed. Send the closeout flow to a device so the warehouse team can transfer the goods to a regular / dispatch cell.",
+  },
+  ready_to_dispatch: {
+    title: "Order is ready to ship.",
+    body: "All output is in warehouse cells. Generate the invoice (if needed) and arrange a courier. Dispatch module isn't built yet — for now this is the terminal state.",
+  },
+  cancelled: null,
+};
+
+function PhaseExplainerCard({ phase }: { phase: OrderWizardPhase }) {
+  const entry = PHASE_EXPLAINER[phase.key];
+  if (!entry) return null;
+  return (
+    <Card className="border-border/40 bg-card">
+      <CardContent className="space-y-1 py-3">
+        <p className="text-sm font-medium text-foreground">{entry.title}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {entry.body}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================================
 // Invoice reminder — advisory only, decoupled from production state.
 // =============================================================================
 
@@ -1174,7 +1227,6 @@ function LineCard({
               prefs={prefs}
               permissions={permissions}
               onOpen={() => onOpenMo(mo.uuid)}
-              onAction={(action) => onMoAction(mo.uuid, action)}
               onSendToDevice={onSendToDevice}
             />
           ))}
@@ -1216,30 +1268,14 @@ function MiniMoCard({
   prefs,
   permissions,
   onOpen,
-  onAction,
   onSendToDevice,
 }: {
   mo: OrderWizardMo;
   prefs: CompanyDefaults;
   permissions: ProjectBoardPermissions;
   onOpen: () => void;
-  onAction: (action: MOActionString) => Promise<void>;
   onSendToDevice: (cta: OrderWizardCta) => void;
 }) {
-  const [busyAction, setBusyAction] = useState<MOActionString | null>(null);
-
-  async function fire(action: MOActionString) {
-    setBusyAction(action);
-    try {
-      await onAction(action);
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  const showRequestPurchases =
-    mo.has_placeholder_bookings && !mo.purchasing_requested_at;
-
   return (
     <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -1275,60 +1311,21 @@ function MiniMoCard({
         )}
       </div>
 
+      {/* Single canonical action: open the MO. Signing (prepare,
+          approve), booking decisions, and Request purchases live on
+          the MO page where the planner sees BOM + bookings + routing
+          before committing. Inline buttons here caused misclicks. */}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="ghost" onClick={onOpen}>
-          View details
-        </Button>
-
-        {permissions.canManageMOs && mo.status === "draft" && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void fire("prepare")}
-            disabled={busyAction === "prepare"}
-          >
-            {busyAction === "prepare" && (
-              <Loader2 className="mr-1 size-3 animate-spin" />
-            )}
-            Prepare
-          </Button>
-        )}
-
-        {permissions.canManageMOs && mo.status === "prepared" && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void fire("approve")}
-            disabled={busyAction === "approve"}
-          >
-            {busyAction === "approve" && (
-              <Loader2 className="mr-1 size-3 animate-spin" />
-            )}
-            Approve
-          </Button>
-        )}
-
-        {permissions.canManageMOs && showRequestPurchases && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void fire("request_purchases")}
-            disabled={busyAction === "request_purchases"}
-          >
-            {busyAction === "request_purchases" && (
-              <Loader2 className="mr-1 size-3 animate-spin" />
-            )}
-            <ShoppingBag className="mr-1 size-3" />
-            Request purchases
-          </Button>
-        )}
-
-        {mo.status === "approved" && (
+        {permissions.canManageMOs ? (
           <Button asChild size="sm" variant="outline">
-            <Link href={`/production/schedule?mo=${mo.uuid}`}>
-              <Calendar className="mr-1 size-3" />
-              Open in scheduler
+            <Link href={`/production/manufacturing-orders/${mo.uuid}`}>
+              <ExternalLink className="mr-1 size-3" />
+              Open MO
             </Link>
+          </Button>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={onOpen}>
+            View details
           </Button>
         )}
 
@@ -1646,7 +1643,6 @@ function MoModal({
   permissions,
   onClose,
   onSendToDevice,
-  onAction,
 }: {
   uuid: string | null;
   mo: OrderWizardMo | null;
@@ -1655,10 +1651,7 @@ function MoModal({
   permissions: ProjectBoardPermissions;
   onClose: () => void;
   onSendToDevice: (cta: OrderWizardCta) => void;
-  onAction: (moUuid: string, action: MOActionString) => Promise<void>;
 }) {
-  const [busyAction, setBusyAction] = useState<MOActionString | null>(null);
-
   // Defensive guard: parent re-renders may briefly have uuid set
   // before the snapshot map has the row.
   if (!uuid) return null;
@@ -1676,15 +1669,6 @@ function MoModal({
         </DialogContent>
       </Dialog>
     );
-  }
-
-  async function fire(action: MOActionString) {
-    setBusyAction(action);
-    try {
-      await onAction(mo!.uuid, action);
-    } finally {
-      setBusyAction(null);
-    }
   }
 
   return (
@@ -1771,57 +1755,13 @@ function MoModal({
           )}
         </div>
 
+        {/* The modal is a peek — no inline signing or action buttons.
+            The MO page is where the planner sees BOM + bookings +
+            routing and decides. Send-to-device shortcuts (preflight,
+            run, closeout) stay because they're physical-floor entry
+            points, not state-changing signatures. */}
         <DialogFooter className="flex flex-wrap items-center gap-2 sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            {permissions.canManageMOs && mo.status === "draft" && (
-              <Button
-                size="sm"
-                onClick={() => void fire("prepare")}
-                disabled={busyAction !== null}
-              >
-                {busyAction === "prepare" && (
-                  <Loader2 className="mr-1 size-3 animate-spin" />
-                )}
-                Prepare
-              </Button>
-            )}
-            {permissions.canManageMOs && mo.status === "prepared" && (
-              <Button
-                size="sm"
-                onClick={() => void fire("approve")}
-                disabled={busyAction !== null}
-              >
-                {busyAction === "approve" && (
-                  <Loader2 className="mr-1 size-3 animate-spin" />
-                )}
-                Approve
-              </Button>
-            )}
-            {permissions.canManageMOs &&
-              mo.has_placeholder_bookings &&
-              !mo.purchasing_requested_at && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void fire("request_purchases")}
-                  disabled={busyAction !== null}
-                >
-                  {busyAction === "request_purchases" && (
-                    <Loader2 className="mr-1 size-3 animate-spin" />
-                  )}
-                  <ShoppingBag className="mr-1 size-3" />
-                  Request purchases
-                </Button>
-              )}
-
-            {mo.status === "approved" && (
-              <Button asChild size="sm" variant="outline">
-                <Link href={`/production/schedule?mo=${mo.uuid}`}>
-                  <Calendar className="mr-1 size-3" />
-                  Open in scheduler
-                </Link>
-              </Button>
-            )}
             {mo.status === "scheduled" && (
               <Button
                 size="sm"
@@ -1875,9 +1815,9 @@ function MoModal({
             )}
           </div>
 
-          <Button asChild variant="ghost" size="sm">
+          <Button asChild size="sm">
             <Link href={`/production/manufacturing-orders/${mo.uuid}`}>
-              Open full MO page
+              Open MO page
               <ExternalLink className="ml-1 size-3" />
             </Link>
           </Button>

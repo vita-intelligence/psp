@@ -227,7 +227,17 @@ defmodule Backend.OrderWizard do
 
   defp derive_phase(%CustomerOrder{status: "confirmed"}, line_states, mos) do
     cond do
+      # A line is still waiting on an MO being created at all.
       Enum.any?(line_states, &(&1.needs_mo? and is_nil(&1.primary_mo))) ->
+        :production_planning
+
+      # Stay in planning until EVERY MO is fully sorted by the planner:
+      # signed off (status ≥ approved) AND either all bookings are real
+      # OR procurement is engaged for shortages (purchasing_requested_at
+      # is set). Strict gate — one half-handled MO keeps the whole CO in
+      # planning, since "Awaiting ingredients" should only mean "waiting
+      # on POs to land," never "waiting on the planner to decide."
+      not Enum.all?(mos, & &1.is_fully_sorted?) ->
         :production_planning
 
       Enum.any?(mos, & &1.has_placeholder_bookings?) ->
@@ -801,6 +811,17 @@ defmodule Backend.OrderWizard do
     feed_lots = Enum.filter(output_lots, & &1.at_production_feed?)
     warehouse_lots = output_lots -- feed_lots
 
+    has_placeholders = placeholder_bookings != []
+    procurement_engaged = not is_nil(mo.purchasing_requested_at)
+    past_approval = mo.status in ["approved", "scheduled", "in_progress", "completed"]
+
+    # "Fully sorted" = planner has finished deciding for this MO:
+    # both signatures in (approved+) AND no unresolved shortages —
+    # either every booking is real, or procurement has been engaged
+    # for the placeholders. This is the gate the CO-level phase
+    # uses to decide if production_planning is done.
+    is_fully_sorted = past_approval and (not has_placeholders or procurement_engaged)
+
     %{
       id: mo.id,
       uuid: mo.uuid,
@@ -811,7 +832,7 @@ defmodule Backend.OrderWizard do
       customer_order_line_id: mo.customer_order_line_id,
       bookings_total: length(mo.bookings),
       placeholder_count: length(placeholder_bookings),
-      has_placeholder_bookings?: placeholder_bookings != [],
+      has_placeholder_bookings?: has_placeholders,
       placeholder_po_uuids: placeholder_po_uuids,
       broken_booking_count: count_broken_bookings(mo.bookings),
       output_lots: Enum.map(output_lots, &lot_summary/1),
@@ -821,6 +842,7 @@ defmodule Backend.OrderWizard do
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
       purchasing_requested_at: mo.purchasing_requested_at,
+      is_fully_sorted?: is_fully_sorted,
       due_date: mo.due_date
     }
   end
