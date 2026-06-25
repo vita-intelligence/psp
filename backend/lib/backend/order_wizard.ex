@@ -143,6 +143,15 @@ defmodule Backend.OrderWizard do
         end),
       mos_with_placeholders:
         Enum.count(snap.mos, & &1.has_placeholder_bookings?),
+      # Split the placeholder count by PO state so the kanban chip
+      # can tell the planner whether the next move is "push the PO
+      # out the door" (unsent) vs. "wait for delivery" (sent).
+      mos_awaiting_po_send:
+        Enum.count(snap.mos, & &1.has_unsent_placeholder_po?),
+      mos_awaiting_delivery:
+        Enum.count(snap.mos, fn mo ->
+          mo.has_sent_placeholder_po? and not mo.has_unsent_placeholder_po?
+        end),
       mos_in_production:
         Enum.count(snap.mos, &(&1.status in ["scheduled", "in_progress"])),
       mos_awaiting_closeout:
@@ -936,11 +945,19 @@ defmodule Backend.OrderWizard do
     placeholder_bookings =
       Enum.filter(mo.bookings, &(not is_nil(&1.purchase_order_line_id)))
 
-    placeholder_po_uuids =
+    placeholder_po_line_ids =
       placeholder_bookings
       |> Enum.map(& &1.purchase_order_line_id)
       |> Enum.uniq()
-      |> po_uuids_for_line_ids()
+
+    placeholder_po_uuids = po_uuids_for_line_ids(placeholder_po_line_ids)
+    placeholder_po_statuses = po_statuses_for_line_ids(placeholder_po_line_ids)
+
+    has_unsent_placeholder_po? =
+      Enum.any?(placeholder_po_statuses, &(&1 in ~w(draft pending_approver pending_director approved)))
+
+    has_sent_placeholder_po? =
+      Enum.any?(placeholder_po_statuses, &(&1 in ~w(ordered partially_received)))
 
     output_lots = output_lots_for_mo(mo)
     feed_lots = Enum.filter(output_lots, & &1.at_production_feed?)
@@ -972,6 +989,8 @@ defmodule Backend.OrderWizard do
       placeholder_count: length(placeholder_bookings),
       has_placeholder_bookings?: has_placeholders,
       placeholder_po_uuids: placeholder_po_uuids,
+      has_unsent_placeholder_po?: has_unsent_placeholder_po?,
+      has_sent_placeholder_po?: has_sent_placeholder_po?,
       broken_booking_count: broken_booking_count,
       under_booked_count: under_booked,
       output_lots: Enum.map(output_lots, &lot_summary/1),
@@ -1088,6 +1107,18 @@ defmodule Backend.OrderWizard do
       where: pol.id in ^po_line_ids,
       join: po in PurchaseOrder, on: po.id == pol.purchase_order_id,
       select: po.uuid,
+      distinct: true
+    )
+    |> Repo.all()
+  end
+
+  defp po_statuses_for_line_ids([]), do: []
+
+  defp po_statuses_for_line_ids(po_line_ids) do
+    from(pol in Backend.Purchasing.PurchaseOrderLine,
+      where: pol.id in ^po_line_ids,
+      join: po in PurchaseOrder, on: po.id == pol.purchase_order_id,
+      select: po.status,
       distinct: true
     )
     |> Repo.all()

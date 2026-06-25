@@ -2875,6 +2875,16 @@ export interface ProjectSummary {
   line_count: number;
   mo_count: number;
   lines_awaiting_mo: number;
+  /** MOs whose placeholder-bookings include at least one PO still
+   *  in draft / pending-approval / approved-but-not-ordered. The
+   *  next action is "push the PO out the door." */
+  mos_awaiting_po_send: number;
+  /** MOs whose placeholder-bookings are all on ordered or
+   *  partially-received POs — the planner has nothing to do, just
+   *  wait on the vendor. */
+  mos_awaiting_delivery: number;
+  /** Total MOs with any placeholder bookings. Kept for backwards
+   *  compatibility; new UI should branch on the two fields above. */
   mos_with_placeholders: number;
   mos_in_production: number;
   mos_awaiting_closeout: number;

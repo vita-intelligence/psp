@@ -351,22 +351,43 @@ function CardChips({ project }: { project: ProjectSummary }) {
   }
 
   // POs are only on the agenda once MOs exist and bookings might
-  // have placeholders.
+  // have placeholders. Split the chip by what the planner can
+  // actually do about it:
+  //
+  //   - Unsent PO → amber "Sign PO" (planner blocked something).
+  //   - All sent → sky "Awaiting delivery" (procurement is doing
+  //     its job, just wait for the vendor).
   if (
-    project.mos_with_placeholders > 0 &&
-    (phase === "awaiting_ingredients" || phase === "in_production")
+    phase === "awaiting_ingredients" ||
+    phase === "in_production"
   ) {
-    chips.push(
-      <Chip
-        key="placeholders"
-        tone="amber"
-        title={`${project.mos_with_placeholders} MO${
-          project.mos_with_placeholders === 1 ? "" : "s"
-        } depending on POs`}
-      >
-        {project.mos_with_placeholders} on PO
-      </Chip>,
-    );
+    if (project.mos_awaiting_po_send > 0) {
+      chips.push(
+        <Chip
+          key="po_send"
+          tone="amber"
+          title={`${project.mos_awaiting_po_send} MO${
+            project.mos_awaiting_po_send === 1 ? "" : "s"
+          } depend on a PO that hasn't been sent to the vendor yet`}
+        >
+          {project.mos_awaiting_po_send} sign PO
+        </Chip>,
+      );
+    }
+
+    if (project.mos_awaiting_delivery > 0) {
+      chips.push(
+        <Chip
+          key="po_delivery"
+          tone="sky"
+          title={`${project.mos_awaiting_delivery} MO${
+            project.mos_awaiting_delivery === 1 ? "" : "s"
+          } awaiting delivery from the vendor`}
+        >
+          {project.mos_awaiting_delivery} awaiting delivery
+        </Chip>,
+      );
+    }
   }
 
   if (project.mos_in_production > 0 && phase === "in_production") {
