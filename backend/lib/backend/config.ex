@@ -11,7 +11,7 @@ defmodule Backend.Config do
   Called by CORSPlug on every request — must stay pure / fast.
   """
   def cors_origins(_conn \\ nil) do
-    System.get_env("CORS_ORIGINS", "http://localhost:3000")
+    System.get_env("CORS_ORIGINS", "http://localhost:3010,https://localhost:3010")
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
   end

@@ -88,7 +88,7 @@ defmodule BackendWeb.PasswordResetController do
   ## ------------------------------------------------------------------
 
   defp reset_url_for_token(token) do
-    frontend = System.get_env("PSP_FRONTEND_URL", "http://localhost:3000")
+    frontend = System.get_env("PSP_FRONTEND_URL", "http://localhost:3010")
     "#{frontend}/reset-password?token=#{token}"
   end
 

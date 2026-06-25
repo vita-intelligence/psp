@@ -119,10 +119,10 @@ defmodule BackendWeb.AuthController do
   ## ------------------------------------------------------------------
 
   # Where the customer is sent to click "I confirm". Resolved from the
-  # PSP_FRONTEND_URL env var so this works in local dev (Next on :3000)
+  # PSP_FRONTEND_URL env var so this works in local dev (Next on :3010)
   # and in production without code changes.
   defp confirm_url_for_token(token) do
-    frontend = System.get_env("PSP_FRONTEND_URL", "http://localhost:3000")
+    frontend = System.get_env("PSP_FRONTEND_URL", "http://localhost:3010")
     "#{frontend}/confirm?token=#{token}"
   end
 

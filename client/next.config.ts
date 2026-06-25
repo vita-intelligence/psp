@@ -8,10 +8,11 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["pdfkit"],
 
   // Dev-only: allow the laptop's LAN IP so phones / tablets on the
-  // same Wi-Fi can hit `http://<lan-ip>:3000` for QR pairing without
+  // same Wi-Fi can hit `http://<lan-ip>:3010` for QR pairing without
   // tripping Next 15+'s cross-origin protections (HMR + server-action
   // Origin check). Production goes through a proper hostname so this
-  // is not needed there.
+  // is not needed there. Port is 3010 (not 3000) so PSP coexists with
+  // other Next dev servers on the laptop without dual-bind clashes.
   allowedDevOrigins: [
     "192.168.0.116",
     "192.168.0.0/24",
@@ -28,9 +29,9 @@ const nextConfig: NextConfig = {
       // the LAN URL, so list both the .local hostname (preferred —
       // Safari persists cookies for it) and the raw IP fallback.
       allowedOrigins: [
-        "maksyms-macbook-pro.local:3000",
-        "192.168.0.116:3000",
-        "localhost:3000",
+        "maksyms-macbook-pro.local:3010",
+        "192.168.0.116:3010",
+        "localhost:3010",
       ],
     },
   },

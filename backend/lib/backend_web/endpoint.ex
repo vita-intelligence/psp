@@ -53,7 +53,7 @@ defmodule BackendWeb.Endpoint do
   # deploying. Keep CORSPlug's `origin` value to types it can `escape`
   # at plug-init time: lists, strings, regexes.
   plug CORSPlug,
-    origin: ["http://localhost:3000"],
+    origin: ["http://localhost:3010", "https://localhost:3010"],
     credentials: false,
     max_age: 86_400
 
