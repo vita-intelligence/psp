@@ -242,15 +242,18 @@ defmodule Backend.OrderWizard do
         :production_planning
 
       # Stay in planning until EVERY MO is fully sorted by the planner:
-      # signed off (status ≥ approved) AND either all bookings are real
-      # OR procurement is engaged for shortages (purchasing_requested_at
-      # is set). Strict gate — one half-handled MO keeps the whole CO in
-      # planning, since "Awaiting ingredients" should only mean "waiting
-      # on POs to land," never "waiting on the planner to decide."
+      # signed off (status ≥ approved) AND no broken bookings. Once
+      # signed, planning is "done from the planner's side" — what's
+      # missing is goods, not decisions.
       not Enum.all?(mos, & &1.is_fully_sorted?) ->
         :production_planning
 
-      Enum.any?(mos, & &1.has_placeholder_bookings?) ->
+      # Awaiting ingredients = planner signed off but goods aren't on
+      # hand yet. Either there's a placeholder reservation against an
+      # in-flight PO (waiting for delivery), OR there's a BOM line not
+      # yet booked at all (waiting for procurement to even create the
+      # PO). Both keep the order from advancing to production.
+      Enum.any?(mos, &(&1.has_placeholder_bookings? or &1.under_booked_count > 0)) ->
         :awaiting_ingredients
 
       not Enum.all?(mos, &(&1.status == "completed")) ->
@@ -831,7 +834,7 @@ defmodule Backend.OrderWizard do
   # ----- mo state ------------------------------------------------
 
   defp mo_state(%ManufacturingOrder{} = mo) do
-    mo = Repo.preload(mo, [:item, :children, bookings: []])
+    mo = Repo.preload(mo, [:item, :children, bookings: [], bom: [lines: :part]])
 
     # Recurse into child MOs (auto-spawned for semi-finished
     # sub-assemblies). The chain has to be sorted top-to-bottom
@@ -839,6 +842,8 @@ defmodule Backend.OrderWizard do
     # MO with an unhandled child is no different from a parent
     # MO with unhandled bookings.
     child_states = Enum.map(mo.children, &mo_state/1)
+
+    under_booked = count_under_booked_lines(mo)
 
     placeholder_bookings =
       Enum.filter(mo.bookings, &(not is_nil(&1.purchase_order_line_id)))
@@ -880,6 +885,7 @@ defmodule Backend.OrderWizard do
       has_placeholder_bookings?: has_placeholders,
       placeholder_po_uuids: placeholder_po_uuids,
       broken_booking_count: broken_booking_count,
+      under_booked_count: under_booked,
       output_lots: Enum.map(output_lots, &lot_summary/1),
       output_lot_count: length(output_lots),
       output_at_feed_count: length(feed_lots),
@@ -891,6 +897,56 @@ defmodule Backend.OrderWizard do
       children: child_states,
       due_date: mo.due_date
     }
+  end
+
+  # Per-MO count of BOM lines where booked + pending-from-children
+  # is still less than required. Mirrors the rule in
+  # Backend.Production.ensure_all_lines_fully_booked but inline so
+  # the wizard avoids an extra round-trip per MO.
+  defp count_under_booked_lines(%ManufacturingOrder{} = mo) do
+    lines =
+      case mo.bom do
+        %{lines: lines} when is_list(lines) -> lines
+        _ -> []
+      end
+
+    mo_qty = mo.quantity || Decimal.new(0)
+
+    children_by_item =
+      (Map.get(mo, :children) || [])
+      |> Enum.filter(&(&1.status not in ["completed", "cancelled"]))
+      |> Enum.group_by(& &1.item_id)
+
+    Enum.count(lines, fn line ->
+      case line.part do
+        %{id: part_id, item_type: t} when t in ["raw_material", "packaging", "semi_finished"] ->
+          required =
+            if line.is_fixed do
+              line.qty || Decimal.new(0)
+            else
+              Decimal.mult(line.qty || Decimal.new(0), mo_qty)
+            end
+
+          booked =
+            mo.bookings
+            |> Enum.filter(fn b -> b.item_id == part_id and b.status == "requested" end)
+            |> Enum.reduce(Decimal.new(0), fn b, acc ->
+              Decimal.add(acc, b.quantity || Decimal.new(0))
+            end)
+
+          pending =
+            children_by_item
+            |> Map.get(part_id, [])
+            |> Enum.reduce(Decimal.new(0), fn c, acc ->
+              Decimal.add(acc, c.quantity || Decimal.new(0))
+            end)
+
+          Decimal.compare(required, Decimal.add(booked, pending)) == :gt
+
+        _ ->
+          false
+      end
+    end)
   end
 
   # Flatten a parent MO + its descendants into a single list.
