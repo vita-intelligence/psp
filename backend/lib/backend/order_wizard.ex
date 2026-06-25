@@ -97,11 +97,12 @@ defmodule Backend.OrderWizard do
   def notify_via_mo(_), do: :ok
 
   @doc """
-  Compact summary of every "active" CO in the company — anything
-  that isn't `draft` or `cancelled`. Used by the /projects landing
-  page so a worker sees every job in flight without clicking into
-  each one. Each row carries enough state to render the phase
-  badge, the next-action title, and a blocker chip.
+  Compact summary of every "in-flight" CO in the company — anything
+  that isn't `cancelled`. Drafts ARE included so the Setup column
+  of the pipeline shows half-built orders that need finishing.
+  Cancelled COs belong in an archive view, not the live board.
+  Each row carries enough state to render the phase badge, the
+  next-action title, and a blocker chip.
 
   Returns:
     `[%{customer_order, phase, next_action_title, blocker_count,
@@ -115,7 +116,7 @@ defmodule Backend.OrderWizard do
   def list_active(company_id) when is_integer(company_id) do
     from(co in CustomerOrder,
       where: co.company_id == ^company_id,
-      where: co.status not in ["draft", "cancelled"],
+      where: co.status != "cancelled",
       order_by: [asc: co.id]
     )
     |> Repo.all()
@@ -267,11 +268,11 @@ defmodule Backend.OrderWizard do
           code: "add_lines",
           title: "Add at least one line to the order.",
           detail:
-            "An empty draft can't be submitted. Open the Lines card on this order and pick the items the customer wants.",
+            "An empty draft can't be submitted. Open the order to pick the items the customer wants — the lines editor lives on the order detail page.",
           primary_cta: %{
-            label: "Open lines",
-            kind: "scroll_to",
-            target: "#co-lines"
+            label: "Add lines",
+            kind: "link",
+            href: "/sales/orders/#{co.uuid}"
           },
           secondary_ctas: []
         }

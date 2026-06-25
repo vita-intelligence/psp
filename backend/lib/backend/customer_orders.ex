@@ -138,16 +138,42 @@ defmodule Backend.CustomerOrders do
         "updated_by_id" => actor.id
       })
 
-    %CustomerOrder{}
-    |> CustomerOrder.changeset(attrs)
-    |> Repo.insert()
-    |> case do
-      {:ok, co} ->
-        Audit.record_created(actor, "customer_order", co, co_snapshot(co))
-        {:ok, preload_co(co)}
+    # Customer-approval gate at the create boundary, not just at
+    # submit. The FE picker already hides unapproved customers, but
+    # a direct API call (or a customer suspended after the picker
+    # render) could otherwise land an orphan draft that can never be
+    # submitted. Closing the loop here keeps the chronology strict:
+    # approve the customer first, then create the order.
+    with :ok <- ensure_customer_approved_for_create(company_id, attrs["customer_id"]) do
+      %CustomerOrder{}
+      |> CustomerOrder.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, co} ->
+          Audit.record_created(actor, "customer_order", co, co_snapshot(co))
+          {:ok, preload_co(co)}
 
-      other ->
-        other
+        other ->
+          other
+      end
+    end
+  end
+
+  defp ensure_customer_approved_for_create(_company_id, nil),
+    do: {:error, :customer_required}
+
+  defp ensure_customer_approved_for_create(company_id, customer_id) do
+    case Repo.get(Backend.Customers.Customer, customer_id) do
+      nil ->
+        {:error, :customer_not_found}
+
+      %{company_id: cid} when cid != company_id ->
+        {:error, :customer_not_found}
+
+      customer ->
+        if Customers.approval_active?(customer),
+          do: :ok,
+          else: {:error, :customer_not_approved}
     end
   end
 

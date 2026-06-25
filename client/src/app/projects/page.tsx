@@ -10,9 +10,11 @@ import {
   Factory,
   FileText,
   PackageOpen,
+  Plus,
   ShieldCheck,
   Truck,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
@@ -115,6 +117,7 @@ export default async function ProjectsPage() {
   const rows = projects ?? [];
   const total = rows.length;
   const grouped = groupByPhase(rows);
+  const canCreate = hasPermission(user, "customer_orders.create");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -124,8 +127,8 @@ export default async function ProjectsPage() {
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-10">
         <div className="mx-auto max-w-[1600px] space-y-6">
           {/* ---------- Header ---------- */}
-          <header className="flex flex-wrap items-end justify-between gap-4">
-            <div className="space-y-1.5">
+          <header className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 space-y-1.5">
               <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
                 <ClipboardList className="size-6 text-brand sm:size-7" />
                 Production pipeline
@@ -134,13 +137,23 @@ export default async function ProjectsPage() {
                 Every customer order in flight, by phase. Click a card to
                 open the project control board — it tells you what to do
                 next without leaving the page.
+                {total > 0 && (
+                  <>
+                    {" "}
+                    <span className="font-medium text-foreground">
+                      {total} project{total === 1 ? "" : "s"} live.
+                    </span>
+                  </>
+                )}
               </p>
             </div>
-            {total > 0 && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-xs font-medium">
-                <span className="size-1.5 rounded-full bg-emerald-500" />
-                {total} active project{total === 1 ? "" : "s"}
-              </span>
+            {canCreate && (
+              <Button asChild size="sm" className="shrink-0">
+                <Link href="/sales/orders/new">
+                  <Plus className="mr-1.5 size-4" />
+                  Start new project
+                </Link>
+              </Button>
             )}
           </header>
 
@@ -295,7 +308,11 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
 
 function CardChips({ project }: { project: ProjectSummary }) {
   const chips: React.ReactNode[] = [];
+  const phase = project.phase.key;
 
+  // Blockers always show — they're current issues, not future-phase
+  // noise. Everything else is gated by phase so a draft card
+  // doesn't show "2 need MO" before MOs are even on the agenda.
   if (project.blocker_count > 0) {
     chips.push(
       <Chip
@@ -312,7 +329,14 @@ function CardChips({ project }: { project: ProjectSummary }) {
     );
   }
 
-  if (project.lines_awaiting_mo > 0) {
+  // "Need MO" only relevant once production planning is the active
+  // concern — i.e. CO is confirmed.
+  if (
+    project.lines_awaiting_mo > 0 &&
+    (phase === "production_planning" ||
+      phase === "awaiting_ingredients" ||
+      phase === "in_production")
+  ) {
     chips.push(
       <Chip
         key="awaiting_mo"
@@ -326,7 +350,12 @@ function CardChips({ project }: { project: ProjectSummary }) {
     );
   }
 
-  if (project.mos_with_placeholders > 0) {
+  // POs are only on the agenda once MOs exist and bookings might
+  // have placeholders.
+  if (
+    project.mos_with_placeholders > 0 &&
+    (phase === "awaiting_ingredients" || phase === "in_production")
+  ) {
     chips.push(
       <Chip
         key="placeholders"
@@ -340,7 +369,7 @@ function CardChips({ project }: { project: ProjectSummary }) {
     );
   }
 
-  if (project.mos_in_production > 0) {
+  if (project.mos_in_production > 0 && phase === "in_production") {
     chips.push(
       <Chip
         key="in_production"
@@ -354,7 +383,7 @@ function CardChips({ project }: { project: ProjectSummary }) {
     );
   }
 
-  if (project.mos_awaiting_closeout > 0) {
+  if (project.mos_awaiting_closeout > 0 && phase === "closeout") {
     chips.push(
       <Chip
         key="closeout"

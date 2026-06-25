@@ -124,8 +124,31 @@ export function COWorkflowCard({
 
   const actorIsApprover = approverSig?.signed_by?.id === currentUserId;
 
+  // Submission gates — mirror Backend.CustomerOrders.submit/2's checks
+  // so the user sees what's missing BEFORE clicking and getting a 422.
+  // Order matters: the wizard's "do this next" surfaces these one at a
+  // time so we list them top-down here for consistency.
+  const submitBlockers: string[] = [];
+  if (co.status === "draft") {
+    if (!co.lines || co.lines.length === 0) {
+      submitBlockers.push("Add at least one line to the order.");
+    }
+    if (
+      co.customer &&
+      co.customer.effective_approval_status !== "approved"
+    ) {
+      submitBlockers.push(
+        `Customer is ${co.customer.effective_approval_status.replace(/_/g, " ")} — needs to be approved before this order can be submitted.`,
+      );
+    }
+    if (!co.customer) {
+      submitBlockers.push("Pick a customer first.");
+    }
+  }
+
   // Action visibility based on state
   const showSubmit = canSubmit && co.status === "draft";
+  const submitReady = showSubmit && submitBlockers.length === 0;
   const showSignApprover = canApprove && co.status === "pending_approver";
   const showSignDirector = canDirectorApprove && co.status === "pending_director";
   const showMarkConfirmed = canDirectorApprove && co.status === "approved";
@@ -219,9 +242,30 @@ export function COWorkflowCard({
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Actions
             </p>
+            {showSubmit && submitBlockers.length > 0 && (
+              <div className="mb-3 rounded-md border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-800/40 dark:bg-amber-950/30 dark:text-amber-200">
+                <p className="mb-1 font-medium">
+                  Finish setup before submitting:
+                </p>
+                <ul className="ml-4 list-disc space-y-0.5">
+                  {submitBlockers.map((b) => (
+                    <li key={b}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {showSubmit && (
-                <Button size="sm" onClick={() => setOpenAction("submit")}>
+                <Button
+                  size="sm"
+                  onClick={() => setOpenAction("submit")}
+                  disabled={!submitReady}
+                  title={
+                    submitReady
+                      ? undefined
+                      : "Finish the setup steps above before submitting."
+                  }
+                >
                   <Send className="mr-1.5 size-3.5" />
                   Submit for approval
                 </Button>

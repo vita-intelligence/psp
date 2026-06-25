@@ -119,7 +119,7 @@ defmodule BackendWeb.CustomerOrderController do
       attrs =
         %{
           "company_id" => actor.company_id,
-          "warehouse_id" => default_warehouse_id(actor.company_id),
+          "warehouse_id" => default_production_facility_id(actor.company_id),
           "item_id" => line.item_id,
           "quantity" => line.qty_ordered,
           "due_date" => line.expected_ship_date,
@@ -147,11 +147,20 @@ defmodule BackendWeb.CustomerOrderController do
     end
   end
 
-  defp default_warehouse_id(company_id) do
-    case Backend.Warehouses.list_for_company(company_id) do
-      [%{id: id} | _] -> id
-      _ -> nil
-    end
+  # MOs must live at a production-facility (not a regular storage
+  # warehouse). Query directly — list_for_company defaults to kind
+  # "warehouse" and returns a paginated tuple shape, so it's the
+  # wrong tool for this lookup.
+  defp default_production_facility_id(company_id) do
+    import Ecto.Query
+
+    Backend.Repo.one(
+      from w in Backend.Warehouses.Warehouse,
+        where: w.company_id == ^company_id and w.kind == "production_facility",
+        order_by: [asc: w.id],
+        limit: 1,
+        select: w.id
+    )
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -168,6 +177,19 @@ defmodule BackendWeb.CustomerOrderController do
         conn
         |> put_status(:created)
         |> json(%{customer_order: Payloads.customer_order(co)})
+
+      {:error, :customer_required} ->
+        conflict(conn, "customer_required", "Pick a customer for the order.")
+
+      {:error, :customer_not_found} ->
+        conflict(conn, "customer_not_found", "That customer doesn't exist.")
+
+      {:error, :customer_not_approved} ->
+        conflict(
+          conn,
+          "customer_not_approved",
+          "Customer must be approved before an order can be created. Approve the customer first."
+        )
 
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
