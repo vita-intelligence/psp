@@ -295,14 +295,14 @@ defmodule BackendWeb.PurchaseOrderController do
           unprocessable(
             conn,
             "item_not_approved",
-            "Item ##{item_id} is not on the vendor's approved-supplier list."
+            "#{item_label(item_id)} is not on the vendor's approved-supplier list."
           )
 
         {:error, {:item_not_ready, item_id}} ->
           unprocessable(
             conn,
             "item_not_ready",
-            "Item ##{item_id} is still in draft. Mark it ready for use before putting it on a PO line."
+            "#{item_label(item_id)} is still in draft. Mark it ready for use before putting it on a PO line."
           )
 
         {:error, %Ecto.Changeset{} = cs} ->
@@ -705,5 +705,29 @@ defmodule BackendWeb.PurchaseOrderController do
     code = Numbering.render(po.id, company, "purchase_order") || "PO-#{po.id}"
     _ = actor
     "#{code}-#{kind}.#{ext}"
+  end
+
+  # Friendly label for error messages — never show a raw item id to
+  # the operator. Prefers `"<code> – <name>"` so the chip on the line
+  # row matches the error text. Falls back gracefully if the item
+  # row is missing.
+  defp item_label(nil), do: "Item"
+
+  defp item_label(item_id) do
+    case Backend.Repo.get(Backend.Items.Item, item_id) do
+      nil ->
+        "Item ##{item_id}"
+
+      item ->
+        code = Payloads.render_entity_code(item, "item")
+        name = item.name
+
+        cond do
+          name && code -> "#{code} – #{name}"
+          name -> name
+          code -> code
+          true -> "Item ##{item_id}"
+        end
+    end
   end
 end
