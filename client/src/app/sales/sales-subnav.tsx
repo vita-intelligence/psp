@@ -44,7 +44,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/todays-contacts",
     label: "Today's contacts",
     Icon: CalendarClock,
-    comingSoon: true,
   },
   {
     href: "/sales/invoices",

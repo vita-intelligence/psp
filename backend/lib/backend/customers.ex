@@ -916,6 +916,67 @@ defmodule Backend.Customers do
   defp recent?(%DateTime{} = at, %DateTime{} = boundary),
     do: DateTime.compare(at, boundary) != :lt
 
+  @doc """
+  Push `next_contact_at` forward by N days without recording a
+  contact event. Used by the "Today's contacts" page when the
+  salesperson wants to defer (not log) a follow-up — e.g. customer
+  asked "call me Thursday".
+
+  Audit row is written so the deferral is traceable. The base for
+  the new datetime is whichever is later: the current
+  `next_contact_at` or "today 09:00" — snoozing an already-overdue
+  row should land in the future, not still in the past.
+  """
+  def snooze_next_contact(%User{} = actor, %Customer{} = customer, days) do
+    case parse_days(days) do
+      {:ok, n} ->
+        today_morning = DateTime.new!(Date.utc_today(), ~T[09:00:00])
+
+        base =
+          case customer.next_contact_at do
+            %DateTime{} = at ->
+              if DateTime.compare(at, today_morning) == :lt, do: today_morning, else: at
+
+            _ ->
+              today_morning
+          end
+
+        new_at = DateTime.add(base, n * 24 * 60 * 60, :second)
+
+        before_state = %{next_contact_at: customer.next_contact_at}
+
+        customer
+        |> Customer.cadence_changeset(%{"next_contact_at" => new_at})
+        |> Repo.update()
+        |> case do
+          {:ok, updated} ->
+            Audit.record_updated(actor, "customer", updated, before_state, %{
+              next_contact_at: new_at,
+              snooze_days: n
+            })
+
+            {:ok, updated}
+
+          other ->
+            other
+        end
+
+      :error ->
+        {:error, :invalid_days}
+    end
+  end
+
+  defp parse_days(n) when is_integer(n) and n > 0 and n <= 365, do: {:ok, n}
+
+  defp parse_days(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> parse_days(n)
+      _ -> :error
+    end
+  end
+
+  defp parse_days(_), do: :error
+
   # ----- file uploads ----------------------------------------------
 
   def record_file(%User{} = actor, %Customer{} = customer, attrs) do

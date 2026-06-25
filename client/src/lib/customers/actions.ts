@@ -297,12 +297,41 @@ export async function logCustomerContactEventAction(
       { method: "POST", token, body: JSON.stringify(input) },
     );
     revalidatePath("/sales/customers");
+    revalidatePath("/sales/todays-contacts");
     revalidatePath(`/sales/customers/${customerUuid}`);
     return { ok: true, event: res.event, customer: res.customer };
   } catch (err) {
     return toErrorResult(err, {
       source: "logCustomerContactEventAction",
       fallbackDetail: "Couldn't log the contact event.",
+    });
+  }
+}
+
+export type SnoozeResult = { ok: true; customer: Customer } | ErrorResult;
+
+/** Push the customer's `next_contact_at` forward by `days` without
+ *  recording a contact event. Used by the "Today's contacts" page. */
+export async function snoozeNextContactAction(
+  customerUuid: string,
+  days: number,
+): Promise<SnoozeResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("snoozeNextContactAction");
+
+  try {
+    const res = await api<{ customer: Customer }>(
+      `/api/customers/${encodeURIComponent(customerUuid)}/snooze-next-contact`,
+      { method: "POST", token, body: JSON.stringify({ days }) },
+    );
+    revalidatePath("/sales/customers");
+    revalidatePath("/sales/todays-contacts");
+    revalidatePath(`/sales/customers/${customerUuid}`);
+    return { ok: true, customer: res.customer };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "snoozeNextContactAction",
+      fallbackDetail: "Couldn't snooze the follow-up.",
     });
   }
 }

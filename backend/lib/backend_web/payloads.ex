@@ -1064,6 +1064,50 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Per-row shape for the "Today's contacts" CRM page. Carries enough
+  context for the salesperson to act: who the customer is, where
+  they are in the lifecycle, when we last spoke, when the cadence
+  was supposed to ring, and how many days late we are.
+  """
+  def today_customer(c) do
+    today = Date.utc_today()
+
+    days_overdue =
+      case c.next_contact_at do
+        nil ->
+          nil
+
+        %DateTime{} = at ->
+          diff = Date.diff(today, DateTime.to_date(at))
+          if diff > 0, do: diff, else: 0
+      end
+
+    days_since_contact =
+      case c.last_contact_at do
+        nil -> nil
+        %DateTime{} = at -> Date.diff(today, DateTime.to_date(at))
+      end
+
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      code: render_code(c, "customer"),
+      name: c.name,
+      currency_code: c.currency_code,
+      approval_status: c.approval_status,
+      effective_approval_status:
+        elem(Backend.Customers.effective_approval_status(c), 0),
+      status: Backend.Customers.status_projection(c) |> Atom.to_string(),
+      last_contact_at: c.last_contact_at,
+      next_contact_at: c.next_contact_at,
+      contact_frequency_months: c.contact_frequency_months,
+      total_orders_count: c.total_orders_count,
+      days_overdue: days_overdue,
+      days_since_contact: days_since_contact
+    }
+  end
+
+  @doc """
   Picker-shaped summary — id/uuid/name/code + the bits Customer Order
   forms will need to surface the right customer to the right line:
   currency, payment terms, approval status (greyed-out tile when not

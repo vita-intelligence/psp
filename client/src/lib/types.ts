@@ -2355,3 +2355,30 @@ export interface CustomerReturn {
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
 }
+
+// ---------------------------------------------------------------
+// Today's contacts — daily CRM follow-up surface.
+// ---------------------------------------------------------------
+
+export interface TodayCustomer {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  currency_code: string;
+  approval_status: CustomerApprovalStatus;
+  effective_approval_status: CustomerApprovalStatus;
+  status: string;
+  last_contact_at: string | null;
+  next_contact_at: string | null;
+  contact_frequency_months: number;
+  total_orders_count: number;
+  days_overdue: number | null;
+  days_since_contact: number | null;
+}
+
+export interface TodayBuckets {
+  due_today: TodayCustomer[];
+  overdue: TodayCustomer[];
+  going_quiet: TodayCustomer[];
+}

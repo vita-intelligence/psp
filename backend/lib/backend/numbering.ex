@@ -21,9 +21,14 @@ defmodule Backend.Numbering do
   alias Backend.Catalogs.{AttributeDefinition, ProductFamily}
   alias Backend.Certificates.Certificate
   alias Backend.Companies.Company
+  alias Backend.CustomerInvoices.CustomerInvoice
+  alias Backend.CustomerOrders.CustomerOrder
+  alias Backend.CustomerReturns.CustomerReturn
+  alias Backend.Customers.Customer
   alias Backend.Devices.LinkedDevice
   alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
+  alias Backend.Pricelists.Pricelist
   alias Backend.Production.BOM
   alias Backend.Production.{
     ManufacturingOrder,
@@ -61,7 +66,12 @@ defmodule Backend.Numbering do
     "workstation_group" => WorkstationGroup,
     "workstation" => Workstation,
     "routing" => Routing,
-    "manufacturing_order" => ManufacturingOrder
+    "manufacturing_order" => ManufacturingOrder,
+    "customer" => Customer,
+    "pricelist" => Pricelist,
+    "customer_order" => CustomerOrder,
+    "customer_invoice" => CustomerInvoice,
+    "customer_return" => CustomerReturn
   }
 
   @default_padding 5

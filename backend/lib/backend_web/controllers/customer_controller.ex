@@ -41,6 +41,7 @@ defmodule BackendWeb.CustomerController do
               :update_contact,
               :remove_contact,
               :log_contact_event,
+              :snooze_next_contact,
               :add_approved_item,
               :remove_approved_item
             ]
@@ -261,6 +262,27 @@ defmodule BackendWeb.CustomerController do
       end
     else
       _ -> {:error, :not_found}
+    end
+  end
+
+  def snooze_next_contact(conn, %{"customer_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+    days = params["days"] || 1
+
+    with %{} = customer <- Customers.get_for_company(actor.company_id, uuid),
+         {:ok, updated} <- Customers.snooze_next_contact(actor, customer, days) do
+      json(conn, %{
+        customer: Payloads.customer(Customers.get_for_company(actor.company_id, updated.uuid))
+      })
+    else
+      {:error, :invalid_days} ->
+        unprocessable(conn, "invalid_days", "Snooze days must be a positive integer.")
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+
+      _ ->
+        {:error, :not_found}
     end
   end
 

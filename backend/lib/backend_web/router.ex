@@ -338,6 +338,10 @@ defmodule BackendWeb.Router do
       # status projection.
       post "/contact-events", CustomerController, :log_contact_event
 
+      # Bump next_contact_at without recording an event — used by the
+      # "Today's contacts" page's Snooze action. RBAC = customers.edit.
+      post "/snooze-next-contact", CustomerController, :snooze_next_contact
+
       # File uploads — contracts, NDAs, credit checks, logos.
       # Bytes live in `Backend.Storage`. Mirror of vendor file
       # uploads. RBAC: `customers.view` to fetch, `customers.edit`
@@ -371,6 +375,11 @@ defmodule BackendWeb.Router do
       get "/files/:id/serve", CustomerReturnController, :serve_file
       delete "/files/:id", CustomerReturnController, :remove_file
     end
+
+    # "Today's contacts" — daily CRM follow-up surface. Projection
+    # over customer cadence columns; no writes here, snooze + log
+    # live on the customer endpoints.
+    get "/today", TodayController, :index
 
     # Customer invoices — sell-side back-half of order-to-cash. Lines
     # auto-pull unbilled qty from a CO on create_from_co; multiple

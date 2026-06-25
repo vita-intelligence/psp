@@ -99,4 +99,11 @@ export const NUMBERING_ENTITIES: Array<{ key: string; label: string }> = [
   { key: "purchase_order", label: "Purchase orders" },
   { key: "stock_lot", label: "Stock lots" },
   { key: "linked_device", label: "Linked devices" },
+  // Sales CRM entities — registered server-side via per-entity seed
+  // migrations (priv/repo/migrations/*_seed_*_numbering.exs).
+  { key: "customer", label: "Customers" },
+  { key: "pricelist", label: "Pricelists" },
+  { key: "customer_order", label: "Customer orders" },
+  { key: "customer_invoice", label: "Customer invoices" },
+  { key: "customer_return", label: "Returns (RMAs)" },
 ];
