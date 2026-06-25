@@ -1080,11 +1080,26 @@ defmodule BackendWeb.Payloads do
       blockers: snapshot.blockers,
       lines: Enum.map(snapshot.lines, &wizard_line/1),
       open_pos: Enum.map(snapshot.open_pos, &wizard_open_po/1),
+      invoices: Enum.map(snapshot[:invoices] || [], &wizard_invoice/1),
       timeline: snapshot.timeline,
       signers: %{
         approver: wizard_signer(snapshot[:signers] && snapshot.signers[:approver]),
         director: wizard_signer(snapshot[:signers] && snapshot.signers[:director])
       }
+    }
+  end
+
+  defp wizard_invoice(inv) do
+    %{
+      id: inv.id,
+      uuid: inv.uuid,
+      code: render_code(inv, "customer_invoice"),
+      kind: inv.kind,
+      status: inv.status,
+      grand_total: decimal_to_string(inv.grand_total),
+      currency_code: inv.currency_code,
+      invoice_date: inv.invoice_date,
+      due_date: inv.due_date
     }
   end
 

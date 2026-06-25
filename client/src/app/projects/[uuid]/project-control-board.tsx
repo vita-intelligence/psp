@@ -26,6 +26,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useTransition,
 } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -52,6 +53,7 @@ import {
   PackageOpen,
   PackagePlus,
   QrCode,
+  Receipt,
   ShieldCheck,
   ShoppingBag,
   Smartphone,
@@ -77,6 +79,7 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThread } from "@/components/comments/comment-thread";
+import { createInvoiceFromCOAction } from "@/lib/customer-invoices/actions";
 import { cn } from "@/lib/utils";
 import type { Comment } from "@/lib/comments/types";
 import type {
@@ -85,6 +88,7 @@ import type {
   OrderWizardAvailableBom,
   OrderWizardBlocker,
   OrderWizardCta,
+  OrderWizardInvoice,
   OrderWizardLine,
   OrderWizardMo,
   OrderWizardMoStatus,
@@ -197,6 +201,7 @@ export interface ProjectBoardPermissions {
   canDirectorApprove: boolean;
   canConfirm: boolean;
   canManageMOs: boolean;
+  canCreateInvoice: boolean;
 }
 
 interface Props {
@@ -310,7 +315,15 @@ export function ProjectControlBoard({
     return <BoardSkeleton co={co} />;
   }
 
-  const { phase, next_action, blockers, lines, open_pos, timeline } = snapshot;
+  const {
+    phase,
+    next_action,
+    blockers,
+    lines,
+    open_pos,
+    invoices,
+    timeline,
+  } = snapshot;
 
   return (
     <main className="flex-1 bg-muted/20">
@@ -366,6 +379,14 @@ export function ProjectControlBoard({
 
             {/* Blockers */}
             {blockers.length > 0 && <BlockersCard blockers={blockers} />}
+
+            {/* Invoice reminder — advisory, never a blocker. */}
+            <InvoiceReminderCard
+              coUuid={co.uuid}
+              coStatus={co.status}
+              invoices={invoices ?? []}
+              canCreateInvoice={permissions.canCreateInvoice}
+            />
 
             {/* Lines & MOs */}
             <section data-phase="production_planning">
@@ -924,6 +945,88 @@ function BlockersCard({ blockers }: { blockers: OrderWizardBlocker[] }) {
         {blockers.map((b) => (
           <BlockerRow key={b.code} blocker={b} />
         ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================================
+// Invoice reminder — advisory only, decoupled from production state.
+// =============================================================================
+
+function InvoiceReminderCard({
+  coUuid,
+  coStatus,
+  invoices,
+  canCreateInvoice,
+}: {
+  coUuid: string;
+  coStatus: string;
+  invoices: OrderWizardInvoice[];
+  canCreateInvoice: boolean;
+}) {
+  const router = useRouter();
+  const [generating, startGenerate] = useTransition();
+
+  // No reminder before the CO is confirmed — too early to invoice.
+  // No reminder when terminal-cancelled — moot.
+  if (coStatus !== "confirmed") return null;
+
+  if (invoices.length > 0) {
+    const total = invoices.length;
+    const first = invoices[0];
+    const targetHref = first
+      ? `/sales/invoices/${first.uuid}`
+      : `/sales/invoices`;
+    return (
+      <Card className="border-emerald-300/50 bg-emerald-50/40 dark:border-emerald-800/40 dark:bg-emerald-950/20">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
+          <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-200">
+            <Receipt className="size-4 shrink-0" />
+            <span>
+              {total} invoice{total === 1 ? "" : "s"} attached
+              {first?.code ? ` (${first.code}${total > 1 ? ` +${total - 1}` : ""})` : ""}
+            </span>
+          </div>
+          <Button asChild size="sm" variant="outline">
+            <Link href={targetHref}>
+              {total === 1 ? "Open invoice" : "View invoices"}
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  function generate() {
+    startGenerate(async () => {
+      const res = await createInvoiceFromCOAction(coUuid, {});
+      if (res.ok) {
+        toast.success("Invoice generated");
+        router.push(`/sales/invoices/${res.customer_invoice.uuid}`);
+      } else {
+        toast.error(res.detail);
+      }
+    });
+  }
+
+  return (
+    <Card className="border-amber-300/50 bg-amber-50/50 dark:border-amber-800/40 dark:bg-amber-950/20">
+      <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
+        <div className="flex items-center gap-2 text-amber-900 dark:text-amber-200">
+          <Receipt className="size-4 shrink-0" />
+          <span>
+            No invoice attached. Some orders ship without one — raise it if this one needs billing.
+          </span>
+        </div>
+        {canCreateInvoice && (
+          <Button size="sm" variant="outline" onClick={generate} disabled={generating}>
+            {generating ? (
+              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+            ) : null}
+            Generate invoice
+          </Button>
+        )}
       </CardContent>
     </Card>
   );

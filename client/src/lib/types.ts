@@ -2814,6 +2814,20 @@ export interface OrderWizardTimelineEntry {
   actor?: string | null;
 }
 
+export interface OrderWizardInvoice {
+  id: number;
+  uuid: string;
+  code: string | null;
+  /** "invoice" | "proforma" | "credit_note" | "quotation" */
+  kind: string;
+  /** "draft" | "sent" | "partially_paid" | "paid" | "cancelled" */
+  status: string;
+  grand_total: string;
+  currency_code: string;
+  invoice_date: string | null;
+  due_date: string | null;
+}
+
 export interface OrderWizardSnapshot {
   customer_order: CustomerOrder;
   phase: OrderWizardPhase;
@@ -2824,6 +2838,11 @@ export interface OrderWizardSnapshot {
    *  counters and the MO modal lookups (uuid → MO). */
   mos?: OrderWizardMo[];
   open_pos: OrderWizardOpenPo[];
+  /** Invoices already raised against this CO (cancelled excluded).
+   *  Invoicing is decoupled from production: some orders ship without
+   *  an invoice, some are pro-forma'd up front. The PCB uses this to
+   *  show an advisory "no invoice attached" reminder once confirmed. */
+  invoices?: OrderWizardInvoice[];
   timeline: OrderWizardTimelineEntry[];
   /** Approval signer rollup — fills as the CO walks through the
    *  two-tier approval gate. */

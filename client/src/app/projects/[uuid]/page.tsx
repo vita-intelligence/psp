@@ -65,6 +65,7 @@ export default async function ProjectBoardPage({
   // collapse it onto canSubmit so the gate stays one perm.
   const canConfirm = canSubmit;
   const canManageMOs = hasPermission(user, "production.mo_create");
+  const canCreateInvoice = hasPermission(user, "customer_invoices.create");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -84,6 +85,7 @@ export default async function ProjectBoardPage({
           canDirectorApprove,
           canConfirm,
           canManageMOs,
+          canCreateInvoice,
         }}
       />
     </div>

@@ -36,6 +36,7 @@ defmodule Backend.OrderWizard do
 
   import Ecto.Query, warn: false
 
+  alias Backend.CustomerInvoices.CustomerInvoice
   alias Backend.CustomerOrders.{CustomerOrder, CustomerOrderApproval, CustomerOrderLine}
   alias Backend.Production
   alias Backend.Production.{BOM, ManufacturingOrder}
@@ -162,6 +163,7 @@ defmodule Backend.OrderWizard do
     blockers = compute_blockers(co, line_states, all_mos)
     phase = derive_phase(co, line_states, all_mos)
     approvals = signers_for(co)
+    invoices = invoices_for(co)
 
     %{
       customer_order: co,
@@ -172,9 +174,24 @@ defmodule Backend.OrderWizard do
       lines: line_states,
       mos: all_mos,
       open_pos: open_pos_for(all_mos),
+      invoices: invoices,
       timeline: timeline(co, all_mos, approvals),
       signers: approvals
     }
+  end
+
+  # Surface invoice presence on the CO so the wizard can flag
+  # "confirmed but no invoice yet". Invoicing is intentionally
+  # decoupled from production state (some COs ship without an
+  # invoice; some are invoiced up front as pro-forma), so this is
+  # advisory — never a blocker.
+  defp invoices_for(%CustomerOrder{id: cid}) do
+    from(i in CustomerInvoice,
+      where: i.customer_order_id == ^cid,
+      where: i.status != "cancelled",
+      order_by: [asc: i.id]
+    )
+    |> Repo.all()
   end
 
   # Pull the approval signature rows (approver + director) attached to
