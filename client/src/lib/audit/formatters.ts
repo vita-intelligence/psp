@@ -544,6 +544,31 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     kind: "Kind",
     filename: "Filename",
   },
+  loyalty_program: {
+    name: "Name",
+    description: "Description",
+    scheme: "Scheme",
+    basis: "Basis",
+    payout_kind: "Payout kind",
+    is_active: "Active",
+    is_default: "Default program",
+    deactivation_reason: "Deactivation reason",
+  },
+  loyalty_program_tier: {
+    rank: "Rank",
+    min_threshold: "Threshold",
+    rate_pct: "Rate %",
+    label: "Label",
+  },
+  customer_credit: {
+    customer_id: "Customer",
+    kind: "Kind",
+    amount: "Amount",
+    currency_code: "Currency",
+    reason: "Reason",
+    loyalty_program_id: "Loyalty program",
+    source_invoice_id: "Source invoice",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

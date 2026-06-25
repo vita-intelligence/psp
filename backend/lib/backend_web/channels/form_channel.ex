@@ -296,6 +296,9 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "customer-return"),
     do: RBAC.has_permission?(user, "customer_returns.create")
 
+  defp can_edit_resource?(user, "loyalty-program"),
+    do: RBAC.has_permission?(user, "loyalty.programs_manage")
+
   defp can_edit_resource?(user, "purchase-order"),
     do: RBAC.has_permission?(user, "procurement.po_create")
 

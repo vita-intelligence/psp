@@ -46,6 +46,7 @@ export interface CustomerInput {
   payment_terms_basis?: CustomerPaymentBasis;
   trade_credit_limit?: string | null;
   pricelist_id?: number | null;
+  loyalty_program_id?: number | null;
   contact_frequency_months?: number | null;
   account_manager_id?: number | null;
   is_active?: boolean;

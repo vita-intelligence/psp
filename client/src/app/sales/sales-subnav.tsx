@@ -75,13 +75,13 @@ const ITEMS: SubnavItem[] = [
     label: "Returns (RMAs)",
     Icon: PackageCheck,
   },
-  // Mirroring MRPEasy's last icon (the small gift); reserved for the
-  // customer-loyalty / referral surface we'll build last.
+  // Mirroring MRPEasy's last icon (the small gift) — loyalty programs
+  // + customer credit balances. Crossing a YTD tier on a paid invoice
+  // accrues credit; redemption applies against future invoices.
   {
     href: "/sales/loyalty",
     label: "Loyalty",
     Icon: Gift,
-    comingSoon: true,
   },
 ];
 

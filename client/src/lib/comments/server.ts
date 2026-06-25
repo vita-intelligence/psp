@@ -13,6 +13,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   customer_order: "customer-orders",
   customer_invoice: "customer-invoices",
   customer_return: "customer-returns",
+  loyalty_program: "loyalty/programs",
   purchase_order: "purchase-orders",
   stock_lot: "stock/lots",
   purchase_order_line: "purchase-order-lines",

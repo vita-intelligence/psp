@@ -38,6 +38,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "customer_return"
   end
 
+  pipeline :comments_loyalty_program do
+    plug :put_entity_type, "loyalty_program"
+  end
+
   pipeline :comments_purchase_order do
     plug :put_entity_type, "purchase_order"
   end
@@ -393,6 +397,51 @@ defmodule BackendWeb.Router do
 
     # Sales management — book-of-business by account manager. Read-only.
     get "/sales-management", SalesManagementController, :index
+
+    # Loyalty surface — programs CRUD + customer credits ledger. All
+    # routes here go through Backend.Loyalty; the dashboard endpoint
+    # bundles the three pieces (programs, per-customer balances,
+    # recent ledger feed) the /sales/loyalty page renders.
+    get "/loyalty/dashboard", LoyaltyController, :dashboard
+
+    get "/loyalty/programs", LoyaltyController, :list_programs
+    get "/loyalty/programs/:id", LoyaltyController, :show_program
+    post "/loyalty/programs", LoyaltyController, :create_program
+    put "/loyalty/programs/:id", LoyaltyController, :update_program
+    delete "/loyalty/programs/:id", LoyaltyController, :delete_program
+
+    post "/loyalty/programs/:id/set-active", LoyaltyController, :set_active
+    post "/loyalty/programs/:id/set-default", LoyaltyController, :set_default
+
+    post "/loyalty/programs/:loyalty_program_id/tiers",
+         LoyaltyController,
+         :add_tier
+
+    put "/loyalty/programs/:loyalty_program_id/tiers/:id",
+        LoyaltyController,
+        :update_tier
+
+    delete "/loyalty/programs/:loyalty_program_id/tiers/:id",
+           LoyaltyController,
+           :delete_tier
+
+    get "/loyalty/credits", LoyaltyController, :list_credits
+
+    get "/customers/:customer_id/credits",
+        LoyaltyController,
+        :customer_credits
+
+    get "/customers/:customer_id/credits/balance",
+        LoyaltyController,
+        :customer_balance
+
+    post "/customers/:customer_id/credits/grant",
+         LoyaltyController,
+         :grant_credit
+
+    post "/customers/:customer_id/credits/apply",
+         LoyaltyController,
+         :apply_credit
 
     # Customer invoices — sell-side back-half of order-to-cash. Lines
     # auto-pull unbilled qty from a CO on create_from_co; multiple
@@ -993,6 +1042,15 @@ defmodule BackendWeb.Router do
 
   scope "/api/customer-returns/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_customer_return]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/loyalty/programs/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_loyalty_program]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

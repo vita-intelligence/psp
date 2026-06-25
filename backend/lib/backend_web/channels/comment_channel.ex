@@ -124,6 +124,9 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "customer_return"),
     do: gate(user, "customer_returns.view")
 
+  defp check_view_perm(user, "loyalty_program"),
+    do: gate(user, "loyalty.view")
+
   defp check_view_perm(user, "purchase_order"),
     do: gate(user, "procurement.po_view")
 
@@ -188,6 +191,13 @@ defmodule BackendWeb.CommentChannel do
 
   defp resolve_entity_id(user, "customer_return", uuid) do
     case Backend.CustomerReturns.get_for_company(user.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "loyalty_program", uuid) do
+    case Backend.Loyalty.get_program(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
       _ -> {:error, :not_found}
     end

@@ -9,6 +9,7 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { listUsersFirstPage } from "@/lib/users/server";
 import { listPricelistsForPicker } from "@/lib/pricelists/server";
+import { listLoyaltyPrograms } from "@/lib/loyalty/server";
 import { SalesSubnav } from "../../sales-subnav";
 import { CustomerForm } from "../customer-form";
 
@@ -20,11 +21,13 @@ export default async function NewCustomerPage() {
     redirect("/sales/customers");
   }
 
-  const [company, userListPage, pricelists] = await Promise.all([
-    getCompanyDefaults(),
-    listUsersFirstPage(100),
-    listPricelistsForPicker(),
-  ]);
+  const [company, userListPage, pricelists, loyaltyPrograms] =
+    await Promise.all([
+      getCompanyDefaults(),
+      listUsersFirstPage(100),
+      listPricelistsForPicker(),
+      listLoyaltyPrograms(),
+    ]);
 
   if (!company) {
     // No defaults ⇒ something is very wrong with the company endpoint;
@@ -72,6 +75,9 @@ export default async function NewCustomerPage() {
             company={company}
             users={userListPage.items}
             pricelists={pricelists ?? []}
+            availablePrograms={
+              (loyaltyPrograms ?? []).filter((p) => p.is_active)
+            }
             canEdit={true}
           />
         </div>

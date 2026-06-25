@@ -181,6 +181,9 @@ export interface AuditEvent {
     | "customer_return"
     | "customer_return_line"
     | "customer_return_file"
+    | "loyalty_program"
+    | "loyalty_program_tier"
+    | "customer_credit"
     | "purchase_order"
     | "purchase_order_line"
     | "purchase_order_approval"
@@ -653,6 +656,10 @@ export interface Customer {
   payment_terms_basis: CustomerPaymentBasis;
   trade_credit_limit: string | null;
   pricelist_id: number | null;
+  /** Loyalty program the customer is individually enrolled in. `null`
+   *  means "use the default program", which is whichever active
+   *  program has `is_default = true`. */
+  loyalty_program_id: number | null;
   contact_frequency_months: number | null;
   contact_started_at: string | null;
   last_contact_at: string | null;
@@ -2517,4 +2524,126 @@ export interface SalesManagementSnapshot {
   leaderboard: SalesManagementLeaderRow[];
   funnel: SalesManagementFunnelStage[];
   unassigned: SalesManagementUnassignedRow[];
+}
+
+// ---------------------------------------------------------------
+// Loyalty — programs, tiers, customer credits, dashboard.
+// ---------------------------------------------------------------
+
+/** V1 only ships `tiered_rebate`; enum has room for future modes
+ *  (`flat_rebate`, `points`, etc.). Locked in the UI as a single
+ *  option per CLAUDE.md "if it can be computed, don't ask" — the
+ *  workflow narrows down to one for now. */
+export type LoyaltyScheme = "tiered_rebate";
+
+/** YTD revenue is the only basis in V1. Future: rolling 12m. */
+export type LoyaltyBasis = "ytd_revenue";
+
+/** What earns when a customer crosses a tier. V1 = credit balance
+ *  applied against future invoices. Future: discount %, points. */
+export type LoyaltyPayoutKind = "credit";
+
+export interface LoyaltyTier {
+  id: number;
+  uuid: string;
+  loyalty_program_id: number;
+  rank: number;
+  /** Threshold in the program's basis units (string-Decimal so we
+   *  don't lose precision in the browser). */
+  min_threshold: string;
+  /** Accrual rate as a percent (`"2.50"` ⇒ 2.5 %). */
+  rate_pct: string;
+  label: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface LoyaltyProgram {
+  id: number;
+  uuid: string;
+  code: string | null;
+  name: string;
+  description: string | null;
+  scheme: LoyaltyScheme;
+  basis: LoyaltyBasis;
+  payout_kind: LoyaltyPayoutKind;
+  is_active: boolean;
+  is_default: boolean;
+  activated_at: string | null;
+  deactivated_at: string | null;
+  deactivation_reason: string | null;
+  tiers: LoyaltyTier[];
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+/** Discriminator for one ledger row. `rebate_accrual` posts when an
+ *  invoice payment crosses a tier threshold; `manual_grant` is a
+ *  goodwill credit; `applied_to_invoice` is the redemption side that
+ *  reduces the balance + sometimes spawns a paired credit note. */
+export type CustomerCreditKind =
+  | "rebate_accrual"
+  | "manual_grant"
+  | "applied_to_invoice";
+
+export interface CustomerCredit {
+  id: number;
+  uuid: string;
+  code: string | null;
+  customer: {
+    id: number;
+    uuid: string;
+    name: string;
+    code: string | null;
+  } | null;
+  customer_id: number;
+  kind: CustomerCreditKind;
+  /** Signed Decimal as string. Accruals + grants are positive; an
+   *  apply is negative — the ledger sums to the current balance. */
+  amount: string;
+  currency_code: string;
+  reason: string | null;
+  loyalty_program: { id: number; uuid: string; name: string } | null;
+  loyalty_program_id: number | null;
+  loyalty_program_tier_id: number | null;
+  source_invoice: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    kind: CustomerInvoiceKind;
+    status: CustomerInvoiceStatus;
+    grand_total: string;
+  } | null;
+  source_invoice_id: number | null;
+  credit_note_invoice: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: CustomerInvoiceStatus;
+    grand_total: string;
+  } | null;
+  credit_note_invoice_id: number | null;
+  granted_by: AuditActor | null;
+  granted_by_id: number | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface LoyaltyPerCustomerRow {
+  customer: { id: number; uuid: string; name: string } | null;
+  currency_code: string;
+  balance: string;
+  total_earned: string;
+  total_applied: string;
+}
+
+export interface LoyaltyDashboard {
+  base_currency: string;
+  programs: LoyaltyProgram[];
+  per_customer: LoyaltyPerCustomerRow[];
+  recent_ledger: CustomerCredit[];
+  /** Optional — BE may not return this if all FX rates are present. */
+  excluded_currencies?: string[];
 }

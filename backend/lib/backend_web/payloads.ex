@@ -1063,6 +1063,136 @@ defmodule BackendWeb.Payloads do
     }
   end
 
+  # ---------------------------------------------------------------
+  # Loyalty.
+  # ---------------------------------------------------------------
+
+  @doc "Loyalty program with embedded tiers (sorted by min_threshold ASC)."
+  def loyalty_program(p) do
+    %{
+      id: p.id,
+      uuid: p.uuid,
+      code: render_code(p, "loyalty_program"),
+      name: p.name,
+      description: p.description,
+      scheme: p.scheme,
+      basis: p.basis,
+      payout_kind: p.payout_kind,
+      is_active: p.is_active,
+      is_default: p.is_default,
+      activated_at: p.activated_at,
+      deactivated_at: p.deactivated_at,
+      deactivation_reason: p.deactivation_reason,
+      tiers: preloaded_list(p, :tiers, &loyalty_tier/1),
+      created_by: actor(p, :created_by),
+      updated_by: actor(p, :updated_by),
+      inserted_at: p.inserted_at,
+      updated_at: p.updated_at
+    }
+  end
+
+  def loyalty_tier(t) do
+    %{
+      id: t.id,
+      uuid: t.uuid,
+      loyalty_program_id: t.loyalty_program_id,
+      rank: t.rank,
+      min_threshold: Decimal.to_string(t.min_threshold, :normal),
+      rate_pct: Decimal.to_string(t.rate_pct, :normal),
+      label: t.label,
+      inserted_at: t.inserted_at,
+      updated_at: t.updated_at
+    }
+  end
+
+  @doc "Single ledger row — preloaded with FK summaries."
+  def customer_credit(c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      code: render_code(c, "customer_credit"),
+      customer: customer_compact_or_nil(c),
+      customer_id: c.customer_id,
+      kind: c.kind,
+      amount: Decimal.to_string(c.amount, :normal),
+      currency_code: c.currency_code,
+      reason: c.reason,
+      loyalty_program:
+        case Map.get(c, :loyalty_program) do
+          %Backend.Loyalty.LoyaltyProgram{} = p ->
+            %{id: p.id, uuid: p.uuid, name: p.name}
+
+          _ ->
+            nil
+        end,
+      loyalty_program_id: c.loyalty_program_id,
+      loyalty_program_tier_id: c.loyalty_program_tier_id,
+      source_invoice:
+        case Map.get(c, :source_invoice) do
+          %Backend.CustomerInvoices.CustomerInvoice{} = inv ->
+            %{
+              id: inv.id,
+              uuid: inv.uuid,
+              code: render_code(inv, "customer_invoice"),
+              kind: inv.kind,
+              status: inv.status,
+              grand_total: inv.grand_total
+            }
+
+          _ ->
+            nil
+        end,
+      source_invoice_id: c.source_invoice_id,
+      credit_note_invoice:
+        case Map.get(c, :credit_note_invoice) do
+          %Backend.CustomerInvoices.CustomerInvoice{} = inv ->
+            %{
+              id: inv.id,
+              uuid: inv.uuid,
+              code: render_code(inv, "customer_invoice"),
+              status: inv.status,
+              grand_total: inv.grand_total
+            }
+
+          _ ->
+            nil
+        end,
+      credit_note_invoice_id: c.credit_note_invoice_id,
+      granted_by: actor(c, :granted_by),
+      granted_by_id: c.granted_by_id,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at
+    }
+  end
+
+  defp customer_compact_or_nil(%{customer: %Backend.Customers.Customer{} = c}) do
+    %{id: c.id, uuid: c.uuid, name: c.name, code: render_code(c, "customer")}
+  end
+
+  defp customer_compact_or_nil(_), do: nil
+
+  @doc """
+  Per-customer aggregate row used by the loyalty dashboard
+  leaderboard. The controller hydrates `customer` before calling.
+  """
+  def loyalty_per_customer(row) do
+    %{
+      customer: row.customer,
+      currency_code: row.currency_code,
+      balance: Decimal.to_string(ensure_decimal_payload(row.balance), :normal),
+      total_earned:
+        Decimal.to_string(ensure_decimal_payload(row.total_earned), :normal),
+      total_applied:
+        Decimal.to_string(ensure_decimal_payload(row.total_applied), :normal)
+    }
+  end
+
+  defp ensure_decimal_payload(%Decimal{} = d), do: d
+  defp ensure_decimal_payload(n) when is_integer(n), do: Decimal.new(n)
+  defp ensure_decimal_payload(n) when is_float(n), do: Decimal.from_float(n)
+  defp ensure_decimal_payload(n) when is_binary(n), do: Decimal.new(n)
+  defp ensure_decimal_payload(_), do: Decimal.new(0)
+
   @doc """
   Sales-management dashboard payload. All money values are stringified
   Decimals in the company base currency.

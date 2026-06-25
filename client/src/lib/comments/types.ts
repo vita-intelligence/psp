@@ -9,6 +9,7 @@ export type CommentEntityType =
   | "customer_order"
   | "customer_invoice"
   | "customer_return"
+  | "loyalty_program"
   | "purchase_order"
   | "stock_lot"
   | "purchase_order_line"

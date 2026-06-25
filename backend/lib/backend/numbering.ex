@@ -28,6 +28,7 @@ defmodule Backend.Numbering do
   alias Backend.Devices.LinkedDevice
   alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
+  alias Backend.Loyalty.{CustomerCredit, LoyaltyProgram}
   alias Backend.Pricelists.Pricelist
   alias Backend.Production.BOM
   alias Backend.Production.{
@@ -71,7 +72,9 @@ defmodule Backend.Numbering do
     "pricelist" => Pricelist,
     "customer_order" => CustomerOrder,
     "customer_invoice" => CustomerInvoice,
-    "customer_return" => CustomerReturn
+    "customer_return" => CustomerReturn,
+    "loyalty_program" => LoyaltyProgram,
+    "customer_credit" => CustomerCredit
   }
 
   @default_padding 5

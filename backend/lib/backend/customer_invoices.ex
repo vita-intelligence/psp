@@ -837,10 +837,23 @@ defmodule Backend.CustomerInvoices do
       end
 
     if target != refreshed.status do
-      transition(actor, refreshed, %{
-        "status" => target,
-        "updated_by_id" => actor.id
-      })
+      case transition(actor, refreshed, %{
+             "status" => target,
+             "updated_by_id" => actor.id
+           }) do
+        {:ok, post_transition} = ok ->
+          # Edge into `paid` is the trigger for loyalty rebate accrual.
+          # The hook is idempotent at the DB level (unique index on
+          # customer_credits accruals) so a re-firing can't double-grant.
+          if target == "paid" do
+            Backend.Loyalty.accrue_on_invoice_paid(post_transition, actor)
+          end
+
+          ok
+
+        other ->
+          other
+      end
     else
       {:ok, refreshed}
     end

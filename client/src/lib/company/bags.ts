@@ -106,4 +106,6 @@ export const NUMBERING_ENTITIES: Array<{ key: string; label: string }> = [
   { key: "customer_order", label: "Customer orders" },
   { key: "customer_invoice", label: "Customer invoices" },
   { key: "customer_return", label: "Returns (RMAs)" },
+  { key: "loyalty_program", label: "Loyalty programs" },
+  { key: "customer_credit", label: "Customer credits" },
 ];

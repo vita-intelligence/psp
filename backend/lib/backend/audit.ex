@@ -169,6 +169,14 @@ defmodule Backend.Audit do
           _ -> {nil, own_uuid}
         end
 
+      not is_nil(Map.get(entity, :loyalty_program_id)) ->
+        # Loyalty tiers don't carry their own company_id — derive from
+        # the parent program so the audit row is still tenant-scoped.
+        case Repo.get(Backend.Loyalty.LoyaltyProgram, Map.get(entity, :loyalty_program_id)) do
+          %{company_id: cid} -> {cid, own_uuid}
+          _ -> {nil, own_uuid}
+        end
+
       true ->
         {nil, own_uuid}
     end

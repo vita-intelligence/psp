@@ -53,6 +53,7 @@ import type {
   Customer,
   CustomerPaymentBasis,
   CustomerStatus,
+  LoyaltyProgram,
   PricelistSummary,
   UserListEntry,
 } from "@/lib/types";
@@ -76,6 +77,9 @@ interface CustomerFormProps {
   users: UserListEntry[];
   /** Active pricelists for the pricelist picker. */
   pricelists: PricelistSummary[];
+  /** Loyalty programs (active ones) for the loyalty picker. Null when
+   *  the caller couldn't fetch them — picker stays disabled. */
+  availablePrograms: LoyaltyProgram[];
   canEdit: boolean;
   /** Fired on successful save so the EditModeToggle wrapper can flip
    *  the page back to view mode. */
@@ -102,6 +106,7 @@ interface FormState {
   trade_credit_limit: string;
   contact_frequency_months: number;
   pricelist_id: number | null;
+  loyalty_program_id: number | null;
   // Relationship
   account_manager_id: number | null;
   is_active: boolean;
@@ -168,6 +173,7 @@ function initialFrom(
       trade_credit_limit: "",
       contact_frequency_months: 3,
       pricelist_id: null,
+      loyalty_program_id: null,
       account_manager_id: null,
       is_active: true,
     };
@@ -190,6 +196,7 @@ function initialFrom(
     trade_credit_limit: customer.trade_credit_limit ?? "",
     contact_frequency_months: customer.contact_frequency_months ?? 3,
     pricelist_id: customer.pricelist_id ?? null,
+    loyalty_program_id: customer.loyalty_program_id ?? null,
     account_manager_id: customer.account_manager?.id ?? null,
     is_active: customer.is_active,
   };
@@ -200,6 +207,7 @@ export function CustomerForm({
   company,
   users,
   pricelists,
+  availablePrograms,
   canEdit,
   onSavedSuccess,
 }: CustomerFormProps) {
@@ -319,6 +327,10 @@ export function CustomerForm({
             : 3,
         pricelist_id:
           typeof r.pricelist_id === "number" ? r.pricelist_id : null,
+        loyalty_program_id:
+          typeof r.loyalty_program_id === "number"
+            ? r.loyalty_program_id
+            : null,
         account_manager_id:
           typeof r.account_manager_id === "number"
             ? r.account_manager_id
@@ -385,6 +397,7 @@ export function CustomerForm({
       trade_credit_limit: state.trade_credit_limit.trim() || null,
       contact_frequency_months: state.contact_frequency_months,
       pricelist_id: state.pricelist_id,
+      loyalty_program_id: state.loyalty_program_id,
       account_manager_id: state.account_manager_id,
       is_active: state.is_active,
     };
@@ -806,6 +819,52 @@ export function CustomerForm({
                       ))}
                     </SelectContent>
                   </Select>
+                </FieldRow>
+
+                <FieldRow
+                  id="loyalty_program_id"
+                  label="Loyalty program"
+                  editor={fieldEditors.loyalty_program_id}
+                  errors={fieldErrors.loyalty_program_id}
+                >
+                  <Select
+                    value={
+                      state.loyalty_program_id !== null
+                        ? String(state.loyalty_program_id)
+                        : "none"
+                    }
+                    onValueChange={(v) =>
+                      setField(
+                        "loyalty_program_id",
+                        v === "none" ? null : Number(v),
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      onFocus={() => focusField("loyalty_program_id")}
+                      onBlur={() => blurField("loyalty_program_id")}
+                      className="h-11"
+                    >
+                      <SelectValue placeholder="Use the default program" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">
+                        — Use default program —
+                      </SelectItem>
+                      {availablePrograms.map((p) => (
+                        <SelectItem key={p.id} value={String(p.id)}>
+                          {p.name}
+                          {p.is_default && " ★"}
+                          {!p.is_active && " (inactive)"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground">
+                    Leave on default unless this customer needs a
+                    custom rebate ladder — the default program covers
+                    everyone else automatically.
+                  </p>
                 </FieldRow>
 
                 <CollabRow

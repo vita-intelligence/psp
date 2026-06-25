@@ -41,6 +41,7 @@ defmodule Backend.Comments do
     "customer_order" => ["customer_orders.create"],
     "customer_invoice" => ["customer_invoices.create"],
     "customer_return" => ["customer_returns.create"],
+    "loyalty_program" => ["loyalty.programs_manage"],
     "purchase_order" => ["procurement.po_create"],
     "stock_lot" => ["stock.edit", "stock.receive"],
     "purchase_order_line" => ["procurement.po_create"],

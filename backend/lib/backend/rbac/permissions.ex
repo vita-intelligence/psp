@@ -221,6 +221,19 @@ defmodule Backend.RBAC.Permissions do
      "View the sales management dashboard (account-manager leaderboard, CO funnel, unassigned customers)"}
   ]
 
+  # Loyalty — tiered-rebate programs + the customer credits ledger.
+  # `programs.manage` covers program CRUD (admin / finance lead);
+  # `credits.grant` covers manual grants + redemptions (front-of-house);
+  # `view` is the read-only consumer (account managers).
+  @loyalty [
+    {"loyalty.view",
+     "View loyalty programs + customer credit balances and ledger"},
+    {"loyalty.programs_manage",
+     "Create, edit, activate / deactivate loyalty programs and their tiers"},
+    {"loyalty.credits_grant",
+     "Grant manual credits to a customer and redeem credit against an invoice"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -332,6 +345,7 @@ defmodule Backend.RBAC.Permissions do
         @cash_flow ++
         @statistics ++
         @sales_management ++
+        @loyalty ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -363,6 +377,7 @@ defmodule Backend.RBAC.Permissions do
       cash_flow: @cash_flow,
       statistics: @statistics,
       sales_management: @sales_management,
+      loyalty: @loyalty,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -657,6 +672,26 @@ defmodule Backend.RBAC.Permissions do
               "Book-of-business view per account manager — revenue YTD, outstanding A/R, pipeline value, plus the CO funnel and unassigned-customer list. Read-only.",
             read: "sales_management.view",
             create: nil,
+            update: nil,
+            delete: nil
+          },
+          %{
+            key: "loyalty_programs",
+            label: "Loyalty programs",
+            description:
+              "Tiered-rebate scheme editor. Programs are assigned to customers; tier crossings trigger auto-accrued credits when invoices flip to paid. Existing credits stay if a program is deactivated.",
+            read: "loyalty.view",
+            create: "loyalty.programs_manage",
+            update: "loyalty.programs_manage",
+            delete: "loyalty.programs_manage"
+          },
+          %{
+            key: "loyalty_credits",
+            label: "Customer credits",
+            description:
+              "Per-customer credit ledger + balance. Grants are append-only with reason. Redemptions issue a credit-note invoice so A/R stays consistent. Separated from program management so finance can grant credits without touching scheme rules.",
+            read: "loyalty.view",
+            create: "loyalty.credits_grant",
             update: nil,
             delete: nil
           }

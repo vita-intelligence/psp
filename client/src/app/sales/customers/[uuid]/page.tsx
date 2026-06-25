@@ -15,12 +15,17 @@ import { getCustomer } from "@/lib/customers/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { listUsersFirstPage } from "@/lib/users/server";
 import { listPricelistsForPicker } from "@/lib/pricelists/server";
+import {
+  getCustomerCredits,
+  listLoyaltyPrograms,
+} from "@/lib/loyalty/server";
 import type { CustomerApprovalStatus, CustomerStatus } from "@/lib/types";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { SalesSubnav } from "../../sales-subnav";
 import { CustomerForm } from "../customer-form";
 import { CustomerOnboardingCard } from "./customer-onboarding-card";
 import { CustomerApprovedItemsCard } from "./customer-approved-items-card";
+import { CustomerCreditsCard } from "./customer-credits-card";
 import { CustomerContactsCard } from "./customer-contacts-card";
 import { CustomerContactEventsCard } from "./customer-contact-events-card";
 import { CustomerFilesCard } from "./customer-files-card";
@@ -74,19 +79,30 @@ export default async function CustomerDetailPage({
   }
 
   const { uuid } = await params;
-  const [customer, company, userList, pricelists, initialComments] =
-    await Promise.all([
-      getCustomer(uuid),
-      getCompanyDefaults(),
-      listUsersFirstPage(100),
-      listPricelistsForPicker(),
-      listCommentsForEntity("customer", uuid),
-    ]);
+  const [
+    customer,
+    company,
+    userList,
+    pricelists,
+    loyaltyPrograms,
+    initialCredits,
+    initialComments,
+  ] = await Promise.all([
+    getCustomer(uuid),
+    getCompanyDefaults(),
+    listUsersFirstPage(100),
+    listPricelistsForPicker(),
+    listLoyaltyPrograms(),
+    getCustomerCredits(uuid),
+    listCommentsForEntity("customer", uuid),
+  ]);
   if (!customer || !company) notFound();
 
   const canEdit = hasPermission(user, "customers.edit");
   const canApprove = hasPermission(user, "customers.approve");
   const canDelete = hasPermission(user, "customers.delete");
+  const canGrantCredit = hasPermission(user, "loyalty.credits_grant");
+  const canViewLoyalty = hasPermission(user, "loyalty.view");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -173,11 +189,28 @@ export default async function CustomerDetailPage({
               company={company}
               users={userList.items}
               pricelists={pricelists ?? []}
+              availablePrograms={
+                (loyaltyPrograms ?? []).filter(
+                  (p) =>
+                    p.is_active ||
+                    p.id === (customer.loyalty_program_id ?? -1),
+                )
+              }
               canEdit={canEdit}
             />
           </EditModeToggle>
 
           <CustomerApprovedItemsCard customer={customer} canEdit={canEdit} />
+
+          {canViewLoyalty && (
+            <CustomerCreditsCard
+              customer={customer}
+              prefs={company}
+              initial={initialCredits}
+              programs={loyaltyPrograms ?? []}
+              canGrant={canGrantCredit}
+            />
+          )}
 
           <CustomerContactsCard customer={customer} canEdit={canEdit} />
 

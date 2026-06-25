@@ -81,6 +81,9 @@ defmodule BackendWeb.AuditController do
     "customer_return" => "customer_returns.view",
     "customer_return_line" => "customer_returns.view",
     "customer_return_file" => "customer_returns.view",
+    "loyalty_program" => "loyalty.view",
+    "loyalty_program_tier" => "loyalty.view",
+    "customer_credit" => "loyalty.view",
     # Procurement domain.
     "purchase_order" => "procurement.po_view",
     "purchase_order_line" => "procurement.po_view",
@@ -511,6 +514,34 @@ defmodule BackendWeb.AuditController do
 
   defp check_parent_customer_return(actor, return_id) do
     case Backend.Repo.get(Backend.CustomerReturns.CustomerReturn, return_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "loyalty_program", entity_id) do
+    case Backend.Repo.get(Backend.Loyalty.LoyaltyProgram, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "loyalty_program_tier", entity_id) do
+    case Backend.Repo.get(Backend.Loyalty.LoyaltyProgramTier, entity_id) do
+      %{loyalty_program_id: pid} -> check_parent_loyalty_program(actor, pid)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "customer_credit", entity_id) do
+    case Backend.Repo.get(Backend.Loyalty.CustomerCredit, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_parent_loyalty_program(actor, program_id) do
+    case Backend.Repo.get(Backend.Loyalty.LoyaltyProgram, program_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

@@ -104,6 +104,7 @@ defmodule Backend.Customers.Customer do
 
     belongs_to :company, Company
     belongs_to :account_manager, User
+    belongs_to :loyalty_program, Backend.Loyalty.LoyaltyProgram
     belongs_to :approved_by, User
     belongs_to :created_by, User
     belongs_to :updated_by, User
@@ -168,6 +169,7 @@ defmodule Backend.Customers.Customer do
       :payment_terms_basis,
       :trade_credit_limit,
       :pricelist_id,
+      :loyalty_program_id,
       :contact_frequency_months,
       :account_manager_id,
       :is_active,
