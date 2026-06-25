@@ -1064,6 +1064,63 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Sales statistics payload. All money values are stringified Decimals
+  in the company base currency; quantities also stringified.
+  """
+  def statistics(snapshot, company) do
+    %{
+      months: snapshot.months,
+      base_currency: company.currency_code,
+      excluded_currencies: snapshot.excluded_currencies,
+      kpis: %{
+        revenue_this_month: Decimal.to_string(snapshot.kpis.revenue_this_month, :normal),
+        revenue_ytd: Decimal.to_string(snapshot.kpis.revenue_ytd, :normal),
+        revenue_prior_ytd: Decimal.to_string(snapshot.kpis.revenue_prior_ytd, :normal),
+        revenue_prior_year_full:
+          Decimal.to_string(snapshot.kpis.revenue_prior_year_full, :normal),
+        avg_invoice_value: Decimal.to_string(snapshot.kpis.avg_invoice_value, :normal),
+        invoices_sent_count: snapshot.kpis.invoices_sent_count,
+        active_customers: snapshot.kpis.active_customers
+      },
+      revenue_by_month:
+        Enum.map(snapshot.revenue_by_month, fn m ->
+          %{
+            month_start: m.month_start,
+            invoice_revenue: Decimal.to_string(m.invoice_revenue, :normal),
+            credit_notes: Decimal.to_string(m.credit_notes, :normal),
+            net: Decimal.to_string(m.net, :normal)
+          }
+        end),
+      top_customers:
+        Enum.map(snapshot.top_customers, fn r ->
+          %{
+            customer_id: r.customer_id,
+            customer_name: r.customer_name,
+            revenue: Decimal.to_string(r.revenue, :normal),
+            monthly_series: Enum.map(r.monthly_series, &Decimal.to_string(&1, :normal))
+          }
+        end),
+      top_items:
+        Enum.map(snapshot.top_items, fn r ->
+          %{
+            item_id: r.item_id,
+            item_uuid: r.item_uuid,
+            item_name: r.item_name,
+            revenue: Decimal.to_string(r.revenue, :normal),
+            qty: Decimal.to_string(r.qty, :normal)
+          }
+        end),
+      funnel: %{
+        lead: snapshot.funnel.lead,
+        prospect: snapshot.funnel.prospect,
+        active: snapshot.funnel.active,
+        dormant: snapshot.funnel.dormant,
+        inactive: snapshot.funnel.inactive
+      }
+    }
+  end
+
+  @doc """
   Cash-flow forecast payload. All money values are stringified
   Decimals in the company base currency.
   """

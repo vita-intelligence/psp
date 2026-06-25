@@ -207,6 +207,13 @@ defmodule Backend.RBAC.Permissions do
      "View the 12-week cash-flow forecast (A/R + A/P inflows + outflows)"}
   ]
 
+  # Sales statistics — analytics dashboard projection over invoices.
+  # Read-only.
+  @statistics [
+    {"statistics.view",
+     "View sales statistics (revenue KPIs, top customers, top items, lifecycle funnel)"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -316,6 +323,7 @@ defmodule Backend.RBAC.Permissions do
         @customer_invoices ++
         @customer_returns ++
         @cash_flow ++
+        @statistics ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -345,6 +353,7 @@ defmodule Backend.RBAC.Permissions do
       customer_invoices: @customer_invoices,
       customer_returns: @customer_returns,
       cash_flow: @cash_flow,
+      statistics: @statistics,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -618,6 +627,16 @@ defmodule Backend.RBAC.Permissions do
             description:
               "12-week receivables + payables dashboard. Read-only — finance reads the projection over invoices + POs, no writes here.",
             read: "cash_flow.view",
+            create: nil,
+            update: nil,
+            delete: nil
+          },
+          %{
+            key: "statistics",
+            label: "Sales statistics",
+            description:
+              "Look-back analytics — revenue KPIs, monthly trend, top customers, top items, lifecycle funnel. Read-only.",
+            read: "statistics.view",
             create: nil,
             update: nil,
             delete: nil

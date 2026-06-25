@@ -2423,3 +2423,60 @@ export interface CashFlowForecast {
   overdue: CashFlowOverdue;
   totals: CashFlowTotals;
 }
+
+// ---------------------------------------------------------------
+// Sales statistics — look-back analytics snapshot.
+// ---------------------------------------------------------------
+
+export interface StatisticsKpis {
+  revenue_this_month: string;
+  revenue_ytd: string;
+  revenue_prior_ytd: string;
+  revenue_prior_year_full: string;
+  avg_invoice_value: string;
+  invoices_sent_count: number;
+  active_customers: number;
+}
+
+export interface StatisticsMonthRow {
+  /** ISO date — first of the month */
+  month_start: string;
+  invoice_revenue: string;
+  credit_notes: string;
+  net: string;
+}
+
+export interface StatisticsTopCustomer {
+  customer_id: number;
+  customer_name: string;
+  revenue: string;
+  /** Aligned with revenue_by_month length (12 entries) */
+  monthly_series: string[];
+}
+
+export interface StatisticsTopItem {
+  item_id: number;
+  item_uuid: string | null;
+  item_name: string;
+  revenue: string;
+  qty: string;
+}
+
+export interface StatisticsFunnel {
+  lead: number;
+  prospect: number;
+  active: number;
+  dormant: number;
+  inactive: number;
+}
+
+export interface StatisticsSnapshot {
+  months: number;
+  base_currency: string;
+  excluded_currencies: string[];
+  kpis: StatisticsKpis;
+  revenue_by_month: StatisticsMonthRow[];
+  top_customers: StatisticsTopCustomer[];
+  top_items: StatisticsTopItem[];
+  funnel: StatisticsFunnel;
+}

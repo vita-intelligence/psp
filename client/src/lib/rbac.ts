@@ -71,6 +71,7 @@ export type PermissionCode =
   | "customer_returns.resolve"
   | "customer_returns.delete"
   | "cash_flow.view"
+  | "statistics.view"
   | "procurement.po_view"
   | "procurement.po_create"
   | "procurement.po_submit"

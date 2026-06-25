@@ -64,7 +64,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/statistics",
     label: "Statistics",
     Icon: BarChart3,
-    comingSoon: true,
   },
   {
     href: "/sales/sales-management",
