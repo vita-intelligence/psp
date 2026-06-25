@@ -2480,3 +2480,41 @@ export interface StatisticsSnapshot {
   top_items: StatisticsTopItem[];
   funnel: StatisticsFunnel;
 }
+
+// ---------------------------------------------------------------
+// Sales management — book of business per account manager.
+// ---------------------------------------------------------------
+
+export interface SalesManagementLeaderRow {
+  manager_id: number;
+  manager_name: string;
+  customers_count: number;
+  active_customers_count: number;
+  approved_customers_count: number;
+  revenue_ytd: string;
+  outstanding_ar: string;
+  pipeline_value: string;
+}
+
+export interface SalesManagementFunnelStage {
+  stage: string;
+  count: number;
+  total_value: string;
+}
+
+export interface SalesManagementUnassignedRow {
+  id: number;
+  uuid: string;
+  name: string;
+  approval_status: CustomerApprovalStatus;
+  last_contact_at: string | null;
+  total_orders_count: number;
+}
+
+export interface SalesManagementSnapshot {
+  base_currency: string;
+  excluded_currencies: string[];
+  leaderboard: SalesManagementLeaderRow[];
+  funnel: SalesManagementFunnelStage[];
+  unassigned: SalesManagementUnassignedRow[];
+}

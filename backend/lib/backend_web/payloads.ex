@@ -1064,6 +1064,49 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Sales-management dashboard payload. All money values are stringified
+  Decimals in the company base currency.
+  """
+  def sales_management(snapshot, company) do
+    %{
+      base_currency: company.currency_code,
+      excluded_currencies: snapshot.excluded_currencies,
+      leaderboard:
+        Enum.map(snapshot.leaderboard, fn r ->
+          %{
+            manager_id: r.manager_id,
+            manager_name: r.manager_name,
+            customers_count: r.customers_count,
+            active_customers_count: r.active_customers_count,
+            approved_customers_count: r.approved_customers_count,
+            revenue_ytd: Decimal.to_string(r.revenue_ytd, :normal),
+            outstanding_ar: Decimal.to_string(r.outstanding_ar, :normal),
+            pipeline_value: Decimal.to_string(r.pipeline_value, :normal)
+          }
+        end),
+      funnel:
+        Enum.map(snapshot.funnel, fn r ->
+          %{
+            stage: r.stage,
+            count: r.count,
+            total_value: Decimal.to_string(r.total_value, :normal)
+          }
+        end),
+      unassigned:
+        Enum.map(snapshot.unassigned, fn r ->
+          %{
+            id: r.id,
+            uuid: r.uuid,
+            name: r.name,
+            approval_status: r.approval_status,
+            last_contact_at: r.last_contact_at,
+            total_orders_count: r.total_orders_count
+          }
+        end)
+    }
+  end
+
+  @doc """
   Sales statistics payload. All money values are stringified Decimals
   in the company base currency; quantities also stringified.
   """

@@ -391,6 +391,9 @@ defmodule BackendWeb.Router do
     # series, top customers + items, lifecycle funnel. Read-only.
     get "/statistics", StatisticsController, :index
 
+    # Sales management — book-of-business by account manager. Read-only.
+    get "/sales-management", SalesManagementController, :index
+
     # Customer invoices — sell-side back-half of order-to-cash. Lines
     # auto-pull unbilled qty from a CO on create_from_co; multiple
     # partial payments per invoice; status auto-flips on payment

@@ -214,6 +214,13 @@ defmodule Backend.RBAC.Permissions do
      "View sales statistics (revenue KPIs, top customers, top items, lifecycle funnel)"}
   ]
 
+  # Sales management — book-of-business view per account manager.
+  # Read-only; account manager is set on the customer record itself.
+  @sales_management [
+    {"sales_management.view",
+     "View the sales management dashboard (account-manager leaderboard, CO funnel, unassigned customers)"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -324,6 +331,7 @@ defmodule Backend.RBAC.Permissions do
         @customer_returns ++
         @cash_flow ++
         @statistics ++
+        @sales_management ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -354,6 +362,7 @@ defmodule Backend.RBAC.Permissions do
       customer_returns: @customer_returns,
       cash_flow: @cash_flow,
       statistics: @statistics,
+      sales_management: @sales_management,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -637,6 +646,16 @@ defmodule Backend.RBAC.Permissions do
             description:
               "Look-back analytics — revenue KPIs, monthly trend, top customers, top items, lifecycle funnel. Read-only.",
             read: "statistics.view",
+            create: nil,
+            update: nil,
+            delete: nil
+          },
+          %{
+            key: "sales_management",
+            label: "Sales management",
+            description:
+              "Book-of-business view per account manager — revenue YTD, outstanding A/R, pipeline value, plus the CO funnel and unassigned-customer list. Read-only.",
+            read: "sales_management.view",
             create: nil,
             update: nil,
             delete: nil

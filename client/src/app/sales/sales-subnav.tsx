@@ -69,7 +69,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/sales-management",
     label: "Sales management",
     Icon: TrendingUp,
-    comingSoon: true,
   },
   {
     href: "/sales/returns",
