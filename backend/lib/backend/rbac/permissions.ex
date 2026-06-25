@@ -199,6 +199,14 @@ defmodule Backend.RBAC.Permissions do
     {"customer_returns.delete", "Delete draft customer returns"}
   ]
 
+  # Cash flow — finance dashboard projection over invoices + POs.
+  # Read-only; the underlying writes happen on the sales-invoice + PO
+  # workflows themselves.
+  @cash_flow [
+    {"cash_flow.view",
+     "View the 12-week cash-flow forecast (A/R + A/P inflows + outflows)"}
+  ]
+
   # Procurement — purchase orders, invoices. Two-tier approval split
   # (po_approve = first signature, po_director_approve = second + ordered).
   @procurement [
@@ -307,6 +315,7 @@ defmodule Backend.RBAC.Permissions do
         @customer_orders ++
         @customer_invoices ++
         @customer_returns ++
+        @cash_flow ++
         @procurement ++
         @goods_in ++
         @production ++
@@ -335,6 +344,7 @@ defmodule Backend.RBAC.Permissions do
       customer_orders: @customer_orders,
       customer_invoices: @customer_invoices,
       customer_returns: @customer_returns,
+      cash_flow: @cash_flow,
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
@@ -600,6 +610,16 @@ defmodule Backend.RBAC.Permissions do
             read: "customer_returns.view",
             create: "customer_returns.receive",
             update: "customer_returns.resolve",
+            delete: nil
+          },
+          %{
+            key: "cash_flow",
+            label: "Cash-flow forecast",
+            description:
+              "12-week receivables + payables dashboard. Read-only — finance reads the projection over invoices + POs, no writes here.",
+            read: "cash_flow.view",
+            create: nil,
+            update: nil,
             delete: nil
           }
         ]

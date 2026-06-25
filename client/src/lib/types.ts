@@ -2382,3 +2382,44 @@ export interface TodayBuckets {
   overdue: TodayCustomer[];
   going_quiet: TodayCustomer[];
 }
+
+// ---------------------------------------------------------------
+// Cash flow — 12-week receivables + payables forecast.
+// ---------------------------------------------------------------
+
+export interface CashFlowBucket {
+  week_index: number;
+  /** ISO date — Monday of the bucket's week */
+  week_start: string;
+  ar_due: string;
+  ar_projected: string;
+  ap_due: string;
+  ap_planned: string;
+  net: string;
+  cumulative: string;
+}
+
+export interface CashFlowOverdue {
+  ar_due: string;
+  ar_projected: string;
+  ap_due: string;
+  ap_planned: string;
+  net: string;
+}
+
+export interface CashFlowTotals {
+  outstanding_ar: string;
+  projected_ar: string;
+  outstanding_ap: string;
+  planned_ap: string;
+  net_position: string;
+}
+
+export interface CashFlowForecast {
+  weeks_ahead: number;
+  base_currency: string;
+  excluded_currencies: string[];
+  buckets: CashFlowBucket[];
+  overdue: CashFlowOverdue;
+  totals: CashFlowTotals;
+}

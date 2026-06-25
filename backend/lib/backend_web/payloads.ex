@@ -1064,6 +1064,45 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Cash-flow forecast payload. All money values are stringified
+  Decimals in the company base currency.
+  """
+  def cash_flow(forecast, company) do
+    %{
+      weeks_ahead: forecast.weeks_ahead,
+      base_currency: company.currency_code,
+      excluded_currencies: forecast.excluded_currencies,
+      buckets:
+        Enum.map(forecast.buckets, fn b ->
+          %{
+            week_index: b.week_index,
+            week_start: b.week_start,
+            ar_due: Decimal.to_string(b.ar_due, :normal),
+            ar_projected: Decimal.to_string(b.ar_projected, :normal),
+            ap_due: Decimal.to_string(b.ap_due, :normal),
+            ap_planned: Decimal.to_string(b.ap_planned, :normal),
+            net: Decimal.to_string(b.net, :normal),
+            cumulative: Decimal.to_string(b.cumulative, :normal)
+          }
+        end),
+      overdue: %{
+        ar_due: Decimal.to_string(forecast.overdue.ar_due, :normal),
+        ar_projected: Decimal.to_string(forecast.overdue.ar_projected, :normal),
+        ap_due: Decimal.to_string(forecast.overdue.ap_due, :normal),
+        ap_planned: Decimal.to_string(forecast.overdue.ap_planned, :normal),
+        net: Decimal.to_string(forecast.overdue.net, :normal)
+      },
+      totals: %{
+        outstanding_ar: Decimal.to_string(forecast.totals.outstanding_ar, :normal),
+        projected_ar: Decimal.to_string(forecast.totals.projected_ar, :normal),
+        outstanding_ap: Decimal.to_string(forecast.totals.outstanding_ap, :normal),
+        planned_ap: Decimal.to_string(forecast.totals.planned_ap, :normal),
+        net_position: Decimal.to_string(forecast.totals.net_position, :normal)
+      }
+    }
+  end
+
+  @doc """
   Per-row shape for the "Today's contacts" CRM page. Carries enough
   context for the salesperson to act: who the customer is, where
   they are in the lifecycle, when we last spoke, when the cadence

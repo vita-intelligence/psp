@@ -381,6 +381,12 @@ defmodule BackendWeb.Router do
     # live on the customer endpoints.
     get "/today", TodayController, :index
 
+    # Cash-flow forecast — 12-week receivables + payables dashboard.
+    # Read-only projection over customer_invoices + customer_orders
+    # + procurement_invoices + purchase_orders, aggregated weekly in
+    # the company base currency.
+    get "/cash-flow", CashFlowController, :index
+
     # Customer invoices — sell-side back-half of order-to-cash. Lines
     # auto-pull unbilled qty from a CO on create_from_co; multiple
     # partial payments per invoice; status auto-flips on payment

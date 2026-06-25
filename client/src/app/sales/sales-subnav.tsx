@@ -59,7 +59,6 @@ const ITEMS: SubnavItem[] = [
     href: "/sales/cash-flow",
     label: "Cash flow",
     Icon: Wallet,
-    comingSoon: true,
   },
   {
     href: "/sales/statistics",
