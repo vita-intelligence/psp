@@ -2647,3 +2647,159 @@ export interface LoyaltyDashboard {
   /** Optional — BE may not return this if all FX rates are present. */
   excluded_currencies?: string[];
 }
+
+// ---------------------------------------------------------------
+// Order wizard — single-page projection of a CO's full lifecycle.
+// One snapshot returned by GET /api/customer-orders/:uuid/wizard
+// that aggregates the CO, derived phase, the next compliance-driven
+// action, blockers, per-line MO state, open POs covering placeholder
+// bookings, and a chronological timeline.
+// ---------------------------------------------------------------
+
+export type OrderWizardPhaseKey =
+  | "setup"
+  | "approval"
+  | "production_planning"
+  | "awaiting_ingredients"
+  | "in_production"
+  | "closeout"
+  | "ready_to_dispatch"
+  | "cancelled";
+
+export interface OrderWizardPhase {
+  key: OrderWizardPhaseKey;
+  label: string;
+  /** 0..6 for forward phases; -1 for cancelled. */
+  index: number;
+  /** Total number of forward phases (typically 7). */
+  total: number;
+  is_terminal: boolean;
+}
+
+export type OrderWizardCtaKind = "action" | "link" | "scroll_to";
+
+export interface OrderWizardCta {
+  label: string;
+  kind: OrderWizardCtaKind;
+  /** kind=action: "submit" | "confirm" | "create_mo_for_line" | ... */
+  action?: string;
+  /** kind=action + action="create_mo_for_line" — which line to spawn. */
+  line_uuid?: string;
+  /** kind=link — destination href. */
+  href?: string;
+  /** kind=scroll_to — CSS selector to scroll into view. */
+  target?: string;
+}
+
+export interface OrderWizardNextAction {
+  code: string;
+  title: string;
+  detail: string | null;
+  primary_cta: OrderWizardCta | null;
+  secondary_ctas: OrderWizardCta[];
+  shortages_link?: { label: string; href: string };
+  scheduler_link?: { label: string; href: string };
+}
+
+export type OrderWizardBlockerSeverity = "error" | "warning";
+
+export interface OrderWizardBlocker {
+  code: string;
+  severity: OrderWizardBlockerSeverity;
+  message: string;
+  link: { label: string; href: string } | null;
+}
+
+export type OrderWizardMoStatus =
+  | "draft"
+  | "prepared"
+  | "approved"
+  | "scheduled"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export interface OrderWizardMoOutputLot {
+  uuid: string;
+  status: string;
+  qty: string;
+  at_production_feed: boolean;
+}
+
+export interface OrderWizardMo {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: OrderWizardMoStatus;
+  quantity: string;
+  item_name: string | null;
+  bookings_total: number;
+  placeholder_count: number;
+  has_placeholder_bookings: boolean;
+  broken_booking_count: number;
+  output_lot_count: number;
+  output_at_feed_count: number;
+  output_in_warehouse_count: number;
+  has_output_at_production_feed: boolean;
+  purchasing_requested_at: string | null;
+  due_date: string | null;
+  output_lots: OrderWizardMoOutputLot[];
+}
+
+export interface OrderWizardLine {
+  uuid: string;
+  id: number;
+  item_id: number | null;
+  item_name: string | null;
+  qty_ordered: string;
+  needs_mo: boolean;
+  primary_mo: OrderWizardMo | null;
+  mos: OrderWizardMo[];
+}
+
+export interface OrderWizardOpenPo {
+  id: number;
+  uuid: string;
+  status: string;
+  expected_delivery_date: string | null;
+  grand_total: string;
+  currency_code: string;
+}
+
+export interface OrderWizardTimelineEntry {
+  at: string;
+  label: string;
+  scope: "co" | "mo";
+  mo_uuid?: string;
+}
+
+export interface OrderWizardSnapshot {
+  customer_order: CustomerOrder;
+  phase: OrderWizardPhase;
+  next_action: OrderWizardNextAction | null;
+  blockers: OrderWizardBlocker[];
+  lines: OrderWizardLine[];
+  open_pos: OrderWizardOpenPo[];
+  timeline: OrderWizardTimelineEntry[];
+}
+
+// ---------------------------------------------------------------
+// Projects landing — one row per active CO.
+// ---------------------------------------------------------------
+
+export interface ProjectSummary {
+  customer_order: CustomerOrder;
+  phase: OrderWizardPhase;
+  next_action_title: string | null;
+  next_action_detail: string | null;
+  next_action_cta:
+    | OrderWizardNextAction["primary_cta"]
+    | null;
+  blocker_count: number;
+  line_count: number;
+  mo_count: number;
+  lines_awaiting_mo: number;
+  mos_with_placeholders: number;
+  mos_in_production: number;
+  mos_awaiting_closeout: number;
+}

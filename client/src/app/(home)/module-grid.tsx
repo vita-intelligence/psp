@@ -1,5 +1,6 @@
 import {
   Boxes,
+  ClipboardList,
   Factory,
   HandCoins,
   Settings as SettingsIcon,
@@ -18,6 +19,14 @@ import { ModuleTile } from "./module-tile";
  */
 export function ModuleGrid({ user }: { user: User }) {
   const tiles = [
+    {
+      key: "projects",
+      href: "/projects",
+      label: "Projects",
+      Icon: ClipboardList,
+      caption: "Order-by-order wizard",
+      gate: hasPermission(user, "customer_orders.view"),
+    },
     {
       key: "stock",
       href: "/stock",

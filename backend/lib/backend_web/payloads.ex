@@ -1064,6 +1064,113 @@ defmodule BackendWeb.Payloads do
   end
 
   # ---------------------------------------------------------------
+  # Order wizard.
+  # ---------------------------------------------------------------
+
+  @doc """
+  Snapshot payload for the wizard tab on a CO detail page. The
+  shape mirrors the FE component tree: phase strip + next-action
+  card + blockers + per-line MO state + open-PO list + timeline.
+  """
+  def order_wizard(snapshot) do
+    %{
+      customer_order: customer_order(snapshot.customer_order),
+      phase: snapshot.phase,
+      next_action: stringify_action(snapshot.next_action),
+      blockers: snapshot.blockers,
+      lines: Enum.map(snapshot.lines, &wizard_line/1),
+      open_pos: Enum.map(snapshot.open_pos, &wizard_open_po/1),
+      timeline: snapshot.timeline
+    }
+  end
+
+  defp wizard_line(line) do
+    %{
+      uuid: line.uuid,
+      id: line.id,
+      item_id: line.item_id,
+      item_name: line.item_name,
+      qty_ordered: decimal_to_string(line.qty_ordered),
+      needs_mo: line.needs_mo?,
+      primary_mo: line.primary_mo && wizard_mo(line.primary_mo),
+      mos: Enum.map(line.mos, &wizard_mo/1)
+    }
+  end
+
+  defp wizard_mo(mo) do
+    %{
+      id: mo.id,
+      uuid: mo.uuid,
+      code: mo.code,
+      status: mo.status,
+      quantity: decimal_to_string(mo.quantity),
+      item_name: mo.item_name,
+      bookings_total: mo.bookings_total,
+      placeholder_count: mo.placeholder_count,
+      has_placeholder_bookings: mo.has_placeholder_bookings?,
+      broken_booking_count: mo.broken_booking_count,
+      output_lot_count: mo.output_lot_count,
+      output_at_feed_count: mo.output_at_feed_count,
+      output_in_warehouse_count: mo.output_in_warehouse_count,
+      has_output_at_production_feed: mo.has_output_at_production_feed?,
+      purchasing_requested_at: mo.purchasing_requested_at,
+      due_date: mo.due_date,
+      output_lots:
+        Enum.map(mo.output_lots, fn lot ->
+          %{
+            uuid: lot.uuid,
+            status: lot.status,
+            qty: decimal_to_string(lot.qty),
+            at_production_feed: lot.at_production_feed?
+          }
+        end)
+    }
+  end
+
+  defp wizard_open_po(po) do
+    %{
+      id: po.id,
+      uuid: po.uuid,
+      status: po.status,
+      expected_delivery_date: po.expected_delivery_date,
+      grand_total: decimal_to_string(po.grand_total),
+      currency_code: po.currency_code
+    }
+  end
+
+  defp stringify_action(nil), do: nil
+
+  defp stringify_action(action) do
+    Map.put(action, :secondary_ctas, action.secondary_ctas || [])
+  end
+
+  @doc """
+  One row on the /projects landing page. Compact summary — no
+  per-line or per-MO breakdown; for that the operator clicks
+  through to the wizard tab on the CO detail page.
+  """
+  def project_summary(s) do
+    %{
+      customer_order: customer_order(s.customer_order),
+      phase: s.phase,
+      next_action_title: s.next_action_title,
+      next_action_detail: s.next_action_detail,
+      next_action_cta: s.next_action_cta,
+      blocker_count: s.blocker_count,
+      line_count: s.line_count,
+      mo_count: s.mo_count,
+      lines_awaiting_mo: s.lines_awaiting_mo,
+      mos_with_placeholders: s.mos_with_placeholders,
+      mos_in_production: s.mos_in_production,
+      mos_awaiting_closeout: s.mos_awaiting_closeout
+    }
+  end
+
+  defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+  defp decimal_to_string(nil), do: nil
+  defp decimal_to_string(v), do: to_string(v)
+
+  # ---------------------------------------------------------------
   # Loyalty.
   # ---------------------------------------------------------------
 

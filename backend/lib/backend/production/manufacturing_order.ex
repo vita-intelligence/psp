@@ -128,6 +128,7 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :purchasing_requested_by, User
     belongs_to :production_cell, Backend.Warehouses.StorageCell
     belongs_to :produced_lot, Backend.Stock.Lot
+    belongs_to :customer_order_line, Backend.CustomerOrders.CustomerOrderLine
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
@@ -178,6 +179,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :bom_id,
       :routing_id,
       :parent_mo_id,
+      :customer_order_line_id,
       :quantity,
       :due_date,
       :expiry_date,

@@ -29,7 +29,7 @@ defmodule BackendWeb.CustomerOrderController do
   @max_evidence_bytes 20 * 1024 * 1024
 
   plug RequirePermission, "customer_orders.view"
-       when action in [:index, :show, :suggest_price, :serve_file]
+       when action in [:index, :show, :suggest_price, :serve_file, :wizard]
 
   plug RequirePermission, "customer_orders.create"
        when action in [
@@ -49,6 +49,11 @@ defmodule BackendWeb.CustomerOrderController do
        when action in [:sign_director, :mark_confirmed]
 
   plug RequirePermission, "customer_orders.delete" when action in [:delete, :remove_file]
+
+  # Wizard's "Create MO for this line" CTA needs the production
+  # mo_create capability since it really does insert a draft MO.
+  plug RequirePermission, "production.mo_create"
+       when action in [:create_mo_for_line]
 
   action_fallback BackendWeb.FallbackController
 
@@ -71,6 +76,76 @@ defmodule BackendWeb.CustomerOrderController do
     case CustomerOrders.get_for_company(actor.company_id, uuid) do
       nil -> {:error, :not_found}
       co -> json(conn, %{customer_order: Payloads.customer_order(co)})
+    end
+  end
+
+  @doc """
+  Wizard snapshot for one CO — the projection that drives
+  /sales/orders/[uuid]?tab=wizard.
+  """
+  def wizard(conn, %{"customer_order_id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case CustomerOrders.get_for_company(actor.company_id, uuid) do
+      nil ->
+        {:error, :not_found}
+
+      co ->
+        snapshot = Backend.OrderWizard.snapshot(co)
+        json(conn, %{wizard: Payloads.order_wizard(snapshot)})
+    end
+  end
+
+  @doc """
+  Create an MO pre-linked to the given CO line. Pre-fills:
+    * item_id from the line's item
+    * quantity from the line's qty_ordered
+    * warehouse from the CO's company default (first warehouse)
+    * customer_order_line_id so the wizard projection picks it up
+
+  BOM + routing + dates are NOT auto-filled — the planner chooses
+  those, and the FE pops the MO detail page with the wizard's
+  pre-fills already in place so they can finish setup.
+  """
+  def create_mo_for_line(conn, %{
+        "customer_order_id" => co_uuid,
+        "line_uuid" => line_uuid
+      }) do
+    actor = conn.assigns.current_user
+
+    with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
+         %{} = line <-
+           Enum.find(co.lines, &(&1.uuid == line_uuid)) do
+      attrs = %{
+        "company_id" => actor.company_id,
+        "warehouse_id" => default_warehouse_id(actor.company_id),
+        "item_id" => line.item_id,
+        "quantity" => line.qty_ordered,
+        "due_date" => line.expected_ship_date,
+        "customer_order_line_id" => line.id,
+        "assigned_to_id" => actor.id,
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      }
+
+      case Backend.Production.create_manufacturing_order(actor, attrs) do
+        {:ok, mo} ->
+          conn
+          |> put_status(:created)
+          |> json(%{manufacturing_order: Payloads.manufacturing_order(mo)})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp default_warehouse_id(company_id) do
+    case Backend.Warehouses.list_for_company(company_id) do
+      [%{id: id} | _] -> id
+      _ -> nil
     end
   end
 

@@ -391,6 +391,11 @@ defmodule BackendWeb.Router do
     # the company base currency.
     get "/cash-flow", CashFlowController, :index
 
+    # Projects landing — every active (non-draft, non-cancelled)
+    # CO with its wizard phase + next action. The operator's first
+    # stop when they log in.
+    get "/projects", ProjectsController, :index
+
     # Sales statistics — look-back analytics. Revenue KPIs, monthly
     # series, top customers + items, lifecycle funnel. Read-only.
     get "/statistics", StatisticsController, :index
@@ -492,6 +497,15 @@ defmodule BackendWeb.Router do
       post "/files", CustomerOrderController, :upload_file
       delete "/files/:id", CustomerOrderController, :remove_file
       get "/files/:id/serve", CustomerOrderController, :serve_file
+
+      # Wizard projection — the FE renders this as a tab on the CO
+      # detail page that tells operators exactly what to do next.
+      get "/wizard", CustomerOrderController, :wizard
+
+      # Wizard CTA: create an MO pre-linked to the chosen CO line.
+      post "/lines/:line_uuid/create-mo",
+           CustomerOrderController,
+           :create_mo_for_line
     end
 
     # Pricelists — sell-side selling-price quotes. Header + tiered
