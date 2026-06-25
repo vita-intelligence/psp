@@ -2280,25 +2280,41 @@ defmodule Backend.Production do
   """
   def prepare_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
     with :ok <- ensure_status_in(mo, ["draft"]),
-         :ok <- ensure_all_lines_fully_booked(mo) do
+         :ok <- ensure_planning_complete(mo) do
       # Per-MO signature — does not cascade to children. Planner
       # prepares each MO in the tree independently (typically leaves
       # first so sub-MOs are ready by the time the parent rolls
-      # forward). Refuses if any BOM line is short: prepare is the
-      # first commitment in the workflow, and committing with
-      # missing ingredients defeats the planning gate.
+      # forward).
       #
-      # Clears any open procurement request in the same transition —
-      # preparing implies the planner is satisfied with the bookings
-      # (either fully sourced from stock or the missing items have
-      # been booked from a delivered PO).
+      # Prepare is "I've decided how to source this", not "everything
+      # is sourced." Allowed when every line is either fully booked
+      # OR the MO has had Request purchases fired — at that point
+      # the planner has handed shortfalls to procurement, which is
+      # all they can do. The release-time gate
+      # (ensure_all_lines_have_real_bookings) keeps the floor safe
+      # by refusing pickup until actual lots exist.
+      #
+      # purchasing_requested_at is preserved through the transition
+      # so the wizard can keep showing "Awaiting delivery" until the
+      # POs land and the placeholders upgrade.
       do_transition(actor, mo, "prepared", %{
         "prepared_by_id" => actor.id,
         "prepared_at" => now(),
-        "rejection_reason" => nil,
-        "purchasing_requested_at" => nil,
-        "purchasing_requested_by_id" => nil
+        "rejection_reason" => nil
       })
+    end
+  end
+
+  # Prepare-time gate. Passes if the MO is fully covered by bookings
+  # OR if the planner has already engaged procurement for the
+  # shortfall. Either way, the planning decision is made.
+  defp ensure_planning_complete(%ManufacturingOrder{} = mo) do
+    case ensure_all_lines_fully_booked(mo) do
+      :ok ->
+        :ok
+
+      {:error, :lines_under_booked, _list} = err ->
+        if mo.purchasing_requested_at, do: :ok, else: err
     end
   end
 
