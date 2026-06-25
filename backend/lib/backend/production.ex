@@ -3109,7 +3109,14 @@ defmodule Backend.Production do
             booking_snapshot(booking)
           )
 
-          _ = demote_root_if_signed(actor, mo)
+          # Placeholder bookings are procurement FULFILLING a request
+          # the planner already signed off on (the MO was approved with
+          # purchasing_requested_at set under the new Prepare gate, or
+          # the planner manually booked from an open PO). Either way
+          # they're expected coverage, not a structural edit — so we
+          # skip demote_root_if_signed here. The cascade still fires
+          # for real stock_lot bookings (see create_booking above)
+          # because those DO change the run plan.
           {:ok, reload_booking(booking)}
 
         err ->
