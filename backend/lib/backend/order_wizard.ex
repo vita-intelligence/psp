@@ -528,43 +528,73 @@ defmodule Backend.OrderWizard do
   end
 
   defp next_action_for(:awaiting_ingredients, co, _line_states, mos, _signers) do
-    # If any MO is still in draft/prepared/approved without
-    # purchasing_requested_at, surface that BEFORE chasing POs —
-    # purchases can't be ordered until that flag is set.
+    # Phase fires when at least one MO either has placeholder
+    # bookings (POs exist, awaiting delivery) OR has under-booked
+    # BOM lines (planner needs to allocate or hand to procurement).
+    # The "next step" depends on which one:
+    #
+    #  1. Shortages exist on an MO that hasn't fired Request
+    #     purchases yet → planner action.
+    #  2. Shortages exist on an MO that DID fire Request purchases
+    #     but no PO has been created → procurement action.
+    #  3. Placeholder bookings exist (POs are out) → chase the PO.
+
     needs_request =
       Enum.filter(mos, fn mo ->
-        mo.has_placeholder_bookings? and
-          is_nil(mo.purchasing_requested_at) and
-          mo.status not in ["scheduled", "in_progress", "completed"]
+        mo.under_booked_count > 0 and is_nil(mo.purchasing_requested_at)
       end)
 
-    if needs_request != [] do
-      target = List.first(needs_request)
+    awaiting_po_creation =
+      Enum.filter(mos, fn mo ->
+        mo.under_booked_count > 0 and not is_nil(mo.purchasing_requested_at)
+      end)
 
-      %{
-        code: "request_purchases",
-        title:
-          "Click Request purchases on MO #{target.code}.",
-        detail:
-          "This MO depends on ingredients we don't have yet. Until you request purchases, the shortages page won't pick it up and procurement can't act.",
-        primary_cta: %{
-          label: "Request purchases for MO #{target.code}",
-          kind: "action",
-          action: "request_purchases",
-          mo_uuid: target.uuid
-        },
-        secondary_ctas:
-          for mo <- Enum.drop(needs_request, 1) do
-            %{
-              label: "Request purchases for MO #{mo.code}",
-              kind: "action",
-              action: "request_purchases",
-              mo_uuid: mo.uuid
-            }
-          end
-      }
-    else
-      chase_open_pos(co, mos)
+    cond do
+      needs_request != [] ->
+        target = List.first(needs_request)
+
+        %{
+          code: "request_purchases",
+          title: "Click Request purchases on MO #{target.code}.",
+          detail:
+            "This MO has unbooked BOM lines. Until you request purchases, the shortages page won't pick it up and procurement can't act.",
+          primary_cta: %{
+            label: "Request purchases for MO #{target.code}",
+            kind: "action",
+            action: "request_purchases",
+            mo_uuid: target.uuid
+          },
+          secondary_ctas:
+            for mo <- Enum.drop(needs_request, 1) do
+              %{
+                label: "Request purchases for MO #{mo.code}",
+                kind: "action",
+                action: "request_purchases",
+                mo_uuid: mo.uuid
+              }
+            end
+        }
+
+      awaiting_po_creation != [] ->
+        codes = awaiting_po_creation |> Enum.map(& &1.code) |> Enum.join(", ")
+        count = length(awaiting_po_creation)
+
+        %{
+          code: "create_pos",
+          title:
+            "Procurement needs to create #{count} purchase order#{if count == 1, do: "", else: "s"}.",
+          detail:
+            "Shortages on #{codes} have been sent to procurement, but no POs have been opened yet. Open the shortages page and create the POs (reserve them against these MOs) so production can move forward.",
+          primary_cta: %{
+            label: "Open shortages page",
+            kind: "link",
+            href: "/procurement/shortages"
+          },
+          secondary_ctas: []
+        }
+
+      true ->
+        chase_open_pos(co, mos)
     end
   end
 
