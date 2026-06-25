@@ -64,7 +64,10 @@ import {
   type POHeaderInput,
   type POLineInput,
 } from "@/lib/purchase-orders/actions";
-import type { ShortageRow } from "@/lib/procurement-shortages/server";
+import type {
+  ShortageDependentMo,
+  ShortageRow,
+} from "@/lib/procurement-shortages/server";
 
 /** Vendor option — carries the picker label + the metadata the form
  *  derives off (currency_code, lead time) so we don't need a second
@@ -1692,6 +1695,19 @@ function ReservationPickerRow({
 
   const deps = shortage?.dependent_mos ?? [];
 
+  // Auto-expand when the planner already set something — otherwise
+  // the picker stays collapsed so a 200-MO list doesn't drop into
+  // the DOM by default. The collapse rule is the primary perf knob:
+  // visible MO rows are bounded by user intent.
+  const hasReservations = (line.reservations ?? []).length > 0;
+  const [expanded, setExpanded] = useState(hasReservations);
+  const [search, setSearch] = useState("");
+
+  // Re-open if external state added reservations (e.g. deep-link).
+  useEffect(() => {
+    if (hasReservations) setExpanded(true);
+  }, [hasReservations]);
+
   if (!item || deps.length === 0) return null;
 
   const orderedQty = parseFloat(line.qty_ordered) || 0;
@@ -1734,6 +1750,7 @@ function ReservationPickerRow({
       }
     }
     onChange(next);
+    setExpanded(true);
   }
 
   function clearAll() {
@@ -1745,6 +1762,58 @@ function ReservationPickerRow({
     : reservedQty === 0
       ? "text-muted-foreground"
       : "text-foreground";
+
+  // Filter + cap visible MOs. Reservations always render so the
+  // planner doesn't lose sight of what they already set when the
+  // search hides everything else.
+  const needle = search.trim().toLowerCase();
+  const reservedUuids = new Set(line.reservations.map((r) => r.mo_uuid));
+
+  const matchesSearch = (m: ShortageDependentMo) => {
+    if (!needle) return true;
+    return (
+      (m.code ?? "").toLowerCase().includes(needle) ||
+      (m.item_name ?? "").toLowerCase().includes(needle)
+    );
+  };
+
+  const filtered = deps.filter(matchesSearch);
+  const pinned = deps.filter((m) => reservedUuids.has(m.uuid));
+  const cap = 20;
+  const visible = (() => {
+    if (filtered.length <= cap) return filtered;
+    const remaining = filtered.filter((m) => !reservedUuids.has(m.uuid));
+    return [...pinned, ...remaining.slice(0, Math.max(cap - pinned.length, 0))];
+  })();
+  const hidden = filtered.length - visible.length;
+
+  // Compact / collapsed strip — no MO list in the DOM, just a
+  // single-line summary + the FIFO toggle + Override link. Keeps
+  // the picker invisible-by-default at scale.
+  if (!expanded) {
+    return (
+      <tr className="bg-muted/10">
+        <td colSpan={9} className="px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/40 bg-card px-3 py-1.5 text-[11px]">
+            <span className="text-muted-foreground">
+              <span className="font-mono font-medium text-foreground">
+                Reserve for MOs:
+              </span>{" "}
+              {deps.length} waiting · auto-FIFO will distribute by earliest
+              planned start
+            </span>
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="rounded border border-border/60 px-2 py-0.5 hover:bg-muted"
+            >
+              Override
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
 
   return (
     <tr className="bg-muted/10">
@@ -1778,8 +1847,26 @@ function ReservationPickerRow({
                   Clear
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                className="rounded border border-border/60 px-1.5 py-0.5 text-[11px] hover:bg-muted"
+                title="Collapse the picker — reservations stay set."
+              >
+                Collapse
+              </button>
             </div>
           </div>
+
+          {deps.length > 8 && (
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={`Search ${deps.length} waiting MOs by code or item…`}
+              className="h-7 text-[11px]"
+            />
+          )}
+
           <table className="w-full text-[11px]">
             <thead className="text-muted-foreground">
               <tr className="border-b border-border/40">
@@ -1793,7 +1880,7 @@ function ReservationPickerRow({
               </tr>
             </thead>
             <tbody>
-              {deps.map((m) => (
+              {visible.map((m) => (
                 <tr key={m.uuid} className="border-b border-border/20">
                   <td className="px-1 py-1 font-mono text-[10px]">
                     {m.code ?? m.uuid.slice(0, 8)}
@@ -1820,8 +1907,24 @@ function ReservationPickerRow({
                   </td>
                 </tr>
               ))}
+              {visible.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-1 py-3 text-center text-[11px] text-muted-foreground"
+                  >
+                    No MOs match the search.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
+          {hidden > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              +{hidden} more MOs hidden — refine the search to find a specific
+              one. Anything left out gets auto-FIFO at submit time.
+            </p>
+          )}
           {over && (
             <p className="text-[11px] text-destructive">
               Reserved more than the ordered qty. The server will clamp the
