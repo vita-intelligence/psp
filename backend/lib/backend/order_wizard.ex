@@ -617,14 +617,18 @@ defmodule Backend.OrderWizard do
 
     case pos do
       [next_po | _] ->
+        # Branch on PO status. A draft / pending-approval PO can't be
+        # "chased" from the vendor — it hasn't even been sent yet.
+        # An ordered / partially-received PO is what the vendor has;
+        # that's what "chase" applies to.
+        {title, detail, label} = chase_po_copy(pos, next_po)
+
         %{
           code: "chase_po",
-          title:
-            "Awaiting #{Enum.count(po_uuids)} purchase order(s) before production can start.",
-          detail:
-            "Next expected delivery: #{format_date(next_po.expected_delivery_date) || "no date set"}. Chase the vendor or update the expected date.",
+          title: title,
+          detail: detail,
           primary_cta: %{
-            label: "Open next PO",
+            label: label,
             kind: "link",
             href: "/procurement/purchase-orders/#{next_po.uuid}"
           },
@@ -657,6 +661,60 @@ defmodule Backend.OrderWizard do
         }
     end
   end
+
+  # Three buckets of PO state the planner cares about:
+  #
+  #   - Not sent yet (draft / pending_approver / pending_director /
+  #     approved) → the planner / procurement needs to submit + sign
+  #     it before the vendor sees anything.
+  #   - Sent (ordered / partially_received) → vendor owes us goods;
+  #     "chase" applies.
+  #   - Mix → call out the not-sent ones first since they're the
+  #     immediate blocker.
+  @sent_po_statuses ~w(ordered partially_received)
+  defp chase_po_copy(pos, next_po) do
+    {sent, not_sent} = Enum.split_with(pos, &(&1.status in @sent_po_statuses))
+
+    cond do
+      not_sent != [] ->
+        target = List.first(not_sent)
+        count = length(not_sent)
+        label_for_status = po_status_label(target.status)
+
+        title =
+          "#{count} purchase order#{if count == 1, do: "", else: "s"} not sent to the vendor yet."
+
+        detail =
+          "PO ##{target.id} is #{label_for_status}. Submit + sign it off so the vendor receives the order — production can't start until the goods are at least on order."
+
+        {title, detail, "Open PO ##{target.id}"}
+
+      sent != [] ->
+        count = length(sent)
+
+        title =
+          "Awaiting #{count} purchase order#{if count == 1, do: "", else: "s"} from the vendor."
+
+        detail =
+          "Next expected delivery: #{format_date(next_po.expected_delivery_date) || "no date set"}. Chase the vendor or update the expected date."
+
+        {title, detail, "Open next PO"}
+
+      true ->
+        # Defensive — shouldn't reach here since pos is non-empty.
+        {"Awaiting purchase orders.", nil, "Open next PO"}
+    end
+  end
+
+  defp po_status_label("draft"), do: "still in draft"
+  defp po_status_label("pending_approver"), do: "waiting on approver sign-off"
+  defp po_status_label("pending_director"), do: "waiting on director sign-off"
+  defp po_status_label("approved"), do: "approved but not marked ordered yet"
+  defp po_status_label("ordered"), do: "ordered"
+  defp po_status_label("partially_received"), do: "partially received"
+  defp po_status_label("received"), do: "fully received"
+  defp po_status_label("cancelled"), do: "cancelled"
+  defp po_status_label(other), do: other
 
   defp next_action_for(:in_production, _co, _line_states, mos, _signers) do
     active = Enum.reject(mos, &(&1.status == "completed"))
