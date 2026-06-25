@@ -36,16 +36,65 @@ defmodule Backend.OrderWizard do
 
   import Ecto.Query, warn: false
 
-  alias Backend.CustomerOrders.{CustomerOrder, CustomerOrderLine}
-  alias Backend.Production.{ManufacturingOrder, ManufacturingOrderBooking}
+  alias Backend.CustomerOrders.{CustomerOrder, CustomerOrderApproval, CustomerOrderLine}
+  alias Backend.Production
+  alias Backend.Production.{BOM, ManufacturingOrder}
   alias Backend.Purchasing.PurchaseOrder
   alias Backend.Repo
-  alias Backend.Stock.{Lot, Placement}
-  alias Backend.Warehouses.StorageCell
+  alias Backend.Stock.Lot
 
   @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
            :in_production, :closeout, :ready_to_dispatch]
   @total_phases length(@phases)
+
+  @doc """
+  Broadcast a "wizard refresh" hint to every subscriber of the given
+  CO's wizard channel. Safe to call from any context that flips state
+  the wizard projects over — the FE simply re-fetches its snapshot
+  when it receives the event.
+
+  Pass the CO directly when you have it; otherwise pass an
+  `manufacturing_order_id`, `purchase_order_id`, or `customer_order_id`
+  and we resolve.
+  """
+  def notify_co_changed(%CustomerOrder{uuid: uuid}) when not is_nil(uuid) do
+    BackendWeb.WizardChannel.broadcast_changed(uuid)
+  end
+
+  def notify_co_changed(co_id) when is_integer(co_id) do
+    case Repo.get(CustomerOrder, co_id) do
+      %{uuid: uuid} -> BackendWeb.WizardChannel.broadcast_changed(uuid)
+      _ -> :ok
+    end
+  end
+
+  def notify_co_changed(_), do: :ok
+
+  @doc """
+  Resolve from an MO id → the customer-order line → the CO, and
+  notify. Used by Production context functions that don't directly
+  hold a CO reference.
+  """
+  def notify_via_mo(%ManufacturingOrder{customer_order_line_id: nil}), do: :ok
+
+  def notify_via_mo(%ManufacturingOrder{customer_order_line_id: line_id}) do
+    line = Repo.get(CustomerOrderLine, line_id)
+
+    if line && line.customer_order_id do
+      notify_co_changed(line.customer_order_id)
+    end
+
+    :ok
+  end
+
+  def notify_via_mo(mo_id) when is_integer(mo_id) do
+    case Repo.get(ManufacturingOrder, mo_id) do
+      %ManufacturingOrder{} = mo -> notify_via_mo(mo)
+      _ -> :ok
+    end
+  end
+
+  def notify_via_mo(_), do: :ok
 
   @doc """
   Compact summary of every "active" CO in the company — anything
@@ -111,16 +160,36 @@ defmodule Backend.OrderWizard do
     all_mos = line_states |> Enum.flat_map(& &1.mos)
     blockers = compute_blockers(co, line_states, all_mos)
     phase = derive_phase(co, line_states, all_mos)
+    approvals = signers_for(co)
 
     %{
       customer_order: co,
       phase: phase_payload(phase),
-      next_action: next_action_for(phase, co, line_states, all_mos),
+      next_action:
+        next_action_for(phase, co, line_states, all_mos, approvals),
       blockers: blockers,
       lines: line_states,
       mos: all_mos,
       open_pos: open_pos_for(all_mos),
-      timeline: timeline(co, all_mos)
+      timeline: timeline(co, all_mos, approvals),
+      signers: approvals
+    }
+  end
+
+  # Pull the approval signature rows (approver + director) attached to
+  # the CO so the next-action card can name who signed each tier and
+  # who's still expected to sign.
+  defp signers_for(%CustomerOrder{id: cid}) do
+    rows =
+      from(a in CustomerOrderApproval,
+        where: a.customer_order_id == ^cid,
+        preload: [:signed_by]
+      )
+      |> Repo.all()
+
+    %{
+      approver: Enum.find(rows, &(&1.kind == "approver")),
+      director: Enum.find(rows, &(&1.kind == "director"))
     }
   end
 
@@ -180,7 +249,7 @@ defmodule Backend.OrderWizard do
 
   # ----- next_action derivation ----------------------------------
 
-  defp next_action_for(:cancelled, co, _, _) do
+  defp next_action_for(:cancelled, co, _, _, _) do
     %{
       code: "cancelled",
       title: "This order was cancelled.",
@@ -191,7 +260,7 @@ defmodule Backend.OrderWizard do
     }
   end
 
-  defp next_action_for(:setup, co, _line_states, _mos) do
+  defp next_action_for(:setup, co, _line_states, _mos, _signers) do
     cond do
       co.lines == [] ->
         %{
@@ -240,32 +309,43 @@ defmodule Backend.OrderWizard do
     end
   end
 
-  defp next_action_for(:approval, co, _line_states, _mos) do
+  defp next_action_for(:approval, co, _line_states, _mos, signers) do
+    submitter = co.submitted_by && co.submitted_by.name
+    creator = co.created_by && co.created_by.name
+
     case co.status do
       "pending_approver" ->
+        # Author of the CO can't sign as approver — segregation of
+        # duties. Surface the author so the worker knows *they* can't
+        # be the signer.
         %{
           code: "awaiting_approver",
           title: "Awaiting approver signature.",
           detail:
-            "Whoever isn't the order's author needs to sign as the approver tier. They open this CO and click Approve.",
+            author_note(submitter || creator, "approver") <>
+              " Anyone with the customer-orders.approve permission (other than the author) opens this project and clicks Approve.",
           primary_cta: %{
-            label: "Open order",
-            kind: "link",
-            href: "/sales/orders/#{co.uuid}"
+            label: "Approve as approver",
+            kind: "action",
+            action: "sign_approver"
           },
           secondary_ctas: []
         }
 
       "pending_director" ->
+        approver_name =
+          (signers.approver && signers.approver.signed_by &&
+             signers.approver.signed_by.name) || "the approver"
+
         %{
           code: "awaiting_director",
           title: "Awaiting director signature.",
           detail:
-            "Approver has signed. A director (different from the approver) needs to sign to finalise.",
+            "#{approver_name} signed as approver. A director (different from the approver, and not the author) signs to finalise the order.",
           primary_cta: %{
-            label: "Open order",
-            kind: "link",
-            href: "/sales/orders/#{co.uuid}"
+            label: "Approve as director",
+            kind: "action",
+            action: "sign_director"
           },
           secondary_ctas: []
         }
@@ -275,37 +355,81 @@ defmodule Backend.OrderWizard do
           code: "mark_confirmed",
           title: "Click Confirm to release for production.",
           detail:
-            "Both signatures done. Marking the order confirmed unlocks the wizard for MO creation, invoicing, and shipment.",
+            "Both signatures done. Confirming the order unlocks MO creation and locks the lines.",
           primary_cta: %{
             label: "Mark confirmed",
             kind: "action",
-            action: "confirm",
-            href: "/sales/orders/#{co.uuid}"
+            action: "confirm"
           },
           secondary_ctas: []
         }
     end
   end
 
-  defp next_action_for(:production_planning, co, line_states, _mos) do
+  defp author_note(nil, _), do: ""
+
+  defp author_note(name, "approver"),
+    do: "#{name} authored this order, so they can't sign as approver."
+
+  defp next_action_for(:production_planning, co, line_states, _mos, _signers) do
     missing = Enum.filter(line_states, &(&1.needs_mo? and is_nil(&1.primary_mo)))
 
     case missing do
       [first | _] ->
+        boms = first.available_boms || []
+
+        # Auto-pick path: exactly one active BOM → one-click create.
+        # Multiple BOMs → FE pops a small picker. Zero BOMs → we
+        # surface a hard blocker (operator needs to build a BOM first).
+        cta =
+          case boms do
+            [bom] ->
+              %{
+                label: "Create MO using BOM #{bom.code || bom.name}",
+                kind: "action",
+                action: "create_mo_for_line",
+                line_uuid: first.uuid,
+                bom_id: bom.id,
+                href: "/sales/orders/#{co.uuid}/wizard"
+              }
+
+            [_, _ | _] ->
+              %{
+                label: "Pick a BOM and create MO",
+                kind: "action",
+                action: "create_mo_for_line",
+                line_uuid: first.uuid,
+                href: "/sales/orders/#{co.uuid}/wizard"
+              }
+
+            [] ->
+              %{
+                label: "Build a BOM for #{first.item_name}",
+                kind: "link",
+                href: "/production/boms"
+              }
+          end
+
+        detail =
+          case boms do
+            [] ->
+              "No active BOM exists for #{first.item_name}. Build one before the MO can be created."
+
+            [bom] ->
+              line_summary(first) <>
+                ". This item has one active BOM (#{bom.name}); we'll use it automatically."
+
+            [_, _ | _] ->
+              line_summary(first) <>
+                ". This item has #{length(boms)} active BOMs — pick which one this MO should use."
+          end
+
         %{
           code: "create_mo",
           title:
             "Create the manufacturing order for #{first.item_name}.",
-          detail:
-            line_summary(first) <>
-              ". The wizard pre-fills the item + qty; you pick the BOM, routing, and dates.",
-          primary_cta: %{
-            label: "Create MO from this line",
-            kind: "action",
-            action: "create_mo_for_line",
-            line_uuid: first.uuid,
-            href: "/sales/orders/#{co.uuid}/wizard"
-          },
+          detail: detail,
+          primary_cta: cta,
           secondary_ctas:
             for line <- Enum.drop(missing, 1) do
               %{
@@ -328,7 +452,48 @@ defmodule Backend.OrderWizard do
     end
   end
 
-  defp next_action_for(:awaiting_ingredients, co, _line_states, mos) do
+  defp next_action_for(:awaiting_ingredients, co, _line_states, mos, _signers) do
+    # If any MO is still in draft/prepared/approved without
+    # purchasing_requested_at, surface that BEFORE chasing POs —
+    # purchases can't be ordered until that flag is set.
+    needs_request =
+      Enum.filter(mos, fn mo ->
+        mo.has_placeholder_bookings? and
+          is_nil(mo.purchasing_requested_at) and
+          mo.status not in ["scheduled", "in_progress", "completed"]
+      end)
+
+    if needs_request != [] do
+      target = List.first(needs_request)
+
+      %{
+        code: "request_purchases",
+        title:
+          "Click Request purchases on MO #{target.code}.",
+        detail:
+          "This MO depends on ingredients we don't have yet. Until you request purchases, the shortages page won't pick it up and procurement can't act.",
+        primary_cta: %{
+          label: "Request purchases for MO #{target.code}",
+          kind: "action",
+          action: "request_purchases",
+          mo_uuid: target.uuid
+        },
+        secondary_ctas:
+          for mo <- Enum.drop(needs_request, 1) do
+            %{
+              label: "Request purchases for MO #{mo.code}",
+              kind: "action",
+              action: "request_purchases",
+              mo_uuid: mo.uuid
+            }
+          end
+      }
+    else
+      chase_open_pos(co, mos)
+    end
+  end
+
+  defp chase_open_pos(co, mos) do
     blocked_mos = Enum.filter(mos, & &1.has_placeholder_bookings?)
     po_uuids = blocked_mos |> Enum.flat_map(& &1.placeholder_po_uuids) |> Enum.uniq()
 
@@ -388,22 +553,13 @@ defmodule Backend.OrderWizard do
     end
   end
 
-  defp next_action_for(:in_production, _co, _line_states, mos) do
-    # Pick the most-blocked / earliest MO to surface as the action.
+  defp next_action_for(:in_production, _co, _line_states, mos, _signers) do
     active = Enum.reject(mos, &(&1.status == "completed"))
 
     candidate =
       Enum.min_by(active, &mo_priority/1, fn -> List.first(active) end)
 
-    title =
-      case candidate.status do
-        "draft" -> "Prepare MO #{candidate.code}."
-        "prepared" -> "Approve MO #{candidate.code} (scientist signature)."
-        "approved" -> "Schedule MO #{candidate.code} on the production calendar."
-        "scheduled" -> "Start MO #{candidate.code} on the floor."
-        "in_progress" -> "MO #{candidate.code} is running — finish it on the floor."
-        _ -> "Move MO #{candidate.code} forward."
-      end
+    {title, cta} = production_step_cta(candidate)
 
     %{
       code: "advance_mo",
@@ -411,18 +567,11 @@ defmodule Backend.OrderWizard do
       detail:
         candidate.broken_booking_count > 0 &&
           "Heads up: #{candidate.broken_booking_count} broken booking(s). Fix before running.",
-      primary_cta: %{
-        label: "Open MO #{candidate.code}",
-        kind: "link",
-        href: "/production/manufacturing-orders/#{candidate.uuid}"
-      },
+      primary_cta: cta,
       secondary_ctas:
         for mo <- Enum.reject(active, &(&1.id == candidate.id)) do
-          %{
-            label: "Open MO #{mo.code}",
-            kind: "link",
-            href: "/production/manufacturing-orders/#{mo.uuid}"
-          }
+          {_title, cta} = production_step_cta(mo)
+          Map.put(cta, :label, "MO #{mo.code} — #{cta.label}")
         end,
       scheduler_link: %{
         label: "Open scheduler",
@@ -431,33 +580,96 @@ defmodule Backend.OrderWizard do
     }
   end
 
-  defp next_action_for(:closeout, _co, _line_states, mos) do
+  # Each MO status maps to a specific action the operator needs to
+  # take. The wizard's primary CTA fires the right endpoint inline
+  # where possible (transitions), and links out only when the
+  # operation needs a richer UI (the scheduler grid, mobile floor
+  # actions).
+  defp production_step_cta(mo) do
+    case mo.status do
+      "draft" ->
+        {"Prepare MO #{mo.code}.",
+         %{
+           label: "Prepare",
+           kind: "action",
+           action: "prepare_mo",
+           mo_uuid: mo.uuid
+         }}
+
+      "prepared" ->
+        {"Approve MO #{mo.code} (second signature).",
+         %{
+           label: "Approve",
+           kind: "action",
+           action: "approve_mo",
+           mo_uuid: mo.uuid
+         }}
+
+      "approved" ->
+        {"Schedule MO #{mo.code} on the calendar.",
+         %{
+           label: "Open scheduler",
+           kind: "link",
+           href: "/production/schedule?mo=#{mo.uuid}"
+         }}
+
+      "scheduled" ->
+        {"Start MO #{mo.code} on the floor.",
+         %{
+           label: "Send to device",
+           kind: "send_to_device",
+           href: "/m/preflight/#{mo.uuid}",
+           mo_uuid: mo.uuid
+         }}
+
+      "in_progress" ->
+        {"MO #{mo.code} is running — finish on the floor.",
+         %{
+           label: "Send to device",
+           kind: "send_to_device",
+           href: "/m/run/#{mo.uuid}",
+           mo_uuid: mo.uuid
+         }}
+
+      _ ->
+        {"Open MO #{mo.code}.",
+         %{
+           label: "Open MO",
+           kind: "link",
+           href: "/production/manufacturing-orders/#{mo.uuid}"
+         }}
+    end
+  end
+
+  defp next_action_for(:closeout, _co, _line_states, mos, _signers) do
     needs_closeout = Enum.filter(mos, & &1.has_output_at_production_feed?)
     target = List.first(needs_closeout)
 
     %{
       code: "run_closeout",
       title:
-        "Run closeout for MO #{target.code} — move output back to warehouse.",
+        "Closeout MO #{target.code} — move output back to warehouse.",
       detail:
         "Production is finished but the output lot is still at the production-feed cell. The warehouse team scans it back to a storage cell on mobile.",
       primary_cta: %{
-        label: "Open mobile closeout",
-        kind: "link",
-        href: "/m/closeout/#{target.uuid}"
+        label: "Send to device",
+        kind: "send_to_device",
+        href: "/m/closeout/#{target.uuid}",
+        mo_uuid: target.uuid
       },
       secondary_ctas:
         for mo <- Enum.drop(needs_closeout, 1) do
           %{
             label: "Closeout MO #{mo.code}",
-            kind: "link",
-            href: "/m/closeout/#{mo.uuid}"
+            kind: "send_to_device",
+            href: "/m/closeout/#{mo.uuid}",
+            mo_uuid: mo.uuid
           }
         end
     }
   end
 
-  defp next_action_for(:ready_to_dispatch, co, _, _) do
+  defp next_action_for(:ready_to_dispatch, co, _, _, _) do
     %{
       code: "ready_to_dispatch",
       title: "All MOs complete and stock is back in the warehouse.",
@@ -474,7 +686,7 @@ defmodule Backend.OrderWizard do
 
   # ----- line state ----------------------------------------------
 
-  defp line_state(_co, %CustomerOrderLine{} = line) do
+  defp line_state(%CustomerOrder{company_id: company_id}, %CustomerOrderLine{} = line) do
     mos =
       from(m in ManufacturingOrder,
         where: m.customer_order_line_id == ^line.id,
@@ -487,6 +699,17 @@ defmodule Backend.OrderWizard do
     primary_mo = List.first(mos)
     needs_mo? = needs_mo_for_line?(line)
 
+    # Surface the active BOMs for this line's item so the FE can show
+    # a picker when there's more than one, or auto-pick when there's
+    # exactly one. Only queried when no MO exists yet — no point if
+    # the BOM is already committed.
+    available_boms =
+      if needs_mo? and is_nil(primary_mo) and line.item_id do
+        active_boms_for_item(company_id, line.item_id)
+      else
+        []
+      end
+
     %{
       uuid: line.uuid,
       id: line.id,
@@ -495,8 +718,30 @@ defmodule Backend.OrderWizard do
       qty_ordered: line.qty_ordered,
       mos: mos,
       primary_mo: primary_mo,
-      needs_mo?: needs_mo?
+      needs_mo?: needs_mo?,
+      available_boms: available_boms
     }
+  end
+
+  defp active_boms_for_item(company_id, item_id) do
+    Production.list_for_item(company_id, item_id)
+    |> Enum.filter(& &1.is_active)
+    |> Enum.map(fn bom ->
+      %{
+        id: bom.id,
+        uuid: bom.uuid,
+        name: bom.name,
+        code: bom_code(bom),
+        is_primary: bom.is_primary
+      }
+    end)
+  end
+
+  defp bom_code(%BOM{id: id}) do
+    case Backend.Companies.current() do
+      nil -> nil
+      company -> Backend.Numbering.render(id, company, "bom")
+    end
   end
 
   defp needs_mo_for_line?(%CustomerOrderLine{item: nil}), do: false
@@ -661,29 +906,39 @@ defmodule Backend.OrderWizard do
 
   # ----- timeline ------------------------------------------------
 
-  defp timeline(co, mos) do
+  defp timeline(co, _mos, signers) do
+    approver_event =
+      signers.approver &&
+        %{
+          at: signers.approver.signed_at,
+          label:
+            "Approver: #{(signers.approver.signed_by && signers.approver.signed_by.name) || "—"}",
+          scope: "co"
+        }
+
+    director_event =
+      signers.director &&
+        %{
+          at: signers.director.signed_at,
+          label:
+            "Director: #{(signers.director.signed_by && signers.director.signed_by.name) || "—"}",
+          scope: "co"
+        }
+
     co_events =
       [
         co.inserted_at && %{at: co.inserted_at, label: "Order created", scope: "co"},
-        co.submitted_at && %{at: co.submitted_at, label: "Submitted for approval", scope: "co"},
-        co.confirmed_at && %{at: co.confirmed_at, label: "Confirmed — released for production", scope: "co"},
+        co.submitted_at &&
+          %{at: co.submitted_at, label: "Submitted for approval", scope: "co"},
+        approver_event,
+        director_event,
+        co.confirmed_at &&
+          %{at: co.confirmed_at, label: "Confirmed — released for production", scope: "co"},
         co.cancelled_at && %{at: co.cancelled_at, label: "Cancelled", scope: "co"}
       ]
       |> Enum.reject(&is_nil/1)
 
-    mo_events =
-      Enum.flat_map(mos, fn mo ->
-        [
-          %{
-            at: nil,
-            label: "MO #{mo.code} created",
-            scope: "mo",
-            mo_uuid: mo.uuid
-          }
-        ]
-      end)
-
-    (co_events ++ mo_events)
+    co_events
     |> Enum.reject(&is_nil(&1.at))
     |> Enum.sort_by(& &1.at, {:asc, DateTime})
   end

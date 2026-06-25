@@ -503,6 +503,10 @@ defmodule Backend.CustomerOrders do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+    |> tap(fn
+      {:ok, updated} -> Backend.OrderWizard.notify_co_changed(updated)
+      _ -> :ok
+    end)
   end
 
   defp ensure_different_signer(co, %User{} = actor) do
@@ -555,13 +559,22 @@ defmodule Backend.CustomerOrders do
   end
 
   defp transition(actor, %CustomerOrder{} = co, attrs) do
-    Repo.transaction(fn ->
-      case transition_db(actor, co, attrs) do
-        {:ok, updated} -> preload_co(updated)
-        {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
+    result =
+      Repo.transaction(fn ->
+        case transition_db(actor, co, attrs) do
+          {:ok, updated} -> preload_co(updated)
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+
+    # Broadcast outside the transaction so subscribers see the
+    # committed state, not a phantom mid-transaction view.
+    with {:ok, updated} <- result do
+      Backend.OrderWizard.notify_co_changed(updated)
+    end
+
+    result
   end
 
   defp transition_db(actor, %CustomerOrder{} = co, attrs) do

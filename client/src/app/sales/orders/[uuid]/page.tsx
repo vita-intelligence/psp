@@ -13,7 +13,6 @@ import { CommentThread } from "@/components/comments/comment-thread";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { getCustomerOrder } from "@/lib/customer-orders/server";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { getOrderWizard } from "@/lib/order-wizard/server";
 import { listActiveWarehousesForMobile } from "@/lib/warehouses/server";
 import type { CustomerOrderStatus } from "@/lib/types";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
@@ -21,7 +20,6 @@ import { SalesSubnav } from "../../sales-subnav";
 import { COHeaderCard } from "./co-header-card";
 import { COLinesCard } from "./co-lines-card";
 import { COWorkflowCard } from "./co-workflow-card";
-import { CoTabs } from "./co-tabs";
 
 export const metadata = { title: "Customer order · Sales · PSP" };
 
@@ -46,6 +44,16 @@ const STATUS_TONE: Record<
   cancelled: "destructive",
 };
 
+/**
+ * Customer-order admin page — the editable / inspectable side of a
+ * CO. The lifecycle drive surface (phase progress, do-this-next CTA,
+ * MO/PO orchestration) lives on `/projects/<uuid>` instead. This
+ * page stays focused on the order's content: header fields, lines,
+ * approvals, files, comments, audit.
+ *
+ * Workers on the floor land on the project board; back-office staff
+ * editing the order fields land here.
+ */
 export default async function CustomerOrderDetailPage({
   params,
 }: {
@@ -57,12 +65,11 @@ export default async function CustomerOrderDetailPage({
   }
 
   const { uuid } = await params;
-  const [co, company, warehouses, initialComments, wizard] = await Promise.all([
+  const [co, company, warehouses, initialComments] = await Promise.all([
     getCustomerOrder(uuid),
     getCompanyDefaults(),
     listActiveWarehousesForMobile(),
     listCommentsForEntity("customer_order", uuid),
-    getOrderWizard(uuid),
   ]);
   if (!co || !company) notFound();
 
@@ -77,56 +84,6 @@ export default async function CustomerOrderDetailPage({
 
   const isDraft = co.status === "draft";
 
-  // Drafts spend most of their time being built — the wizard's
-  // "do this next" view doesn't have much to project yet, so default
-  // to Detail. Every post-submission state defaults to Wizard so the
-  // operator lands on the action they need to take.
-  const defaultTab: "wizard" | "detail" = isDraft ? "detail" : "wizard";
-
-  // The existing detail content — rendered server-side and handed to
-  // CoTabs as a React node. Keeping it server-rendered preserves all
-  // the realtime collab wiring on the inner forms.
-  const detailContent = (
-    <div className="space-y-6">
-      <COWorkflowCard
-        co={co}
-        currentUserId={user.id}
-        canEdit={canEdit}
-        canSubmit={canSubmit}
-        canApprove={canApprove}
-        canDirectorApprove={canDirectorApprove}
-        canCreateInvoice={canCreateInvoice}
-        prefs={company}
-      />
-
-      <EditModeToggle canEdit={canEdit && isDraft}>
-        <COHeaderCard
-          co={co}
-          canEdit={canEdit && isDraft}
-          warehouses={warehouses}
-        />
-      </EditModeToggle>
-
-      <COLinesCard co={co} canEdit={canEdit && isDraft} prefs={company} />
-
-      <CommentThread
-        entityType="customer_order"
-        entityUuid={co.uuid}
-        initial={initialComments ?? []}
-        canComment={canEdit}
-        currentUserId={user.id}
-      />
-
-      <AuditMetaSection
-        inserted_at={co.inserted_at}
-        updated_at={co.updated_at}
-        created_by={co.created_by ?? null}
-        updated_by={co.updated_by ?? null}
-      />
-      <AuditHistoryCard entityType="customer_order" entityId={co.id} />
-    </div>
-  );
-
   return (
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />
@@ -135,13 +92,20 @@ export default async function CustomerOrderDetailPage({
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-5xl space-y-6">
-          <div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
               <Link href="/sales/orders">
                 <ChevronLeft className="mr-1 size-4" />
                 Back to orders
               </Link>
             </Button>
+            {!isDraft && (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/projects/${co.uuid}`}>
+                  Open Project Board
+                </Link>
+              </Button>
+            )}
           </div>
 
           <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
@@ -166,13 +130,42 @@ export default async function CustomerOrderDetailPage({
             </div>
           </header>
 
-          <CoTabs
-            coUuid={co.uuid}
-            defaultTab={defaultTab}
-            wizard={wizard}
+          <COWorkflowCard
+            co={co}
+            currentUserId={user.id}
+            canEdit={canEdit}
+            canSubmit={canSubmit}
+            canApprove={canApprove}
+            canDirectorApprove={canDirectorApprove}
+            canCreateInvoice={canCreateInvoice}
             prefs={company}
-            detail={detailContent}
           />
+
+          <EditModeToggle canEdit={canEdit && isDraft}>
+            <COHeaderCard
+              co={co}
+              canEdit={canEdit && isDraft}
+              warehouses={warehouses}
+            />
+          </EditModeToggle>
+
+          <COLinesCard co={co} canEdit={canEdit && isDraft} prefs={company} />
+
+          <CommentThread
+            entityType="customer_order"
+            entityUuid={co.uuid}
+            initial={initialComments ?? []}
+            canComment={canEdit}
+            currentUserId={user.id}
+          />
+
+          <AuditMetaSection
+            inserted_at={co.inserted_at}
+            updated_at={co.updated_at}
+            created_by={co.created_by ?? null}
+            updated_by={co.updated_by ?? null}
+          />
+          <AuditHistoryCard entityType="customer_order" entityId={co.id} />
         </div>
       </main>
     </div>

@@ -2676,16 +2676,29 @@ export interface OrderWizardPhase {
   is_terminal: boolean;
 }
 
-export type OrderWizardCtaKind = "action" | "link" | "scroll_to";
+export type OrderWizardCtaKind =
+  | "action"
+  | "link"
+  | "scroll_to"
+  | "send_to_device";
 
 export interface OrderWizardCta {
   label: string;
   kind: OrderWizardCtaKind;
-  /** kind=action: "submit" | "confirm" | "create_mo_for_line" | ... */
+  /** kind=action: "submit" | "sign_approver" | "sign_director"
+   *   | "confirm" | "create_mo_for_line" | "request_purchases"
+   *   | "prepare_mo" | "approve_mo" */
   action?: string;
   /** kind=action + action="create_mo_for_line" — which line to spawn. */
   line_uuid?: string;
-  /** kind=link — destination href. */
+  /** kind=action + action="create_mo_for_line" — optional BOM id when the
+   *  line has more than one BOM available (BE auto-picks if omitted). */
+  bom_id?: number;
+  /** kind=action with an MO-scoped action (request_purchases / prepare_mo
+   *  / approve_mo) — the MO this CTA targets. Also surfaced on
+   *  send_to_device CTAs so the QR modal can attribute the deep-link. */
+  mo_uuid?: string;
+  /** kind=link / send_to_device — destination href. */
   href?: string;
   /** kind=scroll_to — CSS selector to scroll into view. */
   target?: string;
@@ -2746,6 +2759,14 @@ export interface OrderWizardMo {
   output_lots: OrderWizardMoOutputLot[];
 }
 
+export interface OrderWizardAvailableBom {
+  id: number;
+  uuid: string;
+  name: string;
+  code: string | null;
+  is_primary: boolean;
+}
+
 export interface OrderWizardLine {
   uuid: string;
   id: number;
@@ -2755,15 +2776,34 @@ export interface OrderWizardLine {
   needs_mo: boolean;
   primary_mo: OrderWizardMo | null;
   mos: OrderWizardMo[];
+  /** BOMs the operator can choose from when spawning an MO for this
+   *  line. Empty when the item has no published BOM (the row surfaces
+   *  a blocker instead of a picker). */
+  available_boms: OrderWizardAvailableBom[];
 }
 
 export interface OrderWizardOpenPo {
   id: number;
   uuid: string;
+  code?: string | null;
   status: string;
   expected_delivery_date: string | null;
   grand_total: string;
   currency_code: string;
+  vendor_name?: string | null;
+}
+
+export interface OrderWizardSigner {
+  /** "approver" | "director" */
+  kind: string;
+  signed_at: string | null;
+  signed_by: { name: string } | null;
+  notes: string | null;
+}
+
+export interface OrderWizardSigners {
+  approver: OrderWizardSigner | null;
+  director: OrderWizardSigner | null;
 }
 
 export interface OrderWizardTimelineEntry {
@@ -2771,6 +2811,7 @@ export interface OrderWizardTimelineEntry {
   label: string;
   scope: "co" | "mo";
   mo_uuid?: string;
+  actor?: string | null;
 }
 
 export interface OrderWizardSnapshot {
@@ -2779,8 +2820,14 @@ export interface OrderWizardSnapshot {
   next_action: OrderWizardNextAction | null;
   blockers: OrderWizardBlocker[];
   lines: OrderWizardLine[];
+  /** Flattened MOs across every line — useful for cross-line summary
+   *  counters and the MO modal lookups (uuid → MO). */
+  mos?: OrderWizardMo[];
   open_pos: OrderWizardOpenPo[];
   timeline: OrderWizardTimelineEntry[];
+  /** Approval signer rollup — fills as the CO walks through the
+   *  two-tier approval gate. */
+  signers?: OrderWizardSigners;
 }
 
 // ---------------------------------------------------------------

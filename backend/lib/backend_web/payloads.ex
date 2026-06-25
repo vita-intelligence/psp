@@ -1080,7 +1080,28 @@ defmodule BackendWeb.Payloads do
       blockers: snapshot.blockers,
       lines: Enum.map(snapshot.lines, &wizard_line/1),
       open_pos: Enum.map(snapshot.open_pos, &wizard_open_po/1),
-      timeline: snapshot.timeline
+      timeline: snapshot.timeline,
+      signers: %{
+        approver: wizard_signer(snapshot[:signers] && snapshot.signers[:approver]),
+        director: wizard_signer(snapshot[:signers] && snapshot.signers[:director])
+      }
+    }
+  end
+
+  defp wizard_signer(nil), do: nil
+
+  defp wizard_signer(approval) do
+    %{
+      kind: approval.kind,
+      signed_at: approval.signed_at,
+      signed_by:
+        approval.signed_by &&
+          %{
+            id: approval.signed_by.id,
+            uuid: approval.signed_by.uuid,
+            name: approval.signed_by.name
+          },
+      notes: approval.notes
     }
   end
 
@@ -1093,7 +1114,8 @@ defmodule BackendWeb.Payloads do
       qty_ordered: decimal_to_string(line.qty_ordered),
       needs_mo: line.needs_mo?,
       primary_mo: line.primary_mo && wizard_mo(line.primary_mo),
-      mos: Enum.map(line.mos, &wizard_mo/1)
+      mos: Enum.map(line.mos, &wizard_mo/1),
+      available_boms: Map.get(line, :available_boms, [])
     }
   end
 

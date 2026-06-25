@@ -18,15 +18,32 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listProjects } from "@/lib/projects/server";
-import { getCompanyDefaults } from "@/lib/company/server";
 import { Badge } from "@/components/ui/badge-mini";
+import { cn } from "@/lib/utils";
 import type {
   OrderWizardPhaseKey,
   ProjectSummary,
 } from "@/lib/types";
-import { formatCompanyDate } from "@/lib/format/company";
 
-export const metadata = { title: "Projects · PSP" };
+export const metadata = { title: "Production pipeline · PSP" };
+
+// ============================================================================
+// Phase metadata — single source of truth for the kanban column chrome.
+// ============================================================================
+//
+// Columns always render in this order, regardless of whether they have any
+// rows. An empty column still tells the operator the pipeline shape so a
+// glance from across the room shows where today's bottleneck sits.
+
+const PHASE_COLUMNS: ReadonlyArray<OrderWizardPhaseKey> = [
+  "setup",
+  "approval",
+  "production_planning",
+  "awaiting_ingredients",
+  "in_production",
+  "closeout",
+  "ready_to_dispatch",
+];
 
 const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
   setup: FileText,
@@ -39,7 +56,42 @@ const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
   cancelled: Ban,
 };
 
-const PHASE_TONE: Record<
+const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
+  setup: "Order setup",
+  approval: "Awaiting approval",
+  production_planning: "Need MO created",
+  awaiting_ingredients: "Awaiting ingredients",
+  in_production: "In production",
+  closeout: "Awaiting closeout",
+  ready_to_dispatch: "Ready to dispatch",
+  cancelled: "Cancelled",
+};
+
+/**
+ * Accent stripe under each column header — mimics the colour-coded R&D
+ * pipeline reference the team is anchoring the redesign on.
+ *
+ * Tones map to the phase's "temperature":
+ *   - setup           → muted grey  (nothing's happened yet)
+ *   - approval        → sky         (admin signoff in flight)
+ *   - planning        → sky         (admin, but moving towards production)
+ *   - awaiting ingr.  → amber       (procurement bottleneck)
+ *   - in production   → amber       (floor work in flight)
+ *   - closeout        → amber       (QC + warehouse handoff)
+ *   - ready to ship   → emerald     (done, awaiting customer)
+ */
+const PHASE_ACCENT: Record<OrderWizardPhaseKey, string> = {
+  setup: "bg-slate-400/70 dark:bg-slate-500/70",
+  approval: "bg-sky-500/80 dark:bg-sky-400/80",
+  production_planning: "bg-sky-500/80 dark:bg-sky-400/80",
+  awaiting_ingredients: "bg-amber-500/80 dark:bg-amber-400/80",
+  in_production: "bg-amber-500/80 dark:bg-amber-400/80",
+  closeout: "bg-amber-500/80 dark:bg-amber-400/80",
+  ready_to_dispatch: "bg-emerald-500/80 dark:bg-emerald-400/80",
+  cancelled: "bg-destructive/70",
+};
+
+const PHASE_COUNT_TONE: Record<
   OrderWizardPhaseKey,
   "muted" | "sky" | "amber" | "emerald" | "destructive"
 > = {
@@ -59,79 +111,43 @@ export default async function ProjectsPage() {
     redirect("/settings/profile");
   }
 
-  const [projects, company] = await Promise.all([
-    listProjects(),
-    getCompanyDefaults(),
-  ]);
-
-  const total = projects?.length ?? 0;
-  const grouped = groupByPhase(projects ?? []);
-  const phaseOrder: OrderWizardPhaseKey[] = [
-    "setup",
-    "approval",
-    "production_planning",
-    "awaiting_ingredients",
-    "in_production",
-    "closeout",
-    "ready_to_dispatch",
-  ];
+  const projects = await listProjects();
+  const rows = projects ?? [];
+  const total = rows.length;
+  const grouped = groupByPhase(rows);
 
   return (
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />
       <PresenceMount />
 
-      <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-7xl space-y-6">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <ClipboardList className="size-7 text-brand sm:size-8" />
-              Projects
-            </h1>
-            <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
-              Every customer order currently in flight, sorted by where
-              it sits in the lifecycle. Click a card to open the wizard
-              for that order — it tells you exactly what to do next.
-              {total > 0 && (
-                <>
-                  {" "}
-                  <strong className="text-foreground">{total}</strong>{" "}
-                  active project{total === 1 ? "" : "s"}.
-                </>
-              )}
-            </p>
+      <main className="flex-1 px-4 py-8 sm:px-8 sm:py-10">
+        <div className="mx-auto max-w-[1600px] space-y-6">
+          {/* ---------- Header ---------- */}
+          <header className="flex flex-wrap items-end justify-between gap-4">
+            <div className="space-y-1.5">
+              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
+                <ClipboardList className="size-6 text-brand sm:size-7" />
+                Production pipeline
+              </h1>
+              <p className="max-w-3xl text-sm text-muted-foreground">
+                Every customer order in flight, by phase. Click a card to
+                open the project control board — it tells you what to do
+                next without leaving the page.
+              </p>
+            </div>
+            {total > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-xs font-medium">
+                <span className="size-1.5 rounded-full bg-emerald-500" />
+                {total} active project{total === 1 ? "" : "s"}
+              </span>
+            )}
           </header>
 
           {total === 0 ? (
             <EmptyState />
           ) : (
-            <div className="space-y-8">
-              {phaseOrder.map((phaseKey) => {
-                const rows = grouped[phaseKey] ?? [];
-                if (rows.length === 0) return null;
-
-                const Icon = PHASE_ICON[phaseKey];
-
-                return (
-                  <section key={phaseKey} className="space-y-3">
-                    <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                      <Icon className="size-3.5" />
-                      {phaseLabel(phaseKey)}
-                      <Badge tone={PHASE_TONE[phaseKey]}>{rows.length}</Badge>
-                    </h2>
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {rows.map((p) => (
-                        <ProjectCard
-                          key={p.customer_order.id}
-                          project={p}
-                          prefs={company}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                );
-              })}
-            </div>
+            <KanbanBoard grouped={grouped} />
           )}
         </div>
       </main>
@@ -139,15 +155,19 @@ export default async function ProjectsPage() {
   );
 }
 
+// ============================================================================
+// Empty state — nothing yet in flight.
+// ============================================================================
+
 function EmptyState() {
   return (
-    <div className="rounded-lg border border-dashed border-border/60 bg-card/40 px-6 py-16 text-center">
+    <div className="rounded-xl border border-dashed border-border/60 bg-card/40 px-6 py-16 text-center">
       <ClipboardList className="mx-auto size-10 text-muted-foreground" />
       <h2 className="mt-3 text-sm font-semibold">No active projects</h2>
       <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-        Once a customer order is submitted for approval, it shows up
-        here with its current phase + the next action you need to
-        take. Drafts don&rsquo;t appear until they&rsquo;re submitted.
+        Once a customer order is submitted for approval, it shows up here
+        with its current phase + the next action you need to take. Drafts
+        don&rsquo;t appear until they&rsquo;re submitted.
       </p>
       <Link
         href="/sales/orders/new"
@@ -160,94 +180,241 @@ function EmptyState() {
   );
 }
 
-function ProjectCard({
-  project,
-  prefs,
+// ============================================================================
+// Kanban board — 7 columns, horizontal scroll on narrow viewports.
+// ============================================================================
+
+function KanbanBoard({
+  grouped,
 }: {
-  project: ProjectSummary;
-  prefs: Awaited<ReturnType<typeof getCompanyDefaults>>;
+  grouped: Partial<Record<OrderWizardPhaseKey, ProjectSummary[]>>;
 }) {
+  // Outer wrapper takes the horizontal scroll; the inner row is the
+  // actual flex container. Min-width on each column keeps them from
+  // collapsing into unreadable widths on wide-but-busy viewports.
+  return (
+    <div className="-mx-2 overflow-x-auto pb-4 sm:-mx-4">
+      <div className="flex min-w-min gap-3 px-2 sm:gap-4 sm:px-4">
+        {PHASE_COLUMNS.map((phaseKey) => {
+          const rows = grouped[phaseKey] ?? [];
+          return (
+            <KanbanColumn key={phaseKey} phaseKey={phaseKey} rows={rows} />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function KanbanColumn({
+  phaseKey,
+  rows,
+}: {
+  phaseKey: OrderWizardPhaseKey;
+  rows: ProjectSummary[];
+}) {
+  const Icon = PHASE_ICON[phaseKey];
+  const accent = PHASE_ACCENT[phaseKey];
+  const countTone = PHASE_COUNT_TONE[phaseKey];
+
+  return (
+    <section
+      aria-label={PHASE_LABEL[phaseKey]}
+      className="flex w-[280px] shrink-0 flex-col rounded-xl border border-border/60 bg-muted/20 sm:w-[300px]"
+    >
+      {/* ---------- Column header ---------- */}
+      <header className="space-y-2 px-3 pt-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+            <h2 className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {PHASE_LABEL[phaseKey]}
+            </h2>
+          </div>
+          <Badge tone={countTone} className="shrink-0">
+            {rows.length}
+          </Badge>
+        </div>
+        <div className={cn("h-1 rounded-full", accent)} />
+      </header>
+
+      {/* ---------- Cards ---------- */}
+      <div className="flex-1 space-y-2 p-3">
+        {rows.length === 0 ? (
+          <div className="flex h-16 items-center justify-center text-xs text-muted-foreground/50">
+            —
+          </div>
+        ) : (
+          rows.map((row) => (
+            <ProjectCard key={row.customer_order.id} project={row} />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ============================================================================
+// Project card — dense kanban tile.
+// ============================================================================
+
+function ProjectCard({ project }: { project: ProjectSummary }) {
   const co = project.customer_order;
-  const phase = project.phase;
-  const Icon = PHASE_ICON[phase.key];
-  const tone = PHASE_TONE[phase.key];
+  const customerName = co.customer?.name ?? "—";
 
   return (
     <Link
-      href={`/sales/orders/${co.uuid}?tab=wizard`}
-      className="group flex flex-col gap-3 rounded-lg border border-border/60 bg-card p-4 shadow-sm transition hover:border-brand/60 hover:shadow-md"
+      href={`/projects/${co.uuid}`}
+      className="group block rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-brand/60 hover:shadow-md"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <p className="truncate text-sm font-semibold tracking-tight">
-            {co.customer?.name ?? "—"}
-          </p>
-          <p className="truncate text-[11px] text-muted-foreground">
-            <span className="font-mono">{co.code ?? `CO #${co.id}`}</span>
-            {co.expected_ship_date && prefs && (
-              <>
-                {" "}
-                · ship{" "}
-                {formatCompanyDate(co.expected_ship_date, prefs)}
-              </>
-            )}
-          </p>
-        </div>
-        <Badge tone={tone} className="shrink-0">
-          <Icon className="mr-1 inline size-3" />
-          {phase.label}
-        </Badge>
-      </div>
+      {/* CO code — top, monospace, small */}
+      <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+        {co.code ?? `CO #${co.id}`}
+      </p>
 
-      <div className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs">
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          Do this next
+      {/* Customer name */}
+      <h3 className="mt-0.5 truncate text-sm font-semibold tracking-tight">
+        {customerName}
+      </h3>
+
+      {/* Next action */}
+      {project.next_action_title && (
+        <p
+          className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground"
+          title={project.next_action_title}
+        >
+          {project.next_action_title}
         </p>
-        <p className="mt-0.5 font-medium leading-snug">
-          {project.next_action_title || "—"}
-        </p>
-      </div>
+      )}
 
-      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-        {project.blocker_count > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 font-medium text-destructive">
-            <AlertTriangle className="size-3" />
-            {project.blocker_count} blocker
-            {project.blocker_count === 1 ? "" : "s"}
-          </span>
-        )}
-        {project.lines_awaiting_mo > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-sky-50 px-2 py-0.5 font-medium text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
-            {project.lines_awaiting_mo} line
-            {project.lines_awaiting_mo === 1 ? "" : "s"} need MO
-          </span>
-        )}
-        {project.mos_with_placeholders > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-            {project.mos_with_placeholders} MO
-            {project.mos_with_placeholders === 1 ? "" : "s"} on POs
-          </span>
-        )}
-        {project.mos_in_production > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-            {project.mos_in_production} MO
-            {project.mos_in_production === 1 ? "" : "s"} in production
-          </span>
-        )}
-        {project.mos_awaiting_closeout > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-            {project.mos_awaiting_closeout} MO
-            {project.mos_awaiting_closeout === 1 ? "" : "s"} need closeout
-          </span>
-        )}
-      </div>
-
-      <span className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-brand opacity-0 transition group-hover:opacity-100">
-        Open wizard <ArrowRight className="size-3" />
-      </span>
+      {/* Chips — only render when > 0 */}
+      <CardChips project={project} />
     </Link>
   );
 }
+
+function CardChips({ project }: { project: ProjectSummary }) {
+  const chips: React.ReactNode[] = [];
+
+  if (project.blocker_count > 0) {
+    chips.push(
+      <Chip
+        key="blockers"
+        tone="destructive"
+        icon={<AlertTriangle className="size-2.5" />}
+        title={`${project.blocker_count} blocker${
+          project.blocker_count === 1 ? "" : "s"
+        }`}
+      >
+        {project.blocker_count} blocker
+        {project.blocker_count === 1 ? "" : "s"}
+      </Chip>,
+    );
+  }
+
+  if (project.lines_awaiting_mo > 0) {
+    chips.push(
+      <Chip
+        key="awaiting_mo"
+        tone="sky"
+        title={`${project.lines_awaiting_mo} line${
+          project.lines_awaiting_mo === 1 ? "" : "s"
+        } waiting for MO`}
+      >
+        {project.lines_awaiting_mo} need MO
+      </Chip>,
+    );
+  }
+
+  if (project.mos_with_placeholders > 0) {
+    chips.push(
+      <Chip
+        key="placeholders"
+        tone="amber"
+        title={`${project.mos_with_placeholders} MO${
+          project.mos_with_placeholders === 1 ? "" : "s"
+        } depending on POs`}
+      >
+        {project.mos_with_placeholders} on PO
+      </Chip>,
+    );
+  }
+
+  if (project.mos_in_production > 0) {
+    chips.push(
+      <Chip
+        key="in_production"
+        tone="amber"
+        title={`${project.mos_in_production} MO${
+          project.mos_in_production === 1 ? "" : "s"
+        } in production`}
+      >
+        {project.mos_in_production} making
+      </Chip>,
+    );
+  }
+
+  if (project.mos_awaiting_closeout > 0) {
+    chips.push(
+      <Chip
+        key="closeout"
+        tone="emerald"
+        title={`${project.mos_awaiting_closeout} MO${
+          project.mos_awaiting_closeout === 1 ? "" : "s"
+        } awaiting closeout`}
+      >
+        {project.mos_awaiting_closeout} to close
+      </Chip>,
+    );
+  }
+
+  if (chips.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1">{chips}</div>
+  );
+}
+
+function Chip({
+  children,
+  tone,
+  icon,
+  title,
+}: {
+  children: React.ReactNode;
+  tone: "destructive" | "sky" | "amber" | "emerald";
+  icon?: React.ReactNode;
+  title?: string;
+}) {
+  // Small palette inline rather than reusing Badge — the kanban chip
+  // sits at 9-10px and Badge's default padding is too tall for the
+  // dense card layout.
+  const tones: Record<typeof tone, string> = {
+    destructive:
+      "bg-destructive/10 text-destructive ring-destructive/20",
+    sky: "bg-sky-50 text-sky-700 ring-sky-200/60 dark:bg-sky-950/30 dark:text-sky-300 dark:ring-sky-700/40",
+    amber:
+      "bg-amber-50 text-amber-800 ring-amber-200/60 dark:bg-amber-950/30 dark:text-amber-300 dark:ring-amber-700/40",
+    emerald:
+      "bg-emerald-50 text-emerald-800 ring-emerald-200/60 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-700/40",
+  };
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1",
+        tones[tone],
+      )}
+    >
+      {icon}
+      {children}
+    </span>
+  );
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 function groupByPhase(
   rows: ProjectSummary[],
@@ -259,25 +426,4 @@ function groupByPhase(
     out[key]!.push(row);
   }
   return out;
-}
-
-function phaseLabel(key: OrderWizardPhaseKey): string {
-  switch (key) {
-    case "setup":
-      return "Order setup";
-    case "approval":
-      return "Awaiting approval";
-    case "production_planning":
-      return "Need MO created";
-    case "awaiting_ingredients":
-      return "Awaiting ingredients";
-    case "in_production":
-      return "In production";
-    case "closeout":
-      return "Awaiting closeout";
-    case "ready_to_dispatch":
-      return "Ready to dispatch";
-    case "cancelled":
-      return "Cancelled";
-  }
 }

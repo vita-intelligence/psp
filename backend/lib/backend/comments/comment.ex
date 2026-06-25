@@ -17,7 +17,29 @@ defmodule Backend.Comments.Comment do
   alias Backend.Accounts.User
   alias Backend.Companies.Company
 
-  @entity_types ~w(vendor purchase_order stock_lot purchase_order_line bom workstation_group workstation routing manufacturing_order)
+  # Keep this list in sync with `Backend.Comments` `@write_perms`
+  # keys — both serve as gates and drifting causes a 422 on insert
+  # for entity types the context module accepts but the schema
+  # changeset rejects. (Found via the loyalty / sales arc shipping
+  # new comment-able entities without touching the schema.)
+  @entity_types ~w(
+    vendor
+    customer
+    pricelist
+    customer_order
+    customer_invoice
+    customer_return
+    purchase_order
+    purchase_order_line
+    stock_lot
+    bom
+    workstation_group
+    workstation
+    routing
+    manufacturing_order
+    manufacturing_order_step
+    loyalty_program
+  )
   @visibilities ~w(internal shared)
   @body_max 4_000
 

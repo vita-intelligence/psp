@@ -1456,6 +1456,9 @@ defmodule Backend.Production do
           # trigger this (the new MO is itself draft so the root walk
           # finds the same draft MO; no-op).
           if mo.parent_mo_id, do: demote_root_if_signed(actor, mo)
+          # Hook the wizard's realtime channel — the Project Control
+          # Board for the parent CO should refresh.
+          Backend.OrderWizard.notify_via_mo(mo)
           {:ok, reload_manufacturing_order(mo)}
 
         err ->
@@ -2155,6 +2158,10 @@ defmodule Backend.Production do
         with :ok <- ensure_children_complete(mo, to),
              :ok <- ensure_preflight_complete_for_transition(mo, to) do
           transactional_transition(actor, mo, to)
+          |> tap(fn
+            {:ok, updated} -> Backend.OrderWizard.notify_via_mo(updated)
+            _ -> :ok
+          end)
         end
     end
   end

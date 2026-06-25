@@ -110,23 +110,28 @@ defmodule BackendWeb.CustomerOrderController do
   def create_mo_for_line(conn, %{
         "customer_order_id" => co_uuid,
         "line_uuid" => line_uuid
-      }) do
+      } = params) do
     actor = conn.assigns.current_user
 
     with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
          %{} = line <-
            Enum.find(co.lines, &(&1.uuid == line_uuid)) do
-      attrs = %{
-        "company_id" => actor.company_id,
-        "warehouse_id" => default_warehouse_id(actor.company_id),
-        "item_id" => line.item_id,
-        "quantity" => line.qty_ordered,
-        "due_date" => line.expected_ship_date,
-        "customer_order_line_id" => line.id,
-        "assigned_to_id" => actor.id,
-        "created_by_id" => actor.id,
-        "updated_by_id" => actor.id
-      }
+      attrs =
+        %{
+          "company_id" => actor.company_id,
+          "warehouse_id" => default_warehouse_id(actor.company_id),
+          "item_id" => line.item_id,
+          "quantity" => line.qty_ordered,
+          "due_date" => line.expected_ship_date,
+          "customer_order_line_id" => line.id,
+          "assigned_to_id" => actor.id,
+          "created_by_id" => actor.id,
+          "updated_by_id" => actor.id
+        }
+        # Wizard's auto-pick path passes a bom_id when the line's item
+        # has exactly one active BOM; create_manufacturing_order/2 also
+        # falls back to the primary BOM when this is absent.
+        |> maybe_put("bom_id", params["bom_id"])
 
       case Backend.Production.create_manufacturing_order(actor, attrs) do
         {:ok, mo} ->
@@ -148,6 +153,10 @@ defmodule BackendWeb.CustomerOrderController do
       _ -> nil
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   # ----- create / update / delete ---------------------------------
 
