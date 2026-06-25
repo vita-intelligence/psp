@@ -1151,6 +1151,7 @@ defmodule BackendWeb.Payloads do
       output_in_warehouse_count: mo.output_in_warehouse_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
       purchasing_requested_at: mo.purchasing_requested_at,
+      is_fully_sorted: mo.is_fully_sorted?,
       due_date: mo.due_date,
       output_lots:
         Enum.map(mo.output_lots, fn lot ->
@@ -1160,7 +1161,8 @@ defmodule BackendWeb.Payloads do
             qty: decimal_to_string(lot.qty),
             at_production_feed: lot.at_production_feed?
           }
-        end)
+        end),
+      children: Enum.map(Map.get(mo, :children, []) || [], &wizard_mo/1)
     }
   end
 

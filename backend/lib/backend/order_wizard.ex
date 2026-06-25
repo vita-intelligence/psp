@@ -159,7 +159,17 @@ defmodule Backend.OrderWizard do
     lines = co.lines
 
     line_states = Enum.map(lines, &line_state(co, &1))
-    all_mos = line_states |> Enum.flat_map(& &1.mos)
+
+    # all_mos is the flattened chain — each line's primary +
+    # secondary MOs PLUS every child MO in the parent/child tree.
+    # Phase derivation and blocker rollups need to see the full
+    # chain or they'll declare "ingredients ready" while a
+    # sub-assembly MO is still in draft.
+    all_mos =
+      line_states
+      |> Enum.flat_map(& &1.mos)
+      |> Enum.flat_map(&flatten_mo_tree/1)
+
     blockers = compute_blockers(co, line_states, all_mos)
     phase = derive_phase(co, line_states, all_mos)
     approvals = signers_for(co)
@@ -399,18 +409,43 @@ defmodule Backend.OrderWizard do
   defp author_note(name, "approver"),
     do: "#{name} authored this order, so they can't sign as approver."
 
-  defp next_action_for(:production_planning, co, line_states, _mos, _signers) do
+  defp next_action_for(:production_planning, co, line_states, mos, _signers) do
     missing = Enum.filter(line_states, &(&1.needs_mo? and is_nil(&1.primary_mo)))
 
     case missing do
       [] ->
-        %{
-          code: "next_phase",
-          title: "All lines have an MO — moving to ingredients.",
-          detail: nil,
-          primary_cta: nil,
-          secondary_ctas: []
-        }
+        # Every line has its primary MO, but the strict phase gate
+        # keeps us in planning until every MO in the parent/child
+        # chain is fully sorted (approved + no unresolved shortages).
+        # Surface the first unfinished MO so the operator knows
+        # exactly where to click.
+        unfinished = Enum.filter(mos, &(not &1.is_fully_sorted?))
+
+        case unfinished do
+          [] ->
+            %{
+              code: "next_phase",
+              title: "All MOs are sorted — moving to ingredients.",
+              detail: nil,
+              primary_cta: nil,
+              secondary_ctas: []
+            }
+
+          [first | _] ->
+            {title, detail} = unfinished_mo_reason(first, length(unfinished))
+
+            %{
+              code: "finish_sorting_mo",
+              title: title,
+              detail: detail,
+              primary_cta: %{
+                label: "Open MO #{first.code}",
+                kind: "link",
+                href: "/production/manufacturing-orders/#{first.uuid}"
+              },
+              secondary_ctas: []
+            }
+        end
 
       [only] ->
         # Single missing line — inline action is unambiguous.
@@ -796,7 +831,14 @@ defmodule Backend.OrderWizard do
   # ----- mo state ------------------------------------------------
 
   defp mo_state(%ManufacturingOrder{} = mo) do
-    mo = Repo.preload(mo, [:item, bookings: []])
+    mo = Repo.preload(mo, [:item, :children, bookings: []])
+
+    # Recurse into child MOs (auto-spawned for semi-finished
+    # sub-assemblies). The chain has to be sorted top-to-bottom
+    # before the order can leave production_planning — a parent
+    # MO with an unhandled child is no different from a parent
+    # MO with unhandled bookings.
+    child_states = Enum.map(mo.children, &mo_state/1)
 
     placeholder_bookings =
       Enum.filter(mo.bookings, &(not is_nil(&1.purchase_order_line_id)))
@@ -843,8 +885,48 @@ defmodule Backend.OrderWizard do
         mo.status == "completed" and feed_lots != [],
       purchasing_requested_at: mo.purchasing_requested_at,
       is_fully_sorted?: is_fully_sorted,
+      children: child_states,
       due_date: mo.due_date
     }
+  end
+
+  # Flatten a parent MO + its descendants into a single list.
+  # Used so phase / next-action calculations cover the full chain
+  # — a child MO blocks the order from advancing just like the
+  # parent does.
+  defp flatten_mo_tree(mo_state) do
+    children = Map.get(mo_state, :children, []) || []
+    [mo_state | Enum.flat_map(children, &flatten_mo_tree/1)]
+  end
+
+  # Title + detail for an MO that's stuck in production_planning.
+  # The "why" is one of: missing first signature (Prepare), missing
+  # second signature (Approve), or unresolved shortages without
+  # Request purchases. Naming it gives the operator a one-glance
+  # reason and a deep-link to the MO page.
+  defp unfinished_mo_reason(mo, total_unfinished) do
+    others =
+      if total_unfinished > 1,
+        do: " (#{total_unfinished - 1} more MO#{if total_unfinished - 1 == 1, do: "", else: "s"} also pending)",
+        else: ""
+
+    cond do
+      mo.status == "draft" ->
+        {"MO #{mo.code} needs its first signature.",
+         "It's still draft. Open the MO, sort the bookings (allocate stock for what we have, Request purchases for what we don't), then sign Prepare#{others}."}
+
+      mo.status == "prepared" ->
+        {"MO #{mo.code} needs its second signature.",
+         "Prepare is done. Open the MO and sign Approve — that's the segregation-of-duties gate before procurement / scheduling can proceed#{others}."}
+
+      mo.has_placeholder_bookings? and is_nil(mo.purchasing_requested_at) ->
+        {"MO #{mo.code} has shortages but no purchase request yet.",
+         "Some lines aren't covered by real lots. Open the MO and hit Request purchases — until you do, procurement can't act#{others}."}
+
+      true ->
+        {"MO #{mo.code} isn't fully sorted yet.",
+         "Open the MO to finish bookings and signatures#{others}."}
+    end
   end
 
   defp po_uuids_for_line_ids([]), do: []

@@ -1226,7 +1226,7 @@ function LineCard({
               mo={mo}
               prefs={prefs}
               permissions={permissions}
-              onOpen={() => onOpenMo(mo.uuid)}
+              onOpenMo={onOpenMo}
               onSendToDevice={onSendToDevice}
             />
           ))}
@@ -1267,15 +1267,19 @@ function MiniMoCard({
   mo,
   prefs,
   permissions,
-  onOpen,
+  onOpenMo,
   onSendToDevice,
+  depth = 0,
 }: {
   mo: OrderWizardMo;
   prefs: CompanyDefaults;
   permissions: ProjectBoardPermissions;
-  onOpen: () => void;
+  onOpenMo: (uuid: string) => void;
   onSendToDevice: (cta: OrderWizardCta) => void;
+  /** Nesting level — children get indented + a "Sub-MO" tag. */
+  depth?: number;
 }) {
+  const onOpen = () => onOpenMo(mo.uuid);
   return (
     <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -1286,11 +1290,17 @@ function MiniMoCard({
         >
           {mo.code ?? `MO #${mo.id}`}
         </button>
+        {depth > 0 && (
+          <Badge tone="muted">
+            <Layers className="mr-1 inline size-3" />
+            Sub-MO
+          </Badge>
+        )}
         <Badge tone={MO_STATUS_TONE[mo.status]}>
           {MO_STATUS_LABEL[mo.status]}
         </Badge>
         <span className="text-[11px] text-muted-foreground">
-          Qty {formatCompanyNumber(mo.quantity, prefs)}
+          {mo.item_name ?? "Item"} · Qty {formatCompanyNumber(mo.quantity, prefs)}
         </span>
         {mo.due_date && (
           <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -1383,6 +1393,25 @@ function MiniMoCard({
           </Button>
         )}
       </div>
+
+      {/* Auto-spawned sub-assembly MOs render nested under the
+          parent. They block the order from leaving planning just
+          like the parent does, so they need to be visible here. */}
+      {mo.children && mo.children.length > 0 && (
+        <div className="mt-2.5 space-y-2 border-l-2 border-border/40 pl-3">
+          {mo.children.map((child) => (
+            <MiniMoCard
+              key={child.uuid}
+              mo={child}
+              prefs={prefs}
+              permissions={permissions}
+              onOpenMo={onOpenMo}
+              onSendToDevice={onSendToDevice}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

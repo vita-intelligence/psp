@@ -2755,8 +2755,18 @@ export interface OrderWizardMo {
   output_in_warehouse_count: number;
   has_output_at_production_feed: boolean;
   purchasing_requested_at: string | null;
+  /** True when this MO is past approval AND has no unresolved
+   *  shortages (every booking is real, or procurement is engaged
+   *  for the placeholders). Drives the per-MO "needs attention"
+   *  hint on the project board. */
+  is_fully_sorted: boolean;
   due_date: string | null;
   output_lots: OrderWizardMoOutputLot[];
+  /** Sub-MOs auto-spawned when this MO's BOM needed a semi-finished
+   *  the stock couldn't cover. Recursive — children may have their
+   *  own children. The wizard treats them like any other MO when
+   *  deciding whether the order can leave production_planning. */
+  children: OrderWizardMo[];
 }
 
 export interface OrderWizardAvailableBom {
