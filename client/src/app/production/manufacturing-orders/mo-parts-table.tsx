@@ -179,6 +179,7 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
                 p={p}
                 company={company}
                 canEdit={canEdit}
+                purchasingRequested={mo.purchasing_requested_at != null}
                 onAdd={() => setAddingFor(p)}
                 onRelease={(b) => setReleasing({ part: p, booking: b })}
                 onAddSubMo={() => setAddingSubMoFor(p)}
@@ -248,6 +249,11 @@ interface PartRowsProps {
   p: ManufacturingOrderPart;
   company: CompanyDefaults;
   canEdit: boolean;
+  /** True when the MO's purchasing_requested_at flag is set —
+   *  drives "Sent to procurement" tone on the synthetic gap row
+   *  even when coverage_status is "partial" (some bookings done,
+   *  rest sent to procurement). */
+  purchasingRequested: boolean;
   onAdd: () => void;
   onRelease: (b: ManufacturingOrderBooking) => void;
   onAddSubMo: () => void;
@@ -258,6 +264,7 @@ function PartRows({
   p,
   company,
   canEdit,
+  purchasingRequested,
   onAdd,
   onRelease,
   onAddSubMo,
@@ -384,6 +391,7 @@ function PartRows({
           unbookedQty={p.unbooked_qty ?? "0"}
           company={company}
           canEdit={canEdit}
+          purchasingRequested={purchasingRequested}
           onAddBooking={onAdd}
           onAddSubMo={onAddSubMo}
         />
@@ -694,6 +702,11 @@ interface NotBookedRowProps {
   unbookedQty: string;
   company: CompanyDefaults;
   canEdit: boolean;
+  /** Tones the gap row sky-blue ("Sent to procurement") instead of
+   *  red ("Not booked") when the MO has hit Request purchases.
+   *  Independent of coverage_status because a partial line + open
+   *  request still wants the friendly tone on the shortfall. */
+  purchasingRequested: boolean;
   onAddBooking: () => void;
   onAddSubMo: () => void;
 }
@@ -711,6 +724,7 @@ function NotBookedRow({
   unbookedQty,
   company,
   canEdit,
+  purchasingRequested,
   onAddBooking,
   onAddSubMo,
 }: NotBookedRowProps) {
@@ -719,11 +733,12 @@ function NotBookedRow({
       ? String(Number(unitCost) * Number(unbookedQty))
       : null;
 
-  // If the parent row's coverage is "awaiting_po" (planner has hit
-  // Request purchases for this gap), tone down the row from red to
-  // sky-blue — the gap is handled, just waiting for procurement to
-  // open the PO.
-  const awaiting = part.coverage_status === "awaiting_po";
+  // Tone the gap row sky-blue ("Sent to procurement") instead of
+  // red ("Not booked") whenever the MO has had Request purchases
+  // fired — covers both no-bookings-at-all (coverage_status =
+  // "awaiting_po") and partial-coverage rows where the shortfall
+  // has been handed to procurement.
+  const awaiting = purchasingRequested;
   const rowTint = awaiting ? "bg-sky-50/40" : "bg-destructive/[0.04]";
   const qtyTone = awaiting ? "text-sky-700 dark:text-sky-300" : "text-destructive";
 
