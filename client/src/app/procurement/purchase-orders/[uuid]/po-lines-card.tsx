@@ -368,7 +368,7 @@ export function POLinesCard({ po, items, canEdit }: Props) {
                   onBlur={() => blurField("qty")}
                   placeholder="100"
                   inputMode="decimal"
-                  className="font-mono"
+                  className="h-9 font-mono"
                 />
                 <FieldEditingIndicator peer={fieldEditors.qty} />
               </div>
@@ -389,22 +389,14 @@ export function POLinesCard({ po, items, canEdit }: Props) {
                   onBlur={() => blurField("price")}
                   placeholder="5.15"
                   inputMode="decimal"
-                  className="font-mono"
+                  className="h-9 font-mono"
                 />
                 <FieldEditingIndicator peer={fieldEditors.price} />
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                {suggestLoading
-                  ? "Looking up last paid…"
-                  : lastPaid
-                    ? `Last paid ${formatCompanyMoney(lastPaid.unit_price, prefs, { currency_code: lastPaid.currency_code })} on ${formatCompanyDate(lastPaid.last_paid_at, prefs)}`
-                    : state.pickItemId
-                      ? "No prior purchases — first time buying this item from this vendor."
-                      : " "}
-              </p>
             </div>
             <Button
               size="sm"
+              className="h-9"
               onClick={onAdd}
               disabled={
                 pending ||
@@ -429,6 +421,17 @@ export function POLinesCard({ po, items, canEdit }: Props) {
               Add line
             </Button>
           </div>
+          {/* Suggest-price hint lives on its own row so it doesn't push
+              the Unit price input out of alignment with the others. */}
+          {(suggestLoading || lastPaid || state.pickItemId) && (
+            <p className="text-[11px] text-muted-foreground">
+              {suggestLoading
+                ? "Looking up last paid price…"
+                : lastPaid
+                  ? `Last paid ${formatCompanyMoney(lastPaid.unit_price, prefs, { currency_code: lastPaid.currency_code })} on ${formatCompanyDate(lastPaid.last_paid_at, prefs)}.`
+                  : "No prior purchases — first time buying this item from this vendor."}
+            </p>
+          )}
         </div>
       )}
     </section>
