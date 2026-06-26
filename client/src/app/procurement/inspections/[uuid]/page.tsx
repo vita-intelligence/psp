@@ -781,6 +781,13 @@ function CheckBadge({ entry }: { entry: SectionCheck | undefined }) {
       </span>
     );
   }
+  if (entry.na) {
+    return (
+      <Badge tone="muted">
+        N/A
+      </Badge>
+    );
+  }
   if (entry.passed) {
     return (
       <Badge tone="emerald">

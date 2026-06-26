@@ -29,11 +29,17 @@ export type InspectionFileKind = "photo" | "coa" | "other";
 
 /** One yes/no check inside a section JSONB bag. */
 export interface SectionCheck {
-  /** `true` = the operator ticked Yes (compliant), `false` = No (issue). */
+  /** `true` = the operator ticked Yes (compliant) OR ticked N/A,
+   *  `false` = No (issue). N/A is disambiguated by the `na` flag. */
   passed: boolean;
   /** Free-text observations — required when `passed === false` so the
    *  audit trail explains what was off. */
   notes: string | null;
+  /** `true` = operator explicitly marked the check as Not Applicable
+   *  (e.g. seal intact when the load wasn't sealed). Stored alongside
+   *  `passed: true` so existing readers still see "not a failure"
+   *  while audit / display can distinguish "compliant" from "N/A". */
+  na?: boolean;
 }
 
 /** Section JSONB bag — a map from check_key → SectionCheck. */

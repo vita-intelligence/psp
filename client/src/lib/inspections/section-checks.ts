@@ -11,6 +11,11 @@
 export interface CheckRow {
   key: string;
   label: string;
+  /** When true the mobile wizard renders a third "N/A" button alongside
+   *  Yes / No. Use sparingly — only for checks that genuinely don't
+   *  apply on some loads (e.g. seal intact when the vendor didn't
+   *  seal). N/A still counts as "answered" for the must-confirm gate. */
+  na_allowed?: boolean;
 }
 
 export const VEHICLE_CHECKS: CheckRow[] = [
@@ -25,7 +30,7 @@ export const VEHICLE_CHECKS: CheckRow[] = [
     label: "Previous cargo acceptable / compatible",
   },
   { key: "structurally_sound", label: "Vehicle structurally sound" },
-  { key: "seal_intact_or_na", label: "Seal intact (or N/A)" },
+  { key: "seal_intact_or_na", label: "Seal intact", na_allowed: true },
 ];
 
 export const DOC_CHECKS: CheckRow[] = [

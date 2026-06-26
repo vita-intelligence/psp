@@ -65,6 +65,10 @@ import type { PurchaseOrder, PurchaseOrderLine, User } from "@/lib/types";
 interface CheckRow {
   key: string;
   label: string;
+  /** Renders an extra N/A button on the row. Use only for checks that
+   *  legitimately don't apply on some loads (e.g. seal intact when the
+   *  vendor didn't seal the trailer). */
+  na_allowed?: boolean;
 }
 
 const VEHICLE_CHECKS: CheckRow[] = [
@@ -79,7 +83,7 @@ const VEHICLE_CHECKS: CheckRow[] = [
     label: "Previous cargo acceptable / compatible",
   },
   { key: "structurally_sound", label: "Vehicle structurally sound" },
-  { key: "seal_intact_or_na", label: "Seal intact (or N/A)" },
+  { key: "seal_intact_or_na", label: "Seal intact", na_allowed: true },
 ];
 
 const DOC_CHECKS: CheckRow[] = [
@@ -175,6 +179,17 @@ type SectionKey =
   | "physical_inspection"
   | "food_safety_checks"
   | "storage_verification";
+
+// Mirror of the per-section check arrays, keyed by SectionKey so the
+// save-time "every check must be answered" gate can look up the
+// expected keys without threading them through every panel prop.
+const SECTION_CHECKS_FOR: Record<SectionKey, CheckRow[]> = {
+  vehicle_inspection: VEHICLE_CHECKS,
+  documentation_verification: DOC_CHECKS,
+  physical_inspection: PHYSICAL_CHECKS,
+  food_safety_checks: FOOD_SAFETY_CHECKS,
+  storage_verification: STORAGE_CHECKS,
+};
 
 interface WizardError {
   detail: string;
@@ -423,15 +438,23 @@ export function MobileInspectionWizard({
     key: SectionKey,
     value: SectionBag,
   ): Promise<boolean> {
-    // The BE requires at least one populated check per section to
-    // operator-sign. Hand off an empty bag still PATCHes — it just
-    // doesn't satisfy that gate later. Surface that here so the
-    // operator knows before reaching sign-off.
-    const filled = Object.keys(value).length > 0;
-    if (!filled) {
+    // Compliance: every check must be actively confirmed (Yes / No /
+    // N/A where allowed). Operators who scroll past defaults are the
+    // #1 source of empty audit rows, so we block here rather than
+    // letting them through to sign-off and bouncing.
+    const checks = SECTION_CHECKS_FOR[key];
+    const unanswered = checks.filter((c) => {
+      const row = value[c.key];
+      if (!row) return true;
+      const isYes = row.passed === true && row.na !== true;
+      const isNo = row.passed === false;
+      const isNa = row.na === true;
+      return !(isYes || isNo || isNa);
+    });
+    if (unanswered.length > 0) {
       setError({
-        detail: "Tick or note at least one check before continuing.",
-        code: "section_empty",
+        detail: `Answer every check before continuing — ${unanswered.length} still ${unanswered.length === 1 ? "needs" : "need"} a response.`,
+        code: "section_unanswered",
       });
       return false;
     }
@@ -939,32 +962,73 @@ function SectionPanel({
   onChange: (next: SectionBag) => void;
   testId: string;
 }) {
-  function update(key: string, patch: Partial<SectionCheck>) {
-    const prev: SectionCheck = value[key] ?? { passed: true, notes: null };
-    onChange({ ...value, [key]: { ...prev, ...patch } });
+  // A row is "answered" once the operator has actively picked Yes,
+  // No, or N/A. Compliance rule: the operator must confirm every
+  // check, even the good ones — they can't skip past defaults.
+  function setAnswer(key: string, answer: "yes" | "no" | "na") {
+    const prev: SectionCheck =
+      value[key] ?? { passed: true, notes: null, na: false };
+    const next: SectionCheck =
+      answer === "yes"
+        ? { ...prev, passed: true, na: false }
+        : answer === "no"
+          ? { ...prev, passed: false, na: false }
+          : // N/A — keep passed: true so legacy readers still see
+            // "not a failure"; the na flag flips display + skips the
+            // notes-required gate.
+            { ...prev, passed: true, na: true, notes: null };
+    onChange({ ...value, [key]: next });
+  }
+  function setNotes(key: string, notes: string) {
+    const prev: SectionCheck =
+      value[key] ?? { passed: true, notes: null, na: false };
+    onChange({ ...value, [key]: { ...prev, notes: notes || null } });
   }
   return (
     <section className="space-y-4" data-testid={testId}>
       <StepHeading title={title} />
+      <p className="text-[11px] text-muted-foreground">
+        Confirm every check — Yes, No, or N/A where allowed. Notes are
+        required when the answer is No.
+      </p>
       <div className="space-y-3">
         {checks.map((check) => {
           const row: SectionCheck | undefined = value[check.key];
-          const passed = row?.passed ?? null;
+          const isYes = !!row && row.passed === true && row.na !== true;
+          const isNo = !!row && row.passed === false;
+          const isNa = !!row && row.na === true;
+          const answered = isYes || isNo || isNa;
+          const noNeedsNotes = isNo && !(row?.notes ?? "").trim();
+          const showRowError = !answered || noNeedsNotes;
           const inputId = `${testId}-${check.key}`;
           return (
             <div
               key={check.key}
-              className="space-y-2 rounded-lg border border-border/60 bg-card p-3"
+              className={cn(
+                "space-y-2 rounded-lg border bg-card p-3",
+                showRowError
+                  ? "border-destructive/60"
+                  : "border-border/60",
+              )}
               data-testid={`check-${check.key}`}
             >
-              <p className="text-sm font-medium leading-snug">{check.label}</p>
-              <div className="flex gap-2" role="radiogroup" aria-label={check.label}>
+              <p className="text-sm font-medium leading-snug">
+                {check.label}
+                <span aria-hidden className="ml-1 text-destructive">
+                  *
+                </span>
+              </p>
+              <div
+                className="flex gap-2"
+                role="radiogroup"
+                aria-label={check.label}
+              >
                 <Button
                   type="button"
                   size="sm"
-                  variant={passed === true ? "default" : "outline"}
+                  variant={isYes ? "default" : "outline"}
                   className="flex-1"
-                  onClick={() => update(check.key, { passed: true })}
+                  onClick={() => setAnswer(check.key, "yes")}
                   data-testid={`${inputId}-yes`}
                 >
                   Yes
@@ -972,32 +1036,53 @@ function SectionPanel({
                 <Button
                   type="button"
                   size="sm"
-                  variant={passed === false ? "destructive" : "outline"}
+                  variant={isNo ? "destructive" : "outline"}
                   className="flex-1"
-                  onClick={() => update(check.key, { passed: false })}
+                  onClick={() => setAnswer(check.key, "no")}
                   data-testid={`${inputId}-no`}
                 >
                   No
                 </Button>
-              </div>
-              <Textarea
-                value={row?.notes ?? ""}
-                placeholder={
-                  passed === false
-                    ? "Describe the issue — required for No"
-                    : "Notes (optional)"
-                }
-                rows={2}
-                onChange={(e) =>
-                  update(check.key, { notes: e.target.value || null })
-                }
-                className={cn(
-                  passed === false &&
-                    !(row?.notes ?? "").trim() &&
-                    "border-destructive focus-visible:ring-destructive/40",
+                {check.na_allowed && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={isNa ? "secondary" : "outline"}
+                    className="flex-1"
+                    onClick={() => setAnswer(check.key, "na")}
+                    data-testid={`${inputId}-na`}
+                  >
+                    N/A
+                  </Button>
                 )}
-              />
-              {passed === false && !(row?.notes ?? "").trim() && (
+              </div>
+              {/* Notes textarea is only useful for No (mandatory) or
+                  Yes (optional context). Hide for N/A to keep the
+                  row compact — N/A means "doesn't apply", a note
+                  would just be noise. */}
+              {!isNa && (
+                <Textarea
+                  value={row?.notes ?? ""}
+                  placeholder={
+                    isNo
+                      ? "Describe the issue — required for No"
+                      : "Notes (optional)"
+                  }
+                  rows={2}
+                  onChange={(e) => setNotes(check.key, e.target.value)}
+                  className={cn(
+                    noNeedsNotes &&
+                      "border-destructive focus-visible:ring-destructive/40",
+                  )}
+                />
+              )}
+              {!answered && (
+                <p className="text-[11px] font-medium text-destructive">
+                  Answer required — pick Yes, No
+                  {check.na_allowed && ", or N/A"}.
+                </p>
+              )}
+              {noNeedsNotes && (
                 <p className="text-[11px] font-medium text-destructive">
                   A note explaining the issue is required for No.
                 </p>
