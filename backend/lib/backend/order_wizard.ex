@@ -988,12 +988,36 @@ defmodule Backend.OrderWizard do
 
     placeholder_po_uuids = po_uuids_for_line_ids(placeholder_po_line_ids)
     placeholder_po_statuses = po_statuses_for_line_ids(placeholder_po_line_ids)
+    placeholder_po_status_by_line_id = po_status_by_line_id(placeholder_po_line_ids)
 
     has_unsent_placeholder_po? =
       Enum.any?(placeholder_po_statuses, &(&1 in ~w(draft pending_approver pending_director approved)))
 
     has_sent_placeholder_po? =
       Enum.any?(placeholder_po_statuses, &(&1 in ~w(ordered partially_received)))
+
+    # Per-placeholder bucketing so the FE chip can split N awaiting QC
+    # vs N awaiting delivery vs N need PO instead of lumping them all
+    # under "awaiting delivery".
+    placeholder_breakdown =
+      Enum.reduce(
+        placeholder_bookings,
+        %{awaiting_qc: 0, in_transit: 0, not_sent: 0},
+        fn b, acc ->
+          status = Map.get(placeholder_po_status_by_line_id, b.purchase_order_line_id)
+
+          cond do
+            status in @awaiting_qc_po_statuses ->
+              Map.update!(acc, :awaiting_qc, &(&1 + 1))
+
+            status in @sent_po_statuses ->
+              Map.update!(acc, :in_transit, &(&1 + 1))
+
+            true ->
+              Map.update!(acc, :not_sent, &(&1 + 1))
+          end
+        end
+      )
 
     output_lots = output_lots_for_mo(mo)
     feed_lots = Enum.filter(output_lots, & &1.at_production_feed?)
@@ -1023,6 +1047,9 @@ defmodule Backend.OrderWizard do
       customer_order_line_id: mo.customer_order_line_id,
       bookings_total: length(mo.bookings),
       placeholder_count: length(placeholder_bookings),
+      placeholder_awaiting_qc_count: placeholder_breakdown.awaiting_qc,
+      placeholder_in_transit_count: placeholder_breakdown.in_transit,
+      placeholder_not_sent_count: placeholder_breakdown.not_sent,
       has_placeholder_bookings?: has_placeholders,
       placeholder_po_uuids: placeholder_po_uuids,
       has_unsent_placeholder_po?: has_unsent_placeholder_po?,
@@ -1158,6 +1185,21 @@ defmodule Backend.OrderWizard do
       distinct: true
     )
     |> Repo.all()
+  end
+
+  # Per-line PO status lookup so we can bucket EACH placeholder
+  # booking by the state of the PO covering it (not_sent / in_transit
+  # / awaiting_qc). The distinct version above loses that mapping.
+  defp po_status_by_line_id([]), do: %{}
+
+  defp po_status_by_line_id(po_line_ids) do
+    from(pol in Backend.Purchasing.PurchaseOrderLine,
+      where: pol.id in ^po_line_ids,
+      join: po in PurchaseOrder, on: po.id == pol.purchase_order_id,
+      select: {pol.id, po.status}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   defp count_broken_bookings([]), do: 0

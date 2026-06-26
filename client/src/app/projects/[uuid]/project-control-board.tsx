@@ -1436,21 +1436,46 @@ function BookingsSummary({ mo }: { mo: OrderWizardMo }) {
       </span>
     );
   }
-  // After Request purchases is fired, placeholders are awaiting their
-  // PO to land — they're "on order" rather than "unhandled". Language
-  // change is the planner's signal that procurement is in motion.
-  const procurementEngaged = !!mo.purchasing_requested_at;
+  // Per-placeholder breakdown — the project board splits the chip so a
+  // planner can see "X awaiting QC" separately from "X awaiting
+  // delivery" without opening the MO. Fall back to the legacy "need PO
+  // / awaiting delivery" split when the BE didn't surface a breakdown
+  // (older snapshots / mid-deploy).
+  const awaitingQc = mo.placeholder_awaiting_qc_count ?? 0;
+  const inTransit = mo.placeholder_in_transit_count ?? 0;
+  const notSent = mo.placeholder_not_sent_count ?? 0;
+  const breakdownKnown = awaitingQc + inTransit + notSent === placeholders;
+
+  const parts: string[] = breakdownKnown
+    ? [
+        notSent > 0 ? `${notSent} need PO` : null,
+        inTransit > 0 ? `${inTransit} awaiting delivery` : null,
+        awaitingQc > 0 ? `${awaitingQc} awaiting QC` : null,
+      ].filter((s): s is string => !!s)
+    : [
+        !!mo.purchasing_requested_at
+          ? `${placeholders} awaiting delivery`
+          : `${placeholders} need PO`,
+      ];
+
+  // Icon priority follows the chip ordering: not_sent (Hourglass — the
+  // immediate blocker) wins over in_transit (ShoppingBag) wins over
+  // awaiting_qc (Package).
+  const Icon =
+    notSent > 0 ? Hourglass : inTransit > 0 ? ShoppingBag : Package;
+
+  // Soften the tone when EVERY placeholder is just awaiting QC —
+  // procurement is fully done, only QA is left, so amber overstates
+  // the urgency. Sky reads as "passive wait" per the kanban palette.
+  const tone =
+    breakdownKnown && notSent === 0 && inTransit === 0 && awaitingQc > 0
+      ? "text-sky-700 dark:text-sky-400"
+      : "text-amber-700 dark:text-amber-400";
+
   return (
-    <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
-      {procurementEngaged ? (
-        <ShoppingBag className="size-3" />
-      ) : (
-        <Hourglass className="size-3" />
-      )}
-      {real}/{total} real ·{" "}
-      {procurementEngaged
-        ? `${placeholders} awaiting delivery`
-        : `${placeholders} need PO`}
+    <span className={cn("inline-flex items-center gap-1", tone)}>
+      <Icon className="size-3" />
+      {real}/{total} real · {parts.join(" · ")}
     </span>
   );
 }

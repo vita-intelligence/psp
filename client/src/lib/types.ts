@@ -2748,6 +2748,16 @@ export interface OrderWizardMo {
   item_name: string | null;
   bookings_total: number;
   placeholder_count: number;
+  /** Subset of `placeholder_count`: placeholders whose covering PO is
+   *  fully received but the lots are still in quarantine awaiting QC.
+   *  Drives the "awaiting QC" chip on the project board. */
+  placeholder_awaiting_qc_count: number;
+  /** Subset of `placeholder_count`: placeholders whose PO is ordered
+   *  or partially received — goods in transit from the vendor. */
+  placeholder_in_transit_count: number;
+  /** Subset of `placeholder_count`: placeholders whose PO hasn't been
+   *  sent to the vendor yet (draft / pending_* / approved). */
+  placeholder_not_sent_count: number;
   has_placeholder_bookings: boolean;
   broken_booking_count: number;
   output_lot_count: number;
