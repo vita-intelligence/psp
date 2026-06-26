@@ -267,6 +267,16 @@ function MobileCountrySheet({
     return () => cancelAnimationFrame(id);
   }, [open]);
 
+  // Hardware-keyboard Esc + Android back-button safety net.
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onOpenChange(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onOpenChange]);
+
   if (!open) return null;
 
   return (
@@ -274,17 +284,16 @@ function MobileCountrySheet({
       role="dialog"
       aria-modal="true"
       aria-label="Pick a country"
+      // pt-/pb-safe respect the iOS notch + home-indicator. inset-0
+      // makes the sheet truly full-screen so the operator can't tap
+      // a phantom area underneath.
       className="fixed inset-0 z-50 flex flex-col bg-background"
+      style={{
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
     >
       <header className="flex items-center gap-2 border-b border-border/60 bg-background px-3 py-3">
-        <button
-          type="button"
-          onClick={() => onOpenChange(false)}
-          aria-label="Close"
-          className="rounded-md p-1.5 text-muted-foreground active:bg-muted"
-        >
-          <X className="size-5" />
-        </button>
         <div className="relative flex-1">
           <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -293,11 +302,22 @@ function MobileCountrySheet({
             value={search}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search country or code…"
-            className="h-10 pl-9 text-base"
+            className="h-11 pl-9 text-base"
             // 16 px text avoids iOS's auto-zoom on focus; pl-9 leaves
             // room for the search icon.
           />
         </div>
+        {/* Explicit labelled Close button — the icon-only version
+            was easy to miss on a tall screen with the keyboard up. */}
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          aria-label="Close country picker"
+          className="flex h-11 shrink-0 items-center gap-1 rounded-md border border-border/60 bg-background px-3 text-sm font-medium text-foreground active:bg-muted"
+        >
+          <X className="size-4" />
+          <span>Close</span>
+        </button>
       </header>
       <ul className="flex-1 overflow-y-auto overscroll-contain">
         {allowClear && (
@@ -351,6 +371,19 @@ function MobileCountrySheet({
           })
         )}
       </ul>
+      {/* Sticky Done bar so the operator always has a thumb-reachable
+          way out, even when the keyboard pushed the X off-screen. */}
+      <footer className="border-t border-border/60 bg-background p-3">
+        <Button
+          type="button"
+          size="lg"
+          variant="outline"
+          className="w-full"
+          onClick={() => onOpenChange(false)}
+        >
+          Done
+        </Button>
+      </footer>
     </div>
   );
 }
