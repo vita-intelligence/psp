@@ -683,18 +683,30 @@ defmodule Backend.OrderWizard do
     end
   end
 
-  # Three buckets of PO state the planner cares about:
+  # Three buckets of PO state the planner cares about, in priority
+  # order (the immediate blocker wins the messaging):
   #
   #   - Not sent yet (draft / pending_approver / pending_director /
   #     approved) → the planner / procurement needs to submit + sign
   #     it before the vendor sees anything.
-  #   - Sent (ordered / partially_received) → vendor owes us goods;
-  #     "chase" applies.
-  #   - Mix → call out the not-sent ones first since they're the
-  #     immediate blocker.
+  #   - In transit (ordered / partially_received) → vendor owes us
+  #     goods; "chase" applies.
+  #   - Awaiting QC (received) → goods are on site, QC inspection is
+  #     the only thing between here and production. Different copy so
+  #     the operator doesn't get told to "submit + sign it off" on a
+  #     PO whose pallets are already on the dock.
   @sent_po_statuses ~w(ordered partially_received)
+  @awaiting_qc_po_statuses ~w(received)
   defp chase_po_copy(pos, next_po) do
-    {sent, not_sent} = Enum.split_with(pos, &(&1.status in @sent_po_statuses))
+    not_sent =
+      Enum.filter(
+        pos,
+        &(&1.status not in @sent_po_statuses and
+            &1.status not in @awaiting_qc_po_statuses)
+      )
+
+    in_transit = Enum.filter(pos, &(&1.status in @sent_po_statuses))
+    awaiting_qc = Enum.filter(pos, &(&1.status in @awaiting_qc_po_statuses))
 
     cond do
       not_sent != [] ->
@@ -710,8 +722,8 @@ defmodule Backend.OrderWizard do
 
         {title, detail, "Open PO ##{target.id}"}
 
-      sent != [] ->
-        count = length(sent)
+      in_transit != [] ->
+        count = length(in_transit)
 
         title =
           "Awaiting #{count} purchase order#{if count == 1, do: "", else: "s"} from the vendor."
@@ -720,6 +732,18 @@ defmodule Backend.OrderWizard do
           "Next expected delivery: #{format_date(next_po.expected_delivery_date) || "no date set"}. Chase the vendor or update the expected date."
 
         {title, detail, "Open next PO"}
+
+      awaiting_qc != [] ->
+        target = List.first(awaiting_qc)
+        count = length(awaiting_qc)
+
+        title =
+          "Goods received — awaiting QC on #{count} purchase order#{if count == 1, do: "", else: "s"}."
+
+        detail =
+          "PO ##{target.id} is fully received. The quality team needs to sign off the goods-in inspection before the bookings become real and production can pull stock."
+
+        {title, detail, "Open PO ##{target.id}"}
 
       true ->
         # Defensive — shouldn't reach here since pos is non-empty.
