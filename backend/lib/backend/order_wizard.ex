@@ -643,15 +643,15 @@ defmodule Backend.OrderWizard do
           },
           secondary_ctas:
             [
-              # Quick handoff to the warehouse phone — the goods-in
-              # team scans the QR and lands on the mobile incoming list
-              # so they know what's expected. Lives next to the
-              # per-PO links so the planner can shoot it to a tablet
-              # without leaving the project board.
+              # Quick handoff to the warehouse phone — pushes the goods-in
+              # team straight onto the pre-receive page for THIS PO so
+              # they don't have to find it in the incoming list. The
+              # mobile page renders the line-by-line "what to expect"
+              # checklist for receiving against vendor paperwork.
               %{
-                label: "Send expected POs to device",
+                label: "Send PO ##{next_po.id} to device",
                 kind: "send_to_device",
-                href: "/m/incoming"
+                href: "/m/incoming/#{next_po.uuid}"
               }
             ] ++
               for po <- Enum.drop(pos, 1) do
