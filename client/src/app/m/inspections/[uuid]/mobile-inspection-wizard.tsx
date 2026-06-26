@@ -530,13 +530,20 @@ export function MobileInspectionWizard({
         className="sticky top-0 z-20 flex items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-3 backdrop-blur"
         data-testid="wizard-header"
       >
+        {/* Header button always exits to the PO pre-receive page —
+            label says "Exit" so the operator never confuses it with
+            "back one step" (that lives in the footer). Explicit push
+            to /m/incoming/<uuid> instead of router.back() so a deep
+            link (QR scan straight into the wizard) still lands on
+            the right page rather than off the site. */}
         <button
           type="button"
-          onClick={() => router.back()}
-          className="rounded-md p-1.5 text-muted-foreground active:bg-muted"
-          aria-label="Back"
+          onClick={() => router.push(`/m/incoming/${purchaseOrder.uuid}`)}
+          className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground active:bg-muted"
+          aria-label="Exit inspection"
         >
-          <ChevronLeft className="size-5" />
+          <ChevronLeft className="size-4" />
+          <span>Exit</span>
         </button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs text-muted-foreground">
@@ -592,9 +599,29 @@ export function MobileInspectionWizard({
         />
       </main>
 
-      {/* sticky footer */}
+      {/* sticky footer — Back / forward navigation lives here so the
+          operator's reach is consistent (header chevron = exit, footer
+          = move through the wizard). Back is hidden on the approver
+          panel because that's a single decision, not a step ladder. */}
       {(editing || showApprover) && (
         <footer className="sticky bottom-0 z-20 flex items-center gap-2 border-t border-border/60 bg-background/95 px-3 py-2 backdrop-blur">
+          {!showApprover && (
+            <Button
+              size="lg"
+              variant="outline"
+              className="gap-1"
+              onClick={() => {
+                if (stepIdx === 0) return;
+                setStepIdx((i) => i - 1);
+                window.scrollTo({ top: 0 });
+              }}
+              disabled={saving || stepIdx === 0}
+              data-testid="wizard-back"
+            >
+              <ChevronLeft className="size-4" />
+              Back
+            </Button>
+          )}
           {showApprover ? (
             <Button
               size="lg"
@@ -632,15 +659,15 @@ export function MobileInspectionWizard({
               disabled={saving}
               data-testid="wizard-next"
             >
-                {saving ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <>
-                    Save &amp; continue
-                    <ChevronRight className="size-4" />
-                  </>
-                )}
-              </Button>
+              {saving ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <>
+                  Save &amp; continue
+                  <ChevronRight className="size-4" />
+                </>
+              )}
+            </Button>
           )}
         </footer>
       )}
