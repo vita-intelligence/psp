@@ -278,9 +278,33 @@ defmodule BackendWeb.GoodsInInspectionController do
           "Fill every section before signing as operator (missing: #{Enum.join(Enum.map(missing, &Atom.to_string/1), ", ")})."
         )
 
+      # Stock-lot materialisation failed during sign-off. Surfaces the
+      # validation rather than 500-ing the whole flow, so the operator
+      # sees what to fix (typically an over-cap stack_factor or qty).
+      {:error, {:lot_create_failed, line_uuid, idx, %Ecto.Changeset{} = cs}} ->
+        unprocessable(
+          conn,
+          "lot_create_failed",
+          "Couldn't create a stock lot for pack ##{idx + 1} on a PO line. #{lot_changeset_summary(cs)} (line uuid: #{line_uuid})"
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
+  end
+
+  defp lot_changeset_summary(%Ecto.Changeset{errors: errors}) do
+    errors
+    |> Enum.take(2)
+    |> Enum.map(fn {field, {msg, opts}} ->
+      formatted =
+        Enum.reduce(opts, msg, fn {k, v}, acc ->
+          String.replace(acc, "%{#{k}}", to_string(v))
+        end)
+
+      "#{field}: #{formatted}"
+    end)
+    |> Enum.join("; ")
   end
 
   def sign_quality(conn, %{"goods_in_inspection_id" => uuid} = params) do

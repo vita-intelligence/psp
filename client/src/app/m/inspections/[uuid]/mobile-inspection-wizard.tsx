@@ -1459,8 +1459,13 @@ function packDraftToWire(p: PackDraft): InspectionItemPack {
     package_height_mm: Number(p.package_height_mm),
     package_weight_kg: String(weight),
     units_per_package: unitsPerPackage,
+    // BE schema caps stack_factor at 50. Clamp here as well as on the
+    // input so a stale localStorage draft with a higher value can't
+    // sneak through and crash sign-off.
     stack_factor:
-      Number.isInteger(stackFactor) && stackFactor > 0 ? stackFactor : 1,
+      Number.isInteger(stackFactor) && stackFactor > 0
+        ? Math.min(stackFactor, 50)
+        : 1,
     supplier_batch_no: p.supplier_batch_no.trim() || null,
     country_of_origin: p.country_of_origin.trim().toUpperCase() || null,
     revision: p.revision.trim() || null,
@@ -2159,12 +2164,22 @@ function PackEditor({
         <PackInput
           label="Stack factor"
           value={pack.stack_factor}
-          onChange={(v) =>
-            onPatch({ stack_factor: v.replace(/\D/g, "") || "" })
-          }
+          onChange={(v) => {
+            // Strip non-digits, cap at 50 to match the BE stock_lot
+            // schema validation. Anything higher gets silently clipped
+            // so the operator's not blocked at sign-off by a forgotten
+            // typo (the BE used to crash on > 50).
+            const digits = v.replace(/\D/g, "");
+            if (digits === "") {
+              onPatch({ stack_factor: "" });
+              return;
+            }
+            const n = Math.min(Number(digits), 50);
+            onPatch({ stack_factor: String(n) });
+          }}
           placeholder="1"
           mode="integer"
-          helper="Max packs that can be safely stacked on top of each other (1 = no vertical stacking)"
+          helper="Max packs that can be safely stacked on top of each other (1 = no stacking, max 50)"
         />
       </div>
 
