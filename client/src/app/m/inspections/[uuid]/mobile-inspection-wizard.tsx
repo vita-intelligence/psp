@@ -554,6 +554,17 @@ export function MobileInspectionWizard({
               resolve(false);
               return;
             }
+            // Merge the just-saved item back into local inspection
+            // state so the per-line pill strip flips green right
+            // away — the upsert endpoint only returns the item, not
+            // the whole inspection, so without this the strip stays
+            // grey even though BE has the data.
+            setInspection((prev) => {
+              const others = (prev.items ?? []).filter(
+                (it) => it.purchase_order_line_uuid !== line.uuid,
+              );
+              return { ...prev, items: [...others, res.item] };
+            });
             resolve(true);
             return;
           }
