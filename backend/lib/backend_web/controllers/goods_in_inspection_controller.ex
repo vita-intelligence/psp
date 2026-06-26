@@ -281,11 +281,23 @@ defmodule BackendWeb.GoodsInInspectionController do
       # Stock-lot materialisation failed during sign-off. Surfaces the
       # validation rather than 500-ing the whole flow, so the operator
       # sees what to fix (typically an over-cap stack_factor or qty).
+      # The structured fields let the FE wire a "Go to pack" button
+      # straight back to the right line + pack index.
       {:error, {:lot_create_failed, line_uuid, idx, %Ecto.Changeset{} = cs}} ->
+        item_label = po_line_item_label(line_uuid)
+
         unprocessable(
           conn,
           "lot_create_failed",
-          "Couldn't create a stock lot for pack ##{idx + 1} on a PO line. #{lot_changeset_summary(cs)} (line uuid: #{line_uuid})"
+          "Couldn't create a stock lot for #{item_label} (pack ##{idx + 1}). #{lot_changeset_summary(cs)}",
+          # Wrapped in single-element lists because the standard
+          # `fields` envelope on the FE is typed Record<string,
+          # string[]> — single values still round-trip.
+          %{
+            "line_uuid" => [line_uuid],
+            "pack_index" => [Integer.to_string(idx)],
+            "item_label" => [item_label]
+          }
         )
 
       {:error, %Ecto.Changeset{} = cs} ->
@@ -305,6 +317,38 @@ defmodule BackendWeb.GoodsInInspectionController do
       "#{field}: #{formatted}"
     end)
     |> Enum.join("; ")
+  end
+
+  # Render "<item code> – <item name>" for the PO line so the operator
+  # immediately recognises which product the validation tripped on.
+  # Falls back gracefully through any partial state — never crashes
+  # because of a missing item / preload.
+  defp po_line_item_label(line_uuid) do
+    case Backend.Repo.get_by(Backend.Purchasing.PurchaseOrderLine,
+           uuid: line_uuid
+         ) do
+      nil ->
+        "an unknown PO line"
+
+      %{item_id: nil} ->
+        "an item that's no longer linked"
+
+      %{item_id: item_id} ->
+        case Backend.Repo.get(Backend.Items.Item, item_id) do
+          nil ->
+            "Item ##{item_id}"
+
+          item ->
+            code = Payloads.render_entity_code(item, "item")
+
+            cond do
+              item.name && code -> "#{code} – #{item.name}"
+              item.name -> item.name
+              code -> code
+              true -> "Item ##{item_id}"
+            end
+        end
+    end
   end
 
   def sign_quality(conn, %{"goods_in_inspection_id" => uuid} = params) do
@@ -494,9 +538,9 @@ defmodule BackendWeb.GoodsInInspectionController do
     |> json(Errors.payload(code, detail, %{}))
   end
 
-  defp unprocessable(conn, code, detail) do
+  defp unprocessable(conn, code, detail, fields \\ %{}) do
     conn
     |> put_status(:unprocessable_entity)
-    |> json(Errors.payload(code, detail, %{}))
+    |> json(Errors.payload(code, detail, fields))
   end
 end

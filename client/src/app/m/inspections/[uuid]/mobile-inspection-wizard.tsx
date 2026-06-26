@@ -196,6 +196,7 @@ interface WizardError {
   detail: string;
   code?: string;
   debug?: ErrorDebug;
+  fields?: Record<string, string[]>;
 }
 
 interface Props {
@@ -757,11 +758,41 @@ export function MobileInspectionWizard({
       {/* scrollable body */}
       <main className="flex-1 space-y-4 px-4 py-4">
         {error && (
-          <ErrorBanner
-            detail={error.detail}
-            code={error.code}
-            debug={error.debug}
-          />
+          <div className="space-y-2">
+            <ErrorBanner
+              detail={error.detail}
+              code={error.code}
+              debug={error.debug}
+            />
+            {/* Lot-create failures land structured fields with the
+                line uuid + pack index. Surface a one-tap jump back
+                to that exact product so the operator doesn't have
+                to hunt for it. */}
+            {error.code === "lot_create_failed" && (() => {
+              const lineUuid = error.fields?.line_uuid?.[0];
+              const targetIdx = lines.findIndex((l) => l.uuid === lineUuid);
+              if (targetIdx < 0) return null;
+              const linesStepIdx = STEPS.findIndex((s) => s.id === "lines");
+              const itemLabel = error.fields?.item_label?.[0];
+              return (
+                <Button
+                  type="button"
+                  size="lg"
+                  variant="outline"
+                  className="w-full justify-center gap-2"
+                  onClick={() => {
+                    setError(null);
+                    if (linesStepIdx >= 0) setStepIdx(linesStepIdx);
+                    setLineIdx(targetIdx);
+                    window.scrollTo({ top: 0 });
+                  }}
+                >
+                  <ChevronLeft className="size-4" />
+                  Go to {itemLabel ?? "that pack"}
+                </Button>
+              );
+            })()}
+          </div>
         )}
 
         {showApprover ? (
