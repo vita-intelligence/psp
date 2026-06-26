@@ -20,6 +20,14 @@ export type RevokeDeviceResult =
 
 export type SendPingResult = { ok: true } | ErrorResult;
 
+export type ListMyDevicesResult =
+  | { ok: true; devices: LinkedDevice[] }
+  | ErrorResult;
+
+export type PushNavigateResult =
+  | { ok: true; pushed_to: LinkedDevice[] }
+  | ErrorResult;
+
 /**
  * Laptop: create a one-time pairing code. The dialog renders the
  * returned code as a QR + 6-char fallback, and subscribes to the
@@ -67,6 +75,76 @@ export async function revokeDeviceAction(
     return toErrorResult(err, {
       source: "revokeDeviceAction",
       fallbackDetail: "Couldn't revoke that device.",
+    });
+  }
+}
+
+/**
+ * Laptop: list paired devices for the current user. Used by the
+ * "Send to device" modal so the operator can pick which phone to
+ * push to (or fall back to QR when they haven't paired anything).
+ */
+export async function listMyDevicesAction(): Promise<ListMyDevicesResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("listMyDevicesAction");
+
+  try {
+    const res = await api<{ items: LinkedDevice[] }>("/api/devices", {
+      method: "GET",
+      token,
+    });
+    return { ok: true, devices: res.items };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "listMyDevicesAction",
+      fallbackDetail: "Couldn't load your paired devices.",
+    });
+  }
+}
+
+/**
+ * Laptop: fan out a navigate command to every paired device. The
+ * mobile shell on each device hard-replaces its route to `path`.
+ * BE rejects anything outside `/m/*`.
+ */
+export async function pushNavigateToMyDevicesAction(
+  path: string,
+): Promise<PushNavigateResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("pushNavigateToMyDevicesAction");
+
+  try {
+    const res = await api<{ pushed_to: LinkedDevice[] }>(
+      "/api/devices/push-navigate",
+      { method: "POST", token, body: JSON.stringify({ path }) },
+    );
+    return { ok: true, pushed_to: res.pushed_to };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "pushNavigateToMyDevicesAction",
+      fallbackDetail: "Couldn't push to your devices.",
+    });
+  }
+}
+
+/** Laptop: push a navigate command to a single paired device. */
+export async function pushNavigateToDeviceAction(
+  uuid: string,
+  path: string,
+): Promise<PushNavigateResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("pushNavigateToDeviceAction");
+
+  try {
+    const res = await api<{ device: LinkedDevice }>(
+      `/api/devices/${encodeURIComponent(uuid)}/push-navigate`,
+      { method: "POST", token, body: JSON.stringify({ path }) },
+    );
+    return { ok: true, pushed_to: [res.device] };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "pushNavigateToDeviceAction",
+      fallbackDetail: "Couldn't push to that device.",
     });
   }
 }

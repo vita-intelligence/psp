@@ -285,6 +285,56 @@ defmodule Backend.Devices do
     end
   end
 
+  @doc """
+  Push a navigate command to a single device. The mobile shell sees
+  `navigate` on its `device:<uuid>` channel and `router.replace()`s
+  to the given path. Restricted to `/m/*` paths so a stolen socket
+  can't be used to redirect the device to an external URL.
+  """
+  def push_navigate(%User{} = user, device_uuid, path)
+      when is_binary(device_uuid) and is_binary(path) do
+    with :ok <- validate_navigate_path(path),
+         {:ok, device} <- get_for_user(user, device_uuid) do
+      Endpoint.broadcast!("device:#{device.uuid}", "navigate", %{
+        path: path,
+        sent_at: DateTime.to_iso8601(utc_now())
+      })
+
+      {:ok, device}
+    end
+  end
+
+  @doc """
+  Fan-out push_navigate to every active device the user owns. Used
+  by the "Send expected POs to device" CTA so the planner can hit
+  one button and have their phone(s) jump to `/m/incoming`.
+  """
+  def push_navigate_to_user(%User{} = user, path) when is_binary(path) do
+    with :ok <- validate_navigate_path(path) do
+      devices = list_for_user(user)
+      sent_at = DateTime.to_iso8601(utc_now())
+
+      Enum.each(devices, fn d ->
+        Endpoint.broadcast!("device:#{d.uuid}", "navigate", %{
+          path: path,
+          sent_at: sent_at
+        })
+      end)
+
+      {:ok, devices}
+    end
+  end
+
+  defp validate_navigate_path(path) when is_binary(path) do
+    cond do
+      not String.starts_with?(path, "/m/") -> {:error, :unsafe_path}
+      String.contains?(path, "..") -> {:error, :unsafe_path}
+      true -> :ok
+    end
+  end
+
+  defp validate_navigate_path(_), do: {:error, :unsafe_path}
+
   # ----- helpers ---------------------------------------------------------
 
   defp generate_token do

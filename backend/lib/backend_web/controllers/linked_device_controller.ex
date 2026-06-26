@@ -145,6 +145,56 @@ defmodule BackendWeb.LinkedDeviceController do
     end
   end
 
+  @doc """
+  Push a remote-navigate command to every paired device the user owns.
+  Returns the list of devices the command was sent to so the laptop
+  can render "Sent to <label> (3 devices)" as a toast.
+  """
+  def push_navigate(conn, %{"path" => path}) do
+    actor = conn.assigns.current_user
+
+    case Devices.push_navigate_to_user(actor, path) do
+      {:ok, devices} ->
+        json(conn, %{
+          pushed_to: Enum.map(devices, &Payloads.linked_device/1)
+        })
+
+      {:error, :unsafe_path} ->
+        unprocessable(
+          conn,
+          "unsafe_path",
+          "Remote navigation is restricted to /m/* paths."
+        )
+    end
+  end
+
+  def push_navigate(conn, _params) do
+    unprocessable(conn, "path_required", "Missing required `path` parameter.")
+  end
+
+  def push_navigate_one(conn, %{"uuid" => uuid, "path" => path}) do
+    actor = conn.assigns.current_user
+
+    case Devices.push_navigate(actor, uuid, path) do
+      {:ok, device} ->
+        json(conn, %{device: Payloads.linked_device(device)})
+
+      {:error, :not_found} ->
+        not_found(conn, "device_not_found", "Device not found.")
+
+      {:error, :unsafe_path} ->
+        unprocessable(
+          conn,
+          "unsafe_path",
+          "Remote navigation is restricted to /m/* paths."
+        )
+    end
+  end
+
+  def push_navigate_one(conn, _params) do
+    unprocessable(conn, "path_required", "Missing required `path` parameter.")
+  end
+
   # ----- helpers -------------------------------------------------------
 
   defp not_found(conn, code, detail) do

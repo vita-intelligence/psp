@@ -52,7 +52,6 @@ import {
   Package,
   PackageOpen,
   PackagePlus,
-  QrCode,
   Receipt,
   ShieldCheck,
   ShoppingBag,
@@ -80,6 +79,12 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { createInvoiceFromCOAction } from "@/lib/customer-invoices/actions";
+import {
+  listMyDevicesAction,
+  pushNavigateToDeviceAction,
+  pushNavigateToMyDevicesAction,
+} from "@/lib/devices/actions";
+import type { LinkedDevice } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { Comment } from "@/lib/comments/types";
 import type {
@@ -497,7 +502,7 @@ export function ProjectControlBoard({
           void refreshSnapshot();
         }}
       />
-      <QrCodeModal
+      <SendToDeviceModal
         cta={qrModalCta}
         onClose={() => setQrModalCta(null)}
       />
@@ -2116,7 +2121,20 @@ function BomPickerModal({
 // Send-to-device QR modal
 // =============================================================================
 
-function QrCodeModal({
+// A phone counts as "online" when its socket touched `last_seen_at`
+// within the channel-presence window. The mobile shell ticks every
+// time the device socket opens, so 90 s is enough headroom for a
+// phone with the screen briefly off but the page still open.
+const DEVICE_ONLINE_WINDOW_MS = 90_000;
+
+function deviceOnline(d: LinkedDevice): boolean {
+  if (!d.last_seen_at) return false;
+  const seen = Date.parse(d.last_seen_at);
+  if (Number.isNaN(seen)) return false;
+  return Date.now() - seen < DEVICE_ONLINE_WINDOW_MS;
+}
+
+function SendToDeviceModal({
   cta,
   onClose,
 }: {
@@ -2125,6 +2143,10 @@ function QrCodeModal({
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [devices, setDevices] = useState<LinkedDevice[] | null>(null);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [pushingUuid, setPushingUuid] = useState<string | null>(null);
+  const [pushingAll, setPushingAll] = useState(false);
 
   const open = !!cta;
   const href = cta?.href ?? "";
@@ -2148,6 +2170,21 @@ function QrCodeModal({
     }).then(setDataUrl);
   }, [open, url]);
 
+  useEffect(() => {
+    if (!open) {
+      setDevices(null);
+      setPushingUuid(null);
+      setPushingAll(false);
+      return;
+    }
+    setDevicesLoading(true);
+    void listMyDevicesAction().then((res) => {
+      setDevicesLoading(false);
+      if (res.ok) setDevices(res.devices);
+      else setDevices([]);
+    });
+  }, [open]);
+
   function copy() {
     if (!url) return;
     void navigator.clipboard.writeText(url).then(() => {
@@ -2156,32 +2193,142 @@ function QrCodeModal({
     });
   }
 
+  async function pushOne(device: LinkedDevice) {
+    if (!href) return;
+    setPushingUuid(device.uuid);
+    const res = await pushNavigateToDeviceAction(device.uuid, href);
+    setPushingUuid(null);
+    if (res.ok) {
+      toast.success(`Opened on ${device.label || "your device"}`);
+      onClose();
+    } else {
+      toast.error(res.detail || "Couldn't push to that device.");
+    }
+  }
+
+  async function pushAll() {
+    if (!href) return;
+    setPushingAll(true);
+    const res = await pushNavigateToMyDevicesAction(href);
+    setPushingAll(false);
+    if (res.ok) {
+      const count = res.pushed_to.length;
+      if (count === 0) {
+        toast.error(
+          "No paired devices. Scan the QR with your phone instead.",
+        );
+        return;
+      }
+      const label =
+        count === 1
+          ? `Opened on ${res.pushed_to[0]?.label || "your device"}`
+          : `Opened on ${count} devices`;
+      toast.success(label);
+      onClose();
+    } else {
+      toast.error(res.detail || "Couldn't push to your devices.");
+    }
+  }
+
+  const onlineDevices = (devices ?? []).filter(deviceOnline);
+  const offlineDevices = (devices ?? []).filter((d) => !deviceOnline(d));
+  const hasPaired = (devices?.length ?? 0) > 0;
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <QrCode className="size-4 text-muted-foreground" />
+            <Smartphone className="size-4 text-muted-foreground" />
             {cta?.label ?? "Send to device"}
           </DialogTitle>
           <DialogDescription>
-            Scan with your phone&apos;s camera to land on the mobile flow.
+            Push this page to a paired phone — it jumps there
+            instantly. Or scan the QR with an unpaired device.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col items-center gap-3">
-          {dataUrl ? (
-            <img
-              src={dataUrl}
-              alt="QR code"
-              className="size-56 rounded-md border border-border/40 bg-white p-2"
-            />
+
+        {/* Paired-device list (one-tap push). */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <span>Your devices</span>
+            {onlineDevices.length > 1 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-[11px]"
+                onClick={pushAll}
+                disabled={pushingAll || !!pushingUuid}
+              >
+                {pushingAll ? (
+                  <Loader2 className="mr-1 size-3 animate-spin" />
+                ) : (
+                  <ArrowRight className="mr-1 size-3" />
+                )}
+                Send to all {onlineDevices.length}
+              </Button>
+            )}
+          </div>
+          {devicesLoading ? (
+            <Skeleton className="h-12 w-full rounded-md" />
+          ) : hasPaired ? (
+            <div className="space-y-1.5">
+              {onlineDevices.map((d) => (
+                <DeviceRow
+                  key={d.uuid}
+                  device={d}
+                  online
+                  busy={pushingUuid === d.uuid}
+                  disabled={pushingAll || (!!pushingUuid && pushingUuid !== d.uuid)}
+                  onPush={() => pushOne(d)}
+                />
+              ))}
+              {offlineDevices.map((d) => (
+                <DeviceRow
+                  key={d.uuid}
+                  device={d}
+                  online={false}
+                  busy={pushingUuid === d.uuid}
+                  disabled={pushingAll || !!pushingUuid}
+                  onPush={() => pushOne(d)}
+                />
+              ))}
+            </div>
           ) : (
-            <Skeleton className="size-56 rounded-md" />
+            <p className="rounded-md bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+              No paired devices yet. Pair a phone from{" "}
+              <Link
+                href="/settings/devices"
+                className="text-brand underline-offset-2 hover:underline"
+              >
+                Settings → Devices
+              </Link>{" "}
+              for one-tap handoff next time.
+            </p>
           )}
-          <code className="w-full break-all rounded-md bg-muted/40 px-2 py-1.5 text-center text-[10px]">
-            {url}
-          </code>
         </div>
+
+        {/* QR fallback for unpaired phones. */}
+        <div className="space-y-2 border-t border-border/60 pt-3">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Or scan with another phone
+          </div>
+          <div className="flex flex-col items-center gap-3">
+            {dataUrl ? (
+              <img
+                src={dataUrl}
+                alt="QR code"
+                className="size-44 rounded-md border border-border/40 bg-white p-2"
+              />
+            ) : (
+              <Skeleton className="size-44 rounded-md" />
+            )}
+            <code className="w-full break-all rounded-md bg-muted/40 px-2 py-1.5 text-center text-[10px]">
+              {url}
+            </code>
+          </div>
+        </div>
+
         <DialogFooter className="sm:justify-between">
           <Button size="sm" variant="outline" onClick={copy}>
             <Copy className="mr-1.5 size-3.5" />
@@ -2193,6 +2340,57 @@ function QrCodeModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function DeviceRow({
+  device,
+  online,
+  busy,
+  disabled,
+  onPush,
+}: {
+  device: LinkedDevice;
+  online: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onPush: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={cn(
+            "inline-block size-2 shrink-0 rounded-full",
+            online ? "bg-emerald-500" : "bg-muted-foreground/40",
+          )}
+          aria-hidden
+        />
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-medium leading-tight">
+            {device.label || "Unnamed device"}
+          </div>
+          <div className="truncate text-[10px] text-muted-foreground">
+            {device.platform ?? "device"} ·{" "}
+            {online ? "online" : "offline"}
+          </div>
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant={online ? "default" : "outline"}
+        onClick={onPush}
+        disabled={busy || disabled}
+        className="h-8 shrink-0"
+      >
+        {busy ? (
+          <Loader2 className="mr-1 size-3.5 animate-spin" />
+        ) : (
+          <ArrowRight className="mr-1 size-3.5" />
+        )}
+        Send
+      </Button>
+    </div>
   );
 }
 

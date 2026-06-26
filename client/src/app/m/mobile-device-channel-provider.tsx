@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, WifiOff } from "lucide-react";
+import { ArrowRight, Bell, WifiOff } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +19,11 @@ import {
 
 interface PingPayload {
   message: string;
+  sent_at: string;
+}
+
+interface NavigatePayload {
+  path: string;
   sent_at: string;
 }
 
@@ -60,6 +65,19 @@ export function MobileDeviceChannelProvider({ deviceUuid, children }: Props) {
           icon: <Bell className="size-4" />,
           description: new Date(payload.sent_at).toLocaleTimeString(),
         });
+      });
+
+      // Laptop tapped "Send to device" — jump the phone to the target
+      // mobile page. BE already restricts `path` to /m/*; we re-check
+      // here so a misbehaving socket can't drag us elsewhere.
+      channel.on("navigate", (payload: NavigatePayload) => {
+        if (typeof payload?.path !== "string") return;
+        if (!payload.path.startsWith("/m/")) return;
+        toast.message("Opening from your laptop", {
+          icon: <ArrowRight className="size-4" />,
+          description: payload.path,
+        });
+        router.replace(payload.path);
       });
 
       channel.on("revoked", () => {

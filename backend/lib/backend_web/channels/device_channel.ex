@@ -9,8 +9,11 @@ defmodule BackendWeb.DeviceChannel do
 
   Events the channel receives (broadcast from `Backend.Devices`):
 
-    * `ping`    — `%{message, sent_at}` — laptop "send test ping".
-    * `revoked` — empty — emitted on revoke; client should disconnect.
+    * `ping`     — `%{message, sent_at}` — laptop "send test ping".
+    * `navigate` — `%{path, sent_at}`    — laptop "send to device";
+      mobile shell hard-replaces the route to `path` (restricted to
+      `/m/*` paths server-side).
+    * `revoked`  — empty — emitted on revoke; client should disconnect.
   """
 
   use Phoenix.Channel

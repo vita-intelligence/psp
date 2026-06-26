@@ -930,8 +930,10 @@ defmodule BackendWeb.Router do
     # in the context), so no separate RBAC perm is needed.
     get "/devices", LinkedDeviceController, :index
     post "/devices/pairing-codes", LinkedDeviceController, :create_pairing_code
+    post "/devices/push-navigate", LinkedDeviceController, :push_navigate
     delete "/devices/:uuid", LinkedDeviceController, :revoke
     post "/devices/:uuid/ping", LinkedDeviceController, :ping
+    post "/devices/:uuid/push-navigate", LinkedDeviceController, :push_navigate_one
 
     # Stock — lots, placements, movements. Read-only in Slice 1;
     # receive/move/consume/dispose endpoints land in subsequent
