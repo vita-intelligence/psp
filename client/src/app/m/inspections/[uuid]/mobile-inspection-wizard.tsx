@@ -1363,11 +1363,11 @@ function makeDefaultPack(qty: string = ""): PackDraft {
 // downstream depend on them, and an audit will ask for both.
 function isPackComplete(p: PackDraft): boolean {
   return (
-    Number(p.qty) > 0 &&
+    parseLooseDecimal(p.qty) > 0 &&
     Number(p.package_length_mm) > 0 &&
     Number(p.package_width_mm) > 0 &&
     Number(p.package_height_mm) > 0 &&
-    Number(p.package_weight_kg) > 0 &&
+    parseLooseDecimal(p.package_weight_kg) > 0 &&
     Number.isInteger(Number(p.stack_factor)) &&
     Number(p.stack_factor) > 0 &&
     p.manufactured_at.trim() !== "" &&
@@ -1375,8 +1375,41 @@ function isPackComplete(p: PackDraft): boolean {
   );
 }
 
+/**
+ * Parse a decimal the operator may have typed with either dot or
+ * comma as the separator (EU keyboards default to comma). Returns
+ * NaN for empty / unparseable input so callers can skip + show the
+ * usual "required" UI.
+ *
+ *   "25"      → 25
+ *   "25.5"    → 25.5
+ *   "25,5"    → 25.5
+ *   "1,234.56"→ 1234.56  (last separator wins as decimal)
+ *   "1.234,56"→ 1234.56  (same — handles EU thousands-dot)
+ *   ""        → NaN
+ */
+function parseLooseDecimal(raw: string | number | null | undefined): number {
+  if (typeof raw === "number") return raw;
+  if (raw == null) return NaN;
+  let s = String(raw).trim().replace(/\s+/g, "");
+  if (s === "") return NaN;
+  const lastDot = s.lastIndexOf(".");
+  const lastComma = s.lastIndexOf(",");
+  if (lastDot !== -1 && lastComma !== -1) {
+    const decimalIdx = Math.max(lastDot, lastComma);
+    const intPart = s.slice(0, decimalIdx).replace(/[.,]/g, "");
+    const fracPart = s.slice(decimalIdx + 1).replace(/[.,]/g, "");
+    s = `${intPart}.${fracPart}`;
+  } else if (lastComma !== -1) {
+    s = s.replace(/,/g, ".");
+  }
+  return Number(s);
+}
+
 function sumCompletePackQty(packs: PackDraft[]): number {
-  return packs.filter(isPackComplete).reduce((acc, p) => acc + Number(p.qty), 0);
+  return packs
+    .filter(isPackComplete)
+    .reduce((acc, p) => acc + parseLooseDecimal(p.qty), 0);
 }
 
 // Running total of every pack that has a positive qty typed, regardless
@@ -1386,20 +1419,24 @@ function sumCompletePackQty(packs: PackDraft[]): number {
 // to be complete.
 function sumTypedPackQty(packs: PackDraft[]): number {
   return packs.reduce((acc, p) => {
-    const n = Number(p.qty);
+    const n = parseLooseDecimal(p.qty);
     return n > 0 ? acc + n : acc;
   }, 0);
 }
 
 function packDraftToWire(p: PackDraft): InspectionItemPack {
-  const qty = Number(p.qty);
+  // Decimals route through parseLooseDecimal so a EU-typed "25,5"
+  // round-trips as "25.5" to the BE — which expects dot-separated
+  // input for Decimal.parse.
+  const qty = parseLooseDecimal(p.qty);
+  const weight = parseLooseDecimal(p.package_weight_kg);
   // One editor row = one physical pack, so units_per_package = qty.
   // The schema's `packages = qty / units_per_package` formula then
   // resolves to exactly 1 pack per row, matching the operator's
   // mental model. If the operator explicitly typed something
   // different in `units_per_package` we honour it (advanced case:
   // "5 identical drums in 1 row" → qty=125, units_per_package=25).
-  const explicitUpp = Number(p.units_per_package);
+  const explicitUpp = parseLooseDecimal(p.units_per_package);
   const unitsPerPackage =
     Number.isFinite(explicitUpp) && explicitUpp > 0 ? explicitUpp : qty;
 
@@ -1409,7 +1446,7 @@ function packDraftToWire(p: PackDraft): InspectionItemPack {
     package_length_mm: Number(p.package_length_mm),
     package_width_mm: Number(p.package_width_mm),
     package_height_mm: Number(p.package_height_mm),
-    package_weight_kg: String(Number(p.package_weight_kg)),
+    package_weight_kg: String(weight),
     units_per_package: unitsPerPackage,
     stack_factor:
       Number.isInteger(stackFactor) && stackFactor > 0 ? stackFactor : 1,

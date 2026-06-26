@@ -329,7 +329,7 @@ defmodule Backend.GoodsIn do
         :error
 
       is_binary(raw) ->
-        case Decimal.parse(String.trim(raw)) do
+        case raw |> String.trim() |> normalise_decimal_string() |> Decimal.parse() do
           {dec, ""} -> {:ok, dec}
           _ -> :error
         end
@@ -339,6 +339,42 @@ defmodule Backend.GoodsIn do
 
       true ->
         :error
+    end
+  end
+
+  # Operators with EU keyboards type "25,5" instead of "25.5". Swap a
+  # lone comma in for a dot so Decimal.parse accepts it. If both `.`
+  # and `,` are present the last separator wins as the decimal point
+  # (covers "1.234,56" + "1,234.56" thousands shapes).
+  defp normalise_decimal_string(s) when is_binary(s) do
+    has_dot = String.contains?(s, ".")
+    has_comma = String.contains?(s, ",")
+
+    cond do
+      has_dot and has_comma ->
+        last_dot = byte_index_of_last(s, ".")
+        last_comma = byte_index_of_last(s, ",")
+        decimal_idx = max(last_dot, last_comma)
+        int_part = s |> binary_part(0, decimal_idx) |> String.replace([".", ","], "")
+        frac_part =
+          s
+          |> binary_part(decimal_idx + 1, byte_size(s) - decimal_idx - 1)
+          |> String.replace([".", ","], "")
+
+        int_part <> "." <> frac_part
+
+      has_comma ->
+        String.replace(s, ",", ".")
+
+      true ->
+        s
+    end
+  end
+
+  defp byte_index_of_last(s, needle) when is_binary(s) and is_binary(needle) do
+    case :binary.matches(s, needle) do
+      [] -> -1
+      matches -> matches |> List.last() |> elem(0)
     end
   end
 
@@ -532,7 +568,7 @@ defmodule Backend.GoodsIn do
   end
 
   defp coerce_numeric(s) when is_binary(s) do
-    case Decimal.parse(String.trim(s)) do
+    case s |> String.trim() |> normalise_decimal_string() |> Decimal.parse() do
       {dec, ""} -> coerce_numeric(dec)
       _ -> nil
     end
