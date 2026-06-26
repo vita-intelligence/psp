@@ -767,31 +767,33 @@ export function MobileInspectionWizard({
             {/* Lot-create failures land structured fields with the
                 line uuid + pack index. Surface a one-tap jump back
                 to that exact product so the operator doesn't have
-                to hunt for it. */}
-            {error.code === "lot_create_failed" && (() => {
-              const lineUuid = error.fields?.line_uuid?.[0];
-              const targetIdx = lines.findIndex((l) => l.uuid === lineUuid);
-              if (targetIdx < 0) return null;
-              const linesStepIdx = STEPS.findIndex((s) => s.id === "lines");
-              const itemLabel = error.fields?.item_label?.[0];
-              return (
-                <Button
-                  type="button"
-                  size="lg"
-                  variant="outline"
-                  className="w-full justify-center gap-2"
-                  onClick={() => {
-                    setError(null);
-                    if (linesStepIdx >= 0) setStepIdx(linesStepIdx);
-                    setLineIdx(targetIdx);
-                    window.scrollTo({ top: 0 });
-                  }}
-                >
-                  <ChevronLeft className="size-4" />
-                  Go to {itemLabel ?? "that pack"}
-                </Button>
-              );
-            })()}
+                to hunt for it. We always show the button when the
+                BE returned this code — even when the line lookup
+                misses, jumping to the lines step is still helpful. */}
+            {error.code === "lot_create_failed" && (
+              <Button
+                type="button"
+                size="lg"
+                variant="outline"
+                className="w-full justify-center gap-2"
+                onClick={() => {
+                  const lineUuid = error.fields?.line_uuid?.[0];
+                  const targetIdx = lines.findIndex(
+                    (l) => l.uuid === lineUuid,
+                  );
+                  const linesStepIdx = STEPS.findIndex(
+                    (s) => s.id === "lines",
+                  );
+                  setError(null);
+                  if (linesStepIdx >= 0) setStepIdx(linesStepIdx);
+                  setLineIdx(targetIdx >= 0 ? targetIdx : 0);
+                  window.scrollTo({ top: 0 });
+                }}
+              >
+                <ChevronLeft className="size-4" />
+                Go to {error.fields?.item_label?.[0] ?? "the failing pack"}
+              </Button>
+            )}
           </div>
         )}
 
