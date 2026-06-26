@@ -674,8 +674,11 @@ export function MobileInspectionWizard({
         setError(res);
         return;
       }
-      applyResultInspection(res.inspection);
-      router.refresh();
+      // Inspection is now submitted — the operator's job is done.
+      // Drop them on the mobile home screen instead of leaving them
+      // on the locked, read-only form they can't edit any more.
+      toast.success("Signed off — inspection sent for quality approval.");
+      router.replace("/m");
     });
   }
 
