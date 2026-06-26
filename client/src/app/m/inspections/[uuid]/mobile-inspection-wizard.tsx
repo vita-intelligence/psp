@@ -299,20 +299,30 @@ export function MobileInspectionWizard({
       startSave(async () => {
         switch (step.id) {
           case "delivery": {
-            if (!delivery.delivery_date) {
+            // Compliance: delivery paperwork drives traceability. The
+            // seal number is the only optional field — vendors don't
+            // always seal loads. Everything else has to be on the row.
+            const missing: string[] = [];
+            if (!delivery.delivery_date) missing.push("delivery date");
+            if (!delivery.delivery_time) missing.push("delivery time");
+            if (!delivery.transport_company.trim())
+              missing.push("transport company");
+            if (!delivery.vehicle_registration.trim())
+              missing.push("vehicle registration");
+            if (missing.length > 0) {
               setError({
-                detail: "Pick a delivery date before continuing.",
-                code: "missing_date",
+                detail: `Fill in the required field${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`,
+                code: "missing_delivery_fields",
               });
               resolve(false);
               return;
             }
             const res = await updateInspectionAction(inspection.uuid, {
               delivery_date: delivery.delivery_date,
-              delivery_time: delivery.delivery_time || null,
-              transport_company: delivery.transport_company || null,
-              vehicle_registration: delivery.vehicle_registration || null,
-              seal_number: delivery.seal_number || null,
+              delivery_time: delivery.delivery_time,
+              transport_company: delivery.transport_company.trim(),
+              vehicle_registration: delivery.vehicle_registration.trim(),
+              seal_number: delivery.seal_number.trim() || null,
             });
             if (!res.ok) {
               setError(res);
@@ -358,7 +368,7 @@ export function MobileInspectionWizard({
               const completePacks = draft.packs.filter(isPackComplete);
               if (completePacks.length === 0) {
                 setError({
-                  detail: `Add at least one complete pack (qty + dimensions + weight) for ${itemNameFor(line)}.`,
+                  detail: `Add at least one complete pack (qty + dimensions + weight + manufactured + expiry) for ${itemNameFor(line)}.`,
                   code: "missing_packs",
                 });
                 resolve(false);
@@ -422,6 +432,19 @@ export function MobileInspectionWizard({
       setError({
         detail: "Tick or note at least one check before continuing.",
         code: "section_empty",
+      });
+      return false;
+    }
+    // Compliance: a "No" answer without a written reason is a dead
+    // audit row. Block save until each negative answer has notes —
+    // mirrors the per-row red-border rendered in SectionPanel.
+    const missingReasons = Object.entries(value)
+      .filter(([, row]) => row.passed === false && !(row.notes ?? "").trim())
+      .map(([k]) => k);
+    if (missingReasons.length > 0) {
+      setError({
+        detail: `Write a note explaining the "No" answer${missingReasons.length === 1 ? "" : "s"} before continuing.`,
+        code: "missing_no_notes",
       });
       return false;
     }
@@ -635,6 +658,7 @@ export function MobileInspectionWizard({
             <div className="grid gap-3">
               <Field
                 label="Delivery date"
+                required
                 input={
                   <Input
                     type="date"
@@ -651,6 +675,7 @@ export function MobileInspectionWizard({
               />
               <Field
                 label="Delivery time"
+                required
                 input={
                   <Input
                     type="time"
@@ -666,6 +691,7 @@ export function MobileInspectionWizard({
               />
               <Field
                 label="Transport company"
+                required
                 input={
                   <Input
                     value={delivery.transport_company}
@@ -681,6 +707,7 @@ export function MobileInspectionWizard({
               />
               <Field
                 label="Vehicle registration"
+                required
                 input={
                   <Input
                     value={delivery.vehicle_registration}
@@ -700,6 +727,7 @@ export function MobileInspectionWizard({
               />
               <Field
                 label="Seal number"
+                hint="Leave blank if the load wasn't sealed."
                 input={
                   <Input
                     value={delivery.seal_number}
@@ -709,7 +737,7 @@ export function MobileInspectionWizard({
                         seal_number: e.target.value,
                       })
                     }
-                    placeholder="Leave blank if none"
+                    placeholder="e.g. 8472193"
                   />
                 }
               />
@@ -837,16 +865,36 @@ function currentLocalTime(): string {
 function Field({
   label,
   input,
+  required,
+  hint,
 }: {
   label: string;
   input: React.ReactNode;
+  required?: boolean;
+  /** One-line clarifier under the label (e.g. "leave blank if none"). */
+  hint?: string;
 }) {
   return (
     <div className="space-y-1">
-      <Label className="text-xs uppercase tracking-wider text-muted-foreground">
-        {label}
+      <Label className="flex items-center gap-1 text-xs uppercase tracking-wider text-muted-foreground">
+        <span>{label}</span>
+        {required && (
+          <span aria-hidden className="text-destructive">
+            *
+          </span>
+        )}
+        {!required && (
+          <span className="text-[10px] normal-case tracking-normal text-muted-foreground/70">
+            (optional)
+          </span>
+        )}
       </Label>
       {input}
+      {hint && (
+        <p className="text-[10px] leading-tight text-muted-foreground/80">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }
@@ -909,14 +957,24 @@ function SectionPanel({
                 value={row?.notes ?? ""}
                 placeholder={
                   passed === false
-                    ? "Describe the issue (required for No)"
+                    ? "Describe the issue — required for No"
                     : "Notes (optional)"
                 }
                 rows={2}
                 onChange={(e) =>
                   update(check.key, { notes: e.target.value || null })
                 }
+                className={cn(
+                  passed === false &&
+                    !(row?.notes ?? "").trim() &&
+                    "border-destructive focus-visible:ring-destructive/40",
+                )}
               />
+              {passed === false && !(row?.notes ?? "").trim() && (
+                <p className="text-[11px] font-medium text-destructive">
+                  A note explaining the issue is required for No.
+                </p>
+              )}
             </div>
           );
         })}
@@ -992,6 +1050,8 @@ function makeDefaultPack(qty: string = ""): PackDraft {
 // have a half-typed extra row in flight without it blocking save.
 // `units_per_package` is auto-derived from qty on the wire (one
 // editor row = one physical pack), so it's not in the gate.
+// Manufactured + expiry are required: shelf-life math + FEFO
+// downstream depend on them, and an audit will ask for both.
 function isPackComplete(p: PackDraft): boolean {
   return (
     Number(p.qty) > 0 &&
@@ -1000,7 +1060,9 @@ function isPackComplete(p: PackDraft): boolean {
     Number(p.package_height_mm) > 0 &&
     Number(p.package_weight_kg) > 0 &&
     Number.isInteger(Number(p.stack_factor)) &&
-    Number(p.stack_factor) > 0
+    Number(p.stack_factor) > 0 &&
+    p.manufactured_at.trim() !== "" &&
+    p.expiry_at.trim() !== ""
   );
 }
 
@@ -1386,23 +1448,25 @@ function PackEditor({
         />
       </div>
 
-      {/* Traceability fields — manufactured + expiry from the pack
-          label, country of origin from the CoA, revision when the
-          vendor stamps one. All optional at the FE level so the
-          operator can step forward if the vendor's paperwork is
-          missing a value (audit catches that gap in QC review). */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Traceability fields — manufactured + expiry come off the
+          pack label and drive shelf-life / FEFO downstream. Required
+          so the operator can't skip a date that audit will ask for.
+          Stacked one-per-line on mobile so the date wheels have
+          room and the labels never truncate. */}
+      <div className="grid grid-cols-1 gap-2">
         <PackInput
-          label="Manufactured"
+          label="Manufactured date"
           value={pack.manufactured_at}
           onChange={(v) => onPatch({ manufactured_at: v })}
           mode="date"
+          required
         />
         <PackInput
-          label="Expiry"
+          label="Expiry date"
           value={pack.expiry_at}
           onChange={(v) => onPatch({ expiry_at: v })}
           mode="date"
+          required
         />
       </div>
 
@@ -1439,6 +1503,7 @@ function PackInput({
   mode,
   mono,
   helper,
+  required,
 }: {
   label: string;
   value: string;
@@ -1450,11 +1515,20 @@ function PackInput({
    *  label alone could be misread (e.g. "Pack weight" vs "Product in
    *  pack" — both are kg numbers, the helper disambiguates). */
   helper?: string;
+  /** Show a destructive asterisk on the label so the operator knows
+   *  this one blocks "Save & continue". The pack-completeness gate
+   *  on the lines step is what actually enforces it. */
+  required?: boolean;
 }) {
   return (
     <label className="block space-y-0.5">
-      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-        {label}
+      <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span>{label}</span>
+        {required && (
+          <span aria-hidden className="text-destructive">
+            *
+          </span>
+        )}
       </span>
       <Input
         type={mode === "date" ? "date" : "text"}
