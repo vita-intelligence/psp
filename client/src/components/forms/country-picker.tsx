@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronsUpDown, Search, X } from "lucide-react";
 import {
   Popover,
@@ -277,8 +278,13 @@ function MobileCountrySheet({
   }, [open, onOpenChange]);
 
   if (!open) return null;
+  if (typeof document === "undefined") return null;
 
-  return (
+  // Render at document.body so the sheet is OUTSIDE any wrapping
+  // <label> from the caller. Without this, clicks on Close / Done
+  // were bubbling to the label, which then re-fired the click on the
+  // labelled trigger button — so the sheet immediately re-opened.
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -382,6 +388,7 @@ function MobileCountrySheet({
           Done
         </Button>
       </footer>
-    </div>
+    </div>,
+    document.body,
   );
 }
