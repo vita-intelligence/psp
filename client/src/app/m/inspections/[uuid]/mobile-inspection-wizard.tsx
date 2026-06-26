@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -224,6 +225,12 @@ export function MobileInspectionWizard({
   const router = useRouter();
   const [inspection, setInspection] = useState(initial);
   const [stepIdx, setStepIdx] = useState(0);
+  // Sub-step inside the "lines" step — the PO can have many lines, and
+  // stacking them on one phone screen drowns the operator. We render
+  // ONE line at a time and bounce through them with the same footer
+  // Back / Next buttons. Reset to the first line whenever the operator
+  // re-enters the lines step from outside.
+  const [lineIdx, setLineIdx] = useState(0);
   const [error, setError] = useState<WizardError | null>(null);
   const [saving, startSave] = useTransition();
 
@@ -294,6 +301,13 @@ export function MobileInspectionWizard({
   const step = STEPS[stepIdx]!;
 
   const canAdvance = stepIdx < STEPS.length - 1;
+
+  // Reset the inner line index whenever the operator enters or leaves
+  // the "lines" step. This means stepping back from a later step
+  // re-enters at line 1 — explicit but simple.
+  useEffect(() => {
+    if (step.id === "lines") setLineIdx(0);
+  }, [step.id]);
 
   /* ============ persistence helpers ============ */
 
@@ -373,54 +387,66 @@ export function MobileInspectionWizard({
             resolve(true);
             return;
           case "lines": {
-            // upsert every line that has at least one complete pack +
-            // decision; we do them serially so a single 422 surfaces
-            // with which line was the offender rather than a
-            // Promise.all swallow.
-            for (const line of lines) {
-              const draft = items[line.uuid];
-              if (!draft) continue;
-              const completePacks = draft.packs.filter(isPackComplete);
-              if (completePacks.length === 0) {
-                setError({
-                  detail: `Add at least one complete pack (qty + dimensions + weight + manufactured + expiry) for ${itemNameFor(line)}.`,
-                  code: "missing_packs",
-                });
-                resolve(false);
-                return;
-              }
-              if (
-                draft.material_decision !== "accept" &&
-                !draft.material_decision_reason
-              ) {
-                setError({
-                  detail: `Add a reason for the ${draft.material_decision} decision on ${itemNameFor(line)}.`,
-                  code: "missing_reason",
-                });
-                resolve(false);
-                return;
-              }
-              const packs = completePacks.map(packDraftToWire);
-              const totalQty = sumCompletePackQty(completePacks);
-              const res = await upsertItemAction(inspection.uuid, line.uuid, {
-                // BE re-derives qty_received from `packs` server-side
-                // (see `reconcile_qty_from_packs`); we send our local
-                // sum so legacy callers + the changeset's required
-                // validation are both happy.
-                qty_received: String(totalQty),
-                packs,
-                packaging_condition: draft.packaging_condition || undefined,
-                packaging_condition_notes:
-                  draft.packaging_condition_notes || null,
-                material_decision: draft.material_decision,
-                material_decision_reason:
-                  draft.material_decision_reason || null,
+            // One product per save — the operator advances through
+            // lines via the footer Next button, and we upsert that
+            // single line on each advance. Stops the operator from
+            // hitting a wall when line 5 is broken but lines 1-4 are
+            // already good (previous behaviour PATCHed every line on
+            // every Next and surfaced the first failure each time).
+            const line = lines[lineIdx];
+            if (!line) {
+              resolve(true);
+              return;
+            }
+            const draft = items[line.uuid];
+            if (!draft) {
+              setError({
+                detail: `Add at least one complete pack (qty + dimensions + weight + manufactured + expiry) for ${itemNameFor(line)}.`,
+                code: "missing_packs",
               });
-              if (!res.ok) {
-                setError(res);
-                resolve(false);
-                return;
-              }
+              resolve(false);
+              return;
+            }
+            const completePacks = draft.packs.filter(isPackComplete);
+            if (completePacks.length === 0) {
+              setError({
+                detail: `Add at least one complete pack (qty + dimensions + weight + manufactured + expiry) for ${itemNameFor(line)}.`,
+                code: "missing_packs",
+              });
+              resolve(false);
+              return;
+            }
+            if (
+              draft.material_decision !== "accept" &&
+              !draft.material_decision_reason
+            ) {
+              setError({
+                detail: `Add a reason for the ${draft.material_decision} decision on ${itemNameFor(line)}.`,
+                code: "missing_reason",
+              });
+              resolve(false);
+              return;
+            }
+            const packs = completePacks.map(packDraftToWire);
+            const totalQty = sumCompletePackQty(completePacks);
+            const res = await upsertItemAction(inspection.uuid, line.uuid, {
+              // BE re-derives qty_received from `packs` server-side
+              // (see `reconcile_qty_from_packs`); we send our local
+              // sum so legacy callers + the changeset's required
+              // validation are both happy.
+              qty_received: String(totalQty),
+              packs,
+              packaging_condition: draft.packaging_condition || undefined,
+              packaging_condition_notes:
+                draft.packaging_condition_notes || null,
+              material_decision: draft.material_decision,
+              material_decision_reason:
+                draft.material_decision_reason || null,
+            });
+            if (!res.ok) {
+              setError(res);
+              resolve(false);
+              return;
             }
             resolve(true);
             return;
@@ -486,10 +512,33 @@ export function MobileInspectionWizard({
   async function onNext() {
     const ok = await saveCurrentStep();
     if (!ok) return;
+    // Inside the lines step we walk through products one at a time
+    // before advancing the wizard. The footer button doubles as a
+    // "Next product" until we reach the last line.
+    if (step.id === "lines" && lineIdx < lines.length - 1) {
+      setLineIdx((i) => i + 1);
+      window.scrollTo({ top: 0 });
+      return;
+    }
     if (canAdvance) {
       setStepIdx((i) => i + 1);
       window.scrollTo({ top: 0 });
     }
+  }
+
+  function onBackStep() {
+    // Walk back through line indices first if we're inside the lines
+    // step. Same logic as onNext mirrored: the footer Back button
+    // behaves as "Previous product" until we hit line 0, then it
+    // steps the outer wizard.
+    if (step.id === "lines" && lineIdx > 0) {
+      setLineIdx((i) => i - 1);
+      window.scrollTo({ top: 0 });
+      return;
+    }
+    if (stepIdx === 0) return;
+    setStepIdx((i) => i - 1);
+    window.scrollTo({ top: 0 });
   }
 
   async function onSignOperator() {
@@ -633,12 +682,12 @@ export function MobileInspectionWizard({
               size="lg"
               variant="outline"
               className="gap-1"
-              onClick={() => {
-                if (stepIdx === 0) return;
-                setStepIdx((i) => i - 1);
-                window.scrollTo({ top: 0 });
-              }}
-              disabled={saving || stepIdx === 0}
+              onClick={onBackStep}
+              disabled={
+                saving ||
+                (stepIdx === 0 &&
+                  !(step.id === "lines" && lineIdx > 0))
+              }
               data-testid="wizard-back"
             >
               <ChevronLeft className="size-4" />
@@ -686,7 +735,9 @@ export function MobileInspectionWizard({
                 <Loader2 className="size-4 animate-spin" />
               ) : (
                 <>
-                  Save &amp; continue
+                  {step.id === "lines" && lineIdx < lines.length - 1
+                    ? "Save & next product"
+                    : "Save & continue"}
                   <ChevronRight className="size-4" />
                 </>
               )}
@@ -844,28 +895,68 @@ export function MobileInspectionWizard({
             testId="step-storage"
           />
         );
-      case "lines":
+      case "lines": {
+        const currentLine = lines[lineIdx];
         return (
           <section className="space-y-4" data-testid="step-lines">
             <StepHeading title={step.title} />
-            {lines.length === 0 ? (
+            {lines.length === 0 || !currentLine ? (
               <p className="text-sm text-muted-foreground">
                 This PO has no lines.
               </p>
             ) : (
-              lines.map((line) => (
+              <>
+                {/* Sub-step progress — operator can see they're on
+                    line 2 of 4 without parsing pack rows. Pills show
+                    each line at a glance: green = saved on BE, brand
+                    = current, grey = pending. */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-muted-foreground">
+                      Product {lineIdx + 1} of {lines.length}
+                    </span>
+                    <span className="text-muted-foreground/70">
+                      {itemNameFor(currentLine)}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    {lines.map((l, i) => {
+                      const submitted = (inspection.items ?? []).some(
+                        (it) => it.purchase_order_line_uuid === l.uuid,
+                      );
+                      return (
+                        <span
+                          key={l.uuid}
+                          aria-hidden
+                          className={cn(
+                            "h-1.5 flex-1 rounded-full transition-colors",
+                            i === lineIdx
+                              ? "bg-brand"
+                              : submitted
+                                ? "bg-emerald-500/70"
+                                : "bg-border",
+                          )}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
                 <LineCard
-                  key={line.uuid}
-                  line={line}
-                  value={items[line.uuid]!}
+                  key={currentLine.uuid}
+                  line={currentLine}
+                  value={items[currentLine.uuid]!}
                   onChange={(next) =>
-                    setItems((prev) => ({ ...prev, [line.uuid]: next }))
+                    setItems((prev) => ({
+                      ...prev,
+                      [currentLine.uuid]: next,
+                    }))
                   }
                 />
-              ))
+              </>
             )}
           </section>
         );
+      }
       case "quarantine_label":
         return (
           <QuarantineLabelPanel
@@ -1315,21 +1406,82 @@ function LineCard({
   // off-count gets a second look before sign-off.
   const diffTone: "ok" | "warn" =
     totalReceived === qtyOrdered ? "ok" : "warn";
+  const overReceived = totalReceived > qtyOrdered;
+  const shortBy = qtyOrdered - totalReceived;
+  const overBy = totalReceived - qtyOrdered;
+  const itemCode = line.item?.code ?? null;
 
   return (
     <div
       className="space-y-3 rounded-lg border border-border/60 bg-card p-3"
       data-testid={`line-${line.uuid}`}
     >
-      <div>
-        <p className="text-sm font-semibold leading-tight">
-          {itemNameFor(line)}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Ordered: {line.qty_ordered}
-          {uomSymbol ? ` ${uomSymbol}` : ""}
-          {line.vendor_part_no ? ` · Vendor: ${line.vendor_part_no}` : ""}
-        </p>
+      {/* Item header — big enough to read across the warehouse floor,
+          with the PO-expected vs running-received numbers side-by-
+          side so the cross-check is unmissable. */}
+      <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-3">
+        <div className="space-y-0.5">
+          <p className="text-base font-semibold leading-tight">
+            {itemNameFor(line)}
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            {itemCode ? `${itemCode}` : null}
+            {itemCode && line.vendor_part_no ? " · " : null}
+            {line.vendor_part_no ? `Vendor: ${line.vendor_part_no}` : null}
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Ordered
+            </p>
+            <p className="text-xl font-bold tabular-nums leading-tight">
+              {qtyOrdered}
+              {uomSymbol ? (
+                <span className="ml-1 text-xs font-medium text-muted-foreground">
+                  {uomSymbol}
+                </span>
+              ) : null}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Received so far
+            </p>
+            <p
+              className={cn(
+                "text-xl font-bold tabular-nums leading-tight",
+                diffTone === "ok"
+                  ? "text-emerald-700 dark:text-emerald-400"
+                  : overReceived
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-foreground",
+              )}
+            >
+              {totalReceived}
+              {uomSymbol ? (
+                <span className="ml-1 text-xs font-medium text-muted-foreground">
+                  {uomSymbol}
+                </span>
+              ) : null}
+            </p>
+          </div>
+        </div>
+        {diffTone === "ok" ? (
+          <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+            Matches the PO.
+          </p>
+        ) : overReceived ? (
+          <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            Over by {overBy}
+            {uomSymbol ? ` ${uomSymbol}` : ""}. Confirm before signing.
+          </p>
+        ) : (
+          <p className="text-[11px] text-muted-foreground">
+            Still short by {shortBy}
+            {uomSymbol ? ` ${uomSymbol}` : ""}.
+          </p>
+        )}
       </div>
 
       {/* Packs — one row per physical pack. Each becomes its own
