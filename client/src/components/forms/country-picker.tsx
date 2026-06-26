@@ -243,7 +243,6 @@ function MobileCountrySheet({
   allowClear: boolean;
   onSelect: (code: string | null) => void;
 }) {
-  const searchRef = useRef<HTMLInputElement | null>(null);
   const selectedItemRef = useRef<HTMLLIElement | null>(null);
 
   // Lock body scroll while open so the sheet doesn't fight the page
@@ -297,14 +296,13 @@ function MobileCountrySheet({
         <div className="relative flex-1">
           <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            ref={searchRef}
-            autoFocus
             value={search}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search country or code…"
             className="h-11 pl-9 text-base"
-            // 16 px text avoids iOS's auto-zoom on focus; pl-9 leaves
-            // room for the search icon.
+            // No autoFocus — operator usually wants to scroll the
+            // list first; popping the keyboard immediately covers
+            // half the rows. They tap the input when ready to type.
           />
         </div>
         {/* Explicit labelled Close button — the icon-only version
