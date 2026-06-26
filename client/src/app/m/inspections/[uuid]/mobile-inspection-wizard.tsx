@@ -1273,6 +1273,18 @@ function sumCompletePackQty(packs: PackDraft[]): number {
   return packs.filter(isPackComplete).reduce((acc, p) => acc + Number(p.qty), 0);
 }
 
+// Running total of every pack that has a positive qty typed, regardless
+// of whether dimensions / dates have caught up. The cross-check strip
+// on the line header uses this so operators see the number tick up the
+// moment they enter a qty rather than waiting for the whole pack row
+// to be complete.
+function sumTypedPackQty(packs: PackDraft[]): number {
+  return packs.reduce((acc, p) => {
+    const n = Number(p.qty);
+    return n > 0 ? acc + n : acc;
+  }, 0);
+}
+
 function packDraftToWire(p: PackDraft): InspectionItemPack {
   const qty = Number(p.qty);
   // One editor row = one physical pack, so units_per_package = qty.
@@ -1397,7 +1409,12 @@ function LineCard({
   const uomSymbol =
     line.item?.stock_uom?.symbol ?? line.item?.stock_uom?.code ?? null;
   const qtyOrdered = Number(line.qty_ordered) || 0;
-  const totalReceived = sumCompletePackQty(value.packs);
+  // Cross-check header runs off the typed total so the number ticks
+  // up the moment the operator enters a qty — they don't need to fill
+  // every dimension before seeing what they've recorded so far. The
+  // pack-completeness gate at save-time still uses the strict
+  // `isPackComplete` view.
+  const totalReceived = sumTypedPackQty(value.packs);
   const completeCount = value.packs.filter(isPackComplete).length;
 
   // Diff vs PO — informational only, the wizard still allows a partial
@@ -1610,6 +1627,165 @@ function LineCard({
   );
 }
 
+/**
+ * Tiny isometric preview of the pack the operator is describing.
+ * Three rules:
+ *
+ *   - Side-by-side with the dimension inputs so typos jump out
+ *     visually (operators tell us they can't reason about a 3-mm vs
+ *     30-mm L without a picture).
+ *   - The stack factor draws additional boxes piled on top so "3"
+ *     reads as a vertical stack, not just a number.
+ *   - Pure CSS / SVG, no canvas / images / external assets — keeps
+ *     it fast on the warehouse iPhone over the dock wifi.
+ */
+function PackBoxPreview({
+  lengthMm,
+  widthMm,
+  heightMm,
+  stack,
+}: {
+  lengthMm: number;
+  widthMm: number;
+  heightMm: number;
+  stack: number;
+}) {
+  const hasDims = lengthMm > 0 && widthMm > 0 && heightMm > 0;
+  // Cap the rendered stack so a typo'd 99 doesn't blow the SVG out the
+  // top of the card. We still tell the user how high they meant.
+  const stackN = Math.max(1, Math.min(Math.round(stack || 1), 6));
+  const stackOverflow = (stack || 1) > 6;
+
+  if (!hasDims) {
+    return (
+      <div className="rounded-md border border-dashed border-border/60 bg-muted/20 px-3 py-4 text-center text-[11px] text-muted-foreground">
+        Fill in L / W / H to preview the pack shape.
+      </div>
+    );
+  }
+
+  const cos30 = Math.cos(Math.PI / 6);
+  const sin30 = Math.sin(Math.PI / 6);
+
+  // Initial scale so the longest face fits a ~70-unit footprint, then
+  // tighten if the stacked column would overflow the card height.
+  const dimMax = Math.max(lengthMm, widthMm, heightMm);
+  let scale = 70 / dimMax;
+  let w = widthMm * scale;
+  let h = heightMm * scale;
+  let d = lengthMm * scale;
+  // 0.55 squashes the depth so the iso projection doesn't lean too far.
+  let ix = d * cos30 * 0.55;
+  let iy = d * sin30 * 0.55;
+  const maxColumnH = 110;
+  const columnH = h * stackN + iy;
+  if (columnH > maxColumnH) {
+    const f = maxColumnH / columnH;
+    scale *= f;
+    w *= f;
+    h *= f;
+    ix *= f;
+    iy *= f;
+  }
+
+  const padX = 14;
+  const padY = 18;
+  const svgW = w + ix + padX * 2;
+  const svgH = h * stackN + iy + padY * 2;
+  const originX = padX;
+  const originY = svgH - padY;
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/10 p-2">
+      <div className="flex items-center justify-between gap-2 px-1 pb-1">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          Pack preview
+        </span>
+        <span className="text-[10px] text-muted-foreground/80 tabular-nums">
+          {lengthMm} × {widthMm} × {heightMm} mm
+          {stackN > 1 ? ` · stack ${stack}` : ""}
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${svgW} ${svgH}`}
+        className="mx-auto block h-32 w-full text-brand"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden
+      >
+        {Array.from({ length: stackN }, (_, i) => {
+          const yBase = originY - i * h;
+          const yTop = yBase - h;
+          const front = `M${originX},${yBase} L${originX + w},${yBase} L${originX + w},${yTop} L${originX},${yTop} Z`;
+          const top = `M${originX},${yTop} L${originX + w},${yTop} L${originX + w + ix},${yTop - iy} L${originX + ix},${yTop - iy} Z`;
+          const right = `M${originX + w},${yBase} L${originX + w + ix},${yBase - iy} L${originX + w + ix},${yTop - iy} L${originX + w},${yTop} Z`;
+          return (
+            <g key={i}>
+              <path
+                d={right}
+                fill="currentColor"
+                fillOpacity="0.45"
+                stroke="currentColor"
+                strokeOpacity="0.75"
+                strokeWidth="0.75"
+              />
+              <path
+                d={top}
+                fill="currentColor"
+                fillOpacity="0.3"
+                stroke="currentColor"
+                strokeOpacity="0.75"
+                strokeWidth="0.75"
+              />
+              <path
+                d={front}
+                fill="currentColor"
+                fillOpacity="0.65"
+                stroke="currentColor"
+                strokeOpacity="0.85"
+                strokeWidth="0.75"
+              />
+            </g>
+          );
+        })}
+        {/* Dim labels in raw mm, anchored outside the box footprint. */}
+        <text
+          x={originX + w / 2}
+          y={originY + 12}
+          textAnchor="middle"
+          fontSize="9"
+          className="fill-muted-foreground"
+        >
+          W {widthMm}
+        </text>
+        <text
+          x={originX + w + ix + 4}
+          y={originY - iy / 2 + 3}
+          textAnchor="start"
+          fontSize="9"
+          className="fill-muted-foreground"
+        >
+          L {lengthMm}
+        </text>
+        <text
+          x={originX - 4}
+          y={originY - (h * stackN) / 2 + 3}
+          textAnchor="end"
+          fontSize="9"
+          className="fill-muted-foreground"
+        >
+          H {heightMm}
+          {stackN > 1 ? `×${stackN}` : ""}
+        </text>
+      </svg>
+      {stackOverflow && (
+        <p className="px-1 pt-1 text-[10px] text-amber-700 dark:text-amber-300">
+          Stack factor {stack} — preview is capped at 6 for clarity.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function PackEditor({
   index,
   pack,
@@ -1700,6 +1876,17 @@ function PackEditor({
           helper="Max packs that can be safely stacked on top of each other (1 = no vertical stacking)"
         />
       </div>
+
+      {/* Live 3D preview of what the operator just typed. Updates as
+          L / W / H / stack change so a fat-finger on a dimension is
+          visually obvious (a 3000 mm pack on a 3-stack reads as a
+          tower well before the operator hits Save). */}
+      <PackBoxPreview
+        lengthMm={Number(pack.package_length_mm) || 0}
+        widthMm={Number(pack.package_width_mm) || 0}
+        heightMm={Number(pack.package_height_mm) || 0}
+        stack={Number(pack.stack_factor) || 1}
+      />
 
       <div className="grid grid-cols-1 gap-2">
         <PackInput
