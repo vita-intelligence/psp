@@ -309,6 +309,112 @@ export function MobileInspectionWizard({
     if (step.id === "lines") setLineIdx(0);
   }, [step.id]);
 
+  // Local-draft persistence ------------------------------------------------
+  // The wizard only PATCHes the BE when the operator hits "Save & continue"
+  // / "Save & next product". A refresh or accidental tab close in the middle
+  // of typing pack dimensions used to wipe everything. Mirror the local
+  // state into localStorage so the operator can pick up exactly where
+  // they left off — keyed by inspection uuid, capped at 24 h so a stale
+  // draft from yesterday doesn't override a clean inspection.
+  const draftKey = useMemo(
+    () => `psp:inspection-draft:${inspection.uuid}`,
+    [inspection.uuid],
+  );
+  const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+  const draftLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    if (typeof window === "undefined") return;
+    if (inspection.status !== "draft") return;
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as {
+        delivery?: typeof delivery;
+        vehicle?: SectionBag;
+        documentation?: SectionBag;
+        physical?: SectionBag;
+        foodSafety?: SectionBag;
+        storage?: SectionBag;
+        items?: Record<string, ItemDraft>;
+        stepIdx?: number;
+        lineIdx?: number;
+        savedAt?: number;
+      };
+      if (!draft.savedAt || Date.now() - draft.savedAt > DRAFT_TTL_MS) {
+        window.localStorage.removeItem(draftKey);
+        return;
+      }
+      if (draft.delivery) setDelivery(draft.delivery);
+      if (draft.vehicle) setVehicle(draft.vehicle);
+      if (draft.documentation) setDocumentation(draft.documentation);
+      if (draft.physical) setPhysical(draft.physical);
+      if (draft.foodSafety) setFoodSafety(draft.foodSafety);
+      if (draft.storage) setStorage(draft.storage);
+      if (draft.items) setItems(draft.items);
+      if (typeof draft.stepIdx === "number") setStepIdx(draft.stepIdx);
+      if (typeof draft.lineIdx === "number") setLineIdx(draft.lineIdx);
+    } catch {
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        // Storage blocked entirely (private browsing). Nothing to do.
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // Once the operator signs (status !== draft) the BE owns the truth.
+    // Clear any leftover draft so a later draft re-open starts fresh.
+    if (inspection.status !== "draft") {
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        // ignore quota / private-mode failures
+      }
+      return;
+    }
+    const handle = setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          draftKey,
+          JSON.stringify({
+            delivery,
+            vehicle,
+            documentation,
+            physical,
+            foodSafety,
+            storage,
+            items,
+            stepIdx,
+            lineIdx,
+            savedAt: Date.now(),
+          }),
+        );
+      } catch {
+        // Quota exceeded / Safari private mode — silent fail is fine,
+        // the BE save path still works on Save & continue.
+      }
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [
+    inspection.status,
+    draftKey,
+    delivery,
+    vehicle,
+    documentation,
+    physical,
+    foodSafety,
+    storage,
+    items,
+    stepIdx,
+    lineIdx,
+  ]);
+
   /* ============ persistence helpers ============ */
 
   function applyResultInspection(next: Inspection) {
@@ -1435,8 +1541,15 @@ function LineCard({
     >
       {/* Item header — big enough to read across the warehouse floor,
           with the PO-expected vs running-received numbers side-by-
-          side so the cross-check is unmissable. */}
-      <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-3">
+          side so the cross-check is unmissable. Sticky just under the
+          wizard header so the operator keeps the target qty in sight
+          while scrolling through pack rows. The 56-px offset matches
+          the wizard header's height; bg-background/95 + backdrop blur
+          keep the content beneath readable as it slides under. */}
+      <div
+        className="sticky z-10 space-y-2 rounded-md border border-border/60 bg-background/95 p-3 shadow-sm backdrop-blur"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 56px)" }}
+      >
         <div className="space-y-0.5">
           <p className="text-base font-semibold leading-tight">
             {itemNameFor(line)}
