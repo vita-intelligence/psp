@@ -628,8 +628,8 @@ export function ScheduleWorkspace({
       if (!chosen) return;
 
       const dayIso = chosen.dayIso;
-      const dayMs = new Date(dayIso).getTime();
-      if (!Number.isFinite(dayMs)) return;
+      const dayLocal = new Date(dayIso);
+      if (Number.isNaN(dayLocal.getTime())) return;
 
       const yWithinColumn = cursor.y - chosen.rect.top;
       const minutesFromGridStart = Math.max(
@@ -640,8 +640,26 @@ export function ScheduleWorkspace({
       // intentional drag (e.g. nudge by half an hour) registers.
       const snapped = Math.round(minutesFromGridStart / 5) * 5;
       const totalMinutes = CALENDAR_DAY_START_HOUR * 60 + snapped;
+      const hours = Math.floor(totalMinutes / 60);
+      const mins = totalMinutes % 60;
 
-      const newStartDate = new Date(dayMs + totalMinutes * 60_000);
+      // Build the new start using LOCAL year/month/date from the day
+      // column and LOCAL hours/minutes from the cursor — the calendar
+      // grid renders hour labels in the user's local timezone, so the
+      // drop's interpretation must match. Building via UTC dayMs +
+      // local minutes silently shifted every drop by the user's UTC
+      // offset (in BST: 10:00 visual → 11:00 actual), which combined
+      // with the BE walker pushed late-day drops past close into the
+      // next working day — making blocks 'disappear' to the user.
+      const newStartDate = new Date(
+        dayLocal.getFullYear(),
+        dayLocal.getMonth(),
+        dayLocal.getDate(),
+        hours,
+        mins,
+        0,
+        0,
+      );
 
       if (isPast(newStartDate)) {
         toast.error("Can't drag the operation before the current time.");
