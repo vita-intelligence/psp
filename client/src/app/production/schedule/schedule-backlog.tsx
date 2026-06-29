@@ -9,6 +9,7 @@ import {
   GitBranch,
   GripVertical,
   Inbox,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,7 @@ interface Props {
   items: BacklogMO[];
   canEdit: boolean;
   company: CompanyDefaults;
+  onQuickSchedule?: (mo: BacklogMO) => void;
 }
 
 interface TreeNode {
@@ -59,7 +61,7 @@ function buildTree(items: BacklogMO[]): TreeNode[] {
   return roots;
 }
 
-export function ScheduleBacklog({ items, canEdit, company }: Props) {
+export function ScheduleBacklog({ items, canEdit, company, onQuickSchedule }: Props) {
   // The rail itself is a drop target — dropping a scheduled block on
   // it = unschedule. The workspace inspects over.id === "backlog-zone".
   const { setNodeRef, isOver } = useDroppable({ id: "backlog-zone" });
@@ -108,6 +110,7 @@ export function ScheduleBacklog({ items, canEdit, company }: Props) {
                 canEdit={canEdit}
                 company={company}
                 depth={0}
+                onQuickSchedule={onQuickSchedule}
               />
             ))}
           </ul>
@@ -122,11 +125,13 @@ function TreeRow({
   canEdit,
   company,
   depth,
+  onQuickSchedule,
 }: {
   node: TreeNode;
   canEdit: boolean;
   company: CompanyDefaults;
   depth: number;
+  onQuickSchedule?: (mo: BacklogMO) => void;
 }) {
   // Collapsed by default so the rail stays compact — planner
   // expands only the projects they want to break apart.
@@ -148,6 +153,11 @@ function TreeRow({
         expanded={expanded}
         canToggle={hasChildren || hasSteps}
         onToggle={() => setExpanded((e) => !e)}
+        onQuickSchedule={
+          onQuickSchedule && !isProjectRoot
+            ? () => onQuickSchedule(node.mo)
+            : undefined
+        }
       />
 
       {expanded && (hasChildren || hasSteps) && (
@@ -163,6 +173,7 @@ function TreeRow({
                 canEdit={canEdit}
                 company={company}
                 depth={depth + 1}
+                onQuickSchedule={onQuickSchedule}
               />
             ))}
           {hasSteps && !hasChildren && (
@@ -193,6 +204,7 @@ function BacklogMOCard({
   expanded,
   canToggle,
   onToggle,
+  onQuickSchedule,
 }: {
   mo: BacklogMO;
   canEdit: boolean;
@@ -202,6 +214,7 @@ function BacklogMOCard({
   expanded: boolean;
   canToggle: boolean;
   onToggle: () => void;
+  onQuickSchedule?: () => void;
 }) {
   const id = `backlog-${dragKind}-${mo.uuid}`;
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -281,6 +294,21 @@ function BacklogMOCard({
             <span className="shrink-0 rounded-full bg-muted px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
               Sub-MO
             </span>
+          )}
+          {onQuickSchedule && canEdit && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuickSchedule();
+              }}
+              className="shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-950/50"
+              title="Quick schedule — type a start time or pick a free slot"
+              aria-label="Quick schedule"
+            >
+              <Zap className="size-3" />
+            </button>
           )}
         </div>
         <p className="truncate text-[11px]" title={mo.item?.name ?? ""}>

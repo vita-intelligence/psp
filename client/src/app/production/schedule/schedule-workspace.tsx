@@ -90,6 +90,8 @@ import {
   CALENDAR_DAY_START_HOUR,
   CALENDAR_HOUR_HEIGHT_PX,
 } from "./schedule-view-calendar";
+import { QuickSchedulePanel } from "./schedule-quick-panel";
+import type { BacklogMO } from "@/lib/production/types";
 
 interface Site {
   id: number;
@@ -168,6 +170,7 @@ export function ScheduleWorkspace({
     kind: "project" | "mo";
   } | null>(null);
   const [editTarget, setEditTarget] = useState<ScheduleEditTarget | null>(null);
+  const [quickScheduleMo, setQuickScheduleMo] = useState<BacklogMO | null>(null);
   const [, startTransition] = useTransition();
 
   // The canvas DOM ref + a live cursor ref let us turn a drag-end
@@ -586,6 +589,25 @@ export function ScheduleWorkspace({
 
       const moUuid = op.manufacturing_order?.uuid;
       if (!moUuid) return;
+
+      // Drop onto the backlog rail = unschedule the whole MO. dnd-kit
+      // detects this even though the calendar uses pointerWithin —
+      // the backlog rail is a sibling droppable, not nested inside
+      // the calendar grid.
+      if (overId === "backlog-zone") {
+        startTransition(async () => {
+          const res = await unscheduleManufacturingOrderAction(moUuid);
+          if (res.ok) {
+            toast.success("Returned to backlog");
+            invalidateAudit("manufacturing_order", res.mo.id);
+            router.refresh();
+            await reload();
+          } else {
+            toast.error(res.detail);
+          }
+        });
+        return;
+      }
 
       const cursor = cursorRef.current;
       if (!cursor) {
@@ -1385,7 +1407,21 @@ export function ScheduleWorkspace({
               items={data?.backlog ?? []}
               canEdit={canEditSteps}
               company={company}
+              onQuickSchedule={(mo) => setQuickScheduleMo(mo)}
             />
+
+            {data && quickScheduleMo && (
+              <QuickSchedulePanel
+                mo={quickScheduleMo}
+                data={data}
+                onClose={() => setQuickScheduleMo(null)}
+                onScheduled={() => {
+                  setQuickScheduleMo(null);
+                  void reload();
+                  router.refresh();
+                }}
+              />
+            )}
 
             <CanvasArea
               canvasRef={canvasRef}
@@ -1517,7 +1553,12 @@ function CanvasArea({
         // No overflow on this wrapper — the CalendarShell owns the
         // scroll container inside. Nested overflow ancestors clip
         // dragged blocks twice and confuse the drop detection.
-        "flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-shadow",
+        // `relative` + `z-20` lift the canvas above the sibling
+        // backlog rail when a drag is in progress, so dragged blocks
+        // (z-30 inside this stacking context) visually sit on top of
+        // the rail instead of sliding under it.
+        "relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-shadow",
+        activeDragId ? "z-20" : "z-0",
         isBacklogDrag &&
           "shadow-[inset_0_0_0_2px_color-mix(in_oklab,var(--color-brand)_45%,transparent)]",
       )}
