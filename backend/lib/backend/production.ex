@@ -4145,23 +4145,35 @@ defmodule Backend.Production do
   """
   def shift_mo_chain(%User{} = actor, %ManufacturingOrder{} = root, delta_seconds)
       when is_integer(delta_seconds) do
-    if delta_seconds == 0 do
-      {:ok, reload_manufacturing_order(root)}
-    else
-      # Pure delta shift — add delta_seconds to every step's
-      # planned_start / planned_finish across the whole chain. No
-      # rescheduler re-walk: the user dragged by exactly delta and
-      # expects every step to move by exactly delta. Re-running the
-      # walker off `chain_earliest_start` is hostile when a hidden
-      # descendant step lives weeks in the past (drag would teleport
-      # the whole chain back to that ancient earliest).
-      chain_mos = mo_chain(root)
-      chain_ids = Enum.map(chain_mos, & &1.id)
+    cond do
+      delta_seconds == 0 ->
+        {:ok, reload_manufacturing_order(root)}
 
-      case do_shift_steps_by_delta(actor, chain_ids, delta_seconds) do
-        {:ok, _count} -> {:ok, reload_manufacturing_order(root)}
-        {:error, reason} -> {:error, reason}
-      end
+      true ->
+        # Compute the new anchor — current chain earliest + delta —
+        # then re-run the working-hour-aware chain walker from there.
+        # A pure +delta shift bypasses the walker entirely and leaves
+        # steps inside closed hours / on holidays / outside the step's
+        # WSG window. The drag still feels like "move by delta" because
+        # the anchor moves by exactly delta; only the per-step landing
+        # changes when the naive position would have crossed a close.
+        case chain_earliest_start(root) do
+          nil ->
+            # No steps scheduled yet — nothing to shift.
+            {:ok, reload_manufacturing_order(root)}
+
+          %DateTime{} = current_earliest ->
+            new_earliest = DateTime.add(current_earliest, delta_seconds, :second)
+
+            if DateTime.compare(new_earliest, now()) == :lt do
+              {:error, :past_time}
+            else
+              case do_schedule_mo_chain(actor, root, new_earliest) do
+                {:ok, _mo, _meta} -> {:ok, reload_manufacturing_order(root)}
+                {:error, reason} -> {:error, reason}
+              end
+            end
+        end
     end
   end
 
@@ -4233,17 +4245,42 @@ defmodule Backend.Production do
   """
   def shift_mo_schedule(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds)
       when is_integer(delta_seconds) do
-    if delta_seconds == 0 do
-      {:ok, reload_manufacturing_order(mo)}
-    else
-      # Pure delta shift — every step moves by exactly delta_seconds.
-      # No walker re-run: the user dragged by exactly delta and expects
-      # an exact delta, not a re-snap that can teleport the block to
-      # an unrelated earliest if any step happens to be in the past.
-      case do_shift_steps_by_delta(actor, [mo.id], delta_seconds) do
-        {:ok, _count} -> {:ok, reload_manufacturing_order(mo)}
-        {:error, reason} -> {:error, reason}
-      end
+    cond do
+      delta_seconds == 0 ->
+        {:ok, reload_manufacturing_order(mo)}
+
+      true ->
+        # Re-run the working-hour walker from the delta-shifted first
+        # step start so the MO's steps stay inside open windows of
+        # their own WSG instead of landing inside closed hours. The
+        # anchor moves by exactly delta — only the per-step landing
+        # changes when the naive position would have crossed a close.
+        case mo_first_step_start(mo) do
+          nil ->
+            # No scheduled steps yet — nothing to shift.
+            {:ok, reload_manufacturing_order(mo)}
+
+          %DateTime{} = current_first ->
+            new_first = DateTime.add(current_first, delta_seconds, :second)
+
+            if DateTime.compare(new_first, now()) == :lt do
+              {:error, :past_time}
+            else
+              Repo.transaction(fn ->
+                case do_schedule_one_forward(actor, mo, new_first) do
+                  {:ok, _mo, _off, _first_start, _last_finish} ->
+                    reload_manufacturing_order(mo)
+
+                  {:error, reason} ->
+                    Repo.rollback(reason)
+                end
+              end)
+              |> case do
+                {:ok, updated} -> {:ok, updated}
+                err -> err
+              end
+            end
+        end
     end
   end
 
