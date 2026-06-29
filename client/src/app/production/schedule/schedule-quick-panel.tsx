@@ -221,9 +221,10 @@ export function QuickSchedulePanel({
             </div>
           ) : slots.length === 0 ? (
             <div className="rounded-md border border-dashed border-border/60 px-3 py-4 text-center text-[11px] text-muted-foreground">
-              No free window long enough in the next two weeks. Either
-              shorten the MO, reassign its workstation, or extend working
-              hours.
+              No working hours configured for this workstation in the
+              next two weeks. Set up the working schedule for{" "}
+              <span className="font-medium">{primaryWsg.name}</span>{" "}
+              or type a start time manually below.
             </div>
           ) : (
             <ul className="space-y-1.5">
@@ -271,19 +272,24 @@ export function QuickSchedulePanel({
 // ---------- Helpers ----------------------------------------------------
 
 /**
- * Returns the first `limit` free time windows on the given workstation
- * group that are at least `durationSeconds` long. Walks every working
- * interval the BE sent down and subtracts every op already on that
- * WSG. Only future windows (>= now) are considered.
+ * Returns the first `limit` free starting points on the given
+ * workstation group within the next ~2 weeks of working windows.
+ *
+ * Crucially this does NOT require the gap to fit the MO's full
+ * duration — the walker spreads work across multiple working
+ * windows automatically, so a 10-hour MO on an 8-hour working day
+ * still has plenty of valid start times. Each suggestion is just:
+ * 'here's a free open-window minute that isn't already occupied'.
+ *
+ * Minimum gap of 15 minutes so we don't spam the list with tiny
+ * useless slivers between back-to-back ops.
  */
 function computeFreeSlots(
   data: ProductionScheduleResponse,
   wsgId: number,
-  durationSeconds: number,
+  _durationSeconds: number,
   limit: number,
 ): FreeSlot[] {
-  if (durationSeconds <= 0) return [];
-
   const windowsGroup = data.working_windows.find((w) => w.group_id === wsgId);
   if (!windowsGroup) return [];
 
@@ -312,7 +318,7 @@ function computeFreeSlots(
     .sort((a, b) => a.startMs - b.startMs);
 
   const minStart = Date.now();
-  const durationMs = durationSeconds * 1000;
+  const minGapMs = 15 * 60_000;
   const free: FreeSlot[] = [];
 
   for (const interval of intervals) {
@@ -323,14 +329,14 @@ function computeFreeSlots(
       if (b.endMs <= cursor) continue;
       if (b.startMs >= interval.endMs) break;
       const gapEnd = Math.min(b.startMs, interval.endMs);
-      if (gapEnd - cursor >= durationMs) {
+      if (gapEnd - cursor >= minGapMs) {
         free.push({ startMs: cursor, endMs: gapEnd });
         if (free.length >= limit) return free;
       }
       cursor = Math.max(cursor, b.endMs);
       if (cursor >= interval.endMs) break;
     }
-    if (interval.endMs - cursor >= durationMs) {
+    if (interval.endMs - cursor >= minGapMs) {
       free.push({ startMs: cursor, endMs: interval.endMs });
       if (free.length >= limit) return free;
     }
