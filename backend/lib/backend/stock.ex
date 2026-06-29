@@ -1512,13 +1512,27 @@ defmodule Backend.Stock do
       # Skip the filter when the lot has no live placements anywhere
       # (fresh lot, or all-consumed) so the recommender still has
       # something to offer in that edge case.
+      #
+      # Fallback: if the source warehouse has NO regular cells at all
+      # (typical for a production-only site that holds nothing in
+      # long-term storage), drop the warehouse filter so the operator
+      # gets candidates from the main warehouse. Without this, a lot
+      # stranded at a production-feed cell in a pure-production site
+      # shows zero suggestions and the operator can't return it
+      # anywhere via the recommender.
       query =
         case source_warehouse_ids do
           [] ->
             base_query
 
           ids ->
-            from [c, l, f, w] in base_query, where: l.warehouse_id in ^ids
+            scoped = from [c, l, f, w] in base_query, where: l.warehouse_id in ^ids
+
+            if Repo.exists?(scoped) do
+              scoped
+            else
+              base_query
+            end
         end
 
       query
