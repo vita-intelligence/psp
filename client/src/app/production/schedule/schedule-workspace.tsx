@@ -586,14 +586,16 @@ export function ScheduleWorkspace({
       const moUuid = op.manufacturing_order?.uuid;
       if (!moUuid) return;
 
-      // Where the block landed inside the day column, in pixels from
-      // the column's top. dnd-kit gives us both rects after the
-      // translation, so this works regardless of where in the block
-      // the user grabbed.
-      const blockRect = active.rect.current.translated;
-      if (!blockRect) return;
+      // Use the CURSOR position at release time, not the block's
+      // translated top — operators expect "where I let go = where it
+      // starts" rather than "block top stays aligned to my grab
+      // offset". cursorRef is updated on pointermove inside this same
+      // drag session, so it carries the release coordinates here.
+      // Both cursorRef and over.rect are viewport-relative.
+      const cursor = cursorRef.current;
+      if (!cursor) return;
       const dayColumnTop = over.rect.top;
-      const yWithinColumn = blockRect.top - dayColumnTop;
+      const yWithinColumn = cursor.y - dayColumnTop;
       const minutesFromGridStart = Math.max(
         0,
         (yWithinColumn / CALENDAR_HOUR_HEIGHT_PX) * 60,
