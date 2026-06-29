@@ -2,16 +2,19 @@ import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
+  ArrowRight,
   ClipboardCheck,
   FileText,
   FileWarning,
   ImageIcon,
+  Info,
   Microscope,
   PackageCheck,
   Paperclip,
   Printer,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Truck,
 } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -165,6 +168,13 @@ export default async function ProcurementInspectionDetailPage({
             </div>
           </header>
 
+          <StatusActionBanner
+            inspection={inspection}
+            viewerId={user.id}
+            viewerCanApprove={hasPermission(user, "goods_in.approve")}
+            viewerCanInspect={hasPermission(user, "goods_in.inspect")}
+          />
+
           <SummaryCard
             inspection={inspection}
             purchaseOrder={purchaseOrder}
@@ -203,6 +213,134 @@ export default async function ProcurementInspectionDetailPage({
         </div>
       </main>
     </div>
+  );
+}
+
+/**
+ * Tells the viewer what's actually possible / blocking on this page.
+ * The desktop detail view is read-only — the operator + approver
+ * sign-off panels live on /m/inspections — so a fresh visitor used to
+ * arrive here, see no buttons, and assume something was broken (or in
+ * the operator's case, that the segregation-of-duties rule was
+ * silently blocking them). The banner spells it out and routes them
+ * to the right place.
+ */
+function StatusActionBanner({
+  inspection,
+  viewerId,
+  viewerCanApprove,
+  viewerCanInspect,
+}: {
+  inspection: Inspection;
+  viewerId: number;
+  viewerCanApprove: boolean;
+  viewerCanInspect: boolean;
+}) {
+  const status = inspection.status;
+  if (status === "approved" || status === "hold" || status === "rejected") {
+    // Terminal — nothing to act on. The Quality decision notes section
+    // below already surfaces the verdict + reason.
+    return null;
+  }
+
+  const wasOperator = inspection.goods_in_operator?.id === viewerId;
+  const mobileHref = `/m/inspections/${inspection.uuid}`;
+
+  if (status === "draft") {
+    return (
+      <Banner
+        tone="muted"
+        title="Inspection still in draft."
+        body={
+          viewerCanInspect
+            ? "The goods-in operator hasn't signed off yet. Continue filling it in from the mobile app — once signed, it moves to QC review."
+            : "The goods-in operator hasn't signed off yet. Once they sign, this row will appear under QC review for a user with goods_in.approve."
+        }
+        action={
+          viewerCanInspect
+            ? { label: "Continue on mobile", href: mobileHref }
+            : null
+        }
+      />
+    );
+  }
+
+  // status === "submitted" — awaiting QC sign-off.
+  if (viewerCanApprove && wasOperator) {
+    return (
+      <Banner
+        tone="amber"
+        title="Awaiting QC sign-off — you were the goods-in operator."
+        body={
+          "Best practice is for a different reviewer to approve, but your role lets you sign as quality approver too. Open it on the mobile app to record the decision."
+        }
+        action={{ label: "Open on mobile", href: mobileHref }}
+      />
+    );
+  }
+
+  if (viewerCanApprove) {
+    return (
+      <Banner
+        tone="indigo"
+        title="Awaiting your QC sign-off."
+        body="The goods-in operator has signed and the lots are sitting in quarantine. Open it on the mobile app to approve, put on hold, or reject."
+        action={{ label: "Open on mobile", href: mobileHref }}
+      />
+    );
+  }
+
+  return (
+    <Banner
+      tone="muted"
+      title="Awaiting QC sign-off."
+      body="Only a user with the goods_in.approve permission can sign this off. Ask the quality team to review."
+      action={null}
+    />
+  );
+}
+
+function Banner({
+  tone,
+  title,
+  body,
+  action,
+}: {
+  tone: "muted" | "amber" | "indigo";
+  title: string;
+  body: string;
+  action: { label: string; href: string } | null;
+}) {
+  const toneClasses = {
+    muted: "border-border/60 bg-muted/40",
+    amber:
+      "border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-500/40",
+    indigo:
+      "border-indigo-500/40 bg-indigo-50 dark:bg-indigo-950/30 dark:border-indigo-500/40",
+  }[tone];
+
+  const Icon = tone === "indigo" ? Smartphone : tone === "amber" ? Info : Info;
+
+  return (
+    <section
+      className={`flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between ${toneClasses}`}
+    >
+      <div className="flex gap-3">
+        <Icon className="mt-0.5 size-5 shrink-0 text-foreground/70" />
+        <div className="space-y-1">
+          <p className="text-sm font-semibold leading-tight">{title}</p>
+          <p className="text-sm text-muted-foreground">{body}</p>
+        </div>
+      </div>
+      {action && (
+        <Button asChild size="sm" className="shrink-0 self-start sm:self-auto">
+          <Link href={action.href}>
+            {action.label}
+            <ArrowRight className="ml-1 size-3.5" />
+          </Link>
+        </Button>
+      )}
+    </section>
   );
 }
 
