@@ -1817,7 +1817,12 @@ defmodule Backend.Production do
 
   defp do_move_mo_step(actor, step, new_start_dt, opts) do
     mo = Repo.get!(ManufacturingOrder, step.manufacturing_order_id)
-    intervals = working_intervals_for_mo(mo, new_start_dt)
+    # When the planner dropped onto a different station row the new
+    # WSG owns the working-hours calc — otherwise reuse the step's
+    # current WSG so the walker doesn't union every group's hours.
+    target_wsg_id = Keyword.get(opts, :workstation_group_id) || step.workstation_group_id
+    resolved = resolved_windows_for_mo(mo, new_start_dt)
+    intervals = intervals_for_step(resolved, target_wsg_id)
     duration = step.planned_duration_seconds || 0
 
     {:ok,
@@ -4295,7 +4300,12 @@ defmodule Backend.Production do
   end
 
   defp do_schedule_mo(actor, mo, start_dt, wsg_override) do
-    intervals = working_intervals_for_mo(mo, start_dt)
+    # Resolve windows once per MO; pick the per-step WSG slice inside
+    # the loop so different stations within an MO honour their own
+    # working hours (Blending vs Bottling). When the planner dropped
+    # the MO on a specific station row we override step 1's WSG, so
+    # we resolve the slice AFTER applying the override below.
+    resolved = resolved_windows_for_mo(mo, start_dt)
 
     Repo.transaction(fn ->
       steps =
@@ -4308,6 +4318,14 @@ defmodule Backend.Production do
       {_cursor, outside_total, _index, first_start, last_finish} =
         Enum.reduce(steps, {start_dt, 0, 0, nil, nil}, fn step, {cursor, off_acc, idx, first, _last} ->
           duration = step.planned_duration_seconds || 0
+          effective_wsg_id =
+            if idx == 0 and is_integer(wsg_override) do
+              wsg_override
+            else
+              step.workstation_group_id
+            end
+
+          intervals = intervals_for_step(resolved, effective_wsg_id)
 
           {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
             ScheduleWalker.walk_forward(intervals, cursor, duration)
@@ -4396,14 +4414,17 @@ defmodule Backend.Production do
 
   defp do_schedule_mo_chain(actor, root, start_dt) do
     Repo.transaction(fn ->
-      intervals = working_intervals_for_mo(root, start_dt)
-
       # FORWARD topological scheduling. Drop_dt = the EARLIEST start
       # of the whole chain. Leaves (deepest descendants) start at
       # drop_dt; each parent starts when ALL its children have
       # finished. So the chain extends RIGHT of the cursor, not
       # backward into the past, and "drop here" matches the planner's
       # mental model of "this is when work on the project begins".
+      #
+      # Intervals are no longer pre-computed for the root and reused —
+      # each MO resolves its own warehouse + WSG hours inside
+      # do_schedule_one_forward so multi-warehouse / multi-WSG chains
+      # land in each station's actual working window.
       chain =
         mo_chain(root)
         |> Enum.filter(&(&1.status in ["approved", "scheduled"]))
@@ -4424,7 +4445,7 @@ defmodule Backend.Production do
               list -> [start_dt | list] |> Enum.max(DateTime)
             end
 
-          case do_schedule_one_forward(actor, mo, earliest, intervals) do
+          case do_schedule_one_forward(actor, mo, earliest) do
             {:ok, _mo, off, _first, last} ->
               {Map.put(finishes, mo.id, last), off_total + off}
 
@@ -4488,7 +4509,11 @@ defmodule Backend.Production do
   # of an MO's steps share one calendar — matches operators' mental
   # model of "the factory's hours". WSG-specific overrides land in
   # a future pass.
-  defp working_intervals_for_mo(%ManufacturingOrder{} = mo, %DateTime{} = from_dt) do
+  # Resolved windows (per-group, per-day) for an MO's warehouse. Run
+  # ONCE per MO; per-step intervals are extracted by `intervals_for_step/2`
+  # without re-hitting the DB. Multi-warehouse chain scheduling calls
+  # this per-MO so each MO walks in its own site's hours.
+  defp resolved_windows_for_mo(%ManufacturingOrder{} = mo, %DateTime{} = from_dt) do
     company = Repo.get!(Company, mo.company_id)
     warehouse = Repo.get!(Warehouse, mo.warehouse_id)
     groups = list_workstation_groups_for_schedule_company(mo.company_id)
@@ -4496,10 +4521,24 @@ defmodule Backend.Production do
     from_date = DateTime.to_date(from_dt)
     to_date = Date.add(from_date, 90)
 
-    resolved =
-      resolve_working_windows(groups, warehouse, company, from_date, to_date)
+    resolve_working_windows(groups, warehouse, company, from_date, to_date)
+  end
 
-    ScheduleWalker.flatten_windows(resolved, nil)
+  # Per-step intervals. `wsg_id` nil falls back to the union of every
+  # group's hours — only used when the step has no assigned WSG (rare,
+  # legacy data). When the step has a WSG, only that group's windows
+  # apply so a 'Blending' step never lands inside 'Packaging' hours.
+  defp intervals_for_step(resolved, wsg_id) do
+    ScheduleWalker.flatten_windows(resolved, wsg_id)
+  end
+
+  # Convenience for callers that don't know the step yet (e.g. an MO
+  # got dropped on the calendar without a station row). Resolves the
+  # MO's windows and unions every group.
+  defp working_intervals_for_mo(%ManufacturingOrder{} = mo, %DateTime{} = from_dt) do
+    mo
+    |> resolved_windows_for_mo(from_dt)
+    |> intervals_for_step(nil)
   end
 
   defp list_workstation_groups_for_schedule_company(company_id)
@@ -4510,10 +4549,16 @@ defmodule Backend.Production do
     |> Repo.all()
   end
 
-  defp do_schedule_one_forward(actor, %ManufacturingOrder{} = mo, %DateTime{} = start_dt, intervals) do
+  defp do_schedule_one_forward(actor, %ManufacturingOrder{} = mo, %DateTime{} = start_dt) do
     if mo.status not in ["approved", "scheduled"] do
       {:error, :wrong_status}
     else
+      # Resolve windows ONCE per MO (one company + warehouse + groups
+      # query). Each step picks its own WSG slice cheaply from the
+      # cached `resolved` structure so a Blending step never lands
+      # inside Packaging hours.
+      resolved = resolved_windows_for_mo(mo, start_dt)
+
       steps =
         from(s in ManufacturingOrderStep,
           where: s.manufacturing_order_id == ^mo.id,
@@ -4524,6 +4569,7 @@ defmodule Backend.Production do
       {last_finish, first_start, off_total} =
         Enum.reduce(steps, {start_dt, nil, 0}, fn step, {cursor, first, off_acc} ->
           duration = step.planned_duration_seconds || 0
+          intervals = intervals_for_step(resolved, step.workstation_group_id)
 
           {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
             ScheduleWalker.walk_forward(intervals, cursor, duration)
@@ -4543,10 +4589,14 @@ defmodule Backend.Production do
     end
   end
 
-  defp do_schedule_one_backward(actor, %ManufacturingOrder{} = mo, %DateTime{} = finish_dt, intervals) do
+  defp do_schedule_one_backward(actor, %ManufacturingOrder{} = mo, %DateTime{} = finish_dt) do
     if mo.status not in ["approved", "scheduled"] do
       {:error, :wrong_status}
     else
+      # Per-step WSG intervals — see do_schedule_one_forward for the
+      # rationale (Blending hours ≠ Packaging hours).
+      resolved = resolved_windows_for_mo(mo, finish_dt)
+
       # Place steps RIGHT-to-LEFT: last step finishes at finish_dt,
       # step before that ends where the last one started, etc.
       steps =
@@ -4564,6 +4614,7 @@ defmodule Backend.Production do
       {earliest_start, off_total} =
         Enum.reduce(steps, {finish_dt, 0}, fn step, {cursor, off_acc} ->
           duration = step.planned_duration_seconds || 0
+          intervals = intervals_for_step(resolved, step.workstation_group_id)
 
           {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
             ScheduleWalker.walk_backward(intervals, cursor, duration)

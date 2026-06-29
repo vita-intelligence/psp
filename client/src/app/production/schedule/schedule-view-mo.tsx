@@ -268,13 +268,21 @@ export function PausedSegmentsOverlay({
           <div
             key={i}
             aria-hidden
-            className="pointer-events-none absolute top-0 bottom-0 bg-background/55"
+            // High-contrast cut-out so a 9-hour MO straddling an
+            // overnight close visibly breaks into two work segments.
+            // The previous bg-background/55 + faint stripes were hard
+            // to see on top of the brand-tinted block — operators
+            // read it as "one giant continuous bar".
+            className="pointer-events-none absolute top-0 bottom-0 bg-background/90"
             style={{
               left,
               width,
               backgroundImage:
-                "repeating-linear-gradient(135deg, transparent 0 5px, rgba(100,116,139,0.35) 5px 10px)",
+                "repeating-linear-gradient(135deg, rgba(71,85,105,0.35) 0 2px, rgba(255,255,255,0.6) 2px 8px)",
+              boxShadow:
+                "inset 1px 0 0 rgba(71,85,105,0.45), inset -1px 0 0 rgba(71,85,105,0.45)",
             }}
+            title="Outside working hours — no work happens here"
           />
         );
       })}
