@@ -71,6 +71,19 @@ export function QuickSchedulePanel({
   const [timeStr, setTimeStr] = useState(() => fmtTimeInput(initialDefault));
   const [pending, startTransition] = useTransition();
 
+  // Lower bounds for the inputs — date can't be earlier than today,
+  // and when the user has today selected, time can't be earlier than
+  // the next 5-min slot after 'now'. Re-derived from a state ticker
+  // so the bound moves forward as time passes.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const minDate = fmtDateInput(nowMs);
+  const isToday = dateStr === minDate;
+  const minTime = isToday ? fmtTimeInput(roundUpTo5Min(nowMs)) : "00:00";
+
   // Re-default the inputs when the panel opens for a new MO.
   useEffect(() => {
     const first = slots[0]?.startMs ?? roundUpTo5Min(Date.now());
@@ -89,14 +102,18 @@ export function QuickSchedulePanel({
       toast.error("Pick a start date and time first.");
       return;
     }
-    const local = new Date(`${dateStr}T${timeStr}:00`);
+    let local = new Date(`${dateStr}T${timeStr}:00`);
     if (Number.isNaN(local.getTime())) {
       toast.error("Date / time format isn't valid.");
       return;
     }
-    if (local.getTime() < Date.now() - 60_000) {
-      toast.error("Pick a time in the future.");
-      return;
+    // Soft-clamp instead of error if the user typed a past time
+    // manually (browsers don't always respect min on the inputs).
+    if (local.getTime() < Date.now()) {
+      local = new Date(roundUpTo5Min(Date.now()));
+      setDateStr(fmtDateInput(local.getTime()));
+      setTimeStr(fmtTimeInput(local.getTime()));
+      toast.info("Snapped to the next 5-min slot — can't start in the past.");
     }
     startTransition(async () => {
       const res = isProject
@@ -173,6 +190,7 @@ export function QuickSchedulePanel({
               <Input
                 type="date"
                 value={dateStr}
+                min={minDate}
                 onChange={(e) => setDateStr(e.target.value)}
                 className="h-9 text-sm"
               />
@@ -185,6 +203,7 @@ export function QuickSchedulePanel({
               <Input
                 type="time"
                 value={timeStr}
+                min={minTime}
                 onChange={(e) => setTimeStr(e.target.value)}
                 className="h-9 text-sm"
                 step={300}
