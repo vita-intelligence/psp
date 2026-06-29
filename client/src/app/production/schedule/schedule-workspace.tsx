@@ -83,6 +83,7 @@ import {
   projectRowsFromOps,
   type ProjectRow,
 } from "./schedule-view-project";
+import { CalendarView } from "./schedule-view-calendar";
 
 interface Site {
   id: number;
@@ -97,7 +98,7 @@ interface Props {
   company: CompanyDefaults;
 }
 
-type ScheduleView = "mo" | "workstation" | "project";
+type ScheduleView = "mo" | "workstation" | "project" | "calendar";
 
 const VIEW_STORAGE_KEY = "production.schedule.view";
 const ZOOM_STORAGE_KEY = "production.schedule.zoom";
@@ -105,7 +106,13 @@ const ZOOM_STORAGE_KEY = "production.schedule.zoom";
 function readStoredView(): ScheduleView {
   if (typeof window === "undefined") return "mo";
   const v = window.localStorage.getItem(VIEW_STORAGE_KEY);
-  if (v === "mo" || v === "workstation" || v === "project") return v;
+  if (
+    v === "mo" ||
+    v === "workstation" ||
+    v === "project" ||
+    v === "calendar"
+  )
+    return v;
   return "mo";
 }
 
@@ -1195,6 +1202,9 @@ export function ScheduleWorkspace({
                       canEditSteps={canEditSteps}
                     />
                   )}
+                  {view === "calendar" && (
+                    <CalendarView data={data} zoom={zoom} anchor={anchor} />
+                  )}
 
                   {/* Hint overlay when the active view has nothing
                       scheduled — sits above the empty grid so the
@@ -1483,6 +1493,7 @@ function ViewPicker({
     { id: "mo", label: "By MO", icon: Factory },
     { id: "workstation", label: "By workstation", icon: Settings2 },
     { id: "project", label: "By project", icon: GitBranch },
+    { id: "calendar", label: "Calendar", icon: CalendarDays },
   ];
 
   return (
