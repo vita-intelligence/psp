@@ -231,7 +231,13 @@ defmodule Backend.Warehouses.ReturnPickup do
           mo: mo,
           lots_at_dispatch: lots_at_dispatch,
           trolley: mine,
-          trolley_others: others
+          trolley_others: others,
+          last_photo_urls:
+            last_photo_url_map(
+              actor.company_id,
+              lots_at_dispatch ++
+                Enum.map(mine ++ others, & &1.stock_lot)
+            )
         }
     end
   end
@@ -262,8 +268,25 @@ defmodule Backend.Warehouses.ReturnPickup do
       mo: nil,
       lots_at_dispatch: lots,
       trolley: mine,
-      trolley_others: others
+      trolley_others: others,
+      last_photo_urls:
+        last_photo_url_map(
+          actor.company_id,
+          lots ++ Enum.map(mine ++ others, & &1.stock_lot)
+        )
     }
+  end
+
+  defp last_photo_url_map(company_id, lots_or_nils) do
+    ids =
+      lots_or_nils
+      |> Enum.flat_map(fn
+        %Lot{id: id} -> [id]
+        _ -> []
+      end)
+      |> Enum.uniq()
+
+    Stock.last_photo_url_by_lot_ids(company_id, ids)
   end
 
   # ----- Actions ----------------------------------------------------

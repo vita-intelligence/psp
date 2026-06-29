@@ -61,22 +61,23 @@ defmodule BackendWeb.WarehouseReturnPickupController do
 
   def loose(conn, _params) do
     actor = conn.assigns.current_user
-    %{lots_at_dispatch: lots} = ReturnPickup.get_loose_detail(actor)
+    %{lots_at_dispatch: lots, last_photo_urls: photos} =
+      ReturnPickup.get_loose_detail(actor)
 
     json(conn, %{
-      items: Enum.map(lots, &Payloads.return_pickup_lot/1)
+      items: Enum.map(lots, &Payloads.return_pickup_lot(&1, photos))
     })
   end
 
   def trolley(conn, _params) do
     actor = conn.assigns.current_user
 
-    %{trolley: mine, trolley_others: others} =
+    %{trolley: mine, trolley_others: others, last_photo_urls: photos} =
       ReturnPickup.get_loose_detail(actor)
 
     json(conn, %{
-      items: Enum.map(mine, &Payloads.return_pick_row/1),
-      others: Enum.map(others, &Payloads.return_pick_row/1)
+      items: Enum.map(mine, &Payloads.return_pick_row(&1, photos)),
+      others: Enum.map(others, &Payloads.return_pick_row(&1, photos))
     })
   end
 
@@ -91,13 +92,14 @@ defmodule BackendWeb.WarehouseReturnPickupController do
         mo: mo,
         lots_at_dispatch: lots,
         trolley: mine,
-        trolley_others: others
+        trolley_others: others,
+        last_photo_urls: photos
       } ->
         json(conn, %{
           mo: Payloads.manufacturing_order(mo),
-          lots_at_dispatch: Enum.map(lots, &Payloads.return_pickup_lot/1),
-          trolley: Enum.map(mine, &Payloads.return_pick_row/1),
-          trolley_others: Enum.map(others, &Payloads.return_pick_row/1)
+          lots_at_dispatch: Enum.map(lots, &Payloads.return_pickup_lot(&1, photos)),
+          trolley: Enum.map(mine, &Payloads.return_pick_row(&1, photos)),
+          trolley_others: Enum.map(others, &Payloads.return_pick_row(&1, photos))
         })
     end
   end

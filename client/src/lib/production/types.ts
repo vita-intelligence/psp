@@ -874,6 +874,7 @@ export interface ReturnPickupLot {
   uom: { id: number; symbol: string; name: string } | null;
   source_kind: string;
   source_ref: string | null;
+  last_photo_url: string | null;
   dispatch_cell: DispatchCell | null;
 }
 
@@ -892,6 +893,7 @@ export interface ReturnPickRow {
     uuid: string;
     code: string | null;
     status: string;
+    last_photo_url: string | null;
     item: BOMPartSummary | null;
     uom: { id: number; symbol: string; name: string } | null;
   } | null;

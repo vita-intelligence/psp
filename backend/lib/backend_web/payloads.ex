@@ -2945,7 +2945,10 @@ defmodule BackendWeb.Payloads do
   warehouse rack (e.g. partial-consume remainder), but that portion
   isn't relevant to the return pickup.
   """
-  def return_pickup_lot(%Backend.Stock.Lot{} = lot) do
+  def return_pickup_lot(lot, last_photo_urls \\ %{})
+
+  def return_pickup_lot(%Backend.Stock.Lot{} = lot, last_photo_urls)
+      when is_map(last_photo_urls) do
     placement = first_dispatch_placement(lot)
 
     %{
@@ -2968,6 +2971,11 @@ defmodule BackendWeb.Payloads do
           },
       source_kind: lot.source_kind,
       source_ref: lot.source_ref,
+      # Last photo a worker took while moving this lot — shown next
+      # to the floor plan on the pickup screen so the operator
+      # recognises the physical box at the shelf instead of just a
+      # name on a label.
+      last_photo_url: Map.get(last_photo_urls, lot.id),
       dispatch_cell:
         case placement do
           nil -> nil
@@ -2976,13 +2984,16 @@ defmodule BackendWeb.Payloads do
     }
   end
 
-  def return_pickup_lot(_), do: nil
+  def return_pickup_lot(_, _), do: nil
 
   @doc """
   Trolley row — warehouse worker currently holding the lot in flight
   between the dispatch cell and the warehouse rack.
   """
-  def return_pick_row(%Backend.Warehouses.ReturnPick{} = pick) do
+  def return_pick_row(pick, last_photo_urls \\ %{})
+
+  def return_pick_row(%Backend.Warehouses.ReturnPick{} = pick, last_photo_urls)
+      when is_map(last_photo_urls) do
     %{
       id: pick.id,
       uuid: pick.uuid,
@@ -3007,6 +3018,11 @@ defmodule BackendWeb.Payloads do
               uuid: lot.uuid,
               code: render_code(lot, "stock_lot"),
               status: lot.status,
+              # Most-recent placement photo for this lot — falls back
+              # to the picker's own snap if they uploaded one when
+              # claiming the trolley row.
+              last_photo_url:
+                Map.get(last_photo_urls, lot.id) || pick.picked_photo_url,
               item: maybe_item_summary(lot.item),
               uom:
                 lot.unit_of_measurement &&
@@ -3039,7 +3055,7 @@ defmodule BackendWeb.Payloads do
     }
   end
 
-  def return_pick_row(_), do: nil
+  def return_pick_row(_, _), do: nil
 
   @doc """
   Recommendation row shaped for the mobile place-step. Mirrors the

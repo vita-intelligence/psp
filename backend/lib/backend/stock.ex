@@ -2028,6 +2028,38 @@ defmodule Backend.Stock do
   floor.ordinal, location.name, cell.ordinal, cell.id) so the
   ordering matches the natural breadcrumb traversal.
   """
+  @doc """
+  Latest non-null photo_url from `stock_movements` per lot — the
+  "what does this lot physically look like" reference shown next to
+  the floor-plan on pickup screens so the worker can recognise the
+  box / pallet at the shelf.
+
+  Returns a map `%{lot_id => url}`. Lots with no photo'd movement are
+  absent from the map.
+  """
+  def last_photo_url_by_lot_ids(company_id, lot_ids)
+      when is_integer(company_id) and is_list(lot_ids) do
+    if lot_ids == [] do
+      %{}
+    else
+      from(m in Movement,
+        where:
+          m.company_id == ^company_id and
+            m.stock_lot_id in ^lot_ids and
+            not is_nil(m.photo_url),
+        distinct: m.stock_lot_id,
+        order_by: [
+          asc: m.stock_lot_id,
+          desc: m.occurred_at,
+          desc: m.id
+        ],
+        select: {m.stock_lot_id, m.photo_url}
+      )
+      |> Repo.all()
+      |> Map.new()
+    end
+  end
+
   def list_cells_for_picker(company_id, opts \\ []) when is_integer(company_id) do
     limit = opts |> Keyword.get(:limit) |> normalise_limit()
     item = maybe_fetch_item_for_tags(company_id, opts)
