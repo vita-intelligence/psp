@@ -1459,6 +1459,18 @@ defmodule Backend.Stock do
       # 3. Candidate cells with breadcrumb. Source cells are excluded
       #    so the recommender never suggests "move here" for the cell
       #    the lot is already in.
+      #
+      #    Purpose = "regular" only — every other purpose is workflow-
+      #    specific and must never appear as a put-away suggestion:
+      #
+      #      quarantine       — set by the receive flow
+      #      hold / rejected  — set by QC verdict (auto-router)
+      #      dispatch         — set by the picker after staging
+      #      production_feed  — set by the picker walking stock to the line
+      #
+      #    Suggesting any of these for a QC-passed put-away breaks the
+      #    audit chain (the cell's intent stops matching the lot's
+      #    state) and physically shoves stock into the wrong area.
       query =
         from c in StorageCell,
           join: l in StorageLocation,
@@ -1469,6 +1481,7 @@ defmodule Backend.Stock do
           on: w.id == l.warehouse_id,
           where:
             c.company_id == ^company_id and
+              c.purpose == "regular" and
               is_nil(c.system_kind) and
               is_nil(l.system_kind) and
               is_nil(f.system_kind) and
