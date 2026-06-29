@@ -40,6 +40,8 @@ export type PermissionCode =
   | "stock.edit"
   | "stock.adjust"
   | "stock.dispose"
+  | "stock.qc"
+  | "stock.hold"
   | "vendors.view"
   | "vendors.create"
   | "vendors.edit"

@@ -313,3 +313,59 @@ export async function updateLotAction(
     });
   }
 }
+
+export type LifecycleEventKind =
+  | "qc_passed"
+  | "qc_failed"
+  | "held"
+  | "released"
+  | "disposed"
+  | "routed_to_quarantine"
+  | "canceled";
+
+export type RecordLotEventResult =
+  | { ok: true; lot: StockLot }
+  | ErrorResult;
+
+/**
+ * Record a lifecycle event against a lot. Required for non-PO lots
+ * (opening balance / manual) that need a manual QC pass before they
+ * count as available — PO lots are cleared by the Goods-In Inspection
+ * sign-off, but ad-hoc lots have no inspection to ride on.
+ *
+ * BE dispatches the permission check per kind (qc_passed → stock.qc,
+ * held → stock.hold, disposed → stock.dispose) so the FE doesn't
+ * need to re-check; the action surfaces a 403 as a regular error
+ * result.
+ */
+export async function recordLotEventAction(
+  uuid: string,
+  kind: LifecycleEventKind,
+  reason?: string | null,
+): Promise<RecordLotEventResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("recordLotEventAction");
+
+  try {
+    const res = await api<{ lot: StockLot }>(
+      `/api/stock/lots/${encodeURIComponent(uuid)}/events`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({
+          kind,
+          reason: reason ?? null,
+          metadata: {},
+        }),
+      },
+    );
+    revalidatePath("/stock/lots");
+    revalidatePath(`/stock/lots/${uuid}`);
+    return { ok: true, lot: res.lot };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "recordLotEventAction",
+      fallbackDetail: "Couldn't record the lifecycle event.",
+    });
+  }
+}

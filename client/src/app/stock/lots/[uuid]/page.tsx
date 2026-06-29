@@ -19,6 +19,7 @@ import { LotPlacementsCard } from "./lot-placements-card";
 import { LotMovementTimeline } from "./lot-movement-timeline";
 import { LotInspectionCard } from "./lot-inspection-card";
 import { LotMoBookingsCard } from "./lot-mo-bookings-card";
+import { LotQcActionCard } from "./lot-qc-action-card";
 import {
   LotFilesCard,
   LotReturnPicksCard,
@@ -74,6 +75,14 @@ export default async function StockLotDetailPage({
             lot={lot}
             canMove={hasPermission(user, "stock.move")}
             canAdjust={hasPermission(user, "stock.adjust")}
+          />
+
+          <LotQcActionCard
+            lotUuid={lot.uuid}
+            lotStatus={lot.status}
+            itemName={lot.item?.name ?? null}
+            sourceKind={lot.source_kind ?? null}
+            canRecordQc={hasPermission(user, "stock.qc")}
           />
 
           <LotEditForm
