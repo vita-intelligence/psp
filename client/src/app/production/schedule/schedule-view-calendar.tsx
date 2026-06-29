@@ -221,9 +221,10 @@ function DayColumn({
   conflictIds: Set<number>;
 }) {
   const isToday = isSameUtcDay(day, new Date());
+  const dayIso = day.toISOString();
   const { setNodeRef, isOver } = useDroppable({
-    id: `${CALENDAR_DAY_DROPPABLE_PREFIX}${day.toISOString()}`,
-    data: { dayMs: day.getTime() },
+    id: `${CALENDAR_DAY_DROPPABLE_PREFIX}${dayIso}`,
+    data: { dayMs: day.getTime(), dayIso },
   });
 
   // Layout overlapping ops side-by-side: each op gets a (lane, cluster)
@@ -234,6 +235,7 @@ function DayColumn({
   return (
     <div
       ref={setNodeRef}
+      data-calendar-day-iso={dayIso}
       className={cn(
         "relative border-l border-border/60",
         isLast && "border-r-0",

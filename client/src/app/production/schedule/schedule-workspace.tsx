@@ -591,11 +591,26 @@ export function ScheduleWorkspace({
       // starts" rather than "block top stays aligned to my grab
       // offset". cursorRef is updated on pointermove inside this same
       // drag session, so it carries the release coordinates here.
-      // Both cursorRef and over.rect are viewport-relative.
       const cursor = cursorRef.current;
       if (!cursor) return;
-      const dayColumnTop = over.rect.top;
-      const yWithinColumn = cursor.y - dayColumnTop;
+
+      // Measure the day column's bounding rect LIVE at drop time. The
+      // dnd-kit over.rect can lag the actual position when the
+      // calendar's nested scroll container scrolls during drag — read
+      // the rect off the DOM ourselves so cursor.y - column.top is
+      // always against the rendered position.
+      const dayData = over.data?.current as
+        | { dayMs?: number; dayIso?: string }
+        | undefined;
+      if (!dayData?.dayMs || !dayData.dayIso) return;
+      const columnEl =
+        typeof document !== "undefined"
+          ? (document.querySelector(
+              `[data-calendar-day-iso="${dayData.dayIso}"]`,
+            ) as HTMLElement | null)
+          : null;
+      const columnRect = columnEl?.getBoundingClientRect() ?? over.rect;
+      const yWithinColumn = cursor.y - columnRect.top;
       const minutesFromGridStart = Math.max(
         0,
         (yWithinColumn / CALENDAR_HOUR_HEIGHT_PX) * 60,
@@ -604,16 +619,13 @@ export function ScheduleWorkspace({
       const snapped = Math.round(minutesFromGridStart / 15) * 15;
       const totalMinutes = CALENDAR_DAY_START_HOUR * 60 + snapped;
 
-      const dayData = over.data?.current as
-        | { dayMs?: number }
-        | undefined;
-      if (!dayData?.dayMs) return;
       const newStartDate = new Date(dayData.dayMs + totalMinutes * 60_000);
 
       if (isPast(newStartDate)) {
         toast.error("Can't drag the operation before the current time.");
         return;
       }
+      warnIfDropOutsideHours(newStartDate);
 
       const currentStartMs = new Date(op.planned_start).getTime();
       const currentFinishMs = new Date(op.planned_finish).getTime();
