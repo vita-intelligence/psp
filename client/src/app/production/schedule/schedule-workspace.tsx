@@ -821,19 +821,28 @@ export function ScheduleWorkspace({
       return;
     }
 
-    // Pixels → milliseconds via the active zoom level.
-    const msDelta = Math.round(delta.x / scale.preset.pxPerMs);
-    const secondsDelta = Math.round(msDelta / 1000);
+    // Cursor-anchored drop: the block's FIRST step lands at exactly
+    // the cursor's release position, regardless of where on the block
+    // the user grabbed it. Falling back to the delta-based shift only
+    // when the cursor isn't over the canvas (drag cancelled in a weird
+    // spot).
+    const cursorDropTime = cursorToScheduleTime();
+    const msDeltaFromDelta = Math.round(delta.x / scale.preset.pxPerMs);
 
     if (idStr.startsWith("mo-")) {
       const uuid = idStr.slice("mo-".length);
       const row = moRows.find((r) => r.moUuid === uuid);
-      if (!row || secondsDelta === 0) return;
+      if (!row) return;
+
+      const rowStartMs = new Date(row.start).getTime();
+      const msDelta = cursorDropTime
+        ? cursorDropTime.getTime() - rowStartMs
+        : msDeltaFromDelta;
+      const secondsDelta = Math.round(msDelta / 1000);
+      if (secondsDelta === 0) return;
 
       // Past-time guard — earliest step's new start can't be < now.
-      const newFirstStart = new Date(
-        new Date(row.start).getTime() + msDelta,
-      );
+      const newFirstStart = new Date(rowStartMs + msDelta);
       if (isPast(newFirstStart)) {
         toast.error("Can't drag the block before the current time.");
         return;
@@ -880,12 +889,17 @@ export function ScheduleWorkspace({
     if (idStr.startsWith("project-")) {
       const uuid = idStr.slice("project-".length);
       const row = projectRows.find((r) => r.rootMoUuid === uuid);
-      if (!row || secondsDelta === 0) return;
+      if (!row) return;
+
+      const rowStartMs = new Date(row.start).getTime();
+      const msDelta = cursorDropTime
+        ? cursorDropTime.getTime() - rowStartMs
+        : msDeltaFromDelta;
+      const secondsDelta = Math.round(msDelta / 1000);
+      if (secondsDelta === 0) return;
 
       // Earliest step in the WHOLE chain after the shift.
-      const newFirstStart = new Date(
-        new Date(row.start).getTime() + msDelta,
-      );
+      const newFirstStart = new Date(rowStartMs + msDelta);
       if (isPast(newFirstStart)) {
         toast.error("Can't drag the project before the current time.");
         return;
@@ -919,16 +933,20 @@ export function ScheduleWorkspace({
       const opId = Number(idStr.slice("op-".length));
       const op = data.operations.find((o) => o.id === opId);
       if (!op || !op.planned_start || !op.planned_finish) return;
-      const newStartDate = new Date(
-        new Date(op.planned_start).getTime() + msDelta,
-      );
+
+      const opStartMs = new Date(op.planned_start).getTime();
+      const opFinishMs = new Date(op.planned_finish).getTime();
+      const msDelta = cursorDropTime
+        ? cursorDropTime.getTime() - opStartMs
+        : msDeltaFromDelta;
+      if (msDelta === 0) return;
+
+      const newStartDate = new Date(opStartMs + msDelta);
       if (isPast(newStartDate)) {
         toast.error("Can't drag the operation before the current time.");
         return;
       }
-      const newFinishDate = new Date(
-        new Date(op.planned_finish).getTime() + msDelta,
-      );
+      const newFinishDate = new Date(opFinishMs + msDelta);
       // Chain-order guard at the MO level — a single op shift moves
       // the whole MO's bounds out of sync if it crosses a parent /
       // child boundary.
