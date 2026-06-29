@@ -19,7 +19,8 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { AlertTriangle, CalendarOff, Info } from "lucide-react";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { AlertTriangle, CalendarOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   ProductionScheduleResponse,
@@ -34,37 +35,30 @@ interface Props {
   data: ProductionScheduleResponse;
   zoom: ZoomLevel;
   anchor: Date;
+  canEditSteps: boolean;
 }
 
-const HOUR_HEIGHT_PX = 56;
-const DAY_START_HOUR = 6;
-const DAY_END_HOUR = 22;
+export const CALENDAR_HOUR_HEIGHT_PX = 56;
+export const CALENDAR_DAY_START_HOUR = 6;
+export const CALENDAR_DAY_END_HOUR = 22;
+const HOUR_HEIGHT_PX = CALENDAR_HOUR_HEIGHT_PX;
+const DAY_START_HOUR = CALENDAR_DAY_START_HOUR;
+const DAY_END_HOUR = CALENDAR_DAY_END_HOUR;
 const TIME_GUTTER_PX = 64;
 
-export function CalendarView({ data, zoom, anchor }: Props) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <ReadOnlyHint />
-      {zoom === "month" ? (
-        <MonthCalendar data={data} anchor={anchor} />
-      ) : (
-        <TimedCalendar data={data} zoom={zoom} anchor={anchor} />
-      )}
-    </div>
-  );
-}
+export const CALENDAR_DAY_DROPPABLE_PREFIX = "calendar-day-";
 
-function ReadOnlyHint() {
+export function CalendarView({ data, zoom, anchor, canEditSteps }: Props) {
+  if (zoom === "month") {
+    return <MonthCalendar data={data} anchor={anchor} />;
+  }
   return (
-    <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground">
-      <Info className="mt-0.5 size-3.5 shrink-0" />
-      <p>
-        Read-only at-a-glance view. To drag-reschedule, switch to{" "}
-        <span className="font-medium text-foreground">By MO</span> or{" "}
-        <span className="font-medium text-foreground">By workstation</span>.
-        Click any block here to open the step editor.
-      </p>
-    </div>
+    <TimedCalendar
+      data={data}
+      zoom={zoom}
+      anchor={anchor}
+      canEditSteps={canEditSteps}
+    />
   );
 }
 
@@ -74,10 +68,12 @@ function TimedCalendar({
   data,
   zoom,
   anchor,
+  canEditSteps,
 }: {
   data: ProductionScheduleResponse;
   zoom: "day" | "week";
   anchor: Date;
+  canEditSteps: boolean;
 }) {
   const days = useMemo(() => visibleDays(zoom, anchor), [zoom, anchor]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -170,6 +166,7 @@ function TimedCalendar({
                 ops={opsByDay.get(dayKey(day)) ?? []}
                 workstationGroups={data.workstation_groups}
                 isLast={idx === days.length - 1}
+                canEditSteps={canEditSteps}
               />
             ))}
           </div>
@@ -203,20 +200,28 @@ function DayColumn({
   ops,
   workstationGroups,
   isLast,
+  canEditSteps,
 }: {
   day: Date;
   hours: number[];
   ops: ScheduleOperation[];
   workstationGroups: ProductionScheduleResponse["workstation_groups"];
   isLast: boolean;
+  canEditSteps: boolean;
 }) {
   const isToday = isSameUtcDay(day, new Date());
+  const { setNodeRef, isOver } = useDroppable({
+    id: `${CALENDAR_DAY_DROPPABLE_PREFIX}${day.toISOString()}`,
+    data: { dayMs: day.getTime() },
+  });
   return (
     <div
+      ref={setNodeRef}
       className={cn(
         "relative border-l border-border/60",
         isLast && "border-r-0",
-        isToday && "bg-primary/[0.03]",
+        isToday && "bg-primary/[0.04]",
+        isOver && "bg-brand/10 ring-2 ring-inset ring-brand/40",
       )}
     >
       {/* Hour gridlines */}
@@ -238,6 +243,7 @@ function DayColumn({
           op={op}
           day={day}
           workstationGroups={workstationGroups}
+          canEditSteps={canEditSteps}
         />
       ))}
     </div>
@@ -268,12 +274,20 @@ function OperationBlock({
   op,
   day,
   workstationGroups,
+  canEditSteps,
 }: {
   op: ScheduleOperation;
   day: Date;
   workstationGroups: ProductionScheduleResponse["workstation_groups"];
+  canEditSteps: boolean;
 }) {
   const editor = useScheduleEditor();
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id: `op-${op.id}`,
+      disabled: !canEditSteps,
+    });
+
   if (!op.planned_start || !op.planned_finish) return null;
   const start = new Date(op.planned_start);
   const finish = new Date(op.planned_finish);
@@ -291,10 +305,18 @@ function OperationBlock({
     (mo?.bookings_lot_off_warehouse?.length ?? 0);
   const qcPending = mo?.qc_pending_count ?? 0;
 
+  const dragStyle: React.CSSProperties = transform
+    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
+    : {};
+
   return (
     <button
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
       type="button"
       onClick={(e) => {
+        if (isDragging) return;
         e.stopPropagation();
         editor?.openEditor({ kind: "step", stepUuid: op.uuid });
       }}
@@ -303,9 +325,17 @@ function OperationBlock({
         height: Math.max(layout.height, 18),
         left: 4,
         right: 4,
+        ...dragStyle,
       }}
-      className="absolute z-10 flex flex-col gap-0.5 overflow-hidden rounded-md border border-border/70 bg-card px-1.5 py-1 text-left text-[11px] shadow-sm transition-shadow hover:shadow-md"
-      title={`${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}`}
+      className={cn(
+        "absolute z-10 flex flex-col gap-0.5 overflow-hidden rounded-md border border-border/70 bg-card px-1.5 py-1 text-left text-[11px] shadow-sm transition-shadow",
+        isDragging
+          ? "z-30 cursor-grabbing shadow-lg"
+          : canEditSteps
+            ? "cursor-grab hover:shadow-md"
+            : "cursor-pointer hover:shadow-md",
+      )}
+      title={`${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}${canEditSteps ? "\nDrag to reschedule, click to edit." : ""}`}
     >
       <span
         aria-hidden
@@ -378,7 +408,7 @@ function MonthCalendar({
           {monthGrid.map((week) => (
             <div
               key={week[0].toISOString()}
-              className="grid min-h-[120px] grid-cols-[64px_repeat(7,_1fr)] border-b border-border/60 last:border-b-0"
+              className="grid min-h-[88px] grid-cols-[64px_repeat(7,_1fr)] border-b border-border/60 last:border-b-0"
             >
               <div className="flex items-center justify-center text-[11px] font-semibold text-muted-foreground">
                 W{isoWeek(week[0])}
@@ -442,14 +472,25 @@ function MonthDayCell({
     <div
       className={cn(
         "flex min-h-0 flex-col gap-1 border-l border-border/60 p-1.5",
-        !inMonth && "bg-muted/20 text-muted-foreground",
-        isToday && "bg-primary/[0.05]",
+        !inMonth && "bg-muted/30 text-muted-foreground/60",
+        isToday && "bg-primary/[0.08] ring-1 ring-inset ring-primary/30",
       )}
     >
-      <div className="flex items-center justify-end text-[11px] font-semibold">
-        {day.getUTCDate()}
+      <div className="flex items-center justify-end">
+        <span
+          className={cn(
+            "text-[10px] font-medium tabular-nums",
+            isToday
+              ? "rounded-full bg-primary px-1.5 py-0.5 text-primary-foreground"
+              : inMonth
+                ? "text-foreground/70"
+                : "text-muted-foreground/50",
+          )}
+        >
+          {day.getUTCDate()}
+        </span>
       </div>
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-0.5">
         {moBuckets.map(({ op, earliestStart }) => (
           <MonthChip
             key={`${op.uuid}-${op.id}`}
@@ -486,19 +527,21 @@ function MonthChip({
         e.stopPropagation();
         onClick();
       }}
-      className="group relative flex flex-col overflow-hidden rounded border border-border/60 bg-card px-1.5 py-0.5 text-left text-[10px] leading-tight hover:bg-muted"
+      className="group relative flex flex-col overflow-hidden rounded border border-border/50 bg-card px-1 py-0.5 pl-2 text-left text-[10px] leading-[1.15] hover:bg-muted"
       title={`${mo?.code ?? `Op #${op.id}`} ${mo?.item?.name ?? ""}`}
     >
       <span
         aria-hidden
-        className="absolute left-0 top-0 h-full w-1"
+        className="absolute left-0 top-0 h-full w-[3px]"
         style={{ backgroundColor: wsg?.color ?? "var(--brand)" }}
       />
-      <span className="ml-1.5 flex items-center gap-1">
-        <span className="font-semibold">{formatHm(start)}</span>
-        <span className="truncate font-mono">{mo?.code ?? `OP#${op.id}`}</span>
+      <span className="flex items-center gap-1 font-mono tabular-nums">
+        <span className="font-semibold text-foreground">{formatHm(start)}</span>
+        <span className="truncate text-muted-foreground">
+          {mo?.code ?? `OP#${op.id}`}
+        </span>
       </span>
-      <span className="ml-1.5 truncate text-muted-foreground">
+      <span className="truncate text-muted-foreground">
         {mo?.item?.name ?? op.operation_description ?? "—"}
       </span>
     </button>

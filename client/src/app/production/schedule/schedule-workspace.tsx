@@ -83,7 +83,12 @@ import {
   projectRowsFromOps,
   type ProjectRow,
 } from "./schedule-view-project";
-import { CalendarView } from "./schedule-view-calendar";
+import {
+  CalendarView,
+  CALENDAR_DAY_DROPPABLE_PREFIX,
+  CALENDAR_DAY_START_HOUR,
+  CALENDAR_HOUR_HEIGHT_PX,
+} from "./schedule-view-calendar";
 
 interface Site {
   id: number;
@@ -564,6 +569,124 @@ export function ScheduleWorkspace({
     const { active, delta, over } = event;
     const idStr = String(active.id);
     const overId = over ? String(over.id) : null;
+
+    // ----- Calendar view drop: drop a step onto a day column at a
+    // specific time-of-day. Differs from the Gantt drop path because
+    // the time axis here is vertical and the day axis is horizontal,
+    // so delta.x can't be used to compute a time shift.
+    if (
+      overId?.startsWith(CALENDAR_DAY_DROPPABLE_PREFIX) &&
+      idStr.startsWith("op-") &&
+      over
+    ) {
+      const opId = Number(idStr.slice("op-".length));
+      const op = data.operations.find((o) => o.id === opId);
+      if (!op || !op.planned_start || !op.planned_finish) return;
+
+      const moUuid = op.manufacturing_order?.uuid;
+      if (!moUuid) return;
+
+      // Where the block landed inside the day column, in pixels from
+      // the column's top. dnd-kit gives us both rects after the
+      // translation, so this works regardless of where in the block
+      // the user grabbed.
+      const blockRect = active.rect.current.translated;
+      if (!blockRect) return;
+      const dayColumnTop = over.rect.top;
+      const yWithinColumn = blockRect.top - dayColumnTop;
+      const minutesFromGridStart = Math.max(
+        0,
+        (yWithinColumn / CALENDAR_HOUR_HEIGHT_PX) * 60,
+      );
+      // Snap to 15-min ticks for sane drops.
+      const snapped = Math.round(minutesFromGridStart / 15) * 15;
+      const totalMinutes = CALENDAR_DAY_START_HOUR * 60 + snapped;
+
+      const dayData = over.data?.current as
+        | { dayMs?: number }
+        | undefined;
+      if (!dayData?.dayMs) return;
+      const newStartDate = new Date(dayData.dayMs + totalMinutes * 60_000);
+
+      if (isPast(newStartDate)) {
+        toast.error("Can't drag the operation before the current time.");
+        return;
+      }
+
+      const currentStartMs = new Date(op.planned_start).getTime();
+      const currentFinishMs = new Date(op.planned_finish).getTime();
+      const msDelta = newStartDate.getTime() - currentStartMs;
+      if (msDelta === 0) return;
+      const newFinishDate = new Date(currentFinishMs + msDelta);
+
+      // Same chain-order guard the existing per-op handler uses.
+      if (op.manufacturing_order) {
+        const moId = op.manufacturing_order.id;
+        const sibs = data.operations.filter(
+          (o) =>
+            o.manufacturing_order?.id === moId &&
+            o.id !== opId &&
+            o.planned_start &&
+            o.planned_finish,
+        );
+        const starts = sibs.map((o) => new Date(o.planned_start!).getTime());
+        const finishes = sibs.map((o) => new Date(o.planned_finish!).getTime());
+        starts.push(newStartDate.getTime());
+        finishes.push(newFinishDate.getTime());
+        const chainErr = validateChainOrder(
+          moId,
+          Math.min(...starts),
+          Math.max(...finishes),
+        );
+        if (chainErr) {
+          toast.error(chainErr);
+          return;
+        }
+      }
+
+      const newStart = newStartDate.toISOString();
+      const newFinish = newFinishDate.toISOString();
+      const snapshot = data;
+
+      // Optimistic update — same shape as the workstation-view drop.
+      setData((cur) =>
+        cur
+          ? {
+              ...cur,
+              operations: cur.operations.map((o) =>
+                o.id === opId
+                  ? {
+                      ...o,
+                      planned_start: newStart,
+                      planned_finish: newFinish,
+                    }
+                  : o,
+              ),
+            }
+          : cur,
+      );
+
+      startTransition(async () => {
+        const res = await moveManufacturingOrderStepAction(
+          moUuid,
+          op.uuid,
+          newStart,
+        );
+        if (res.ok) {
+          toast.success("Step rescheduled");
+          invalidateAudit(
+            "manufacturing_order",
+            op.manufacturing_order!.id,
+          );
+          router.refresh();
+          await reload();
+        } else {
+          setData(snapshot);
+          toast.error(res.detail);
+        }
+      });
+      return;
+    }
 
     // ----- Canvas → backlog rail: unschedule the MO/project.
     if (overId === "backlog-zone") {
@@ -1203,7 +1326,12 @@ export function ScheduleWorkspace({
                     />
                   )}
                   {view === "calendar" && (
-                    <CalendarView data={data} zoom={zoom} anchor={anchor} />
+                    <CalendarView
+                      data={data}
+                      zoom={zoom}
+                      anchor={anchor}
+                      canEditSteps={canEditSteps}
+                    />
                   )}
 
                   {/* Hint overlay when the active view has nothing
