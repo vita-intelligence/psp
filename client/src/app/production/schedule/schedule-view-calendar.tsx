@@ -108,6 +108,14 @@ function TimedCalendar({
     [data.operations, days],
   );
 
+  // Same-WSG overlap detection. Different-WSG overlaps are NOT
+  // conflicts (parallel work) — they just get laid out side-by-side
+  // via the lane algorithm without a red outline.
+  const conflictIds = useMemo(
+    () => detectSameWsgConflicts(data.operations),
+    [data.operations],
+  );
+
   const totalHeight = (DAY_END_HOUR - DAY_START_HOUR + 1) * HOUR_HEIGHT_PX;
   const weekNumber = isoWeek(days[0]);
   const gridTemplate = `${TIME_GUTTER_PX}px repeat(${days.length}, minmax(0, 1fr))`;
@@ -167,6 +175,7 @@ function TimedCalendar({
                 workstationGroups={data.workstation_groups}
                 isLast={idx === days.length - 1}
                 canEditSteps={canEditSteps}
+                conflictIds={conflictIds}
               />
             ))}
           </div>
@@ -201,6 +210,7 @@ function DayColumn({
   workstationGroups,
   isLast,
   canEditSteps,
+  conflictIds,
 }: {
   day: Date;
   hours: number[];
@@ -208,12 +218,19 @@ function DayColumn({
   workstationGroups: ProductionScheduleResponse["workstation_groups"];
   isLast: boolean;
   canEditSteps: boolean;
+  conflictIds: Set<number>;
 }) {
   const isToday = isSameUtcDay(day, new Date());
   const { setNodeRef, isOver } = useDroppable({
     id: `${CALENDAR_DAY_DROPPABLE_PREFIX}${day.toISOString()}`,
     data: { dayMs: day.getTime() },
   });
+
+  // Layout overlapping ops side-by-side: each op gets a (lane, cluster)
+  // pair where 'cluster' is the total parallel tracks needed in this
+  // group of overlapping ops. Mirrors Google Calendar's day view.
+  const laneByOp = useMemo(() => assignLanes(ops), [ops]);
+
   return (
     <div
       ref={setNodeRef}
@@ -237,15 +254,21 @@ function DayColumn({
       {isToday && <NowLine />}
 
       {/* Operations */}
-      {ops.map((op) => (
-        <OperationBlock
-          key={op.id}
-          op={op}
-          day={day}
-          workstationGroups={workstationGroups}
-          canEditSteps={canEditSteps}
-        />
-      ))}
+      {ops.map((op) => {
+        const lane = laneByOp.get(op.id) ?? { lane: 0, cluster: 1 };
+        return (
+          <OperationBlock
+            key={op.id}
+            op={op}
+            day={day}
+            workstationGroups={workstationGroups}
+            canEditSteps={canEditSteps}
+            lane={lane.lane}
+            cluster={lane.cluster}
+            conflict={conflictIds.has(op.id)}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -275,11 +298,17 @@ function OperationBlock({
   day,
   workstationGroups,
   canEditSteps,
+  lane,
+  cluster,
+  conflict,
 }: {
   op: ScheduleOperation;
   day: Date;
   workstationGroups: ProductionScheduleResponse["workstation_groups"];
   canEditSteps: boolean;
+  lane: number;
+  cluster: number;
+  conflict: boolean;
 }) {
   const editor = useScheduleEditor();
   const { attributes, listeners, setNodeRef, transform, isDragging } =
@@ -309,6 +338,15 @@ function OperationBlock({
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : {};
 
+  // Side-by-side layout: each parallel lane gets 1/cluster of the
+  // column width, with a 2px gap between lanes for breathing room.
+  const widthPct = 100 / cluster;
+  const leftPct = lane * widthPct;
+  const laneStyle: React.CSSProperties = {
+    left: `calc(${leftPct}% + 2px)`,
+    width: `calc(${widthPct}% - 4px)`,
+  };
+
   return (
     <button
       ref={setNodeRef}
@@ -323,19 +361,25 @@ function OperationBlock({
       style={{
         top: layout.top,
         height: Math.max(layout.height, 18),
-        left: 4,
-        right: 4,
+        ...laneStyle,
         ...dragStyle,
       }}
       className={cn(
-        "absolute z-10 flex flex-col gap-0.5 overflow-hidden rounded-md border border-border/70 bg-card px-1.5 py-1 text-left text-[11px] shadow-sm transition-shadow",
+        "absolute z-10 flex flex-col gap-0.5 overflow-hidden rounded-md border px-1.5 py-1 text-left text-[11px] shadow-sm transition-shadow",
+        conflict
+          ? "border-destructive bg-destructive/5 ring-1 ring-destructive/50 text-destructive"
+          : "border-border/70 bg-card",
         isDragging
           ? "z-30 cursor-grabbing shadow-lg"
           : canEditSteps
             ? "cursor-grab hover:shadow-md"
             : "cursor-pointer hover:shadow-md",
       )}
-      title={`${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}${canEditSteps ? "\nDrag to reschedule, click to edit." : ""}`}
+      title={
+        conflict
+          ? `${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}\nConflict: another operation on the same workstation overlaps this time.${canEditSteps ? "\nDrag to reschedule." : ""}`
+          : `${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}${canEditSteps ? "\nDrag to reschedule, click to edit." : ""}`
+      }
     >
       <span
         aria-hidden
@@ -622,6 +666,107 @@ function layoutForDay(
     ((visibleFinish.getTime() - visibleStart.getTime()) / 3_600_000) *
     HOUR_HEIGHT_PX;
   return { top, height };
+}
+
+/**
+ * Pack overlapping ops into parallel lanes for side-by-side rendering
+ * inside a single day column (Google-Calendar style).
+ *
+ * Algorithm:
+ *   - Sort ops by start time.
+ *   - Walk through; maintain the set of "active lanes" — lanes whose
+ *     current op hasn't ended yet by this op's start.
+ *   - Each op takes the lowest-numbered free lane (re-using a lane
+ *     once its previous occupant finishes).
+ *   - Group ops into "clusters" of mutually-overlapping ops; every op
+ *     in a cluster gets the same `cluster` value (= max lane index in
+ *     the cluster + 1), which is the divisor used to compute the
+ *     width of each block. This is what keeps the cluster's blocks
+ *     equally narrow even when only two of three lanes are active at
+ *     a given vertical position.
+ */
+function assignLanes(
+  ops: ScheduleOperation[],
+): Map<number, { lane: number; cluster: number }> {
+  const result = new Map<number, { lane: number; cluster: number }>();
+  const usable = ops
+    .filter((o) => o.planned_start && o.planned_finish)
+    .map((o) => ({
+      op: o,
+      start: new Date(o.planned_start!).getTime(),
+      end: new Date(o.planned_finish!).getTime(),
+    }))
+    .sort((a, b) => a.start - b.start);
+
+  let active: { lane: number; end: number }[] = [];
+  let clusterIds: number[] = [];
+  let clusterMaxLane = 0;
+
+  function flushCluster() {
+    const width = clusterMaxLane + 1;
+    for (const opId of clusterIds) {
+      const prev = result.get(opId);
+      if (prev) result.set(opId, { lane: prev.lane, cluster: width });
+    }
+    clusterIds = [];
+    clusterMaxLane = 0;
+  }
+
+  for (const { op, start, end } of usable) {
+    // Drop lanes whose op already ended before this one starts.
+    active = active.filter((l) => l.end > start);
+
+    // No overlap with anything active = end of the previous cluster.
+    if (active.length === 0) flushCluster();
+
+    // Find the lowest lane index not currently in use.
+    const used = new Set(active.map((l) => l.lane));
+    let lane = 0;
+    while (used.has(lane)) lane++;
+
+    active.push({ lane, end });
+    clusterIds.push(op.id);
+    if (lane > clusterMaxLane) clusterMaxLane = lane;
+    result.set(op.id, { lane, cluster: 1 });
+  }
+  flushCluster();
+  return result;
+}
+
+/**
+ * Same-WSG overlap = a real conflict (one workstation can't run two
+ * ops in parallel). Returns the set of op ids that share at least one
+ * second of overlap with another op on the same workstation_group_id.
+ * Ops with no WSG (unassigned steps) never conflict.
+ */
+function detectSameWsgConflicts(
+  ops: ScheduleOperation[],
+): Set<number> {
+  const out = new Set<number>();
+  const byWsg = new Map<number, ScheduleOperation[]>();
+  for (const op of ops) {
+    if (!op.workstation_group_id || !op.planned_start || !op.planned_finish) continue;
+    const arr = byWsg.get(op.workstation_group_id) ?? [];
+    arr.push(op);
+    byWsg.set(op.workstation_group_id, arr);
+  }
+  for (const arr of byWsg.values()) {
+    for (let i = 0; i < arr.length; i++) {
+      const a = arr[i];
+      const aStart = new Date(a.planned_start!).getTime();
+      const aEnd = new Date(a.planned_finish!).getTime();
+      for (let j = i + 1; j < arr.length; j++) {
+        const b = arr[j];
+        const bStart = new Date(b.planned_start!).getTime();
+        const bEnd = new Date(b.planned_finish!).getTime();
+        if (aStart < bEnd && bStart < aEnd) {
+          out.add(a.id);
+          out.add(b.id);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 function dayKey(d: Date): string {
