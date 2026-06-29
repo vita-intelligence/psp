@@ -22,10 +22,17 @@ import type {
   BacklogMO,
   ProductionScheduleResponse,
 } from "@/lib/production/types";
-import { scheduleManufacturingOrderAction } from "@/lib/production/actions";
+import {
+  scheduleManufacturingOrderAction,
+  scheduleProjectAction,
+} from "@/lib/production/actions";
 
 interface Props {
   mo: BacklogMO;
+  /** True when this row is the root of a multi-MO project (has
+   *  descendants in the backlog). Routes the action to
+   *  scheduleProjectAction so the whole chain walks. */
+  isProject: boolean;
   data: ProductionScheduleResponse;
   onClose: () => void;
   onScheduled: () => void;
@@ -36,7 +43,13 @@ interface FreeSlot {
   endMs: number;
 }
 
-export function QuickSchedulePanel({ mo, data, onClose, onScheduled }: Props) {
+export function QuickSchedulePanel({
+  mo,
+  isProject,
+  data,
+  onClose,
+  onScheduled,
+}: Props) {
   const primaryWsg = mo.steps_summary[0]?.workstation_group ?? null;
   const totalDurationSeconds = mo.planned_duration_seconds;
 
@@ -86,12 +99,18 @@ export function QuickSchedulePanel({ mo, data, onClose, onScheduled }: Props) {
       return;
     }
     startTransition(async () => {
-      const res = await scheduleManufacturingOrderAction(
-        mo.uuid,
-        local.toISOString(),
-      );
+      const res = isProject
+        ? await scheduleProjectAction(mo.uuid, local.toISOString())
+        : await scheduleManufacturingOrderAction(
+            mo.uuid,
+            local.toISOString(),
+          );
       if (res.ok) {
-        toast.success(`Scheduled ${mo.code ?? "MO"} for ${fmtSlot(local.getTime(), 0).timeLabel}`);
+        toast.success(
+          isProject
+            ? `Scheduled project ${mo.code ?? "MO"} for ${fmtSlot(local.getTime(), 0).timeLabel}`
+            : `Scheduled ${mo.code ?? "MO"} for ${fmtSlot(local.getTime(), 0).timeLabel}`,
+        );
         if (res.outsideHoursSeconds && res.outsideHoursSeconds > 0) {
           toast.info(
             `Walker bumped your start past ${Math.round(res.outsideHoursSeconds / 60)} min of closed hours.`,
@@ -177,15 +196,28 @@ export function QuickSchedulePanel({ mo, data, onClose, onScheduled }: Props) {
         {/* Free slot suggestions */}
         <section className="space-y-2">
           <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Free slots on{" "}
-            <span className="font-medium text-foreground">
-              {primaryWsg?.name ?? "no workstation"}
-            </span>
+            {isProject ? (
+              <>Free slots on the project's first step</>
+            ) : (
+              <>
+                Free slots on{" "}
+                <span className="font-medium text-foreground">
+                  {primaryWsg?.name ?? "no workstation"}
+                </span>
+              </>
+            )}
           </h3>
+          {isProject && (
+            <p className="text-[11px] text-muted-foreground">
+              The walker cascades the chain from your start time — every
+              child MO falls into place behind the first one.
+            </p>
+          )}
           {!primaryWsg ? (
             <div className="rounded-md border border-dashed border-border/60 px-3 py-4 text-center text-[11px] text-muted-foreground">
-              This MO's first step has no workstation assigned. Pick one
-              in the BOM / routing first.
+              {isProject
+                ? "The project root has no first-step workstation. Type a start time below — the walker will route each child MO via its routing."
+                : "This MO's first step has no workstation assigned. Pick one in the BOM / routing first."}
             </div>
           ) : slots.length === 0 ? (
             <div className="rounded-md border border-dashed border-border/60 px-3 py-4 text-center text-[11px] text-muted-foreground">

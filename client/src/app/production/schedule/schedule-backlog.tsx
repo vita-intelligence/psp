@@ -21,7 +21,7 @@ interface Props {
   items: BacklogMO[];
   canEdit: boolean;
   company: CompanyDefaults;
-  onQuickSchedule?: (mo: BacklogMO) => void;
+  onQuickSchedule?: (mo: BacklogMO, isProject: boolean) => void;
 }
 
 interface TreeNode {
@@ -131,7 +131,7 @@ function TreeRow({
   canEdit: boolean;
   company: CompanyDefaults;
   depth: number;
-  onQuickSchedule?: (mo: BacklogMO) => void;
+  onQuickSchedule?: (mo: BacklogMO, isProject: boolean) => void;
 }) {
   // Collapsed by default so the rail stays compact — planner
   // expands only the projects they want to break apart.
@@ -139,6 +139,7 @@ function TreeRow({
   const hasChildren = node.children.length > 0;
   const hasSteps = node.mo.steps_summary.length > 0;
   const isProjectRoot = depth === 0 && hasChildren;
+  const projectRowFlag = isProjectRoot;
 
   return (
     <li>
@@ -154,8 +155,8 @@ function TreeRow({
         canToggle={hasChildren || hasSteps}
         onToggle={() => setExpanded((e) => !e)}
         onQuickSchedule={
-          onQuickSchedule && !isProjectRoot
-            ? () => onQuickSchedule(node.mo)
+          onQuickSchedule
+            ? () => onQuickSchedule(node.mo, projectRowFlag)
             : undefined
         }
       />

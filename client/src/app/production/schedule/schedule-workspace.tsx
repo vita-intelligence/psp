@@ -170,7 +170,10 @@ export function ScheduleWorkspace({
     kind: "project" | "mo";
   } | null>(null);
   const [editTarget, setEditTarget] = useState<ScheduleEditTarget | null>(null);
-  const [quickScheduleMo, setQuickScheduleMo] = useState<BacklogMO | null>(null);
+  const [quickScheduleMo, setQuickScheduleMo] = useState<{
+    mo: BacklogMO;
+    isProject: boolean;
+  } | null>(null);
   const [, startTransition] = useTransition();
 
   // The canvas DOM ref + a live cursor ref let us turn a drag-end
@@ -1407,12 +1410,15 @@ export function ScheduleWorkspace({
               items={data?.backlog ?? []}
               canEdit={canEditSteps}
               company={company}
-              onQuickSchedule={(mo) => setQuickScheduleMo(mo)}
+              onQuickSchedule={(mo, isProject) =>
+                setQuickScheduleMo({ mo, isProject })
+              }
             />
 
             {data && quickScheduleMo && (
               <QuickSchedulePanel
-                mo={quickScheduleMo}
+                mo={quickScheduleMo.mo}
+                isProject={quickScheduleMo.isProject}
                 data={data}
                 onClose={() => setQuickScheduleMo(null)}
                 onScheduled={() => {
