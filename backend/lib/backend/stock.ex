@@ -1437,6 +1437,24 @@ defmodule Backend.Stock do
         )
         |> Repo.all()
 
+      # 1c. Warehouse(s) the lot is currently sitting in. The operator
+      #     can only physically walk a lot within the same warehouse
+      #     during put-away, so candidates must live in the same site.
+      #     If the lot has no live placements (edge case — fresh lot)
+      #     we fall back to "any warehouse" rather than block all
+      #     suggestions.
+      source_warehouse_ids =
+        from(p in Placement,
+          join: c in StorageCell,
+          on: c.id == p.storage_cell_id,
+          join: l in StorageLocation,
+          on: l.id == c.storage_location_id,
+          where: p.stock_lot_id == ^lot.id and p.qty > 0,
+          select: l.warehouse_id,
+          distinct: true
+        )
+        |> Repo.all()
+
       # 2. Committed footprint per cell — sum each placement's
       #    (qty × packaging dims) so we know the *real* free space.
       #    Joined to the lot for packaging dims; lots without dims are
@@ -1471,7 +1489,7 @@ defmodule Backend.Stock do
       #    Suggesting any of these for a QC-passed put-away breaks the
       #    audit chain (the cell's intent stops matching the lot's
       #    state) and physically shoves stock into the wrong area.
-      query =
+      base_query =
         from c in StorageCell,
           join: l in StorageLocation,
           on: l.id == c.storage_location_id,
@@ -1487,6 +1505,21 @@ defmodule Backend.Stock do
               is_nil(f.system_kind) and
               c.id not in ^source_cell_ids,
           select: %{cell: c, location: l, floor: f, warehouse: w}
+
+      # Restrict to the warehouse(s) the lot is currently in — put-away
+      # is a physical walk, so a cell in another site (e.g. unit 11
+      # when the lot sits in unit 12) is never a legitimate suggestion.
+      # Skip the filter when the lot has no live placements anywhere
+      # (fresh lot, or all-consumed) so the recommender still has
+      # something to offer in that edge case.
+      query =
+        case source_warehouse_ids do
+          [] ->
+            base_query
+
+          ids ->
+            from [c, l, f, w] in base_query, where: l.warehouse_id in ^ids
+        end
 
       query
       |> Repo.all()
