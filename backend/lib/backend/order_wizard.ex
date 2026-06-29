@@ -611,15 +611,30 @@ defmodule Backend.OrderWizard do
     blocked_mos = Enum.filter(mos, & &1.has_placeholder_bookings?)
     po_uuids = blocked_mos |> Enum.flat_map(& &1.placeholder_po_uuids) |> Enum.uniq()
 
+    # Pull the most-recent inspection uuid per PO via a subquery so the
+    # awaiting-QC branch can deep-link straight at it. left_join + take
+    # the latest by id covers re-opened inspections (rare) and the
+    # common single-inspection case.
+    latest_inspection =
+      from(i in Backend.GoodsIn.Inspection,
+        group_by: i.purchase_order_id,
+        select: %{purchase_order_id: i.purchase_order_id, max_id: max(i.id)}
+      )
+
     pos =
       from(po in PurchaseOrder,
+        left_join: latest in subquery(latest_inspection),
+        on: latest.purchase_order_id == po.id,
+        left_join: insp in Backend.GoodsIn.Inspection,
+        on: insp.id == latest.max_id,
         where: po.uuid in ^po_uuids,
         order_by: [asc: po.expected_delivery_date, asc: po.id],
         select: %{
           uuid: po.uuid,
           status: po.status,
           expected_delivery_date: po.expected_delivery_date,
-          id: po.id
+          id: po.id,
+          inspection_uuid: insp.uuid
         }
       )
       |> Repo.all()
@@ -629,36 +644,32 @@ defmodule Backend.OrderWizard do
         # Branch on PO status. A draft / pending-approval PO can't be
         # "chased" from the vendor — it hasn't even been sent yet.
         # An ordered / partially-received PO is what the vendor has;
-        # that's what "chase" applies to.
-        {title, detail, label} = chase_po_copy(pos, next_po)
+        # that's what "chase" applies to. A `received` PO is awaiting
+        # QC sign-off — the buttons jump straight at the inspection.
+        copy = chase_po_copy(pos, next_po)
 
         %{
           code: "chase_po",
-          title: title,
-          detail: detail,
+          title: copy.title,
+          detail: copy.detail,
           primary_cta: %{
-            label: label,
+            label: copy.primary_label,
             kind: "link",
-            href: "/procurement/purchase-orders/#{next_po.uuid}"
+            href: copy.primary_href
           },
           secondary_ctas:
             [
-              # Quick handoff to the warehouse phone — pushes the goods-in
-              # team straight onto the pre-receive page for THIS PO so
-              # they don't have to find it in the incoming list. The
-              # mobile page renders the line-by-line "what to expect"
-              # checklist for receiving against vendor paperwork.
               %{
-                label: "Send PO ##{next_po.id} to device",
+                label: copy.send_label,
                 kind: "send_to_device",
-                href: "/m/incoming/#{next_po.uuid}"
+                href: copy.send_href
               }
             ] ++
               for po <- Enum.drop(pos, 1) do
                 %{
-                  label: "Open PO ##{po.id}",
+                  label: secondary_po_label(po),
                   kind: "link",
-                  href: "/procurement/purchase-orders/#{po.uuid}"
+                  href: secondary_po_href(po)
                 }
               end,
           shortages_link: %{
@@ -714,40 +725,111 @@ defmodule Backend.OrderWizard do
         count = length(not_sent)
         label_for_status = po_status_label(target.status)
 
-        title =
-          "#{count} purchase order#{if count == 1, do: "", else: "s"} not sent to the vendor yet."
-
-        detail =
-          "PO ##{target.id} is #{label_for_status}. Submit + sign it off so the vendor receives the order — production can't start until the goods are at least on order."
-
-        {title, detail, "Open PO ##{target.id}"}
+        %{
+          title:
+            "#{count} purchase order#{if count == 1, do: "", else: "s"} not sent to the vendor yet.",
+          detail:
+            "PO ##{target.id} is #{label_for_status}. Submit + sign it off so the vendor receives the order — production can't start until the goods are at least on order.",
+          primary_label: "Open PO ##{target.id}",
+          primary_href: "/procurement/purchase-orders/#{target.uuid}",
+          send_label: "Send PO ##{target.id} to device",
+          send_href: "/m/incoming/#{target.uuid}"
+        }
 
       in_transit != [] ->
         count = length(in_transit)
 
-        title =
-          "Awaiting #{count} purchase order#{if count == 1, do: "", else: "s"} from the vendor."
-
-        detail =
-          "Next expected delivery: #{format_date(next_po.expected_delivery_date) || "no date set"}. Chase the vendor or update the expected date."
-
-        {title, detail, "Open next PO"}
+        %{
+          title:
+            "Awaiting #{count} purchase order#{if count == 1, do: "", else: "s"} from the vendor.",
+          detail:
+            "Next expected delivery: #{format_date(next_po.expected_delivery_date) || "no date set"}. Chase the vendor or update the expected date.",
+          primary_label: "Open next PO",
+          primary_href: "/procurement/purchase-orders/#{next_po.uuid}",
+          send_label: "Send PO ##{next_po.id} to device",
+          send_href: "/m/incoming/#{next_po.uuid}"
+        }
 
       awaiting_qc != [] ->
+        # Goods are on site — the operator's next action is the QC
+        # inspection, not the desktop PO page. Buttons deep-link at
+        # the inspection (desktop + mobile) so a one-tap handoff lands
+        # the QC team exactly where they need to sign off.
         target = List.first(awaiting_qc)
         count = length(awaiting_qc)
+        insp_uuid = target.inspection_uuid
 
-        title =
-          "Goods received — awaiting QC on #{count} purchase order#{if count == 1, do: "", else: "s"}."
+        primary =
+          if insp_uuid do
+            %{
+              label: "Open inspection",
+              href: "/procurement/inspections/#{insp_uuid}"
+            }
+          else
+            %{
+              label: "Open PO ##{target.id}",
+              href: "/procurement/purchase-orders/#{target.uuid}"
+            }
+          end
 
-        detail =
-          "PO ##{target.id} is fully received. The quality team needs to sign off the goods-in inspection before the bookings become real and production can pull stock."
+        send =
+          if insp_uuid do
+            %{
+              label: "Send inspection to device",
+              href: "/m/inspections/#{insp_uuid}"
+            }
+          else
+            %{
+              label: "Send PO ##{target.id} to device",
+              href: "/m/incoming/#{target.uuid}"
+            }
+          end
 
-        {title, detail, "Open PO ##{target.id}"}
+        %{
+          title:
+            "Goods received — awaiting QC on #{count} purchase order#{if count == 1, do: "", else: "s"}.",
+          detail:
+            "PO ##{target.id} is fully received. The quality team needs to sign off the goods-in inspection before the bookings become real and production can pull stock.",
+          primary_label: primary.label,
+          primary_href: primary.href,
+          send_label: send.label,
+          send_href: send.href
+        }
 
       true ->
         # Defensive — shouldn't reach here since pos is non-empty.
-        {"Awaiting purchase orders.", nil, "Open next PO"}
+        %{
+          title: "Awaiting purchase orders.",
+          detail: nil,
+          primary_label: "Open next PO",
+          primary_href: "/procurement/purchase-orders/#{next_po.uuid}",
+          send_label: "Send PO ##{next_po.id} to device",
+          send_href: "/m/incoming/#{next_po.uuid}"
+        }
+    end
+  end
+
+  # Per-PO secondary link — for the awaiting-QC branch we link at the
+  # inspection when one exists so the planner can drill into either
+  # PO's QC at a tap. Falls back to the desktop PO page when no
+  # inspection has been spun up yet (rare).
+  defp secondary_po_label(po) do
+    cond do
+      po.status in @awaiting_qc_po_statuses and po.inspection_uuid ->
+        "Open inspection (PO ##{po.id})"
+
+      true ->
+        "Open PO ##{po.id}"
+    end
+  end
+
+  defp secondary_po_href(po) do
+    cond do
+      po.status in @awaiting_qc_po_statuses and po.inspection_uuid ->
+        "/procurement/inspections/#{po.inspection_uuid}"
+
+      true ->
+        "/procurement/purchase-orders/#{po.uuid}"
     end
   end
 
