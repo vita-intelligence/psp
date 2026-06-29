@@ -86,6 +86,7 @@ import {
 import {
   CalendarView,
   CALENDAR_DAY_DROPPABLE_PREFIX,
+  CALENDAR_DAY_END_HOUR,
   CALENDAR_DAY_START_HOUR,
   CALENDAR_HOUR_HEIGHT_PX,
 } from "./schedule-view-calendar";
@@ -632,13 +633,19 @@ export function ScheduleWorkspace({
       if (Number.isNaN(dayLocal.getTime())) return;
 
       const yWithinColumn = cursor.y - chosen.rect.top;
-      const minutesFromGridStart = Math.max(
-        0,
-        (yWithinColumn / CALENDAR_HOUR_HEIGHT_PX) * 60,
-      );
+      // Clamp cursor.y to the visible grid window so drops above the
+      // first hour row land at the column's start hour (not at
+      // negative minutes), and drops below the last row land at the
+      // column's end hour (not far in the next day). Snap-to-bounds
+      // rather than error so an over-shot drag still resolves to the
+      // closest valid spot.
+      const gridSpanMinutes =
+        (CALENDAR_DAY_END_HOUR - CALENDAR_DAY_START_HOUR + 1) * 60;
+      const rawMinutes = (yWithinColumn / CALENDAR_HOUR_HEIGHT_PX) * 60;
+      const clampedRaw = Math.max(0, Math.min(rawMinutes, gridSpanMinutes - 5));
       // 5-min snap — finer than the prior 15-min so a small but
       // intentional drag (e.g. nudge by half an hour) registers.
-      const snapped = Math.round(minutesFromGridStart / 5) * 5;
+      const snapped = Math.round(clampedRaw / 5) * 5;
       const totalMinutes = CALENDAR_DAY_START_HOUR * 60 + snapped;
       const hours = Math.floor(totalMinutes / 60);
       const mins = totalMinutes % 60;
@@ -651,7 +658,7 @@ export function ScheduleWorkspace({
       // offset (in BST: 10:00 visual → 11:00 actual), which combined
       // with the BE walker pushed late-day drops past close into the
       // next working day — making blocks 'disappear' to the user.
-      const newStartDate = new Date(
+      let newStartDate = new Date(
         dayLocal.getFullYear(),
         dayLocal.getMonth(),
         dayLocal.getDate(),
@@ -661,9 +668,13 @@ export function ScheduleWorkspace({
         0,
       );
 
+      // Past-time clamp: instead of refusing the drop, snap the new
+      // start to the next 5-min slot after 'now' so the user's drag
+      // still lands somewhere sensible.
       if (isPast(newStartDate)) {
-        toast.error("Can't drag the operation before the current time.");
-        return;
+        const fiveMin = 5 * 60_000;
+        newStartDate = new Date(Math.ceil(Date.now() / fiveMin) * fiveMin);
+        toast.info("Snapped to the next 5-minute slot — can't start in the past.");
       }
       warnIfDropOutsideHours(newStartDate);
 
@@ -881,18 +892,22 @@ export function ScheduleWorkspace({
       if (!row) return;
 
       const rowStartMs = new Date(row.start).getTime();
-      const msDelta = cursorDropTime
+      const rawMsDelta = cursorDropTime
         ? cursorDropTime.getTime() - rowStartMs
         : msDeltaFromDelta;
+
+      // Past-time clamp: snap to the next 5-min slot after 'now'.
+      let newFirstStart = new Date(rowStartMs + rawMsDelta);
+      let msDelta = rawMsDelta;
+      if (isPast(newFirstStart)) {
+        const fiveMin = 5 * 60_000;
+        newFirstStart = new Date(Math.ceil(Date.now() / fiveMin) * fiveMin);
+        msDelta = newFirstStart.getTime() - rowStartMs;
+        toast.info("Snapped to the next 5-minute slot — can't start in the past.");
+      }
       const secondsDelta = Math.round(msDelta / 1000);
       if (secondsDelta === 0) return;
 
-      // Past-time guard — earliest step's new start can't be < now.
-      const newFirstStart = new Date(rowStartMs + msDelta);
-      if (isPast(newFirstStart)) {
-        toast.error("Can't drag the block before the current time.");
-        return;
-      }
       // Chain-order guard — block dragging a child past its parent's
       // start (or vice versa) before we even fire the request so the
       // user never sees the optimistic move bounce back.
@@ -938,18 +953,21 @@ export function ScheduleWorkspace({
       if (!row) return;
 
       const rowStartMs = new Date(row.start).getTime();
-      const msDelta = cursorDropTime
+      const rawMsDelta = cursorDropTime
         ? cursorDropTime.getTime() - rowStartMs
         : msDeltaFromDelta;
-      const secondsDelta = Math.round(msDelta / 1000);
-      if (secondsDelta === 0) return;
 
       // Earliest step in the WHOLE chain after the shift.
-      const newFirstStart = new Date(rowStartMs + msDelta);
+      let newFirstStart = new Date(rowStartMs + rawMsDelta);
+      let msDelta = rawMsDelta;
       if (isPast(newFirstStart)) {
-        toast.error("Can't drag the project before the current time.");
-        return;
+        const fiveMin = 5 * 60_000;
+        newFirstStart = new Date(Math.ceil(Date.now() / fiveMin) * fiveMin);
+        msDelta = newFirstStart.getTime() - rowStartMs;
+        toast.info("Snapped to the next 5-minute slot — can't start in the past.");
       }
+      const secondsDelta = Math.round(msDelta / 1000);
+      if (secondsDelta === 0) return;
       warnIfDropOutsideHours(newFirstStart);
 
       const snapshot = data;
@@ -982,16 +1000,19 @@ export function ScheduleWorkspace({
 
       const opStartMs = new Date(op.planned_start).getTime();
       const opFinishMs = new Date(op.planned_finish).getTime();
-      const msDelta = cursorDropTime
+      const rawMsDelta = cursorDropTime
         ? cursorDropTime.getTime() - opStartMs
         : msDeltaFromDelta;
-      if (msDelta === 0) return;
 
-      const newStartDate = new Date(opStartMs + msDelta);
+      let newStartDate = new Date(opStartMs + rawMsDelta);
+      let msDelta = rawMsDelta;
       if (isPast(newStartDate)) {
-        toast.error("Can't drag the operation before the current time.");
-        return;
+        const fiveMin = 5 * 60_000;
+        newStartDate = new Date(Math.ceil(Date.now() / fiveMin) * fiveMin);
+        msDelta = newStartDate.getTime() - opStartMs;
+        toast.info("Snapped to the next 5-minute slot — can't start in the past.");
       }
+      if (msDelta === 0) return;
       const newFinishDate = new Date(opFinishMs + msDelta);
       // Chain-order guard at the MO level — a single op shift moves
       // the whole MO's bounds out of sync if it crosses a parent /
