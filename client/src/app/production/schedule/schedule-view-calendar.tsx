@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { AlertTriangle, CalendarOff } from "lucide-react";
+import { AlertTriangle, CalendarOff, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   ProductionScheduleResponse,
@@ -42,10 +42,30 @@ const DAY_END_HOUR = 22;
 const TIME_GUTTER_PX = 64;
 
 export function CalendarView({ data, zoom, anchor }: Props) {
-  if (zoom === "month") {
-    return <MonthCalendar data={data} anchor={anchor} />;
-  }
-  return <TimedCalendar data={data} zoom={zoom} anchor={anchor} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <ReadOnlyHint />
+      {zoom === "month" ? (
+        <MonthCalendar data={data} anchor={anchor} />
+      ) : (
+        <TimedCalendar data={data} zoom={zoom} anchor={anchor} />
+      )}
+    </div>
+  );
+}
+
+function ReadOnlyHint() {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground">
+      <Info className="mt-0.5 size-3.5 shrink-0" />
+      <p>
+        Read-only at-a-glance view. To drag-reschedule, switch to{" "}
+        <span className="font-medium text-foreground">By MO</span> or{" "}
+        <span className="font-medium text-foreground">By workstation</span>.
+        Click any block here to open the step editor.
+      </p>
+    </div>
+  );
 }
 
 // ---------- Timed (Day / Week) -----------------------------------------
@@ -94,60 +114,65 @@ function TimedCalendar({
 
   const totalHeight = (DAY_END_HOUR - DAY_START_HOUR + 1) * HOUR_HEIGHT_PX;
   const weekNumber = isoWeek(days[0]);
+  const gridTemplate = `${TIME_GUTTER_PX}px repeat(${days.length}, minmax(0, 1fr))`;
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-card">
-      {/* Sticky day-header row */}
-      <div
-        className="grid border-b border-border/60 bg-muted/30"
-        style={{
-          gridTemplateColumns: `${TIME_GUTTER_PX}px repeat(${days.length}, minmax(0, 1fr))`,
-        }}
-      >
-        <div className="flex items-center justify-center px-2 py-2 text-[11px] font-semibold text-muted-foreground">
-          W{weekNumber}
-        </div>
-        {days.map((day) => (
-          <DayHeader key={day.toISOString()} day={day} />
-        ))}
-      </div>
-
-      {/* Scrollable body */}
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-card">
+      <div className="relative min-h-0 flex-1">
         <div
-          className="relative grid"
-          style={{
-            gridTemplateColumns: `${TIME_GUTTER_PX}px repeat(${days.length}, minmax(0, 1fr))`,
-            height: totalHeight,
-          }}
+          ref={scrollRef}
+          className="absolute inset-0 overflow-auto"
         >
-          {/* Hour gutter */}
-          <div className="relative">
-            {hours.map((h) => (
-              <div
-                key={h}
-                className="absolute left-0 right-0 border-t border-border/60 pl-2 pt-1 text-[11px] text-muted-foreground"
-                style={{
-                  top: (h - DAY_START_HOUR) * HOUR_HEIGHT_PX,
-                  height: HOUR_HEIGHT_PX,
-                }}
-              >
-                {h.toString().padStart(2, "0")}:00
-              </div>
+          {/* Sticky day-header row — inside the scroll container so it
+              stays visible at the top as the body scrolls past. */}
+          <div
+            className="sticky top-0 z-30 grid border-b border-border/60 bg-muted/30"
+            style={{ gridTemplateColumns: gridTemplate }}
+          >
+            <div className="flex items-center justify-center px-2 py-2 text-[11px] font-semibold text-muted-foreground">
+              W{weekNumber}
+            </div>
+            {days.map((day) => (
+              <DayHeader key={day.toISOString()} day={day} />
             ))}
           </div>
 
-          {/* Day columns */}
-          {days.map((day, idx) => (
-            <DayColumn
-              key={day.toISOString()}
-              day={day}
-              hours={hours}
-              ops={opsByDay.get(dayKey(day)) ?? []}
-              workstationGroups={data.workstation_groups}
-              isLast={idx === days.length - 1}
-            />
-          ))}
+          {/* Time-grid body */}
+          <div
+            className="relative grid"
+            style={{
+              gridTemplateColumns: gridTemplate,
+              height: totalHeight,
+            }}
+          >
+            {/* Hour gutter */}
+            <div className="relative">
+              {hours.map((h) => (
+                <div
+                  key={h}
+                  className="absolute left-0 right-0 border-t border-border/60 pl-2 pt-1 text-[11px] text-muted-foreground"
+                  style={{
+                    top: (h - DAY_START_HOUR) * HOUR_HEIGHT_PX,
+                    height: HOUR_HEIGHT_PX,
+                  }}
+                >
+                  {h.toString().padStart(2, "0")}:00
+                </div>
+              ))}
+            </div>
+
+            {/* Day columns */}
+            {days.map((day, idx) => (
+              <DayColumn
+                key={day.toISOString()}
+                day={day}
+                hours={hours}
+                ops={opsByDay.get(dayKey(day)) ?? []}
+                workstationGroups={data.workstation_groups}
+                isLast={idx === days.length - 1}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -334,40 +359,42 @@ function MonthCalendar({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-card">
-      <div className="grid grid-cols-[64px_repeat(7,_1fr)] border-b border-border/60 bg-muted/30">
-        <div className="flex items-center justify-center text-[11px] font-semibold text-muted-foreground">
-          {/* week-number gutter */}
-        </div>
-        {weekdayHeaders().map((label) => (
-          <div
-            key={label}
-            className="border-l border-border/60 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-          >
-            {label}
-          </div>
-        ))}
-      </div>
-      <div className="flex-1 overflow-auto">
-        {monthGrid.map((week) => (
-          <div
-            key={week[0].toISOString()}
-            className="grid min-h-[120px] grid-cols-[64px_repeat(7,_1fr)] border-b border-border/60 last:border-b-0"
-          >
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-card">
+      <div className="relative min-h-0 flex-1">
+        <div className="absolute inset-0 overflow-auto">
+          <div className="sticky top-0 z-30 grid grid-cols-[64px_repeat(7,_1fr)] border-b border-border/60 bg-muted/30">
             <div className="flex items-center justify-center text-[11px] font-semibold text-muted-foreground">
-              W{isoWeek(week[0])}
+              {/* week-number gutter */}
             </div>
-            {week.map((day) => (
-              <MonthDayCell
-                key={day.toISOString()}
-                day={day}
-                anchorMonth={anchor.getUTCMonth()}
-                ops={opsByDay.get(dayKey(day)) ?? []}
-                workstationGroups={data.workstation_groups}
-              />
+            {weekdayHeaders().map((label) => (
+              <div
+                key={label}
+                className="border-l border-border/60 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                {label}
+              </div>
             ))}
           </div>
-        ))}
+          {monthGrid.map((week) => (
+            <div
+              key={week[0].toISOString()}
+              className="grid min-h-[120px] grid-cols-[64px_repeat(7,_1fr)] border-b border-border/60 last:border-b-0"
+            >
+              <div className="flex items-center justify-center text-[11px] font-semibold text-muted-foreground">
+                W{isoWeek(week[0])}
+              </div>
+              {week.map((day) => (
+                <MonthDayCell
+                  key={day.toISOString()}
+                  day={day}
+                  anchorMonth={anchor.getUTCMonth()}
+                  ops={opsByDay.get(dayKey(day)) ?? []}
+                  workstationGroups={data.workstation_groups}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
