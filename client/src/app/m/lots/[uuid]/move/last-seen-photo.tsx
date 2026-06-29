@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { Camera } from "lucide-react";
 
 /**
@@ -14,6 +13,12 @@ import { Camera } from "lucide-react";
  * load (deleted blob, auth blip) — never the browser's broken-image
  * icon, which looks identical to a "no photo on file" state to a
  * worker.
+ *
+ * Uses a plain `<img>` (not `next/image`) on purpose — the photo
+ * comes from a session-gated proxy route, can be any aspect ratio
+ * (operator's hand-held snap), and on iOS Safari the `fill` +
+ * unoptimized combo collapsed to a hairline when the parent's flex
+ * context squeezed it.
  */
 export function LastSeenPhoto({
   url,
@@ -42,16 +47,14 @@ export function LastSeenPhoto({
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="relative block h-44 w-full overflow-hidden rounded-md border border-border/60 bg-muted"
+      className="block w-full overflow-hidden rounded-md border border-border/60 bg-muted"
       title={caption ?? "Tap to enlarge"}
     >
-      <Image
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
         src={url}
         alt={caption ?? "Last known photo of this lot"}
-        fill
-        sizes="(max-width: 600px) 90vw, 400px"
-        className="object-cover"
-        unoptimized
+        className="block h-44 w-full object-cover"
         onError={() => setErrored(true)}
       />
     </a>
