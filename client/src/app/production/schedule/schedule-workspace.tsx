@@ -571,14 +571,14 @@ export function ScheduleWorkspace({
     const overId = over ? String(over.id) : null;
 
     // ----- Calendar view drop: drop a step onto a day column at a
-    // specific time-of-day. Differs from the Gantt drop path because
-    // the time axis here is vertical and the day axis is horizontal,
-    // so delta.x can't be used to compute a time shift.
-    if (
-      overId?.startsWith(CALENDAR_DAY_DROPPABLE_PREFIX) &&
-      idStr.startsWith("op-") &&
-      over
-    ) {
+    // specific time-of-day. Route by ACTIVE VIEW, not by dnd-kit's
+    // `over`, because the calendar's pointerWithin collision returns
+    // null when the cursor strays even a few pixels outside the day
+    // column at release — which made the block "snap back to start"
+    // and look like a broken drop. With view-routed handling, ANY
+    // op-drag while the calendar tab is active resolves via DOM
+    // hit-testing against [data-calendar-day-iso].
+    if (view === "calendar" && idStr.startsWith("op-")) {
       const opId = Number(idStr.slice("op-".length));
       const op = data.operations.find((o) => o.id === opId);
       if (!op || !op.planned_start || !op.planned_finish) return;
@@ -586,40 +586,62 @@ export function ScheduleWorkspace({
       const moUuid = op.manufacturing_order?.uuid;
       if (!moUuid) return;
 
-      // Use the CURSOR position at release time, not the block's
-      // translated top — operators expect "where I let go = where it
-      // starts" rather than "block top stays aligned to my grab
-      // offset". cursorRef is updated on pointermove inside this same
-      // drag session, so it carries the release coordinates here.
       const cursor = cursorRef.current;
-      if (!cursor) return;
+      if (!cursor) {
+        toast.error("Couldn't read drop position — try again.");
+        return;
+      }
 
-      // Measure the day column's bounding rect LIVE at drop time. The
-      // dnd-kit over.rect can lag the actual position when the
-      // calendar's nested scroll container scrolls during drag — read
-      // the rect off the DOM ourselves so cursor.y - column.top is
-      // always against the rendered position.
-      const dayData = over.data?.current as
-        | { dayMs?: number; dayIso?: string }
-        | undefined;
-      if (!dayData?.dayMs || !dayData.dayIso) return;
-      const columnEl =
+      // Find the day column under the cursor by querying all day
+      // columns and picking the one whose rect contains cursor.x.
+      // Falls back to the closest column by horizontal distance, so
+      // a near-miss drop still lands on the nearest day.
+      const columnEls =
         typeof document !== "undefined"
-          ? (document.querySelector(
-              `[data-calendar-day-iso="${dayData.dayIso}"]`,
-            ) as HTMLElement | null)
-          : null;
-      const columnRect = columnEl?.getBoundingClientRect() ?? over.rect;
-      const yWithinColumn = cursor.y - columnRect.top;
+          ? Array.from(
+              document.querySelectorAll(
+                "[data-calendar-day-iso]",
+              ) as NodeListOf<HTMLElement>,
+            )
+          : [];
+      if (columnEls.length === 0) return;
+
+      type ColMatch = { el: HTMLElement; rect: DOMRect; dayIso: string };
+      let inside: ColMatch | null = null;
+      let closest: { match: ColMatch; dx: number } | null = null;
+      for (const el of columnEls) {
+        const iso = el.dataset.calendarDayIso;
+        if (!iso) continue;
+        const rect = el.getBoundingClientRect();
+        const candidate: ColMatch = { el, rect, dayIso: iso };
+        if (cursor.x >= rect.left && cursor.x <= rect.right) {
+          inside = candidate;
+          break;
+        }
+        const dx = Math.min(
+          Math.abs(cursor.x - rect.left),
+          Math.abs(cursor.x - rect.right),
+        );
+        if (!closest || dx < closest.dx) closest = { match: candidate, dx };
+      }
+      const chosen = inside ?? closest?.match;
+      if (!chosen) return;
+
+      const dayIso = chosen.dayIso;
+      const dayMs = new Date(dayIso).getTime();
+      if (!Number.isFinite(dayMs)) return;
+
+      const yWithinColumn = cursor.y - chosen.rect.top;
       const minutesFromGridStart = Math.max(
         0,
         (yWithinColumn / CALENDAR_HOUR_HEIGHT_PX) * 60,
       );
-      // Snap to 15-min ticks for sane drops.
-      const snapped = Math.round(minutesFromGridStart / 15) * 15;
+      // 5-min snap — finer than the prior 15-min so a small but
+      // intentional drag (e.g. nudge by half an hour) registers.
+      const snapped = Math.round(minutesFromGridStart / 5) * 5;
       const totalMinutes = CALENDAR_DAY_START_HOUR * 60 + snapped;
 
-      const newStartDate = new Date(dayData.dayMs + totalMinutes * 60_000);
+      const newStartDate = new Date(dayMs + totalMinutes * 60_000);
 
       if (isPast(newStartDate)) {
         toast.error("Can't drag the operation before the current time.");
@@ -630,7 +652,13 @@ export function ScheduleWorkspace({
       const currentStartMs = new Date(op.planned_start).getTime();
       const currentFinishMs = new Date(op.planned_finish).getTime();
       const msDelta = newStartDate.getTime() - currentStartMs;
-      if (msDelta === 0) return;
+      if (msDelta === 0) {
+        // The drop landed in the same 5-min slot as the original —
+        // surface a hint instead of silently snapping back so the user
+        // knows the drop registered but didn't move.
+        toast.info("Dropped in the same time slot — no change.");
+        return;
+      }
       const newFinishDate = new Date(currentFinishMs + msDelta);
 
       // Same chain-order guard the existing per-op handler uses.
