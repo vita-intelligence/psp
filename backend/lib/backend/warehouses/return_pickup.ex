@@ -30,11 +30,18 @@ defmodule Backend.Warehouses.ReturnPickup do
 
   # ----- Queue + detail loaders --------------------------------
 
+  # Production-side cells the return-pickup flow pulls lots OUT of.
+  # `dispatch` is the leftover-after-consume handoff target;
+  # `production_feed` is where the picker walked stock TO for an
+  # active run, and any lot stranded there after the run aborted /
+  # regressed is also a return-pickup candidate.
+  @return_pickup_purposes ~w(dispatch production_feed)
+
   @doc """
   Mobile queue. Lists every MO that has at least one lot sitting at
-  a production-side dispatch cell and not already claimed by an open
-  trolley pick. Sorted by oldest closeout finish first so the most
-  stale handoff bubbles to the top.
+  a production-side dispatch or production-feed cell and not already
+  claimed by an open trolley pick. Sorted by oldest closeout finish
+  first so the most stale handoff bubbles to the top.
   """
   def list_queue(company_id) when is_integer(company_id) do
     open_picks_subq =
@@ -44,7 +51,7 @@ defmodule Backend.Warehouses.ReturnPickup do
       )
 
     # MOs whose produced output (source_kind=manufacturing_order)
-    # still sits at a dispatch cell.
+    # still sits at a production-side cell.
     output_mos =
       from(p in Placement,
         join: l in Lot,
@@ -58,17 +65,17 @@ defmodule Backend.Warehouses.ReturnPickup do
             l.source_kind == "manufacturing_order" and
             l.status == "available" and
             p.qty > 0 and
-            c.purpose == "dispatch" and
+            c.purpose in @return_pickup_purposes and
             l.id not in subquery(open_picks_subq),
         distinct: true,
         select: m.id
       )
 
     # MOs whose booked ingredient lots (raw_material / packaging)
-    # have leftover qty sitting at a dispatch cell after closeout's
-    # partial-consume hand-off. The booking row gives us the MO
-    # back-link even though the lot's own source_kind points at the
-    # original PO / manual receive.
+    # have leftover qty sitting at a production-side cell after
+    # closeout's partial-consume hand-off. The booking row gives us
+    # the MO back-link even though the lot's own source_kind points
+    # at the original PO / manual receive.
     ingredient_mos =
       from(b in ManufacturingOrderBooking,
         join: p in Placement,
@@ -82,7 +89,7 @@ defmodule Backend.Warehouses.ReturnPickup do
             not is_nil(b.consumed_at) and
             l.status == "available" and
             p.qty > 0 and
-            c.purpose == "dispatch" and
+            c.purpose in @return_pickup_purposes and
             l.id not in subquery(open_picks_subq),
         distinct: true,
         select: b.manufacturing_order_id
@@ -100,10 +107,18 @@ defmodule Backend.Warehouses.ReturnPickup do
   end
 
   @doc """
-  Lots returned by closeout that aren't tied to a specific MO via
-  source_ref — e.g. leftover raw materials handed off after a partial
-  consume. We surface these as a single "loose" bucket in the queue
-  alongside the per-MO cards.
+  Lots sitting at a production-side cell (dispatch or production-feed)
+  that aren't tied to a completed MO card. Two main shapes:
+
+    * Leftover raw materials handed off after a partial consume on a
+      completed MO — the consumed booking lives elsewhere so the lot
+      ends up here instead of under that MO's card.
+    * Lots stranded at production-feed by a picker walking them onto
+      the line for a run that never started / was regressed. The
+      booking is still `requested` (no consumed_at) so the per-MO
+      card doesn't catch them; without this bucket they were
+      invisible to the warehouse worker even though the schedule
+      release-blocker correctly flagged them.
   """
   def list_loose_dispatch_lots(company_id) when is_integer(company_id) do
     open_picks_subq =
@@ -123,9 +138,9 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: b.stock_lot_id
       )
 
-    from(p in Placement,
-      join: l in Lot,
-      on: l.id == p.stock_lot_id,
+    from(l in Lot,
+      join: p in Placement,
+      on: p.stock_lot_id == l.id,
       join: c in StorageCell,
       on: c.id == p.storage_cell_id,
       where:
@@ -133,7 +148,7 @@ defmodule Backend.Warehouses.ReturnPickup do
           l.source_kind != "manufacturing_order" and
           l.status == "available" and
           p.qty > 0 and
-          c.purpose == "dispatch" and
+          c.purpose in @return_pickup_purposes and
           l.id not in subquery(open_picks_subq) and
           l.id not in subquery(booked_lot_ids_subq),
       preload: [
@@ -191,7 +206,7 @@ defmodule Backend.Warehouses.ReturnPickup do
               l.company_id == ^actor.company_id and
                 l.status == "available" and
                 p.qty > 0 and
-                c.purpose == "dispatch" and
+                c.purpose in @return_pickup_purposes and
                 l.id not in subquery(open_picks_subq) and
                 ((l.source_kind == "manufacturing_order" and
                     l.source_ref == ^mo_uuid) or
@@ -439,7 +454,10 @@ defmodule Backend.Warehouses.ReturnPickup do
   defp ensure_status_available(%Lot{status: "available"}), do: :ok
   defp ensure_status_available(_), do: {:error, :lot_unavailable}
 
-  defp ensure_dispatch_cell(%StorageCell{purpose: "dispatch"}), do: :ok
+  defp ensure_dispatch_cell(%StorageCell{purpose: purpose})
+       when purpose in @return_pickup_purposes,
+       do: :ok
+
   defp ensure_dispatch_cell(_), do: {:error, :not_a_dispatch_cell}
 
   defp ensure_lot_on_cell(%Lot{id: lot_id}, %StorageCell{id: cell_id}) do
