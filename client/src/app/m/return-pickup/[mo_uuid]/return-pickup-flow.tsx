@@ -25,12 +25,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowLeft,
   Building2,
-  Camera,
   CheckCircle2,
   ChevronRight,
   ImagePlus,
@@ -71,6 +69,7 @@ import type {
 import type { MoveRecommendation } from "@/lib/stock/mobile";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
+import { LastSeenPhotoCard } from "../../lots/[uuid]/move/last-seen-photo";
 
 type Mode = "mo" | "loose";
 
@@ -594,11 +593,6 @@ function DispatchRow({
         onClick={onPick}
         className="flex w-full items-center gap-3 rounded-xl border border-border/60 bg-card px-3 py-3 text-left active:bg-muted"
       >
-        <LastSeenPhoto
-          url={lot.last_photo_url}
-          size="sm"
-          caption={lot.item?.name ?? "Last seen"}
-        />
         <div className="flex-1 min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
@@ -682,11 +676,6 @@ function TrolleyRow({
 }) {
   return (
     <li className="flex items-center gap-2 rounded-xl border border-sky-500/40 bg-sky-500/5 px-3 py-2.5">
-      <LastSeenPhoto
-        url={pick.stock_lot?.last_photo_url}
-        size="sm"
-        caption={pick.stock_lot?.item?.name ?? "Last seen"}
-      />
       <div className="flex-1 min-w-0 space-y-0.5">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="rounded-full bg-sky-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:text-sky-200">
@@ -791,22 +780,10 @@ function PickScanCellStep({
         />
       )}
 
-      <div className="rounded-lg border border-border/60 bg-card p-3">
-        <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-          Last known photo of this lot
-        </p>
-        <LastSeenPhoto
-          url={lot.last_photo_url}
-          size="lg"
-          caption={lot.item?.name ?? "Last seen"}
-        />
-        {!lot.last_photo_url && (
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            No photo on file yet — this lot has never been photographed
-            on a movement.
-          </p>
-        )}
-      </div>
+      <LastSeenPhotoCard
+        url={lot.last_photo_url}
+        caption={lot.item?.name ?? "Last seen"}
+      />
 
       <ul className="space-y-2">
         <DirectionsRow
@@ -1037,16 +1014,10 @@ function PlaceDirectionsStep({
         />
       )}
 
-      <div className="rounded-lg border border-border/60 bg-card p-3">
-        <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-          Last known photo of this lot
-        </p>
-        <LastSeenPhoto
-          url={pick.stock_lot?.last_photo_url}
-          size="lg"
-          caption={pick.stock_lot?.item?.name ?? "Last seen"}
-        />
-      </div>
+      <LastSeenPhotoCard
+        url={pick.stock_lot?.last_photo_url}
+        caption={pick.stock_lot?.item?.name ?? "Last seen"}
+      />
 
       <ul className="space-y-2">
         <DirectionsRow
@@ -1205,61 +1176,6 @@ function formatLocation(
   const code = loc.code?.trim();
   if (name && code) return `${name} · ${code}`;
   return name || code || "—";
-}
-
-/**
- * Last-known photo of a lot. Rendered next to the floor-plan on
- * pickup screens so the worker can spot the actual box / pallet on
- * the shelf, not just match a label. Falls back to a placeholder
- * tile if the lot has never been photographed.
- */
-function LastSeenPhoto({
-  url,
-  size = "md",
-  caption,
-}: {
-  url: string | null | undefined;
-  size?: "sm" | "md" | "lg";
-  caption?: string;
-}) {
-  const dim =
-    size === "sm" ? "size-12" : size === "lg" ? "h-44 w-full" : "size-20";
-
-  if (!url) {
-    return (
-      <div
-        className={cn(
-          "flex shrink-0 items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/40 text-muted-foreground",
-          dim,
-        )}
-        title="No photo on record for this lot yet"
-      >
-        <Camera className="size-4 opacity-60" />
-      </div>
-    );
-  }
-
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      className={cn(
-        "relative block shrink-0 overflow-hidden rounded-md border border-border/60 bg-muted",
-        dim,
-      )}
-      title={caption ?? "Tap to enlarge"}
-    >
-      <Image
-        src={url}
-        alt={caption ?? "Last known photo of this lot"}
-        fill
-        sizes="(max-width: 600px) 50vw, 200px"
-        className="object-cover"
-        unoptimized
-      />
-    </a>
-  );
 }
 
 function DirectionsRow({

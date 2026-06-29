@@ -2598,7 +2598,10 @@ defmodule BackendWeb.Payloads do
   Full booking row payload — the FE renders one of these per
   sub-row under each part master row.
   """
-  def mo_booking(%Backend.Production.ManufacturingOrderBooking{} = b) do
+  def mo_booking(booking, last_photo_urls \\ %{})
+
+  def mo_booking(%Backend.Production.ManufacturingOrderBooking{} = b, last_photo_urls)
+      when is_map(last_photo_urls) do
     %{
       id: b.id,
       uuid: b.uuid,
@@ -2609,7 +2612,7 @@ defmodule BackendWeb.Payloads do
       item_id: b.item_id,
       item: maybe_item_summary(b.item),
       stock_lot_id: b.stock_lot_id,
-      stock_lot: mo_booking_lot_summary(b.stock_lot),
+      stock_lot: mo_booking_lot_summary(b.stock_lot, last_photo_urls),
       # Placeholder booking link — set when the booking reserves qty
       # against an open PO line instead of a real lot. Mutually
       # exclusive with stock_lot_id. The FE labels these rows
@@ -2644,7 +2647,7 @@ defmodule BackendWeb.Payloads do
     }
   end
 
-  def mo_booking(_), do: nil
+  def mo_booking(_, _), do: nil
 
   @doc """
   One row of the warehouse picker's queue. Wraps the MO with the
@@ -3187,7 +3190,8 @@ defmodule BackendWeb.Payloads do
 
   defp mo_production_cell_payload(_), do: nil
 
-  defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot) do
+  defp mo_booking_lot_summary(%Backend.Stock.Lot{} = lot, last_photo_urls)
+       when is_map(last_photo_urls) do
     # Surface qty_on_hand alongside the lot identity so the mobile
     # closeout page can show "booked 1.0 / on hand 2.5 kg" without
     # a second fetch. Sums every placement (cross-cell totals).
@@ -3209,11 +3213,14 @@ defmodule BackendWeb.Payloads do
       status: lot.status,
       expiry_at: lot.expiry_at,
       available_from: lot.available_from,
-      qty_on_hand: decimal_to_string(qty_on_hand)
+      qty_on_hand: decimal_to_string(qty_on_hand),
+      # Last on-shelf photo for this lot — surfaced on the pickup
+      # directions screen so the worker can recognise the box.
+      last_photo_url: Map.get(last_photo_urls, lot.id)
     }
   end
 
-  defp mo_booking_lot_summary(_), do: nil
+  defp mo_booking_lot_summary(_, _), do: nil
 
   # Summary for a placeholder booking — links it back to the PO line
   # it reserves against. Surfaces the parent PO code so the FE can

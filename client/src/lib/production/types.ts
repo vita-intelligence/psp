@@ -698,6 +698,10 @@ export interface ManufacturingOrderBookingLotSummary {
    *  "booked 1.0 / on hand 2.5 kg" info row so operators can verify
    *  the lot still has enough to consume against. */
   qty_on_hand: string;
+  /** Most recent stock-movement photo for this lot — shown on the
+   *  pickup directions screen so the worker can recognise the box
+   *  at the shelf instead of just matching a label. */
+  last_photo_url: string | null;
 }
 
 export interface ManufacturingOrderBookingCellSummary {

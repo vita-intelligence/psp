@@ -115,9 +115,17 @@ defmodule BackendWeb.WarehousePickupController do
       %ManufacturingOrder{} = mo ->
         bookings = Production.list_pickup_bookings(mo)
 
+        lot_ids =
+          bookings
+          |> Enum.flat_map(fn b -> if b.stock_lot_id, do: [b.stock_lot_id], else: [] end)
+          |> Enum.uniq()
+
+        last_photo_urls =
+          Backend.Stock.last_photo_url_by_lot_ids(actor.company_id, lot_ids)
+
         json(conn, %{
           mo: Payloads.manufacturing_order(mo),
-          bookings: Enum.map(bookings, &Payloads.mo_booking/1)
+          bookings: Enum.map(bookings, &Payloads.mo_booking(&1, last_photo_urls))
         })
     end
   end

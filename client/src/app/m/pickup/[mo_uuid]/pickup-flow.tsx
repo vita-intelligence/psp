@@ -76,6 +76,7 @@ import type {
 } from "@/lib/production/types";
 import { UuidScanStep } from "./uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
+import { LastSeenPhotoCard } from "../../lots/[uuid]/move/last-seen-photo";
 import type { ManufacturingOrderBookingCellSummary } from "@/lib/production/types";
 
 interface Props {
@@ -359,6 +360,7 @@ export function PickupFlow({
           lotCode={booking.stock_lot?.code ?? null}
           qty={booking.quantity}
           itemName={booking.item?.name ?? null}
+          lastPhotoUrl={booking.stock_lot?.last_photo_url ?? null}
           onContinue={() =>
             setStep({ kind: "scan_cell", bookingUuid: booking.uuid })
           }
@@ -611,6 +613,7 @@ function DirectionsBody({
   lotCode,
   qty,
   itemName,
+  lastPhotoUrl,
   onContinue,
   onBack,
 }: {
@@ -619,6 +622,11 @@ function DirectionsBody({
   lotCode: string | null;
   qty: string | null;
   itemName: string | null;
+  /** Pass `string | null` to render the "Last known photo" tile (with
+   *  the empty-state placeholder if null). Omit when the step isn't
+   *  about a specific lot — e.g. the "walk the trolley to production"
+   *  transfer step. */
+  lastPhotoUrl?: string | null;
   onContinue: () => void;
   onBack: () => void;
 }) {
@@ -702,6 +710,13 @@ function DirectionsBody({
               targetLocationUuid={loc.uuid}
             />
           )
+        )}
+
+        {lastPhotoUrl !== undefined && (
+          <LastSeenPhotoCard
+            url={lastPhotoUrl}
+            caption={itemName ?? "Last seen"}
+          />
         )}
 
         <ol className="space-y-2">
