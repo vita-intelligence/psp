@@ -392,11 +392,19 @@ defmodule Backend.GoodsIn do
   def sign_operator(%User{} = actor, %Inspection{status: "draft"} = i, attrs) do
     with :ok <- ensure_all_lines_decided(i),
          :ok <- ensure_all_sections_touched(i) do
+      # FE posts `signature_image` to match the approver endpoint's
+      # contract — rename it to the schema field before casting so
+      # the bitmap actually persists. (The previous version silently
+      # dropped the data URL and the inspection showed up as 'Signed
+      # — image not captured'.)
+      sig = attrs[:signature_image] || attrs["signature_image"]
+
       attrs =
         attrs
         |> stringify_keys()
         |> Map.merge(%{
           "goods_in_operator_id" => actor.id,
+          "goods_in_operator_signature_image" => sig,
           "goods_in_operator_signed_at" =>
             DateTime.utc_now() |> DateTime.truncate(:second),
           "updated_by_id" => actor.id
