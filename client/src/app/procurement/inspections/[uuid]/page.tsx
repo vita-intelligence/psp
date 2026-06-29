@@ -2,7 +2,6 @@ import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
-  ArrowRight,
   ClipboardCheck,
   FileText,
   FileWarning,
@@ -41,6 +40,7 @@ import type {
 } from "@/lib/goods-in/types";
 import type { PurchaseOrder, PurchaseOrderLine } from "@/lib/types";
 import { ProcurementSubnav } from "../../procurement-subnav";
+import { SendToDeviceButton } from "@/components/realtime/send-to-device-button";
 
 export const metadata = { title: "Inspection · Procurement · PSP" };
 
@@ -253,14 +253,11 @@ function StatusActionBanner({
         title="Inspection still in draft."
         body={
           viewerCanInspect
-            ? "The goods-in operator hasn't signed off yet. Continue filling it in from the mobile app — once signed, it moves to QC review."
+            ? "The goods-in operator hasn't signed off yet. Continue filling it in on your phone — once signed, it moves to QC review."
             : "The goods-in operator hasn't signed off yet. Once they sign, this row will appear under QC review for a user with goods_in.approve."
         }
-        action={
-          viewerCanInspect
-            ? { label: "Continue on mobile", href: mobileHref }
-            : null
-        }
+        sendPath={viewerCanInspect ? mobileHref : null}
+        sendLabel="Send to my phone"
       />
     );
   }
@@ -272,9 +269,10 @@ function StatusActionBanner({
         tone="amber"
         title="Awaiting QC sign-off — you were the goods-in operator."
         body={
-          "Best practice is for a different reviewer to approve, but your role lets you sign as quality approver too. Open it on the mobile app to record the decision."
+          "Best practice is for a different reviewer to approve, but your role lets you sign as quality approver too. Push this to your phone to record the decision."
         }
-        action={{ label: "Open on mobile", href: mobileHref }}
+        sendPath={mobileHref}
+        sendLabel="Send to my phone"
       />
     );
   }
@@ -284,8 +282,9 @@ function StatusActionBanner({
       <Banner
         tone="indigo"
         title="Awaiting your QC sign-off."
-        body="The goods-in operator has signed and the lots are sitting in quarantine. Open it on the mobile app to approve, put on hold, or reject."
-        action={{ label: "Open on mobile", href: mobileHref }}
+        body="The goods-in operator has signed and the lots are sitting in quarantine. Push this to your phone to approve, put on hold, or reject."
+        sendPath={mobileHref}
+        sendLabel="Send to my phone"
       />
     );
   }
@@ -295,7 +294,8 @@ function StatusActionBanner({
       tone="muted"
       title="Awaiting QC sign-off."
       body="Only a user with the goods_in.approve permission can sign this off. Ask the quality team to review."
-      action={null}
+      sendPath={null}
+      sendLabel="Send to my phone"
     />
   );
 }
@@ -304,12 +304,18 @@ function Banner({
   tone,
   title,
   body,
-  action,
+  sendPath,
+  sendLabel,
 }: {
   tone: "muted" | "amber" | "indigo";
   title: string;
   body: string;
-  action: { label: string; href: string } | null;
+  /** When set, renders a SendToDeviceButton that pushes this path to
+   *  the user's paired phone. The desktop never opens /m/* directly —
+   *  mobile flows always run on the mobile device they were designed
+   *  for. */
+  sendPath: string | null;
+  sendLabel: string;
 }) {
   const toneClasses = {
     muted: "border-border/60 bg-muted/40",
@@ -319,7 +325,7 @@ function Banner({
       "border-indigo-500/40 bg-indigo-50 dark:bg-indigo-950/30 dark:border-indigo-500/40",
   }[tone];
 
-  const Icon = tone === "indigo" ? Smartphone : tone === "amber" ? Info : Info;
+  const Icon = tone === "indigo" ? Smartphone : Info;
 
   return (
     <section
@@ -332,13 +338,17 @@ function Banner({
           <p className="text-sm text-muted-foreground">{body}</p>
         </div>
       </div>
-      {action && (
-        <Button asChild size="sm" className="shrink-0 self-start sm:self-auto">
-          <Link href={action.href}>
-            {action.label}
-            <ArrowRight className="ml-1 size-3.5" />
-          </Link>
-        </Button>
+      {sendPath && (
+        <SendToDeviceButton
+          path={sendPath}
+          buttonLabel={sendLabel}
+          title="Send inspection to your phone"
+          description="Push this page to a paired phone — it jumps there instantly. Or scan the QR with an unpaired device."
+          buttonProps={{
+            size: "sm",
+            className: "shrink-0 gap-2 self-start sm:self-auto",
+          }}
+        />
       )}
     </section>
   );
