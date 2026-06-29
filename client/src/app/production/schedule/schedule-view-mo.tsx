@@ -48,10 +48,17 @@ export interface MORow {
   start: string;
   finish: string;
   steps: ScheduleOperation[];
-  /** Sum of `broken_bookings_count` + `under_booked_count` for this
-   *  MO — drives the urgent red corner badge on the calendar block.
-   *  Both categories collapse to one user-facing chip since the
-   *  planner action for either is the same (pull back + re-book). */
+  /** Total of every "release blocked" category for this MO:
+   *
+   *   - broken_bookings_count    (lot fell out of available)
+   *   - under_booked_count       (BOM line short, no child covering)
+   *   - lines_awaiting_child_output (sub-MO must finish + Output QC)
+   *   - bookings_lot_off_warehouse  (lot sitting at production feed)
+   *
+   *  All four feed the same red "issues" chip — the planner clicks
+   *  through to the Release section to see the breakdown. Without
+   *  this sum a parent MO whose only blocker was a pending sub-MO
+   *  showed clean on the calendar even though it couldn't release. */
   brokenCount: number;
   /** Sum of `qc_pending_count` for this MO — drives the existing
    *  amber QC chip. */
@@ -77,7 +84,10 @@ export function rowsFromOps(operations: ScheduleOperation[]): MORow[] {
         finish: op.planned_finish,
         steps: [op],
         brokenCount:
-          (mo.broken_bookings_count ?? 0) + (mo.under_booked_count ?? 0),
+          (mo.broken_bookings_count ?? 0) +
+          (mo.under_booked_count ?? 0) +
+          (mo.lines_awaiting_child_output?.length ?? 0) +
+          (mo.bookings_lot_off_warehouse?.length ?? 0),
         qcPending: mo.qc_pending_count ?? 0,
       });
     } else {

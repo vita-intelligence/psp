@@ -277,15 +277,22 @@ function OperationBlock({
           </p>
         </div>
         {mo &&
-          ((mo.broken_bookings_count ?? 0) > 0 ||
-            (mo.under_booked_count ?? 0) > 0) && (
-            <span
-              className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-red-500/25 px-1 py-0.5 text-[9px] font-semibold text-red-900 dark:text-red-200"
-              title={`${(mo.broken_bookings_count ?? 0) + (mo.under_booked_count ?? 0)} bookings or BOM lines can't satisfy this MO — open it to pull back and re-book.`}
-            >
-              <AlertTriangle className="size-2.5" />
-            </span>
-          )}
+          (() => {
+            const issuesCount =
+              (mo.broken_bookings_count ?? 0) +
+              (mo.under_booked_count ?? 0) +
+              (mo.lines_awaiting_child_output?.length ?? 0) +
+              (mo.bookings_lot_off_warehouse?.length ?? 0);
+            if (issuesCount === 0) return null;
+            return (
+              <span
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-red-500/25 px-1 py-0.5 text-[9px] font-semibold text-red-900 dark:text-red-200"
+                title={`${issuesCount} release blocker${issuesCount === 1 ? "" : "s"} — broken bookings, short lines, or sub-MO output still pending. Open the MO for details.`}
+              >
+                <AlertTriangle className="size-2.5" />
+              </span>
+            );
+          })()}
         {mo && (mo.qc_pending_count ?? 0) > 0 && (
           <span
             className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/25 px-1 py-0.5 text-[9px] font-semibold text-amber-900 dark:text-amber-200"
