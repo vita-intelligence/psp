@@ -3107,9 +3107,20 @@ defmodule BackendWeb.Payloads do
   # the dispatch portion.
   defp first_dispatch_placement(%Backend.Stock.Lot{placements: list})
        when is_list(list) do
+    # Both `dispatch` (post-consume hand-off) and `production_feed`
+    # (lot walked to the line but never consumed because the MO was
+    # cancelled / regressed) are return-pickup source cells — the
+    # warehouse worker walks the lot back from either. Keeping just
+    # the dispatch match here caused the loose-bucket payload to
+    # render 0 kg + a missing source cell whenever the lot was
+    # stranded at production_feed.
     Enum.find(list, fn p ->
       Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt and
-        match?(%Backend.Warehouses.StorageCell{purpose: "dispatch"}, p.storage_cell)
+        match?(
+          %Backend.Warehouses.StorageCell{purpose: purpose}
+          when purpose in ["dispatch", "production_feed"],
+          p.storage_cell
+        )
     end)
   end
 
