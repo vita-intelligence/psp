@@ -1170,7 +1170,20 @@ defmodule Backend.OrderWizard do
     # MO with unhandled bookings.
     child_states = Enum.map(mo.children, &mo_state/1)
 
-    under_booked = count_under_booked_lines(mo)
+    # `count_under_booked_lines` only credits bookings that are still
+    # `status == "requested"` (the ones holding stock at the floor).
+    # The moment booking closeout flips them to `consumed`, those rows
+    # fall out and the line *looks* unbooked again. That's fine for an
+    # in-flight MO (re-booking would be a real action) but dead wrong
+    # for a `completed` MO — the work happened, the consumption is on
+    # record via Movement rows, and the wizard would otherwise jump
+    # back to "Request purchases for MO X" days after the MO closed.
+    # Cancelled MOs follow the same logic — there's no shortage to
+    # chase if the MO was abandoned. Treat both as zero.
+    under_booked =
+      if mo.status in ["completed", "cancelled"],
+        do: 0,
+        else: count_under_booked_lines(mo)
 
     placeholder_bookings =
       Enum.filter(mo.bookings, &(not is_nil(&1.purchase_order_line_id)))
@@ -1224,7 +1237,12 @@ defmodule Backend.OrderWizard do
     output_qc_pending_count =
       Enum.count(output_lots, &(&1.status == "received"))
 
-    has_placeholders = placeholder_bookings != []
+    # Same rationale as `under_booked` above — a `completed` or
+    # `cancelled` MO can't be acted on procurement-side, so any
+    # leftover placeholder bookings are noise. The wizard would
+    # otherwise stay parked on "Awaiting ingredients" forever.
+    has_placeholders =
+      placeholder_bookings != [] and mo.status not in ["completed", "cancelled"]
     past_approval = mo.status in ["approved", "scheduled", "in_progress", "completed"]
     broken_booking_count = count_broken_bookings(mo.bookings)
 
