@@ -13,6 +13,9 @@ import type { ReturnPickRow } from "../production/types";
 
 export interface PickToTrolleyInput {
   scanned_cell_uuid: string;
+  /** Optional courtesy photo — the actual BRCGS / FSSC movement
+   *  happens at PLACE (which DOES require photo-or-skip). Pick just
+   *  creates the trolley row, so no skip-reason needed here. */
   photo_url: string | null;
 }
 
