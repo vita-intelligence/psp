@@ -65,6 +65,17 @@ export function UuidScanStep({
     }
   }, [status]);
 
+  // When the parent swaps what we're expecting (e.g. pickup advancing
+  // from scan-cell to scan-lot with the same JSX shape), React
+  // reuses this component instance. Without an explicit reset the
+  // green "Matched" overlay from the previous scan persists on the
+  // next viewfinder. Re-arming on expectedUuid change drops the
+  // status back to idle + clears any half-typed manual UUID.
+  useEffect(() => {
+    setStatus({ kind: "idle" });
+    setManual("");
+  }, [expectedUuid, kind]);
+
   const handle = useCallback(
     (data: string) => {
       const uuid = kind === "lot" ? extractLotUuid(data) : extractCellUuid(data);
