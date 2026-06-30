@@ -519,10 +519,25 @@ function BookingRow({
         {lineTotal ? formatCompanyMoney(lineTotal, company) : "—"}
       </td>
       <td className="px-2 py-1.5 font-mono">
-        {booking.stock_lot?.code ??
-          (booking.purchase_order_line?.purchase_order?.code
-            ? `↺ ${booking.purchase_order_line.purchase_order.code}`
-            : "—")}
+        {booking.stock_lot?.uuid && booking.stock_lot?.code ? (
+          <Link
+            href={`/stock/lots/${booking.stock_lot.uuid}`}
+            className="text-brand underline-offset-2 hover:underline"
+          >
+            {booking.stock_lot.code}
+          </Link>
+        ) : booking.purchase_order_line?.purchase_order?.uuid &&
+          booking.purchase_order_line?.purchase_order?.code ? (
+          <Link
+            href={`/procurement/purchase-orders/${booking.purchase_order_line.purchase_order.uuid}`}
+            className="text-brand underline-offset-2 hover:underline"
+            title="Reserved against an in-flight purchase order"
+          >
+            ↺ {booking.purchase_order_line.purchase_order.code}
+          </Link>
+        ) : (
+          "—"
+        )}
       </td>
       <td className="px-2 py-1.5">
         {booking.purchase_order_line_id != null ? (

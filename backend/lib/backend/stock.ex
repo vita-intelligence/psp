@@ -1068,6 +1068,12 @@ defmodule Backend.Stock do
             to_cell_id: movement.to_cell_id
           })
 
+          # Repoint open MO bookings at the lot's new primary cell.
+          # Without this, bookings made when the lot was in (say) the
+          # quarantine cage keep saying "pick from the cage" forever,
+          # even after QC released the lot to a regular shelf.
+          Backend.Production.refresh_open_bookings_for_lot(lot.id)
+
           Repo.preload(lot, [
             :item,
             :unit_of_measurement,
@@ -1113,10 +1119,12 @@ defmodule Backend.Stock do
         new_qty = Decimal.add(placement.qty, delta)
         before_qty = placement.qty
 
-        with {:ok, updated_placement} <-
-               placement
-               |> Placement.changeset(%{"qty" => new_qty})
-               |> Repo.update(),
+        # If the adjustment empties the placement (down-adjust to
+        # exactly zero), delete the row instead of persisting a
+        # qty=0 ghost. Audit captures the before/after with the
+        # zero snapshot below — same shape as the regular update
+        # branch so downstream readers don't care which path ran.
+        with {:ok, updated_placement} <- write_adjusted_placement(placement, new_qty),
              {:ok, movement} <-
                %Movement{}
                |> Movement.changeset(%{
@@ -1148,6 +1156,10 @@ defmodule Backend.Stock do
             to_cell_id: movement.to_cell_id,
             reason: movement.reason
           })
+
+          # Re-point open bookings if the adjust dropped a cell to
+          # zero — the booking's snapshot cell may now be empty.
+          Backend.Production.refresh_open_bookings_for_lot(lot.id)
 
           cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
 
@@ -1280,10 +1292,28 @@ defmodule Backend.Stock do
 
   defp decrement_placement(%Placement{} = p, qty) do
     new_qty = Decimal.sub(p.qty, qty)
+    write_adjusted_placement(p, new_qty)
+  end
 
-    p
-    |> Placement.changeset(%{"qty" => new_qty})
-    |> Repo.update()
+  # Persist a new qty on a placement. When the new qty is exactly
+  # zero, delete the row instead of leaving a qty=0 ghost — ghosts
+  # pinned lots to cells they no longer physically occupied (notably
+  # the quarantine cage, where the auto-router placed every PO
+  # receipt) and broke cell-contents views that didn't filter
+  # qty > 0. Returns `{:ok, %Placement{}}` with the qty already
+  # mutated to the target value so the audit snapshot upstream can
+  # capture the before/after regardless of which branch ran.
+  defp write_adjusted_placement(%Placement{} = p, new_qty) do
+    if Decimal.equal?(new_qty, Decimal.new(0)) do
+      case Repo.delete(p) do
+        {:ok, _} -> {:ok, %Placement{p | qty: new_qty}}
+        err -> err
+      end
+    else
+      p
+      |> Placement.changeset(%{"qty" => new_qty})
+      |> Repo.update()
+    end
   end
 
   defp upsert_placement(%Lot{} = lot, %StorageCell{} = cell, qty) do

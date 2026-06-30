@@ -195,6 +195,90 @@ const MO_STATUS_TONE: Record<
   cancelled: "destructive",
 };
 
+// Live sub-stage for an MO. `status` alone is too coarse — "scheduled"
+// covers three distinct moments (awaiting pickup, picking, awaiting
+// preflight) that each need their own label + handoff button. Without
+// this, planners look at a "Scheduled" badge and can't tell whether
+// the picker has even started.
+type MoLiveStage =
+  | "approved"
+  | "awaiting_pickup"
+  | "picking"
+  | "awaiting_preflight"
+  | "ready_to_run"
+  | "running"
+  | "completed";
+
+interface MoStageView {
+  key: MoLiveStage;
+  label: string;
+  hint: string;
+  tone: "muted" | "sky" | "amber" | "emerald";
+}
+
+function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
+  switch (mo.status) {
+    case "approved":
+      return {
+        key: "approved",
+        label: "Approved — not yet released",
+        hint: "Release to warehouse from the MO page to unlock pickup.",
+        tone: "sky",
+      };
+    case "scheduled":
+      if (!mo.pickup_started_at && !mo.pickup_completed_at) {
+        return {
+          key: "awaiting_pickup",
+          label: "Awaiting pickup",
+          hint: "A warehouse picker needs to claim this MO and fetch the booked lots.",
+          tone: "amber",
+        };
+      }
+      if (mo.pickup_started_at && !mo.pickup_completed_at) {
+        return {
+          key: "picking",
+          label: mo.pickup_started_by_name
+            ? `Picking — ${mo.pickup_started_by_name} on the floor`
+            : "Picking in progress",
+          hint: "Picker is on the floor with the trolley. Wait for hand-off before preflight.",
+          tone: "amber",
+        };
+      }
+      if (mo.preflight_complete) {
+        return {
+          key: "ready_to_run",
+          label: "Ready to start run",
+          hint: "Every booking signed off at the production-feed cell. Production operator opens the run on device to flip the MO to In progress.",
+          tone: "emerald",
+        };
+      }
+      return {
+        key: "awaiting_preflight",
+        label: "Awaiting preflight sign-off",
+        hint: "Picker has dropped the lots at the production-feed cell. Production operator weighs + confirms each one.",
+        tone: "amber",
+      };
+    case "in_progress":
+      return {
+        key: "running",
+        label: "Run in progress",
+        hint: "Operator is executing the routing steps on the shop floor.",
+        tone: "amber",
+      };
+    case "completed":
+      return {
+        key: "completed",
+        label: "Closeout",
+        hint: mo.has_output_at_production_feed
+          ? "Outputs are sitting at the production-feed cell; warehouse needs to fetch them back."
+          : "Outputs have been returned to warehouse storage.",
+        tone: "emerald",
+      };
+    default:
+      return null;
+  }
+}
+
 // =============================================================================
 // Permissions + props
 // =============================================================================
@@ -207,6 +291,9 @@ export interface ProjectBoardPermissions {
   canConfirm: boolean;
   canManageMOs: boolean;
   canCreateInvoice: boolean;
+  /** `warehouse.pick` — gates the "Send pickup to phone" CTA on MOs
+   *  waiting for the warehouse picker to fetch + drop bookings. */
+  canPick: boolean;
 }
 
 interface Props {
@@ -1285,6 +1372,7 @@ function MiniMoCard({
   depth?: number;
 }) {
   const onOpen = () => onOpenMo(mo.uuid);
+  const stage = deriveMoLiveStage(mo);
   return (
     <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -1315,6 +1403,22 @@ function MiniMoCard({
         )}
       </div>
 
+      {/* Live sub-stage. The MO status alone is too coarse — a
+          "Scheduled" MO can be awaiting pickup, picking, or awaiting
+          preflight, and each needs its own handoff button. Showing
+          the stage explicitly stops planners from guessing where in
+          the workflow the order actually is. */}
+      {stage && (
+        <div className="mt-2 flex items-start gap-2 rounded-md border border-border/40 bg-background/60 px-2.5 py-1.5">
+          <Badge tone={stage.tone} className="shrink-0">
+            {stage.label}
+          </Badge>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            {stage.hint}
+          </p>
+        </div>
+      )}
+
       <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
         <BookingsSummary mo={mo} />
         <OutputSummary mo={mo} />
@@ -1326,10 +1430,10 @@ function MiniMoCard({
         )}
       </div>
 
-      {/* Single canonical action: open the MO. Signing (prepare,
-          approve), booking decisions, and Request purchases live on
-          the MO page where the planner sees BOM + bookings + routing
-          before committing. Inline buttons here caused misclicks. */}
+      {/* Stage-driven actions: each sub-stage gets the single handoff
+          that moves the work forward. Picker / preflight / run /
+          closeout all route to mobile pages, gated on the matching
+          permission so a non-picker doesn't see "Send to picker". */}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         {permissions.canManageMOs ? (
           <Button asChild size="sm" variant="outline">
@@ -1344,7 +1448,43 @@ function MiniMoCard({
           </Button>
         )}
 
-        {mo.status === "scheduled" && (
+        {stage?.key === "awaiting_pickup" && permissions.canPick && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              onSendToDevice({
+                label: "Send pickup to device",
+                kind: "send_to_device",
+                href: `/m/pickup/${mo.uuid}`,
+                mo_uuid: mo.uuid,
+              })
+            }
+          >
+            <Smartphone className="mr-1 size-3" />
+            Send pickup
+          </Button>
+        )}
+
+        {stage?.key === "picking" && permissions.canPick && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              onSendToDevice({
+                label: "Open pickup on device",
+                kind: "send_to_device",
+                href: `/m/pickup/${mo.uuid}`,
+                mo_uuid: mo.uuid,
+              })
+            }
+          >
+            <Smartphone className="mr-1 size-3" />
+            Open pickup
+          </Button>
+        )}
+
+        {stage?.key === "awaiting_preflight" && (
           <Button
             size="sm"
             variant="outline"
@@ -1362,21 +1502,21 @@ function MiniMoCard({
           </Button>
         )}
 
-        {mo.status === "in_progress" && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              onSendToDevice({
-                label: "Open run on device",
-                kind: "send_to_device",
-                href: `/m/run/${mo.uuid}`,
-                mo_uuid: mo.uuid,
-              })
-            }
-          >
-            <Smartphone className="mr-1 size-3" />
-            Open run
+        {stage?.key === "ready_to_run" && (
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/production/runs/${mo.uuid}`}>
+              <ExternalLink className="mr-1 size-3" />
+              Open run
+            </Link>
+          </Button>
+        )}
+
+        {stage?.key === "running" && (
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/production/runs/${mo.uuid}`}>
+              <ExternalLink className="mr-1 size-3" />
+              Open run
+            </Link>
           </Button>
         )}
 
@@ -1741,6 +1881,8 @@ function MoModal({
     );
   }
 
+  const stage = deriveMoLiveStage(mo);
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
@@ -1764,6 +1906,22 @@ function MoModal({
         </DialogHeader>
 
         <div className="space-y-4">
+          {stage && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Current stage
+              </h3>
+              <div className="flex items-start gap-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2 text-sm">
+                <Badge tone={stage.tone} className="shrink-0">
+                  {stage.label}
+                </Badge>
+                <p className="text-[12px] leading-snug text-muted-foreground">
+                  {stage.hint}
+                </p>
+              </div>
+            </section>
+          )}
+
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Bookings
@@ -1832,7 +1990,41 @@ function MoModal({
             points, not state-changing signatures. */}
         <DialogFooter className="flex flex-wrap items-center gap-2 sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            {mo.status === "scheduled" && (
+            {stage?.key === "awaiting_pickup" && permissions.canPick && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  onSendToDevice({
+                    label: "Send pickup to device",
+                    kind: "send_to_device",
+                    href: `/m/pickup/${mo.uuid}`,
+                    mo_uuid: mo.uuid,
+                  })
+                }
+              >
+                <Smartphone className="mr-1 size-3" />
+                Pickup on device
+              </Button>
+            )}
+            {stage?.key === "picking" && permissions.canPick && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  onSendToDevice({
+                    label: "Open pickup on device",
+                    kind: "send_to_device",
+                    href: `/m/pickup/${mo.uuid}`,
+                    mo_uuid: mo.uuid,
+                  })
+                }
+              >
+                <Smartphone className="mr-1 size-3" />
+                Open pickup on device
+              </Button>
+            )}
+            {stage?.key === "awaiting_preflight" && (
               <Button
                 size="sm"
                 variant="outline"
@@ -1849,21 +2041,20 @@ function MoModal({
                 Preflight on device
               </Button>
             )}
-            {mo.status === "in_progress" && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  onSendToDevice({
-                    label: "Open run on device",
-                    kind: "send_to_device",
-                    href: `/m/run/${mo.uuid}`,
-                    mo_uuid: mo.uuid,
-                  })
-                }
-              >
-                <Smartphone className="mr-1 size-3" />
-                Open run on device
+            {stage?.key === "ready_to_run" && (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/production/runs/${mo.uuid}`}>
+                  <ExternalLink className="mr-1 size-3" />
+                  Open run
+                </Link>
+              </Button>
+            )}
+            {stage?.key === "running" && (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/production/runs/${mo.uuid}`}>
+                  <ExternalLink className="mr-1 size-3" />
+                  Open run
+                </Link>
               </Button>
             )}
             {mo.status === "completed" && mo.has_output_at_production_feed && (

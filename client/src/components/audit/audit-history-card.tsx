@@ -337,6 +337,26 @@ export function AuditHistoryCard({
               </li>
             )}
 
+            {/* Explicit fallback. The IntersectionObserver auto-loads
+                when the sentinel scrolls into view, but a visible
+                button reassures the operator the history continues
+                beyond what's on screen and works for keyboard / no-
+                scroll cases (e.g. when only one screen of rows shows
+                but there's a next page). */}
+            {state.cursor && !state.loadingMore && (
+              <li className="-ml-6 pt-2 text-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadMore()}
+                >
+                  <ChevronDown className="mr-1 size-3.5" />
+                  Load more history
+                </Button>
+              </li>
+            )}
+
             {!state.cursor && state.events.length > 0 && (
               <li className="-ml-6 pt-2 text-center text-[10px] uppercase tracking-wide text-muted-foreground/60">
                 — end of history —

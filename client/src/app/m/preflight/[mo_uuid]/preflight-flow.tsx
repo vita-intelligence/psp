@@ -151,57 +151,86 @@ export function PreflightFlow({
       <main className="flex-1 space-y-3 px-3 py-3">
         {errorDetail && <ErrorBanner detail={errorDetail} />}
 
-        {preflightComplete && (
-          <div className="flex items-start gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-900 dark:text-emerald-200">
-            <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
-            <div>
-              <p className="font-medium">All ingredients verified</p>
+        {/* Picker hasn't handed over yet — production has nothing to
+            sign off. Match the desktop list filter (which also requires
+            pickup_completed_at) so direct deep-links from stale wizard
+            buttons don't trick the operator into tapping Confirm on
+            ingredients that aren't physically on the floor. */}
+        {!mo.pickup_completed_at ? (
+          <div className="flex items-start gap-2 rounded-lg border border-slate-300/60 bg-slate-50 px-3 py-4 text-sm text-slate-800 dark:border-slate-700/60 dark:bg-slate-900/40 dark:text-slate-200">
+            <Truck className="mt-0.5 size-5 shrink-0 opacity-70" />
+            <div className="space-y-1">
+              <p className="font-medium">Waiting for picker</p>
               <p className="text-[12px] opacity-80">
-                Production is cleared to start this MO. Head over to the
-                planner / desk to flip status to In progress.
+                The warehouse picker hasn&apos;t dropped this MO&apos;s
+                ingredients at the production-feed cell yet. Preflight
+                sign-off opens once the picker hands the trolley over —
+                refresh this page after they finish.
               </p>
+              <Button
+                asChild
+                variant="ghost"
+                size="sm"
+                className="-ml-2 text-[12px] text-slate-700 dark:text-slate-300"
+              >
+                <Link href="/m/preflight">Back to preflight queue</Link>
+              </Button>
             </div>
           </div>
-        )}
+        ) : (
+          <>
+            {preflightComplete && (
+              <div className="flex items-start gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-900 dark:text-emerald-200">
+                <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+                <div>
+                  <p className="font-medium">All ingredients verified</p>
+                  <p className="text-[12px] opacity-80">
+                    Production is cleared to start this MO. Head over to the
+                    planner / desk to flip status to In progress.
+                  </p>
+                </div>
+              </div>
+            )}
 
-        {!preflightComplete && pendingCount > 0 && (
-          <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-900 dark:text-amber-200">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-            <div>
-              <p className="font-medium">
-                {pendingCount} booking{pendingCount === 1 ? "" : "s"} awaiting
-                sign-off
-              </p>
-              <p className="text-[12px] opacity-80">
-                Weigh / count each ingredient, then tap Confirm receipt.
-                Production can&apos;t start until every line is verified.
-              </p>
+            {!preflightComplete && pendingCount > 0 && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-900 dark:text-amber-200">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <div>
+                  <p className="font-medium">
+                    {pendingCount} booking{pendingCount === 1 ? "" : "s"} awaiting
+                    sign-off
+                  </p>
+                  <p className="text-[12px] opacity-80">
+                    Weigh / count each ingredient, then tap Confirm receipt.
+                    Production can&apos;t start until every line is verified.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-lg border border-border/60 bg-card px-3 py-2 text-[12px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <Truck className="size-3" />
+                {mo.pickup_completed_by?.name ?? "Picker"} dropped{" "}
+                {bookings.length} lot
+                {bookings.length === 1 ? "" : "s"} on{" "}
+                {formatCompanyDate(mo.pickup_completed_at, companyDateFormat)}
+              </span>
             </div>
-          </div>
-        )}
 
-        {mo.pickup_completed_at && (
-          <div className="rounded-lg border border-border/60 bg-card px-3 py-2 text-[12px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              <Truck className="size-3" />
-              Picker dropped {bookings.length} lot
-              {bookings.length === 1 ? "" : "s"} on{" "}
-              {formatCompanyDate(mo.pickup_completed_at, companyDateFormat)}
-            </span>
-          </div>
+            <ul className="space-y-2">
+              {bookings.map((booking) => (
+                <BookingRow
+                  key={booking.uuid}
+                  booking={booking}
+                  moUuid={mo.uuid}
+                  companyDateFormat={companyDateFormat}
+                  onUpdated={onBookingUpdated}
+                />
+              ))}
+            </ul>
+          </>
         )}
-
-        <ul className="space-y-2">
-          {bookings.map((booking) => (
-            <BookingRow
-              key={booking.uuid}
-              booking={booking}
-              moUuid={mo.uuid}
-              companyDateFormat={companyDateFormat}
-              onUpdated={onBookingUpdated}
-            />
-          ))}
-        </ul>
       </main>
     </div>
   );

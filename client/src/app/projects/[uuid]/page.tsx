@@ -66,6 +66,7 @@ export default async function ProjectBoardPage({
   const canConfirm = canSubmit;
   const canManageMOs = hasPermission(user, "production.mo_create");
   const canCreateInvoice = hasPermission(user, "customer_invoices.create");
+  const canPick = hasPermission(user, "warehouse.pick");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -86,6 +87,7 @@ export default async function ProjectBoardPage({
           canConfirm,
           canManageMOs,
           canCreateInvoice,
+          canPick,
         }}
       />
     </div>

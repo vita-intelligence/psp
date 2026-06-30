@@ -3924,7 +3924,8 @@ defmodule Backend.Production do
   def delete_booking(%User{} = actor, %ManufacturingOrderBooking{} = booking) do
     before = booking_snapshot(booking)
 
-    with :ok <- ensure_booking_mo_not_locked(booking) do
+    with :ok <- ensure_booking_mo_not_locked(booking),
+         :ok <- ensure_booking_not_picked(booking) do
       case Repo.delete(booking) do
         {:ok, deleted} ->
           Audit.record_deleted(
@@ -3942,6 +3943,19 @@ defmodule Backend.Production do
       end
     end
   end
+
+  # A picked booking has already had its qty moved to the production-
+  # feed cell via `transfer_booking_to_production` (which emitted a
+  # Movement). Deleting the booking row would orphan that placement
+  # — the lot would sit at the feed cell with no upstream reference
+  # and no audit row explaining the disappearance of the booking.
+  # The operator should abort the pickup first, which unwinds
+  # picked_at on every booking and lets `delete_booking` proceed
+  # cleanly.
+  defp ensure_booking_not_picked(%ManufacturingOrderBooking{picked_at: nil}), do: :ok
+
+  defp ensure_booking_not_picked(%ManufacturingOrderBooking{}),
+    do: {:error, :booking_already_picked}
 
   defp ensure_booking_mo_not_locked(%ManufacturingOrderBooking{manufacturing_order_id: mo_id}) do
     case Repo.get(ManufacturingOrder, mo_id) do
@@ -6175,44 +6189,58 @@ defmodule Backend.Production do
   # from its origin cell to the production-feed cell. Mirrors
   # Backend.Stock.insert_move_movement/7 but inline here so the whole
   # pickup transfer lives in one transaction.
+  #
+  # Resolves the origin cell at confirm-transfer time rather than
+  # trusting `booking.storage_cell_id` blindly: if the snapshot is
+  # stale (e.g. a lot received into the quarantine cage was QC-
+  # released to a regular shelf AFTER the picker stamped picked_at,
+  # so the auto-sync skipped the booking) we fall back to the lot's
+  # CURRENT primary placement. Without this, the picker hits
+  # `placement_not_found` at the finish step and gets stuck having
+  # physically picked the lot but unable to confirm.
   defp transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
     photo_url = Map.get(photo_urls, booking.uuid)
 
-    %Backend.Stock.Movement{}
-    |> Backend.Stock.Movement.changeset(%{
-      "company_id" => booking.company_id,
-      "stock_lot_id" => booking.stock_lot_id,
-      "from_cell_id" => booking.storage_cell_id,
-      "to_cell_id" => target_cell.id,
-      "delta_qty" => booking.quantity,
-      "kind" => "move",
-      "actor_id" => actor.id,
-      "occurred_at" => now_dt,
-      "photo_url" => photo_url,
-      "reference_kind" => "manufacturing_order",
-      "reference_ref" => mo_uuid_for_booking(booking)
-    })
-    |> Repo.insert()
-    |> case do
-      {:ok, movement} ->
-        # Decrement origin placement, upsert destination placement
-        # so the on-floor inventory stays accurate.
-        with {:ok, _from_placement} <- decrement_lot_placement(booking),
-             {:ok, _to_placement} <- upsert_lot_placement(booking, target_cell) do
-          Audit.record_created(actor, "stock_movement", movement, %{
-            kind: movement.kind,
-            delta_qty: movement.delta_qty,
-            from_cell_id: movement.from_cell_id,
-            to_cell_id: movement.to_cell_id,
-            reference_kind: movement.reference_kind,
-            reference_ref: movement.reference_ref
-          })
-
-          {:ok, movement}
-        end
-
-      err ->
+    case resolve_origin_placement(booking) do
+      {:error, _} = err ->
         err
+
+      {:ok, %Backend.Stock.Placement{} = origin_placement} ->
+        %Backend.Stock.Movement{}
+        |> Backend.Stock.Movement.changeset(%{
+          "company_id" => booking.company_id,
+          "stock_lot_id" => booking.stock_lot_id,
+          "from_cell_id" => origin_placement.storage_cell_id,
+          "to_cell_id" => target_cell.id,
+          "delta_qty" => booking.quantity,
+          "kind" => "move",
+          "actor_id" => actor.id,
+          "occurred_at" => now_dt,
+          "photo_url" => photo_url,
+          "reference_kind" => "manufacturing_order",
+          "reference_ref" => mo_uuid_for_booking(booking)
+        })
+        |> Repo.insert()
+        |> case do
+          {:ok, movement} ->
+            with {:ok, _from_placement} <-
+                   decrement_placement_row(origin_placement, booking.quantity),
+                 {:ok, _to_placement} <- upsert_lot_placement(booking, target_cell) do
+              Audit.record_created(actor, "stock_movement", movement, %{
+                kind: movement.kind,
+                delta_qty: movement.delta_qty,
+                from_cell_id: movement.from_cell_id,
+                to_cell_id: movement.to_cell_id,
+                reference_kind: movement.reference_kind,
+                reference_ref: movement.reference_ref
+              })
+
+              {:ok, movement}
+            end
+
+          err ->
+            err
+        end
     end
   end
 
@@ -6223,24 +6251,70 @@ defmodule Backend.Production do
     end
   end
 
-  defp decrement_lot_placement(%ManufacturingOrderBooking{} = b) do
-    case Repo.get_by(Backend.Stock.Placement,
-           stock_lot_id: b.stock_lot_id,
-           storage_cell_id: b.storage_cell_id
-         ) do
-      nil ->
-        {:error, :placement_not_found}
+  # Find the placement the picker is actually fetching from. First try
+  # the booking's snapshot cell (the happy path — picker scanned exactly
+  # this cell). If the snapshot is stale, fall back to the lot's
+  # current primary placement (regular cells beat system-purpose cells,
+  # highest qty wins). Returns `:placement_not_found` only when the
+  # lot has zero non-zero placements anywhere — at that point the
+  # picker really can't fetch and we should surface the abort.
+  defp resolve_origin_placement(%ManufacturingOrderBooking{} = b) do
+    snapshot =
+      if b.storage_cell_id do
+        Repo.get_by(Backend.Stock.Placement,
+          stock_lot_id: b.stock_lot_id,
+          storage_cell_id: b.storage_cell_id
+        )
+      end
 
+    case snapshot do
       %Backend.Stock.Placement{} = p ->
-        new_qty = Decimal.sub(p.qty, b.quantity)
+        {:ok, p}
 
-        if Decimal.compare(new_qty, Decimal.new(0)) == :lt do
-          {:error, :insufficient_qty}
-        else
-          p
-          |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
-          |> Repo.update()
+      nil ->
+        case primary_placement_for_lot(b.stock_lot_id) do
+          nil -> {:error, :placement_not_found}
+          %Backend.Stock.Placement{} = p -> {:ok, p}
         end
+    end
+  end
+
+  defp primary_placement_for_lot(lot_id) when is_integer(lot_id) do
+    from(p in Backend.Stock.Placement,
+      join: sc in Backend.Warehouses.StorageCell,
+      on: sc.id == p.storage_cell_id,
+      where: p.stock_lot_id == ^lot_id and p.qty > 0,
+      order_by: [
+        asc: fragment("CASE WHEN ? = 'regular' THEN 0 ELSE 1 END", sc.purpose),
+        desc: p.qty,
+        asc: p.id
+      ],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp primary_placement_for_lot(_), do: nil
+
+  defp decrement_placement_row(%Backend.Stock.Placement{} = p, qty) do
+    new_qty = Decimal.sub(p.qty, qty)
+
+    cond do
+      Decimal.compare(new_qty, Decimal.new(0)) == :lt ->
+        {:error, :insufficient_qty}
+
+      # Empty the cell: delete the row instead of leaving a qty=0
+      # ghost. Same rationale as Backend.Stock.write_adjusted_placement.
+      Decimal.equal?(new_qty, Decimal.new(0)) ->
+        case Repo.delete(p) do
+          {:ok, _} -> {:ok, %Backend.Stock.Placement{p | qty: new_qty}}
+          err -> err
+        end
+
+      true ->
+        p
+        |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+        |> Repo.update()
     end
   end
 
@@ -6276,6 +6350,42 @@ defmodule Backend.Production do
   child MOs and don't enter the warehouse picking flow until the
   child completes (deferred to a later phase).
   """
+  @doc """
+  After a lot moves cells, repoint every open MO booking referencing
+  it at the lot's CURRENT primary placement. Open = `status =
+  "requested"` and `picked_at IS NULL` — once a picker is on the
+  trolley, the cell is locked to where they fetched from.
+
+  Without this, a booking captures the cell snapshot at booking time
+  and never updates. A lot received into the quarantine cage and
+  later QC-released to a regular shelf will still tell the picker
+  "go to the cage" — the symptom that prompted this helper.
+
+  Primary placement = the placement with the most qty; regular cells
+  beat system-purpose cells (quarantine / hold / dispatch / etc.) so
+  the picker never gets sent to a non-pickable cell when a regular
+  alternative exists.
+  """
+  def refresh_open_bookings_for_lot(lot_id) when is_integer(lot_id) do
+    case primary_placement_for_lot(lot_id) do
+      nil ->
+        :ok
+
+      %Backend.Stock.Placement{storage_cell_id: cell_id} ->
+        from(b in ManufacturingOrderBooking,
+          where:
+            b.stock_lot_id == ^lot_id and
+              b.status == "requested" and
+              is_nil(b.picked_at)
+        )
+        |> Repo.update_all(set: [storage_cell_id: cell_id, updated_at: now()])
+
+        :ok
+    end
+  end
+
+  def refresh_open_bookings_for_lot(_), do: :ok
+
   def list_pickup_bookings(%ManufacturingOrder{} = mo) do
     from(b in ManufacturingOrderBooking,
       join: it in Item,
@@ -6713,6 +6823,30 @@ defmodule Backend.Production do
                insert_child_failed_lot(actor, parent, reject_qty, child_pkg),
              {:ok, _child_placement} <-
                insert_child_placement(actor, child_lot, parent_placement.storage_cell_id, reject_qty),
+             # Every kg crossing a placement boundary needs a
+             # Movement audit row. The parent shrinks → emit
+             # adjust_down. The child appears at the same cell →
+             # emit `receive` (rejected-lot genesis). Without these
+             # the lot history view can't explain "where did 40 kg of
+             # lot #123 go" / "where did lot #125 come from".
+             {:ok, _parent_mvmt} <-
+               emit_partial_fail_parent_movement(
+                 actor,
+                 parent,
+                 parent_placement,
+                 reject_qty,
+                 child_lot,
+                 reason
+               ),
+             {:ok, _child_mvmt} <-
+               emit_partial_fail_child_movement(
+                 actor,
+                 child_lot,
+                 parent,
+                 parent_placement.storage_cell_id,
+                 reject_qty,
+                 reason
+               ),
              {:ok, _event} <-
                record_partial_fail_event(actor, parent, child_lot, reject_qty, reason) do
           %{parent: parent_updated, child: child_lot}
@@ -6869,6 +7003,119 @@ defmodule Backend.Production do
       "qty" => qty
     })
     |> Repo.insert()
+  end
+
+  # Partial QC fail emits two paired Movement rows so the lot history
+  # for both parent and child explains the split:
+  #
+  #   - parent: `adjust_down` of `reject_qty` from the storage cell.
+  #     Reason text references the child lot uuid so auditors can
+  #     follow the split forward.
+  #   - child:  `receive` of `reject_qty` at the same cell.
+  #     Reason text references the parent lot uuid so the child's
+  #     genesis is traceable backward.
+  defp emit_partial_fail_parent_movement(
+         actor,
+         %StockLot{} = parent,
+         %Backend.Stock.Placement{} = parent_placement,
+         reject_qty,
+         %StockLot{} = child,
+         reason_input
+       ) do
+    now_dt = now()
+    reason = build_partial_fail_reason(:parent, reject_qty, child, reason_input)
+
+    %Backend.Stock.Movement{}
+    |> Backend.Stock.Movement.changeset(%{
+      "company_id" => parent.company_id,
+      "stock_lot_id" => parent.id,
+      "from_cell_id" => parent_placement.storage_cell_id,
+      "to_cell_id" => nil,
+      "delta_qty" => reject_qty,
+      "kind" => "adjust_down",
+      "reason" => reason,
+      "actor_id" => actor.id,
+      "occurred_at" => now_dt,
+      "reference_kind" => "lifecycle_event",
+      "reference_ref" => child.uuid
+    })
+    |> Repo.insert()
+    |> case do
+      {:ok, movement} ->
+        Audit.record_created(actor, "stock_movement", movement, %{
+          kind: movement.kind,
+          delta_qty: movement.delta_qty,
+          from_cell_id: movement.from_cell_id,
+          reason: movement.reason,
+          reference_kind: movement.reference_kind,
+          reference_ref: movement.reference_ref
+        })
+
+        {:ok, movement}
+
+      err ->
+        err
+    end
+  end
+
+  defp emit_partial_fail_child_movement(
+         actor,
+         %StockLot{} = child,
+         %StockLot{} = parent,
+         cell_id,
+         reject_qty,
+         reason_input
+       ) do
+    now_dt = now()
+    reason = build_partial_fail_reason(:child, reject_qty, parent, reason_input)
+
+    %Backend.Stock.Movement{}
+    |> Backend.Stock.Movement.changeset(%{
+      "company_id" => child.company_id,
+      "stock_lot_id" => child.id,
+      "from_cell_id" => nil,
+      "to_cell_id" => cell_id,
+      "delta_qty" => reject_qty,
+      "kind" => "receive",
+      "reason" => reason,
+      "actor_id" => actor.id,
+      "occurred_at" => now_dt,
+      "reference_kind" => "lifecycle_event",
+      "reference_ref" => parent.uuid
+    })
+    |> Repo.insert()
+    |> case do
+      {:ok, movement} ->
+        Audit.record_created(actor, "stock_movement", movement, %{
+          kind: movement.kind,
+          delta_qty: movement.delta_qty,
+          to_cell_id: movement.to_cell_id,
+          reason: movement.reason,
+          reference_kind: movement.reference_kind,
+          reference_ref: movement.reference_ref
+        })
+
+        {:ok, movement}
+
+      err ->
+        err
+    end
+  end
+
+  defp build_partial_fail_reason(side, reject_qty, %StockLot{} = other, reason_input) do
+    qty_str = decimal_to_string(reject_qty)
+    other_label = other.uuid
+
+    base =
+      case side do
+        :parent -> "QC partial fail: split off #{qty_str} into rejected lot #{other_label}"
+        :child -> "QC partial fail: split from parent lot #{other_label} (#{qty_str} rejected)"
+      end
+
+    case reason_input do
+      s when is_binary(s) and s != "" -> base <> " — " <> String.trim(s)
+      _ -> base
+    end
   end
 
   # Emit a `qc_failed` lifecycle event AGAINST THE CHILD lot (not the
@@ -7178,12 +7425,19 @@ defmodule Backend.Production do
         :ok
 
       Decimal.compare(remaining, Decimal.new(0)) == :eq ->
-        # Consumed everything → drop the production-feed placement to 0.
-        case Backend.Stock.Placement.changeset(placement, %{"qty" => Decimal.new(0)})
-             |> Repo.update() do
-          {:ok, _} -> :ok
-          err -> err
-        end
+        # Consumed everything → emit a `consume` movement (so the
+        # stock vanishing from the production-feed cell is visible in
+        # the lot's audit trail), then delete the placement row.
+        # Previously the placement was silently zeroed via a direct
+        # changeset which broke BRCGS / FSSC traceability — every kg
+        # leaving a cell must cross a Movement row.
+        emit_consume_movement(
+          actor,
+          booking,
+          placement,
+          booking.consumed_quantity,
+          photo_url
+        )
 
       true ->
         # Leftover → move the production-feed placement to dispatch.
@@ -7198,6 +7452,49 @@ defmodule Backend.Production do
           {:ok, _} -> :ok
           {:error, reason} -> {:error, {:move_failed, reason}}
         end
+    end
+  end
+
+  # Emit a `consume` Stock.Movement for the qty written off at the
+  # production-feed cell, then delete the placement row. Used by the
+  # closeout full-consume path so every kg leaving a cell crosses an
+  # audit row (BRCGS 3.5.1 / FSSC 22000). Movement carries the
+  # reference back to the booking + MO; reason text records the
+  # operator's consumed_quantity.
+  defp emit_consume_movement(actor, booking, placement, consumed_qty, photo_url) do
+    now_dt = now()
+
+    movement_attrs = %{
+      "company_id" => booking.company_id,
+      "stock_lot_id" => booking.stock_lot_id,
+      "from_cell_id" => placement.storage_cell_id,
+      "to_cell_id" => nil,
+      "delta_qty" => placement.qty,
+      "kind" => "consume",
+      "reason" => "MO closeout: consumed #{decimal_to_string(consumed_qty)}",
+      "actor_id" => actor.id,
+      "occurred_at" => now_dt,
+      "photo_url" => photo_url,
+      "reference_kind" => "manufacturing_order",
+      "reference_ref" => mo_uuid_for_booking(booking)
+    }
+
+    with {:ok, movement} <-
+           %Backend.Stock.Movement{}
+           |> Backend.Stock.Movement.changeset(movement_attrs)
+           |> Repo.insert(),
+         {:ok, _deleted} <- Repo.delete(placement) do
+      Audit.record_created(actor, "stock_movement", movement, %{
+        kind: movement.kind,
+        delta_qty: movement.delta_qty,
+        from_cell_id: movement.from_cell_id,
+        to_cell_id: movement.to_cell_id,
+        reason: movement.reason,
+        reference_kind: movement.reference_kind,
+        reference_ref: movement.reference_ref
+      })
+
+      :ok
     end
   end
 
@@ -7353,7 +7650,10 @@ defmodule Backend.Production do
 
       not is_nil(booking.received_at) ->
         # Idempotent re-confirm. Updates notes / qty only when the
-        # operator passes them; never overwrites the actor stamp.
+        # operator passes them; never overwrites the actor stamp. If
+        # the operator corrects received_qty, we reconcile the lot's
+        # placement at the production-feed cell with a balancing
+        # adjust movement so the books stay honest.
         update_attrs =
           %{}
           |> maybe_put_received_qty(attrs)
@@ -7363,7 +7663,23 @@ defmodule Backend.Production do
         if update_attrs == %{"updated_by_id" => actor.id} do
           {:ok, Repo.preload(booking, [:item, :stock_lot, :picked_by, :received_by])}
         else
-          apply_booking_changeset(actor, booking, update_attrs)
+          prev_received_qty = booking.received_qty || booking.quantity
+
+          new_received_qty =
+            case parse_received_qty(attrs) do
+              {:ok, q} -> q
+              _ -> prev_received_qty
+            end
+
+          run_confirm_received_txn(
+            actor,
+            booking,
+            mo,
+            update_attrs,
+            prev_received_qty,
+            new_received_qty,
+            attrs
+          )
         end
 
       true ->
@@ -7377,9 +7693,157 @@ defmodule Backend.Production do
             }
             |> maybe_put_received_notes(attrs)
 
-          apply_booking_changeset(actor, booking, update_attrs)
+          # First confirm. Compare measured against booked qty (what
+          # the picker physically transferred to the production-feed
+          # cell). Any delta → emit a variance movement so the lot's
+          # placement at the production-feed cell snaps to the
+          # operator's measurement and the missing / extra kg is
+          # accounted for in the audit trail.
+          run_confirm_received_txn(
+            actor,
+            booking,
+            mo,
+            update_attrs,
+            booking.quantity,
+            qty,
+            attrs
+          )
         end
     end
+  end
+
+  # Wrap the booking update + variance reconciliation in one Repo
+  # transaction so the booking and the placement always agree post-
+  # commit. Rolls back the booking update if the variance movement
+  # fails (e.g. the production-feed placement is missing).
+  defp run_confirm_received_txn(
+         actor,
+         booking,
+         mo,
+         update_attrs,
+         baseline_qty,
+         new_qty,
+         attrs
+       ) do
+    Repo.transaction(fn ->
+      with {:ok, updated} <- apply_booking_changeset(actor, booking, update_attrs),
+           :ok <-
+             emit_preflight_variance(
+               actor,
+               updated,
+               mo,
+               baseline_qty,
+               new_qty,
+               attrs
+             ) do
+        updated
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # Compare baseline (booked qty on first confirm, previous
+  # received_qty on re-confirm) against the operator's measurement.
+  # If they differ, emit an `adjust_down` (negative delta) or
+  # `adjust_up` (positive delta) movement against the lot's
+  # production-feed placement and snap that placement to the new
+  # truth. Reason text records both numbers so QA can audit later.
+  defp emit_preflight_variance(_actor, _booking, _mo, baseline, new_qty, _attrs)
+       when is_nil(baseline) or is_nil(new_qty),
+       do: :ok
+
+  defp emit_preflight_variance(actor, booking, mo, baseline, new_qty, attrs) do
+    delta = Decimal.sub(new_qty, baseline)
+
+    if Decimal.equal?(delta, Decimal.new(0)) do
+      :ok
+    else
+      lot = Repo.get!(StockLot, booking.stock_lot_id)
+
+      case locate_production_feed_placement(lot, mo.production_cell_id) do
+        nil ->
+          # The lot isn't on the production-feed cell anymore (already
+          # consumed mid-run, picker bypassed flow, etc.). The
+          # variance is captured on the booking row regardless — we
+          # just can't reconcile a placement that isn't there. Not
+          # fatal; the audit log still has the booking's old / new
+          # received_qty.
+          :ok
+
+        %Backend.Stock.Placement{} = placement ->
+          reason = build_preflight_variance_reason(baseline, new_qty, attrs)
+          kind = if Decimal.negative?(delta), do: "adjust_down", else: "adjust_up"
+          new_placement_qty = Decimal.add(placement.qty, delta)
+
+          cond do
+            Decimal.compare(new_placement_qty, Decimal.new(0)) == :lt ->
+              {:error, :insufficient_qty}
+
+            true ->
+              now_dt = now()
+
+              movement_attrs = %{
+                "company_id" => booking.company_id,
+                "stock_lot_id" => booking.stock_lot_id,
+                "from_cell_id" =>
+                  if(Decimal.negative?(delta), do: placement.storage_cell_id),
+                "to_cell_id" =>
+                  if(Decimal.negative?(delta), do: nil, else: placement.storage_cell_id),
+                "delta_qty" => Decimal.abs(delta),
+                "kind" => kind,
+                "reason" => reason,
+                "actor_id" => actor.id,
+                "occurred_at" => now_dt,
+                "reference_kind" => "manufacturing_order_booking",
+                "reference_ref" => booking.uuid
+              }
+
+              with {:ok, movement} <-
+                     %Backend.Stock.Movement{}
+                     |> Backend.Stock.Movement.changeset(movement_attrs)
+                     |> Repo.insert(),
+                   {:ok, _placement} <-
+                     adjust_placement_to(placement, new_placement_qty) do
+                Audit.record_created(actor, "stock_movement", movement, %{
+                  kind: movement.kind,
+                  delta_qty: movement.delta_qty,
+                  from_cell_id: movement.from_cell_id,
+                  to_cell_id: movement.to_cell_id,
+                  reason: movement.reason,
+                  reference_kind: movement.reference_kind,
+                  reference_ref: movement.reference_ref
+                })
+
+                :ok
+              end
+          end
+      end
+    end
+  end
+
+  defp adjust_placement_to(%Backend.Stock.Placement{} = p, new_qty) do
+    if Decimal.equal?(new_qty, Decimal.new(0)) do
+      case Repo.delete(p) do
+        {:ok, _} -> {:ok, %Backend.Stock.Placement{p | qty: new_qty}}
+        err -> err
+      end
+    else
+      p
+      |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+      |> Repo.update()
+    end
+  end
+
+  defp build_preflight_variance_reason(baseline, new_qty, attrs) do
+    notes =
+      case Map.get(attrs, "received_notes") || Map.get(attrs, :received_notes) do
+        s when is_binary(s) and s != "" -> " — " <> String.trim(s)
+        _ -> ""
+      end
+
+    "Preflight variance: measured #{decimal_to_string(new_qty)} vs picker-transferred #{decimal_to_string(baseline)}" <>
+      notes
   end
 
   defp parse_received_qty(attrs) do

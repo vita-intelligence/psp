@@ -2765,6 +2765,22 @@ export interface OrderWizardMo {
   output_in_warehouse_count: number;
   has_output_at_production_feed: boolean;
   purchasing_requested_at: string | null;
+  /** Set the moment a picker claims the MO (head-of-picker lock).
+   *  Used to render the "picking in progress" sub-stage on the
+   *  wizard so the room knows who's on the floor with the trolley. */
+  pickup_started_at: string | null;
+  pickup_started_by_name: string | null;
+  /** Set when the warehouse picker has dropped this MO's bookings at
+   *  the production-feed cell. Until then, the production operator
+   *  has nothing to preflight — the wizard's "Send preflight" CTA is
+   *  gated on this field so the link target matches the menu list. */
+  pickup_completed_at: string | null;
+  /** True when every raw/packaging/semi booking on this MO has its
+   *  `received_at` stamped (i.e. the preflight operator has signed
+   *  every booking off). The BE's `start_mo_production` requires
+   *  this — the wizard splits "scheduled + pickup done" into
+   *  "awaiting preflight" vs "ready to start" based on this flag. */
+  preflight_complete: boolean;
   /** True when this MO is past approval AND has no unresolved
    *  shortages (every booking is real, or procurement is engaged
    *  for the placeholders). Drives the per-MO "needs attention"

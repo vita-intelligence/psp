@@ -870,11 +870,13 @@ defmodule Backend.OrderWizard do
     }
   end
 
-  # Each MO status maps to a specific action the operator needs to
-  # take. The wizard's primary CTA fires the right endpoint inline
-  # where possible (transitions), and links out only when the
-  # operation needs a richer UI (the scheduler grid, mobile floor
-  # actions).
+  # Each MO sub-stage maps to a specific action the operator needs
+  # to take. "scheduled" is split three ways because a single
+  # "scheduled" MO can be awaiting pickup, picking, or awaiting
+  # preflight — three distinct handoffs with three distinct mobile
+  # pages. Falling back to "Start MO on the floor" + /m/preflight
+  # for all three (the old behaviour) mislabeled the work and sent
+  # operators to the wrong screen.
   defp production_step_cta(mo) do
     case mo.status do
       "draft" ->
@@ -904,21 +906,14 @@ defmodule Backend.OrderWizard do
          }}
 
       "scheduled" ->
-        {"Start MO #{mo.code} on the floor.",
-         %{
-           label: "Send to device",
-           kind: "send_to_device",
-           href: "/m/preflight/#{mo.uuid}",
-           mo_uuid: mo.uuid
-         }}
+        scheduled_step_cta(mo)
 
       "in_progress" ->
         {"MO #{mo.code} is running — finish on the floor.",
          %{
-           label: "Send to device",
-           kind: "send_to_device",
-           href: "/m/run/#{mo.uuid}",
-           mo_uuid: mo.uuid
+           label: "Open run",
+           kind: "link",
+           href: "/production/runs/#{mo.uuid}"
          }}
 
       _ ->
@@ -927,6 +922,57 @@ defmodule Backend.OrderWizard do
            label: "Open MO",
            kind: "link",
            href: "/production/manufacturing-orders/#{mo.uuid}"
+         }}
+    end
+  end
+
+  # Split a "scheduled" MO by pickup + preflight state. Mirrors the
+  # FE `deriveMoLiveStage` logic so the wizard's primary CTA and the
+  # per-MO card always agree on what comes next.
+  defp scheduled_step_cta(mo) do
+    cond do
+      is_nil(Map.get(mo, :pickup_started_at)) and is_nil(Map.get(mo, :pickup_completed_at)) ->
+        {"Pick up MO #{mo.code} from warehouse.",
+         %{
+           label: "Send pickup to device",
+           kind: "send_to_device",
+           href: "/m/pickup/#{mo.uuid}",
+           mo_uuid: mo.uuid
+         }}
+
+      not is_nil(Map.get(mo, :pickup_started_at)) and is_nil(Map.get(mo, :pickup_completed_at)) ->
+        actor =
+          case Map.get(mo, :pickup_started_by_name) do
+            name when is_binary(name) and name != "" -> " (#{name} on the floor)"
+            _ -> ""
+          end
+
+        {"Picking in progress for MO #{mo.code}#{actor}.",
+         %{
+           label: "Open pickup on device",
+           kind: "send_to_device",
+           href: "/m/pickup/#{mo.uuid}",
+           mo_uuid: mo.uuid
+         }}
+
+      # Pickup done + every booking signed off — operator can flip
+      # the MO to in_progress. No mobile run page yet, so the CTA
+      # links to the desktop run page where Start lives.
+      Map.get(mo, :preflight_complete?) == true ->
+        {"Start MO #{mo.code} on the floor.",
+         %{
+           label: "Open run",
+           kind: "link",
+           href: "/production/runs/#{mo.uuid}"
+         }}
+
+      true ->
+        {"Preflight check MO #{mo.code} on the production-feed cell.",
+         %{
+           label: "Send preflight to device",
+           kind: "send_to_device",
+           href: "/m/preflight/#{mo.uuid}",
+           mo_uuid: mo.uuid
          }}
     end
   end
@@ -1049,7 +1095,14 @@ defmodule Backend.OrderWizard do
   # ----- mo state ------------------------------------------------
 
   defp mo_state(%ManufacturingOrder{} = mo) do
-    mo = Repo.preload(mo, [:item, :children, bookings: [], bom: [lines: :part]])
+    mo =
+      Repo.preload(mo, [
+        :item,
+        :children,
+        :pickup_started_by,
+        bookings: [],
+        bom: [lines: :part]
+      ])
 
     # Recurse into child MOs (auto-spawned for semi-finished
     # sub-assemblies). The chain has to be sorted top-to-bottom
@@ -1145,6 +1198,20 @@ defmodule Backend.OrderWizard do
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
       purchasing_requested_at: mo.purchasing_requested_at,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_started_by_name:
+        case mo.pickup_started_by do
+          %{name: name} when is_binary(name) -> name
+          _ -> nil
+        end,
+      pickup_completed_at: mo.pickup_completed_at,
+      # True when every raw/packaging/semi booking has received_at
+      # set — the production operator has signed off the preflight
+      # and `start_mo_production` will accept the scheduled →
+      # in_progress flip. The wizard uses this to split the
+      # "scheduled + pickup done" stage into "awaiting preflight" vs
+      # "ready to start run".
+      preflight_complete?: Production.mo_preflight_complete?(mo),
       is_fully_sorted?: is_fully_sorted,
       children: child_states,
       due_date: mo.due_date

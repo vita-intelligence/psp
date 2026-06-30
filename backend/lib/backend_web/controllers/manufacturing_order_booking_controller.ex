@@ -240,6 +240,10 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
           {:unprocessable_entity, "bookings_locked_for_purchasing",
            "Bookings are locked while procurement is sourcing the missing items. Cancel the procurement request first if you need to edit."}
 
+        :booking_already_picked ->
+          {:conflict, "booking_already_picked",
+           "The picker has already moved this booking's lot to the production-feed cell. Abort the pickup first, then delete."}
+
         :po_line_not_found ->
           {:unprocessable_entity, "po_line_not_found",
            "That PO line doesn't exist or belongs to another company."}

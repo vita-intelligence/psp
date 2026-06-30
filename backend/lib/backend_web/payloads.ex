@@ -1154,6 +1154,10 @@ defmodule BackendWeb.Payloads do
       output_in_warehouse_count: mo.output_in_warehouse_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
       purchasing_requested_at: mo.purchasing_requested_at,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_started_by_name: mo.pickup_started_by_name,
+      pickup_completed_at: mo.pickup_completed_at,
+      preflight_complete: mo.preflight_complete?,
       is_fully_sorted: mo.is_fully_sorted?,
       due_date: mo.due_date,
       output_lots:
@@ -4416,7 +4420,18 @@ defmodule BackendWeb.Payloads do
   reduce rather than a query.
   """
   def stock_lot(l) do
-    placements = preloaded_or_empty(l, :placements)
+    # Drop qty=0 ghost placements defensively. The move/adjust paths
+    # now delete the row when qty hits zero, but old data + any
+    # future caller that forgets to clean up shouldn't leak ghosts
+    # into cell-contents views (the quarantine-cage symptom that
+    # prompted this filter).
+    placements =
+      l
+      |> preloaded_or_empty(:placements)
+      |> Enum.reject(fn p ->
+        Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) != :gt
+      end)
+
     qty_on_hand = sum_decimal(placements, & &1.qty)
 
     %{
