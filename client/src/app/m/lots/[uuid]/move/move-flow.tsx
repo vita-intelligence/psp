@@ -32,7 +32,15 @@ import { CellScanStep } from "./cell-scan-step";
 import { LotScanStep } from "./lot-scan-step";
 import { FloorPlanMini } from "./floor-plan-mini";
 
-type Step = "verify-lot" | "pick" | "directions" | "verify-scan" | "confirm";
+// Lot move follows the canonical mobile move pattern (closeout
+// step-3 / return-pickup-place):
+//
+//   verify-lot → pick → directions+details → verify-scan (auto-submit)
+//
+// `directions` carries the qty input + photo / skip-reason capture
+// alongside the breadcrumb so the scan result can fire submit
+// immediately; the old "confirm" step has been folded in and dropped.
+type Step = "verify-lot" | "pick" | "directions" | "verify-scan";
 
 interface Props {
   lot: StockLot;
@@ -126,9 +134,11 @@ export function MoveFlow({
     // The scanner itself rejects wrong cells inline (red flash + stays
     // in viewfinder), so anything reaching this callback has already
     // been verified to match the expected cell (or the operator
-    // explicitly overrode to scan-anything mode).
+    // explicitly overrode to scan-anything mode). Auto-submit with the
+    // scanned cell — the qty / photo / skip-reason were captured in
+    // the directions step, no extra confirm screen needed.
     setScanned(cell);
-    setStep("confirm");
+    onSubmit(cell);
   }
 
   async function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -156,9 +166,13 @@ export function MoveFlow({
     }
   }
 
-  function onSubmit() {
+  function onSubmit(cellOverride?: ScannedCell) {
     setError(null);
-    if (!scanned) return;
+    // Caller may pass the just-scanned cell directly (the auto-submit
+    // path from verify-scan, where setScanned hasn't committed yet);
+    // fall back to the rendered scanned state otherwise.
+    const targetCell = cellOverride ?? scanned;
+    if (!targetCell) return;
     if (!photoUrl && !skipReason) {
       setError("Take a photo or pick a skip reason.");
       return;
@@ -183,7 +197,7 @@ export function MoveFlow({
       const res = await Promise.race([
         moveLotAction({
           lotUuid: lot.uuid,
-          toCellUuid: scanned.uuid,
+          toCellUuid: targetCell.uuid,
           qty: qty || undefined,
           photoUrl: photoUrl || null,
           skipPhotoReason: photoUrl ? null : skipReason || null,
@@ -211,10 +225,7 @@ export function MoveFlow({
   }
 
   function backFromCurrentStep() {
-    if (step === "confirm") {
-      setStep("verify-scan");
-      setScanned(null);
-    } else if (step === "verify-scan") {
+    if (step === "verify-scan") {
       // If we came from a recommendation, back goes to the directions
       // card; otherwise straight back to the recommendation list.
       setStep(expected ? "directions" : "pick");
@@ -287,6 +298,16 @@ export function MoveFlow({
       {step === "directions" && expected && (
         <DirectionsStep
           cell={expected}
+          lot={lot}
+          qty={qty}
+          onQtyChange={setQty}
+          photoUrl={photoUrl}
+          photoUploading={photoUploading}
+          skipReason={skipReason}
+          onPhotoChange={onPhotoChange}
+          onClearPhoto={() => setPhotoUrl(null)}
+          onSkipReasonChange={setSkipReason}
+          error={error}
           onContinue={() => setStep("verify-scan")}
         />
       )}
@@ -297,131 +318,6 @@ export function MoveFlow({
           onResult={onScanResult}
           onError={(msg) => setError(msg)}
         />
-      )}
-
-
-      {step === "confirm" && scanned && (
-        <>
-          <main className="flex-1 space-y-4 px-4 py-4">
-            <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-                <Check className="size-3.5" />
-                <span>Scan confirmed</span>
-              </div>
-              <p className="mt-1 text-sm font-semibold">
-                {scanned.warehouse?.name ?? "—"} ·{" "}
-                {formatLocation(scanned.storage_location)} · {scanned.name}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {scanned.floor?.name ?? "—"}
-              </p>
-            </section>
-
-            <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
-              <label className="text-xs uppercase tracking-wider text-muted-foreground">
-                Quantity
-              </label>
-              <div className="flex items-stretch gap-2">
-                <Input
-                  type="text"
-                  inputMode="decimal"
-                  value={qty}
-                  onChange={(e) => setQty(e.target.value)}
-                  className="h-12 font-mono text-lg"
-                />
-                <span className="inline-flex items-center rounded-md border border-border/60 bg-muted px-3 text-sm font-medium text-muted-foreground">
-                  {lot.unit_of_measurement?.symbol ?? ""}
-                </span>
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                Defaults to everything in {lot.code ?? `#${lot.id}`}.
-              </p>
-            </section>
-
-            <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
-              <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                Photo
-              </p>
-              {photoUrl ? (
-                <div className="flex items-center gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
-                  <Check className="size-4 text-emerald-600" />
-                  <span className="flex-1 text-sm">Photo attached</span>
-                  <button
-                    type="button"
-                    onClick={() => setPhotoUrl(null)}
-                    className="text-xs text-muted-foreground underline"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <label className="flex h-12 cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-muted/50 text-sm font-medium">
-                    {photoUploading ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <ImagePlus className="size-4" />
-                    )}
-                    {photoUploading ? "Uploading…" : "Take photo"}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={onPhotoChange}
-                      className="hidden"
-                      disabled={photoUploading}
-                    />
-                  </label>
-
-                  <div className="space-y-1.5">
-                    <p className="text-[11px] text-muted-foreground">
-                      Or skip with a reason:
-                    </p>
-                    <Select value={skipReason} onValueChange={setSkipReason}>
-                      <SelectTrigger className="h-10">
-                        <SelectValue placeholder="Pick a reason…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {SKIP_REASONS.map((r) => (
-                          <SelectItem key={r.value} value={r.value}>
-                            {r.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </>
-              )}
-            </section>
-
-            {error && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </div>
-            )}
-          </main>
-
-          <footer className="space-y-2 border-t border-border/60 px-4 py-3">
-            {!photoUrl && !skipReason && (
-              <p className="text-center text-[11px] text-muted-foreground">
-                Add a photo or pick a skip reason to continue.
-              </p>
-            )}
-            <Button
-              size="lg"
-              className="h-14 w-full text-base"
-              onClick={onSubmit}
-              disabled={submitting || (!photoUrl && !skipReason)}
-            >
-              {submitting ? (
-                <Loader2 className="mr-2 size-5 animate-spin" />
-              ) : (
-                <Check className="mr-2 size-5" />
-              )}
-              Confirm move
-            </Button>
-          </footer>
-        </>
       )}
     </div>
   );
@@ -532,9 +428,29 @@ function PickStep({
  */
 function DirectionsStep({
   cell,
+  lot,
+  qty,
+  onQtyChange,
+  photoUrl,
+  photoUploading,
+  skipReason,
+  onPhotoChange,
+  onClearPhoto,
+  onSkipReasonChange,
+  error,
   onContinue,
 }: {
   cell: ScannedCell;
+  lot: StockLot;
+  qty: string;
+  onQtyChange: (value: string) => void;
+  photoUrl: string | null;
+  photoUploading: boolean;
+  skipReason: string;
+  onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onClearPhoto: () => void;
+  onSkipReasonChange: (value: string) => void;
+  error: string | null;
   onContinue: () => void;
 }) {
   const rackCode = cell.storage_location?.code?.trim() || null;
@@ -551,6 +467,7 @@ function DirectionsStep({
   const rackSuffix = rackCode && rackName ? rackName : null;
   const cellPrimary = cellCode ?? shelfLabel;
   const cellSuffix = cellCode ? shelfLabel : null;
+  const canContinue = Boolean(photoUrl) || skipReason.length > 0;
 
   return (
     <>
@@ -560,10 +477,10 @@ function DirectionsStep({
             Walk to
           </p>
           <p className="text-sm text-muted-foreground">
-            Find the highlighted rack on the floor plan. The label on
-            the shelf will read the same code below. Tap Scan now when
-            you&apos;re there and point the camera at the QR on the
-            shelf.
+            Find the highlighted rack on the floor plan, then capture
+            a photo (or pick a skip reason). Tap Scan now when you&apos;re
+            at the shelf — the move fires automatically when the QR
+            matches.
           </p>
         </div>
 
@@ -600,13 +517,102 @@ function DirectionsStep({
             hero
           />
         </ol>
+
+        <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
+          <label className="text-xs uppercase tracking-wider text-muted-foreground">
+            Quantity
+          </label>
+          <div className="flex items-stretch gap-2">
+            <Input
+              type="text"
+              inputMode="decimal"
+              value={qty}
+              onChange={(e) => onQtyChange(e.target.value)}
+              className="h-12 font-mono text-lg"
+            />
+            <span className="inline-flex items-center rounded-md border border-border/60 bg-muted px-3 text-sm font-medium text-muted-foreground">
+              {lot.unit_of_measurement?.symbol ?? ""}
+            </span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Defaults to everything in {lot.code ?? `#${lot.id}`}.
+          </p>
+        </section>
+
+        <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">
+            Photo
+          </p>
+          {photoUrl ? (
+            <div className="flex items-center gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+              <Check className="size-4 text-emerald-600" />
+              <span className="flex-1 text-sm">Photo attached</span>
+              <button
+                type="button"
+                onClick={onClearPhoto}
+                className="text-xs text-muted-foreground underline"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <>
+              <label className="flex h-12 cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-muted/50 text-sm font-medium">
+                {photoUploading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <ImagePlus className="size-4" />
+                )}
+                {photoUploading ? "Uploading…" : "Take photo"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={onPhotoChange}
+                  className="hidden"
+                  disabled={photoUploading}
+                />
+              </label>
+
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-muted-foreground">
+                  Or skip with a reason:
+                </p>
+                <Select value={skipReason} onValueChange={onSkipReasonChange}>
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="Pick a reason…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SKIP_REASONS.map((r) => (
+                      <SelectItem key={r.value} value={r.value}>
+                        {r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
+        </section>
+
+        {error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
       </main>
 
-      <footer className="border-t border-border/60 px-4 py-3">
+      <footer className="space-y-2 border-t border-border/60 px-4 py-3">
+        {!canContinue && (
+          <p className="text-center text-[11px] text-muted-foreground">
+            Add a photo or pick a skip reason to continue.
+          </p>
+        )}
         <Button
           size="lg"
           className="h-14 w-full text-base"
           onClick={onContinue}
+          disabled={!canContinue || photoUploading}
         >
           <ScanLine className="mr-2 size-5" />
           I&apos;m there — scan now
