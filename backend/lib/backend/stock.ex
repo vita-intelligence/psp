@@ -1074,6 +1074,16 @@ defmodule Backend.Stock do
           # even after QC released the lot to a regular shelf.
           Backend.Production.refresh_open_bookings_for_lot(lot.id)
 
+          # Reality-vs-system check: if any move depleted the lot
+          # below what open bookings claim, demote the affected MOs
+          # back to a re-plannable state (see
+          # Backend.Production.revalidate_bookings_for_lot/3).
+          Backend.Production.revalidate_bookings_for_lot(
+            actor,
+            lot.id,
+            "Stock move on lot " <> (lot.uuid || "")
+          )
+
           Repo.preload(lot, [
             :item,
             :unit_of_measurement,
@@ -1160,6 +1170,15 @@ defmodule Backend.Stock do
           # Re-point open bookings if the adjust dropped a cell to
           # zero — the booking's snapshot cell may now be empty.
           Backend.Production.refresh_open_bookings_for_lot(lot.id)
+
+          # Reality-vs-system check: down-adjust may leave the lot
+          # below the sum of open bookings; demote affected MOs.
+          Backend.Production.revalidate_bookings_for_lot(
+            actor,
+            lot.id,
+            "Stock adjust on lot " <>
+              (lot.uuid || "") <> " — " <> (attrs["reason"] || "no reason given")
+          )
 
           cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
 

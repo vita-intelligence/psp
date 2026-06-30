@@ -6490,6 +6490,126 @@ defmodule Backend.Production do
 
   def refresh_open_bookings_for_lot(_), do: :ok
 
+  @doc """
+  Reality-vs-system check after a stock decrease on `lot_id`. Walks
+  every open booking on the lot in FIFO order (booking id ASC, so the
+  oldest claim wins), tracks cumulative demand against the lot's
+  current on-hand, and cascades any MO whose bookings now exceed
+  what's physically available back to a re-plannable state.
+
+  Triggered after:
+
+    * closeout drains (the path that legitimately exceeds the booked
+      qty via spillage — the case that started this regression)
+    * `Stock.move_placement` / `Stock.adjust_placement` (any manual
+      stock write that could deplete an open booking's lot)
+
+  Cascade per affected MO (depends on current status):
+
+    * `released` to warehouse → `unrelease_mo_from_warehouse(needs_replan: true)`
+      drops out of picker queue, cascades to `draft`, clears both
+      signatures, stamps `needs_replan` with the reason.
+    * `approved` (not yet released) → `unapprove_mo` + mark
+      needs_replan. Same end state as above without the unrelease.
+    * `draft` → just stamp needs_replan so the planner sees the
+      "Request purchases" call-to-action on the wizard.
+    * `scheduled` → unschedule the MO chain first, then cascade
+      to draft via unrelease (handles the released+scheduled combo).
+    * `in_progress` / `completed` / `cancelled` → too late to flip;
+      audit the incident and move on. Manual cleanup required.
+
+  Returns `:ok` regardless — best-effort cleanup; the caller already
+  succeeded with the primary write and we don't want to roll it back
+  just because a downstream MO couldn't be demoted (a completed MO
+  can't be demoted at all, but we still recorded the consumption).
+  """
+  def revalidate_bookings_for_lot(%User{} = actor, lot_id, reason)
+      when is_integer(lot_id) and is_binary(reason) do
+    on_hand = lot_on_hand(lot_id)
+
+    open_bookings =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.stock_lot_id == ^lot_id and
+            b.status == "requested" and
+            is_nil(b.picked_at) and
+            is_nil(b.consumed_at),
+        order_by: [asc: b.id]
+      )
+      |> Repo.all()
+
+    {_used, broken} =
+      Enum.reduce(open_bookings, {Decimal.new(0), []}, fn b, {used, broken_acc} ->
+        next_demand = Decimal.add(used, b.quantity || Decimal.new(0))
+
+        if Decimal.compare(next_demand, on_hand) == :gt do
+          {used, [b | broken_acc]}
+        else
+          {next_demand, broken_acc}
+        end
+      end)
+
+    broken
+    |> Enum.map(& &1.manufacturing_order_id)
+    |> Enum.uniq()
+    |> Enum.each(fn mo_id ->
+      case Repo.get(ManufacturingOrder, mo_id) do
+        %ManufacturingOrder{} = mo -> cascade_mo_to_planning(actor, mo, reason)
+        _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  def revalidate_bookings_for_lot(_actor, _lot_id, _reason), do: :ok
+
+  # MO-status cascade for the over-allocation case. See the doc on
+  # `revalidate_bookings_for_lot/3` for the decision table.
+  defp cascade_mo_to_planning(actor, %ManufacturingOrder{} = mo, reason) do
+    cond do
+      mo.status in ["completed", "cancelled"] ->
+        # Audit the incident so an auditor can spot a completed MO
+        # whose ingredient lot retroactively went short — but there's
+        # nothing to demote, the work happened.
+        Audit.record_updated(
+          actor,
+          "manufacturing_order",
+          mo,
+          %{},
+          %{
+            broken_bookings_detected: true,
+            broken_bookings_reason: reason,
+            status_at_detection: mo.status
+          }
+        )
+
+      mo.status == "in_progress" ->
+        # Production already started — flipping back would invalidate
+        # the audit chain. Flag for manual intervention.
+        mark_needs_replan(actor, mo, reason)
+
+      not is_nil(mo.released_to_warehouse_at) ->
+        unrelease_mo_from_warehouse(actor, mo, needs_replan: true, reason: reason)
+
+      mo.status == "scheduled" ->
+        with {:ok, unscheduled} <- unschedule_mo(actor, mo) do
+          cascade_mo_to_planning(actor, unscheduled, reason)
+        end
+
+      mo.status == "approved" ->
+        with {:ok, draft_mo} <- unapprove_mo(actor, mo) do
+          mark_needs_replan(actor, draft_mo, reason)
+        end
+
+      mo.status == "draft" ->
+        mark_needs_replan(actor, mo, reason)
+
+      true ->
+        :ok
+    end
+  end
+
   def list_pickup_bookings(%ManufacturingOrder{} = mo) do
     from(b in ManufacturingOrderBooking,
       join: it in Item,
@@ -7572,23 +7692,48 @@ defmodule Backend.Production do
         "skip_photo_reason" => attrs["skip_photo_reason"]
       }
 
-      Repo.transaction(fn ->
-        with {:ok, updated_booking} <-
-               stamp_booking_consumed(actor, booking, consumed),
-             :ok <-
-               apply_booking_movement(
-                 actor,
-                 booking,
-                 consumed,
-                 remaining,
-                 dest_cell,
-                 photo_meta
-               ) do
-          updated_booking
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      result =
+        Repo.transaction(fn ->
+          with {:ok, updated_booking} <-
+                 stamp_booking_consumed(actor, booking, consumed),
+               :ok <-
+                 apply_booking_movement(
+                   actor,
+                   booking,
+                   consumed,
+                   remaining,
+                   dest_cell,
+                   photo_meta
+                 ) do
+            updated_booking
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      # POST-COMMIT cascade. Spillage closeouts can drain a lot's
+      # warehouse placement past what was booked, leaving downstream
+      # MOs over-allocated. Walk affected lots and demote any MO
+      # whose bookings now exceed reality back to a re-plannable
+      # state (see `revalidate_bookings_for_lot/3`). Best-effort —
+      # the closeout itself already succeeded; this is housekeeping.
+      case result do
+        {:ok, _} = ok ->
+          # Drained lots = the booking's stock_lot for sure; if drain
+          # spilled into other warehouse cells those still belong to
+          # the same lot, so one revalidation call covers it.
+          revalidate_bookings_for_lot(
+            actor,
+            booking.stock_lot_id,
+            "Closeout of MO booking " <>
+              (booking.uuid || "") <> " consumed #{decimal_to_string(consumed)}"
+          )
+
+          ok
+
+        err ->
+          err
+      end
     end
   end
 

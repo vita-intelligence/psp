@@ -1469,13 +1469,75 @@ defmodule Backend.OrderWizard do
   defp count_broken_bookings([]), do: 0
 
   defp count_broken_bookings(bookings) do
-    # A booking is "broken" when its stock_lot is no longer placed at
-    # a cell, OR when the qty available has dropped below qty
-    # required. Conservative V1: only count bookings flagged as
-    # `is_broken` on the booking row if such a field exists; else 0.
-    Enum.count(bookings, fn b ->
-      Map.get(b, :is_broken) == true
-    end)
+    # A booking is "broken" when its lot is no longer `available` OR
+    # the lot's on-hand is now less than the sum of all requested
+    # bookings against it (over-allocated). Earlier this read a stub
+    # `:is_broken` field that nothing ever populated — so wizard
+    # never surfaced reality drift caused by closeout spillage.
+    # Mirrors `Backend.Production.list_broken_bookings_for/1` but
+    # inline per MO so the wizard's per-MO state stays self-contained.
+    lot_ids =
+      bookings
+      |> Enum.flat_map(fn b ->
+        if b.status == "requested" and not is_nil(b.stock_lot_id),
+          do: [b.stock_lot_id],
+          else: []
+      end)
+      |> Enum.uniq()
+
+    if lot_ids == [] do
+      0
+    else
+      on_hand_by_lot =
+        from(p in Backend.Stock.Placement,
+          where: p.stock_lot_id in ^lot_ids,
+          group_by: p.stock_lot_id,
+          select: {p.stock_lot_id, sum(p.qty)}
+        )
+        |> Repo.all()
+        |> Map.new()
+
+      total_booked_by_lot =
+        from(b in Backend.Production.ManufacturingOrderBooking,
+          where:
+            b.stock_lot_id in ^lot_ids and
+              b.status == "requested",
+          group_by: b.stock_lot_id,
+          select: {b.stock_lot_id, sum(b.quantity)}
+        )
+        |> Repo.all()
+        |> Map.new()
+
+      lot_status_by_id =
+        from(l in Backend.Stock.Lot,
+          where: l.id in ^lot_ids,
+          select: {l.id, l.status}
+        )
+        |> Repo.all()
+        |> Map.new()
+
+      Enum.count(bookings, fn b ->
+        cond do
+          b.status != "requested" ->
+            false
+
+          is_nil(b.stock_lot_id) ->
+            false
+
+          Map.get(lot_status_by_id, b.stock_lot_id) != "available" ->
+            true
+
+          true ->
+            on_hand =
+              Map.get(on_hand_by_lot, b.stock_lot_id) || Decimal.new(0)
+
+            total_demand =
+              Map.get(total_booked_by_lot, b.stock_lot_id) || Decimal.new(0)
+
+            Decimal.compare(total_demand, on_hand) == :gt
+        end
+      end)
+    end
   end
 
   defp output_lots_for_mo(%ManufacturingOrder{uuid: mo_uuid}) do
