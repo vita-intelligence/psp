@@ -2773,6 +2773,12 @@ export interface OrderWizardMo {
    *  so the wizard can render an "awaiting output QC" sub-stage on
    *  completed MOs instead of jumping straight to "Closeout". */
   output_qc_pending_count: number;
+  /** Booking rows on this MO that still need the per-booking
+   *  closeout (record consumed_quantity + route leftover ingredient
+   *  material to dispatch). Must hit zero BEFORE the warehouse
+   *  return-pickup can fetch outputs + leftovers back — otherwise
+   *  the dispatch pile gets orphaned on the production side. */
+  bookings_closeout_pending_count: number;
   has_output_at_production_feed: boolean;
   purchasing_requested_at: string | null;
   /** Set the moment a picker claims the MO (head-of-picker lock).

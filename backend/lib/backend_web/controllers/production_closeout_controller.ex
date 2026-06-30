@@ -111,11 +111,11 @@ defmodule BackendWeb.ProductionCloseoutController do
           "Remaining qty must be a non-negative number."
         )
 
-      {:error, :remaining_exceeds_booked} ->
+      {:error, :remaining_exceeds_on_hand} ->
         unprocessable(
           conn,
-          "remaining_exceeds_booked",
-          "Remaining qty can't exceed the booked quantity."
+          "remaining_exceeds_on_hand",
+          "Remaining qty can't exceed the lot's on-hand quantity."
         )
 
       {:error, :missing_dispatch_cell} ->

@@ -50,6 +50,21 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: rp.stock_lot_id
       )
 
+    # MOs that still owe booking closeout (the per-booking consume +
+    # leftover routing step). Return-pickup MUST wait for these to
+    # finish — otherwise the warehouse picker walks back only the
+    # produced outputs and leaves the dispatch pile orphaned on the
+    # production side. Both stages can't be "active" on the same MO.
+    mos_with_pending_closeout =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.company_id == ^company_id and
+            b.status == "requested" and
+            is_nil(b.consumed_at),
+        distinct: true,
+        select: b.manufacturing_order_id
+      )
+
     # MOs whose produced output (source_kind=manufacturing_order)
     # still sits at a production-side cell.
     output_mos =
@@ -66,7 +81,8 @@ defmodule Backend.Warehouses.ReturnPickup do
             l.status == "available" and
             p.qty > 0 and
             c.purpose in @return_pickup_purposes and
-            l.id not in subquery(open_picks_subq),
+            l.id not in subquery(open_picks_subq) and
+            m.id not in subquery(mos_with_pending_closeout),
         distinct: true,
         select: m.id
       )
@@ -90,7 +106,8 @@ defmodule Backend.Warehouses.ReturnPickup do
             l.status == "available" and
             p.qty > 0 and
             c.purpose in @return_pickup_purposes and
-            l.id not in subquery(open_picks_subq),
+            l.id not in subquery(open_picks_subq) and
+            b.manufacturing_order_id not in subquery(mos_with_pending_closeout),
         distinct: true,
         select: b.manufacturing_order_id
       )
@@ -99,6 +116,7 @@ defmodule Backend.Warehouses.ReturnPickup do
       where:
         mo.company_id == ^company_id and
           mo.status == "completed" and
+          mo.id not in subquery(mos_with_pending_closeout) and
           (mo.id in subquery(output_mos) or mo.id in subquery(ingredient_mos)),
       preload: [:item, :warehouse, :production_cell],
       order_by: [asc: mo.actual_finish, asc: mo.id]

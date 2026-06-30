@@ -29,6 +29,11 @@ interface Props {
   /** When `expectedUuid === "*"` (freeform mode), fires with the
    *  parsed UUID so the parent can take that value forward. */
   onScanned?: (uuid: string) => void;
+  /** Optional fallback uuid used by the dev "Skip scan" bypass when
+   *  `expectedUuid === "*"` — without this the bypass button is
+   *  disabled in freeform mode because there is no specific id to
+   *  pretend was scanned. */
+  bypassUuid?: string;
 }
 
 /**
@@ -45,6 +50,7 @@ export function UuidScanStep({
   onConfirmed,
   onCancel,
   onScanned,
+  bypassUuid,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerRef = useRef<QrScanner | null>(null);
@@ -305,11 +311,11 @@ export function UuidScanStep({
               onClick={() =>
                 handle(
                   expectedUuid === "*"
-                    ? "00000000-0000-0000-0000-000000000000"
+                    ? (bypassUuid ?? "00000000-0000-0000-0000-000000000000")
                     : expectedUuid,
                 )
               }
-              disabled={expectedUuid === "*"}
+              disabled={expectedUuid === "*" && !bypassUuid}
             >
               <FastForward className="mr-1.5 size-3.5" />
               Skip scan

@@ -7459,10 +7459,20 @@ defmodule Backend.Production do
     * `photo_url` — optional but recommended (move-flow convention)
   """
   def closeout_booking(%User{} = actor, %ManufacturingOrderBooking{} = booking, attrs) do
+    # Closeout model (operator's mental model on the floor):
+    #   * The lot's whole drum/bag is at production. `qty_on_hand` is
+    #     what the operator can physically weigh post-run.
+    #   * They type "remaining" — the post-run weight of what's left.
+    #   * Consumption = on_hand − remaining (computed; can exceed
+    #     `booking.quantity` when spillage / recipe overage was real).
+    # The cap is the lot's on-hand at closeout start, NOT the booked
+    # qty — booking is the planned amount, not a ceiling on actual use.
+    on_hand = lot_on_hand(booking.stock_lot_id)
+
     with :ok <- ensure_booking_not_closed(booking),
          :ok <- ensure_output_qc_done(booking),
-         {:ok, remaining} <- parse_remaining_qty(attrs, booking.quantity),
-         consumed = Decimal.sub(booking.quantity, remaining),
+         {:ok, remaining} <- parse_remaining_qty(attrs, on_hand),
+         consumed = Decimal.sub(on_hand, remaining),
          {:ok, dest_cell} <-
            maybe_resolve_dispatch_cell(actor.company_id, attrs, remaining) do
       Repo.transaction(fn ->
@@ -7472,6 +7482,7 @@ defmodule Backend.Production do
                apply_booking_movement(
                  actor,
                  booking,
+                 consumed,
                  remaining,
                  dest_cell,
                  attrs["photo_url"]
@@ -7481,6 +7492,15 @@ defmodule Backend.Production do
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+    end
+  end
+
+  defp lot_on_hand(lot_id) do
+    from(p in Backend.Stock.Placement, where: p.stock_lot_id == ^lot_id, select: sum(p.qty))
+    |> Repo.one()
+    |> case do
+      nil -> Decimal.new(0)
+      %Decimal{} = d -> d
     end
   end
 
@@ -7518,13 +7538,13 @@ defmodule Backend.Production do
     end
   end
 
-  defp parse_remaining_qty(attrs, booked_qty) do
+  defp parse_remaining_qty(attrs, on_hand) do
     raw = attrs["remaining_qty"] || attrs[:remaining_qty]
 
     case raw do
       nil -> {:ok, Decimal.new(0)}
       "" -> {:ok, Decimal.new(0)}
-      _ -> parse_non_negative_decimal_in_range(raw, booked_qty)
+      _ -> parse_non_negative_decimal_in_range(raw, on_hand)
     end
   end
 
@@ -7532,7 +7552,7 @@ defmodule Backend.Production do
     case parse_non_negative_decimal(raw) do
       {:ok, d} ->
         if Decimal.compare(d, max) == :gt do
-          {:error, :remaining_exceeds_booked}
+          {:error, :remaining_exceeds_on_hand}
         else
           {:ok, d}
         end
@@ -7609,58 +7629,193 @@ defmodule Backend.Production do
     end
   end
 
-  # Two physical-stock side effects:
-  #   * remaining = 0 → just drop the lot's placement at the
-  #     production-feed cell (full consumption).
-  #   * remaining > 0 → move that remainder to the scanned dispatch
-  #     cell via Stock.move_placement (reuses the existing movement
-  #     + audit + photo plumbing).
+  # Closeout model — the operator types "remaining" (post-run lot
+  # weight); the system back-computes `consumed = on_hand - remaining`
+  # and reshapes the lot's placements to match. Algorithm:
+  #
+  #   1. Drain feed-cell placement by min(consumed, feed_qty) via a
+  #      `consume` Stock.Movement (so the floor's usage is visible in
+  #      the lot's audit trail — BRCGS 3.5.1 / FSSC 22000).
+  #   2. If consumed > feed_qty (spillage exceeded what was sitting at
+  #      the feed cell), continue draining other placements
+  #      (FIFO by id) until the full consumption is accounted for.
+  #   3. Any feed-cell qty still left after step 1 moves to the
+  #      scanned dispatch cell via `Stock.move_placement` (reuses
+  #      the existing move + audit + photo plumbing).
   defp apply_booking_movement(
          %User{} = actor,
          %ManufacturingOrderBooking{} = booking,
+         consumed,
          remaining,
          dest_cell,
          photo_url
        ) do
-    # The lot sits at the MO's production-feed cell after the warehouse
-    # picker's confirm-transfer step. `booking.storage_cell_id` is the
-    # ORIGINAL warehouse cell it was picked from (audit trail) — NOT
-    # where the lot lives now. Source the closeout move from the
-    # production-feed cell directly so we don't accidentally move from
-    # the lot's main warehouse stock.
     lot = Repo.get!(StockLot, booking.stock_lot_id)
     mo = Repo.get!(ManufacturingOrder, booking.manufacturing_order_id)
-    placement = locate_production_feed_placement(lot, mo.production_cell_id)
+    feed_placement = locate_production_feed_placement(lot, mo.production_cell_id)
 
-    cond do
-      placement == nil ->
-        # Nothing to move — either the lot was already fully consumed
-        # mid-run (booking.consumed_quantity reached qty during
-        # production) or the picker bypassed the standard flow. Either
-        # way, no movement to emit.
+    feed_qty =
+      case feed_placement do
+        %Backend.Stock.Placement{qty: q} -> q
+        nil -> Decimal.new(0)
+      end
+
+    feed_drain = decimal_min(consumed, feed_qty)
+    extra_drain = Decimal.sub(consumed, feed_drain)
+    feed_leftover = Decimal.sub(feed_qty, feed_drain)
+
+    # Reason text shared across every consume movement emitted by this
+    # closeout — the auditor sees the booked/overage breakdown on each
+    # row in the lot's history, not just one. Without an overage:
+    #   "MO closeout: consumed X (booked Y)"
+    # With overage:
+    #   "MO closeout: consumed X (booked Y + overage Z)"
+    consume_reason = closeout_consume_reason(booking.quantity, consumed)
+
+    with :ok <-
+           drain_feed_for_closeout(
+             actor,
+             booking,
+             feed_placement,
+             feed_drain,
+             feed_leftover,
+             photo_url,
+             consume_reason
+           ),
+         :ok <-
+           drain_extra_for_closeout(
+             actor,
+             booking,
+             lot,
+             mo,
+             extra_drain,
+             photo_url,
+             consume_reason
+           ),
+         :ok <-
+           move_feed_leftover_to_dispatch(
+             actor,
+             booking,
+             lot,
+             feed_placement,
+             feed_leftover,
+             remaining,
+             dest_cell,
+             photo_url
+           ) do
+      :ok
+    end
+  end
+
+  defp decimal_min(a, b), do: if(Decimal.compare(a, b) == :gt, do: b, else: a)
+
+  # Build the reason text the closeout flow stamps on every consume
+  # movement. Surfaces `booked + overage` in the lot's audit history
+  # so the auditor can see at a glance when production drew more
+  # than the recipe reserved — without that breakdown, two near-
+  # identical "consumed X" rows hide the variance.
+  defp closeout_consume_reason(booked, consumed) do
+    overage = Decimal.sub(consumed, booked)
+
+    if Decimal.compare(overage, Decimal.new(0)) == :gt do
+      "MO closeout: consumed #{decimal_to_string(consumed)} " <>
+        "(booked #{decimal_to_string(booked)} + overage #{decimal_to_string(overage)})"
+    else
+      "MO closeout: consumed #{decimal_to_string(consumed)} " <>
+        "(booked #{decimal_to_string(booked)})"
+    end
+  end
+
+  # Drain the feed placement by `feed_drain`. When the drain consumes
+  # the whole feed placement AND nothing's heading to dispatch (i.e.
+  # feed_leftover = 0), delete the placement row; otherwise just
+  # decrement so the leftover can subsequently move to dispatch.
+  defp drain_feed_for_closeout(_actor, _booking, nil, _drain, _leftover, _photo, _reason), do: :ok
+
+  defp drain_feed_for_closeout(actor, booking, placement, drain, leftover, photo_url, reason) do
+    case Decimal.compare(drain, Decimal.new(0)) do
+      :eq ->
         :ok
 
-      Decimal.compare(remaining, Decimal.new(0)) == :eq ->
-        # Consumed everything → emit a `consume` movement (so the
-        # stock vanishing from the production-feed cell is visible in
-        # the lot's audit trail), then delete the placement row.
-        # Previously the placement was silently zeroed via a direct
-        # changeset which broke BRCGS / FSSC traceability — every kg
-        # leaving a cell must cross a Movement row.
-        emit_consume_movement(
-          actor,
-          booking,
-          placement,
-          booking.consumed_quantity,
-          photo_url
-        )
+      _ ->
+        if Decimal.compare(leftover, Decimal.new(0)) == :eq do
+          # Whole feed placement evaporates → consume + delete row
+          # (matches the prior full-consumption path).
+          emit_consume_movement(actor, booking, placement, drain, photo_url, reason)
+        else
+          # Partial consume — keep the row, just decrement it.
+          emit_partial_consume_movement(actor, booking, placement, drain, photo_url, reason)
+        end
+    end
+  end
+
+  # Spillage case: consumed exceeded what was at the feed cell. Walk
+  # the lot's other non-zero placements (FIFO by id) and drain them
+  # too, emitting a separate `consume` movement per placement so the
+  # audit trail names where the extra stock came from.
+  defp drain_extra_for_closeout(_actor, _booking, _lot, _mo, %Decimal{coef: 0}, _photo, _reason),
+    do: :ok
+
+  defp drain_extra_for_closeout(actor, booking, lot, mo, remaining_to_drain, photo_url, reason) do
+    placements =
+      from(p in Backend.Stock.Placement,
+        where:
+          p.stock_lot_id == ^lot.id and p.qty > 0 and
+            p.storage_cell_id != ^mo.production_cell_id,
+        order_by: [asc: p.id],
+        preload: [:storage_cell]
+      )
+      |> Repo.all()
+
+    do_drain_extra(actor, booking, placements, remaining_to_drain, photo_url, reason)
+  end
+
+  defp do_drain_extra(_actor, _booking, _placements, %Decimal{coef: 0}, _photo, _reason), do: :ok
+
+  defp do_drain_extra(_actor, _booking, [], _remaining, _photo, _reason),
+    do: {:error, :insufficient_stock}
+
+  defp do_drain_extra(actor, booking, [p | rest], remaining_to_drain, photo_url, reason) do
+    take = decimal_min(remaining_to_drain, p.qty)
+
+    with :ok <-
+           if(Decimal.compare(take, p.qty) == :eq,
+             do: emit_consume_movement(actor, booking, p, take, photo_url, reason),
+             else: emit_partial_consume_movement(actor, booking, p, take, photo_url, reason)
+           ),
+         next = Decimal.sub(remaining_to_drain, take) do
+      do_drain_extra(actor, booking, rest, next, photo_url, reason)
+    end
+  end
+
+  defp move_feed_leftover_to_dispatch(
+         actor,
+         booking,
+         lot,
+         feed_placement,
+         feed_leftover,
+         _remaining,
+         dest_cell,
+         photo_url
+       ) do
+    cond do
+      feed_placement == nil ->
+        :ok
+
+      Decimal.compare(feed_leftover, Decimal.new(0)) == :eq ->
+        :ok
+
+      dest_cell == nil ->
+        # Without a dispatch destination there's nowhere to send the
+        # leftover. UI gates this (remaining > 0 ⇒ scan dispatch), so
+        # reaching this branch means the request bypassed validation.
+        {:error, :missing_dispatch_cell}
 
       true ->
-        # Leftover → move the production-feed placement to dispatch.
         case Backend.Stock.move_placement(actor, lot.uuid, %{
-               "from_cell_uuid" => placement.storage_cell.uuid,
+               "from_cell_uuid" => feed_placement.storage_cell.uuid,
                "to_cell_uuid" => dest_cell.uuid,
-               "qty" => Decimal.to_string(remaining),
+               "qty" => Decimal.to_string(feed_leftover),
                "photo_url" => photo_url,
                "reference_kind" => "manufacturing_order",
                "reference_uuid" => booking.manufacturing_order_id
@@ -7671,13 +7826,71 @@ defmodule Backend.Production do
     end
   end
 
+  # Mirror of Backend.Stock.write_adjusted_placement (which is private)
+  # — keeps placement at qty > 0 or deletes it if the new qty is zero,
+  # so the lot's footprint stays clean after partial consumes.
+  defp closeout_write_placement(%Backend.Stock.Placement{} = p, new_qty) do
+    if Decimal.equal?(new_qty, Decimal.new(0)) do
+      case Repo.delete(p) do
+        {:ok, _} -> {:ok, %Backend.Stock.Placement{p | qty: new_qty}}
+        err -> err
+      end
+    else
+      p
+      |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+      |> Repo.update()
+    end
+  end
+
+  # Partial consume — same shape as `emit_consume_movement` but
+  # decrements the placement row (closeout_write_placement handles
+  # deletion when qty reaches 0) instead of unconditionally deleting.
+  defp emit_partial_consume_movement(actor, booking, placement, drain_qty, photo_url, reason) do
+    now_dt = now()
+
+    movement_attrs = %{
+      "company_id" => booking.company_id,
+      "stock_lot_id" => booking.stock_lot_id,
+      "from_cell_id" => placement.storage_cell_id,
+      "to_cell_id" => nil,
+      "delta_qty" => drain_qty,
+      "kind" => "consume",
+      "reason" => reason,
+      "actor_id" => actor.id,
+      "occurred_at" => now_dt,
+      "photo_url" => photo_url,
+      "reference_kind" => "manufacturing_order",
+      "reference_ref" => mo_uuid_for_booking(booking)
+    }
+
+    new_qty = Decimal.sub(placement.qty, drain_qty)
+
+    with {:ok, movement} <-
+           %Backend.Stock.Movement{}
+           |> Backend.Stock.Movement.changeset(movement_attrs)
+           |> Repo.insert(),
+         {:ok, _} <- closeout_write_placement(placement, new_qty) do
+      Audit.record_created(actor, "stock_movement", movement, %{
+        kind: movement.kind,
+        delta_qty: movement.delta_qty,
+        from_cell_id: movement.from_cell_id,
+        to_cell_id: movement.to_cell_id,
+        reason: movement.reason,
+        reference_kind: movement.reference_kind,
+        reference_ref: movement.reference_ref
+      })
+
+      :ok
+    end
+  end
+
   # Emit a `consume` Stock.Movement for the qty written off at the
   # production-feed cell, then delete the placement row. Used by the
   # closeout full-consume path so every kg leaving a cell crosses an
   # audit row (BRCGS 3.5.1 / FSSC 22000). Movement carries the
   # reference back to the booking + MO; reason text records the
   # operator's consumed_quantity.
-  defp emit_consume_movement(actor, booking, placement, consumed_qty, photo_url) do
+  defp emit_consume_movement(actor, booking, placement, _consumed_qty, photo_url, reason) do
     now_dt = now()
 
     movement_attrs = %{
@@ -7687,7 +7900,7 @@ defmodule Backend.Production do
       "to_cell_id" => nil,
       "delta_qty" => placement.qty,
       "kind" => "consume",
-      "reason" => "MO closeout: consumed #{decimal_to_string(consumed_qty)}",
+      "reason" => reason,
       "actor_id" => actor.id,
       "occurred_at" => now_dt,
       "photo_url" => photo_url,

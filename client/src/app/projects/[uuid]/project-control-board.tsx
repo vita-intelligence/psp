@@ -208,6 +208,7 @@ type MoLiveStage =
   | "ready_to_run"
   | "running"
   | "awaiting_output_qc"
+  | "awaiting_closeout"
   | "awaiting_warehouse_return"
   | "completed";
 
@@ -269,22 +270,38 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
       };
     case "completed":
       // Production run is over but the closeout chain has several
-      // gates left before the MO is truly done. Split them out so
-      // the wizard shows the REAL pending step instead of jumping
-      // straight to "Closeout".
+      // gates left before the MO is truly done. STRICT ORDER:
+      //   1. Output QC — the manufactured product must be cleared.
+      //   2. Booking closeout — record what was consumed of each
+      //      ingredient + route any leftover material to a dispatch
+      //      cell. Has to happen BEFORE the return-pickup, otherwise
+      //      the warehouse picker fetches only the outputs and
+      //      leaves the dispatch pile orphaned on the floor.
+      //   3. Warehouse return — picker walks outputs + dispatched
+      //      leftovers back to storage.
+      // The wizard renders exactly ONE active step at a time so the
+      // operator can't pick the wrong one out of sequence.
       if (mo.output_qc_pending_count > 0) {
         return {
           key: "awaiting_output_qc",
           label: `Awaiting output QC (${mo.output_qc_pending_count})`,
-          hint: "Production finished. Output lots are at the production-feed cell with status received — a QC operator needs to pass or fail each before the warehouse can pick them up. Leftover ingredients also stay at the feed cell until QC clears the batch.",
+          hint: "Production finished. Output lots are at the production-feed cell with status received — a QC operator needs to pass or fail each before the rest of the closeout chain can move.",
+          tone: "amber",
+        };
+      }
+      if (mo.bookings_closeout_pending_count > 0) {
+        return {
+          key: "awaiting_closeout",
+          label: `Awaiting booking closeout (${mo.bookings_closeout_pending_count})`,
+          hint: "QC cleared the outputs. Production operator now records consumed quantity per booked ingredient and routes any leftover material to a dispatch cell. The warehouse return-pickup is gated on this finishing first.",
           tone: "amber",
         };
       }
       if (mo.output_at_feed_count > 0) {
         return {
           key: "awaiting_warehouse_return",
-          label: `QC passed — warehouse fetch (${mo.output_at_feed_count})`,
-          hint: "QC cleared the outputs. Warehouse picker needs to walk them back from the production-feed cell to storage. Any leftover ingredients return on the same pickup.",
+          label: `Awaiting warehouse return (${mo.output_at_feed_count})`,
+          hint: "Closeout's done; outputs + dispatched leftovers are staged for pickup. Warehouse picker walks them back to storage.",
           tone: "amber",
         };
       }
@@ -1597,31 +1614,26 @@ function MiniMoCard({
           </Button>
         )}
 
-        {/* Booking-level closeout (record consumed_quantity per
-            booking + route leftover ingredients to dispatch). Gated
-            on output QC being done first — the operator shouldn't
-            be paperworking consumption while the QC operator hasn't
-            verified the batch yet. Compliance-first: outputs prove
-            good → then we record what made them. */}
-        {mo.status === "completed" &&
-          mo.has_output_at_production_feed &&
-          mo.output_qc_pending_count === 0 && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                onSendToDevice({
-                  label: "Send closeout to device",
-                  kind: "send_to_device",
-                  href: `/m/closeout/${mo.uuid}`,
-                  mo_uuid: mo.uuid,
-                })
-              }
-            >
-              <Smartphone className="mr-1 size-3" />
-              Send closeout
-            </Button>
-          )}
+        {/* Booking closeout — only available AFTER output QC clears
+            and BEFORE the warehouse fetches anything back. The stage
+            machinery enforces the order; we just check the stage. */}
+        {stage?.key === "awaiting_closeout" && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              onSendToDevice({
+                label: "Send closeout to device",
+                kind: "send_to_device",
+                href: `/m/closeout/${mo.uuid}`,
+                mo_uuid: mo.uuid,
+              })
+            }
+          >
+            <Smartphone className="mr-1 size-3" />
+            Send closeout
+          </Button>
+        )}
       </div>
 
       {/* Auto-spawned sub-assembly MOs render nested under the
@@ -2167,25 +2179,23 @@ function MoModal({
                 Return pickup on device
               </Button>
             )}
-            {mo.status === "completed" &&
-              mo.has_output_at_production_feed &&
-              mo.output_qc_pending_count === 0 && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    onSendToDevice({
-                      label: "Send closeout to device",
-                      kind: "send_to_device",
-                      href: `/m/closeout/${mo.uuid}`,
-                      mo_uuid: mo.uuid,
-                    })
-                  }
-                >
-                  <Smartphone className="mr-1 size-3" />
-                  Closeout on device
-                </Button>
-              )}
+            {stage?.key === "awaiting_closeout" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  onSendToDevice({
+                    label: "Send closeout to device",
+                    kind: "send_to_device",
+                    href: `/m/closeout/${mo.uuid}`,
+                    mo_uuid: mo.uuid,
+                  })
+                }
+              >
+                <Smartphone className="mr-1 size-3" />
+                Closeout on device
+              </Button>
+            )}
           </div>
 
           <Button asChild size="sm">

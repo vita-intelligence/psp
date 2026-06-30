@@ -17,7 +17,7 @@
  * The warehouse pickup-from-production step runs separately later.
  */
 
-import { useCallback, useMemo, useState, useTransition } from "react";
+import { useCallback, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -108,6 +108,11 @@ export function CloseoutFlow({
   // Per-row in-flight values.
   const [remainingQty, setRemainingQty] = useState("0");
   const [scannedCell, setScannedCell] = useState<DispatchCell | null>(null);
+  // Pending dispatch-cell uuid captured by the scanner but not yet
+  // committed — we wait for the scanner's onConfirmed before
+  // promoting it to `scannedCell` (and therefore the confirm panel).
+  const scannedCellUuidRef = useRef<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -165,7 +170,15 @@ export function CloseoutFlow({
   }, [mo.uuid]);
 
   function startItem(item: CloseoutItem) {
-    setRemainingQty(item.kind === "output" ? item.bookedQty : "0");
+    // Default to on-hand (= "nothing consumed yet"). The operator
+    // weighs the lot post-run and types a smaller number; the gap
+    // becomes consumption. Defaulting to "0" used to silently record
+    // full consumption if the operator forgot to type the weighing.
+    const defaultRemaining =
+      item.kind === "output"
+        ? item.bookedQty
+        : (item.onHandQty ?? item.bookedQty);
+    setRemainingQty(defaultRemaining);
     setScannedCell(null);
     setPhotoUrl(null);
     setErrorDetail(null);
@@ -214,14 +227,14 @@ export function CloseoutFlow({
       setErrorDetail("Remaining qty must be a non-negative number.");
       return;
     }
-    if (
-      activeItem.kind === "booking" &&
-      remaining > Number(activeItem.bookedQty)
-    ) {
-      setErrorDetail(
-        `Remaining can't exceed the booked qty (${activeItem.bookedQty} ${activeItem.uomSymbol}).`,
-      );
-      return;
+    if (activeItem.kind === "booking" && activeItem.onHandQty != null) {
+      const onHand = Number(activeItem.onHandQty);
+      if (Number.isFinite(onHand) && remaining > onHand) {
+        setErrorDetail(
+          `Remaining can't exceed the lot's on-hand qty (${activeItem.onHandQty} ${activeItem.uomSymbol}).`,
+        );
+        return;
+      }
     }
     if ((activeItem.kind === "output" || remaining > 0) && !scannedCell) {
       setErrorDetail(
@@ -339,9 +352,33 @@ export function CloseoutFlow({
                   close out
                 </p>
                 <p className="opacity-80">
-                  Each row gets scanned at the production-feed cell;
-                  remainder + output land at a dispatch cell.
+                  <strong>This is production-side only</strong> — you&apos;re
+                  staging material at a dispatch cell, NOT walking it
+                  back to the warehouse. Warehouse will pick up from
+                  dispatch in the next step.
                 </p>
+              </div>
+              {/* Quick 1-2-3 reminder so the operator knows what each
+                  row will ask before they tap in. The detail steps
+                  repeat this with the same numbering. */}
+              <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px] leading-snug text-muted-foreground">
+                <p className="font-semibold uppercase tracking-wider text-foreground">
+                  Per row:
+                </p>
+                <ol className="mt-1 space-y-0.5 list-decimal pl-4">
+                  <li>
+                    <strong className="text-foreground">Scan the lot</strong>
+                    {" "}at the production-feed cell.
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Weigh / count</strong>
+                    {" "}what&apos;s left and type the qty (0 if used it all).
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Move &amp; scan</strong>
+                    {" "}a dispatch cell to drop the leftover.
+                  </li>
+                </ol>
               </div>
               <ul className="space-y-2">
                 {items.map((item) => (
@@ -375,7 +412,33 @@ export function CloseoutFlow({
                         <p className="text-[11px] text-muted-foreground">
                           {item.kind === "output"
                             ? `${item.bookedQty} ${item.uomSymbol} produced, awaiting hand-off`
-                            : `Booked ${item.bookedQty}${item.onHandQty != null ? ` · on hand ${item.onHandQty}` : ""} ${item.uomSymbol} — confirm what's left`}
+                            : (() => {
+                                // Predicted leftover = total on-hand
+                                // minus what THIS MO booked. Lets the
+                                // operator sanity-check against the
+                                // shelf before they walk to it — if
+                                // the lot also fed another MO this
+                                // number reflects that too.
+                                const booked = Number(item.bookedQty);
+                                const onHand =
+                                  item.onHandQty != null
+                                    ? Number(item.onHandQty)
+                                    : NaN;
+                                const leftoverNum = onHand - booked;
+                                const showLeftover =
+                                  Number.isFinite(onHand) &&
+                                  Number.isFinite(booked);
+                                const leftoverLabel = showLeftover
+                                  ? ` · est. leftover ${
+                                      leftoverNum < 0 ? "−" : ""
+                                    }${Math.abs(leftoverNum)}`
+                                  : "";
+                                return `Booked ${item.bookedQty}${
+                                  item.onHandQty != null
+                                    ? ` · on hand ${item.onHandQty}`
+                                    : ""
+                                }${leftoverLabel} ${item.uomSymbol} — confirm what's left`;
+                              })()}
                         </p>
                       </div>
                       <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
@@ -400,6 +463,11 @@ export function CloseoutFlow({
                 · {activeItem.bookedQty} {activeItem.uomSymbol}
               </span>
             </p>
+            <p className="mt-1 text-[11px] leading-snug">
+              Walk to the production-feed cell, find the lot, and
+              scan its QR code. The next screen asks how much is
+              left.
+            </p>
           </div>
           <UuidScanStep
             expectedUuid={activeItem.lotUuid}
@@ -419,7 +487,7 @@ export function CloseoutFlow({
         <main className="flex-1 space-y-3 px-4 py-4">
           <div className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
             <p className="text-[10px] uppercase tracking-wider">
-              Step 2 of 3 — record details
+              Step 2 of 3 — weigh + record
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
               {activeItem.itemName}{" "}
@@ -427,12 +495,22 @@ export function CloseoutFlow({
                 · {activeItem.bookedQty} {activeItem.uomSymbol}
               </span>
             </p>
+            <p className="mt-1 text-[11px] leading-snug">
+              {activeItem.kind === "output"
+                ? "Output lot is ready to hand off — no weighing needed. A photo of the pack helps QC and warehouse trace it back."
+                : "Weigh whatever's left on the scale, type the qty (0 if used it all), and snap a photo. Any leftover gets routed to a dispatch cell on the next screen."}
+            </p>
           </div>
 
           {activeItem.kind === "booking" ? (
             <div className="space-y-1.5">
               <Label htmlFor="remaining-qty" className="text-xs">
-                Remaining (not consumed) qty ({activeItem.uomSymbol})
+                Weighed remaining ({activeItem.uomSymbol})
+                {activeItem.onHandQty != null && (
+                  <span className="ml-1 font-normal text-muted-foreground">
+                    · max {activeItem.onHandQty}
+                  </span>
+                )}
               </Label>
               <Input
                 id="remaining-qty"
@@ -445,26 +523,95 @@ export function CloseoutFlow({
                 }
                 className="h-11 font-mono text-base"
               />
+              <p className="text-[11px] text-muted-foreground">
+                Weigh whatever's left of the lot post-run and type that
+                number. The system subtracts it from on-hand to record
+                consumption — spillage / overage is fine, max is just
+                the lot's on-hand qty.
+              </p>
               <div className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-[11px] leading-tight">
                 <div className="flex items-center justify-between gap-3 font-mono">
-                  <span className="text-muted-foreground">Booked</span>
+                  <span className="text-muted-foreground">Booked (planned)</span>
                   <span className="font-medium text-foreground">
                     {activeItem.bookedQty} {activeItem.uomSymbol}
                   </span>
                 </div>
                 {activeItem.onHandQty != null && (
                   <div className="mt-0.5 flex items-center justify-between gap-3 font-mono">
-                    <span className="text-muted-foreground">On hand</span>
+                    <span className="text-muted-foreground">
+                      On hand (whole lot)
+                    </span>
                     <span className="font-medium text-foreground">
                       {activeItem.onHandQty} {activeItem.uomSymbol}
                     </span>
                   </div>
                 )}
+                {/* Ideal remaining if production consumed exactly the
+                    booked qty (no spillage / overage). Lets the
+                    operator compare their weighed value against the
+                    no-loss baseline — gap = variance. */}
+                {(() => {
+                  if (activeItem.onHandQty == null) return null;
+                  const onHand = Number(activeItem.onHandQty);
+                  const booked = Number(activeItem.bookedQty);
+                  if (!Number.isFinite(onHand) || !Number.isFinite(booked)) {
+                    return null;
+                  }
+                  const ideal = onHand - booked;
+                  if (ideal < 0) return null;
+                  return (
+                    <div className="mt-0.5 flex items-center justify-between gap-3 font-mono">
+                      <span className="text-muted-foreground">
+                        Ideal remaining (no spillage)
+                      </span>
+                      <span className="font-medium text-foreground">
+                        {ideal.toFixed(4).replace(/\.?0+$/, "") || "0"}{" "}
+                        {activeItem.uomSymbol}
+                      </span>
+                    </div>
+                  );
+                })()}
+                {/* Live-computed consumption preview — the actual value
+                    the system records once submitted. Tone amber when
+                    consumed > booked (spillage / overage); plain when
+                    within plan. Hidden if the typed value is invalid. */}
+                {(() => {
+                  if (activeItem.onHandQty == null) return null;
+                  const onHand = Number(activeItem.onHandQty);
+                  const booked = Number(activeItem.bookedQty);
+                  const remaining = Number(remainingQty);
+                  if (
+                    !Number.isFinite(onHand) ||
+                    !Number.isFinite(remaining) ||
+                    remaining < 0 ||
+                    remaining > onHand
+                  ) {
+                    return null;
+                  }
+                  const consumed = onHand - remaining;
+                  const overage =
+                    Number.isFinite(booked) && consumed > booked;
+                  const tone = overage
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-foreground";
+                  return (
+                    <div className="mt-1 border-t border-border/60 pt-1 flex items-center justify-between gap-3 font-mono">
+                      <span className="text-muted-foreground">
+                        Will record as consumed
+                      </span>
+                      <span className={`font-medium ${tone}`}>
+                        {consumed.toFixed(4).replace(/\.?0+$/, "") || "0"}{" "}
+                        {activeItem.uomSymbol}
+                        {overage && (
+                          <span className="ml-1 text-[10px] uppercase tracking-wider">
+                            · overage
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                Type 0 if you used it all. Any leftover gets moved to
-                the dispatch cell you scan next.
-              </p>
             </div>
           ) : (
             <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-900 dark:text-emerald-200">
@@ -563,31 +710,82 @@ export function CloseoutFlow({
         <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
           <div className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
             <p className="text-[10px] uppercase tracking-wider">
-              Step 3 of 3 — drop at dispatch cell
+              Step 3 of 3 — move &amp; scan dispatch cell
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
               {scannedCell
-                ? "Walk to the highlighted cell below, then confirm"
-                : "Pick a production-side dispatch cell to hand off to"}
+                ? "Walk the material to the highlighted cell, then confirm"
+                : "Pick a production-side dispatch cell to drop the leftover"}
+            </p>
+            <p className="mt-1 text-[11px] leading-snug">
+              The dispatch cell is <strong>still inside production</strong>
+              {" "}— you&apos;re staging for the warehouse picker, not
+              walking it back to the warehouse yourself. Warehouse will
+              fetch from dispatch in the return-pickup step.
             </p>
           </div>
 
           {scannedCell ? (
             <DispatchDirections
               cell={scannedCell}
-              onReselect={() => setScannedCell(null)}
+              onReselect={() => {
+                scannedCellUuidRef.current = null;
+                setScanError(null);
+                setScannedCell(null);
+              }}
               onConfirm={submit}
               pending={pending}
               errorDetail={errorDetail}
             />
           ) : (
-            <CellPicker
-              cells={dispatchCells}
-              onPick={(cell) => setScannedCell(cell)}
-              onCancel={() =>
-                setStep({ kind: "details", itemKey: activeItem.key })
-              }
-            />
+            <>
+              {scanError && (
+                <div className="rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2 text-xs text-rose-900 dark:text-rose-200">
+                  {scanError}
+                </div>
+              )}
+              <UuidScanStep
+                expectedUuid="*"
+                kind="cell"
+                expectedLabel="any dispatch cell"
+                bypassUuid={dispatchCells[0]?.uuid}
+                onScanned={(uuid) => {
+                  const match = dispatchCells.find((c) => c.uuid === uuid);
+                  if (match) {
+                    scannedCellUuidRef.current = uuid;
+                    setScanError(null);
+                  } else {
+                    scannedCellUuidRef.current = null;
+                    setScanError(
+                      "That cell isn't tagged dispatch on this site. Try another or pick from the list below.",
+                    );
+                  }
+                }}
+                onConfirmed={() => {
+                  const uuid = scannedCellUuidRef.current;
+                  if (!uuid) return;
+                  const match = dispatchCells.find((c) => c.uuid === uuid);
+                  if (match) setScannedCell(match);
+                }}
+                onCancel={() =>
+                  setStep({ kind: "details", itemKey: activeItem.key })
+                }
+              />
+              <details className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
+                <summary className="cursor-pointer font-medium text-foreground">
+                  Pick from list instead
+                </summary>
+                <div className="mt-2">
+                  <CellPicker
+                    cells={dispatchCells}
+                    onPick={(cell) => setScannedCell(cell)}
+                    onCancel={() =>
+                      setStep({ kind: "details", itemKey: activeItem.key })
+                    }
+                  />
+                </div>
+              </details>
+            </>
           )}
         </main>
       )}

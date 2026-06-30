@@ -104,7 +104,6 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     |> validate_lot_xor_po_line()
     |> validate_number(:quantity, greater_than: 0)
     |> validate_non_negative(:consumed_quantity)
-    |> validate_consumed_le_quantity()
     |> validate_inclusion(:status, @statuses)
     |> validate_length(:note, max: 500)
     |> validate_length(:received_notes, max: 2000)
@@ -118,10 +117,6 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     |> check_constraint(:quantity,
       name: :mo_bookings_quantity_positive,
       message: "must be greater than zero"
-    )
-    |> check_constraint(:consumed_quantity,
-      name: :mo_bookings_consumed_le_qty,
-      message: "can't exceed booked quantity"
     )
     |> check_constraint(:status,
       name: :mo_bookings_status_known,
@@ -190,17 +185,4 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     end
   end
 
-  defp validate_consumed_le_quantity(cs) do
-    case {get_field(cs, :consumed_quantity), get_field(cs, :quantity)} do
-      {%Decimal{} = consumed, %Decimal{} = qty} ->
-        if Decimal.compare(consumed, qty) == :gt do
-          add_error(cs, :consumed_quantity, "can't exceed booked quantity")
-        else
-          cs
-        end
-
-      _ ->
-        cs
-    end
-  end
 end

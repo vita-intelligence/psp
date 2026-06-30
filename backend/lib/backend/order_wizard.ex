@@ -943,9 +943,10 @@ defmodule Backend.OrderWizard do
     end
   end
 
-  # Split a `completed` MO by the closeout sub-stage. Mirrors the FE
-  # `deriveMoLiveStage` logic so the wizard's primary CTA and the
-  # per-MO card always agree on what comes next post-production.
+  # Split a `completed` MO by the closeout sub-stage. STRICT order:
+  # QC sign-off → booking closeout → warehouse return. Mirrors the
+  # FE `deriveMoLiveStage` so the wizard's primary CTA and the per-MO
+  # card always agree on the SINGLE next step.
   defp completed_step_cta(mo) do
     cond do
       Map.get(mo, :output_qc_pending_count, 0) > 0 ->
@@ -954,6 +955,15 @@ defmodule Backend.OrderWizard do
            label: "Open output QC",
            kind: "link",
            href: "/production/output-qc"
+         }}
+
+      Map.get(mo, :bookings_closeout_pending_count, 0) > 0 ->
+        {"Closeout MO #{mo.code} — record consumed qty + route leftover ingredients.",
+         %{
+           label: "Send closeout to device",
+           kind: "send_to_device",
+           href: "/m/closeout/#{mo.uuid}",
+           mo_uuid: mo.uuid
          }}
 
       Map.get(mo, :has_output_at_production_feed?) == true ->
@@ -1218,6 +1228,16 @@ defmodule Backend.OrderWizard do
     past_approval = mo.status in ["approved", "scheduled", "in_progress", "completed"]
     broken_booking_count = count_broken_bookings(mo.bookings)
 
+    # Bookings on a completed MO that the operator hasn't run through
+    # the per-booking closeout yet (status still "requested", no
+    # consumed_at stamp). Closeout records consumed_quantity + routes
+    # the leftover ingredient material to a dispatch cell — it has to
+    # finish BEFORE warehouse return-pickup, otherwise the picker
+    # walks back only the produced outputs and leaves the dispatch
+    # pile orphaned on the production side.
+    bookings_closeout_pending_count =
+      Enum.count(mo.bookings, &(&1.status == "requested" and is_nil(&1.consumed_at)))
+
     # "Fully sorted" = planner is done with this MO. Two signatures
     # in (approved+) AND no broken bookings. Placeholder bookings
     # that point at a live PO line are fine — procurement is engaged
@@ -1252,6 +1272,7 @@ defmodule Backend.OrderWizard do
       output_at_feed_count: length(feed_lots),
       output_in_warehouse_count: length(warehouse_lots),
       output_qc_pending_count: output_qc_pending_count,
+      bookings_closeout_pending_count: bookings_closeout_pending_count,
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
       purchasing_requested_at: mo.purchasing_requested_at,
