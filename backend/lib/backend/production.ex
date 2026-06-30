@@ -7473,8 +7473,14 @@ defmodule Backend.Production do
          :ok <- ensure_output_qc_done(booking),
          {:ok, remaining} <- parse_remaining_qty(attrs, on_hand),
          consumed = Decimal.sub(on_hand, remaining),
+         :ok <- ensure_photo_or_skip(attrs),
          {:ok, dest_cell} <-
            maybe_resolve_dispatch_cell(actor.company_id, attrs, remaining) do
+      photo_meta = %{
+        "photo_url" => attrs["photo_url"],
+        "skip_photo_reason" => attrs["skip_photo_reason"]
+      }
+
       Repo.transaction(fn ->
         with {:ok, updated_booking} <-
                stamp_booking_consumed(actor, booking, consumed),
@@ -7485,13 +7491,28 @@ defmodule Backend.Production do
                  consumed,
                  remaining,
                  dest_cell,
-                 attrs["photo_url"]
+                 photo_meta
                ) do
           updated_booking
         else
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+    end
+  end
+
+  # Mirror return-pickup's photo gate (BRCGS / FSSC traceability):
+  # every closeout movement carries either a photo OR an attributable
+  # skip-reason. UI gates the submit CTA, but the BE keeps the same
+  # invariant so a curl can't slip a blank movement through.
+  defp ensure_photo_or_skip(attrs) do
+    photo = attrs["photo_url"]
+    reason = attrs["skip_photo_reason"]
+
+    cond do
+      is_binary(photo) and photo != "" -> :ok
+      is_binary(reason) and reason != "" -> :ok
+      true -> {:error, :photo_or_skip_required}
     end
   end
 
@@ -7648,7 +7669,7 @@ defmodule Backend.Production do
          consumed,
          remaining,
          dest_cell,
-         photo_url
+         photo_meta
        ) do
     lot = Repo.get!(StockLot, booking.stock_lot_id)
     mo = Repo.get!(ManufacturingOrder, booking.manufacturing_order_id)
@@ -7679,7 +7700,7 @@ defmodule Backend.Production do
              feed_placement,
              feed_drain,
              feed_leftover,
-             photo_url,
+             photo_meta,
              consume_reason
            ),
          :ok <-
@@ -7689,7 +7710,7 @@ defmodule Backend.Production do
              lot,
              mo,
              extra_drain,
-             photo_url,
+             photo_meta,
              consume_reason
            ),
          :ok <-
@@ -7701,7 +7722,7 @@ defmodule Backend.Production do
              feed_leftover,
              remaining,
              dest_cell,
-             photo_url
+             photo_meta
            ) do
       :ok
     end
@@ -7732,7 +7753,7 @@ defmodule Backend.Production do
   # decrement so the leftover can subsequently move to dispatch.
   defp drain_feed_for_closeout(_actor, _booking, nil, _drain, _leftover, _photo, _reason), do: :ok
 
-  defp drain_feed_for_closeout(actor, booking, placement, drain, leftover, photo_url, reason) do
+  defp drain_feed_for_closeout(actor, booking, placement, drain, leftover, photo_meta, reason) do
     case Decimal.compare(drain, Decimal.new(0)) do
       :eq ->
         :ok
@@ -7741,10 +7762,10 @@ defmodule Backend.Production do
         if Decimal.compare(leftover, Decimal.new(0)) == :eq do
           # Whole feed placement evaporates → consume + delete row
           # (matches the prior full-consumption path).
-          emit_consume_movement(actor, booking, placement, drain, photo_url, reason)
+          emit_consume_movement(actor, booking, placement, drain, photo_meta, reason)
         else
           # Partial consume — keep the row, just decrement it.
-          emit_partial_consume_movement(actor, booking, placement, drain, photo_url, reason)
+          emit_partial_consume_movement(actor, booking, placement, drain, photo_meta, reason)
         end
     end
   end
@@ -7756,7 +7777,7 @@ defmodule Backend.Production do
   defp drain_extra_for_closeout(_actor, _booking, _lot, _mo, %Decimal{coef: 0}, _photo, _reason),
     do: :ok
 
-  defp drain_extra_for_closeout(actor, booking, lot, mo, remaining_to_drain, photo_url, reason) do
+  defp drain_extra_for_closeout(actor, booking, lot, mo, remaining_to_drain, photo_meta, reason) do
     placements =
       from(p in Backend.Stock.Placement,
         where:
@@ -7767,7 +7788,7 @@ defmodule Backend.Production do
       )
       |> Repo.all()
 
-    do_drain_extra(actor, booking, placements, remaining_to_drain, photo_url, reason)
+    do_drain_extra(actor, booking, placements, remaining_to_drain, photo_meta, reason)
   end
 
   defp do_drain_extra(_actor, _booking, _placements, %Decimal{coef: 0}, _photo, _reason), do: :ok
@@ -7775,16 +7796,16 @@ defmodule Backend.Production do
   defp do_drain_extra(_actor, _booking, [], _remaining, _photo, _reason),
     do: {:error, :insufficient_stock}
 
-  defp do_drain_extra(actor, booking, [p | rest], remaining_to_drain, photo_url, reason) do
+  defp do_drain_extra(actor, booking, [p | rest], remaining_to_drain, photo_meta, reason) do
     take = decimal_min(remaining_to_drain, p.qty)
 
     with :ok <-
            if(Decimal.compare(take, p.qty) == :eq,
-             do: emit_consume_movement(actor, booking, p, take, photo_url, reason),
-             else: emit_partial_consume_movement(actor, booking, p, take, photo_url, reason)
+             do: emit_consume_movement(actor, booking, p, take, photo_meta, reason),
+             else: emit_partial_consume_movement(actor, booking, p, take, photo_meta, reason)
            ),
          next = Decimal.sub(remaining_to_drain, take) do
-      do_drain_extra(actor, booking, rest, next, photo_url, reason)
+      do_drain_extra(actor, booking, rest, next, photo_meta, reason)
     end
   end
 
@@ -7796,7 +7817,7 @@ defmodule Backend.Production do
          feed_leftover,
          _remaining,
          dest_cell,
-         photo_url
+         photo_meta
        ) do
     cond do
       feed_placement == nil ->
@@ -7816,7 +7837,8 @@ defmodule Backend.Production do
                "from_cell_uuid" => feed_placement.storage_cell.uuid,
                "to_cell_uuid" => dest_cell.uuid,
                "qty" => Decimal.to_string(feed_leftover),
-               "photo_url" => photo_url,
+               "photo_url" => Map.get(photo_meta, "photo_url"),
+               "skip_photo_reason" => Map.get(photo_meta, "skip_photo_reason"),
                "reference_kind" => "manufacturing_order",
                "reference_uuid" => booking.manufacturing_order_id
              }) do
@@ -7845,7 +7867,7 @@ defmodule Backend.Production do
   # Partial consume — same shape as `emit_consume_movement` but
   # decrements the placement row (closeout_write_placement handles
   # deletion when qty reaches 0) instead of unconditionally deleting.
-  defp emit_partial_consume_movement(actor, booking, placement, drain_qty, photo_url, reason) do
+  defp emit_partial_consume_movement(actor, booking, placement, drain_qty, photo_meta, reason) do
     now_dt = now()
 
     movement_attrs = %{
@@ -7858,7 +7880,8 @@ defmodule Backend.Production do
       "reason" => reason,
       "actor_id" => actor.id,
       "occurred_at" => now_dt,
-      "photo_url" => photo_url,
+      "photo_url" => Map.get(photo_meta, "photo_url"),
+      "skip_photo_reason" => Map.get(photo_meta, "skip_photo_reason"),
       "reference_kind" => "manufacturing_order",
       "reference_ref" => mo_uuid_for_booking(booking)
     }
@@ -7890,7 +7913,7 @@ defmodule Backend.Production do
   # audit row (BRCGS 3.5.1 / FSSC 22000). Movement carries the
   # reference back to the booking + MO; reason text records the
   # operator's consumed_quantity.
-  defp emit_consume_movement(actor, booking, placement, _consumed_qty, photo_url, reason) do
+  defp emit_consume_movement(actor, booking, placement, _consumed_qty, photo_meta, reason) do
     now_dt = now()
 
     movement_attrs = %{
@@ -7903,7 +7926,8 @@ defmodule Backend.Production do
       "reason" => reason,
       "actor_id" => actor.id,
       "occurred_at" => now_dt,
-      "photo_url" => photo_url,
+      "photo_url" => Map.get(photo_meta, "photo_url"),
+      "skip_photo_reason" => Map.get(photo_meta, "skip_photo_reason"),
       "reference_kind" => "manufacturing_order",
       "reference_ref" => mo_uuid_for_booking(booking)
     }
@@ -7970,7 +7994,8 @@ defmodule Backend.Production do
   """
   def closeout_output_lot(%User{} = actor, lot_uuid, attrs)
       when is_binary(lot_uuid) and is_map(attrs) do
-    with %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
+    with :ok <- ensure_photo_or_skip(attrs),
+         %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          {:ok, dest_cell} <-
            maybe_resolve_dispatch_cell(actor.company_id, attrs, Decimal.new(1)),
@@ -7980,6 +8005,7 @@ defmodule Backend.Production do
              "to_cell_uuid" => dest_cell.uuid,
              "qty" => Decimal.to_string(placement.qty),
              "photo_url" => attrs["photo_url"],
+             "skip_photo_reason" => attrs["skip_photo_reason"],
              "reference_kind" => "manufacturing_order",
              "reference_uuid" => lot.source_ref
            }) do

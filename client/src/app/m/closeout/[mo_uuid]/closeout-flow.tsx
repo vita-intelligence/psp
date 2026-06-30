@@ -41,6 +41,13 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
@@ -56,6 +63,15 @@ import type {
 } from "@/lib/production/types";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
+
+// Same shape as return-pickup's SKIP_PHOTO_REASONS — keep both lists in
+// sync so the auditor sees a consistent vocabulary across move flows.
+const CLOSEOUT_SKIP_PHOTO_REASONS = [
+  { value: "lot_already_packaged", label: "Lot already sealed in packaging" },
+  { value: "camera_unavailable", label: "Camera not working" },
+  { value: "tight_quarters", label: "Couldn't reach the angle" },
+  { value: "other", label: "Other" },
+];
 
 type Step =
   | { kind: "overview" }
@@ -129,6 +145,11 @@ export function CloseoutFlow({
   >("directions");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  // Closeout requires evidence — operator either uploads a photo OR
+  // picks a skip-reason. BE enforces the same invariant
+  // (:photo_or_skip_required) so a curl can't bypass the gate.
+  // Mirrors return-pickup's photo-or-skip pattern.
+  const [skipPhotoReason, setSkipPhotoReason] = useState("");
   const [pending, startTransition] = useTransition();
 
   const items: CloseoutItem[] = useMemo(() => {
@@ -196,6 +217,7 @@ export function CloseoutFlow({
     setScannedCell(null);
     setCellPhase("directions");
     setPhotoUrl(null);
+    setSkipPhotoReason("");
     setErrorDetail(null);
     setStep({ kind: "scan_lot", itemKey: item.key });
   }
@@ -206,6 +228,7 @@ export function CloseoutFlow({
     setScannedCell(null);
     setCellPhase("directions");
     setPhotoUrl(null);
+    setSkipPhotoReason("");
     setErrorDetail(null);
   }
 
@@ -273,6 +296,7 @@ export function CloseoutFlow({
             remaining_qty: remainingQty,
             scanned_cell_uuid: targetCell?.uuid ?? null,
             photo_url: photoUrl,
+            skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
           },
         );
         if (res.ok) {
@@ -294,6 +318,7 @@ export function CloseoutFlow({
         const res = await closeoutOutputLotAction(mo.uuid, activeItem.lotUuid, {
           scanned_cell_uuid: targetCell!.uuid,
           photo_url: photoUrl,
+          skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
         });
         if (res.ok) {
           toast.success("Output handed off to dispatch");
@@ -652,7 +677,12 @@ export function CloseoutFlow({
           )}
 
           <div className="space-y-1.5">
-            <Label className="text-xs">Photo (recommended)</Label>
+            <Label className="text-xs">
+              Photo
+              <span className="ml-1 font-normal text-muted-foreground">
+                · required (or pick a skip reason)
+              </span>
+            </Label>
             {photoUrl ? (
               <div className="flex items-center justify-between rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-[12px] text-emerald-900 dark:text-emerald-200">
                 <span>Photo uploaded ✓</span>
@@ -665,26 +695,54 @@ export function CloseoutFlow({
                 </button>
               </div>
             ) : (
-              <label className="flex h-11 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-dashed border-border/60 bg-muted/30 text-sm text-muted-foreground hover:bg-muted">
-                {photoUploading ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <ImagePlus className="size-4" />
-                )}
-                {photoUploading ? "Uploading…" : "Take / pick a photo"}
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={onPhotoChange}
-                  className="hidden"
-                  disabled={photoUploading}
-                />
-              </label>
+              <>
+                <label className="flex h-11 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-dashed border-border/60 bg-muted/30 text-sm text-muted-foreground hover:bg-muted">
+                  {photoUploading ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <ImagePlus className="size-4" />
+                  )}
+                  {photoUploading ? "Uploading…" : "Take / pick a photo"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={onPhotoChange}
+                    className="hidden"
+                    disabled={photoUploading}
+                  />
+                </label>
+                <div className="space-y-1">
+                  <p className="text-[11px] text-muted-foreground">
+                    Or skip with a reason:
+                  </p>
+                  <Select
+                    value={skipPhotoReason}
+                    onValueChange={setSkipPhotoReason}
+                  >
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="Pick a reason…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CLOSEOUT_SKIP_PHOTO_REASONS.map((r) => (
+                        <SelectItem key={r.value} value={r.value}>
+                          {r.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
             )}
           </div>
 
           {errorDetail && <ErrorBanner detail={errorDetail} />}
+
+          {!photoUrl && !skipPhotoReason && (
+            <p className="text-center text-[11px] text-muted-foreground">
+              Add a photo or pick a skip reason to continue.
+            </p>
+          )}
 
           <div className="flex gap-2">
             <Button
@@ -720,7 +778,11 @@ export function CloseoutFlow({
                 }
               }}
               className="flex-1"
-              disabled={pending || photoUploading}
+              disabled={
+                pending ||
+                photoUploading ||
+                (!photoUrl && !skipPhotoReason)
+              }
             >
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
               {activeItem.kind === "output" ||

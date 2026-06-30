@@ -19,8 +19,13 @@ export interface CloseBookingInput {
   /** Dispatch cell uuid the operator scanned. Required when
    *  remaining_qty > 0; null otherwise. */
   scanned_cell_uuid: string | null;
-  /** Stock-movement photo. Optional but recommended. */
+  /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
+   *  must be set — the closeout panel gates the submit CTA on it. */
   photo_url: string | null;
+  /** Reason the operator couldn't take a photo (camera offline, lot
+   *  packaging hides the labels, etc.). Required when `photo_url` is
+   *  null. Mirrors return-pickup's photo-or-skip pattern. */
+  skip_photo_reason: string | null;
 }
 
 export type CloseoutBookingResult =
@@ -58,6 +63,7 @@ export async function closeoutBookingAction(
   };
   if (input.scanned_cell_uuid) body.scanned_cell_uuid = input.scanned_cell_uuid;
   if (input.photo_url) body.photo_url = input.photo_url;
+  if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
 
   try {
     const { booking } = await api<{ booking: ManufacturingOrderBooking }>(
@@ -77,7 +83,10 @@ export async function closeoutBookingAction(
 
 export interface CloseOutputInput {
   scanned_cell_uuid: string;
+  /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
+   *  must be set — gated by the closeout panel. */
   photo_url: string | null;
+  skip_photo_reason: string | null;
 }
 
 /** Move a produced output lot off the production-feed cell to the
@@ -94,6 +103,7 @@ export async function closeoutOutputLotAction(
     scanned_cell_uuid: input.scanned_cell_uuid,
   };
   if (input.photo_url) body.photo_url = input.photo_url;
+  if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
 
   try {
     const { lot } = await api<{ lot: { status: string } }>(
