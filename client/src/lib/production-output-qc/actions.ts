@@ -38,6 +38,18 @@ export interface FailQcInput {
   /** Required when reject_qty is set and partial. Physical dimensions
    *  of the rejected child lot. */
   child_packaging?: OutputQcPackaging;
+  /** PASS path only — QC operator's corrections applied to the lot
+   *  before the status flips to `available`. Any qty delta emits an
+   *  adjust_up/adjust_down movement at the production-feed cell so
+   *  traceability holds. Send only the fields the operator changed;
+   *  omitted fields keep production's recorded values. */
+  qty_received?: string;
+  package_length_mm?: string;
+  package_width_mm?: string;
+  package_height_mm?: string;
+  package_weight_kg?: string;
+  units_per_package?: string;
+  stack_factor?: string;
 }
 
 /**
@@ -66,6 +78,21 @@ export async function signOffOutputQcAction(
   if (input.reject_qty) body.reject_qty = input.reject_qty;
   if (input.parent_packaging) body.parent_packaging = input.parent_packaging;
   if (input.child_packaging) body.child_packaging = input.child_packaging;
+  // Pass-path adjustments — only include keys the operator actually
+  // edited so a stray "" doesn't blow away production's recorded
+  // value via the BE changeset.
+  for (const key of [
+    "qty_received",
+    "package_length_mm",
+    "package_width_mm",
+    "package_height_mm",
+    "package_weight_kg",
+    "units_per_package",
+    "stack_factor",
+  ] as const) {
+    const v = input[key];
+    if (v != null && v !== "") body[key] = v;
+  }
 
   try {
     const { lot } = await api<{ lot: { status: string } }>(

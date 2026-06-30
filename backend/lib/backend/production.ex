@@ -6634,37 +6634,208 @@ defmodule Backend.Production do
 
   defp do_full_qc(%User{} = actor, lot_uuid, kind, attrs) do
     with %StockLot{source_kind: "manufacturing_order"} = lot <-
-           Backend.Stock.get_for_company(actor.company_id, lot_uuid),
-         {:ok, _result} <-
-           Backend.Stock.Lifecycle.record_event(lot, kind, %{
-             actor: actor,
-             actor_kind: "user",
-             reason: attrs["reason"] || attrs[:reason],
-             metadata: %{}
-           }) do
-      # On QC fail, propagate the regression up the chain — any MO
-      # that's booked this lot as an input can no longer satisfy its
-      # plan. Flag them as needing replan so the planner sees the
-      # downstream impact immediately.
-      if kind == "qc_failed" do
-        propagate_replan_to_consumers(actor, lot)
-      end
+           Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
+      Repo.transaction(fn ->
+        # On pass, let the QC operator correct the production's
+        # numbers before flipping the lot to `available` — measured
+        # weight, real package dims, actual qty. Any qty delta emits
+        # an adjust_up/adjust_down movement at the production-feed
+        # placement so traceability holds; the lot row + placement
+        # update atomically with the lifecycle event.
+        with :ok <- maybe_apply_qc_adjustments(actor, lot, kind, attrs),
+             reloaded <- Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+             {:ok, _result} <-
+               Backend.Stock.Lifecycle.record_event(reloaded, kind, %{
+                 actor: actor,
+                 actor_kind: "user",
+                 reason: attrs["reason"] || attrs[:reason],
+                 metadata: %{}
+               }) do
+          if kind == "qc_failed" do
+            # On QC fail, propagate the regression up the chain — any
+            # MO that's booked this lot as an input can no longer
+            # satisfy its plan. Flag them as needing replan so the
+            # planner sees the downstream impact immediately.
+            propagate_replan_to_consumers(actor, reloaded)
+          end
 
-      # On QC pass, auto-book the freshly-available output onto the
-      # parent MO that was waiting for it. Mirrors the PO placeholder
-      # upgrade — keeps the chain self-healing so the planner doesn't
-      # have to manually re-book after the child finishes.
-      if kind == "qc_passed" do
-        auto_book_output_to_parent_mo(actor, lot)
-      end
+          if kind == "qc_passed" do
+            # On QC pass, auto-book the freshly-available output onto
+            # the parent MO that was waiting for it.
+            auto_book_output_to_parent_mo(actor, reloaded)
+          end
 
-      {:ok, Repo.preload(Backend.Stock.get_for_company(actor.company_id, lot_uuid), [:item])}
+          Repo.preload(
+            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+            [:item]
+          )
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     else
       nil -> {:error, :lot_not_found}
       %StockLot{} -> {:error, :not_a_manufactured_lot}
-      {:error, :illegal_transition, info} -> {:error, {:illegal_transition, info}}
-      {:error, _} = err -> err
     end
+  end
+
+  # Apply any QC-time corrections to the lot before recording the
+  # pass event. Skipped for fail / partial-fail (those paths own
+  # their own qty math via split). Only runs when the attrs actually
+  # carry an adjustment — bare {"pass", reason: nil} stays a no-op.
+  defp maybe_apply_qc_adjustments(_actor, _lot, "qc_failed", _attrs), do: :ok
+
+  defp maybe_apply_qc_adjustments(%User{} = actor, %StockLot{} = lot, "qc_passed", attrs) do
+    cast_attrs = stock_lot_adjust_attrs(attrs)
+
+    if cast_attrs == %{} do
+      :ok
+    else
+      apply_qc_adjustments(actor, lot, cast_attrs, attrs)
+    end
+  end
+
+  # Pluck the editable QC fields out of the request attrs. Returns
+  # only the keys the operator actually sent so partial edits work
+  # — e.g. correcting just the weight without resetting dims.
+  defp stock_lot_adjust_attrs(attrs) do
+    [
+      "qty_received",
+      "package_length_mm",
+      "package_width_mm",
+      "package_height_mm",
+      "package_weight_kg",
+      "units_per_package",
+      "stack_factor"
+    ]
+    |> Enum.reduce(%{}, fn key, acc ->
+      raw = Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+
+      if raw in [nil, ""], do: acc, else: Map.put(acc, key, raw)
+    end)
+  end
+
+  defp apply_qc_adjustments(%User{} = actor, %StockLot{} = lot, cast_attrs, raw_attrs) do
+    before_lot = lot
+
+    with {:ok, updated_lot} <-
+           lot
+           |> Backend.Stock.Lot.changeset(
+             Map.put(cast_attrs, "updated_by_id", actor.id)
+           )
+           |> Repo.update(),
+         :ok <-
+           maybe_emit_qc_qty_movement(actor, before_lot, updated_lot, raw_attrs) do
+      Audit.record_updated(
+        actor,
+        "stock_lot",
+        updated_lot,
+        %{
+          qty_received: before_lot.qty_received,
+          package_length_mm: before_lot.package_length_mm,
+          package_width_mm: before_lot.package_width_mm,
+          package_height_mm: before_lot.package_height_mm,
+          package_weight_kg: before_lot.package_weight_kg,
+          units_per_package: before_lot.units_per_package,
+          stack_factor: before_lot.stack_factor
+        },
+        %{
+          qty_received: updated_lot.qty_received,
+          package_length_mm: updated_lot.package_length_mm,
+          package_width_mm: updated_lot.package_width_mm,
+          package_height_mm: updated_lot.package_height_mm,
+          package_weight_kg: updated_lot.package_weight_kg,
+          units_per_package: updated_lot.units_per_package,
+          stack_factor: updated_lot.stack_factor
+        }
+      )
+
+      :ok
+    end
+  end
+
+  # If qty_received changed, the corresponding placement at the
+  # production-feed cell needs the same delta — and an adjust_up /
+  # adjust_down Movement records why. Without this, a QC operator
+  # bumping a 60 kg estimate to a measured 65 kg would mean 5 kg of
+  # phantom stock with no audit trail. Mirrors the preflight-variance
+  # flow on the booking side.
+  defp maybe_emit_qc_qty_movement(actor, %StockLot{} = before_lot, %StockLot{} = updated_lot, attrs) do
+    old_qty = before_lot.qty_received || Decimal.new(0)
+    new_qty = updated_lot.qty_received || Decimal.new(0)
+    delta = Decimal.sub(new_qty, old_qty)
+
+    if Decimal.equal?(delta, Decimal.new(0)) do
+      :ok
+    else
+      placement =
+        from(p in Backend.Stock.Placement,
+          where: p.stock_lot_id == ^updated_lot.id and p.qty > 0,
+          order_by: [asc: p.id],
+          limit: 1
+        )
+        |> Repo.one()
+
+      case placement do
+        nil ->
+          # Nothing on-floor to reconcile (rare; lot might have been
+          # split or moved). The lot row update + audit trail still
+          # captures the correction; just no movement to emit.
+          :ok
+
+        %Backend.Stock.Placement{} = p ->
+          new_placement_qty = Decimal.add(p.qty, delta)
+
+          cond do
+            Decimal.compare(new_placement_qty, Decimal.new(0)) == :lt ->
+              {:error, :qc_adjustment_below_zero}
+
+            true ->
+              now_dt = now()
+              reason = build_qc_adjustment_reason(old_qty, new_qty, attrs)
+              kind = if Decimal.negative?(delta), do: "adjust_down", else: "adjust_up"
+
+              with {:ok, movement} <-
+                     %Backend.Stock.Movement{}
+                     |> Backend.Stock.Movement.changeset(%{
+                       "company_id" => updated_lot.company_id,
+                       "stock_lot_id" => updated_lot.id,
+                       "from_cell_id" =>
+                         if(Decimal.negative?(delta), do: p.storage_cell_id),
+                       "to_cell_id" =>
+                         if(Decimal.negative?(delta), do: nil, else: p.storage_cell_id),
+                       "delta_qty" => Decimal.abs(delta),
+                       "kind" => kind,
+                       "reason" => reason,
+                       "actor_id" => actor.id,
+                       "occurred_at" => now_dt,
+                       "reference_kind" => "lifecycle_event",
+                       "reference_ref" => updated_lot.uuid
+                     })
+                     |> Repo.insert(),
+                   {:ok, _placement} <- adjust_placement_to(p, new_placement_qty) do
+                Audit.record_created(actor, "stock_movement", movement, %{
+                  kind: movement.kind,
+                  delta_qty: movement.delta_qty,
+                  reason: movement.reason
+                })
+
+                :ok
+              end
+          end
+      end
+    end
+  end
+
+  defp build_qc_adjustment_reason(old_qty, new_qty, attrs) do
+    notes =
+      case Map.get(attrs, "reason") || Map.get(attrs, :reason) do
+        s when is_binary(s) and s != "" -> " — " <> String.trim(s)
+        _ -> ""
+      end
+
+    "Output QC adjustment: measured #{decimal_to_string(new_qty)} vs production-recorded #{decimal_to_string(old_qty)}" <>
+      notes
   end
 
   @doc """

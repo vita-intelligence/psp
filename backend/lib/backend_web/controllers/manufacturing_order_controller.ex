@@ -974,6 +974,13 @@ defmodule BackendWeb.ManufacturingOrderController do
             "Can't transition to #{info.kind} from #{info.from}."
           )
 
+        {:error, :qc_adjustment_below_zero} ->
+          unprocessable(
+            conn,
+            "qc_adjustment_below_zero",
+            "The qty adjustment you typed would drop the lot's on-hand placement below zero. Check the measured qty before passing."
+          )
+
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)
 

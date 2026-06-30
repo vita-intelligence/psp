@@ -9,6 +9,7 @@ import {
   Microscope,
   Package,
   PackageOpen,
+  Pencil,
   RefreshCw,
   XCircle,
 } from "lucide-react";
@@ -126,8 +127,20 @@ function QcCard({
   const [reason, setReason] = useState("");
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"idle" | "fail">("idle");
+  const [mode, setMode] = useState<"idle" | "fail" | "edit">("idle");
   const [scope, setScope] = useState<"full" | "partial">("full");
+  // Pass-with-adjustments draft. Pre-filled with whatever production
+  // recorded so a one-tap "looks right, pass it" still works — the
+  // operator only edits the fields they actually want to correct.
+  const [passDraft, setPassDraft] = useState({
+    qty_received: String(lot.qty_received ?? ""),
+    package_length_mm: String(lot.package_length_mm ?? ""),
+    package_width_mm: String(lot.package_width_mm ?? ""),
+    package_height_mm: String(lot.package_height_mm ?? ""),
+    package_weight_kg: String(lot.package_weight_kg ?? ""),
+    units_per_package: String(lot.units_per_package ?? ""),
+    stack_factor: String(lot.stack_factor ?? "1"),
+  });
   // Partial-fail state: how much to reject + new packaging for both
   // halves of the split. Pre-fill the parent dims with the lot's
   // current measurements (operator usually only adjusts a few),
@@ -151,15 +164,49 @@ function QcCard({
 
   function pass() {
     setError(null);
+
+    // Build adjustments only when something actually differs from
+    // production's recorded value. Equal values get dropped so the
+    // BE doesn't see them as edits in the audit trail.
+    const adjustments: Record<string, string> = {};
+    if (mode === "edit") {
+      const compare: Array<[keyof typeof passDraft, string]> = [
+        ["qty_received", String(lot.qty_received ?? "")],
+        ["package_length_mm", String(lot.package_length_mm ?? "")],
+        ["package_width_mm", String(lot.package_width_mm ?? "")],
+        ["package_height_mm", String(lot.package_height_mm ?? "")],
+        ["package_weight_kg", String(lot.package_weight_kg ?? "")],
+        ["units_per_package", String(lot.units_per_package ?? "")],
+        ["stack_factor", String(lot.stack_factor ?? "")],
+      ];
+      for (const [key, original] of compare) {
+        const next = passDraft[key].trim();
+        if (next !== "" && next !== original) {
+          adjustments[key] = next;
+        }
+      }
+    }
+
     startTransition(async () => {
-      const res = await signOffOutputQcAction(lot.uuid, "pass", { reason: null });
+      const res = await signOffOutputQcAction(lot.uuid, "pass", {
+        reason: mode === "edit" ? reason.trim() || null : null,
+        ...adjustments,
+      });
       if (res.ok) {
-        toast.success("QC passed — lot now available");
+        toast.success(
+          mode === "edit" && Object.keys(adjustments).length > 0
+            ? "QC adjusted + passed — lot now available"
+            : "QC passed — lot now available",
+        );
         onSignedOff();
       } else {
         setError(res.detail);
       }
     });
+  }
+
+  function patchPass(field: keyof typeof passDraft, value: string) {
+    setPassDraft((prev) => ({ ...prev, [field]: value }));
   }
 
   function fail() {
@@ -319,12 +366,25 @@ function QcCard({
             <Button
               type="button"
               size="sm"
+              variant="outline"
+              onClick={() =>
+                setMode((m) => (m === "edit" ? "idle" : "edit"))
+              }
+              disabled={pending}
+              className={cn(mode === "edit" && "bg-muted")}
+            >
+              <Pencil className="mr-1.5 size-3.5" />
+              {mode === "edit" ? "Cancel edit" : "Adjust"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
               onClick={pass}
               disabled={pending}
             >
               {pending && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
               <CheckCircle2 className="mr-1.5 size-3.5" />
-              Pass QC
+              {mode === "edit" ? "Save & pass" : "Pass QC"}
             </Button>
           </div>
         </div>
@@ -336,6 +396,73 @@ function QcCard({
         <Spec label="Height" value={lot.package_height_mm} unit="mm" />
         <Spec label="Weight" value={lot.package_weight_kg} unit="kg" />
       </div>
+
+      {mode === "edit" && (
+        <div className="space-y-3 rounded-md border border-border/60 bg-muted/30 px-3 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold">
+                Adjust before accepting
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Production typed estimates — measure again and correct
+                anything off. A qty change emits an adjust movement
+                at the production-feed cell so the books stay honest.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <PackInput
+              label={`Qty (${uomSymbol})`}
+              value={passDraft.qty_received}
+              onChange={(v) => patchPass("qty_received", v)}
+            />
+            <PackInput
+              label="Length (mm)"
+              value={passDraft.package_length_mm}
+              onChange={(v) => patchPass("package_length_mm", v)}
+            />
+            <PackInput
+              label="Width (mm)"
+              value={passDraft.package_width_mm}
+              onChange={(v) => patchPass("package_width_mm", v)}
+            />
+            <PackInput
+              label="Height (mm)"
+              value={passDraft.package_height_mm}
+              onChange={(v) => patchPass("package_height_mm", v)}
+            />
+            <PackInput
+              label="Weight, gross (kg)"
+              value={passDraft.package_weight_kg}
+              onChange={(v) => patchPass("package_weight_kg", v)}
+            />
+            <PackInput
+              label="Stack factor"
+              value={passDraft.stack_factor}
+              onChange={(v) => patchPass("stack_factor", v)}
+            />
+          </div>
+          <PackBoxPreview
+            lengthMm={Number(passDraft.package_length_mm) || 0}
+            widthMm={Number(passDraft.package_width_mm) || 0}
+            heightMm={Number(passDraft.package_height_mm) || 0}
+            stack={Number(passDraft.stack_factor) || 1}
+          />
+          <div className="space-y-1">
+            <Label htmlFor={`qc-reason-${lot.uuid}`} className="text-xs">
+              Reason (optional)
+            </Label>
+            <Textarea
+              id={`qc-reason-${lot.uuid}`}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Recorded with the adjust movement for the audit log"
+              className="min-h-[60px] text-sm"
+            />
+          </div>
+        </div>
+      )}
 
       {mode === "fail" && (
         <div className="space-y-3 rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-3">
