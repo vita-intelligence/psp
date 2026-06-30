@@ -90,9 +90,7 @@ type Step =
   | { kind: "place_recommend"; pickKey: string }
   | { kind: "place_freeform_scan"; pickKey: string }
   | { kind: "place_directions"; pickKey: string; target: PlaceTarget }
-  | { kind: "place_scan_cell"; pickKey: string; target: PlaceTarget }
-  | { kind: "place_scan_lot"; pickKey: string; target: PlaceTarget }
-  | { kind: "place_photo"; pickKey: string; target: PlaceTarget };
+  | { kind: "place_scan_cell"; pickKey: string; target: PlaceTarget };
 
 interface Props {
   mode: Mode;
@@ -117,6 +115,12 @@ export function ReturnPickupFlow({
   const [step, setStep] = useState<Step>({ kind: "overview" });
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  // When the operator can't take a photo (camera offline, lot
+  // packaging hides the labels, etc.) they pick a skip-reason instead.
+  // Tracked here so the directions step can collect it BEFORE the
+  // cell scan auto-submits — matches the closeout pattern where
+  // photo + skip-reason live in the pre-scan details panel.
+  const [placeSkipReason, setPlaceSkipReason] = useState("");
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -178,6 +182,7 @@ export function ReturnPickupFlow({
 
   function resetPhoto() {
     setPhotoUrl(null);
+    setPlaceSkipReason("");
     setErrorDetail(null);
   }
 
@@ -476,6 +481,12 @@ export function ReturnPickupFlow({
         <PlaceDirectionsStep
           target={step.target}
           pick={pickByKey[step.pickKey]}
+          photoUrl={photoUrl}
+          uploading={photoUploading}
+          skipReason={placeSkipReason}
+          onPhotoChange={onPhotoChange}
+          onClearPhoto={() => setPhotoUrl(null)}
+          onSkipReasonChange={setPlaceSkipReason}
           onContinue={() =>
             setStep({
               kind: "place_scan_cell",
@@ -493,13 +504,21 @@ export function ReturnPickupFlow({
         <main className="flex-1 px-4 py-4">
           <div className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
             <p className="text-[10px] uppercase tracking-wider">
-              Step 3 of 4 — scan target rack
+              Step 3 of 3 — scan the rack QR
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
               {formatLocation(step.target.cell.storage_location)} ·{" "}
               {step.target.cell.name}
             </p>
+            <p className="mt-1 text-[11px] leading-snug">
+              The drop happens automatically when the QR matches.
+            </p>
           </div>
+          {errorDetail && (
+            <div className="mb-3">
+              <ErrorBanner detail={errorDetail} />
+            </div>
+          )}
           <UuidScanStep
             expectedUuid={step.target.uuid}
             kind="cell"
@@ -509,11 +528,11 @@ export function ReturnPickupFlow({
               `Cell ${step.target.cell.id}`
             }
             onConfirmed={() =>
-              setStep({
-                kind: "place_scan_lot",
-                pickKey: step.pickKey,
-                target: step.target,
-              })
+              submitPlace(
+                step.pickKey,
+                step.target.uuid,
+                photoUrl ? null : placeSkipReason || null,
+              )
             }
             onCancel={() =>
               setStep({
@@ -524,56 +543,6 @@ export function ReturnPickupFlow({
             }
           />
         </main>
-      )}
-
-      {step.kind === "place_scan_lot" && pickByKey[step.pickKey] && (
-        <main className="flex-1 px-4 py-4">
-          <div className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-            <p className="text-[10px] uppercase tracking-wider">
-              Step 4 of 4 — scan the lot
-            </p>
-            <p className="mt-0.5 text-sm font-medium text-foreground">
-              {pickByKey[step.pickKey].stock_lot?.item?.name ?? "Unknown item"}
-            </p>
-          </div>
-          <UuidScanStep
-            expectedUuid={pickByKey[step.pickKey].stock_lot?.uuid ?? ""}
-            kind="lot"
-            expectedLabel={
-              pickByKey[step.pickKey].stock_lot?.code ?? "this lot"
-            }
-            onConfirmed={() =>
-              setStep({
-                kind: "place_photo",
-                pickKey: step.pickKey,
-                target: step.target,
-              })
-            }
-            onCancel={() =>
-              setStep({
-                kind: "place_scan_cell",
-                pickKey: step.pickKey,
-                target: step.target,
-              })
-            }
-          />
-        </main>
-      )}
-
-      {step.kind === "place_photo" && pickByKey[step.pickKey] && (
-        <PlaceConfirmStep
-          pick={pickByKey[step.pickKey]}
-          target={step.target}
-          photoUrl={photoUrl}
-          uploading={photoUploading}
-          pending={pending}
-          errorDetail={errorDetail}
-          onPhotoChange={onPhotoChange}
-          onClearPhoto={() => setPhotoUrl(null)}
-          onSubmit={(skipReason) =>
-            submitPlace(step.pickKey, step.target.uuid, skipReason)
-          }
-        />
       )}
     </div>
   );
@@ -972,11 +941,23 @@ function PlaceRecommendStep({
 function PlaceDirectionsStep({
   target,
   pick,
+  photoUrl,
+  uploading,
+  skipReason,
+  onPhotoChange,
+  onClearPhoto,
+  onSkipReasonChange,
   onContinue,
   onChooseDifferent,
 }: {
   target: PlaceTarget;
   pick: ReturnPickRow;
+  photoUrl: string | null;
+  uploading: boolean;
+  skipReason: string;
+  onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onClearPhoto: () => void;
+  onSkipReasonChange: (value: string) => void;
   onContinue: () => void;
   onChooseDifferent: () => void;
 }) {
@@ -989,12 +970,13 @@ function PlaceDirectionsStep({
     (cell.ordinal !== undefined && cell.ordinal !== null
       ? `Level ${cell.ordinal + 1}`
       : `Cell ${cell.id}`);
+  const canContinue = Boolean(photoUrl) || skipReason.length > 0;
 
   return (
     <main className="flex-1 px-4 py-4 space-y-3 overflow-y-auto">
       <div className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
         <p className="text-[10px] uppercase tracking-wider">
-          Step 2 of 4 — walk to this rack
+          Step 2 of 3 — walk + capture photo
         </p>
         {target.reason && (
           <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400">
@@ -1003,7 +985,8 @@ function PlaceDirectionsStep({
         )}
         <p className="mt-1 text-[11px] text-muted-foreground">
           The highlighted rack on the floor plan is where the lot
-          goes. Walk to it, then scan the shelf QR.
+          goes. Walk there, snap a photo (or pick a skip reason), then
+          scan the rack QR — the drop happens automatically on match.
         </p>
       </div>
 
@@ -1045,10 +1028,75 @@ function PlaceDirectionsStep({
         />
       </ul>
 
+      <section className="space-y-2 rounded-lg border border-border/60 bg-card p-3">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Photo
+        </p>
+        {photoUrl ? (
+          <div className="flex items-center gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+            <CheckCircle2 className="size-4 text-emerald-600" />
+            <span className="flex-1 text-sm">Photo attached</span>
+            <button
+              type="button"
+              onClick={onClearPhoto}
+              className="text-xs text-muted-foreground underline"
+            >
+              Remove
+            </button>
+          </div>
+        ) : (
+          <>
+            <label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-muted/50 text-sm font-medium">
+              {uploading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <ImagePlus className="size-4" />
+              )}
+              {uploading ? "Uploading…" : "Take photo"}
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={onPhotoChange}
+                className="hidden"
+                disabled={uploading}
+              />
+            </label>
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-muted-foreground">
+                Or skip with a reason:
+              </p>
+              <Select value={skipReason} onValueChange={onSkipReasonChange}>
+                <SelectTrigger className="h-10">
+                  <SelectValue placeholder="Pick a reason…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SKIP_PHOTO_REASONS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        )}
+      </section>
+
       <div className="flex flex-col gap-2 pt-1">
-        <Button size="lg" className="h-12" onClick={onContinue}>
+        {!canContinue && (
+          <p className="text-center text-[11px] text-muted-foreground">
+            Add a photo or pick a skip reason to continue.
+          </p>
+        )}
+        <Button
+          size="lg"
+          className="h-12"
+          onClick={onContinue}
+          disabled={!canContinue || uploading}
+        >
           <ScanLine className="mr-1.5 size-4" />
-          I'm there — scan the rack
+          I'm at the rack — scan QR
         </Button>
         <Button
           variant="ghost"
@@ -1268,148 +1316,6 @@ const SKIP_PHOTO_REASONS = [
   { value: "tight_quarters", label: "Couldn't reach the angle" },
   { value: "other", label: "Other" },
 ];
-
-function PlaceConfirmStep({
-  pick,
-  target,
-  photoUrl,
-  uploading,
-  pending,
-  errorDetail,
-  onPhotoChange,
-  onClearPhoto,
-  onSubmit,
-}: {
-  pick: ReturnPickRow;
-  target: PlaceTarget;
-  photoUrl: string | null;
-  uploading: boolean;
-  pending: boolean;
-  errorDetail: string | null;
-  onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onClearPhoto: () => void;
-  onSubmit: (skipReason: string | null) => void;
-}) {
-  const [skipReason, setSkipReason] = useState("");
-  const cell = target.cell;
-
-  function handleSubmit() {
-    onSubmit(photoUrl ? null : skipReason || null);
-  }
-
-  return (
-    <>
-      <main className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        <section className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-            <CheckCircle2 className="size-3.5" />
-            <span>Scan confirmed</span>
-          </div>
-          <p className="mt-1 text-sm font-semibold">
-            {cell.warehouse?.name ?? "—"} ·{" "}
-            {formatLocation(cell.storage_location)} · {cell.name ?? "—"}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {cell.floor?.name ?? "—"}
-          </p>
-        </section>
-
-        <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">
-            Quantity
-          </p>
-          <p className="font-mono text-lg font-semibold">
-            {pick.qty}{" "}
-            <span className="text-sm font-medium text-muted-foreground">
-              {pick.stock_lot?.uom?.symbol ?? ""}
-            </span>
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            Locked at pickup — the full trolley row goes onto this rack.
-          </p>
-        </section>
-
-        <section className="space-y-2 rounded-lg border border-border/60 bg-card p-4">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">
-            Photo
-          </p>
-          {photoUrl ? (
-            <div className="flex items-center gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
-              <CheckCircle2 className="size-4 text-emerald-600" />
-              <span className="flex-1 text-sm">Photo attached</span>
-              <button
-                type="button"
-                onClick={onClearPhoto}
-                className="text-xs text-muted-foreground underline"
-              >
-                Remove
-              </button>
-            </div>
-          ) : (
-            <>
-              <label className="flex h-12 cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-muted/50 text-sm font-medium">
-                {uploading ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <ImagePlus className="size-4" />
-                )}
-                {uploading ? "Uploading…" : "Take photo"}
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={onPhotoChange}
-                  className="hidden"
-                  disabled={uploading}
-                />
-              </label>
-              <div className="space-y-1.5">
-                <p className="text-[11px] text-muted-foreground">
-                  Or skip with a reason:
-                </p>
-                <Select value={skipReason} onValueChange={setSkipReason}>
-                  <SelectTrigger className="h-10">
-                    <SelectValue placeholder="Pick a reason…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SKIP_PHOTO_REASONS.map((r) => (
-                      <SelectItem key={r.value} value={r.value}>
-                        {r.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </>
-          )}
-        </section>
-
-        {errorDetail && <ErrorBanner detail={errorDetail} />}
-      </main>
-
-      <footer className="space-y-2 border-t border-border/60 bg-background px-4 py-3">
-        {!photoUrl && !skipReason && (
-          <p className="text-center text-[11px] text-muted-foreground">
-            Add a photo or pick a skip reason to continue.
-          </p>
-        )}
-        <Button
-          size="lg"
-          className="h-14 w-full text-base"
-          onClick={handleSubmit}
-          disabled={pending || uploading || (!photoUrl && !skipReason)}
-        >
-          {pending ? (
-            <Loader2 className="mr-2 size-5 animate-spin" />
-          ) : (
-            <CheckCircle2 className="mr-2 size-5" />
-          )}
-          Confirm placement
-        </Button>
-      </footer>
-    </>
-  );
-}
 
 function PhotoStep({
   title,
