@@ -236,8 +236,12 @@ export function CloseoutFlow({
     }
   }
 
-  function submit() {
+  function submit(cellOverride?: DispatchCell) {
     if (!activeItem) return;
+    // Caller may pass an explicit cell (e.g. just-scanned freeform
+    // cell whose setScannedCell hasn't committed yet) — fall back to
+    // the rendered scannedCell otherwise.
+    const targetCell = cellOverride ?? scannedCell;
     const remaining = Number(remainingQty);
     if (Number.isNaN(remaining) || remaining < 0) {
       setErrorDetail("Remaining qty must be a non-negative number.");
@@ -252,7 +256,7 @@ export function CloseoutFlow({
         return;
       }
     }
-    if ((activeItem.kind === "output" || remaining > 0) && !scannedCell) {
+    if ((activeItem.kind === "output" || remaining > 0) && !targetCell) {
       setErrorDetail(
         "Scan a production-dispatch cell before submitting.",
       );
@@ -267,7 +271,7 @@ export function CloseoutFlow({
           activeItem.bookingUuid!,
           {
             remaining_qty: remainingQty,
-            scanned_cell_uuid: scannedCell?.uuid ?? null,
+            scanned_cell_uuid: targetCell?.uuid ?? null,
             photo_url: photoUrl,
           },
         );
@@ -281,10 +285,14 @@ export function CloseoutFlow({
           backToOverview();
         } else {
           setErrorDetail(res.detail);
+          // Bounce back to directions so the error banner has somewhere
+          // to render — the scanner closes itself after a successful
+          // scan and leaves an empty step otherwise.
+          setCellPhase("directions");
         }
       } else {
         const res = await closeoutOutputLotAction(mo.uuid, activeItem.lotUuid, {
-          scanned_cell_uuid: scannedCell!.uuid,
+          scanned_cell_uuid: targetCell!.uuid,
           photo_url: photoUrl,
         });
         if (res.ok) {
@@ -295,6 +303,7 @@ export function CloseoutFlow({
           backToOverview();
         } else {
           setErrorDetail(res.detail);
+          setCellPhase("directions");
         }
       }
     });
@@ -737,18 +746,14 @@ export function CloseoutFlow({
             <p className="text-[10px] uppercase tracking-wider">
               {cellPhase === "scanning"
                 ? "Step 3 of 3 — scan the rack QR"
-                : cellPhase === "confirm"
-                  ? "Step 3 of 3 — confirm drop"
-                  : "Step 3 of 3 — walk to dispatch cell"}
+                : "Step 3 of 3 — walk to dispatch cell"}
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
               {cellPhase === "scanning" && scannedCell
-                ? "Scan the rack's QR to confirm you're there"
-                : cellPhase === "confirm" && scannedCell
-                  ? "Verified · drop the material and confirm"
-                  : scannedCell
-                    ? "Walk the material to the highlighted cell, then scan its QR"
-                    : "Scan the dispatch cell QR to drop the material"}
+                ? "Scan the rack's QR — drop happens automatically"
+                : scannedCell
+                  ? "Walk the material to the highlighted cell, then scan its QR"
+                  : "Scan the dispatch cell QR to drop the material"}
             </p>
             <p className="mt-1 text-[11px] leading-snug">
               The dispatch cell is <strong>still inside production</strong>
@@ -784,7 +789,9 @@ export function CloseoutFlow({
           )}
 
           {/* Phase B — scanner verifies the operator scanned THIS
-              cell's QR. Mismatch → friendly nudge, stay in scanner. */}
+              cell's QR, then auto-submits. No third "confirm" screen
+              — the scan IS the confirmation. On submit failure the
+              flow bounces back to directions with an error banner. */}
           {scannedCell && cellPhase === "scanning" && (
             <>
               {scanError && (
@@ -802,33 +809,16 @@ export function CloseoutFlow({
                 }
                 onConfirmed={() => {
                   setScanError(null);
-                  setCellPhase("confirm");
+                  submit();
                 }}
                 onCancel={() => setCellPhase("directions")}
               />
             </>
           )}
 
-          {/* Phase C — scan verified. Show breadcrumb + Confirm drop. */}
-          {scannedCell && cellPhase === "confirm" && (
-            <DispatchDirections
-              cell={scannedCell}
-              onReselect={() => {
-                scannedCellUuidRef.current = null;
-                setScanError(null);
-                setScannedCell(null);
-                setCellPhase("directions");
-              }}
-              onConfirm={submit}
-              confirmLabel="Confirm drop"
-              pending={pending}
-              errorDetail={errorDetail}
-            />
-          )}
-
-          {/* No recommended cell available — freeform scanner to pick
-              one. Once a valid cell is scanned, treat it as verified
-              (the scan IS the verification) and jump to confirm. */}
+          {/* No recommended cell available — freeform scanner. The
+              scan IS the verification + the submit trigger; no
+              double-confirm screen. */}
           {!scannedCell && (
             <>
               {scanError && (
@@ -859,7 +849,10 @@ export function CloseoutFlow({
                   const match = dispatchCells.find((c) => c.uuid === uuid);
                   if (match) {
                     setScannedCell(match);
-                    setCellPhase("confirm");
+                    // Pass the cell explicitly — setScannedCell hasn't
+                    // committed yet so submit()'s closure still sees
+                    // null otherwise.
+                    submit(match);
                   }
                 }}
                 onCancel={() =>
