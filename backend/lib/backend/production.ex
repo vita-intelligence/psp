@@ -6212,20 +6212,109 @@ defmodule Backend.Production do
   # `placement_not_found` at the finish step and gets stuck having
   # physically picked the lot but unable to confirm.
   defp transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
+    # At confirm-transfer the operator has already physically moved
+    # the trolley to production — the system has to record what
+    # happened, not refuse because the bookkeeping snapshot drifted.
+    # Drain across whatever placements still exist for the lot
+    # (snapshot cell first, then any other placement FIFO) up to
+    # booking.quantity. As long as the lot has enough total on-hand
+    # we record the move regardless of how it's spread across cells.
     photo_url = Map.get(photo_urls, booking.uuid)
 
-    case resolve_origin_placement(booking) do
-      {:error, _} = err ->
-        err
+    case drain_lot_for_pickup(
+           booking.stock_lot_id,
+           booking.storage_cell_id,
+           booking.quantity
+         ) do
+      {:error, reason} ->
+        {:error, reason}
 
-      {:ok, %Backend.Stock.Placement{} = origin_placement} ->
+      {:ok, drains} ->
+        emit_pickup_movements(
+          actor,
+          booking,
+          drains,
+          target_cell,
+          photo_url,
+          now_dt
+        )
+    end
+  end
+
+  # Resolve all the placements we need to deplete to satisfy
+  # `booking.quantity`, in this order:
+  #   1. the booking's snapshot cell (the picker probably grabbed from
+  #      it; honouring the snapshot keeps the audit trail tight)
+  #   2. every other non-zero placement of the lot, FIFO by id
+  # Returns `[%{placement: p, take: qty}, ...]` summing to
+  # `booking.quantity`, or `{:error, :insufficient_qty}` if the lot
+  # genuinely doesn't have enough on-hand anywhere. The `placement`
+  # struct is re-read from the DB inside the same transaction so we
+  # see any concurrent updates the warehouse picker just made.
+  defp drain_lot_for_pickup(lot_id, snapshot_cell_id, target_qty) do
+    snapshot =
+      if snapshot_cell_id do
+        Repo.get_by(Backend.Stock.Placement,
+          stock_lot_id: lot_id,
+          storage_cell_id: snapshot_cell_id
+        )
+      end
+
+    others =
+      from(p in Backend.Stock.Placement,
+        join: sc in Backend.Warehouses.StorageCell,
+        on: sc.id == p.storage_cell_id,
+        where:
+          p.stock_lot_id == ^lot_id and p.qty > 0 and
+            (is_nil(^snapshot_cell_id) or p.storage_cell_id != ^snapshot_cell_id),
+        order_by: [
+          asc: fragment("CASE WHEN ? = 'regular' THEN 0 ELSE 1 END", sc.purpose),
+          asc: p.id
+        ]
+      )
+      |> Repo.all()
+
+    ordered =
+      case snapshot do
+        %Backend.Stock.Placement{qty: q} = p ->
+          if Decimal.compare(q, Decimal.new(0)) == :gt, do: [p | others], else: others
+
+        nil ->
+          others
+      end
+
+    accumulate_drains(ordered, target_qty, [])
+  end
+
+  defp accumulate_drains(_placements, %Decimal{coef: 0}, acc), do: {:ok, Enum.reverse(acc)}
+  defp accumulate_drains([], _remaining, _acc), do: {:error, :insufficient_qty}
+
+  defp accumulate_drains([p | rest], remaining, acc) do
+    take = decimal_min(remaining, p.qty)
+
+    cond do
+      Decimal.compare(take, Decimal.new(0)) == :eq ->
+        accumulate_drains(rest, remaining, acc)
+
+      true ->
+        next = Decimal.sub(remaining, take)
+        accumulate_drains(rest, next, [%{placement: p, take: take} | acc])
+    end
+  end
+
+  defp emit_pickup_movements(_actor, _booking, [], _target_cell, _photo, _now), do: {:ok, nil}
+
+  defp emit_pickup_movements(actor, booking, drains, target_cell, photo_url, now_dt) do
+    Enum.reduce_while(drains, {:ok, nil}, fn %{placement: placement, take: take},
+                                             _acc ->
+      result =
         %Backend.Stock.Movement{}
         |> Backend.Stock.Movement.changeset(%{
           "company_id" => booking.company_id,
           "stock_lot_id" => booking.stock_lot_id,
-          "from_cell_id" => origin_placement.storage_cell_id,
+          "from_cell_id" => placement.storage_cell_id,
           "to_cell_id" => target_cell.id,
-          "delta_qty" => booking.quantity,
+          "delta_qty" => take,
           "kind" => "move",
           "actor_id" => actor.id,
           "occurred_at" => now_dt,
@@ -6234,27 +6323,29 @@ defmodule Backend.Production do
           "reference_ref" => mo_uuid_for_booking(booking)
         })
         |> Repo.insert()
-        |> case do
-          {:ok, movement} ->
-            with {:ok, _from_placement} <-
-                   decrement_placement_row(origin_placement, booking.quantity),
-                 {:ok, _to_placement} <- upsert_lot_placement(booking, target_cell) do
-              Audit.record_created(actor, "stock_movement", movement, %{
-                kind: movement.kind,
-                delta_qty: movement.delta_qty,
-                from_cell_id: movement.from_cell_id,
-                to_cell_id: movement.to_cell_id,
-                reference_kind: movement.reference_kind,
-                reference_ref: movement.reference_ref
-              })
 
-              {:ok, movement}
-            end
+      case result do
+        {:ok, movement} ->
+          with {:ok, _from_placement} <- decrement_placement_row(placement, take),
+               {:ok, _to_placement} <- upsert_lot_placement(booking, target_cell) do
+            Audit.record_created(actor, "stock_movement", movement, %{
+              kind: movement.kind,
+              delta_qty: movement.delta_qty,
+              from_cell_id: movement.from_cell_id,
+              to_cell_id: movement.to_cell_id,
+              reference_kind: movement.reference_kind,
+              reference_ref: movement.reference_ref
+            })
 
-          err ->
-            err
-        end
-    end
+            {:cont, {:ok, movement}}
+          else
+            err -> {:halt, err}
+          end
+
+        err ->
+          {:halt, err}
+      end
+    end)
   end
 
   defp mo_uuid_for_booking(%ManufacturingOrderBooking{} = b) do
