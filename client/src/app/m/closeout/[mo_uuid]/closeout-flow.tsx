@@ -113,6 +113,20 @@ export function CloseoutFlow({
   // promoting it to `scannedCell` (and therefore the confirm panel).
   const scannedCellUuidRef = useRef<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  // Step-3 sub-state machine. The recommended dispatch cell is just a
+  // suggestion — the operator still has to scan its QR to prove they
+  // physically walked there before the drop is allowed (compliance:
+  // same pattern as return-pickup's place-scan-cell step).
+  //
+  //   "directions" → breadcrumb + "I'm at the rack — scan QR" button.
+  //   "scanning"   → UuidScanStep with expectedUuid = recommendedCell.uuid
+  //                  (verifies the operator scanned THIS cell, not any).
+  //   "confirm"    → directions + "Confirm drop" CTA, submit on click.
+  //
+  // Reset to "directions" on Re-pick / backToOverview / new item.
+  const [cellPhase, setCellPhase] = useState<
+    "directions" | "scanning" | "confirm"
+  >("directions");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -180,6 +194,7 @@ export function CloseoutFlow({
         : (item.onHandQty ?? item.bookedQty);
     setRemainingQty(defaultRemaining);
     setScannedCell(null);
+    setCellPhase("directions");
     setPhotoUrl(null);
     setErrorDetail(null);
     setStep({ kind: "scan_lot", itemKey: item.key });
@@ -189,6 +204,7 @@ export function CloseoutFlow({
     setStep({ kind: "overview" });
     setRemainingQty("0");
     setScannedCell(null);
+    setCellPhase("directions");
     setPhotoUrl(null);
     setErrorDetail(null);
   }
@@ -681,10 +697,13 @@ export function CloseoutFlow({
                 ) {
                   // Pre-pick a recommended dispatch cell so the
                   // operator lands on the directions panel instead of
-                  // the "scan any cell" scanner. They can Re-pick if
-                  // they need a different cell.
+                  // the "scan any cell" scanner. They MUST still scan
+                  // the cell's QR to confirm they're physically there
+                  // before the drop is allowed — Re-pick to choose a
+                  // different cell.
                   const recommended = dispatchCells[0] ?? null;
-                  if (recommended) setScannedCell(recommended);
+                  setScannedCell(recommended);
+                  setCellPhase("directions");
                   setStep({ kind: "scan_cell", itemKey: activeItem.key });
                 } else {
                   // Fully consumed booking — no cell scan needed.
@@ -716,19 +735,27 @@ export function CloseoutFlow({
         <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
           <div className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
             <p className="text-[10px] uppercase tracking-wider">
-              Step 3 of 3 — confirm dispatch cell
+              {cellPhase === "scanning"
+                ? "Step 3 of 3 — scan the rack QR"
+                : cellPhase === "confirm"
+                  ? "Step 3 of 3 — confirm drop"
+                  : "Step 3 of 3 — walk to dispatch cell"}
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
-              {scannedCell
-                ? "Walk the material to the highlighted cell, then confirm"
-                : "Scan the dispatch cell QR to drop the material"}
+              {cellPhase === "scanning" && scannedCell
+                ? "Scan the rack's QR to confirm you're there"
+                : cellPhase === "confirm" && scannedCell
+                  ? "Verified · drop the material and confirm"
+                  : scannedCell
+                    ? "Walk the material to the highlighted cell, then scan its QR"
+                    : "Scan the dispatch cell QR to drop the material"}
             </p>
             <p className="mt-1 text-[11px] leading-snug">
               The dispatch cell is <strong>still inside production</strong>
               {" "}— you&apos;re staging for the warehouse picker, not
               walking it back to the warehouse yourself. Warehouse will
               fetch from dispatch in the return-pickup step.
-              {scannedCell && (
+              {scannedCell && cellPhase !== "scanning" && (
                 <>
                   {" "}Hit <strong>Re-pick</strong> to scan a different
                   cell if this one is full or unavailable.
@@ -737,19 +764,72 @@ export function CloseoutFlow({
             </p>
           </div>
 
-          {scannedCell ? (
+          {/* Phase A — recommended cell shown, operator must walk
+              there. Primary CTA is "I'm at the rack — scan QR", which
+              flips to the scanner sub-step. */}
+          {scannedCell && cellPhase === "directions" && (
             <DispatchDirections
               cell={scannedCell}
               onReselect={() => {
                 scannedCellUuidRef.current = null;
                 setScanError(null);
                 setScannedCell(null);
+                setCellPhase("directions");
               }}
-              onConfirm={submit}
+              onConfirm={() => setCellPhase("scanning")}
+              confirmLabel="I'm at the rack — scan QR"
               pending={pending}
               errorDetail={errorDetail}
             />
-          ) : (
+          )}
+
+          {/* Phase B — scanner verifies the operator scanned THIS
+              cell's QR. Mismatch → friendly nudge, stay in scanner. */}
+          {scannedCell && cellPhase === "scanning" && (
+            <>
+              {scanError && (
+                <div className="rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2 text-xs text-rose-900 dark:text-rose-200">
+                  {scanError}
+                </div>
+              )}
+              <UuidScanStep
+                expectedUuid={scannedCell.uuid}
+                kind="cell"
+                expectedLabel={
+                  scannedCell.code ??
+                  scannedCell.name ??
+                  `Cell ${scannedCell.id}`
+                }
+                onConfirmed={() => {
+                  setScanError(null);
+                  setCellPhase("confirm");
+                }}
+                onCancel={() => setCellPhase("directions")}
+              />
+            </>
+          )}
+
+          {/* Phase C — scan verified. Show breadcrumb + Confirm drop. */}
+          {scannedCell && cellPhase === "confirm" && (
+            <DispatchDirections
+              cell={scannedCell}
+              onReselect={() => {
+                scannedCellUuidRef.current = null;
+                setScanError(null);
+                setScannedCell(null);
+                setCellPhase("directions");
+              }}
+              onConfirm={submit}
+              confirmLabel="Confirm drop"
+              pending={pending}
+              errorDetail={errorDetail}
+            />
+          )}
+
+          {/* No recommended cell available — freeform scanner to pick
+              one. Once a valid cell is scanned, treat it as verified
+              (the scan IS the verification) and jump to confirm. */}
+          {!scannedCell && (
             <>
               {scanError && (
                 <div className="rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2 text-xs text-rose-900 dark:text-rose-200">
@@ -777,7 +857,10 @@ export function CloseoutFlow({
                   const uuid = scannedCellUuidRef.current;
                   if (!uuid) return;
                   const match = dispatchCells.find((c) => c.uuid === uuid);
-                  if (match) setScannedCell(match);
+                  if (match) {
+                    setScannedCell(match);
+                    setCellPhase("confirm");
+                  }
                 }}
                 onCancel={() =>
                   setStep({ kind: "details", itemKey: activeItem.key })
@@ -790,7 +873,10 @@ export function CloseoutFlow({
                 <div className="mt-2">
                   <CellPicker
                     cells={dispatchCells}
-                    onPick={(cell) => setScannedCell(cell)}
+                    onPick={(cell) => {
+                      setScannedCell(cell);
+                      setCellPhase("directions");
+                    }}
                     onCancel={() =>
                       setStep({ kind: "details", itemKey: activeItem.key })
                     }
@@ -881,12 +967,17 @@ function DispatchDirections({
   onConfirm,
   pending,
   errorDetail,
+  confirmLabel,
 }: {
   cell: DispatchCell;
   onReselect: () => void;
   onConfirm: () => void;
   pending: boolean;
   errorDetail: string | null;
+  /** Override the primary button's text. Used by the closeout flow
+   *  to drive the directions panel through two phases (walk-to-cell
+   *  → scan-to-verify → confirm-drop) with the same component. */
+  confirmLabel?: string;
 }) {
   const rackCode = cell.location?.code?.trim() || null;
   const rackName = cell.location?.name?.trim() || null;
@@ -952,7 +1043,7 @@ function DispatchDirections({
         >
           {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
           <CheckCircle2 className="mr-1.5 size-4" />
-          Confirm hand-off
+          {confirmLabel ?? "Confirm hand-off"}
         </Button>
       </div>
     </div>
