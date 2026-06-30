@@ -275,7 +275,7 @@ defmodule Backend.RBAC.Permissions do
     {"production.workstation_group_view", "View workstation groups"},
     {"production.workstation_group_create", "Create new workstation groups"},
     {"production.workstation_group_edit",
-     "Edit existing workstation groups (instances, rate, working hours)"},
+     "Edit existing workstation groups (rate, working hours, defaults)"},
     {"production.workstation_group_delete", "Delete workstation groups"},
     {"production.facility_view", "View production sites + their floor plans"},
     {"production.facility_create", "Create new production sites"},

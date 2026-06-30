@@ -45,21 +45,130 @@ defmodule Backend.Production.ScheduleWalker do
   working window. Anything that doesn't fit gets dumped at the end
   of the last window with the overflow counted in
   `outside_hours_seconds`.
+
+  Optional capacity-aware mode via `opts`:
+
+    * `:reservations` — list of `{start :: DateTime, finish :: DateTime}`
+      blocks already scheduled on this WSG (excluding the step being
+      placed). Defaults to `[]`.
+    * `:capacity` — how many ops can run in parallel on the WSG
+      (i.e. how many active Workstation rows live in the group).
+      Defaults to `1`.
+
+  When reservations + capacity are supplied, the walker first slices
+  out any sub-interval where `concurrent reservations >= capacity`
+  from the working windows, then walks the remaining free time. So
+  a planner dropping an MO on a busy 10:00 slot lands at the next
+  free gap automatically — the calendar never silently overbooks.
   """
-  @spec walk_forward([interval()], DateTime.t(), non_neg_integer()) ::
+  @spec walk_forward([interval()], DateTime.t(), non_neg_integer(), keyword()) ::
           {:ok, placement()}
-  def walk_forward(intervals, %DateTime{} = cursor, duration_seconds)
+  def walk_forward(intervals, %DateTime{} = cursor, duration_seconds, opts \\ [])
       when is_integer(duration_seconds) and duration_seconds >= 0 do
     if duration_seconds == 0 do
       {:ok, %{start_at: cursor, finish_at: cursor, segments: [], outside_hours_seconds: 0}}
     else
+      free = apply_reservations(intervals, opts)
+
       do_walk_forward(
-        Enum.sort_by(intervals, & &1.open, DateTime),
+        Enum.sort_by(free, & &1.open, DateTime),
         cursor,
         duration_seconds,
         [],
         nil
       )
+    end
+  end
+
+  defp apply_reservations(intervals, opts) do
+    reservations = Keyword.get(opts, :reservations, [])
+    capacity = Keyword.get(opts, :capacity, 1)
+
+    cond do
+      reservations == [] -> intervals
+      capacity <= 0 -> []
+      true -> subtract_intervals(intervals, busy_intervals(reservations, capacity))
+    end
+  end
+
+  # Sweep-line over reservation start / finish events. Whenever the
+  # concurrent count is at or above capacity, we accumulate a "busy"
+  # interval. At equal timestamps we process finish (-1) before start
+  # (+1) so back-to-back bookings (A finishes at 10:00, B starts at
+  # 10:00) do not register as a concurrent overlap.
+  defp busy_intervals(reservations, capacity)
+       when is_list(reservations) and is_integer(capacity) and capacity >= 1 do
+    events =
+      reservations
+      |> Enum.flat_map(fn {s, f} -> [{s, +1}, {f, -1}] end)
+      |> Enum.sort_by(fn {t, delta} -> {DateTime.to_unix(t, :microsecond), -delta} end)
+
+    {busy, _count, _open} =
+      Enum.reduce(events, {[], 0, nil}, fn {t, delta}, {acc, count, open_at} ->
+        new_count = count + delta
+
+        cond do
+          # Crossed up into "at capacity" — start a busy interval.
+          count < capacity and new_count >= capacity ->
+            {acc, new_count, t}
+
+          # Dropped back below capacity — close the open busy interval.
+          count >= capacity and new_count < capacity and not is_nil(open_at) ->
+            {[%{open: open_at, close: t} | acc], new_count, nil}
+
+          true ->
+            {acc, new_count, open_at}
+        end
+      end)
+
+    Enum.reverse(busy)
+  end
+
+  # Slice each working interval, removing time covered by any busy
+  # interval. Both lists are assumed roughly sorted; we sort defensively.
+  defp subtract_intervals(working, []), do: working
+
+  defp subtract_intervals(working, busy) do
+    busy_sorted = Enum.sort_by(busy, & &1.open, DateTime)
+
+    Enum.flat_map(working, fn w ->
+      subtract_one(w, busy_sorted)
+    end)
+  end
+
+  defp subtract_one(w, []), do: [w]
+
+  defp subtract_one(%{open: w_open, close: w_close} = w, [b | rest]) do
+    cond do
+      # busy entirely before working window — skip
+      DateTime.compare(b.close, w_open) != :gt ->
+        subtract_one(w, rest)
+
+      # busy entirely after — done with this window
+      DateTime.compare(b.open, w_close) != :lt ->
+        [w]
+
+      # overlap — cut window around busy
+      true ->
+        head =
+          if DateTime.compare(b.open, w_open) == :gt do
+            [%{open: w_open, close: b.open}]
+          else
+            []
+          end
+
+        tail_window =
+          if DateTime.compare(b.close, w_close) == :lt do
+            %{open: b.close, close: w_close}
+          else
+            nil
+          end
+
+        if tail_window do
+          head ++ subtract_one(tail_window, rest)
+        else
+          head
+        end
     end
   end
 

@@ -108,12 +108,15 @@ function TimedCalendar({
     [data.operations, days],
   );
 
-  // Same-WSG overlap detection. Different-WSG overlaps are NOT
-  // conflicts (parallel work) — they just get laid out side-by-side
-  // via the lane algorithm without a red outline.
+  // Same-WSG overlap detection. A conflict is flagged only when the
+  // concurrent op count exceeds the WSG's capacity (= count of active
+  // Workstation rows in the group). Two ops on a 2-machine group is
+  // legal parallel work; three is the overbook that warrants a red
+  // outline. Different-WSG overlaps are never conflicts — they get
+  // laid out side-by-side via the lane algorithm.
   const conflictIds = useMemo(
-    () => detectSameWsgConflicts(data.operations),
-    [data.operations],
+    () => detectSameWsgConflicts(data.operations, data.workstation_groups),
+    [data.operations, data.workstation_groups],
   );
 
   const totalHeight = (DAY_END_HOUR - DAY_START_HOUR + 1) * HOUR_HEIGHT_PX;
@@ -736,14 +739,34 @@ function assignLanes(
 }
 
 /**
- * Same-WSG overlap = a real conflict (one workstation can't run two
- * ops in parallel). Returns the set of op ids that share at least one
- * second of overlap with another op on the same workstation_group_id.
- * Ops with no WSG (unassigned steps) never conflict.
+ * Same-WSG overbooking detector. Returns the set of op ids that are
+ * concurrently active on the same WSG when the concurrent count
+ * exceeds the group's capacity (= count of active Workstation rows).
+ *
+ * A 2-machine "Capsulator" group running two ops at the same hour is
+ * legal parallel work — no flag. A third op stacked on top is the
+ * overbook that earns a red outline.
+ *
+ * Algorithm per WSG:
+ *   1. Build start/finish events; sort with -1 deltas (finishes) before
+ *      +1 deltas (starts) at the same timestamp so back-to-back blocks
+ *      do not count as a concurrent overlap.
+ *   2. Sweep — track which ops are currently "active" (their start has
+ *      passed, their finish hasn't). Whenever the active count exceeds
+ *      capacity, every currently-active op gets flagged.
+ *
+ * Ops without a WSG (rare, legacy) never conflict — they can't lock
+ * a machine they don't claim.
  */
 function detectSameWsgConflicts(
   ops: ScheduleOperation[],
+  workstationGroups: ProductionScheduleResponse["workstation_groups"],
 ): Set<number> {
+  const capacityByWsg = new Map<number, number>();
+  for (const wsg of workstationGroups ?? []) {
+    capacityByWsg.set(wsg.id, Math.max(1, wsg.workstation_count ?? 1));
+  }
+
   const out = new Set<number>();
   const byWsg = new Map<number, ScheduleOperation[]>();
   for (const op of ops) {
@@ -752,19 +775,34 @@ function detectSameWsgConflicts(
     arr.push(op);
     byWsg.set(op.workstation_group_id, arr);
   }
-  for (const arr of byWsg.values()) {
-    for (let i = 0; i < arr.length; i++) {
-      const a = arr[i];
-      const aStart = new Date(a.planned_start!).getTime();
-      const aEnd = new Date(a.planned_finish!).getTime();
-      for (let j = i + 1; j < arr.length; j++) {
-        const b = arr[j];
-        const bStart = new Date(b.planned_start!).getTime();
-        const bEnd = new Date(b.planned_finish!).getTime();
-        if (aStart < bEnd && bStart < aEnd) {
-          out.add(a.id);
-          out.add(b.id);
+
+  for (const [wsgId, arr] of byWsg) {
+    const capacity = capacityByWsg.get(wsgId) ?? 1;
+    type Event = { t: number; delta: 1 | -1; op: ScheduleOperation };
+    const events: Event[] = [];
+    for (const op of arr) {
+      events.push({
+        t: new Date(op.planned_start!).getTime(),
+        delta: 1,
+        op,
+      });
+      events.push({
+        t: new Date(op.planned_finish!).getTime(),
+        delta: -1,
+        op,
+      });
+    }
+    events.sort((a, b) => (a.t === b.t ? a.delta - b.delta : a.t - b.t));
+
+    const active = new Set<ScheduleOperation>();
+    for (const ev of events) {
+      if (ev.delta === 1) {
+        active.add(ev.op);
+        if (active.size > capacity) {
+          for (const op of active) out.add(op.id);
         }
+      } else {
+        active.delete(ev.op);
       }
     }
   }

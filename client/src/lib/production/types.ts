@@ -134,7 +134,9 @@ export interface WorkstationGroup {
   code: string | null;
   name: string;
   notes: string | null;
-  instances: number;
+  /** Capacity = count of active Workstation rows in this group. The
+   *  scheduler reads this to know how many ops can run in parallel. */
+  workstation_count: number;
   kind: WorkstationGroupKind;
   hourly_rate_enabled: boolean;
   /** Decimal string when present (preserves precision in JSON). */
@@ -161,7 +163,8 @@ export interface WorkstationGroupSummary {
   code: string | null;
   name: string;
   kind: WorkstationGroupKind;
-  instances: number;
+  /** Capacity = count of active Workstation rows in this group. */
+  workstation_count: number;
   hourly_rate_enabled: boolean;
   hourly_rate: string | null;
   color: string | null;
@@ -186,7 +189,6 @@ export interface WorkstationGroupLedgerPage {
 export interface WorkstationGroupUpsertInput {
   name?: string;
   notes?: string | null;
-  instances?: number;
   kind?: WorkstationGroupKind;
   hourly_rate_enabled?: boolean;
   hourly_rate?: string | null;

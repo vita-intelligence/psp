@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -71,7 +72,6 @@ interface FormState {
   name: string;
   notes: string;
   default_operation_notes: string;
-  instances: string;
   kind: WorkstationGroupKind;
   hourly_rate_enabled: boolean;
   hourly_rate: string;
@@ -144,7 +144,6 @@ function initialFrom(group: WorkstationGroup | null): FormState {
       name: "",
       notes: "",
       default_operation_notes: "",
-      instances: "1",
       kind: "active_processing",
       hourly_rate_enabled: false,
       hourly_rate: "",
@@ -160,7 +159,6 @@ function initialFrom(group: WorkstationGroup | null): FormState {
     name: group.name,
     notes: group.notes ?? "",
     default_operation_notes: group.default_operation_notes ?? "",
-    instances: String(group.instances ?? 1),
     kind: group.kind,
     hourly_rate_enabled: group.hourly_rate_enabled,
     hourly_rate: group.hourly_rate ?? "",
@@ -278,17 +276,10 @@ export function WorkstationGroupForm({
     setFieldErrors({});
     setActionError(null);
 
-    const instances = Number(state.instances);
-    if (!Number.isFinite(instances) || instances < 1) {
-      setFieldErrors({ instances: ["Must be a whole number 1 or more."] });
-      return;
-    }
-
     const payload = {
       name: state.name.trim(),
       notes: state.notes.trim() || null,
       default_operation_notes: state.default_operation_notes.trim() || null,
-      instances,
       kind: state.kind,
       hourly_rate_enabled: state.hourly_rate_enabled,
       hourly_rate: state.hourly_rate_enabled
@@ -427,18 +418,35 @@ export function WorkstationGroupForm({
                 errors={fieldErrors.name}
               />
 
-              <CollabRow
-                id="instances"
-                label="Number of instances"
-                value={state.instances}
-                onChange={(v) => setField("instances", v.replace(/[^\d]/g, ""))}
-                onFocus={focusField}
-                onBlur={blurField}
-                editor={fieldEditors.instances}
-                errors={fieldErrors.instances}
-                hint="How many identical workstations are in this group (1+)."
-                mono
-              />
+              <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
+                <Label className="pt-2.5 text-sm font-medium">Capacity</Label>
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-sm">
+                    <span className="font-semibold text-foreground">
+                      {group?.workstation_count ?? 0}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {group?.workstation_count === 1
+                        ? "machine in this group"
+                        : "machines in this group"}
+                    </span>
+                    {group ? (
+                      <Link
+                        href={`/production/workstations?workstation_group_id=${group.id}`}
+                        className="ml-auto text-xs font-medium text-primary underline-offset-2 hover:underline"
+                      >
+                        Manage workstations →
+                      </Link>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Capacity is the count of active Workstation rows in this
+                    group — the scheduler enforces it so two MOs can&apos;t
+                    occupy the same machine at the same time. Add or remove
+                    workstations to change capacity.
+                  </p>
+                </div>
+              </div>
 
               <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
                 <Label className="pt-2.5 text-sm font-medium">Type</Label>

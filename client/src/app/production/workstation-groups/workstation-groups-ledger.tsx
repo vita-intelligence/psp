@@ -107,12 +107,12 @@ export function WorkstationGroupsLedger({ initialPage }: Props) {
         ),
       },
       {
-        id: "instances",
-        header: "Instances",
+        id: "workstation_count",
+        header: "Capacity",
         widthClassName: "w-24",
         cell: (g) => (
           <span className="font-mono text-xs">
-            {formatCompanyNumber(g.instances, prefs)}
+            {formatCompanyNumber(g.workstation_count, prefs)}
           </span>
         ),
       },
@@ -171,8 +171,7 @@ export function WorkstationGroupsLedger({ initialPage }: Props) {
             </Badge>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            {formatCompanyNumber(g.instances, prefs)} instance
-            {g.instances === 1 ? "" : "s"}
+            Capacity {formatCompanyNumber(g.workstation_count, prefs)}
             {g.hourly_rate_enabled && g.hourly_rate && (
               <> · {formatCompanyMoney(g.hourly_rate, prefs)} / h</>
             )}

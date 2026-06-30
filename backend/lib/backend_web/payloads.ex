@@ -1768,7 +1768,10 @@ defmodule BackendWeb.Payloads do
       code: render_code(g, "workstation_group"),
       name: g.name,
       notes: g.notes,
-      instances: g.instances,
+      # Capacity = count of active Workstation rows in this group.
+      # Populated by Backend.Production read paths; defaults to 0
+      # when callers haven't preloaded it.
+      workstation_count: g.workstation_count || 0,
       kind: g.kind,
       hourly_rate_enabled: g.hourly_rate_enabled,
       hourly_rate: decimal_to_string(g.hourly_rate),
@@ -1798,7 +1801,7 @@ defmodule BackendWeb.Payloads do
       code: render_code(g, "workstation_group"),
       name: g.name,
       kind: g.kind,
-      instances: g.instances,
+      workstation_count: g.workstation_count || 0,
       hourly_rate_enabled: g.hourly_rate_enabled,
       hourly_rate: decimal_to_string(g.hourly_rate),
       color: g.color,

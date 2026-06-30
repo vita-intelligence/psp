@@ -539,7 +539,8 @@ defmodule Backend.Production do
       |> ListQueries.apply_sort(sort, @wg_sortable, @wg_default_sort)
       |> preload([:created_by, :updated_by])
 
-    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+    page = ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+    Map.update(page, :items, [], &populate_workstation_counts/1)
   end
 
   defp maybe_wg_kind_filter(query, nil), do: query
@@ -559,6 +560,10 @@ defmodule Backend.Production do
     |> where([g], g.company_id == ^company_id and g.uuid == ^uuid)
     |> preload([:created_by, :updated_by])
     |> Repo.one()
+    |> case do
+      nil -> nil
+      g -> populate_workstation_count(g)
+    end
   end
 
   @doc """
@@ -632,15 +637,55 @@ defmodule Backend.Production do
     end
   end
 
-  defp reload_workstation_group(%WorkstationGroup{} = g),
-    do: Repo.preload(g, [:created_by, :updated_by], force: true)
+  defp reload_workstation_group(%WorkstationGroup{} = g) do
+    g
+    |> Repo.preload([:created_by, :updated_by], force: true)
+    |> populate_workstation_count()
+  end
+
+  # Stuff the virtual `workstation_count` field with the count of
+  # active Workstation rows. Capacity = this number. Called on every
+  # read path so the FE always sees the current number; we don't
+  # cache it because adding/removing stations is rare and the count
+  # query is a single indexed lookup.
+  defp populate_workstation_count(%WorkstationGroup{} = g) do
+    count =
+      from(w in Workstation,
+        where: w.workstation_group_id == ^g.id and w.is_active == true,
+        select: count(w.id)
+      )
+      |> Repo.one() || 0
+
+    %{g | workstation_count: count}
+  end
+
+  # Bulk variant for list pages — one query for the whole page.
+  defp populate_workstation_counts(groups) when is_list(groups) do
+    case Enum.map(groups, & &1.id) do
+      [] ->
+        groups
+
+      ids ->
+        counts =
+          from(w in Workstation,
+            where: w.workstation_group_id in ^ids and w.is_active == true,
+            group_by: w.workstation_group_id,
+            select: {w.workstation_group_id, count(w.id)}
+          )
+          |> Repo.all()
+          |> Map.new()
+
+        Enum.map(groups, fn g ->
+          %{g | workstation_count: Map.get(counts, g.id, 0)}
+        end)
+    end
+  end
 
   # Audit snapshot — every column the operator can change at form time.
   defp wg_snapshot(%WorkstationGroup{} = g) do
     %{
       name: g.name,
       notes: g.notes,
-      instances: g.instances,
       kind: g.kind,
       hourly_rate_enabled: g.hourly_rate_enabled,
       hourly_rate: g.hourly_rate,
@@ -1825,12 +1870,23 @@ defmodule Backend.Production do
     intervals = intervals_for_step(resolved, target_wsg_id)
     duration = step.planned_duration_seconds || 0
 
+    # Capacity-aware placement: feed in any other steps already
+    # scheduled on this WSG so the walker auto-walks past full slots.
+    # We exclude this step's own id so dragging itself doesn't
+    # conflict with its old position.
+    capacity = wsg_capacity(target_wsg_id)
+    reservations = wsg_reservations(target_wsg_id, step.id, new_start_dt)
+
     {:ok,
      %{
        start_at: walked_start,
        finish_at: walked_finish,
        outside_hours_seconds: outside
-     }} = ScheduleWalker.walk_forward(intervals, new_start_dt, duration)
+     }} =
+      ScheduleWalker.walk_forward(intervals, new_start_dt, duration,
+        reservations: reservations,
+        capacity: capacity
+      )
 
     wsg_id = Keyword.get(opts, :workstation_group_id)
     before = mo_step_snapshot(step)
@@ -1892,7 +1948,8 @@ defmodule Backend.Production do
     if step_locked_by_pickup?(step) do
       {:error, :pickup_in_progress}
     else
-    with {:ok, parsed} <- parse_segment_list(segments) do
+    with {:ok, parsed} <- parse_segment_list(segments),
+         :ok <- ensure_segments_fit_capacity(step, parsed) do
       [{first_start, _} | _] = parsed
       {_, last_finish} = List.last(parsed)
 
@@ -1949,6 +2006,64 @@ defmodule Backend.Production do
         _ -> {:halt, {:error, :invalid_segments}}
       end
     end)
+  end
+
+  # Hard-reject typed segments that would push concurrent ops on the
+  # WSG above its capacity. Unlike `move_mo_step` (drag-to-reschedule)
+  # which auto-walks past full slots, the click-to-edit dialog lets
+  # the planner pin LITERAL times — silently moving them would
+  # contradict the values they just typed. So we surface the conflict
+  # and let them pick a different time themselves.
+  #
+  # Steps without a WSG (rare, legacy) skip the check; there's no
+  # machine to overbook against.
+  defp ensure_segments_fit_capacity(_step, []), do: :ok
+
+  defp ensure_segments_fit_capacity(%ManufacturingOrderStep{} = step, parsed) do
+    case step.workstation_group_id do
+      nil ->
+        :ok
+
+      wsg_id when is_integer(wsg_id) ->
+        capacity = wsg_capacity(wsg_id)
+        earliest = parsed |> Enum.map(fn {s, _} -> s end) |> Enum.min(DateTime)
+        existing = wsg_reservations(wsg_id, step.id, earliest)
+
+        Enum.find_value(parsed, :ok, fn {ns, nf} ->
+          if segment_overbooks?(ns, nf, existing, capacity) do
+            {:error, :wsg_capacity_exceeded}
+          else
+            false
+          end
+        end)
+    end
+  end
+
+  # Sweep-line: does the new segment [ns, nf) push concurrent existing
+  # ops + 1 above capacity at any moment? True when the EXISTING peak
+  # (clipped to [ns, nf)) is already at or above capacity, because
+  # the new op would tip count to capacity + 1.
+  defp segment_overbooks?(ns, nf, existing, capacity) do
+    overlapping =
+      Enum.filter(existing, fn {es, ef} ->
+        DateTime.compare(ns, ef) == :lt and DateTime.compare(es, nf) == :lt
+      end)
+
+    events =
+      Enum.flat_map(overlapping, fn {es, ef} ->
+        s = if DateTime.compare(es, ns) == :lt, do: ns, else: es
+        f = if DateTime.compare(ef, nf) == :gt, do: nf, else: ef
+        [{s, +1}, {f, -1}]
+      end)
+      |> Enum.sort_by(fn {t, delta} -> {DateTime.to_unix(t, :microsecond), -delta} end)
+
+    {peak, _count} =
+      Enum.reduce(events, {0, 0}, fn {_t, delta}, {peak, count} ->
+        new_count = count + delta
+        {max(peak, new_count), new_count}
+      end)
+
+    peak >= capacity
   end
 
   @doc """
@@ -4363,9 +4478,14 @@ defmodule Backend.Production do
             end
 
           intervals = intervals_for_step(resolved, effective_wsg_id)
+          capacity = wsg_capacity(effective_wsg_id)
+          reservations = wsg_reservations(effective_wsg_id, step.id, cursor)
 
           {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
-            ScheduleWalker.walk_forward(intervals, cursor, duration)
+            ScheduleWalker.walk_forward(intervals, cursor, duration,
+              reservations: reservations,
+              capacity: capacity
+            )
 
           before = mo_step_snapshot(step)
 
@@ -4541,6 +4661,54 @@ defmodule Backend.Production do
 
   # ----- Internal scheduling helpers ------------------------------
 
+  # Capacity of a workstation group = number of active Workstation
+  # rows pointed at it. Falls back to 1 when the WSG has no children
+  # — empty groups still need to be schedulable (you'd otherwise
+  # block scheduling entirely until the user populates Workstations).
+  defp wsg_capacity(nil), do: 1
+
+  defp wsg_capacity(wsg_id) when is_integer(wsg_id) do
+    from(w in Workstation,
+      where: w.workstation_group_id == ^wsg_id and w.is_active == true,
+      select: count(w.id)
+    )
+    |> Repo.one()
+    |> case do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 1
+    end
+  end
+
+  # Existing reservations on a WSG, expressed as `{start, finish}`
+  # pairs for `ScheduleWalker`. Pulled from `manufacturing_order_steps`
+  # with non-null planned_start/finish, excluding the step being moved
+  # (so dragging a block to a new time doesn't conflict with itself).
+  # Bounded forward — we only care about steps that overlap or come
+  # after the placement cursor.
+  defp wsg_reservations(nil, _exclude_step_id, _from_dt), do: []
+
+  defp wsg_reservations(wsg_id, exclude_step_id, %DateTime{} = from_dt)
+       when is_integer(wsg_id) do
+    base =
+      from(s in ManufacturingOrderStep,
+        where:
+          s.workstation_group_id == ^wsg_id and
+            not is_nil(s.planned_start) and
+            not is_nil(s.planned_finish) and
+            s.planned_finish > ^from_dt,
+        select: {s.planned_start, s.planned_finish}
+      )
+
+    query =
+      if is_integer(exclude_step_id) do
+        from(s in base, where: s.id != ^exclude_step_id)
+      else
+        base
+      end
+
+    Repo.all(query)
+  end
+
   # Resolve working intervals over a 90-day window starting from
   # `from_dt`. We resolve at WAREHOUSE level (not per-WSG) so all
   # of an MO's steps share one calendar — matches operators' mental
@@ -4584,6 +4752,7 @@ defmodule Backend.Production do
       where: g.company_id == ^company_id and g.is_active == true
     )
     |> Repo.all()
+    |> populate_workstation_counts()
   end
 
   defp do_schedule_one_forward(actor, %ManufacturingOrder{} = mo, %DateTime{} = start_dt) do
@@ -4607,9 +4776,14 @@ defmodule Backend.Production do
         Enum.reduce(steps, {start_dt, nil, 0}, fn step, {cursor, first, off_acc} ->
           duration = step.planned_duration_seconds || 0
           intervals = intervals_for_step(resolved, step.workstation_group_id)
+          capacity = wsg_capacity(step.workstation_group_id)
+          reservations = wsg_reservations(step.workstation_group_id, step.id, cursor)
 
           {:ok, %{start_at: s_start, finish_at: s_finish, outside_hours_seconds: off}} =
-            ScheduleWalker.walk_forward(intervals, cursor, duration)
+            ScheduleWalker.walk_forward(intervals, cursor, duration,
+              reservations: reservations,
+              capacity: capacity
+            )
 
           write_step_times!(actor, step, s_start, s_finish)
           {s_finish, first || s_start, off_acc + off}

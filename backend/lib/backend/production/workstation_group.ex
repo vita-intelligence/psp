@@ -2,9 +2,15 @@ defmodule Backend.Production.WorkstationGroup do
   @moduledoc """
   A named cluster of identical workstations — an oven bank, a packaging
   line, a blending station. The group is the parent every individual
-  workstation will eventually point at; it carries the production
-  attributes the workstations inside it share (kind, instance count,
-  hourly rate, optional overrides for working hours / holidays).
+  workstation points at; it carries the production attributes the
+  workstations inside it share (kind, hourly rate, optional overrides
+  for working hours / holidays).
+
+  Capacity (number of parallel machines the group can run) is a
+  derived count of active `Workstation` rows in the group, exposed
+  via the virtual `workstation_count` field. To increase a group's
+  capacity, add another Workstation row; to decrease it, deactivate
+  one. The scheduler reads this count to enforce concurrent-op limits.
 
   `kind` is constrained to two values:
     - `active_processing` — operator-driven; the schedule consumes
@@ -31,8 +37,11 @@ defmodule Backend.Production.WorkstationGroup do
     field :uuid, Ecto.UUID, autogenerate: true
     field :name, :string
     field :notes, :string
-    field :instances, :integer, default: 1
     field :kind, :string, default: "active_processing"
+    # Derived: count of active Workstation rows in this group. Populated
+    # by the context layer via a subquery on read paths; the field
+    # never persists. Capacity = this number.
+    field :workstation_count, :integer, virtual: true, default: 0
 
     field :hourly_rate_enabled, :boolean, default: false
     field :hourly_rate, :decimal
@@ -60,7 +69,7 @@ defmodule Backend.Production.WorkstationGroup do
   end
 
   @cast_fields ~w(
-    company_id name notes instances kind
+    company_id name notes kind
     hourly_rate_enabled hourly_rate
     custom_working_hours working_hours
     custom_holidays holidays
@@ -79,7 +88,6 @@ defmodule Backend.Production.WorkstationGroup do
     |> validate_inclusion(:kind, @kinds,
       message: "must be active_processing or passive_processing"
     )
-    |> validate_number(:instances, greater_than_or_equal_to: 1)
     |> validate_hourly_rate()
     |> trim_name()
     |> clean_color()
@@ -87,10 +95,6 @@ defmodule Backend.Production.WorkstationGroup do
     |> unique_constraint([:company_id, :name],
       name: :workstation_groups_company_name_index,
       message: "another workstation group already uses this name"
-    )
-    |> check_constraint(:instances,
-      name: :workstation_groups_instances_positive,
-      message: "must be at least 1"
     )
     |> check_constraint(:kind,
       name: :workstation_groups_kind_known,

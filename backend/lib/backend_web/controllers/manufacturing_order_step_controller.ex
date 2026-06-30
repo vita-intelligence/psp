@@ -183,6 +183,28 @@ defmodule BackendWeb.ManufacturingOrderStepController do
           )
         )
 
+      {:error, :wsg_capacity_exceeded} ->
+        conn
+        |> put_status(:conflict)
+        |> json(
+          Errors.payload(
+            "wsg_capacity_exceeded",
+            "Another MO is already on this workstation at the time you typed. Pick a different time or add capacity to the workstation group.",
+            %{}
+          )
+        )
+
+      {:error, :pickup_in_progress} ->
+        conn
+        |> put_status(:conflict)
+        |> json(
+          Errors.payload(
+            "pickup_in_progress",
+            "Picker is on the floor — can't move this op until the pickup is finished.",
+            %{}
+          )
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
 
