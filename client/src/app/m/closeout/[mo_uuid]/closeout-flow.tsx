@@ -679,6 +679,12 @@ export function CloseoutFlow({
                   activeItem.kind === "output" ||
                   (!Number.isNaN(remaining) && remaining > 0)
                 ) {
+                  // Pre-pick a recommended dispatch cell so the
+                  // operator lands on the directions panel instead of
+                  // the "scan any cell" scanner. They can Re-pick if
+                  // they need a different cell.
+                  const recommended = dispatchCells[0] ?? null;
+                  if (recommended) setScannedCell(recommended);
                   setStep({ kind: "scan_cell", itemKey: activeItem.key });
                 } else {
                   // Fully consumed booking — no cell scan needed.
@@ -693,7 +699,7 @@ export function CloseoutFlow({
               Number(remainingQty) > 0 ? (
                 <>
                   <ScanLine className="mr-1.5 size-4" />
-                  Scan dispatch cell
+                  Continue to dispatch hand-off
                 </>
               ) : (
                 <>
@@ -710,18 +716,24 @@ export function CloseoutFlow({
         <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
           <div className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
             <p className="text-[10px] uppercase tracking-wider">
-              Step 3 of 3 — move &amp; scan dispatch cell
+              Step 3 of 3 — confirm dispatch cell
             </p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
               {scannedCell
                 ? "Walk the material to the highlighted cell, then confirm"
-                : "Pick a production-side dispatch cell to drop the leftover"}
+                : "Scan the dispatch cell QR to drop the material"}
             </p>
             <p className="mt-1 text-[11px] leading-snug">
               The dispatch cell is <strong>still inside production</strong>
               {" "}— you&apos;re staging for the warehouse picker, not
               walking it back to the warehouse yourself. Warehouse will
               fetch from dispatch in the return-pickup step.
+              {scannedCell && (
+                <>
+                  {" "}Hit <strong>Re-pick</strong> to scan a different
+                  cell if this one is full or unavailable.
+                </>
+              )}
             </p>
           </div>
 
