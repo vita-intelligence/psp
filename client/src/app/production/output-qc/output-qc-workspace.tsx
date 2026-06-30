@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type { OutputQcEntry } from "@/lib/production/types";
@@ -605,6 +606,12 @@ function PartialPackagingBlock({
           onChange={(v) => patch("stack_factor", v)}
         />
       </div>
+      <PackBoxPreview
+        lengthMm={Number(pkg.length_mm) || 0}
+        widthMm={Number(pkg.width_mm) || 0}
+        heightMm={Number(pkg.height_mm) || 0}
+        stack={Number(pkg.stack_factor) || 1}
+      />
     </div>
   );
 }

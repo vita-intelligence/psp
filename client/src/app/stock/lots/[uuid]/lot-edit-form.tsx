@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { CurrencyPicker } from "@/components/forms/currency-picker";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
@@ -919,6 +920,14 @@ function PackagingSection({
             inputMode="numeric"
           />
         </Field>
+      </div>
+      <div className="mt-3 sm:col-span-3">
+        <PackBoxPreview
+          lengthMm={Number(draft.package_length_mm) || 0}
+          widthMm={Number(draft.package_width_mm) || 0}
+          heightMm={Number(draft.package_height_mm) || 0}
+          stack={Number(draft.stack_factor) || 1}
+        />
       </div>
     </section>
   );

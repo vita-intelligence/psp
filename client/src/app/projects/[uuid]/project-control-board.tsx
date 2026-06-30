@@ -207,6 +207,8 @@ type MoLiveStage =
   | "awaiting_preflight"
   | "ready_to_run"
   | "running"
+  | "awaiting_output_qc"
+  | "awaiting_warehouse_return"
   | "completed";
 
 interface MoStageView {
@@ -266,12 +268,30 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
         tone: "amber",
       };
     case "completed":
+      // Production run is over but the closeout chain has several
+      // gates left before the MO is truly done. Split them out so
+      // the wizard shows the REAL pending step instead of jumping
+      // straight to "Closeout".
+      if (mo.output_qc_pending_count > 0) {
+        return {
+          key: "awaiting_output_qc",
+          label: `Awaiting output QC (${mo.output_qc_pending_count})`,
+          hint: "Production finished. Output lots are at the production-feed cell with status received — a QC operator needs to pass or fail each before the warehouse can pick them up. Leftover ingredients also stay at the feed cell until QC clears the batch.",
+          tone: "amber",
+        };
+      }
+      if (mo.output_at_feed_count > 0) {
+        return {
+          key: "awaiting_warehouse_return",
+          label: `QC passed — warehouse fetch (${mo.output_at_feed_count})`,
+          hint: "QC cleared the outputs. Warehouse picker needs to walk them back from the production-feed cell to storage. Any leftover ingredients return on the same pickup.",
+          tone: "amber",
+        };
+      }
       return {
         key: "completed",
         label: "Closeout",
-        hint: mo.has_output_at_production_feed
-          ? "Outputs are sitting at the production-feed cell; warehouse needs to fetch them back."
-          : "Outputs have been returned to warehouse storage.",
+        hint: "Outputs have been returned to warehouse storage. MO is done from production's side.",
         tone: "emerald",
       };
     default:
@@ -871,16 +891,46 @@ function NextActionCard({
           />
         )}
 
+        {/* Every other pending step in the project. Renders as a
+            full-width row per CTA so the room can see the whole
+            punch-list at a glance instead of one primary + a strip
+            of small chips. Disabled buttons mean "the BE will
+            refuse" — typically a permission the current user
+            doesn't carry. The hint row underneath says so. */}
         {nextAction.secondary_ctas.filter(filterCta).length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {nextAction.secondary_ctas.filter(filterCta).map((cta, idx) => (
-              <SecondaryCtaButton
-                key={`${cta.label}-${idx}`}
-                cta={cta}
-                onClick={onCtaClick}
-                disabled={!ctaAllowed(cta, permissions)}
-              />
-            ))}
+          <div className="space-y-2 pt-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Other steps in this project
+            </p>
+            <ul className="space-y-1.5">
+              {nextAction.secondary_ctas.filter(filterCta).map((cta, idx) => {
+                const allowed = ctaAllowed(cta, permissions);
+                const rowTitle = cta.description ?? cta.label;
+                return (
+                  <li
+                    key={`${cta.label}-${idx}`}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <p className="text-sm font-medium leading-snug">
+                        {rowTitle}
+                      </p>
+                      {!allowed && (
+                        <p className="text-[11px] text-muted-foreground">
+                          You don&apos;t have the permission for this — ask
+                          a teammate who does.
+                        </p>
+                      )}
+                    </div>
+                    <SecondaryCtaButton
+                      cta={cta}
+                      onClick={onCtaClick}
+                      disabled={!allowed}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         )}
 
@@ -1520,23 +1570,58 @@ function MiniMoCard({
           </Button>
         )}
 
-        {mo.status === "completed" && mo.has_output_at_production_feed && (
+        {stage?.key === "awaiting_output_qc" && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/production/output-qc">
+              <ExternalLink className="mr-1 size-3" />
+              Open output QC
+            </Link>
+          </Button>
+        )}
+
+        {stage?.key === "awaiting_warehouse_return" && (
           <Button
             size="sm"
             variant="outline"
             onClick={() =>
               onSendToDevice({
-                label: "Send closeout to device",
+                label: "Send return-pickup to device",
                 kind: "send_to_device",
-                href: `/m/closeout/${mo.uuid}`,
+                href: `/m/return-pickup`,
                 mo_uuid: mo.uuid,
               })
             }
           >
             <Smartphone className="mr-1 size-3" />
-            Send closeout
+            Send return pickup
           </Button>
         )}
+
+        {/* Booking-level closeout (record consumed_quantity per
+            booking + route leftover ingredients to dispatch). Gated
+            on output QC being done first — the operator shouldn't
+            be paperworking consumption while the QC operator hasn't
+            verified the batch yet. Compliance-first: outputs prove
+            good → then we record what made them. */}
+        {mo.status === "completed" &&
+          mo.has_output_at_production_feed &&
+          mo.output_qc_pending_count === 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                onSendToDevice({
+                  label: "Send closeout to device",
+                  kind: "send_to_device",
+                  href: `/m/closeout/${mo.uuid}`,
+                  mo_uuid: mo.uuid,
+                })
+              }
+            >
+              <Smartphone className="mr-1 size-3" />
+              Send closeout
+            </Button>
+          )}
       </div>
 
       {/* Auto-spawned sub-assembly MOs render nested under the
@@ -2057,23 +2142,50 @@ function MoModal({
                 </Link>
               </Button>
             )}
-            {mo.status === "completed" && mo.has_output_at_production_feed && (
+            {stage?.key === "awaiting_output_qc" && (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/production/output-qc">
+                  <ExternalLink className="mr-1 size-3" />
+                  Open output QC
+                </Link>
+              </Button>
+            )}
+            {stage?.key === "awaiting_warehouse_return" && (
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() =>
                   onSendToDevice({
-                    label: "Send closeout to device",
+                    label: "Send return-pickup to device",
                     kind: "send_to_device",
-                    href: `/m/closeout/${mo.uuid}`,
+                    href: `/m/return-pickup`,
                     mo_uuid: mo.uuid,
                   })
                 }
               >
                 <Smartphone className="mr-1 size-3" />
-                Closeout on device
+                Return pickup on device
               </Button>
             )}
+            {mo.status === "completed" &&
+              mo.has_output_at_production_feed &&
+              mo.output_qc_pending_count === 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    onSendToDevice({
+                      label: "Send closeout to device",
+                      kind: "send_to_device",
+                      href: `/m/closeout/${mo.uuid}`,
+                      mo_uuid: mo.uuid,
+                    })
+                  }
+                >
+                  <Smartphone className="mr-1 size-3" />
+                  Closeout on device
+                </Button>
+              )}
           </div>
 
           <Button asChild size="sm">

@@ -844,7 +844,13 @@ defmodule Backend.OrderWizard do
   defp po_status_label(other), do: other
 
   defp next_action_for(:in_production, _co, _line_states, mos, _signers) do
-    active = Enum.reject(mos, &(&1.status == "completed"))
+    # Pending work = anything not yet completed PLUS completed MOs
+    # that still owe output-QC sign-off or whose outputs / leftovers
+    # haven't been pulled back to warehouse. Both surface to the
+    # "Do this next" punch-list so the room can see the whole tail
+    # of the production chain, not just the part that's actively
+    # running.
+    active = Enum.filter(mos, &mo_has_pending_work?/1)
 
     candidate =
       Enum.min_by(active, &mo_priority/1, fn -> List.first(active) end)
@@ -859,10 +865,18 @@ defmodule Backend.OrderWizard do
           "Heads up: #{candidate.broken_booking_count} broken booking(s). Fix before running.",
       primary_cta: cta,
       secondary_ctas:
-        for mo <- Enum.reject(active, &(&1.id == candidate.id)) do
-          {_title, cta} = production_step_cta(mo)
-          Map.put(cta, :label, "MO #{mo.code} — #{cta.label}")
-        end,
+        active
+        |> Enum.reject(&(&1.id == candidate.id))
+        |> Enum.sort_by(&mo_priority/1)
+        |> Enum.map(fn mo ->
+          {step_title, step_cta} = production_step_cta(mo)
+          # Keep the action verb on `label` (it's the button text);
+          # surface the full sentence on `description` so the FE can
+          # render the row's title separately from the button.
+          step_cta
+          |> Map.put(:label, "MO #{mo.code} — #{step_cta.label}")
+          |> Map.put(:description, step_title)
+        end),
       scheduler_link: %{
         label: "Open scheduler",
         href: "/production/schedule"
@@ -916,8 +930,43 @@ defmodule Backend.OrderWizard do
            href: "/production/runs/#{mo.uuid}"
          }}
 
+      "completed" ->
+        completed_step_cta(mo)
+
       _ ->
         {"Open MO #{mo.code}.",
+         %{
+           label: "Open MO",
+           kind: "link",
+           href: "/production/manufacturing-orders/#{mo.uuid}"
+         }}
+    end
+  end
+
+  # Split a `completed` MO by the closeout sub-stage. Mirrors the FE
+  # `deriveMoLiveStage` logic so the wizard's primary CTA and the
+  # per-MO card always agree on what comes next post-production.
+  defp completed_step_cta(mo) do
+    cond do
+      Map.get(mo, :output_qc_pending_count, 0) > 0 ->
+        {"Quality-check MO #{mo.code} outputs at the production-feed cell.",
+         %{
+           label: "Open output QC",
+           kind: "link",
+           href: "/production/output-qc"
+         }}
+
+      Map.get(mo, :has_output_at_production_feed?) == true ->
+        {"Return MO #{mo.code} outputs from the production-feed cell to warehouse.",
+         %{
+           label: "Send return-pickup to device",
+           kind: "send_to_device",
+           href: "/m/return-pickup",
+           mo_uuid: mo.uuid
+         }}
+
+      true ->
+        {"MO #{mo.code} closed out.",
          %{
            label: "Open MO",
            kind: "link",
@@ -978,30 +1027,30 @@ defmodule Backend.OrderWizard do
   end
 
   defp next_action_for(:closeout, _co, _line_states, mos, _signers) do
-    needs_closeout = Enum.filter(mos, & &1.has_output_at_production_feed?)
-    target = List.first(needs_closeout)
+    # Every completed MO that still has post-run work — output QC or
+    # warehouse return. Order: QC pending first (blocks every other
+    # step), then warehouse fetch. Sort matches the per-MO card stage
+    # ordering so the wizard's panel and the cards agree on priority.
+    pending = Enum.filter(mos, &mo_has_pending_work?/1)
+    target = List.first(pending)
+    {title, cta} = completed_step_cta(target)
 
     %{
       code: "run_closeout",
-      title:
-        "Closeout MO #{target.code} — move output back to warehouse.",
+      title: title,
       detail:
-        "Production is finished but the output lot is still at the production-feed cell. The warehouse team scans it back to a storage cell on mobile.",
-      primary_cta: %{
-        label: "Send to device",
-        kind: "send_to_device",
-        href: "/m/closeout/#{target.uuid}",
-        mo_uuid: target.uuid
-      },
+        "Production finished. Every output lot needs an output-QC verdict before closeout can be recorded; once QC clears the batch the warehouse picker walks outputs + leftovers back from the production-feed cell.",
+      primary_cta: cta,
       secondary_ctas:
-        for mo <- Enum.drop(needs_closeout, 1) do
-          %{
-            label: "Closeout MO #{mo.code}",
-            kind: "send_to_device",
-            href: "/m/closeout/#{mo.uuid}",
-            mo_uuid: mo.uuid
-          }
-        end
+        pending
+        |> Enum.drop(1)
+        |> Enum.map(fn mo ->
+          {step_title, step_cta} = completed_step_cta(mo)
+
+          step_cta
+          |> Map.put(:label, "MO #{mo.code} — #{step_cta.label}")
+          |> Map.put(:description, step_title)
+        end)
     }
   end
 
@@ -1157,6 +1206,13 @@ defmodule Backend.OrderWizard do
     output_lots = output_lots_for_mo(mo)
     feed_lots = Enum.filter(output_lots, & &1.at_production_feed?)
     warehouse_lots = output_lots -- feed_lots
+    # Output QC = a manufacturing_order lot in `received` status. The
+    # closeout flow creates them in that state; sign_off_output_qc
+    # flips them to `available` (pass) or `qc_failed` (fail). Counting
+    # this surfaces the "production finished but QC still owes a
+    # verdict" sub-stage on the wizard before closeout can advance.
+    output_qc_pending_count =
+      Enum.count(output_lots, &(&1.status == "received"))
 
     has_placeholders = placeholder_bookings != []
     past_approval = mo.status in ["approved", "scheduled", "in_progress", "completed"]
@@ -1195,6 +1251,7 @@ defmodule Backend.OrderWizard do
       output_lot_count: length(output_lots),
       output_at_feed_count: length(feed_lots),
       output_in_warehouse_count: length(warehouse_lots),
+      output_qc_pending_count: output_qc_pending_count,
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
       purchasing_requested_at: mo.purchasing_requested_at,
@@ -1231,9 +1288,17 @@ defmodule Backend.OrderWizard do
 
     mo_qty = mo.quantity || Decimal.new(0)
 
+    # Group children by the item they PRODUCE. We keep COMPLETED
+    # children in the mix and credit their `quantity_produced` (the
+    # real output that's now in lots) instead of `quantity` (the
+    # plan). Without this, the wizard regresses to "Awaiting
+    # ingredients" the moment a child closes out — the planned 292 kg
+    # was covering the parent, the child produces 292 kg, but the
+    # filter drops the row and the parent looks short again.
+    # Cancelled children stay excluded — they never produced anything.
     children_by_item =
       (Map.get(mo, :children) || [])
-      |> Enum.filter(&(&1.status not in ["completed", "cancelled"]))
+      |> Enum.reject(&(&1.status == "cancelled"))
       |> Enum.group_by(& &1.item_id)
 
     Enum.count(lines, fn line ->
@@ -1257,7 +1322,18 @@ defmodule Backend.OrderWizard do
             children_by_item
             |> Map.get(part_id, [])
             |> Enum.reduce(Decimal.new(0), fn c, acc ->
-              Decimal.add(acc, c.quantity || Decimal.new(0))
+              # Completed child: trust the real output qty. Anything
+              # in-flight: trust the planned qty.
+              contrib =
+                cond do
+                  c.status == "completed" and not is_nil(c.quantity_produced) ->
+                    c.quantity_produced
+
+                  true ->
+                    c.quantity || Decimal.new(0)
+                end
+
+              Decimal.add(acc, contrib)
             end)
 
           Decimal.compare(required, Decimal.add(booked, pending)) == :gt
@@ -1363,18 +1439,18 @@ defmodule Backend.OrderWizard do
     end)
   end
 
-  defp output_lots_for_mo(%ManufacturingOrder{id: mo_id}) do
+  defp output_lots_for_mo(%ManufacturingOrder{uuid: mo_uuid}) do
     # Lots created by this MO have source_kind = "manufacturing_order"
-    # and source_ref = "<mo.id>". We also include the MO's own
-    # produced_lot_id as a fallback in case some lot's source_ref
-    # got cleared.
-    source_ref = Integer.to_string(mo_id)
-
+    # and source_ref = "<mo.uuid>" (set by `create_produced_lots` in
+    # Backend.Production.finish_mo_production). Earlier this code
+    # compared against `mo.id` as a string, which never matched —
+    # making every MO look like it had zero outputs and short-
+    # circuiting the wizard's closeout / QC sub-stages.
     lots =
       from(l in Lot,
         where:
           l.source_kind == "manufacturing_order" and
-            l.source_ref == ^source_ref,
+            l.source_ref == ^mo_uuid,
         preload: [placements: [storage_cell: []]]
       )
       |> Repo.all()
@@ -1528,6 +1604,21 @@ defmodule Backend.OrderWizard do
         |> Repo.all()
     end
   end
+
+  # True when an MO still has work hanging off it. Non-completed
+  # MOs always count. Completed MOs count when output QC hasn't
+  # signed off all output lots OR when outputs are still sitting at
+  # the production-feed cell waiting for the warehouse fetch. The
+  # "Do this next" punch-list uses this to surface every step that
+  # still needs an operator's attention.
+  defp mo_has_pending_work?(%{status: "completed"} = mo) do
+    Map.get(mo, :output_qc_pending_count, 0) > 0 or
+      Map.get(mo, :has_output_at_production_feed?) == true
+  end
+
+  defp mo_has_pending_work?(%{status: status}) when is_binary(status), do: true
+
+  defp mo_has_pending_work?(_), do: false
 
   defp mo_priority(%{status: status, has_placeholder_bookings?: pb, broken_booking_count: bb}) do
     status_priority =

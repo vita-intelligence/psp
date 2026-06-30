@@ -2303,7 +2303,9 @@ defmodule Backend.Production do
   # an MO half-cancelled.
   defp transactional_transition(%User{} = actor, %ManufacturingOrder{} = mo, to) do
     Repo.transaction(fn ->
-      case do_transition(actor, mo, to) do
+      extra_attrs = transition_extra_attrs(mo, to)
+
+      case do_transition(actor, mo, to, extra_attrs) do
         {:ok, updated} ->
           if to == "cancelled" do
             release_mo_bookings(actor, updated)
@@ -2317,6 +2319,17 @@ defmodule Backend.Production do
       end
     end)
   end
+
+  # Extra attrs the generic transition path needs to stamp alongside
+  # status — currently `actual_start` on the scheduled → in_progress
+  # hop. Keeps both the desktop "Start production" button (which
+  # goes through transition_mo) and the run page's Start (which goes
+  # through start_mo_production) writing the same timestamp so the
+  # Finish dialog's prefill is consistent.
+  defp transition_extra_attrs(%ManufacturingOrder{actual_start: nil}, "in_progress"),
+    do: %{"actual_start" => now()}
+
+  defp transition_extra_attrs(_, _), do: %{}
 
   # Release every still-active booking on this MO. Used as a side
   # effect of cancelling so dead MOs don't keep stock reserved.
@@ -7276,6 +7289,7 @@ defmodule Backend.Production do
   """
   def closeout_booking(%User{} = actor, %ManufacturingOrderBooking{} = booking, attrs) do
     with :ok <- ensure_booking_not_closed(booking),
+         :ok <- ensure_output_qc_done(booking),
          {:ok, remaining} <- parse_remaining_qty(attrs, booking.quantity),
          consumed = Decimal.sub(booking.quantity, remaining),
          {:ok, dest_cell} <-
@@ -7301,6 +7315,37 @@ defmodule Backend.Production do
 
   defp ensure_booking_not_closed(%ManufacturingOrderBooking{consumed_at: nil}), do: :ok
   defp ensure_booking_not_closed(_), do: {:error, :already_closed}
+
+  # Compliance gate (BRCGS 3.5.1 / FSSC 22000): booking-level closeout
+  # records what was consumed AND routes leftover ingredients to a
+  # dispatch cell. Both side-effects should wait until the QC operator
+  # has signed off the manufactured output — closing out the ingredient
+  # paperwork before the verdict on the finished product is in lets
+  # operators sign off batches whose outputs might later be rejected.
+  #
+  # Refuses when any output lot tied to this booking's MO is still
+  # in `status = received` (i.e. waiting for `sign_off_output_qc`).
+  defp ensure_output_qc_done(%ManufacturingOrderBooking{manufacturing_order_id: mo_id}) do
+    case Repo.get(ManufacturingOrder, mo_id) do
+      %ManufacturingOrder{uuid: mo_uuid} ->
+        pending =
+          from(l in StockLot,
+            where:
+              l.source_kind == "manufacturing_order" and
+                l.source_ref == ^mo_uuid and
+                l.status == "received",
+            select: count(l.id)
+          )
+          |> Repo.one()
+
+        if pending && pending > 0,
+          do: {:error, :output_qc_pending},
+          else: :ok
+
+      _ ->
+        :ok
+    end
+  end
 
   defp parse_remaining_qty(attrs, booked_qty) do
     raw = attrs["remaining_qty"] || attrs[:remaining_qty]
@@ -7983,8 +8028,19 @@ defmodule Backend.Production do
   """
   def start_mo_production(%User{} = actor, %ManufacturingOrder{} = mo) do
     cond do
-      mo.status == "in_progress" ->
+      # Already in_progress AND has a real actual_start — pure no-op.
+      mo.status == "in_progress" and not is_nil(mo.actual_start) ->
         {:ok, reload_manufacturing_order(mo)}
+
+      # Already in_progress but actual_start is NULL — happens when
+      # status was flipped via the generic transition path before that
+      # path stamped the timestamp. Self-heal so the Finish dialog
+      # has a real value to prefill from.
+      mo.status == "in_progress" ->
+        apply_run_changeset(actor, mo, %{
+          "actual_start" => now(),
+          "updated_by_id" => actor.id
+        })
 
       mo.status != "scheduled" ->
         {:error, {:invalid_status, mo.status}}

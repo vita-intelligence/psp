@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { CurrencyPicker } from "@/components/forms/currency-picker";
 import {
   SearchPicker,
@@ -1450,7 +1451,12 @@ function PackRow({
   onRemove?: () => void;
 }) {
   const fieldErr = (key: string) => errors?.[key]?.[0] ?? null;
+  const showPreview =
+    Number(pack.package_length_mm) > 0 ||
+    Number(pack.package_width_mm) > 0 ||
+    Number(pack.package_height_mm) > 0;
   return (
+    <>
     <tr
       className={
         errors ? "bg-destructive/[0.04] outline outline-1 outline-destructive/30" : ""
@@ -1532,6 +1538,20 @@ function PackRow({
         )}
       </td>
     </tr>
+    {showPreview && (
+      <tr>
+        <td />
+        <td colSpan={8} className="border-t border-dashed border-border/60 bg-muted/20 px-3 py-2">
+          <PackBoxPreview
+            lengthMm={Number(pack.package_length_mm) || 0}
+            widthMm={Number(pack.package_width_mm) || 0}
+            heightMm={Number(pack.package_height_mm) || 0}
+            stack={Number(pack.stack_factor) || 1}
+          />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
 

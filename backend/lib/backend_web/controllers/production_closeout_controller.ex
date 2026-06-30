@@ -97,6 +97,13 @@ defmodule BackendWeb.ProductionCloseoutController do
           "This booking has already been closed out."
         )
 
+      {:error, :output_qc_pending} ->
+        unprocessable(
+          conn,
+          "output_qc_pending",
+          "Output QC hasn't signed off this MO's produced lots yet. The QC operator must pass or fail each output lot before booking closeout (and any leftover routing) can be recorded."
+        )
+
       {:error, :bad_remaining_qty} ->
         unprocessable(
           conn,

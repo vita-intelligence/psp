@@ -233,6 +233,16 @@ defmodule Backend.Production.ManufacturingOrder do
       :needs_replan_at,
       :purchasing_requested_at,
       :purchasing_requested_by_id,
+      # Run-time stamps. Cast here so the generic `transition_mo`
+      # path (e.g. "Start production" on the desktop MO page that
+      # calls POST /transition?to=in_progress) can backfill
+      # actual_start the same moment status flips. Without this,
+      # only `start_mo_production` set the stamp and any other path
+      # to in_progress left actual_start NULL — the Finish dialog
+      # then defaulted the prefill to now() instead of the real
+      # start time.
+      :actual_start,
+      :actual_finish,
       :updated_by_id
     ])
     |> validate_inclusion(:status, @statuses)

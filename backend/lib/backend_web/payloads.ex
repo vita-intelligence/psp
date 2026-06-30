@@ -1152,6 +1152,7 @@ defmodule BackendWeb.Payloads do
       output_lot_count: mo.output_lot_count,
       output_at_feed_count: mo.output_at_feed_count,
       output_in_warehouse_count: mo.output_in_warehouse_count,
+      output_qc_pending_count: mo.output_qc_pending_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
       purchasing_requested_at: mo.purchasing_requested_at,
       pickup_started_at: mo.pickup_started_at,

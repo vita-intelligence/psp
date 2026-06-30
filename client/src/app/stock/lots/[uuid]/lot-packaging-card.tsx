@@ -1,5 +1,6 @@
 import type { StockLot } from "@/lib/types";
 import { Box } from "lucide-react";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 
 /**
  * Read-only packaging card. Mirrors the receive-form layout so what
@@ -40,7 +41,16 @@ export function LotPackagingCard({ lot }: { lot: StockLot }) {
             <Row label="Stack factor" value={String(lot.stack_factor)} />
           </dl>
 
-          <div className="mt-4 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+          <div className="mt-4">
+            <PackBoxPreview
+              lengthMm={lot.package_length_mm ?? 0}
+              widthMm={lot.package_width_mm ?? 0}
+              heightMm={lot.package_height_mm ?? 0}
+              stack={lot.stack_factor ?? 1}
+            />
+          </div>
+
+          <div className="mt-3 rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
             Footprint per package:{" "}
             <span className="font-mono text-foreground">
               {(

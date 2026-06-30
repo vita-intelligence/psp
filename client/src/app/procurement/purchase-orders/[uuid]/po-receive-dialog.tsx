@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -1005,6 +1006,18 @@ function PackRows({
                   psp/CLAUDE.md — receivers don't get a skip switch.
                   Slot intentionally left blank to keep the 3-col grid. */}
               <div className="hidden sm:block" />
+            </div>
+
+            {/* Live 3D pack preview — mirrors the goods-in wizard so
+                the receiver can sanity-check the dimensions they
+                typed before the lot moves on to QC. */}
+            <div className="mt-3">
+              <PackBoxPreview
+                lengthMm={Number(pack.package_length_mm) || 0}
+                widthMm={Number(pack.package_width_mm) || 0}
+                heightMm={Number(pack.package_height_mm) || 0}
+                stack={Number(pack.stack_factor) || 1}
+              />
             </div>
           </td>
         </tr>

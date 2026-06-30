@@ -2702,6 +2702,11 @@ export interface OrderWizardCta {
   href?: string;
   /** kind=scroll_to — CSS selector to scroll into view. */
   target?: string;
+  /** Optional row description shown next to the button when this CTA
+   *  is rendered in the "Do this next" list. Lets the BE attach the
+   *  full sentence ("Pick up MO MO00026 from warehouse.") next to a
+   *  short button label ("Send pickup to device"). */
+  description?: string | null;
 }
 
 export interface OrderWizardNextAction {
@@ -2763,6 +2768,11 @@ export interface OrderWizardMo {
   output_lot_count: number;
   output_at_feed_count: number;
   output_in_warehouse_count: number;
+  /** Output lots from this MO still in `received` status — they
+   *  need an output-QC verdict before closeout can advance. Counted
+   *  so the wizard can render an "awaiting output QC" sub-stage on
+   *  completed MOs instead of jumping straight to "Closeout". */
+  output_qc_pending_count: number;
   has_output_at_production_feed: boolean;
   purchasing_requested_at: string | null;
   /** Set the moment a picker claims the MO (head-of-picker lock).

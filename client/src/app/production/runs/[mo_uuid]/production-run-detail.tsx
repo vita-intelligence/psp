@@ -9,7 +9,7 @@
  * floor-plan overlay layered on top.
  */
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { FloorPlanMini } from "@/components/warehouses/floor-plan-mini";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
@@ -499,6 +500,24 @@ function FinishDialog({
   const [finishLocal, setFinishLocal] = useState<string>(
     toLocalInput(new Date().toISOString()),
   );
+
+  // The dialog is mounted on page load (parent toggles `open`), so
+  // `useState`'s initialiser only runs once — with the page-load
+  // value of `mo.actual_start`. When the operator taps Start, the
+  // parent refreshes the MO and `mo.actual_start` populates, but
+  // `startLocal` would otherwise stay at the page-load "now".
+  // Re-sync from `mo.actual_start` (and finish to fresh now) every
+  // time the dialog opens so the prefilled values reflect the
+  // real Start stamp the BE recorded.
+  useEffect(() => {
+    if (!open) return;
+    setStartLocal(
+      defaultStart
+        ? toLocalInput(defaultStart)
+        : toLocalInput(new Date().toISOString()),
+    );
+    setFinishLocal(toLocalInput(new Date().toISOString()));
+  }, [open, defaultStart]);
   // Per-pack output rows. Each pack becomes one output stock_lot —
   // 1 pack by default (the common "all the powder ended up in one
   // sack" case), operator can + Add pack to split. Sum of pack qtys
@@ -1017,6 +1036,14 @@ function PacksEditor({
     onChange(packs.filter((_, i) => i !== idx));
   }
 
+  // Cross-check tone — mirrors the goods-in wizard's "Ordered vs
+  // Received so far" sticky card so the operator always sees how
+  // close their pack qtys are to the produced total while scrolling.
+  const matched = total > 0 && !mismatch;
+  const overProduced = sum > total;
+  const shortBy = Math.max(0, total - sum);
+  const overBy = Math.max(0, sum - total);
+
   return (
     <div className="rounded-lg border border-border/60 bg-muted/30 p-3 space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1031,6 +1058,69 @@ function PacksEditor({
         <Button type="button" variant="outline" size="sm" onClick={add}>
           + Add pack
         </Button>
+      </div>
+
+      {/* Sticky cross-check — Produced vs Sum of pack qtys. Same
+          pattern as the goods-in wizard's per-line header so the
+          operator keeps the target qty in sight while filling
+          pack-by-pack. */}
+      <div className="sticky top-0 z-10 space-y-2 rounded-md border border-border/60 bg-background/95 p-3 shadow-sm backdrop-blur">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Produced
+            </p>
+            <p className="text-xl font-bold tabular-nums leading-tight">
+              {total}
+              {uomSymbol ? (
+                <span className="ml-1 text-xs font-medium text-muted-foreground">
+                  {uomSymbol}
+                </span>
+              ) : null}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Packed so far
+            </p>
+            <p
+              className={cn(
+                "text-xl font-bold tabular-nums leading-tight",
+                matched
+                  ? "text-emerald-700 dark:text-emerald-400"
+                  : overProduced
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-foreground",
+              )}
+            >
+              {sum}
+              {uomSymbol ? (
+                <span className="ml-1 text-xs font-medium text-muted-foreground">
+                  {uomSymbol}
+                </span>
+              ) : null}
+            </p>
+          </div>
+        </div>
+        {matched ? (
+          <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+            Matches the produced quantity — ready to finish.
+          </p>
+        ) : overProduced ? (
+          <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            Over by {overBy}
+            {uomSymbol ? ` ${uomSymbol}` : ""} — drop a pack or trim a qty.
+          </p>
+        ) : total > 0 ? (
+          <p className="text-[11px] text-muted-foreground">
+            Still short by {shortBy}
+            {uomSymbol ? ` ${uomSymbol}` : ""}.
+          </p>
+        ) : (
+          <p className="text-[11px] text-muted-foreground">
+            Enter Produced quantity above to compare against pack totals.
+          </p>
+        )}
       </div>
 
       <ul className="space-y-2">
@@ -1143,30 +1233,31 @@ function PacksEditor({
                 />
               </div>
             </div>
+
+            {/* Live 3D preview — same component the goods-in wizard
+                uses. Operator can sanity-check L/W/H/stack as they
+                type instead of guessing the units. */}
+            <div className="mt-2">
+              <PackBoxPreview
+                lengthMm={Number(pack.length_mm) || 0}
+                widthMm={Number(pack.width_mm) || 0}
+                heightMm={Number(pack.height_mm) || 0}
+                stack={Number(pack.stack_factor) || 1}
+              />
+            </div>
           </li>
         ))}
       </ul>
 
-      <div
-        className={cn(
-          "flex items-center justify-between rounded-md border px-2.5 py-1.5 text-[11px]",
-          mismatch
-            ? "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200"
-            : "border-border/60 bg-background text-muted-foreground",
-        )}
-      >
-        <span>
-          Sum of pack qtys:{" "}
-          <span className="font-mono font-medium">
-            {sum} {uomSymbol}
-          </span>
-        </span>
-        <span>
-          Produced:{" "}
-          <span className="font-mono font-medium">
-            {total} {uomSymbol}
-          </span>
-        </span>
+      {/* Duplicate "+ Add pack" at the BOTTOM of the list so the
+          operator doesn't scroll back to the section header to add
+          the next pack after filling the previous one. Keeps the
+          flow linear: fill row → tap button right below → fill the
+          new row that just appeared. */}
+      <div className="flex justify-end">
+        <Button type="button" variant="outline" size="sm" onClick={add}>
+          + Add pack
+        </Button>
       </div>
 
       <p className="text-[10px] text-muted-foreground">
