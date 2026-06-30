@@ -474,7 +474,7 @@ export function PickupFlow({
         companyDateFormat={companyDateFormat}
         productionCell={productionCell}
         onPickCell={(cell) => setProductionCell(cell)}
-        onScanCell={() => setStep({ kind: "transfer_directions" })}
+        onScanCell={() => setStep({ kind: "transfer_scan_cell" })}
         onContinue={() => setStep({ kind: "transfer_photos" })}
         onBack={() => setStep({ kind: "overview" })}
       />
@@ -517,7 +517,7 @@ export function PickupFlow({
             kind="cell"
             expectedLabel={productionCell.code}
             onConfirmed={() => setStep({ kind: "transfer_photos" })}
-            onCancel={() => setStep({ kind: "transfer_directions" })}
+            onCancel={() => setStep({ kind: "transfer_overview" })}
           />
         ) : (
           <p className="text-sm text-destructive">No production cell chosen.</p>
@@ -1213,28 +1213,76 @@ function TransferOverviewBody({
         </ul>
       </div>
 
-      <div className="rounded-lg border border-border/60 bg-card px-3 py-3">
-        <h3 className="text-sm font-semibold">Production cell</h3>
-        {loading ? (
-          <p className="mt-2 text-xs text-muted-foreground">
-            Finding an empty production-feed cell…
-          </p>
-        ) : productionCell ? (
-          <p className="mt-2 inline-flex items-center gap-2 rounded-md bg-muted px-2 py-1 text-sm font-medium">
-            <Truck className="size-4 text-muted-foreground" />
-            {productionCell.code}
-          </p>
-        ) : (
-          <p className="mt-2 text-xs text-destructive">
-            {error ?? "No production cell selected."}
-          </p>
-        )}
-        {productionCell && (
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            Walk to {productionCell.code} and tap continue. You&apos;ll scan
-            the cell label to confirm, then take a photo per lot as you
-            place them.
-          </p>
+      <div className="rounded-lg border border-border/60 bg-card px-3 py-3 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Production drop-off</h3>
+          {loading ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Finding an empty production-feed cell…
+            </p>
+          ) : productionCell ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Walk the trolley out of the warehouse and onto the
+              production floor. The highlighted cell on the map is
+              where the lots go — scan its QR when you&apos;re there.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-destructive">
+              {error ?? "No production cell selected."}
+            </p>
+          )}
+        </div>
+
+        {productionCell?.location?.floor?.uuid &&
+          productionCell.location.uuid && (
+            <FloorPlanMini
+              floorUuid={productionCell.location.floor.uuid}
+              targetLocationUuid={productionCell.location.uuid}
+            />
+          )}
+
+        {productionCell?.location && (
+          <ul className="space-y-2">
+            <DirectionsRow
+              icon={Building2}
+              label="Warehouse"
+              value={
+                productionCell.location.floor?.warehouse?.name ?? "—"
+              }
+            />
+            <DirectionsRow
+              icon={Layers}
+              label="Floor"
+              value={productionCell.location.floor?.name ?? "—"}
+            />
+            <DirectionsRow
+              icon={MapPin}
+              label="Rack"
+              value={
+                productionCell.location.name ??
+                productionCell.location.code ??
+                "—"
+              }
+              suffix={
+                productionCell.location.code &&
+                productionCell.location.name
+                  ? productionCell.location.code
+                  : null
+              }
+            />
+            <DirectionsRow
+              icon={Truck}
+              label="Drop cell"
+              value={productionCell.code}
+              suffix={
+                productionCell.name &&
+                productionCell.name !== productionCell.code
+                  ? productionCell.name
+                  : null
+              }
+              hero
+            />
+          </ul>
         )}
       </div>
 
@@ -1246,7 +1294,7 @@ function TransferOverviewBody({
         disabled={!productionCell}
       >
         <ScanLine className="mr-2 size-4" />
-        Scan production cell
+        I&apos;m at production — scan cell
       </Button>
       <Button
         type="button"
