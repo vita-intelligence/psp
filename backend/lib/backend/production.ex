@@ -6305,47 +6305,70 @@ defmodule Backend.Production do
   defp emit_pickup_movements(_actor, _booking, [], _target_cell, _photo, _now), do: {:ok, nil}
 
   defp emit_pickup_movements(actor, booking, drains, target_cell, photo_url, now_dt) do
-    Enum.reduce_while(drains, {:ok, nil}, fn %{placement: placement, take: take},
-                                             _acc ->
-      result =
-        %Backend.Stock.Movement{}
-        |> Backend.Stock.Movement.changeset(%{
-          "company_id" => booking.company_id,
-          "stock_lot_id" => booking.stock_lot_id,
-          "from_cell_id" => placement.storage_cell_id,
-          "to_cell_id" => target_cell.id,
-          "delta_qty" => take,
-          "kind" => "move",
-          "actor_id" => actor.id,
-          "occurred_at" => now_dt,
-          "photo_url" => photo_url,
-          "reference_kind" => "manufacturing_order",
-          "reference_ref" => mo_uuid_for_booking(booking)
-        })
-        |> Repo.insert()
+    # Per-drain step: insert a `move` Stock.Movement carrying `take`
+    # (NOT booking.quantity) from the source placement to the target,
+    # then decrement the source placement by `take`. The target
+    # placement gets added to ONCE at the end with the total drained
+    # (= booking.quantity once we exit). Adding booking.quantity to
+    # the target on every loop iteration — what the previous version
+    # did via upsert_lot_placement(booking, target_cell) — inflates
+    # the target cell qty by N× when the lot is split across N cells.
+    per_drain =
+      Enum.reduce_while(drains, {:ok, nil}, fn %{placement: placement, take: take},
+                                               _acc ->
+        result =
+          %Backend.Stock.Movement{}
+          |> Backend.Stock.Movement.changeset(%{
+            "company_id" => booking.company_id,
+            "stock_lot_id" => booking.stock_lot_id,
+            "from_cell_id" => placement.storage_cell_id,
+            "to_cell_id" => target_cell.id,
+            "delta_qty" => take,
+            "kind" => "move",
+            "actor_id" => actor.id,
+            "occurred_at" => now_dt,
+            "photo_url" => photo_url,
+            "reference_kind" => "manufacturing_order",
+            "reference_ref" => mo_uuid_for_booking(booking)
+          })
+          |> Repo.insert()
 
-      case result do
-        {:ok, movement} ->
-          with {:ok, _from_placement} <- decrement_placement_row(placement, take),
-               {:ok, _to_placement} <- upsert_lot_placement(booking, target_cell) do
-            Audit.record_created(actor, "stock_movement", movement, %{
-              kind: movement.kind,
-              delta_qty: movement.delta_qty,
-              from_cell_id: movement.from_cell_id,
-              to_cell_id: movement.to_cell_id,
-              reference_kind: movement.reference_kind,
-              reference_ref: movement.reference_ref
-            })
+        case result do
+          {:ok, movement} ->
+            case decrement_placement_row(placement, take) do
+              {:ok, _from_placement} ->
+                Audit.record_created(actor, "stock_movement", movement, %{
+                  kind: movement.kind,
+                  delta_qty: movement.delta_qty,
+                  from_cell_id: movement.from_cell_id,
+                  to_cell_id: movement.to_cell_id,
+                  reference_kind: movement.reference_kind,
+                  reference_ref: movement.reference_ref
+                })
 
-            {:cont, {:ok, movement}}
-          else
-            err -> {:halt, err}
-          end
+                {:cont, {:ok, movement}}
 
-        err ->
-          {:halt, err}
-      end
-    end)
+              err ->
+                {:halt, err}
+            end
+
+          err ->
+            {:halt, err}
+        end
+      end)
+
+    case per_drain do
+      {:ok, _} = ok ->
+        # Target cell gets the full booking qty added in one shot —
+        # exactly matching the sum of all `take` values from drains.
+        case upsert_lot_placement(booking, target_cell) do
+          {:ok, _to_placement} -> ok
+          err -> err
+        end
+
+      err ->
+        err
+    end
   end
 
   defp mo_uuid_for_booking(%ManufacturingOrderBooking{} = b) do
