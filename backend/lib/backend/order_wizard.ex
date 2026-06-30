@@ -1498,9 +1498,17 @@ defmodule Backend.OrderWizard do
   end
 
   defp lot_with_placement(%Lot{} = lot) do
+    # "At production side" = anywhere the warehouse picker can fetch
+    # the lot from on return-pickup. Matches the queue-side rule in
+    # `Backend.Warehouses.ReturnPickup` (@return_pickup_purposes:
+    # dispatch + production_feed). Before this, the wizard only
+    # counted `production_feed`, so the second closeout moved each
+    # output lot to a `dispatch` cell and the wizard stopped surfacing
+    # the "send return-pickup" CTA — the warehouse picker would never
+    # be paged for output lots that came out of closeout.
     feed? =
       Enum.any?(lot.placements, fn p ->
-        p.storage_cell && p.storage_cell.purpose == "production_feed"
+        p.storage_cell && p.storage_cell.purpose in ["production_feed", "dispatch"]
       end)
 
     %{
