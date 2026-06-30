@@ -90,9 +90,20 @@ type FlowStep =
   | { kind: "directions"; bookingUuid: string }
   | { kind: "scan_cell"; bookingUuid: string }
   | { kind: "scan_lot"; bookingUuid: string }
+  // Post-scan instruction beat — "put it on the trolley now" before
+  // the operator moves on. Holds the just-picked booking so we can
+  // remind them of what's in their hand. CTA routes to either the
+  // next booking's directions step or the transfer overview when
+  // everything's picked.
+  | { kind: "picked_confirm"; bookingUuid: string }
   | { kind: "transfer_overview" }
   | { kind: "transfer_directions" }
   | { kind: "transfer_scan_cell" }
+  // Same beat at the end of the transfer phase: lots are physically
+  // at the production-feed cell, pickup done. Gives the operator a
+  // visible "you can stop now" instead of routing them straight back
+  // to the queue.
+  | { kind: "transfer_done" }
   | { kind: "transfer_photos" };
 
 interface ProductionCellChoice {
@@ -235,8 +246,11 @@ export function PickupFlow({
             b.uuid === bookingUuid ? { ...b, ...res.booking } : b,
           ),
         );
-        toast.success("Picked. Move to the next item.");
-        setStep({ kind: "overview" });
+        // Pause on a "put it on the trolley now" instruction screen
+        // before the operator chases the next booking — the scan was
+        // verification, the trolley load is the physical act, and
+        // those used to silently collapse into the same toast.
+        setStep({ kind: "picked_confirm", bookingUuid });
       } else if (res.code === "wrong_lot" || res.code === "wrong_cell") {
         toast.error(res.detail ?? "Mismatch — restart this booking.");
         setStep({ kind: "overview" });
@@ -269,8 +283,11 @@ export function PickupFlow({
       );
       if (res.ok) {
         setMo(res.mo);
-        toast.success("Transferred to production.");
-        router.push("/m/pickup");
+        // Land on the wrap-up instruction screen instead of bouncing
+        // straight to the queue — the operator just put the trolley
+        // contents down at the production-feed cell and needs a "you
+        // can sign off now" beat before routing away.
+        setStep({ kind: "transfer_done" });
       } else if (res.code === "production_cell_not_found") {
         toast.error("Scanned cell wasn't found.");
       } else if (res.code === "production_cell_wrong_purpose") {
@@ -430,6 +447,26 @@ export function PickupFlow({
         </div>
       );
     }
+  } else if (step.kind === "picked_confirm") {
+    const booking = bookings.find((b) => b.uuid === step.bookingUuid);
+    const stillPending = bookings.filter(
+      (b) => b.uuid !== step.bookingUuid && b.picked_at === null,
+    );
+    const nextBooking = stillPending[0] ?? null;
+    body = (
+      <PickedConfirmBody
+        booking={booking ?? null}
+        remainingCount={stillPending.length}
+        nextBooking={nextBooking}
+        onNextItem={() =>
+          nextBooking
+            ? setStep({ kind: "directions", bookingUuid: nextBooking.uuid })
+            : setStep({ kind: "overview" })
+        }
+        onTransfer={() => setStep({ kind: "transfer_overview" })}
+        onBack={() => setStep({ kind: "overview" })}
+      />
+    );
   } else if (step.kind === "transfer_overview") {
     body = (
       <TransferOverviewBody
@@ -509,6 +546,16 @@ export function PickupFlow({
         }
         onSubmit={handleConfirmTransfer}
         onBack={() => setStep({ kind: "transfer_overview" })}
+      />
+    );
+  } else if (step.kind === "transfer_done") {
+    body = (
+      <TransferDoneBody
+        moCode={mo.code ?? `MO #${mo.id}`}
+        itemName={mo.item?.name ?? null}
+        bookingCount={bookings.length}
+        cellLabel={productionCell?.code ?? null}
+        onBackToQueue={() => router.push("/m/pickup")}
       />
     );
   } else {
@@ -1393,5 +1440,177 @@ function PhotoRow({
         )}
       </div>
     </li>
+  );
+}
+
+// Post-scan beat. Big green check + a clear "put it on the trolley
+// now" instruction + the just-picked item summary, then a primary CTA
+// that routes to either the next booking's directions step or the
+// transfer phase when nothing else is pending. Without this the
+// operator's success state was a 2-second toast that swept them back
+// to the overview — easy to miss what they just did.
+function PickedConfirmBody({
+  booking,
+  remainingCount,
+  nextBooking,
+  onNextItem,
+  onTransfer,
+  onBack,
+}: {
+  booking: ManufacturingOrderBooking | null;
+  remainingCount: number;
+  nextBooking: ManufacturingOrderBooking | null;
+  onNextItem: () => void;
+  onTransfer: () => void;
+  onBack: () => void;
+}) {
+  const itemName = booking?.item?.name ?? "this lot";
+  const lotCode = booking?.stock_lot?.code ?? null;
+  const qty = booking?.quantity ?? null;
+  const uom = booking?.item?.stock_uom?.symbol ?? "";
+  const allDone = remainingCount === 0;
+
+  return (
+    <main className="flex-1 px-4 py-5 space-y-4">
+      <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 text-center">
+        <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+          <CheckCircle2 className="size-8" />
+        </div>
+        <p className="mt-3 text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+          Scanned · recorded
+        </p>
+        <h2 className="mt-1 text-xl font-semibold tracking-tight">
+          Put it on your trolley now
+        </h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          The system has it on file — physically move {itemName} from
+          the shelf onto your trolley before you walk away.
+        </p>
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card px-4 py-3">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Just picked
+        </p>
+        <p className="mt-0.5 text-sm font-semibold">{itemName}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {qty ? (
+            <span>
+              {qty} {uom}
+            </span>
+          ) : null}
+          {qty && lotCode ? " · " : null}
+          {lotCode && (
+            <span className="font-mono">{lotCode}</span>
+          )}
+        </p>
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+        {allDone ? (
+          <p>
+            <strong className="text-foreground">All items picked.</strong>
+            {" "}Walk the trolley to the production-feed cell next — the
+            transfer step will record where it landed.
+          </p>
+        ) : (
+          <p>
+            <strong className="text-foreground">
+              {remainingCount} item{remainingCount === 1 ? "" : "s"} left
+            </strong>
+            {" "}on this MO. Keep going — the trolley collects them all
+            before the production hand-off.
+          </p>
+        )}
+      </section>
+
+      <div className="flex flex-col gap-2 pt-1">
+        {allDone ? (
+          <Button size="lg" className="h-12" onClick={onTransfer}>
+            <Truck className="mr-1.5 size-4" />
+            Continue to production hand-off
+          </Button>
+        ) : (
+          <Button size="lg" className="h-12" onClick={onNextItem}>
+            <ScanLine className="mr-1.5 size-4" />
+            {nextBooking?.item?.name
+              ? `Next item — ${nextBooking.item.name}`
+              : "Pick next item"}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          className="text-muted-foreground"
+          onClick={onBack}
+        >
+          Back to checklist
+        </Button>
+      </div>
+    </main>
+  );
+}
+
+// Wrap-up beat after the final transfer-to-production step. Same
+// pattern: visible "you're done" instead of bouncing the operator
+// straight to the queue.
+function TransferDoneBody({
+  moCode,
+  itemName,
+  bookingCount,
+  cellLabel,
+  onBackToQueue,
+}: {
+  moCode: string;
+  itemName: string | null;
+  bookingCount: number;
+  cellLabel: string | null;
+  onBackToQueue: () => void;
+}) {
+  return (
+    <main className="flex-1 px-4 py-5 space-y-4">
+      <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 text-center">
+        <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+          <PackageCheck className="size-8" />
+        </div>
+        <p className="mt-3 text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+          Pickup complete
+        </p>
+        <h2 className="mt-1 text-xl font-semibold tracking-tight">
+          {moCode} handed off to production
+        </h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {bookingCount} lot{bookingCount === 1 ? "" : "s"} now sit at
+          {cellLabel ? (
+            <>
+              {" "}<span className="font-mono">{cellLabel}</span>
+            </>
+          ) : (
+            " the production-feed cell"
+          )}
+          . Production runs the preflight check from here.
+        </p>
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+        <p>
+          <strong className="text-foreground">You can sign off now.</strong>
+          {" "}Roll the trolley back to its bay, restock anything we
+          shifted, and pick the next MO from the queue when you&apos;re
+          ready.
+        </p>
+        {itemName && (
+          <p className="mt-1 opacity-80">
+            Item produced from this MO: <strong>{itemName}</strong>.
+          </p>
+        )}
+      </section>
+
+      <div className="pt-1">
+        <Button size="lg" className="h-12 w-full" onClick={onBackToQueue}>
+          <ArrowLeft className="mr-1.5 size-4" />
+          Back to pickup queue
+        </Button>
+      </div>
+    </main>
   );
 }
