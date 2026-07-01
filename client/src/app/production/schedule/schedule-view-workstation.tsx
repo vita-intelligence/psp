@@ -234,7 +234,11 @@ function OperationBlock({
         canEditSteps ? "cursor-grab" : "cursor-pointer",
         conflict
           ? "border-destructive bg-destructive/10 text-destructive ring-1 ring-destructive/60"
-          : "border-border/70 bg-card text-foreground hover:shadow-md",
+          : mo?.status === "completed"
+            ? "border-emerald-500 bg-emerald-100/60 opacity-80 hover:shadow-md dark:bg-emerald-950/30"
+            : mo?.status === "in_progress"
+              ? "border-amber-500 bg-amber-100/70 text-foreground hover:shadow-md dark:bg-amber-950/30"
+              : "border-border/70 bg-card text-foreground hover:shadow-md",
       )}
       title={
         canEditSteps

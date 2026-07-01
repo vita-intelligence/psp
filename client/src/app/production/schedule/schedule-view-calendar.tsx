@@ -373,7 +373,11 @@ function OperationBlock({
         "absolute z-10 flex flex-col gap-0.5 overflow-hidden rounded-md border px-1.5 py-1 text-left text-[11px] shadow-sm transition-shadow",
         conflict
           ? "border-destructive bg-destructive/5 ring-1 ring-destructive/50 text-destructive"
-          : "border-border/70 bg-card",
+          : mo?.status === "completed"
+            ? "border-emerald-500 bg-emerald-100/60 opacity-80 dark:bg-emerald-950/30"
+            : mo?.status === "in_progress"
+              ? "border-amber-500 bg-amber-100/70 dark:bg-amber-950/30"
+              : "border-border/70 bg-card",
         isDragging
           ? "z-30 cursor-grabbing shadow-lg"
           : canEditSteps
