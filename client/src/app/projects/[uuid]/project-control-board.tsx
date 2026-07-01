@@ -1936,28 +1936,36 @@ function MiniMoCard({
         </div>
       )}
 
-      {/* Sub-MO chips. Each child is a compact clickable pill with
-          its OWN mini pipeline dots — a planner can scan the
-          parent-and-its-dependencies at a glance without a nested
-          card stack. Click a chip to open the child's full detail
-          in the modal (same path onOpenMo takes for the parent). */}
-      {mo.children && mo.children.length > 0 && (
-        <div className="border-t border-border/40 bg-muted/10 px-4 py-2.5">
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Sub-MOs the parent depends on ({mo.children.length})
-          </p>
-          <ul className="flex flex-wrap gap-1.5">
-            {mo.children.map((child) => (
-              <li key={child.uuid}>
-                <SubMoChip
-                  mo={child}
-                  onOpen={() => onOpenMo(child.uuid)}
-                />
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Sub-MO chips. Flattens the ENTIRE descendant tree — a
+          grandchild MO (e.g. MO00029, a sub-MO of MO00028, itself a
+          sub-MO of MO00027) would otherwise never appear on the
+          screen, even though the line-level roll-up counts it. Each
+          chip is a compact clickable pill with its OWN mini pipeline
+          dots so the planner can scan the parent-and-all-its-
+          dependencies at a glance. Click a chip to open the
+          descendant's detail in the same modal onOpenMo uses for
+          the parent. */}
+      {(() => {
+        const descendants = flattenMoTree(mo.children ?? []);
+        if (descendants.length === 0) return null;
+        return (
+          <div className="border-t border-border/40 bg-muted/10 px-4 py-2.5">
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Sub-MOs the parent depends on ({descendants.length})
+            </p>
+            <ul className="flex flex-wrap gap-1.5">
+              {descendants.map((descendant) => (
+                <li key={descendant.uuid}>
+                  <SubMoChip
+                    mo={descendant}
+                    onOpen={() => onOpenMo(descendant.uuid)}
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
     </article>
   );
 }
