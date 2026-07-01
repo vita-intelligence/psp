@@ -51,6 +51,26 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: rp.stock_lot_id
       )
 
+    # Lots that a live downstream MO already picked as ingredients
+    # (picked_at set, consumed_at null, MO not cancelled). Physically
+    # these are "in flight for consumption" — the correct next action
+    # is closeout on the CONSUMING MO, which will drain them. Walking
+    # them back to warehouse via return-pickup would double-book the
+    # ingredient and force the consumer MO into needs_replan.
+    lots_committed_to_open_bookings =
+      from(b in ManufacturingOrderBooking,
+        join: mo in ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id,
+        where:
+          b.company_id == ^company_id and
+            b.status == "requested" and
+            not is_nil(b.picked_at) and
+            is_nil(b.consumed_at) and
+            mo.status != "cancelled",
+        distinct: true,
+        select: b.stock_lot_id
+      )
+
     # COMPLETED MOs that still owe booking closeout (the per-booking
     # consume + leftover routing step). Return-pickup MUST wait for
     # these to finish — otherwise the warehouse picker walks back
@@ -74,7 +94,11 @@ defmodule Backend.Warehouses.ReturnPickup do
       )
 
     # MOs whose produced output (source_kind=manufacturing_order)
-    # still sits at a production-side cell.
+    # still sits at a production-side cell — AND hasn't been picked
+    # into another live MO. When an MO's outputs are already picked
+    # as another MO's ingredients (semi-finished blend feeding a
+    # finished-product MO), the correct next step is the consumer
+    # MO's closeout, not walking the lot back to warehouse.
     output_mos =
       from(p in Placement,
         join: l in Lot,
@@ -90,6 +114,7 @@ defmodule Backend.Warehouses.ReturnPickup do
             p.qty > 0 and
             c.purpose in @return_pickup_purposes and
             l.id not in subquery(open_picks_subq) and
+            l.id not in subquery(lots_committed_to_open_bookings) and
             m.id not in subquery(mos_with_pending_closeout),
         distinct: true,
         select: m.id
@@ -195,6 +220,27 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: b.stock_lot_id
       )
 
+    # Same "committed to open bookings" filter as list_queue/1 — a lot
+    # that a live downstream MO already picked as an ingredient
+    # (opening-balance blend + packaging picked into a finished-product
+    # MO, closeout still pending) belongs to the CONSUMER MO's closeout,
+    # not to a warehouse return. Without this the loose bucket surfaced
+    # them and the picker was tempted to walk them back — which would
+    # force the consumer MO into needs_replan.
+    lots_committed_to_open_bookings =
+      from(b in ManufacturingOrderBooking,
+        join: mo in ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id,
+        where:
+          b.company_id == ^company_id and
+            b.status == "requested" and
+            not is_nil(b.picked_at) and
+            is_nil(b.consumed_at) and
+            mo.status != "cancelled",
+        distinct: true,
+        select: b.stock_lot_id
+      )
+
     from(l in Lot,
       join: p in Placement,
       on: p.stock_lot_id == l.id,
@@ -207,7 +253,8 @@ defmodule Backend.Warehouses.ReturnPickup do
           p.qty > 0 and
           c.purpose in @return_pickup_purposes and
           l.id not in subquery(open_picks_subq) and
-          l.id not in subquery(booked_lot_ids_subq),
+          l.id not in subquery(booked_lot_ids_subq) and
+          l.id not in subquery(lots_committed_to_open_bookings),
       preload: [
         :item,
         :unit_of_measurement,

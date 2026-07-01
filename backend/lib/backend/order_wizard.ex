@@ -1576,10 +1576,38 @@ defmodule Backend.OrderWizard do
       )
       |> Repo.all()
 
-    Enum.map(lots, &lot_with_placement/1)
+    # A lot that a live downstream MO has already picked as an
+    # ingredient is physically "in flight for consumption" — the
+    # consumer MO's closeout owns the discharge, NOT a return-pickup
+    # to warehouse. Look up which of these lot ids are committed
+    # once so the wizard can honestly say has_output_at_production_feed
+    # only for genuinely orphaned outputs (that need the warehouse
+    # picker) and not for outputs that are actually being consumed.
+    lot_ids = Enum.map(lots, & &1.id)
+
+    committed_ids =
+      if lot_ids == [] do
+        MapSet.new()
+      else
+        from(b in Backend.Production.ManufacturingOrderBooking,
+          join: mo in ManufacturingOrder,
+          on: mo.id == b.manufacturing_order_id,
+          where:
+            b.stock_lot_id in ^lot_ids and
+              b.status == "requested" and
+              not is_nil(b.picked_at) and
+              is_nil(b.consumed_at) and
+              mo.status != "cancelled",
+          select: b.stock_lot_id
+        )
+        |> Repo.all()
+        |> MapSet.new()
+      end
+
+    Enum.map(lots, &lot_with_placement(&1, committed_ids))
   end
 
-  defp lot_with_placement(%Lot{} = lot) do
+  defp lot_with_placement(%Lot{} = lot, committed_ids \\ MapSet.new()) do
     # "At production side" = anywhere the warehouse picker can fetch
     # the lot from on return-pickup. Matches the queue-side rule in
     # `Backend.Warehouses.ReturnPickup` (@return_pickup_purposes:
@@ -1588,10 +1616,18 @@ defmodule Backend.OrderWizard do
     # output lot to a `dispatch` cell and the wizard stopped surfacing
     # the "send return-pickup" CTA — the warehouse picker would never
     # be paged for output lots that came out of closeout.
-    feed? =
+    physically_at_feed? =
       Enum.any?(lot.placements, fn p ->
         p.storage_cell && p.storage_cell.purpose in ["production_feed", "dispatch"]
       end)
+
+    # `at_production_feed?` = "warehouse picker owes a return trip on
+    # this lot". If a live downstream MO already picked it as an
+    # ingredient, the discharge belongs to that MO's closeout — a
+    # return would double-book the ingredient. Kept the field name so
+    # every existing reader (queue, wizard CTA, chip strip) picks up
+    # the corrected semantics without a rename cascade.
+    committed? = MapSet.member?(committed_ids, lot.id)
 
     %{
       id: lot.id,
@@ -1600,7 +1636,7 @@ defmodule Backend.OrderWizard do
       status: lot.status,
       qty_received: lot.qty_received,
       placements: lot.placements,
-      at_production_feed?: feed?
+      at_production_feed?: physically_at_feed? and not committed?
     }
   end
 
