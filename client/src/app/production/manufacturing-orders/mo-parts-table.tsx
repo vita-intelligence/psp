@@ -519,25 +519,47 @@ function BookingRow({
         {lineTotal ? formatCompanyMoney(lineTotal, company) : "—"}
       </td>
       <td className="px-2 py-1.5 font-mono">
-        {booking.stock_lot?.uuid && booking.stock_lot?.code ? (
-          <Link
-            href={`/stock/lots/${booking.stock_lot.uuid}`}
-            className="text-brand underline-offset-2 hover:underline"
-          >
-            {booking.stock_lot.code}
-          </Link>
-        ) : booking.purchase_order_line?.purchase_order?.uuid &&
-          booking.purchase_order_line?.purchase_order?.code ? (
-          <Link
-            href={`/procurement/purchase-orders/${booking.purchase_order_line.purchase_order.uuid}`}
-            className="text-brand underline-offset-2 hover:underline"
-            title="Reserved against an in-flight purchase order"
-          >
-            ↺ {booking.purchase_order_line.purchase_order.code}
-          </Link>
-        ) : (
-          "—"
-        )}
+        <div className="flex items-center gap-2">
+          {/* Pickup photo — the picker snaps the sealed container at
+              the shelf during confirm-transfer. Surfacing it here so
+              the production team recognises the box on the trolley
+              before starting the run. */}
+          {booking.stock_lot?.last_photo_url && (
+            <a
+              href={booking.stock_lot.last_photo_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0"
+              title="Pickup photo — click to enlarge"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={booking.stock_lot.last_photo_url}
+                alt={`Pickup photo of ${booking.stock_lot.code ?? "lot"}`}
+                className="size-8 rounded object-cover ring-1 ring-border/60 transition hover:ring-brand/70"
+              />
+            </a>
+          )}
+          {booking.stock_lot?.uuid && booking.stock_lot?.code ? (
+            <Link
+              href={`/stock/lots/${booking.stock_lot.uuid}`}
+              className="text-brand underline-offset-2 hover:underline"
+            >
+              {booking.stock_lot.code}
+            </Link>
+          ) : booking.purchase_order_line?.purchase_order?.uuid &&
+            booking.purchase_order_line?.purchase_order?.code ? (
+            <Link
+              href={`/procurement/purchase-orders/${booking.purchase_order_line.purchase_order.uuid}`}
+              className="text-brand underline-offset-2 hover:underline"
+              title="Reserved against an in-flight purchase order"
+            >
+              ↺ {booking.purchase_order_line.purchase_order.code}
+            </Link>
+          ) : (
+            "—"
+          )}
+        </div>
       </td>
       <td className="px-2 py-1.5">
         {booking.purchase_order_line_id != null ? (

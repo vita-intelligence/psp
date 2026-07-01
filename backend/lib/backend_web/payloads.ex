@@ -2352,6 +2352,17 @@ defmodule BackendWeb.Payloads do
 
     bookings_by_item = Enum.group_by(bookings, & &1.item_id)
 
+    # Pickup photos per booked lot — the picker snaps a shot of each
+    # sealed container at the shelf during confirm-transfer, and we
+    # surface that image next to the booking on the run page so the
+    # production team can recognise the box before they start.
+    last_photo_urls =
+      bookings
+      |> Enum.map(& &1.stock_lot_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> then(&Backend.Stock.last_photo_url_by_lot_ids(company_id, &1))
+
     # Open children producing each item — used to compute the
     # "Sub-MO running" status. Keyed by item_id of the child's output.
     children =
@@ -2483,7 +2494,7 @@ defmodule BackendWeb.Payloads do
           pending_from_sub_mos_qty: decimal_to_string(pending_sum),
           unbooked_qty: decimal_to_string(unbooked_qty),
           coverage_status: coverage_status,
-          bookings: Enum.map(line_bookings, &mo_booking/1),
+          bookings: Enum.map(line_bookings, &mo_booking(&1, last_photo_urls)),
           pending_from_sub_mos: Enum.map(pending_children, &mo_pending_sub_mo_row/1),
           # Legacy single-row columns — kept null since multiple
           # bookings can stack against the same line.
