@@ -2731,18 +2731,37 @@ defmodule Backend.Production do
   end
 
   defp reload_manufacturing_order(%ManufacturingOrder{} = mo) do
+    # Every MO action (start / finish / release / mark-picked / etc.)
+    # returns via this reload so the FE gets a full MO struct back.
+    # Preloads MUST include `item: :stock_uom` — without it the payload
+    # serialises `item.stock_uom` as nil and the run-page's "Produced
+    # quantity (kg)" label falls back to (ea) after any action fires.
+    # Chain preloads (parent_mo / children / links) carry the same
+    # item: :stock_uom pattern so the MO chain roadmap gets the right
+    # UoM everywhere it's rendered.
     Repo.preload(
       mo,
       [
-        :item,
+        [item: :stock_uom],
         :warehouse,
         :assigned_to,
         :approved_by,
+        :prepared_by,
         :created_by,
         :updated_by,
+        :released_to_warehouse_by,
+        :pickup_started_by,
+        :pickup_completed_by,
+        :purchasing_requested_by,
+        :produced_lot,
+        production_cell: [storage_location: [floor: [:warehouse]]],
         steps: [:workstation_group, :routing_step, worker_assignments: :user],
         bom: [lines: [:part, :unit_of_measurement]],
-        routing: [steps: [:workstation_group, worker_assignments: :user]]
+        routing: [steps: [:workstation_group, worker_assignments: :user]],
+        parent_mo: [item: :stock_uom],
+        children: [item: :stock_uom],
+        consumer_links: [consumer_mo: [item: :stock_uom]],
+        supplier_links: [batch_mo: [item: :stock_uom]]
       ],
       force: true
     )
@@ -6260,19 +6279,24 @@ defmodule Backend.Production do
         )
       end
 
-    others =
+    others_base =
       from(p in Backend.Stock.Placement,
         join: sc in Backend.Warehouses.StorageCell,
         on: sc.id == p.storage_cell_id,
-        where:
-          p.stock_lot_id == ^lot_id and p.qty > 0 and
-            (is_nil(^snapshot_cell_id) or p.storage_cell_id != ^snapshot_cell_id),
+        where: p.stock_lot_id == ^lot_id and p.qty > 0,
         order_by: [
           asc: fragment("CASE WHEN ? = 'regular' THEN 0 ELSE 1 END", sc.purpose),
           asc: p.id
         ]
       )
-      |> Repo.all()
+
+    others_query =
+      case snapshot_cell_id do
+        nil -> others_base
+        cell_id -> from(p in others_base, where: p.storage_cell_id != ^cell_id)
+      end
+
+    others = Repo.all(others_query)
 
     ordered =
       case snapshot do
