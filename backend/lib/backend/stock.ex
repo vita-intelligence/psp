@@ -1655,44 +1655,34 @@ defmodule Backend.Stock do
   def compute_lot_footprint(%Lot{} = lot) do
     cond do
       is_nil(lot.package_length_mm) or is_nil(lot.package_width_mm) or
-        is_nil(lot.package_height_mm) or is_nil(lot.package_weight_kg) or
-          is_nil(lot.units_per_package) or is_nil(lot.stack_factor) ->
+          is_nil(lot.package_height_mm) or is_nil(lot.package_weight_kg) ->
         :unknown
 
       true ->
-        # `units_per_package` is now `decimal` (was integer) — accept
-        # a %Decimal{} as-is; convert other shapes through Decimal.new.
-        units_per_package =
-          case lot.units_per_package do
-            %Decimal{} = d -> d
-            other -> Decimal.new(other)
-          end
-
-        qty = lot.qty_received || Decimal.new(0)
-        packages = qty |> Decimal.div(units_per_package) |> Decimal.round(0, :up)
-        packages_int = Decimal.to_integer(packages)
-        stacks = ceil_div(packages_int, lot.stack_factor)
-
-        footprint_area_mm2 =
-          Decimal.new(stacks)
-          |> Decimal.mult(Decimal.new(lot.package_length_mm))
-          |> Decimal.mult(Decimal.new(lot.package_width_mm))
-
-        # Actual stack height = how tall the TALLEST column ends up.
-        # `stack_factor` is the operator's safety cap, not the size of
-        # the lot — a 1-package lot with stack_factor=50 occupies one
-        # 250mm slot, not 12,500mm. We take `min(packages, stack_factor)`
-        # so a partial column counts as its actual height.
-        tallest_column = min(packages_int, lot.stack_factor)
-        stack_height_mm = tallest_column * lot.package_height_mm
-
-        total_weight_kg =
-          Decimal.mult(Decimal.new(packages_int), lot.package_weight_kg)
-
+        # A lot IS one physical container (drum, bag, box, roll, sack —
+        # whatever the receipt looked like). package_length / width /
+        # height + net weight describe that ONE container as a whole,
+        # NOT per-unit or per-sub-package. Fit math reads them straight.
+        #
+        # Why not per-unit: qty_received is measured in whatever custom
+        # UoM the operator invented (kg, litres, pcs, "elephants") —
+        # you can't derive a package count from an opaque quantity.
+        # The old formula did `packages = qty / units_per_package` and
+        # multiplied weight by the result, which turned a lot with
+        # 12,000 pcs on hand (net 5 kg) into 60,000 kg because
+        # units_per_package was 1. Wrong semantics; deleted.
+        #
+        # units_per_package and stack_factor stay on the schema for
+        # documentation and for future cross-lot stacking hints, but
+        # they don't drive the base fit calculation.
         %{
-          footprint_area_mm2: footprint_area_mm2,
-          stack_height_mm: stack_height_mm,
-          weight_kg: total_weight_kg
+          footprint_area_mm2:
+            Decimal.mult(
+              Decimal.new(lot.package_length_mm),
+              Decimal.new(lot.package_width_mm)
+            ),
+          stack_height_mm: lot.package_height_mm,
+          weight_kg: lot.package_weight_kg
         }
     end
   end
