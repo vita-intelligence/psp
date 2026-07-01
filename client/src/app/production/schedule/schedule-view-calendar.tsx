@@ -323,21 +323,40 @@ function OperationBlock({
     });
 
   if (!op.planned_start || !op.planned_finish) return null;
-  const start = new Date(op.planned_start);
-  const finish = new Date(op.planned_finish);
+  const mo = op.manufacturing_order;
+  // Prefer real times over planned once the MO has actually run.
+  // Completed / in-progress steps get their actual_start /
+  // actual_finish stamped by start_mo_production + finish_mo, so
+  // the calendar block should span WHERE THE WORK REALLY LANDED,
+  // not where the planner originally dropped it. Missing actuals
+  // (edge case for legacy rows) fall back to planned.
+  const showActual =
+    mo?.status === "completed" || mo?.status === "in_progress";
+  const start = new Date(
+    (showActual && op.actual_start) || op.planned_start,
+  );
+  const finish = new Date(
+    (showActual && op.actual_finish) || op.planned_finish,
+  );
   const layout = layoutForDay(start, finish, day);
   if (!layout) return null;
 
   const wsg =
     workstationGroups.find((g) => g.id === op.workstation_group_id) ?? null;
   const wsgColor = wsg?.color ?? null;
-  const mo = op.manufacturing_order;
-  const blockers =
-    (mo?.broken_bookings_count ?? 0) +
-    (mo?.under_booked_count ?? 0) +
-    (mo?.lines_awaiting_child_output?.length ?? 0) +
-    (mo?.bookings_lot_off_warehouse?.length ?? 0);
-  const qcPending = mo?.qc_pending_count ?? 0;
+  // Blocker + QC badges only fire while the MO can still be acted
+  // on. Once it's completed / cancelled these counts are historical
+  // noise (a broken booking on a done MO can't be re-picked) and
+  // the badges just clutter the calendar with red alerts on
+  // finished work.
+  const isTerminal = mo?.status === "completed" || mo?.status === "cancelled";
+  const blockers = isTerminal
+    ? 0
+    : (mo?.broken_bookings_count ?? 0) +
+      (mo?.under_booked_count ?? 0) +
+      (mo?.lines_awaiting_child_output?.length ?? 0) +
+      (mo?.bookings_lot_off_warehouse?.length ?? 0);
+  const qcPending = isTerminal ? 0 : (mo?.qc_pending_count ?? 0);
 
   const dragStyle: React.CSSProperties = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }

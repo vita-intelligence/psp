@@ -126,8 +126,15 @@ export function projectRowsFromOps(
     let allCompleted = true;
     for (const moId of moIds) {
       const m = moMetaByMoId.get(moId);
-      qcPending += m?.qcPending ?? 0;
-      brokenCount += m?.brokenCount ?? 0;
+      // Only tally blockers / QC for MOs that can still be acted
+      // on. A broken booking on a done MO isn't actionable — it's
+      // historical noise, don't propagate it into the row badge.
+      const stillActive =
+        m?.status !== "completed" && m?.status !== "cancelled";
+      if (stillActive) {
+        qcPending += m?.qcPending ?? 0;
+        brokenCount += m?.brokenCount ?? 0;
+      }
       if (m?.status === "in_progress") anyInProgress = true;
       if (m?.status !== "completed") allCompleted = false;
     }

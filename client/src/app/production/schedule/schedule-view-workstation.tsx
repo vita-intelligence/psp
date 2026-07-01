@@ -195,8 +195,18 @@ function OperationBlock({
     });
 
   if (!op.planned_start || !op.planned_finish) return null;
-  const startMs = new Date(op.planned_start).getTime();
-  const endMs = new Date(op.planned_finish).getTime();
+  // Prefer actual times over planned once the step has actually
+  // run — the calendar should show WHERE THE WORK LANDED for
+  // completed / in-progress MOs, not the planner's original drop.
+  const showActual =
+    op.manufacturing_order?.status === "completed" ||
+    op.manufacturing_order?.status === "in_progress";
+  const startMs = new Date(
+    (showActual && op.actual_start) || op.planned_start,
+  ).getTime();
+  const endMs = new Date(
+    (showActual && op.actual_finish) || op.planned_finish,
+  ).getTime();
   if (endMs <= scale.rangeStart.getTime() || startMs >= scale.rangeEnd.getTime())
     return null;
 
@@ -281,6 +291,8 @@ function OperationBlock({
           </p>
         </div>
         {mo &&
+          mo.status !== "completed" &&
+          mo.status !== "cancelled" &&
           (() => {
             const issuesCount =
               (mo.broken_bookings_count ?? 0) +
@@ -297,7 +309,10 @@ function OperationBlock({
               </span>
             );
           })()}
-        {mo && (mo.qc_pending_count ?? 0) > 0 && (
+        {mo &&
+          mo.status !== "completed" &&
+          mo.status !== "cancelled" &&
+          (mo.qc_pending_count ?? 0) > 0 && (
           <span
             className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/25 px-1 py-0.5 text-[9px] font-semibold text-amber-900 dark:text-amber-200"
             title={`${mo.qc_pending_count} booked lot${mo.qc_pending_count === 1 ? "" : "s"} awaiting QC.`}

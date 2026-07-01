@@ -83,12 +83,21 @@ export function rowsFromOps(operations: ScheduleOperation[]): MORow[] {
         start: op.planned_start,
         finish: op.planned_finish,
         steps: [op],
+        // Blocker + QC counts only stay actionable while the MO can
+        // still be acted on. Once completed / cancelled they're
+        // historical noise — zero them so the calendar block doesn't
+        // wear a red badge for a finished MO.
         brokenCount:
-          (mo.broken_bookings_count ?? 0) +
-          (mo.under_booked_count ?? 0) +
-          (mo.lines_awaiting_child_output?.length ?? 0) +
-          (mo.bookings_lot_off_warehouse?.length ?? 0),
-        qcPending: mo.qc_pending_count ?? 0,
+          mo.status === "completed" || mo.status === "cancelled"
+            ? 0
+            : (mo.broken_bookings_count ?? 0) +
+              (mo.under_booked_count ?? 0) +
+              (mo.lines_awaiting_child_output?.length ?? 0) +
+              (mo.bookings_lot_off_warehouse?.length ?? 0),
+        qcPending:
+          mo.status === "completed" || mo.status === "cancelled"
+            ? 0
+            : (mo.qc_pending_count ?? 0),
       });
     } else {
       cur.steps.push(op);
