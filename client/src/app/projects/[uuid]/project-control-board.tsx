@@ -1348,37 +1348,73 @@ function LineCard({
   // marked confirmed. Anything earlier and we hide the trigger.
   const coConfirmed = coStatus === "confirmed";
 
+  // Roll-up over descendants so the line header can show at-a-glance
+  // "3 MOs · 1 completed" without the planner expanding every leaf.
+  const flatMoTree = flattenMoTree(line.mos);
+  const totalMos = flatMoTree.length;
+  const completedMos = flatMoTree.filter((m) => m.status === "completed").length;
+  const inFlightMos = flatMoTree.filter((m) =>
+    ["scheduled", "in_progress"].includes(m.status),
+  ).length;
+
   return (
-    <div className="rounded-lg border border-border/60 bg-card p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold tracking-tight">
-            {line.item_name ?? `Line #${line.id}`}
-          </p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            Qty ordered:{" "}
-            <span className="font-mono font-medium">
-              {formatCompanyNumber(line.qty_ordered, prefs)}
+    <section className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/40 bg-muted/30 px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <div className="grid size-7 shrink-0 place-items-center rounded-md bg-background text-muted-foreground shadow-inner">
+              <Package className="size-3.5" />
+            </div>
+            <p className="min-w-0 truncate text-sm font-semibold tracking-tight">
+              {line.item_name ?? `Line #${line.id}`}
+            </p>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pl-9 text-[11px] text-muted-foreground">
+            <span>
+              Qty ordered{" "}
+              <span className="font-mono font-medium text-foreground">
+                {formatCompanyNumber(line.qty_ordered, prefs)}
+              </span>
             </span>
-          </p>
+            {totalMos > 0 && (
+              <>
+                <span className="text-border">·</span>
+                <span>
+                  {totalMos} MO{totalMos === 1 ? "" : "s"}
+                  {completedMos > 0 && (
+                    <span className="ml-1 text-emerald-700 dark:text-emerald-400">
+                      · {completedMos} done
+                    </span>
+                  )}
+                  {inFlightMos > 0 && (
+                    <span className="ml-1 text-amber-700 dark:text-amber-400">
+                      · {inFlightMos} live
+                    </span>
+                  )}
+                </span>
+              </>
+            )}
+          </div>
         </div>
 
-        {!hasMo && line.needs_mo && !coConfirmed && (
-          <Badge tone="muted" className="shrink-0">
-            <Hourglass className="mr-1 inline size-3" />
-            Awaiting confirmation
-          </Badge>
-        )}
-        {!hasMo && line.needs_mo && coConfirmed && canSpawn && (
-          <SpawnMoButton line={line} onClick={() => onSpawnMo(line)} />
-        )}
-        {!hasMo && line.needs_mo && coConfirmed && !canSpawn && (
-          <Badge tone="muted">MO required</Badge>
-        )}
-      </div>
+        <div className="shrink-0">
+          {!hasMo && line.needs_mo && !coConfirmed && (
+            <Badge tone="muted">
+              <Hourglass className="mr-1 inline size-3" />
+              Awaiting confirmation
+            </Badge>
+          )}
+          {!hasMo && line.needs_mo && coConfirmed && canSpawn && (
+            <SpawnMoButton line={line} onClick={() => onSpawnMo(line)} />
+          )}
+          {!hasMo && line.needs_mo && coConfirmed && !canSpawn && (
+            <Badge tone="muted">MO required</Badge>
+          )}
+        </div>
+      </header>
 
       {hasMo && (
-        <div className="mt-3 space-y-2">
+        <div className="space-y-2 px-4 py-3">
           {line.mos.map((mo) => (
             <MiniMoCard
               key={mo.uuid}
@@ -1391,9 +1427,25 @@ function LineCard({
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
+
+function flattenMoTree(mos: OrderWizardMo[]): OrderWizardMo[] {
+  return mos.flatMap((mo) => [mo, ...flattenMoTree(mo.children ?? [])]);
+}
+
+// Left-rail accent per status — thin colored bar signals the MO's
+// state at a glance without a badge scan. Matches MO_STATUS_TONE.
+const MO_STATUS_RAIL: Record<OrderWizardMoStatus, string> = {
+  draft: "bg-muted-foreground/30",
+  prepared: "bg-muted-foreground/40",
+  approved: "bg-sky-500/70",
+  scheduled: "bg-sky-500/70",
+  in_progress: "bg-amber-500/80",
+  completed: "bg-emerald-500/80",
+  cancelled: "bg-destructive/70",
+};
 
 function SpawnMoButton({
   line,
@@ -1440,69 +1492,105 @@ function MiniMoCard({
 }) {
   const onOpen = () => onOpenMo(mo.uuid);
   const stage = deriveMoLiveStage(mo);
+  const isChild = depth > 0;
   return (
-    <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onOpen}
-          className="font-mono text-xs font-semibold text-foreground underline-offset-2 hover:underline"
-        >
-          {mo.code ?? `MO #${mo.id}`}
-        </button>
-        {depth > 0 && (
-          <Badge tone="muted">
-            <Layers className="mr-1 inline size-3" />
-            Sub-MO
-          </Badge>
-        )}
-        <Badge tone={MO_STATUS_TONE[mo.status]}>
-          {MO_STATUS_LABEL[mo.status]}
-        </Badge>
-        <span className="text-[11px] text-muted-foreground">
-          {mo.item_name ?? "Item"} · Qty {formatCompanyNumber(mo.quantity, prefs)}
-        </span>
-        {mo.due_date && (
-          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-            <Calendar className="size-3" />
-            Due {formatCompanyDate(mo.due_date, prefs)}
-          </span>
-        )}
-      </div>
-
-      {/* Live sub-stage. The MO status alone is too coarse — a
-          "Scheduled" MO can be awaiting pickup, picking, or awaiting
-          preflight, and each needs its own handoff button. Showing
-          the stage explicitly stops planners from guessing where in
-          the workflow the order actually is. */}
-      {stage && (
-        <div className="mt-2 flex items-start gap-2 rounded-md border border-border/40 bg-background/60 px-2.5 py-1.5">
-          <Badge tone={stage.tone} className="shrink-0">
-            {stage.label}
-          </Badge>
-          <p className="text-[11px] leading-snug text-muted-foreground">
-            {stage.hint}
-          </p>
-        </div>
+    <div
+      className={cn(
+        "relative flex overflow-hidden rounded-lg border border-border/60 bg-background shadow-sm transition-colors hover:border-border",
+        isChild && "ml-4",
+      )}
+    >
+      {/* Status-tinted left rail — at-a-glance signal without the
+          operator having to read the badge in the header row. Slight
+          shift on hover for tactile feedback. */}
+      <div className={cn("w-1 shrink-0", MO_STATUS_RAIL[mo.status])} />
+      {isChild && (
+        <span
+          aria-hidden
+          className="absolute -left-4 top-1/2 h-px w-4 -translate-y-px bg-border/60"
+        />
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
-        <BookingsSummary mo={mo} />
-        <OutputSummary mo={mo} />
-        {mo.broken_booking_count > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 text-destructive">
-            <AlertCircle className="size-3" />
-            {mo.broken_booking_count} broken
-          </span>
-        )}
-      </div>
+      <div className="min-w-0 flex-1 space-y-2.5 px-3.5 py-3">
+        {/* Header row: MO code (mono, prominent), item + qty inline,
+            status badge pinned to the right. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpen}
+              className="font-mono text-xs font-semibold tracking-tight text-foreground underline-offset-4 hover:underline"
+            >
+              {mo.code ?? `MO #${mo.id}`}
+            </button>
+            {isChild && (
+              <Badge tone="muted" className="text-[10px]">
+                Sub-MO
+              </Badge>
+            )}
+            <span className="truncate text-[12px] text-muted-foreground">
+              <span className="text-foreground/80">{mo.item_name ?? "Item"}</span>
+              <span className="mx-1 text-border">·</span>
+              Qty{" "}
+              <span className="font-mono text-foreground/80">
+                {formatCompanyNumber(mo.quantity, prefs)}
+              </span>
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {mo.due_date && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Calendar className="size-3" />
+                {formatCompanyDate(mo.due_date, prefs)}
+              </span>
+            )}
+            <Badge tone={MO_STATUS_TONE[mo.status]}>
+              {MO_STATUS_LABEL[mo.status]}
+            </Badge>
+          </div>
+        </div>
 
-      {/* Stage-driven actions: each sub-stage gets the single handoff
-          that moves the work forward. Picker / preflight / run /
-          closeout all route to mobile pages, gated on the matching
-          permission so a non-picker doesn't see "Send to picker". */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        {permissions.canManageMOs ? (
+        {/* Live sub-stage. The MO status alone is too coarse — a
+            "Scheduled" MO can be awaiting pickup, picking, or awaiting
+            preflight, and each needs its own handoff button. Showing
+            the stage explicitly stops planners from guessing where in
+            the workflow the order actually is. */}
+        {stage && (
+          <div className="flex items-start gap-2 rounded-md bg-muted/40 px-2.5 py-1.5">
+            <Badge tone={stage.tone} className="shrink-0">
+              {stage.label}
+            </Badge>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              {stage.hint}
+            </p>
+          </div>
+        )}
+
+        {/* Stat strip — each metric in its own pill so the eye can
+            skim booking status ↔ output status ↔ warnings without
+            them running together as one comma-separated line. */}
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-1.5 py-0.5">
+            <BookingsSummary mo={mo} />
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-1.5 py-0.5">
+            <OutputSummary mo={mo} />
+          </span>
+          {mo.broken_booking_count > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive">
+              <AlertCircle className="size-3" />
+              {mo.broken_booking_count} broken
+            </span>
+          )}
+        </div>
+
+        {/* Stage-driven actions: each sub-stage gets the single
+            handoff that moves the work forward. Picker / preflight /
+            run / closeout all route to mobile pages, gated on the
+            matching permission so a non-picker doesn't see
+            "Send to picker". */}
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          {permissions.canManageMOs ? (
           <Button asChild size="sm" variant="outline">
             <Link href={`/production/manufacturing-orders/${mo.uuid}`}>
               <ExternalLink className="mr-1 size-3" />
@@ -1636,24 +1724,25 @@ function MiniMoCard({
         )}
       </div>
 
-      {/* Auto-spawned sub-assembly MOs render nested under the
-          parent. They block the order from leaving planning just
-          like the parent does, so they need to be visible here. */}
-      {mo.children && mo.children.length > 0 && (
-        <div className="mt-2.5 space-y-2 border-l-2 border-border/40 pl-3">
-          {mo.children.map((child) => (
-            <MiniMoCard
-              key={child.uuid}
-              mo={child}
-              prefs={prefs}
-              permissions={permissions}
-              onOpenMo={onOpenMo}
-              onSendToDevice={onSendToDevice}
-              depth={depth + 1}
-            />
-          ))}
-        </div>
-      )}
+        {/* Auto-spawned sub-assembly MOs render nested under the
+            parent. Each child renders its own connector + rail, so
+            no wrapper border needed here — just a tight stack. */}
+        {mo.children && mo.children.length > 0 && (
+          <div className="space-y-2 pt-0.5">
+            {mo.children.map((child) => (
+              <MiniMoCard
+                key={child.uuid}
+                mo={child}
+                prefs={prefs}
+                permissions={permissions}
+                onOpenMo={onOpenMo}
+                onSendToDevice={onSendToDevice}
+                depth={depth + 1}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
