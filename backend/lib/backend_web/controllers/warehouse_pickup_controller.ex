@@ -54,13 +54,23 @@ defmodule BackendWeb.WarehousePickupController do
   # Empty production-feed cells for the confirm-transfer auto-pick.
   # The FE picks the first one as the suggested target; operator can
   # override with a different scan.
-  def production_feed_cells(conn, _params) do
+  def production_feed_cells(conn, params) do
     actor = conn.assigns.current_user
-    cells = Production.list_empty_production_feed_cells(actor.company_id)
+    mo_uuid = params["mo_uuid"]
+
+    entries =
+      case mo_uuid && Production.get_manufacturing_order(actor.company_id, mo_uuid) do
+        %ManufacturingOrder{} = mo ->
+          Production.list_empty_production_feed_cells_with_fit(actor.company_id, mo)
+
+        _ ->
+          Production.list_empty_production_feed_cells(actor.company_id)
+          |> Enum.map(fn cell -> %{cell: cell, fit: nil} end)
+      end
 
     json(conn, %{
       items:
-        Enum.map(cells, fn cell ->
+        Enum.map(entries, fn %{cell: cell, fit: fit} ->
           loc = cell.storage_location
           floor = loc && Ecto.assoc_loaded?(loc.floor) && loc.floor
           warehouse = floor && Ecto.assoc_loaded?(floor.warehouse) && floor.warehouse
@@ -74,6 +84,7 @@ defmodule BackendWeb.WarehousePickupController do
                 do: loc.code || loc.name || cell.name || "Cell ##{cell.id}",
                 else: cell.name || "Cell ##{cell.id}"
               ),
+            fit: fit && pickup_fit_payload(fit),
             location:
               loc &&
                 %{
@@ -99,6 +110,18 @@ defmodule BackendWeb.WarehousePickupController do
           }
         end)
     })
+  end
+
+  defp pickup_fit_payload(fit) do
+    %{
+      disqualified: fit.disqualified?,
+      reason: fit.reason,
+      percent_used: fit.percent_used,
+      current_percent_used: Map.get(fit, :current_percent_used, 0),
+      projected_percent_used:
+        Map.get(fit, :projected_percent_used, fit.percent_used),
+      free_pct: fit.free_pct
+    }
   end
 
   # GET /api/m/pickup/:mo_uuid

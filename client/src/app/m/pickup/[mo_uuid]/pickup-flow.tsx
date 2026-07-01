@@ -470,6 +470,7 @@ export function PickupFlow({
   } else if (step.kind === "transfer_overview") {
     body = (
       <TransferOverviewBody
+        moUuid={mo.uuid}
         bookings={bookings}
         companyDateFormat={companyDateFormat}
         productionCell={productionCell}
@@ -1112,6 +1113,7 @@ function HandedOffNotice({
 // ----- Transfer phase (Phase 5) -----
 
 interface TransferOverviewBodyProps {
+  moUuid: string;
   bookings: ManufacturingOrderBooking[];
   companyDateFormat: FormatPrefs | null;
   productionCell: ProductionCellChoice | null;
@@ -1121,7 +1123,25 @@ interface TransferOverviewBodyProps {
   onBack: () => void;
 }
 
+// Fit info the BE sends alongside each candidate production-feed cell.
+// See `Backend.Warehouses.Stock.check_fit` — mirrors the ranker payload.
+interface CellFitInfo {
+  disqualified: boolean;
+  reason: string | null;
+  percent_used: number;
+  free_pct: number;
+}
+
+interface ProductionFeedCellOption {
+  uuid: string;
+  code: string;
+  name: string | null;
+  fit: CellFitInfo | null;
+  location: ProductionCellChoice["location"];
+}
+
 function TransferOverviewBody({
+  moUuid,
   bookings,
   productionCell,
   onPickCell,
@@ -1131,17 +1151,27 @@ function TransferOverviewBody({
 }: TransferOverviewBodyProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<ProductionFeedCellOption[]>([]);
+  // Fit of the currently-selected production cell — kept in state so
+  // we can warn the picker BEFORE they walk with the trolley if the
+  // auto-pick doesn't have room for the whole lot load.
+  const [selectedFit, setSelectedFit] = useState<CellFitInfo | null>(null);
+  const [showAllCells, setShowAllCells] = useState(false);
 
-  // Auto-fetch a recommended production cell on mount.
+  // Auto-fetch candidate production cells + their fit info, then
+  // pre-pick the first cell that ACTUALLY FITS the pickup's whole
+  // lot load. This runs a pre-flight against Backend.Stock.check_fit
+  // so the picker learns about the "cell too small" case BEFORE they
+  // walk with the trolley + take photos and hit a hard refusal at
+  // confirm-transfer.
   useEffect(() => {
-    if (productionCell) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
       setError(null);
       try {
         const res = await fetch(
-          "/api/m/pickup/production-feed-cells",
+          `/api/m/pickup/production-feed-cells?mo_uuid=${encodeURIComponent(moUuid)}`,
           { cache: "no-store" },
         );
         if (!res.ok) {
@@ -1149,26 +1179,28 @@ function TransferOverviewBody({
           return;
         }
         const data = (await res.json()) as {
-          items: Array<{
-            uuid: string;
-            code: string;
-            name: string | null;
-            location: ProductionCellChoice["location"];
-          }>;
+          items: ProductionFeedCellOption[];
         };
         if (cancelled) return;
-        const first = data.items[0];
-        if (first) {
-          onPickCell({
-            uuid: first.uuid,
-            code: first.code ?? first.name ?? first.uuid.slice(0, 8),
-            name: first.name,
-            location: first.location ?? null,
-          });
-        } else {
+        setCandidates(data.items);
+
+        const fitting = data.items.find((c) => !c.fit || !c.fit.disqualified);
+        const target = fitting ?? data.items[0] ?? null;
+
+        if (!target) {
           setError(
             "No empty production cell available. Clear one before transferring.",
           );
+          return;
+        }
+        setSelectedFit(target.fit);
+        if (!productionCell) {
+          onPickCell({
+            uuid: target.uuid,
+            code: target.code ?? target.name ?? target.uuid.slice(0, 8),
+            name: target.name,
+            location: target.location ?? null,
+          });
         }
       } catch {
         setError("Network blip — try again.");
@@ -1179,7 +1211,32 @@ function TransferOverviewBody({
     return () => {
       cancelled = true;
     };
-  }, [productionCell, onPickCell]);
+    // Intentionally only depend on moUuid — productionCell changes
+    // shouldn't retrigger the fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moUuid]);
+
+  // Whenever the operator picks a different cell (from the list or
+  // via scan-override), update the local fit signal so the warning
+  // banner reflects reality.
+  useEffect(() => {
+    if (!productionCell) {
+      setSelectedFit(null);
+      return;
+    }
+    const match = candidates.find((c) => c.uuid === productionCell.uuid);
+    setSelectedFit(match?.fit ?? null);
+  }, [productionCell, candidates]);
+
+  const fittingCandidates = useMemo(
+    () => candidates.filter((c) => !c.fit || !c.fit.disqualified),
+    [candidates],
+  );
+  const disqualifiedCandidates = useMemo(
+    () => candidates.filter((c) => c.fit?.disqualified),
+    [candidates],
+  );
+  const noCellFits = candidates.length > 0 && fittingCandidates.length === 0;
 
   return (
     <div className="space-y-3 px-3 py-3">
@@ -1284,6 +1341,101 @@ function TransferOverviewBody({
             />
           </ul>
         )}
+
+        {/* Pre-flight fit banner. Warns the operator NOW — before they
+            walk with the trolley — if the auto-picked cell doesn't have
+            room for the whole lot load. The rejection message from the
+            old confirm-transfer refusal used to land after photos were
+            already taken; this catches it early. */}
+        {selectedFit?.disqualified && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+            <p className="font-semibold">
+              {productionCell?.code ?? "This cell"} can&apos;t fit the whole
+              load
+            </p>
+            <p className="mt-0.5 opacity-90">
+              {fitReasonDetail(selectedFit.reason)} Pick a different cell
+              below.
+            </p>
+          </div>
+        )}
+        {selectedFit && !selectedFit.disqualified && selectedFit.percent_used > 80 && (
+          <p className="text-[11px] text-amber-700 dark:text-amber-400">
+            Tight fit — projected {selectedFit.percent_used}% used after
+            landing.
+          </p>
+        )}
+
+        {/* Cell picker. Collapsed by default when the auto-pick fits;
+            auto-expanded when it doesn't. Fitting candidates listed
+            first, disqualified ones after with the reason. */}
+        {candidates.length > 1 && (
+          <details
+            open={showAllCells || !!selectedFit?.disqualified || noCellFits}
+            onToggle={(e) => setShowAllCells((e.target as HTMLDetailsElement).open)}
+            className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px]"
+          >
+            <summary className="cursor-pointer font-medium text-foreground">
+              Choose a different cell ({fittingCandidates.length} fits
+              {disqualifiedCandidates.length > 0
+                ? `, ${disqualifiedCandidates.length} too small`
+                : ""}
+              )
+            </summary>
+            <ul className="mt-2 space-y-1">
+              {fittingCandidates.map((c) => (
+                <li key={c.uuid}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPickCell({
+                        uuid: c.uuid,
+                        code: c.code ?? c.name ?? c.uuid.slice(0, 8),
+                        name: c.name,
+                        location: c.location ?? null,
+                      })
+                    }
+                    className={cn(
+                      "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left",
+                      productionCell?.uuid === c.uuid
+                        ? "border-sky-500 bg-sky-500/10"
+                        : "border-border/60 bg-background hover:border-border",
+                    )}
+                  >
+                    <span className="font-mono text-[11px] font-semibold">
+                      {c.code}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {c.fit ? `${c.fit.percent_used}% after` : "fit unknown"}
+                    </span>
+                  </button>
+                </li>
+              ))}
+              {disqualifiedCandidates.map((c) => (
+                <li key={c.uuid}>
+                  <div
+                    className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-destructive opacity-80"
+                    title={fitReasonDetail(c.fit?.reason)}
+                  >
+                    <span className="font-mono text-[11px] font-semibold">
+                      {c.code}
+                    </span>
+                    <span className="text-[10px] uppercase">
+                      {fitReasonShort(c.fit?.reason)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {noCellFits && (
+              <p className="mt-2 text-[11px] text-destructive">
+                No production cell in this warehouse can hold the whole
+                lot load. Split the pickup across multiple MOs or clear
+                a bigger cell before continuing.
+              </p>
+            )}
+          </details>
+        )}
       </div>
 
       <Button
@@ -1291,7 +1443,7 @@ function TransferOverviewBody({
         className="w-full"
         size="lg"
         onClick={onScanCell}
-        disabled={!productionCell}
+        disabled={!productionCell || !!selectedFit?.disqualified}
       >
         <ScanLine className="mr-2 size-4" />
         I&apos;m at production — scan cell
@@ -1301,12 +1453,38 @@ function TransferOverviewBody({
         variant="ghost"
         className="w-full"
         onClick={onContinue}
-        disabled={!productionCell}
+        disabled={!productionCell || !!selectedFit?.disqualified}
       >
         Skip scan — type cell manually
       </Button>
     </div>
   );
+}
+
+function fitReasonShort(reason: string | null | undefined): string {
+  switch (reason) {
+    case "no_room":
+      return "no room";
+    case "stack_too_tall":
+      return "too tall";
+    case "weight_exceeded":
+      return "too heavy";
+    default:
+      return "no fit";
+  }
+}
+
+function fitReasonDetail(reason: string | null | undefined): string {
+  switch (reason) {
+    case "no_room":
+      return "Not enough footprint area for the packages.";
+    case "stack_too_tall":
+      return "The lot's stack is taller than the cell's clearance.";
+    case "weight_exceeded":
+      return "Total weight would exceed the cell's max weight rating.";
+    default:
+      return "The cell's capacity is exceeded.";
+  }
 }
 
 interface TransferPhotosBodyProps {

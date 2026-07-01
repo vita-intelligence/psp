@@ -6872,6 +6872,87 @@ defmodule Backend.Production do
     |> Repo.all()
   end
 
+  @doc """
+  Pre-flight fit check per production-feed cell for an MO's pickup.
+  Returns each empty production-feed cell decorated with `fit` info
+  — the same shape Backend.Stock.check_fit produces — so the picker
+  UI can filter / gray-out cells that can't hold the whole load
+  BEFORE they walk with the trolley + take photos and hit a hard
+  refusal at confirm-transfer.
+
+  When packaging dims aren't set on some lots (compute_lot_footprint
+  returns :unknown), the check falls through as \"unknown_fit\" for
+  the cell — treated as safe (matches the ranking path's lenient
+  policy).
+  """
+  def list_empty_production_feed_cells_with_fit(company_id, %ManufacturingOrder{} = mo) do
+    cells = list_empty_production_feed_cells(company_id)
+    bookings = list_pickup_bookings(mo)
+
+    # Whole-lot footprint sum — mirrors the picker's whole-lot
+    # transfer semantics. For each booking's lot we take the lot's
+    # TOTAL current on-hand (sum of every placement), not
+    # booking.quantity, since the picker walks the whole container.
+    lot_ids = bookings |> Enum.map(& &1.stock_lot_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    on_hand_by_lot =
+      if lot_ids == [] do
+        %{}
+      else
+        from(p in Backend.Stock.Placement,
+          where: p.stock_lot_id in ^lot_ids,
+          group_by: p.stock_lot_id,
+          select: {p.stock_lot_id, sum(p.qty)}
+        )
+        |> Repo.all()
+        |> Map.new()
+      end
+
+    lots =
+      if lot_ids == [] do
+        []
+      else
+        from(l in StockLot, where: l.id in ^lot_ids) |> Repo.all()
+      end
+
+    footprints =
+      Enum.map(lots, fn l ->
+        qty = Map.get(on_hand_by_lot, l.id) || Decimal.new(0)
+        Backend.Stock.compute_lot_footprint(%{l | qty_received: qty})
+      end)
+
+    # If any lot is :unknown we skip the check (mirror the current
+    # policy). Otherwise sum footprints and check each cell.
+    any_unknown? = Enum.any?(footprints, &(&1 == :unknown))
+
+    total_needed =
+      if any_unknown?, do: :unknown, else: Backend.Stock.sum_footprints(footprints)
+
+    Enum.map(cells, fn cell ->
+      fit =
+        case total_needed do
+          :unknown ->
+            %{
+              disqualified?: false,
+              reason: "unknown_fit",
+              current_percent_used: 0,
+              projected_percent_used: 0,
+              percent_used: 0,
+              free_pct: 100
+            }
+
+          footprint ->
+            capacity = Backend.Stock.compute_cell_capacity(cell, Backend.Stock.empty_footprint())
+            Backend.Stock.check_fit(footprint, capacity)
+        end
+
+      %{cell: cell, fit: fit}
+    end)
+    |> Enum.sort_by(fn %{fit: fit} ->
+      {if(fit.disqualified?, do: 1, else: 0), fit.percent_used}
+    end)
+  end
+
   # ----- Output QC (finished product quality sign-off) -----------
 
   @doc """

@@ -1641,7 +1641,7 @@ defmodule Backend.Stock do
 
   # ----- fit math -------------------------------------------------------
 
-  defp empty_footprint do
+  def empty_footprint do
     %{
       footprint_area_mm2: Decimal.new(0),
       stack_height_mm: 0,
@@ -1652,7 +1652,7 @@ defmodule Backend.Stock do
   # Compute a lot's physical footprint from its packaging dims +
   # qty_received. Returns `:unknown` when any packaging field is missing
   # so callers can degrade gracefully (legacy lots don't lock cells).
-  defp compute_lot_footprint(%Lot{} = lot) do
+  def compute_lot_footprint(%Lot{} = lot) do
     cond do
       is_nil(lot.package_length_mm) or is_nil(lot.package_width_mm) or
         is_nil(lot.package_height_mm) or is_nil(lot.package_weight_kg) or
@@ -1697,13 +1697,13 @@ defmodule Backend.Stock do
     end
   end
 
-  defp compute_lot_footprint(_), do: :unknown
+  def compute_lot_footprint(_), do: :unknown
 
   defp ceil_div(_, 0), do: 0
   defp ceil_div(num, den) when num <= 0, do: 0
   defp ceil_div(num, den), do: div(num + den - 1, den)
 
-  defp sum_footprints(list) when is_list(list) do
+  def sum_footprints(list) when is_list(list) do
     Enum.reduce(list, empty_footprint(), fn
       :unknown, acc ->
         acc
@@ -1719,7 +1719,7 @@ defmodule Backend.Stock do
   end
 
   # Total cell capacity minus already-committed footprints.
-  defp compute_cell_capacity(%StorageCell{} = cell, committed) do
+  def compute_cell_capacity(%StorageCell{} = cell, committed) do
     # Cell dims in metres → millimetres for the comparison. Missing
     # dims = treat cell as "unbounded" (operator skipped dims, we
     # don't want to block them).
@@ -1812,12 +1812,12 @@ defmodule Backend.Stock do
 
   def ensure_placement_fits(_, _, _), do: :ok
 
-  defp check_fit(:unknown, _capacity) do
+  def check_fit(:unknown, _capacity) do
     # Legacy lot without packaging dims — don't block recommendations.
     %{disqualified?: false, reason: nil, percent_used: 0, free_pct: 100}
   end
 
-  defp check_fit(footprint, capacity) do
+  def check_fit(footprint, capacity) do
     over_weight =
       not is_nil(capacity.total_weight_kg) and
         Decimal.gt?(
