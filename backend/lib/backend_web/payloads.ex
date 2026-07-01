@@ -1166,6 +1166,7 @@ defmodule BackendWeb.Payloads do
         Enum.map(mo.output_lots, fn lot ->
           %{
             uuid: lot.uuid,
+            supplier_batch_no: Map.get(lot, :supplier_batch_no),
             status: lot.status,
             qty: decimal_to_string(lot.qty),
             at_production_feed: lot.at_production_feed?

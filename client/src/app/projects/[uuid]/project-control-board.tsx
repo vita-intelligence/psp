@@ -1416,10 +1416,9 @@ function LineCard({
   // marked confirmed. Anything earlier and we hide the trigger.
   const coConfirmed = coStatus === "confirmed";
 
-  // Line-level roll-up. Overall phase = bottleneck (min across the
-  // tree), completion = normalised average of phase indices — the
-  // planner sees BOTH "we're stuck at Setup" (rail dot) and
-  // "we're 42% through overall" (rail track fill).
+  // Line-level roll-up. Overall phase = the slowest MO in the tree
+  // (the whole line can't be Done while any sub-MO is still Setup),
+  // aheadCount = MOs already past that phase and waiting.
   const rollup = lineOverallRollup(line.mos);
   const overallPhase = MO_PHASES[rollup.minPhaseIdx];
   const isLineDone = rollup.totalCount > 0 && rollup.doneCount === rollup.totalCount;
@@ -1450,19 +1449,15 @@ function LineCard({
                   {rollup.doneCount}/{rollup.totalCount} MO
                   {rollup.totalCount === 1 ? "" : "s"} done
                 </span>
-                <span className="text-border">·</span>
-                <span
-                  className={cn(
-                    "font-medium",
-                    isLineDone
-                      ? "text-emerald-700 dark:text-emerald-400"
-                      : rollup.completion > 0
-                        ? "text-sky-700 dark:text-sky-400"
-                        : "text-muted-foreground",
-                  )}
-                >
-                  {Math.round(rollup.completion * 100)}% complete
-                </span>
+                {rollup.aheadCount > 0 && (
+                  <>
+                    <span className="text-border">·</span>
+                    <span className="text-amber-700 dark:text-amber-400">
+                      {rollup.aheadCount} waiting on slower MO
+                      {rollup.aheadCount === 1 ? "" : "s"}
+                    </span>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -1474,10 +1469,7 @@ function LineCard({
         <div className="flex flex-col items-end gap-2 sm:min-w-[16rem]">
           {rollup.totalCount > 0 && (
             <div className="flex w-full flex-col items-end gap-1">
-              <LinePhaseRail
-                currentIdx={rollup.minPhaseIdx}
-                fillPct={rollup.completion}
-              />
+              <LinePhaseRail currentIdx={rollup.minPhaseIdx} />
               <span
                 className={cn(
                   "text-[10px] font-semibold uppercase tracking-wider",
@@ -1486,7 +1478,7 @@ function LineCard({
                     : "text-sky-700 dark:text-sky-400",
                 )}
               >
-                {isLineDone ? "Line complete" : `Bottleneck · ${overallPhase.label}`}
+                {isLineDone ? "Line complete" : `Now in · ${overallPhase.label}`}
               </span>
             </div>
           )}
@@ -1532,47 +1524,45 @@ function flattenMoTree(mos: OrderWizardMo[]): OrderWizardMo[] {
 
 // Line-level roll-up. A line inherits its overall phase from the
 // SLOWEST MO in its tree — the whole line can't be "Done" while any
-// sub-assembly is still in Plan / Setup. Also returns a completion
-// ratio (average phase index across the tree, normalised to
-// 0..1) so we can render a fill under the phase-index dot for
-// "sub-progress within the current phase".
+// sub-assembly is still in Plan / Setup. `aheadCount` reports how
+// many MOs are already past the current phase and just waiting on
+// the slower ones, so the caption can add "· 1 waiting" without
+// having to draw an overshoot fill (which read as "we're further
+// than we actually are").
 function lineOverallRollup(mos: OrderWizardMo[]): {
   minPhaseIdx: number;
-  completion: number;
   doneCount: number;
+  aheadCount: number;
   totalCount: number;
 } {
   const flat = flattenMoTree(mos);
   if (flat.length === 0) {
-    return { minPhaseIdx: 0, completion: 0, doneCount: 0, totalCount: 0 };
+    return { minPhaseIdx: 0, doneCount: 0, aheadCount: 0, totalCount: 0 };
   }
   const phaseIndices = flat.map((mo) => phaseIndex(phaseForMo(mo)));
   const minPhaseIdx = Math.min(...phaseIndices);
-  const maxPhaseValue = MO_PHASES.length - 1; // 4
-  const completion =
-    phaseIndices.reduce((sum, idx) => sum + idx, 0) /
-    (flat.length * maxPhaseValue);
   const doneCount = flat.filter((mo) => phaseForMo(mo) === "done").length;
+  // "Ahead" = past the current phase but not done — they've moved on
+  // but the line can't advance until the slower MO catches up.
+  const aheadCount = phaseIndices.filter(
+    (idx) => idx > minPhaseIdx && idx < MO_PHASES.length - 1,
+  ).length;
   return {
     minPhaseIdx,
-    completion,
     doneCount,
+    aheadCount,
     totalCount: flat.length,
   };
 }
 
 // Compact 5-dot pipeline rendered at the line header — no labels
 // (the MO cards below carry the phase legend), just the shape of the
-// overall product completion. `currentIdx` marks the bottleneck
-// phase (min across the tree); `fillPct` is the smoother average
-// completion drawn as an emerald fill on the track.
-function LinePhaseRail({
-  currentIdx,
-  fillPct,
-}: {
-  currentIdx: number;
-  fillPct: number;
-}) {
+// overall product completion. Fill stops at the current dot, not
+// past it — an average-based overshoot is more misleading than
+// helpful ("progress you don't actually have").
+function LinePhaseRail({ currentIdx }: { currentIdx: number }) {
+  const maxIdx = MO_PHASES.length - 1;
+  const fillPct = maxIdx === 0 ? 0 : currentIdx / maxIdx;
   return (
     <div className="relative w-full max-w-xs">
       <div className="absolute top-1 left-1.5 right-1.5 h-0.5 rounded-full bg-border/60" />
@@ -2474,25 +2464,37 @@ function MoModal({
                 Output lots
               </h3>
               <ul className="space-y-1.5">
-                {mo.output_lots.map((lot) => (
-                  <li
-                    key={lot.uuid}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-muted/10 px-3 py-1.5 text-xs"
-                  >
-                    <Link
-                      href={`/stock/lots/${lot.uuid}`}
-                      className="font-mono text-brand underline-offset-2 hover:underline"
+                {mo.output_lots.map((lot, idx) => {
+                  // Manufactured lots don't get a supplier_batch_no
+                  // stamped, so we synthesise a positional code from
+                  // the MO code + 1-based index. Auditable + easier
+                  // to read than a truncated UUID.
+                  const displayCode =
+                    lot.supplier_batch_no?.trim() ||
+                    (mo.code
+                      ? `${mo.code} · L${String(idx + 1).padStart(2, "0")}`
+                      : `Lot ${lot.uuid.slice(0, 8)}`);
+                  return (
+                    <li
+                      key={lot.uuid}
+                      className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-muted/10 px-3 py-1.5 text-xs"
                     >
-                      {lot.uuid.slice(0, 8)}
-                    </Link>
-                    <span className="font-mono">
-                      {formatCompanyNumber(lot.qty, prefs)}
-                    </span>
-                    <Badge tone={lot.at_production_feed ? "amber" : "emerald"}>
-                      {lot.at_production_feed ? "At feed" : lot.status}
-                    </Badge>
-                  </li>
-                ))}
+                      <Link
+                        href={`/stock/lots/${lot.uuid}`}
+                        className="font-mono text-brand underline-offset-2 hover:underline"
+                        title={lot.uuid}
+                      >
+                        {displayCode}
+                      </Link>
+                      <span className="font-mono">
+                        {formatCompanyNumber(lot.qty, prefs)}
+                      </span>
+                      <Badge tone={lot.at_production_feed ? "amber" : "emerald"}>
+                        {lot.at_production_feed ? "At feed" : lot.status}
+                      </Badge>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           )}

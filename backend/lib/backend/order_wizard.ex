@@ -1576,6 +1576,7 @@ defmodule Backend.OrderWizard do
     %{
       id: lot.id,
       uuid: lot.uuid,
+      supplier_batch_no: lot.supplier_batch_no,
       status: lot.status,
       qty_received: lot.qty_received,
       placements: lot.placements,
@@ -1586,6 +1587,7 @@ defmodule Backend.OrderWizard do
   defp lot_summary(%{} = lot_state) do
     %{
       uuid: lot_state.uuid,
+      supplier_batch_no: lot_state.supplier_batch_no,
       status: lot_state.status,
       qty: lot_state.qty_received,
       at_production_feed?: lot_state.at_production_feed?
