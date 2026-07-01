@@ -317,6 +317,68 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
 }
 
 // =============================================================================
+// MO lifecycle rail — 5-phase pipeline for the redesigned MO card
+// =============================================================================
+//
+// Rolls the 10 live sub-stages up into 5 broad phases so the planner
+// sees the shape of an MO's journey at a glance. Each phase is a
+// dot on a horizontal rail:
+//
+//   PLAN → SETUP → RUN → WRAP → DONE
+//   ●       ●      ○     ○       ○
+//                  ↑
+//                  currently here — one callout + one action below
+//
+// Phase mapping:
+//   plan   — draft / prepared (planner still shaping the MO)
+//   setup  — approved / awaiting_pickup / picking / awaiting_preflight
+//   run    — ready_to_run / running (production floor's turn)
+//   wrap   — awaiting_output_qc / awaiting_closeout /
+//            awaiting_warehouse_return (post-run closeout chain)
+//   done   — everything cleared
+
+type MoLifecyclePhase = "plan" | "setup" | "run" | "wrap" | "done";
+
+const MO_PHASES: {
+  key: MoLifecyclePhase;
+  label: string;
+  short: string;
+}[] = [
+  { key: "plan", label: "Plan", short: "Plan" },
+  { key: "setup", label: "Setup", short: "Setup" },
+  { key: "run", label: "Run", short: "Run" },
+  { key: "wrap", label: "Wrap", short: "Wrap" },
+  { key: "done", label: "Done", short: "Done" },
+];
+
+function phaseForMo(mo: OrderWizardMo): MoLifecyclePhase {
+  if (mo.status === "cancelled") return "done";
+  if (mo.status === "completed") {
+    if (
+      mo.output_qc_pending_count > 0 ||
+      mo.bookings_closeout_pending_count > 0 ||
+      mo.output_at_feed_count > 0
+    ) {
+      return "wrap";
+    }
+    return "done";
+  }
+  if (mo.status === "in_progress") return "run";
+  if (mo.status === "scheduled") {
+    // ready_to_run belongs at the start of Run — preflight's done,
+    // production operator just needs to hit start.
+    if (mo.pickup_completed_at && mo.preflight_complete) return "run";
+    return "setup";
+  }
+  if (mo.status === "approved") return "setup";
+  return "plan";
+}
+
+function phaseIndex(phase: MoLifecyclePhase): number {
+  return MO_PHASES.findIndex((p) => p.key === phase);
+}
+
+// =============================================================================
 // Permissions + props
 // =============================================================================
 
@@ -1435,18 +1497,6 @@ function flattenMoTree(mos: OrderWizardMo[]): OrderWizardMo[] {
   return mos.flatMap((mo) => [mo, ...flattenMoTree(mo.children ?? [])]);
 }
 
-// Left-rail accent per status — thin colored bar signals the MO's
-// state at a glance without a badge scan. Matches MO_STATUS_TONE.
-const MO_STATUS_RAIL: Record<OrderWizardMoStatus, string> = {
-  draft: "bg-muted-foreground/30",
-  prepared: "bg-muted-foreground/40",
-  approved: "bg-sky-500/70",
-  scheduled: "bg-sky-500/70",
-  in_progress: "bg-amber-500/80",
-  completed: "bg-emerald-500/80",
-  cancelled: "bg-destructive/70",
-};
-
 function SpawnMoButton({
   line,
   onClick,
@@ -1492,71 +1542,88 @@ function MiniMoCard({
 }) {
   const onOpen = () => onOpenMo(mo.uuid);
   const stage = deriveMoLiveStage(mo);
+  const currentPhase = phaseForMo(mo);
+  const currentPhaseIdx = phaseIndex(currentPhase);
   const isChild = depth > 0;
+  const hasBrokenBookings = mo.broken_booking_count > 0;
+
   return (
-    <div
+    <article
       className={cn(
-        "relative flex overflow-hidden rounded-lg border border-border/60 bg-background shadow-sm transition-colors hover:border-border",
-        isChild && "ml-4",
+        "relative rounded-xl border border-border/60 bg-background shadow-sm transition-colors hover:border-border",
+        isChild && "ml-6",
       )}
     >
-      {/* Status-tinted left rail — at-a-glance signal without the
-          operator having to read the badge in the header row. Slight
-          shift on hover for tactile feedback. */}
-      <div className={cn("w-1 shrink-0", MO_STATUS_RAIL[mo.status])} />
       {isChild && (
         <span
           aria-hidden
-          className="absolute -left-4 top-1/2 h-px w-4 -translate-y-px bg-border/60"
+          className="absolute -left-6 top-8 h-px w-6 bg-border/60"
         />
       )}
 
-      <div className="min-w-0 flex-1 space-y-2.5 px-3.5 py-3">
-        {/* Header row: MO code (mono, prominent), item + qty inline,
-            status badge pinned to the right. */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={onOpen}
-              className="font-mono text-xs font-semibold tracking-tight text-foreground underline-offset-4 hover:underline"
-            >
-              {mo.code ?? `MO #${mo.id}`}
-            </button>
+      {/* Header — item name hero + code/qty meta + current phase chip. */}
+      <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3.5 pb-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="min-w-0 truncate text-sm font-semibold tracking-tight">
+              {mo.item_name ?? "Item"}
+            </h4>
             {isChild && (
               <Badge tone="muted" className="text-[10px]">
                 Sub-MO
               </Badge>
             )}
-            <span className="truncate text-[12px] text-muted-foreground">
-              <span className="text-foreground/80">{mo.item_name ?? "Item"}</span>
-              <span className="mx-1 text-border">·</span>
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+            <button
+              type="button"
+              onClick={onOpen}
+              className="font-mono font-semibold text-foreground underline-offset-4 hover:underline"
+            >
+              {mo.code ?? `MO #${mo.id}`}
+            </button>
+            <span>
               Qty{" "}
               <span className="font-mono text-foreground/80">
                 {formatCompanyNumber(mo.quantity, prefs)}
               </span>
             </span>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
             {mo.due_date && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
                 <Calendar className="size-3" />
-                {formatCompanyDate(mo.due_date, prefs)}
+                Due {formatCompanyDate(mo.due_date, prefs)}
               </span>
             )}
-            <Badge tone={MO_STATUS_TONE[mo.status]}>
-              {MO_STATUS_LABEL[mo.status]}
-            </Badge>
           </div>
         </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+            currentPhaseIdx === 4
+              ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+              : currentPhaseIdx === 0
+                ? "border-border/60 bg-muted/50 text-muted-foreground"
+                : "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-400",
+          )}
+        >
+          {MO_PHASES[currentPhaseIdx].label}
+        </span>
+      </div>
 
-        {/* Live sub-stage. The MO status alone is too coarse — a
-            "Scheduled" MO can be awaiting pickup, picking, or awaiting
-            preflight, and each needs its own handoff button. Showing
-            the stage explicitly stops planners from guessing where in
-            the workflow the order actually is. */}
-        {stage && (
-          <div className="flex items-start gap-2 rounded-md bg-muted/40 px-2.5 py-1.5">
+      {/* Pipeline rail — 5 dots + connecting lines. Passed phases
+          filled (emerald), current phase ringed, upcoming empty. The
+          filled line under the rail shows progress at a glance
+          without having to read the phase labels. */}
+      <div className="px-4 pb-2">
+        <PhaseRail currentIdx={currentPhaseIdx} />
+      </div>
+
+      {/* Callout: current stage + primary action(s). Shown only when
+          there's something to say — a fully-done MO gets a quiet
+          "complete" line instead of a big empty band. */}
+      {stage ? (
+        <div className="mx-4 mb-3 space-y-2.5 rounded-lg border border-border/50 bg-muted/40 p-3">
+          <div className="flex items-start gap-2">
             <Badge tone={stage.tone} className="shrink-0">
               {stage.label}
             </Badge>
@@ -1564,46 +1631,27 @@ function MiniMoCard({
               {stage.hint}
             </p>
           </div>
-        )}
 
-        {/* Stat strip — each metric in its own pill so the eye can
-            skim booking status ↔ output status ↔ warnings without
-            them running together as one comma-separated line. */}
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-          <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-1.5 py-0.5">
-            <BookingsSummary mo={mo} />
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-muted/30 px-1.5 py-0.5">
-            <OutputSummary mo={mo} />
-          </span>
-          {mo.broken_booking_count > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive">
-              <AlertCircle className="size-3" />
-              {mo.broken_booking_count} broken
-            </span>
-          )}
-        </div>
+          {/* Stage-driven actions: each sub-stage gets the single
+              handoff that moves the work forward. Picker / preflight /
+              run / closeout all route to mobile pages, gated on the
+              matching permission so a non-picker doesn't see
+              "Send to picker". */}
+          <div className="flex flex-wrap items-center gap-2">
+            {permissions.canManageMOs ? (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/production/manufacturing-orders/${mo.uuid}`}>
+                  <ExternalLink className="mr-1 size-3" />
+                  Open MO
+                </Link>
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={onOpen}>
+                View details
+              </Button>
+            )}
 
-        {/* Stage-driven actions: each sub-stage gets the single
-            handoff that moves the work forward. Picker / preflight /
-            run / closeout all route to mobile pages, gated on the
-            matching permission so a non-picker doesn't see
-            "Send to picker". */}
-        <div className="flex flex-wrap items-center gap-2 pt-0.5">
-          {permissions.canManageMOs ? (
-          <Button asChild size="sm" variant="outline">
-            <Link href={`/production/manufacturing-orders/${mo.uuid}`}>
-              <ExternalLink className="mr-1 size-3" />
-              Open MO
-            </Link>
-          </Button>
-        ) : (
-          <Button size="sm" variant="ghost" onClick={onOpen}>
-            View details
-          </Button>
-        )}
-
-        {stage?.key === "awaiting_pickup" && permissions.canPick && (
+            {stage?.key === "awaiting_pickup" && permissions.canPick && (
           <Button
             size="sm"
             variant="outline"
@@ -1722,27 +1770,115 @@ function MiniMoCard({
             Send closeout
           </Button>
         )}
-      </div>
-
-        {/* Auto-spawned sub-assembly MOs render nested under the
-            parent. Each child renders its own connector + rail, so
-            no wrapper border needed here — just a tight stack. */}
-        {mo.children && mo.children.length > 0 && (
-          <div className="space-y-2 pt-0.5">
-            {mo.children.map((child) => (
-              <MiniMoCard
-                key={child.uuid}
-                mo={child}
-                prefs={prefs}
-                permissions={permissions}
-                onOpenMo={onOpenMo}
-                onSendToDevice={onSendToDevice}
-                depth={depth + 1}
-              />
-            ))}
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="mx-4 mb-3 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-800 dark:text-emerald-300">
+          <CheckCircle2 className="size-3.5 shrink-0" />
+          <span>MO complete — outputs returned to warehouse storage.</span>
+        </div>
+      )}
+
+      {/* Optional detail strip — bookings + output + broken chips only
+          shown when there's actually something noteworthy (in-flight
+          bookings, made output, or broken bookings). Keeps the card
+          quiet when everything's just done. */}
+      {(hasBrokenBookings ||
+        mo.bookings_total > 0 ||
+        mo.output_lot_count > 0) && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border/40 bg-muted/20 px-4 py-2 text-[11px]">
+          {mo.bookings_total > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-background px-1.5 py-0.5">
+              <BookingsSummary mo={mo} />
+            </span>
+          )}
+          {mo.output_lot_count > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-background px-1.5 py-0.5">
+              <OutputSummary mo={mo} />
+            </span>
+          )}
+          {hasBrokenBookings && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive">
+              <AlertCircle className="size-3" />
+              {mo.broken_booking_count} broken
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Auto-spawned sub-assembly MOs render nested under the parent.
+          Each child renders its own connector so no wrapper needed. */}
+      {mo.children && mo.children.length > 0 && (
+        <div className="space-y-2 border-t border-border/40 bg-muted/10 p-3">
+          {mo.children.map((child) => (
+            <MiniMoCard
+              key={child.uuid}
+              mo={child}
+              prefs={prefs}
+              permissions={permissions}
+              onOpenMo={onOpenMo}
+              onSendToDevice={onSendToDevice}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// Horizontal 5-dot lifecycle rail. Renders passed phases as filled
+// emerald dots, the current phase as a ringed emphasis dot, and
+// upcoming phases as empty rings. The line under the dots fills to
+// the current phase — quick visual for "how far through is this MO".
+function PhaseRail({ currentIdx }: { currentIdx: number }) {
+  const total = MO_PHASES.length;
+  return (
+    <div className="relative">
+      {/* Track (background) + fill (progress) — anchored to dot
+          centers via left/right px offsets so the ends line up with
+          the outermost dots on either side. */}
+      <div className="absolute top-2 left-3 right-3 h-0.5 rounded-full bg-border/60" />
+      <div
+        className="absolute top-2 left-3 h-0.5 rounded-full bg-emerald-500/70 transition-all"
+        style={{
+          width: `calc((100% - 1.5rem) * ${currentIdx / (total - 1)})`,
+        }}
+      />
+      <ol className="relative flex items-start justify-between">
+        {MO_PHASES.map((phase, idx) => {
+          const isDone = idx < currentIdx;
+          const isCurrent = idx === currentIdx;
+          return (
+            <li key={phase.key} className="flex flex-col items-center gap-1">
+              <span
+                className={cn(
+                  "grid size-4 place-items-center rounded-full border-2 bg-background transition-colors",
+                  isDone && "border-emerald-500 bg-emerald-500 text-white",
+                  isCurrent &&
+                    "border-sky-500 shadow-[0_0_0_3px_rgba(56,189,248,0.15)]",
+                  !isDone && !isCurrent && "border-border/60",
+                )}
+              >
+                {isDone && <CheckCircle2 className="size-2.5" />}
+                {isCurrent && (
+                  <span className="size-1.5 rounded-full bg-sky-500" />
+                )}
+              </span>
+              <span
+                className={cn(
+                  "text-[9px] uppercase tracking-wider",
+                  isDone && "font-semibold text-emerald-700 dark:text-emerald-400",
+                  isCurrent && "font-semibold text-sky-700 dark:text-sky-400",
+                  !isDone && !isCurrent && "text-muted-foreground",
+                )}
+              >
+                {phase.short}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
