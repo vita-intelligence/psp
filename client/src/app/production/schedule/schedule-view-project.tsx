@@ -116,11 +116,26 @@ export function projectRowsFromOps(
     const meta = moMetaByMoId.get(rootId);
     let qcPending = 0;
     let brokenCount = 0;
+    // Roll-up status across every MO in the project row so a project
+    // whose root is completed but still has live children reads as
+    // "in progress" (or the root's plain status), not a stale
+    // "completed" that hides remaining floor work. Rule: any child
+    // in_progress → in_progress; else every child completed →
+    // completed; otherwise fall through to the root's status.
+    let anyInProgress = false;
+    let allCompleted = true;
     for (const moId of moIds) {
       const m = moMetaByMoId.get(moId);
       qcPending += m?.qcPending ?? 0;
       brokenCount += m?.brokenCount ?? 0;
+      if (m?.status === "in_progress") anyInProgress = true;
+      if (m?.status !== "completed") allCompleted = false;
     }
+    const rollupStatus = anyInProgress
+      ? "in_progress"
+      : allCompleted
+        ? "completed"
+        : (meta?.status ?? "draft");
     rows.push({
       rootMoId: rootId,
       rootMoUuid: meta?.uuid ?? "",
@@ -128,7 +143,7 @@ export function projectRowsFromOps(
       itemName: meta?.itemName ?? "—",
       start: new Date(Math.min(...starts)).toISOString(),
       finish: new Date(Math.max(...finishes)).toISOString(),
-      status: meta?.status ?? "draft",
+      status: rollupStatus,
       qty: meta?.qty ?? "0",
       moCount: moIds.size,
       qcPending,
@@ -257,9 +272,11 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : {};
   const statusColor =
-    row.status === "in_progress"
-      ? "border-amber-500 bg-amber-100/75 dark:bg-amber-950/30"
-      : "border-indigo-400 bg-indigo-100/75 dark:bg-indigo-950/30";
+    row.status === "completed"
+      ? "border-emerald-500 bg-emerald-100/60 dark:bg-emerald-950/30 opacity-80"
+      : row.status === "in_progress"
+        ? "border-amber-500 bg-amber-100/75 dark:bg-amber-950/30"
+        : "border-indigo-400 bg-indigo-100/75 dark:bg-indigo-950/30";
 
   return (
     <div
