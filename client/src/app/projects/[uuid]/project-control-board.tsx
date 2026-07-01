@@ -2465,11 +2465,13 @@ function MoModal({
               </h3>
               <ul className="space-y-1.5">
                 {mo.output_lots.map((lot, idx) => {
-                  // Manufactured lots don't get a supplier_batch_no
-                  // stamped, so we synthesise a positional code from
-                  // the MO code + 1-based index. Auditable + easier
-                  // to read than a truncated UUID.
+                  // Prefer the company-configured lot code (L00173),
+                  // then a stamped batch number, then a positional
+                  // fallback for surfaces where the numbering scheme
+                  // isn't set. UUID prefix stays in the title/hover
+                  // as the absolute-last-resort identifier.
                   const displayCode =
+                    lot.code?.trim() ||
                     lot.supplier_batch_no?.trim() ||
                     (mo.code
                       ? `${mo.code} · L${String(idx + 1).padStart(2, "0")}`

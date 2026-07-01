@@ -1586,6 +1586,12 @@ defmodule Backend.OrderWizard do
 
   defp lot_summary(%{} = lot_state) do
     %{
+      # Keep the DB id in the wizard's payload struct so
+      # `Payloads.render_code/2` can turn it into the company-
+      # configured lot code (L00173-style). Without this the wizard
+      # showed the raw UUID prefix and every operator saw a
+      # different-looking snippet for the same lot.
+      id: lot_state.id,
       uuid: lot_state.uuid,
       supplier_batch_no: lot_state.supplier_batch_no,
       status: lot_state.status,

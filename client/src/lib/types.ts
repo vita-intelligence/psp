@@ -2739,9 +2739,13 @@ export type OrderWizardMoStatus =
 
 export interface OrderWizardMoOutputLot {
   uuid: string;
+  /** Company-configured stock-lot code (e.g. `L00173`) — the same
+   *  identifier the operator sees on the lot page + labels. Nil when
+   *  the numbering format for `stock_lot` isn't configured. */
+  code: string | null;
   /** Human-readable batch number. For manufactured lots produced by
    *  an MO closeout this can be null (no batch stamped) — the
-   *  wizard falls back to a positional code like `MO00026 · L01`. */
+   *  wizard then falls back to `code` and finally a positional stub. */
   supplier_batch_no: string | null;
   status: string;
   qty: string;
