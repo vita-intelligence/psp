@@ -1416,18 +1416,17 @@ function LineCard({
   // marked confirmed. Anything earlier and we hide the trigger.
   const coConfirmed = coStatus === "confirmed";
 
-  // Roll-up over descendants so the line header can show at-a-glance
-  // "3 MOs · 1 completed" without the planner expanding every leaf.
-  const flatMoTree = flattenMoTree(line.mos);
-  const totalMos = flatMoTree.length;
-  const completedMos = flatMoTree.filter((m) => m.status === "completed").length;
-  const inFlightMos = flatMoTree.filter((m) =>
-    ["scheduled", "in_progress"].includes(m.status),
-  ).length;
+  // Line-level roll-up. Overall phase = bottleneck (min across the
+  // tree), completion = normalised average of phase indices — the
+  // planner sees BOTH "we're stuck at Setup" (rail dot) and
+  // "we're 42% through overall" (rail track fill).
+  const rollup = lineOverallRollup(line.mos);
+  const overallPhase = MO_PHASES[rollup.minPhaseIdx];
+  const isLineDone = rollup.totalCount > 0 && rollup.doneCount === rollup.totalCount;
 
   return (
     <section className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/40 bg-muted/30 px-4 py-3">
+      <header className="flex flex-col gap-2 border-b border-border/40 bg-muted/30 px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <div className="grid size-7 shrink-0 place-items-center rounded-md bg-background text-muted-foreground shadow-inner">
@@ -1444,40 +1443,67 @@ function LineCard({
                 {formatCompanyNumber(line.qty_ordered, prefs)}
               </span>
             </span>
-            {totalMos > 0 && (
+            {rollup.totalCount > 0 && (
               <>
                 <span className="text-border">·</span>
                 <span>
-                  {totalMos} MO{totalMos === 1 ? "" : "s"}
-                  {completedMos > 0 && (
-                    <span className="ml-1 text-emerald-700 dark:text-emerald-400">
-                      · {completedMos} done
-                    </span>
+                  {rollup.doneCount}/{rollup.totalCount} MO
+                  {rollup.totalCount === 1 ? "" : "s"} done
+                </span>
+                <span className="text-border">·</span>
+                <span
+                  className={cn(
+                    "font-medium",
+                    isLineDone
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : rollup.completion > 0
+                        ? "text-sky-700 dark:text-sky-400"
+                        : "text-muted-foreground",
                   )}
-                  {inFlightMos > 0 && (
-                    <span className="ml-1 text-amber-700 dark:text-amber-400">
-                      · {inFlightMos} live
-                    </span>
-                  )}
+                >
+                  {Math.round(rollup.completion * 100)}% complete
                 </span>
               </>
             )}
           </div>
         </div>
 
-        <div className="shrink-0">
-          {!hasMo && line.needs_mo && !coConfirmed && (
-            <Badge tone="muted">
-              <Hourglass className="mr-1 inline size-3" />
-              Awaiting confirmation
-            </Badge>
+        {/* Right column: line-level pipeline rail (visible ONLY when
+            MOs exist so an empty line doesn't fake progress) +
+            create-MO / awaiting-confirmation action chip. */}
+        <div className="flex flex-col items-end gap-2 sm:min-w-[16rem]">
+          {rollup.totalCount > 0 && (
+            <div className="flex w-full flex-col items-end gap-1">
+              <LinePhaseRail
+                currentIdx={rollup.minPhaseIdx}
+                fillPct={rollup.completion}
+              />
+              <span
+                className={cn(
+                  "text-[10px] font-semibold uppercase tracking-wider",
+                  isLineDone
+                    ? "text-emerald-700 dark:text-emerald-400"
+                    : "text-sky-700 dark:text-sky-400",
+                )}
+              >
+                {isLineDone ? "Line complete" : `Bottleneck · ${overallPhase.label}`}
+              </span>
+            </div>
           )}
-          {!hasMo && line.needs_mo && coConfirmed && canSpawn && (
-            <SpawnMoButton line={line} onClick={() => onSpawnMo(line)} />
-          )}
-          {!hasMo && line.needs_mo && coConfirmed && !canSpawn && (
-            <Badge tone="muted">MO required</Badge>
-          )}
+          <div>
+            {!hasMo && line.needs_mo && !coConfirmed && (
+              <Badge tone="muted">
+                <Hourglass className="mr-1 inline size-3" />
+                Awaiting confirmation
+              </Badge>
+            )}
+            {!hasMo && line.needs_mo && coConfirmed && canSpawn && (
+              <SpawnMoButton line={line} onClick={() => onSpawnMo(line)} />
+            )}
+            {!hasMo && line.needs_mo && coConfirmed && !canSpawn && (
+              <Badge tone="muted">MO required</Badge>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1502,6 +1528,84 @@ function LineCard({
 
 function flattenMoTree(mos: OrderWizardMo[]): OrderWizardMo[] {
   return mos.flatMap((mo) => [mo, ...flattenMoTree(mo.children ?? [])]);
+}
+
+// Line-level roll-up. A line inherits its overall phase from the
+// SLOWEST MO in its tree — the whole line can't be "Done" while any
+// sub-assembly is still in Plan / Setup. Also returns a completion
+// ratio (average phase index across the tree, normalised to
+// 0..1) so we can render a fill under the phase-index dot for
+// "sub-progress within the current phase".
+function lineOverallRollup(mos: OrderWizardMo[]): {
+  minPhaseIdx: number;
+  completion: number;
+  doneCount: number;
+  totalCount: number;
+} {
+  const flat = flattenMoTree(mos);
+  if (flat.length === 0) {
+    return { minPhaseIdx: 0, completion: 0, doneCount: 0, totalCount: 0 };
+  }
+  const phaseIndices = flat.map((mo) => phaseIndex(phaseForMo(mo)));
+  const minPhaseIdx = Math.min(...phaseIndices);
+  const maxPhaseValue = MO_PHASES.length - 1; // 4
+  const completion =
+    phaseIndices.reduce((sum, idx) => sum + idx, 0) /
+    (flat.length * maxPhaseValue);
+  const doneCount = flat.filter((mo) => phaseForMo(mo) === "done").length;
+  return {
+    minPhaseIdx,
+    completion,
+    doneCount,
+    totalCount: flat.length,
+  };
+}
+
+// Compact 5-dot pipeline rendered at the line header — no labels
+// (the MO cards below carry the phase legend), just the shape of the
+// overall product completion. `currentIdx` marks the bottleneck
+// phase (min across the tree); `fillPct` is the smoother average
+// completion drawn as an emerald fill on the track.
+function LinePhaseRail({
+  currentIdx,
+  fillPct,
+}: {
+  currentIdx: number;
+  fillPct: number;
+}) {
+  return (
+    <div className="relative w-full max-w-xs">
+      <div className="absolute top-1 left-1.5 right-1.5 h-0.5 rounded-full bg-border/60" />
+      <div
+        className="absolute top-1 left-1.5 h-0.5 rounded-full bg-emerald-500/70 transition-all"
+        style={{
+          width: `calc((100% - 0.75rem) * ${Math.min(Math.max(fillPct, 0), 1)})`,
+        }}
+      />
+      <ol className="relative flex items-center justify-between">
+        {MO_PHASES.map((phase, idx) => {
+          const isDone = idx < currentIdx;
+          const isCurrent = idx === currentIdx;
+          return (
+            <li
+              key={phase.key}
+              title={phase.label}
+              className={cn(
+                "grid size-2.5 place-items-center rounded-full border-2 bg-background transition-colors",
+                isDone && "border-emerald-500 bg-emerald-500",
+                isCurrent && "border-sky-500 shadow-[0_0_0_2px_rgba(56,189,248,0.15)]",
+                !isDone && !isCurrent && "border-border/60",
+              )}
+            >
+              {isCurrent && (
+                <span className="size-1 rounded-full bg-sky-500" />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
 }
 
 function SpawnMoButton({
