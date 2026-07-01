@@ -6246,19 +6246,24 @@ defmodule Backend.Production do
   # `placement_not_found` at the finish step and gets stuck having
   # physically picked the lot but unable to confirm.
   defp transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
-    # At confirm-transfer the operator has already physically moved
-    # the trolley to production — the system has to record what
-    # happened, not refuse because the bookkeeping snapshot drifted.
-    # Drain across whatever placements still exist for the lot
-    # (snapshot cell first, then any other placement FIFO) up to
-    # booking.quantity. As long as the lot has enough total on-hand
-    # we record the move regardless of how it's spread across cells.
+    # Physical reality: pickers walk the ENTIRE lot to production
+    # (a 500-pouch box, an 800-label roll, an 8kg drum of blend) —
+    # you can't split a sealed container on the shelf and take a
+    # partial qty. Booking quantity is what the recipe EXPECTS to
+    # consume; actual usage lands via closeout. So the transfer
+    # moves every non-target placement of this lot to the production
+    # cell, not just booking.quantity. Any leftover after production
+    # then gets picked up honestly by closeout + return-pickup.
+    #
+    # Idempotent per lot: if multiple bookings on the same MO share
+    # a lot, the first booking drains everything to production and
+    # subsequent bookings find no non-target placements to drain —
+    # the emit path handles the empty list as an audit-only no-op.
     photo_url = Map.get(photo_urls, booking.uuid)
 
-    case drain_lot_for_pickup(
+    case drain_whole_lot_to_production(
            booking.stock_lot_id,
-           booking.storage_cell_id,
-           booking.quantity
+           target_cell.id
          ) do
       {:error, reason} ->
         {:error, reason}
@@ -6273,6 +6278,24 @@ defmodule Backend.Production do
           now_dt
         )
     end
+  end
+
+  # Every non-target placement of `lot_id` gets moved to the
+  # target cell — whole-lot transfer per the physical picker flow.
+  # Returns `{:ok, [%{placement: p, take: qty}, ...]}` with each
+  # drain's full qty (no partial takes), or `{:ok, []}` when the
+  # lot is already fully consolidated at the target cell.
+  defp drain_whole_lot_to_production(lot_id, target_cell_id) do
+    placements =
+      from(p in Backend.Stock.Placement,
+        where:
+          p.stock_lot_id == ^lot_id and p.qty > 0 and
+            p.storage_cell_id != ^target_cell_id
+      )
+      |> Repo.all()
+
+    drains = Enum.map(placements, fn p -> %{placement: p, take: p.qty} end)
+    {:ok, drains}
   end
 
   # Resolve all the placements we need to deplete to satisfy
@@ -6344,69 +6367,82 @@ defmodule Backend.Production do
   defp emit_pickup_movements(_actor, _booking, [], _target_cell, _photo, _now), do: {:ok, nil}
 
   defp emit_pickup_movements(actor, booking, drains, target_cell, photo_url, now_dt) do
-    # Per-drain step: insert a `move` Stock.Movement carrying `take`
-    # (NOT booking.quantity) from the source placement to the target,
-    # then decrement the source placement by `take`. The target
-    # placement gets added to ONCE at the end with the total drained
-    # (= booking.quantity once we exit). Adding booking.quantity to
-    # the target on every loop iteration — what the previous version
-    # did via upsert_lot_placement(booking, target_cell) — inflates
-    # the target cell qty by N× when the lot is split across N cells.
-    per_drain =
-      Enum.reduce_while(drains, {:ok, nil}, fn %{placement: placement, take: take},
-                                               _acc ->
-        result =
-          %Backend.Stock.Movement{}
-          |> Backend.Stock.Movement.changeset(%{
-            "company_id" => booking.company_id,
-            "stock_lot_id" => booking.stock_lot_id,
-            "from_cell_id" => placement.storage_cell_id,
-            "to_cell_id" => target_cell.id,
-            "delta_qty" => take,
-            "kind" => "move",
-            "actor_id" => actor.id,
-            "occurred_at" => now_dt,
-            "photo_url" => photo_url,
-            "reference_kind" => "manufacturing_order",
-            "reference_ref" => mo_uuid_for_booking(booking)
-          })
-          |> Repo.insert()
+    # Per-drain step: emit a `move` Stock.Movement for the source
+    # placement's full qty, decrement the source, and add the same
+    # qty to the target cell placement. No final upsert with
+    # `booking.quantity` — under the whole-lot transfer model each
+    # drain's `take` IS the physical qty that moved, and the target
+    # is the sum of every drain (which matches the lot's on-hand,
+    # not booking.quantity).
+    Enum.reduce_while(drains, {:ok, nil}, fn %{placement: placement, take: take},
+                                             _acc ->
+      result =
+        %Backend.Stock.Movement{}
+        |> Backend.Stock.Movement.changeset(%{
+          "company_id" => booking.company_id,
+          "stock_lot_id" => booking.stock_lot_id,
+          "from_cell_id" => placement.storage_cell_id,
+          "to_cell_id" => target_cell.id,
+          "delta_qty" => take,
+          "kind" => "move",
+          "actor_id" => actor.id,
+          "occurred_at" => now_dt,
+          "photo_url" => photo_url,
+          "reference_kind" => "manufacturing_order",
+          "reference_ref" => mo_uuid_for_booking(booking)
+        })
+        |> Repo.insert()
 
-        case result do
-          {:ok, movement} ->
-            case decrement_placement_row(placement, take) do
-              {:ok, _from_placement} ->
-                Audit.record_created(actor, "stock_movement", movement, %{
-                  kind: movement.kind,
-                  delta_qty: movement.delta_qty,
-                  from_cell_id: movement.from_cell_id,
-                  to_cell_id: movement.to_cell_id,
-                  reference_kind: movement.reference_kind,
-                  reference_ref: movement.reference_ref
-                })
+      case result do
+        {:ok, movement} ->
+          with {:ok, _from_placement} <- decrement_placement_row(placement, take),
+               {:ok, _to_placement} <-
+                 upsert_target_placement(booking, target_cell, take) do
+            Audit.record_created(actor, "stock_movement", movement, %{
+              kind: movement.kind,
+              delta_qty: movement.delta_qty,
+              from_cell_id: movement.from_cell_id,
+              to_cell_id: movement.to_cell_id,
+              reference_kind: movement.reference_kind,
+              reference_ref: movement.reference_ref
+            })
 
-                {:cont, {:ok, movement}}
+            {:cont, {:ok, movement}}
+          else
+            err -> {:halt, err}
+          end
 
-              err ->
-                {:halt, err}
-            end
+        err ->
+          {:halt, err}
+      end
+    end)
+  end
 
-          err ->
-            {:halt, err}
-        end
-      end)
+  # Whole-lot variant of upsert_lot_placement/2 — takes an explicit
+  # qty (the drain's physical `take`) instead of hard-wiring
+  # booking.quantity. Adds to the existing placement or inserts a
+  # new one at the target cell.
+  defp upsert_target_placement(%ManufacturingOrderBooking{} = b, target_cell, qty) do
+    case Repo.get_by(Backend.Stock.Placement,
+           stock_lot_id: b.stock_lot_id,
+           storage_cell_id: target_cell.id
+         ) do
+      %Backend.Stock.Placement{} = existing ->
+        existing
+        |> Backend.Stock.Placement.changeset(%{
+          "qty" => Decimal.add(existing.qty, qty)
+        })
+        |> Repo.update()
 
-    case per_drain do
-      {:ok, _} = ok ->
-        # Target cell gets the full booking qty added in one shot —
-        # exactly matching the sum of all `take` values from drains.
-        case upsert_lot_placement(booking, target_cell) do
-          {:ok, _to_placement} -> ok
-          err -> err
-        end
-
-      err ->
-        err
+      nil ->
+        %Backend.Stock.Placement{}
+        |> Backend.Stock.Placement.changeset(%{
+          "company_id" => b.company_id,
+          "stock_lot_id" => b.stock_lot_id,
+          "storage_cell_id" => target_cell.id,
+          "qty" => qty
+        })
+        |> Repo.insert()
     end
   end
 
