@@ -1041,7 +1041,8 @@ defmodule Backend.Stock do
            fetch_cell_by_uuid(actor.company_id, attrs["to_cell_uuid"]),
          {:ok, from_placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
          {:ok, qty} <- resolve_move_qty(from_placement, attrs["qty"]),
-         :ok <- ensure_distinct_cells(from_placement.storage_cell_id, to_cell.id) do
+         :ok <- ensure_distinct_cells(from_placement.storage_cell_id, to_cell.id),
+         :ok <- ensure_placement_fits(lot, to_cell, qty) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
       Repo.transaction(fn ->
@@ -1758,6 +1759,59 @@ defmodule Backend.Stock do
   # Decide whether the lot's footprint fits in the cell's remaining
   # capacity. Returns a map the recommender uses for filtering + scoring
   # + UI labels.
+  @doc """
+  Pre-move / pre-adjust dimensional fit gate. Refuses the write when
+  the destination cell would overflow on volume, footprint area, or
+  weight after the incoming qty lands.
+
+  Skips silently (`:ok`) for lots whose packaging dimensions aren't
+  configured (compute_lot_footprint/1 returns `:unknown`) — same
+  policy the ranking path uses, so legacy items don't get blocked
+  by an incomplete data model.
+
+  Returns `{:error, {:cell_full, reason}}` where reason is one of
+  `:no_room` (footprint area), `:stack_too_tall` (vertical clearance),
+  or `:weight_exceeded` (max weight).
+  """
+  def ensure_placement_fits(%Lot{} = lot, %StorageCell{} = to_cell, qty) do
+    moving_footprint = compute_lot_footprint(%{lot | qty_received: qty})
+
+    case moving_footprint do
+      :unknown ->
+        :ok
+
+      _ ->
+        # Every placement currently at the destination — including this
+        # lot's own existing placement here (if any) so the check
+        # measures the projected TOTAL, not just the incremental.
+        existing_here =
+          from(p in Placement,
+            join: l in Lot,
+            on: l.id == p.stock_lot_id,
+            where: p.storage_cell_id == ^to_cell.id and p.qty > 0,
+            select: %{p_qty: p.qty, lot: l}
+          )
+          |> Repo.all()
+
+        committed_footprints =
+          Enum.map(existing_here, fn %{p_qty: q, lot: l} ->
+            compute_lot_footprint(%{l | qty_received: q})
+          end)
+
+        committed = sum_footprints(committed_footprints)
+        capacity = compute_cell_capacity(to_cell, committed)
+        fit = check_fit(moving_footprint, capacity)
+
+        if fit.disqualified? do
+          {:error, {:cell_full, fit.reason}}
+        else
+          :ok
+        end
+    end
+  end
+
+  def ensure_placement_fits(_, _, _), do: :ok
+
   defp check_fit(:unknown, _capacity) do
     # Legacy lot without packaging dims — don't block recommendations.
     %{disqualified?: false, reason: nil, percent_used: 0, free_pct: 100}

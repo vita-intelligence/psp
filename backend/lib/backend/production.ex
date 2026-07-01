@@ -6261,22 +6261,42 @@ defmodule Backend.Production do
     # the emit path handles the empty list as an audit-only no-op.
     photo_url = Map.get(photo_urls, booking.uuid)
 
-    case drain_whole_lot_to_production(
-           booking.stock_lot_id,
-           target_cell.id
-         ) do
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, drains} <-
+           drain_whole_lot_to_production(
+             booking.stock_lot_id,
+             target_cell.id
+           ),
+         :ok <- ensure_pickup_fits(booking.stock_lot_id, target_cell, drains) do
+      emit_pickup_movements(
+        actor,
+        booking,
+        drains,
+        target_cell,
+        photo_url,
+        now_dt
+      )
+    end
+  end
 
-      {:ok, drains} ->
-        emit_pickup_movements(
-          actor,
-          booking,
-          drains,
-          target_cell,
-          photo_url,
-          now_dt
-        )
+  # Dimensional fit gate. Under the whole-lot transfer model the
+  # picker moves every non-target placement's qty INTO the production
+  # cell — could be a full 500-pouch box + a partial roll on top.
+  # Delegate to Backend.Stock.ensure_placement_fits/3 which does the
+  # committed-vs-projected math using the lot's packaging dims. When
+  # the lot has no dims configured (:unknown footprint) the check
+  # falls through silently — same lenient policy as the ranking path.
+  defp ensure_pickup_fits(_lot_id, _target_cell, []), do: :ok
+
+  defp ensure_pickup_fits(lot_id, target_cell, drains) do
+    total_qty =
+      Enum.reduce(drains, Decimal.new(0), fn %{take: t}, acc -> Decimal.add(acc, t) end)
+
+    case Repo.get(Backend.Stock.Lot, lot_id) do
+      %Backend.Stock.Lot{} = lot ->
+        Backend.Stock.ensure_placement_fits(lot, target_cell, total_qty)
+
+      _ ->
+        :ok
     end
   end
 

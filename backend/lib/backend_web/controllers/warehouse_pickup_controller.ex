@@ -356,6 +356,27 @@ defmodule BackendWeb.WarehousePickupController do
               "Booked qty isn't available at the origin cell anymore."
             )
 
+          {:error, {:cell_full, "no_room"}} ->
+            unprocessable(
+              conn,
+              "production_cell_full",
+              "Production-feed cell doesn't have enough footprint for the whole lot. Split the pickup across multiple production cells or pick a bigger one."
+            )
+
+          {:error, {:cell_full, "stack_too_tall"}} ->
+            unprocessable(
+              conn,
+              "production_cell_full",
+              "Lot's stack is taller than the production-feed cell's clearance. Pick a taller cell."
+            )
+
+          {:error, {:cell_full, "weight_exceeded"}} ->
+            unprocessable(
+              conn,
+              "production_cell_full",
+              "Lot's weight would exceed the production-feed cell's max weight. Pick a stronger cell or split the pickup."
+            )
+
           {:error, %Ecto.Changeset{} = cs} ->
             changeset_error(conn, cs)
         end

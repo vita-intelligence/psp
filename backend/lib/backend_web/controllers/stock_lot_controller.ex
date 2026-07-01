@@ -786,10 +786,25 @@ defmodule BackendWeb.StockLotController do
           "Lot is on a picker's trolley right now — wait for that pickup to finish or abort before moving it."
         )
 
+      {:error, {:cell_full, reason}} ->
+        unprocessable(conn, "cell_full", cell_full_detail(reason))
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
   end
+
+  defp cell_full_detail("no_room"),
+    do: "Destination cell doesn't have enough footprint area for this lot. Pick a bigger cell or split the move."
+
+  defp cell_full_detail("stack_too_tall"),
+    do: "This lot's stack is taller than the destination cell's clearance. Split the load or pick a taller cell."
+
+  defp cell_full_detail("weight_exceeded"),
+    do: "Destination cell's max weight would be exceeded after this move. Pick a stronger cell or split the load."
+
+  defp cell_full_detail(_),
+    do: "Destination cell can't hold this move — footprint, height, or weight limit exceeded."
 
   def cells(conn, params) do
     actor = conn.assigns.current_user
