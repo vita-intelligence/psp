@@ -1297,6 +1297,22 @@ defmodule Backend.OrderWizard do
       bookings_closeout_pending_count: bookings_closeout_pending_count,
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
+      # Cancelled MO with picked bookings whose lots never got
+      # consumed — the warehouse picker still owes a return-pickup
+      # to walk them back to storage. Surfaced to the wizard so the
+      # planner sees "N orphaned lots awaiting return" instead of
+      # the MO card just fading out of view when the status flipped
+      # to cancelled.
+      cancelled_orphan_booking_count:
+        if mo.status == "cancelled" do
+          Enum.count(mo.bookings, fn b ->
+            b.status == "requested" and
+              not is_nil(b.picked_at) and
+              is_nil(b.consumed_at)
+          end)
+        else
+          0
+        end,
       purchasing_requested_at: mo.purchasing_requested_at,
       pickup_started_at: mo.pickup_started_at,
       pickup_started_by_name:

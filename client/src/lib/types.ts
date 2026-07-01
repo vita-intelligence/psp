@@ -2788,6 +2788,11 @@ export interface OrderWizardMo {
    *  the dispatch pile gets orphaned on the production side. */
   bookings_closeout_pending_count: number;
   has_output_at_production_feed: boolean;
+  /** Cancelled MO whose picked bookings still hold physical stock at
+   *  the production-side cell. Warehouse picker owes a return-pickup
+   *  to walk them back — count drives the "N lots awaiting return"
+   *  chip on the wizard's MO card. */
+  cancelled_orphan_booking_count: number;
   purchasing_requested_at: string | null;
   /** Set the moment a picker claims the MO (head-of-picker lock).
    *  Used to render the "picking in progress" sub-stage on the

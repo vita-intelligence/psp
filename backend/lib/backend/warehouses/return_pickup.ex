@@ -22,6 +22,7 @@ defmodule Backend.Warehouses.ReturnPickup do
 
   import Ecto.Query
   alias Backend.Accounts.User
+  alias Backend.Audit
   alias Backend.Production.{ManufacturingOrder, ManufacturingOrderBooking}
   alias Backend.Repo
   alias Backend.Stock
@@ -50,17 +51,24 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: rp.stock_lot_id
       )
 
-    # MOs that still owe booking closeout (the per-booking consume +
-    # leftover routing step). Return-pickup MUST wait for these to
-    # finish — otherwise the warehouse picker walks back only the
-    # produced outputs and leaves the dispatch pile orphaned on the
-    # production side. Both stages can't be "active" on the same MO.
+    # COMPLETED MOs that still owe booking closeout (the per-booking
+    # consume + leftover routing step). Return-pickup MUST wait for
+    # these to finish — otherwise the warehouse picker walks back
+    # only the produced outputs and leaves the dispatch pile orphaned
+    # on the production side. Both stages can't be "active" on the
+    # same MO. This gate only applies to completed MOs — for a
+    # cancelled MO there's no closeout to owe, so we don't want the
+    # `requested + no consumed_at` shape (which cancelled bookings
+    # keep by design) to silently exclude it from the queue.
     mos_with_pending_closeout =
       from(b in ManufacturingOrderBooking,
+        join: mo in ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id,
         where:
           b.company_id == ^company_id and
             b.status == "requested" and
-            is_nil(b.consumed_at),
+            is_nil(b.consumed_at) and
+            mo.status == "completed",
         distinct: true,
         select: b.manufacturing_order_id
       )
@@ -112,12 +120,43 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: b.manufacturing_order_id
       )
 
+    # CANCELLED MOs whose bookings still hold physical stock at a
+    # production-side cell (picker walked lots to production, MO was
+    # cancelled before consumption). Without this bucket the lots
+    # were orphaned — invisible to the warehouse picker and stuck at
+    # the feed cell until a human noticed and moved them by hand.
+    cancelled_mos_with_orphan_lots =
+      from(b in ManufacturingOrderBooking,
+        join: mo in ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id,
+        join: p in Placement,
+        on: p.stock_lot_id == b.stock_lot_id,
+        join: c in StorageCell,
+        on: c.id == p.storage_cell_id,
+        join: l in Lot,
+        on: l.id == p.stock_lot_id,
+        where:
+          b.company_id == ^company_id and
+            mo.status == "cancelled" and
+            not is_nil(b.picked_at) and
+            b.status == "requested" and
+            is_nil(b.consumed_at) and
+            l.status == "available" and
+            p.qty > 0 and
+            c.purpose in @return_pickup_purposes and
+            l.id not in subquery(open_picks_subq),
+        distinct: true,
+        select: b.manufacturing_order_id
+      )
+
     from(mo in ManufacturingOrder,
       where:
         mo.company_id == ^company_id and
-          mo.status == "completed" and
+          mo.status in ["completed", "cancelled"] and
           mo.id not in subquery(mos_with_pending_closeout) and
-          (mo.id in subquery(output_mos) or mo.id in subquery(ingredient_mos)),
+          (mo.id in subquery(output_mos) or
+             mo.id in subquery(ingredient_mos) or
+             mo.id in subquery(cancelled_mos_with_orphan_lots)),
       preload: [:item, :warehouse, :production_cell],
       order_by: [asc: mo.actual_finish, asc: mo.id]
     )
@@ -413,6 +452,8 @@ defmodule Backend.Warehouses.ReturnPickup do
                "skip_photo_reason" => attrs["skip_photo_reason"]
              }) do
           {:ok, _lot} ->
+            close_cancelled_mo_bookings_for_lot(actor, pick.stock_lot_id, now)
+
             pick
             |> ReturnPick.place_changeset(%{
               placed_at: now,
@@ -441,6 +482,76 @@ defmodule Backend.Warehouses.ReturnPickup do
         end
       end)
     end
+  end
+
+  # After a lot walks back to warehouse storage, close any orphaned
+  # cancelled-MO bookings that were still holding onto it. Sets
+  # status="cancelled" on the booking and stamps consumed_at as an
+  # audit closure timestamp (no actual consumption — the reason
+  # column on the emitted move Stock.Movement carries the "returned
+  # from cancelled MO" narrative). Without this the booking stays in
+  # `status=requested + picked_at set` limbo forever, and the queue
+  # keeps surfacing the same MO on every refresh even though the
+  # picker just handled it.
+  defp close_cancelled_mo_bookings_for_lot(%User{} = actor, stock_lot_id, now_dt) do
+    bookings =
+      from(b in ManufacturingOrderBooking,
+        join: mo in ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id,
+        where:
+          b.company_id == ^actor.company_id and
+            b.stock_lot_id == ^stock_lot_id and
+            mo.status == "cancelled" and
+            b.status == "requested" and
+            not is_nil(b.picked_at) and
+            is_nil(b.consumed_at)
+      )
+      |> Repo.all()
+
+    Enum.each(bookings, fn b ->
+      before = booking_audit_snapshot(b)
+
+      changeset =
+        b
+        |> Ecto.Changeset.change(%{
+          status: "cancelled",
+          consumed_at: now_dt,
+          consumed_by_id: actor.id,
+          consumed_quantity: Decimal.new(0)
+        })
+
+      case Repo.update(changeset) do
+        {:ok, updated} ->
+          Audit.record_updated(
+            actor,
+            "manufacturing_order_booking",
+            updated,
+            before,
+            booking_audit_snapshot(updated)
+          )
+
+        {:error, cs} ->
+          # Don't roll back the physical move because a downstream
+          # audit row wouldn't insert — the picker's already back at
+          # storage. Log a broken-invariant event and let the next
+          # queue refresh re-surface the booking.
+          require Logger
+
+          Logger.error(
+            "close_cancelled_mo_bookings_for_lot failed for booking #{b.id}: #{inspect(cs)}"
+          )
+      end
+    end)
+  end
+
+  defp booking_audit_snapshot(%ManufacturingOrderBooking{} = b) do
+    %{
+      status: b.status,
+      consumed_at: b.consumed_at,
+      consumed_by_id: b.consumed_by_id,
+      consumed_quantity: b.consumed_quantity,
+      picked_at: b.picked_at
+    }
   end
 
   @doc """

@@ -1155,6 +1155,8 @@ defmodule BackendWeb.Payloads do
       output_qc_pending_count: mo.output_qc_pending_count,
       bookings_closeout_pending_count: mo.bookings_closeout_pending_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
+      cancelled_orphan_booking_count:
+        Map.get(mo, :cancelled_orphan_booking_count, 0),
       purchasing_requested_at: mo.purchasing_requested_at,
       pickup_started_at: mo.pickup_started_at,
       pickup_started_by_name: mo.pickup_started_by_name,

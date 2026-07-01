@@ -1911,11 +1911,13 @@ function MiniMoCard({
 
       {/* Optional detail strip — bookings + output + broken chips only
           shown when there's actually something noteworthy (in-flight
-          bookings, made output, or broken bookings). Keeps the card
-          quiet when everything's just done. */}
+          bookings, made output, broken bookings, or orphaned lots on
+          a cancelled MO waiting for warehouse return). Keeps the
+          card quiet when everything's just done. */}
       {(hasBrokenBookings ||
         mo.bookings_total > 0 ||
-        mo.output_lot_count > 0) && (
+        mo.output_lot_count > 0 ||
+        mo.cancelled_orphan_booking_count > 0) && (
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border/40 bg-muted/20 px-4 py-2 text-[11px]">
           {mo.bookings_total > 0 && (
             <span className="inline-flex items-center gap-1 rounded-md border border-border/40 bg-background px-1.5 py-0.5">
@@ -1931,6 +1933,17 @@ function MiniMoCard({
             <span className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive">
               <AlertCircle className="size-3" />
               {mo.broken_booking_count} broken
+            </span>
+          )}
+          {mo.cancelled_orphan_booking_count > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300"
+              title="Cancelled MO — picked lots still at the production-side cell. Warehouse picker owes a return trip."
+            >
+              <Truck className="size-3" />
+              {mo.cancelled_orphan_booking_count} lot
+              {mo.cancelled_orphan_booking_count === 1 ? "" : "s"} awaiting
+              warehouse return
             </span>
           )}
         </div>
