@@ -1330,9 +1330,29 @@ defmodule Backend.OrderWizard do
       preflight_complete?: Production.mo_preflight_complete?(mo),
       is_fully_sorted?: is_fully_sorted,
       children: child_states,
+      # Descendants (children + grandchildren, recursively) whose work
+      # isn't finished yet. Drives the "Do this next" ranker so a
+      # parent MO with an open child sorts AFTER its child — parents
+      # can't run until their sub-assemblies are done producing the
+      # ingredient, so the child is the honest next action.
+      open_descendants_count: count_open_descendants(child_states),
       due_date: mo.due_date
     }
   end
+
+  # Recursive walk over child_states. A descendant is "open" when it
+  # has pending work (mo_has_pending_work?/1) — this includes the
+  # post-run closeout / QC / return-pickup tail so a parent doesn't
+  # jump ahead of a child that's technically completed but still
+  # owes downstream steps that could break the parent's inputs.
+  defp count_open_descendants(child_states) when is_list(child_states) do
+    Enum.reduce(child_states, 0, fn child, acc ->
+      self_count = if mo_has_pending_work?(child), do: 1, else: 0
+      acc + self_count + count_open_descendants(Map.get(child, :children, []) || [])
+    end)
+  end
+
+  defp count_open_descendants(_), do: 0
 
   # Per-MO count of BOM lines where booked + pending-from-children
   # is still less than required. Mirrors the rule in
@@ -1793,7 +1813,12 @@ defmodule Backend.OrderWizard do
 
   defp mo_has_pending_work?(_), do: false
 
-  defp mo_priority(%{status: status, has_placeholder_bookings?: pb, broken_booking_count: bb}) do
+  defp mo_priority(mo) do
+    status = Map.get(mo, :status)
+    pb = Map.get(mo, :has_placeholder_bookings?, false)
+    bb = Map.get(mo, :broken_booking_count, 0)
+    open_descendants = Map.get(mo, :open_descendants_count, 0)
+
     status_priority =
       case status do
         "in_progress" -> 0
@@ -1811,7 +1836,15 @@ defmodule Backend.OrderWizard do
         true -> 0
       end
 
-    blocker_priority + status_priority
+    # Deep-first ordering: an MO with unfinished descendants can't
+    # actually run yet (its bookings depend on those children's
+    # outputs), so the child is the honest next action. +10 nudges
+    # parents behind leaves within the same status band without
+    # overriding the broken-bookings / placeholder blockers which
+    # are the real emergencies.
+    tree_priority = if open_descendants > 0, do: 10, else: 0
+
+    blocker_priority + status_priority + tree_priority
   end
 
   defp render_code(%{id: id}, entity_key) when is_integer(id) do
