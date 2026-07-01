@@ -1184,8 +1184,13 @@ function TransferOverviewBody({
         if (cancelled) return;
         setCandidates(data.items);
 
-        const fitting = data.items.find((c) => !c.fit || !c.fit.disqualified);
-        const target = fitting ?? data.items[0] ?? null;
+        // Prefer a cell with a computed fit that isn't disqualified.
+        // Fall back to a cell whose fit couldn't be computed (missing
+        // packaging dims). Last resort: whatever's disqualified —
+        // banner will yell about it and force the operator to pick.
+        const fitting = data.items.find((c) => c.fit && !c.fit.disqualified);
+        const unknown = data.items.find((c) => !c.fit);
+        const target = fitting ?? unknown ?? data.items[0] ?? null;
 
         if (!target) {
           setError(
@@ -1359,10 +1364,26 @@ function TransferOverviewBody({
             </p>
           </div>
         )}
-        {selectedFit && !selectedFit.disqualified && selectedFit.percent_used > 80 && (
-          <p className="text-[11px] text-amber-700 dark:text-amber-400">
-            Tight fit — projected {selectedFit.percent_used}% used after
-            landing.
+        {selectedFit &&
+          !selectedFit.disqualified &&
+          selectedFit.reason !== "unknown_fit" &&
+          selectedFit.percent_used > 80 && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              Tight fit — projected {selectedFit.percent_used}% used after
+              landing.
+            </p>
+          )}
+        {selectedFit?.reason === "unknown_fit" && (
+          <p className="text-[11px] text-muted-foreground">
+            Fit couldn&apos;t be calculated — one of the picked lots is
+            missing packaging dimensions. Proceeding, but no capacity
+            guarantee.
+          </p>
+        )}
+        {productionCell && !selectedFit && candidates.length > 0 && (
+          <p className="text-[11px] text-muted-foreground">
+            No fit info for this cell (it wasn&apos;t in the recommended
+            list). Double-check it can hold the trolley before you drop.
           </p>
         )}
 
@@ -1406,7 +1427,11 @@ function TransferOverviewBody({
                       {c.code}
                     </span>
                     <span className="text-muted-foreground">
-                      {c.fit ? `${c.fit.percent_used}% after` : "fit unknown"}
+                      {!c.fit
+                        ? "no fit data"
+                        : c.fit.reason === "unknown_fit"
+                          ? "dims not set"
+                          : `${c.fit.percent_used}% after`}
                     </span>
                   </button>
                 </li>
