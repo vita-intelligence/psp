@@ -475,10 +475,16 @@ export function ProjectControlBoard({
   }, []);
 
   // Build a map of MO UUID → MO once per snapshot so the modal can
-  // resolve in O(1) without scanning lines.
+  // resolve in O(1) without scanning lines. Recurses into
+  // `mo.children` so sub-MO chips can open the child's detail modal
+  // — without recursion the modal opens with the UUID set but the
+  // lookup returns undefined and the panel sits at "Loading…".
   const moByUuid = useMemo(() => {
     const map = new Map<string, OrderWizardMo>();
-    const seed = (mo: OrderWizardMo) => map.set(mo.uuid, mo);
+    const seed = (mo: OrderWizardMo) => {
+      map.set(mo.uuid, mo);
+      (mo.children ?? []).forEach(seed);
+    };
     snapshot?.mos?.forEach(seed);
     snapshot?.lines.forEach((line) => {
       line.mos.forEach(seed);
@@ -1485,6 +1491,7 @@ function LineCard({
               permissions={permissions}
               onOpenMo={onOpenMo}
               onSendToDevice={onSendToDevice}
+              parentItemName={line.item_name ?? null}
             />
           ))}
         </div>
@@ -1530,6 +1537,7 @@ function MiniMoCard({
   permissions,
   onOpenMo,
   onSendToDevice,
+  parentItemName,
   depth = 0,
 }: {
   mo: OrderWizardMo;
@@ -1537,10 +1545,23 @@ function MiniMoCard({
   permissions: ProjectBoardPermissions;
   onOpenMo: (uuid: string) => void;
   onSendToDevice: (cta: OrderWizardCta) => void;
-  /** Nesting level — children get indented + a "Sub-MO" tag. */
+  /** Item name of the containing line — used to dedupe the header
+   *  when the root MO produces exactly that item (which is the
+   *  common case for a leaf line). Passing null shows the item name
+   *  unconditionally. */
+  parentItemName?: string | null;
+  /** Nesting level — dead code kept for potential nested rendering. */
   depth?: number;
 }) {
   const onOpen = () => onOpenMo(mo.uuid);
+  // Dedupe: hide the item name when the containing line already
+  // shows it (root MO producing the line's item). Falls back to a
+  // qualified label ("[MO code] · Qty …") that keeps the MO's own
+  // identity as the hero of the card.
+  const itemDuplicatesLine =
+    parentItemName != null &&
+    !!mo.item_name &&
+    parentItemName.trim().toLowerCase() === mo.item_name.trim().toLowerCase();
   const stage = deriveMoLiveStage(mo);
   const currentPhase = phaseForMo(mo);
   const currentPhaseIdx = phaseIndex(currentPhase);
@@ -1561,13 +1582,26 @@ function MiniMoCard({
         />
       )}
 
-      {/* Header — item name hero + code/qty meta + current phase chip. */}
+      {/* Header — MO code as the hero (when the item is already
+          announced in the containing line's header, otherwise item
+          name leads). Keeps the card's identity distinct from the
+          line strip above it. */}
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3.5 pb-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h4 className="min-w-0 truncate text-sm font-semibold tracking-tight">
-              {mo.item_name ?? "Item"}
-            </h4>
+            {itemDuplicatesLine ? (
+              <button
+                type="button"
+                onClick={onOpen}
+                className="min-w-0 truncate font-mono text-sm font-semibold tracking-tight text-foreground underline-offset-4 hover:underline"
+              >
+                {mo.code ?? `MO #${mo.id}`}
+              </button>
+            ) : (
+              <h4 className="min-w-0 truncate text-sm font-semibold tracking-tight">
+                {mo.item_name ?? "Item"}
+              </h4>
+            )}
             {isChild && (
               <Badge tone="muted" className="text-[10px]">
                 Sub-MO
@@ -1575,13 +1609,15 @@ function MiniMoCard({
             )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-            <button
-              type="button"
-              onClick={onOpen}
-              className="font-mono font-semibold text-foreground underline-offset-4 hover:underline"
-            >
-              {mo.code ?? `MO #${mo.id}`}
-            </button>
+            {!itemDuplicatesLine && (
+              <button
+                type="button"
+                onClick={onOpen}
+                className="font-mono font-semibold text-foreground underline-offset-4 hover:underline"
+              >
+                {mo.code ?? `MO #${mo.id}`}
+              </button>
+            )}
             <span>
               Qty{" "}
               <span className="font-mono text-foreground/80">
