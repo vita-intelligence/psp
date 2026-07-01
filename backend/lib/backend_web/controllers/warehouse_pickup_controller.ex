@@ -316,17 +316,23 @@ defmodule BackendWeb.WarehousePickupController do
           "mo_uuid" => mo_uuid,
           "production_cell_uuid" => target_uuid,
           "photo_urls_by_booking_uuid" => photos
-        }
+        } = params
       )
       when is_binary(target_uuid) and is_map(photos) do
     actor = conn.assigns.current_user
+    # `override_fit` opts the operator out of the dimensional gate on
+    # an EMPTY target cell (server-side re-check). See the FE toggle
+    # in TransferOverviewBody.
+    override_fit? = Map.get(params, "override_fit", false) == true
 
     case Production.get_manufacturing_order(actor.company_id, mo_uuid) do
       nil ->
         not_found(conn)
 
       %ManufacturingOrder{} = mo ->
-        case Production.confirm_pickup_transfer(actor, mo, target_uuid, photos) do
+        case Production.confirm_pickup_transfer(actor, mo, target_uuid, photos,
+               override_fit: override_fit?
+             ) do
           {:ok, updated} ->
             json(conn, %{mo: Payloads.manufacturing_order(updated)})
 

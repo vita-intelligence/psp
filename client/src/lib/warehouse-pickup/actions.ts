@@ -113,6 +113,7 @@ export async function confirmPickupTransferAction(
   moUuid: string,
   productionCellUuid: string,
   photoUrlsByBookingUuid: Record<string, string>,
+  overrideFit = false,
 ): Promise<PickupMoResult> {
   const t = await token();
   if (!t) return unauthorized("confirmPickupTransferAction");
@@ -125,6 +126,7 @@ export async function confirmPickupTransferAction(
         body: JSON.stringify({
           production_cell_uuid: productionCellUuid,
           photo_urls_by_booking_uuid: photoUrlsByBookingUuid,
+          override_fit: overrideFit,
         }),
       },
     );

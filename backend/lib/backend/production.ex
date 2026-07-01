@@ -6183,10 +6183,16 @@ defmodule Backend.Production do
         %User{} = actor,
         %ManufacturingOrder{} = mo,
         target_cell_uuid,
-        photo_urls_by_booking_uuid
+        photo_urls_by_booking_uuid,
+        opts \\ []
       )
       when is_binary(target_cell_uuid) and is_map(photo_urls_by_booking_uuid) do
     bookings = list_pickup_bookings(mo)
+    # `override_fit: true` opts the operator out of the dimensional
+    # fit gate — only honoured when the target cell is EMPTY (no
+    # committed placements). The FE offers this as a checkbox on the
+    # transfer overview when the auto-picked cell is disqualified.
+    override_fit? = Keyword.get(opts, :override_fit, false) == true
 
     cond do
       not mo_pickup_in_progress?(mo) ->
@@ -6204,17 +6210,31 @@ defmodule Backend.Production do
             {:error, reason}
 
           {:ok, target_cell} ->
-            do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls_by_booking_uuid)
+            do_confirm_pickup_transfer(
+              actor,
+              mo,
+              bookings,
+              target_cell,
+              photo_urls_by_booking_uuid,
+              override_fit?
+            )
         end
     end
   end
 
-  defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls) do
+  defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls, override_fit?) do
     Repo.transaction(fn ->
       now_dt = now()
 
       Enum.each(bookings, fn booking ->
-        case transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
+        case transfer_booking_to_production(
+               actor,
+               booking,
+               target_cell,
+               photo_urls,
+               now_dt,
+               override_fit?
+             ) do
           {:ok, _movement} -> :ok
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -6245,7 +6265,7 @@ defmodule Backend.Production do
   # CURRENT primary placement. Without this, the picker hits
   # `placement_not_found` at the finish step and gets stuck having
   # physically picked the lot but unable to confirm.
-  defp transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt) do
+  defp transfer_booking_to_production(actor, booking, target_cell, photo_urls, now_dt, override_fit? \\ false) do
     # Physical reality: pickers walk the ENTIRE lot to production
     # (a 500-pouch box, an 800-label roll, an 8kg drum of blend) —
     # you can't split a sealed container on the shelf and take a
@@ -6266,7 +6286,13 @@ defmodule Backend.Production do
              booking.stock_lot_id,
              target_cell.id
            ),
-         :ok <- ensure_pickup_fits(booking.stock_lot_id, target_cell, drains) do
+         :ok <-
+           ensure_pickup_fits(
+             booking.stock_lot_id,
+             target_cell,
+             drains,
+             override_fit?
+           ) do
       emit_pickup_movements(
         actor,
         booking,
@@ -6285,19 +6311,40 @@ defmodule Backend.Production do
   # committed-vs-projected math using the lot's packaging dims. When
   # the lot has no dims configured (:unknown footprint) the check
   # falls through silently — same lenient policy as the ranking path.
-  defp ensure_pickup_fits(_lot_id, _target_cell, []), do: :ok
+  #
+  # `override_fit?` short-circuits the gate ONLY when the target cell
+  # is empty (no committed placements). Operator judgement can beat
+  # the calculator on an empty cell — packages might stack better in
+  # reality, weight ratings are often conservative. But it can't
+  # beat physics on a cell that's already partially full.
+  defp ensure_pickup_fits(_lot_id, _target_cell, [], _override?), do: :ok
 
-  defp ensure_pickup_fits(lot_id, target_cell, drains) do
-    total_qty =
-      Enum.reduce(drains, Decimal.new(0), fn %{take: t}, acc -> Decimal.add(acc, t) end)
+  defp ensure_pickup_fits(lot_id, target_cell, drains, override?) do
+    if override? and cell_is_empty?(target_cell.id) do
+      :ok
+    else
+      total_qty =
+        Enum.reduce(drains, Decimal.new(0), fn %{take: t}, acc -> Decimal.add(acc, t) end)
 
-    case Repo.get(Backend.Stock.Lot, lot_id) do
-      %Backend.Stock.Lot{} = lot ->
-        Backend.Stock.ensure_placement_fits(lot, target_cell, total_qty)
+      case Repo.get(Backend.Stock.Lot, lot_id) do
+        %Backend.Stock.Lot{} = lot ->
+          Backend.Stock.ensure_placement_fits(lot, target_cell, total_qty)
 
-      _ ->
-        :ok
+        _ ->
+          :ok
+      end
     end
+  end
+
+  defp cell_is_empty?(cell_id) do
+    count =
+      from(p in Backend.Stock.Placement,
+        where: p.storage_cell_id == ^cell_id and p.qty > 0,
+        select: count(p.id)
+      )
+      |> Repo.one()
+
+    (count || 0) == 0
   end
 
   # Every non-target placement of `lot_id` gets moved to the

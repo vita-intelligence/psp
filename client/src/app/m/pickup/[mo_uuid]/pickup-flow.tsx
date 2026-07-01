@@ -139,6 +139,10 @@ export function PickupFlow({
   const [confirmAbort, setConfirmAbort] = useState(false);
   const [productionCell, setProductionCell] =
     useState<ProductionCellChoice | null>(null);
+  // Empty-cell override toggle from TransferOverviewBody. Lifted here
+  // so it survives navigation to the photos step and reaches the
+  // confirm-transfer request. `false` = default gate is enforced.
+  const [overrideFit, setOverrideFit] = useState(false);
   const [photosByBookingUuid, setPhotosByBookingUuid] = useState<
     Record<string, string>
   >({});
@@ -280,6 +284,7 @@ export function PickupFlow({
         mo.uuid,
         productionCell.uuid,
         photosByBookingUuid,
+        overrideFit,
       );
       if (res.ok) {
         setMo(res.mo);
@@ -474,6 +479,8 @@ export function PickupFlow({
         bookings={bookings}
         companyDateFormat={companyDateFormat}
         productionCell={productionCell}
+        overrideFit={overrideFit}
+        onOverrideFitChange={setOverrideFit}
         onPickCell={(cell) => setProductionCell(cell)}
         onScanCell={() => setStep({ kind: "transfer_scan_cell" })}
         onContinue={() => setStep({ kind: "transfer_photos" })}
@@ -1117,6 +1124,8 @@ interface TransferOverviewBodyProps {
   bookings: ManufacturingOrderBooking[];
   companyDateFormat: FormatPrefs | null;
   productionCell: ProductionCellChoice | null;
+  overrideFit: boolean;
+  onOverrideFitChange: (next: boolean) => void;
   onPickCell: (cell: ProductionCellChoice) => void;
   onScanCell: () => void;
   onContinue: () => void;
@@ -1129,6 +1138,12 @@ interface CellFitInfo {
   disqualified: boolean;
   reason: string | null;
   percent_used: number;
+  // `current_percent_used` reflects what's already committed to this
+  // cell today (before the pickup lands). We use it to gate the
+  // empty-cell override: only cells at 0% may bypass a disqualified
+  // fit — anything else is a hard block.
+  current_percent_used: number;
+  projected_percent_used: number;
   free_pct: number;
 }
 
@@ -1144,6 +1159,8 @@ function TransferOverviewBody({
   moUuid,
   bookings,
   productionCell,
+  overrideFit,
+  onOverrideFitChange,
   onPickCell,
   onScanCell,
   onContinue,
@@ -1156,7 +1173,6 @@ function TransferOverviewBody({
   // we can warn the picker BEFORE they walk with the trolley if the
   // auto-pick doesn't have room for the whole lot load.
   const [selectedFit, setSelectedFit] = useState<CellFitInfo | null>(null);
-  const [showAllCells, setShowAllCells] = useState(false);
 
   // Auto-fetch candidate production cells + their fit info, then
   // pre-pick the first cell that ACTUALLY FITS the pickup's whole
@@ -1233,15 +1249,18 @@ function TransferOverviewBody({
     setSelectedFit(match?.fit ?? null);
   }, [productionCell, candidates]);
 
-  const fittingCandidates = useMemo(
-    () => candidates.filter((c) => !c.fit || !c.fit.disqualified),
-    [candidates],
-  );
-  const disqualifiedCandidates = useMemo(
-    () => candidates.filter((c) => c.fit?.disqualified),
-    [candidates],
-  );
-  const noCellFits = candidates.length > 0 && fittingCandidates.length === 0;
+  // Empty cell + disqualified → operator judgement call. Real-world
+  // capsule boxes / drums might fit differently than the calculator
+  // thinks, and weight ratings are often conservative. Let them
+  // override with a checkbox — but only when the cell has nothing
+  // else in it (current usage 0). A cell that's already partially
+  // committed can't get an override; that's a genuine hard block.
+  // Override state is lifted to the parent so it reaches the
+  // confirm-transfer request from the photos step.
+  const cellIsEmpty = (selectedFit?.current_percent_used ?? 0) === 0;
+  const canOverride = !!selectedFit?.disqualified && cellIsEmpty;
+  const blocked =
+    !!selectedFit?.disqualified && (!cellIsEmpty || !overrideFit);
 
   return (
     <div className="space-y-3 px-3 py-3">
@@ -1347,21 +1366,32 @@ function TransferOverviewBody({
           </ul>
         )}
 
-        {/* Pre-flight fit banner. Warns the operator NOW — before they
-            walk with the trolley — if the auto-picked cell doesn't have
-            room for the whole lot load. The rejection message from the
-            old confirm-transfer refusal used to land after photos were
-            already taken; this catches it early. */}
-        {selectedFit?.disqualified && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+        {/* Pre-flight fit banner. The system auto-picks the cell —
+            no manual override list. If the auto-pick is disqualified
+            but empty (nothing else in the way), the operator can
+            still proceed via the override toggle: the calculator can
+            be conservative, and empty-cell weight limits sometimes
+            look worse on paper than in reality. */}
+        {canOverride && (
+          <div className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-900 dark:text-amber-100">
             <p className="font-semibold">
-              {productionCell?.code ?? "This cell"} can&apos;t fit the whole
+              {productionCell?.code ?? "This cell"} may be tight for the
               load
             </p>
-            <p className="mt-0.5 opacity-90">
-              {fitReasonDetail(selectedFit.reason)} Pick a different cell
-              below.
+            <p className="opacity-90">{fitReasonDetail(selectedFit?.reason)}</p>
+            <p className="opacity-80">
+              The cell is empty though, so it might still work in
+              practice.
             </p>
+            <label className="flex items-center gap-2 pt-0.5 font-medium">
+              <input
+                type="checkbox"
+                checked={overrideFit}
+                onChange={(e) => onOverrideFitChange(e.target.checked)}
+                className="size-3.5"
+              />
+              Proceed anyway — I&apos;ve looked at it and it fits
+            </label>
           </div>
         )}
         {selectedFit &&
@@ -1386,81 +1416,6 @@ function TransferOverviewBody({
             list). Double-check it can hold the trolley before you drop.
           </p>
         )}
-
-        {/* Cell picker. Collapsed by default when the auto-pick fits;
-            auto-expanded when it doesn't. Fitting candidates listed
-            first, disqualified ones after with the reason. */}
-        {candidates.length > 1 && (
-          <details
-            open={showAllCells || !!selectedFit?.disqualified || noCellFits}
-            onToggle={(e) => setShowAllCells((e.target as HTMLDetailsElement).open)}
-            className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px]"
-          >
-            <summary className="cursor-pointer font-medium text-foreground">
-              Choose a different cell ({fittingCandidates.length} fits
-              {disqualifiedCandidates.length > 0
-                ? `, ${disqualifiedCandidates.length} too small`
-                : ""}
-              )
-            </summary>
-            <ul className="mt-2 space-y-1">
-              {fittingCandidates.map((c) => (
-                <li key={c.uuid}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onPickCell({
-                        uuid: c.uuid,
-                        code: c.code ?? c.name ?? c.uuid.slice(0, 8),
-                        name: c.name,
-                        location: c.location ?? null,
-                      })
-                    }
-                    className={cn(
-                      "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left",
-                      productionCell?.uuid === c.uuid
-                        ? "border-sky-500 bg-sky-500/10"
-                        : "border-border/60 bg-background hover:border-border",
-                    )}
-                  >
-                    <span className="font-mono text-[11px] font-semibold">
-                      {c.code}
-                    </span>
-                    <span className="text-muted-foreground">
-                      {!c.fit
-                        ? "no fit data"
-                        : c.fit.reason === "unknown_fit"
-                          ? "dims not set"
-                          : `${c.fit.percent_used}% after`}
-                    </span>
-                  </button>
-                </li>
-              ))}
-              {disqualifiedCandidates.map((c) => (
-                <li key={c.uuid}>
-                  <div
-                    className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-destructive opacity-80"
-                    title={fitReasonDetail(c.fit?.reason)}
-                  >
-                    <span className="font-mono text-[11px] font-semibold">
-                      {c.code}
-                    </span>
-                    <span className="text-[10px] uppercase">
-                      {fitReasonShort(c.fit?.reason)}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            {noCellFits && (
-              <p className="mt-2 text-[11px] text-destructive">
-                No production cell in this warehouse can hold the whole
-                lot load. Split the pickup across multiple MOs or clear
-                a bigger cell before continuing.
-              </p>
-            )}
-          </details>
-        )}
       </div>
 
       <Button
@@ -1468,7 +1423,7 @@ function TransferOverviewBody({
         className="w-full"
         size="lg"
         onClick={onScanCell}
-        disabled={!productionCell || !!selectedFit?.disqualified}
+        disabled={!productionCell || blocked}
       >
         <ScanLine className="mr-2 size-4" />
         I&apos;m at production — scan cell
@@ -1478,7 +1433,7 @@ function TransferOverviewBody({
         variant="ghost"
         className="w-full"
         onClick={onContinue}
-        disabled={!productionCell || !!selectedFit?.disqualified}
+        disabled={!productionCell || blocked}
       >
         Skip scan — type cell manually
       </Button>
