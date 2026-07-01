@@ -4586,8 +4586,14 @@ defmodule Backend.Production do
     end)
     |> case do
       {:ok, {updated, outside}} ->
-        {:ok, reload_manufacturing_order(updated),
-         %{outside_hours_seconds: outside}}
+        reloaded = reload_manufacturing_order(updated)
+        # Rebroadcast the wizard channel — scheduling changes the
+        # calendar footprint the "Do this next" logic reads to
+        # decide whether the MO can be released. Without this the
+        # planner still sees the "not on calendar" state after a
+        # successful drop.
+        Backend.OrderWizard.notify_via_mo(reloaded)
+        {:ok, reloaded, %{outside_hours_seconds: outside}}
 
       err ->
         err
@@ -4664,8 +4670,12 @@ defmodule Backend.Production do
     end)
     |> case do
       {:ok, {updated, outside}} ->
-        {:ok, reload_manufacturing_order(updated),
-         %{outside_hours_seconds: outside}}
+        reloaded = reload_manufacturing_order(updated)
+        # Chain scheduling drops planned_start/finish across every
+        # MO in the tree — notify the wizard so the whole graph
+        # re-projects (Do this next + line-level roll-up rail).
+        Backend.OrderWizard.notify_via_mo(reloaded)
+        {:ok, reloaded, %{outside_hours_seconds: outside}}
 
       err ->
         err
@@ -5071,8 +5081,13 @@ defmodule Backend.Production do
           end
         end)
         |> case do
-          {:ok, updated} -> {:ok, reload_manufacturing_order(updated)}
-          err -> err
+          {:ok, updated} ->
+            reloaded = reload_manufacturing_order(updated)
+            Backend.OrderWizard.notify_via_mo(reloaded)
+            {:ok, reloaded}
+
+          err ->
+            err
         end
     end
   end
@@ -9059,6 +9074,11 @@ defmodule Backend.Production do
           mo_snapshot(updated)
         )
 
+        # Ping the wizard so the CO board re-projects — start /
+        # finish production both change what the "Do this next"
+        # panel + progress bars render.
+        Backend.OrderWizard.notify_via_mo(updated)
+
         {:ok, reload_manufacturing_order(updated)}
 
       err ->
@@ -9235,6 +9255,13 @@ defmodule Backend.Production do
           before,
           mo_snapshot(updated)
         )
+
+        # Fire the wizard channel — any pickup-lifecycle change
+        # (release, unrelease, start pickup, finish pickup,
+        # abort pickup, ...) alters the "Do this next" panel + the
+        # per-MO card state. Without this the FE keeps rendering
+        # the pre-change snapshot until the next full page load.
+        Backend.OrderWizard.notify_via_mo(updated)
 
         {:ok, reload_manufacturing_order(updated)}
 

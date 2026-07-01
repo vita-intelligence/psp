@@ -912,9 +912,13 @@ defmodule Backend.OrderWizard do
          }}
 
       "approved" ->
+        # Include the MO code in the button label so a planner scanning
+        # the primary CTA sees exactly WHICH MO the click will schedule
+        # — otherwise \"Open scheduler\" reads as a generic launcher and
+        # the planner has scheduled the wrong MO on a fast click.
         {"Schedule MO #{mo.code} on the calendar.",
          %{
-           label: "Open scheduler",
+           label: "Open scheduler for MO #{mo.code}",
            kind: "link",
            href: "/production/schedule?mo=#{mo.uuid}"
          }}
