@@ -1806,24 +1806,77 @@ function MiniMoCard({
         </div>
       )}
 
-      {/* Auto-spawned sub-assembly MOs render nested under the parent.
-          Each child renders its own connector so no wrapper needed. */}
+      {/* Sub-MO chips. Each child is a compact clickable pill with
+          its OWN mini pipeline dots — a planner can scan the
+          parent-and-its-dependencies at a glance without a nested
+          card stack. Click a chip to open the child's full detail
+          in the modal (same path onOpenMo takes for the parent). */}
       {mo.children && mo.children.length > 0 && (
-        <div className="space-y-2 border-t border-border/40 bg-muted/10 p-3">
-          {mo.children.map((child) => (
-            <MiniMoCard
-              key={child.uuid}
-              mo={child}
-              prefs={prefs}
-              permissions={permissions}
-              onOpenMo={onOpenMo}
-              onSendToDevice={onSendToDevice}
-              depth={depth + 1}
-            />
-          ))}
+        <div className="border-t border-border/40 bg-muted/10 px-4 py-2.5">
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Sub-MOs the parent depends on ({mo.children.length})
+          </p>
+          <ul className="flex flex-wrap gap-1.5">
+            {mo.children.map((child) => (
+              <li key={child.uuid}>
+                <SubMoChip
+                  mo={child}
+                  onOpen={() => onOpenMo(child.uuid)}
+                />
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </article>
+  );
+}
+
+// One-line sub-MO summary chip. Shows code + item + current phase
+// label + a compact 5-dot pipeline so the planner sees at a glance
+// where the child is without expanding a nested card. Clicking opens
+// the child's full detail modal (same path the parent uses).
+function SubMoChip({ mo, onOpen }: { mo: OrderWizardMo; onOpen: () => void }) {
+  const currentPhaseIdx = phaseIndex(phaseForMo(mo));
+  const currentPhase = MO_PHASES[currentPhaseIdx];
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group inline-flex items-center gap-2 rounded-md border border-border/60 bg-background px-2 py-1 text-left text-[11px] transition-colors hover:border-sky-500/40 hover:bg-sky-500/5"
+    >
+      <span className="font-mono font-semibold text-foreground">
+        {mo.code ?? `MO #${mo.id}`}
+      </span>
+      <span className="max-w-[10rem] truncate text-muted-foreground">
+        {mo.item_name ?? "Item"}
+      </span>
+      <span className="flex items-center gap-0.5">
+        {MO_PHASES.map((_, idx) => (
+          <span
+            key={idx}
+            className={cn(
+              "size-1.5 rounded-full",
+              idx < currentPhaseIdx && "bg-emerald-500",
+              idx === currentPhaseIdx && "bg-sky-500 ring-2 ring-sky-500/20",
+              idx > currentPhaseIdx && "bg-border/60",
+            )}
+          />
+        ))}
+      </span>
+      <span
+        className={cn(
+          "shrink-0 rounded-sm px-1 text-[9px] font-semibold uppercase tracking-wider",
+          currentPhaseIdx === 4
+            ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+            : currentPhaseIdx === 0
+              ? "bg-muted text-muted-foreground"
+              : "bg-sky-500/10 text-sky-700 dark:text-sky-400",
+        )}
+      >
+        {currentPhase.short}
+      </span>
+    </button>
   );
 }
 
