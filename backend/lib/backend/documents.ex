@@ -358,6 +358,25 @@ defmodule Backend.Documents do
       }
     ]
 
+    # Planned window is derived from the min/max of the steps' planned
+    # times — the MO itself only stores actual_start / actual_finish.
+    steps = case mo.steps do
+      list when is_list(list) -> list
+      _ -> []
+    end
+
+    planned_start =
+      steps
+      |> Enum.map(& &1.planned_start)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.min(fn -> nil end)
+
+    planned_finish =
+      steps
+      |> Enum.map(& &1.planned_finish)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.max(fn -> nil end)
+
     %{
       code: mo_code,
       output_item: (mo.item && mo.item.name) || "—",
@@ -365,28 +384,13 @@ defmodule Backend.Documents do
       role_label: role_label,
       parent_ref: parent_ref,
       status: humanize_lot_status(mo.status),
-      planned_window: format_window(mo.start_at, mo.finish_at),
+      planned_window: format_window(planned_start, planned_finish),
       actual_window: format_window(mo.actual_start, mo.actual_finish),
       materials: materials,
       operations: operations,
       output_lots: Enum.map(output_lots, &output_lot_row(&1, company)),
       signoffs: signoffs
     }
-  rescue
-    _ ->
-      %{
-        code: "##{mo.id}",
-        output_item: "—",
-        quantity: "—",
-        role_label: "—",
-        parent_ref: "—",
-        status: "—",
-        planned_window: "—",
-        actual_window: "—",
-        materials: [],
-        operations: [],
-        output_lots: []
-      }
   end
 
   defp booking_row(b, company) do

@@ -111,6 +111,18 @@ defmodule Backend.Production.FinalReleases do
     cursor = Keyword.get(opts, :cursor)
     search = opts |> Keyword.get(:search) |> normalize_search()
 
+    # Backfill pending rows for release-owed lots that don't have a
+    # release row yet. Without this, only lots someone opened via the
+    # wizard (which lazy-creates the row through `get_or_open/2`) show
+    # up on the list — everything else stays invisible. For an order
+    # with N finished-goods lots, only the ones a QA operator already
+    # clicked into show, so the list looks half-empty relative to
+    # what the wizard says is owed. Runs before the query so newly
+    # materialised rows are visible in the same request.
+    if status in ["pending", "all"] do
+      materialize_pending_release_rows(company_id)
+    end
+
     query =
       from(fr in FinalRelease,
         as: :release,
@@ -191,6 +203,70 @@ defmodule Backend.Production.FinalReleases do
           ilike(coalesce(fr.uuid, ""), ^like) or
           fragment("CAST(? AS TEXT) ILIKE ?", mo.id, ^like) or
           fragment("CAST(? AS TEXT) ILIKE ?", lot.id, ^like)
+  end
+
+  # Ensures every release-owed finished-product lot has a `pending`
+  # release row in the DB. Same predicate the wizard's `needs_release?`
+  # uses: manufacturing_order source, status ∈ {awaiting_release,
+  # available}, NOT reserved by a live downstream MO booking, no
+  # terminal release row yet.
+  #
+  # Idempotent: skips lots that already have a row (any status). The
+  # DB unique index on stock_lot_id would otherwise force us to catch
+  # + swallow the constraint error anyway.
+  defp materialize_pending_release_rows(company_id) do
+    # Lots that owe release but have no row yet.
+    lots_needing =
+      from(l in Backend.Stock.Lot,
+        left_join: r in FinalRelease,
+        on: r.stock_lot_id == l.id,
+        left_join: b in Backend.Production.ManufacturingOrderBooking,
+        on: b.stock_lot_id == l.id,
+        left_join: mo in Backend.Production.ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id and mo.status != "cancelled",
+        where:
+          l.company_id == ^company_id and
+            l.source_kind == "manufacturing_order" and
+            l.status in ["awaiting_release", "available"] and
+            is_nil(r.id) and
+            is_nil(mo.id),
+        select: {l.id, l.source_ref}
+      )
+      |> Repo.all()
+      |> Enum.uniq()
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    # Resolve MO id for each lot (source_ref is the MO uuid as text).
+    # Batching would be nicer but the list is bounded by "outputs
+    # awaiting release" which is small per-company.
+    Enum.each(lots_needing, fn {lot_id, source_ref} ->
+      mo_id =
+        case Repo.get_by(Backend.Production.ManufacturingOrder,
+               uuid: source_ref,
+               company_id: company_id
+             ) do
+          %{id: id} -> id
+          _ -> nil
+        end
+
+      if is_integer(mo_id) do
+        %FinalRelease{}
+        |> FinalRelease.changeset(%{
+          company_id: company_id,
+          manufacturing_order_id: mo_id,
+          stock_lot_id: lot_id,
+          status: "pending",
+          created_by_id: nil,
+          updated_by_id: nil,
+          inserted_at: now,
+          updated_at: now
+        })
+        |> Repo.insert(on_conflict: :nothing, conflict_target: [:stock_lot_id])
+      end
+    end)
+
+    :ok
   end
 
   defp normalize_search(nil), do: nil
