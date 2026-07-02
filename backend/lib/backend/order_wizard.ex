@@ -271,6 +271,14 @@ defmodule Backend.OrderWizard do
       Enum.any?(mos, & &1.has_output_at_production_feed?) ->
         :closeout
 
+      # Any awaiting-release output owes a Final Product Release
+      # ceremony (BRCGS 5.6) before the order can be considered ready
+      # to dispatch. Keeps the wizard on `:closeout` — the closeout
+      # phase now covers the whole post-run trail (QC → booking
+      # closeout → return-pickup → QA sign-off).
+      Enum.any?(mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0)) ->
+        :closeout
+
       true ->
         :ready_to_dispatch
     end
@@ -948,9 +956,9 @@ defmodule Backend.OrderWizard do
   end
 
   # Split a `completed` MO by the closeout sub-stage. STRICT order:
-  # QC sign-off → booking closeout → warehouse return. Mirrors the
-  # FE `deriveMoLiveStage` so the wizard's primary CTA and the per-MO
-  # card always agree on the SINGLE next step.
+  # QC sign-off → booking closeout → warehouse return → Final Product
+  # Release. Mirrors the FE `deriveMoLiveStage` so the wizard's primary
+  # CTA and the per-MO card always agree on the SINGLE next step.
   defp completed_step_cta(mo) do
     cond do
       Map.get(mo, :output_qc_pending_count, 0) > 0 ->
@@ -977,6 +985,29 @@ defmodule Backend.OrderWizard do
            kind: "send_to_device",
            href: "/m/return-pickup",
            mo_uuid: mo.uuid
+         }}
+
+      Map.get(mo, :output_awaiting_release_count, 0) > 0 ->
+        # Post-closeout QA sign-off (BRCGS Issue 9 § 5.6). Point the CTA
+        # at the FIRST awaiting-release lot — the release ceremony
+        # binds per-lot, and if there's more than one they land on the
+        # dedicated queue anyway.
+        target_lot_uuid =
+          case Map.get(mo, :output_awaiting_release_lot_uuids, []) do
+            [uuid | _] when is_binary(uuid) -> uuid
+            _ -> nil
+          end
+
+        href =
+          if target_lot_uuid,
+            do: "/production/final-releases/#{target_lot_uuid}",
+            else: "/production/final-releases"
+
+        {"QA sign-off for MO #{mo.code} finished product (BRCGS § 5.6).",
+         %{
+           label: "Open Final Product Release",
+           kind: "link",
+           href: href
          }}
 
       true ->
@@ -1241,6 +1272,20 @@ defmodule Backend.OrderWizard do
     output_qc_pending_count =
       Enum.count(output_lots, &(&1.status == "received"))
 
+    # Output lots that passed output-QC but haven't been through Final
+    # Product Release yet (BRCGS Issue 9 § 5.6). QA still owes the
+    # sign-off ceremony (releaser + approver + CoA/BMR/micro/label-retain
+    # files); the lot can't dispatch until that lands. Surfaces as a
+    # `wrap` sub-stage on the projects board and drives the "Final
+    # Product Release" CTA on the MO card.
+    awaiting_release_lots =
+      Enum.filter(output_lots, &(&1.status == "awaiting_release"))
+
+    output_awaiting_release_count = length(awaiting_release_lots)
+
+    output_awaiting_release_lot_uuids =
+      Enum.map(awaiting_release_lots, & &1.uuid)
+
     # Same rationale as `under_booked` above — a `completed` or
     # `cancelled` MO can't be acted on procurement-side, so any
     # leftover placeholder bookings are noise. The wizard would
@@ -1294,6 +1339,8 @@ defmodule Backend.OrderWizard do
       output_at_feed_count: length(feed_lots),
       output_in_warehouse_count: length(warehouse_lots),
       output_qc_pending_count: output_qc_pending_count,
+      output_awaiting_release_count: output_awaiting_release_count,
+      output_awaiting_release_lot_uuids: output_awaiting_release_lot_uuids,
       bookings_closeout_pending_count: bookings_closeout_pending_count,
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
@@ -1800,13 +1847,15 @@ defmodule Backend.OrderWizard do
 
   # True when an MO still has work hanging off it. Non-completed
   # MOs always count. Completed MOs count when output QC hasn't
-  # signed off all output lots OR when outputs are still sitting at
-  # the production-feed cell waiting for the warehouse fetch. The
+  # signed off all output lots, OR outputs are still sitting at the
+  # production-feed cell waiting for the warehouse fetch, OR outputs
+  # cleared QC but still owe Final Product Release (BRCGS 5.6). The
   # "Do this next" punch-list uses this to surface every step that
   # still needs an operator's attention.
   defp mo_has_pending_work?(%{status: "completed"} = mo) do
     Map.get(mo, :output_qc_pending_count, 0) > 0 or
-      Map.get(mo, :has_output_at_production_feed?) == true
+      Map.get(mo, :has_output_at_production_feed?) == true or
+      Map.get(mo, :output_awaiting_release_count, 0) > 0
   end
 
   defp mo_has_pending_work?(%{status: status}) when is_binary(status), do: true

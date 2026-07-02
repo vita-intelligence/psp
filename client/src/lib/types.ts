@@ -2787,6 +2787,13 @@ export interface OrderWizardMo {
    *  return-pickup can fetch outputs + leftovers back — otherwise
    *  the dispatch pile gets orphaned on the production side. */
   bookings_closeout_pending_count: number;
+  /** Output lots that passed output-QC but haven't cleared Final
+   *  Product Release (BRCGS 5.6). Drives the release CTA + keeps the
+   *  MO card on the `wrap` phase until QA signs off. */
+  output_awaiting_release_count: number;
+  /** Uuids of the awaiting-release lots — used by the "Open Final
+   *  Product Release" CTA to link straight to the dialog. */
+  output_awaiting_release_lot_uuids: string[];
   has_output_at_production_feed: boolean;
   /** Cancelled MO whose picked bookings still hold physical stock at
    *  the production-side cell. Warehouse picker owes a return-pickup

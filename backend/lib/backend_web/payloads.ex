@@ -1153,6 +1153,10 @@ defmodule BackendWeb.Payloads do
       output_at_feed_count: mo.output_at_feed_count,
       output_in_warehouse_count: mo.output_in_warehouse_count,
       output_qc_pending_count: mo.output_qc_pending_count,
+      output_awaiting_release_count:
+        Map.get(mo, :output_awaiting_release_count, 0),
+      output_awaiting_release_lot_uuids:
+        Map.get(mo, :output_awaiting_release_lot_uuids, []),
       bookings_closeout_pending_count: mo.bookings_closeout_pending_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
       cancelled_orphan_booking_count:

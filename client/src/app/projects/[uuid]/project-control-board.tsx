@@ -210,6 +210,7 @@ type MoLiveStage =
   | "awaiting_output_qc"
   | "awaiting_closeout"
   | "awaiting_warehouse_return"
+  | "awaiting_final_release"
   | "completed";
 
 interface MoStageView {
@@ -305,6 +306,14 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
           tone: "amber",
         };
       }
+      if ((mo.output_awaiting_release_count ?? 0) > 0) {
+        return {
+          key: "awaiting_final_release",
+          label: `Awaiting Final Product Release (${mo.output_awaiting_release_count})`,
+          hint: "Finished product is on the shelf in a finished-quarantine cell. QA owes the release ceremony — attach CoA + BMR + micro + label-retain, collect two signatures, then Release / Hold / Reject (BRCGS Issue 9 § 5.6 Positive Release).",
+          tone: "sky",
+        };
+      }
       return {
         key: "completed",
         label: "Closeout",
@@ -357,7 +366,12 @@ function phaseForMo(mo: OrderWizardMo): MoLifecyclePhase {
     if (
       mo.output_qc_pending_count > 0 ||
       mo.bookings_closeout_pending_count > 0 ||
-      mo.output_at_feed_count > 0
+      mo.output_at_feed_count > 0 ||
+      // Post-QC outputs waiting on QA sign-off (BRCGS § 5.6) — still
+      // wrap work, not done. Without this the MO card would jump to
+      // Done the moment output QC passes, even though the finished
+      // lot can't be dispatched until Final Product Release fires.
+      (mo.output_awaiting_release_count ?? 0) > 0
     ) {
       return "wrap";
     }
@@ -1947,6 +1961,25 @@ function MiniMoCard({
             Send closeout
           </Button>
         )}
+
+        {/* Final Product Release — after return-pickup lands the
+            finished lot in a finished-quarantine cell, QA owes the
+            release ceremony. Deep-link straight to the first
+            awaiting-release lot's dialog. */}
+        {stage?.key === "awaiting_final_release" && (
+          <Button asChild size="sm" variant="outline">
+            <Link
+              href={
+                mo.output_awaiting_release_lot_uuids?.[0]
+                  ? `/production/final-releases/${mo.output_awaiting_release_lot_uuids[0]}`
+                  : "/production/final-releases"
+              }
+            >
+              <ExternalLink className="mr-1 size-3" />
+              Open Final Product Release
+            </Link>
+          </Button>
+        )}
           </div>
         </div>
       ) : (
@@ -2684,6 +2717,20 @@ function MoModal({
               >
                 <Smartphone className="mr-1 size-3" />
                 Closeout on device
+              </Button>
+            )}
+            {stage?.key === "awaiting_final_release" && (
+              <Button asChild size="sm" variant="outline">
+                <Link
+                  href={
+                    mo.output_awaiting_release_lot_uuids?.[0]
+                      ? `/production/final-releases/${mo.output_awaiting_release_lot_uuids[0]}`
+                      : "/production/final-releases"
+                  }
+                >
+                  <ExternalLink className="mr-1 size-3" />
+                  Open Final Product Release
+                </Link>
               </Button>
             )}
           </div>
