@@ -10,6 +10,7 @@ import { CurrencyRatesForm } from "./currency-rates-form";
 import { AllowedIpsForm } from "./allowed-ips-form";
 import { NumberingFormatsForm } from "./numbering-formats-form";
 import { WarehousePickupForm } from "./warehouse-pickup-form";
+import { ThreePlRateForm } from "./three-pl-rate-form";
 import { AlertCircle } from "lucide-react";
 
 export const metadata = { title: "Company · Settings · PSP" };
@@ -48,6 +49,7 @@ export default async function CompanySettingsPage() {
       <WorkingHoursForm company={company} canEdit={canEdit} />
       <HolidaysForm company={company} canEdit={canEdit} />
       <WarehousePickupForm company={company} canEdit={canEdit} />
+      <ThreePlRateForm company={company} canEdit={canEdit} />
       <CurrencyRatesForm company={company} canEdit={canEdit} />
       <AllowedIpsForm company={company} canEdit={canEdit} />
       <NumberingFormatsForm company={company} canEdit={canEdit} />

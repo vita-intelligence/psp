@@ -85,3 +85,29 @@ export async function updateCompanyWarehousePickupAction(
     });
   }
 }
+
+export async function updateCompanyThreePlRateAction(
+  input: { three_pl_rate_per_m3_per_day: string | null },
+): Promise<CompanyResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("updateCompanyThreePlRateAction");
+
+  try {
+    const res = await api<{ company: Company }>(
+      "/api/company/three-pl-rate",
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify(input),
+      },
+    );
+    revalidatePath("/settings/company");
+    revalidatePath("/three-pl");
+    return { ok: true, company: res.company };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "updateCompanyThreePlRateAction",
+      fallbackDetail: "Couldn't save the 3PL rate.",
+    });
+  }
+}

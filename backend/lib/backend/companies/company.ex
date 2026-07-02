@@ -61,6 +61,13 @@ defmodule Backend.Companies.Company do
     field :currency_rates_pulled_at, :utc_datetime
     field :currency_rates_source, :string, default: "manual"
 
+    # 3PL storage rate expressed in the company base currency
+    # (currency_code) — accrues per m³ per day against every bailee
+    # lot from bailee_routed_at until dispatch. Nullable so
+    # organisations that haven't set a rate yet don't accidentally
+    # bill customers £0.00.
+    field :three_pl_rate_per_m3_per_day, :decimal
+
     has_many :roles, Role
     has_many :users, User
 
@@ -195,5 +202,19 @@ defmodule Backend.Companies.Company do
     else
       changeset
     end
+  end
+
+  @doc """
+  3PL storage rate card — currency-agnostic decimal expressed in the
+  company's base `currency_code`. Nullable + non-negative; the
+  settings card writes a null when the operator wants to unset a
+  previously configured rate.
+  """
+  def three_pl_rate_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:three_pl_rate_per_m3_per_day])
+    |> validate_number(:three_pl_rate_per_m3_per_day,
+      greater_than_or_equal_to: 0
+    )
   end
 end

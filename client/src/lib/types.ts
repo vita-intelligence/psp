@@ -115,6 +115,13 @@ export interface Company {
    *  scheduled MO is released to the warehouse, it appears in the
    *  picker queue once `planned_start - window` has passed. */
   default_pickup_window_hours: number;
+  /** 3PL storage rate in the company's base currency (currency_code)
+   *  applied per m³ per day against every bailee lot from
+   *  `bailee_routed_at` until dispatch. Nullable — empty means no rate
+   *  is configured yet + the 3PL tab shows "no rate set" instead of
+   *  £0.00 lines. String because the backend sends decimals as
+   *  strings to avoid JS float rounding. */
+  three_pl_rate_per_m3_per_day: string | null;
 }
 
 export interface UserListEntry extends User {
@@ -239,6 +246,8 @@ export interface CompanyDefaults {
   currency_format: string;
   generic_place_name: string;
   default_pickup_window_hours: number;
+  /** 3PL rate (base-currency decimal, as string). Null when unset. */
+  three_pl_rate_per_m3_per_day: string | null;
 }
 
 export interface Contact {

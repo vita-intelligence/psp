@@ -123,6 +123,7 @@ defmodule BackendWeb.Router do
     put "/company", CompanyController, :update
     put "/company/locale", CompanyController, :update_locale
     put "/company/warehouse-pickup", CompanyController, :update_warehouse_pickup
+    put "/company/three-pl-rate", CompanyController, :update_three_pl_rate
     put "/company/bag", CompanyController, :update_bag
 
     put "/company/currency-rates/auto-pull",
@@ -833,6 +834,7 @@ defmodule BackendWeb.Router do
     # operator sees "no 3PL space" before we accept the choice.
     scope "/three-pl" do
       post "/route/:lot_uuid", ThreePLController, :route_lot
+      post "/dispatch/:lot_uuid", ThreePLController, :dispatch_lot
       get "/inventory", ThreePLController, :inventory
       get "/capacity/:warehouse_uuid", ThreePLController, :capacity
     end

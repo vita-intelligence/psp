@@ -81,6 +81,8 @@ defmodule BackendWeb.Payloads do
       allowed_ips: company.allowed_ips,
       numbering_formats: company.numbering_formats,
       default_pickup_window_hours: company.default_pickup_window_hours,
+      three_pl_rate_per_m3_per_day:
+        decimal_to_string(company.three_pl_rate_per_m3_per_day),
       inserted_at: company.inserted_at,
       updated_at: company.updated_at
     }
@@ -108,7 +110,9 @@ defmodule BackendWeb.Payloads do
       currency_code: company.currency_code,
       currency_format: company.currency_format,
       generic_place_name: company.generic_place_name,
-      default_pickup_window_hours: company.default_pickup_window_hours
+      default_pickup_window_hours: company.default_pickup_window_hours,
+      three_pl_rate_per_m3_per_day:
+        decimal_to_string(company.three_pl_rate_per_m3_per_day)
     }
   end
 

@@ -36,6 +36,7 @@ defmodule BackendWeb.CompanyController do
               :update_locale,
               :update_bag,
               :update_warehouse_pickup,
+              :update_three_pl_rate,
               :update_currency_rates_auto_pull,
               :refresh_currency_rates_now
             ]
@@ -90,6 +91,24 @@ defmodule BackendWeb.CompanyController do
 
   def update_warehouse_pickup(conn, params) do
     case Companies.update_warehouse_pickup(Companies.current(), params) do
+      {:ok, company} ->
+        json(conn, %{company: Payloads.company(company)})
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Please correct the highlighted fields.",
+            Errors.changeset_fields(cs)
+          )
+        )
+    end
+  end
+
+  def update_three_pl_rate(conn, params) do
+    case Companies.update_three_pl_rate(Companies.current(), params) do
       {:ok, company} ->
         json(conn, %{company: Payloads.company(company)})
 

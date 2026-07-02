@@ -76,6 +76,19 @@ defmodule Backend.Companies do
   end
 
   @doc """
+  3PL storage rate — persisted in company base currency, applied to
+  every bailee lot from `bailee_routed_at` until dispatch. Passing
+  `nil` clears the rate (settings card exposes an explicit "no rate"
+  state so accidentally saving zero doesn't silently charge £0.00
+  either).
+  """
+  def update_three_pl_rate(%Company{} = company, attrs) do
+    company
+    |> Company.three_pl_rate_changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
   Replace any of the JSONB bags atomically. Caller is responsible for
   validating the shape it's writing — we just stash it.
 
