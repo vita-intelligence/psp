@@ -1564,17 +1564,30 @@ defmodule Backend.Stock do
       #    so the recommender never suggests "move here" for the cell
       #    the lot is already in.
       #
-      #    Purpose = "regular" only — every other purpose is workflow-
-      #    specific and must never appear as a put-away suggestion:
+      #    Target purpose is driven by the lot's state:
       #
-      #      quarantine       — set by the receive flow
-      #      hold / rejected  — set by QC verdict (auto-router)
-      #      dispatch         — set by the picker after staging
-      #      production_feed  — set by the picker walking stock to the line
+      #      * Top-of-tree finished-goods lot that owes a Final Product
+      #        Release ceremony (BRCGS Issue 9 § 5.6, no terminal
+      #        release row, not consumed by a downstream MO) →
+      #        `finished_quarantine`. The release form hard-blocks
+      #        until the lot sits there, so suggesting anything else
+      #        just wastes an operator's walk.
       #
-      #    Suggesting any of these for a QC-passed put-away breaks the
-      #    audit chain (the cell's intent stops matching the lot's
-      #    state) and physically shoves stock into the wrong area.
+      #      * Everything else → `regular`. Every other purpose is
+      #        workflow-specific and must never appear as a routine
+      #        put-away suggestion:
+      #
+      #          quarantine       — set by the receive flow
+      #          hold / rejected  — set by QC verdict (auto-router)
+      #          dispatch         — set by the picker after staging
+      #          production_feed  — set by the picker walking to line
+      #
+      #        Suggesting any of these for a QC-passed put-away breaks
+      #        the audit chain (the cell's intent stops matching the
+      #        lot's state) and physically shoves stock into the wrong
+      #        area.
+      target_purpose = move_target_purpose(lot)
+
       base_query =
         from c in StorageCell,
           join: l in StorageLocation,
@@ -1585,7 +1598,7 @@ defmodule Backend.Stock do
           on: w.id == l.warehouse_id,
           where:
             c.company_id == ^company_id and
-              c.purpose == "regular" and
+              c.purpose == ^target_purpose and
               is_nil(c.system_kind) and
               is_nil(l.system_kind) and
               is_nil(f.system_kind) and
@@ -1642,6 +1655,49 @@ defmodule Backend.Stock do
     else
       _ -> []
     end
+  end
+
+  # Which cell purpose should the recommender surface for this lot?
+  #
+  # Finished-goods lot that owes a Final Product Release ceremony
+  # (BRCGS Issue 9 § 5.6, Positive Release) goes to
+  # `finished_quarantine`. The release form hard-blocks until the lot
+  # physically sits in one, so pointing operators at anything else on
+  # the put-away flow wastes their walk.
+  #
+  # Everything else (raw material put-away, post-release relocation)
+  # goes to `regular`.
+  defp move_target_purpose(%Lot{
+         id: lot_id,
+         company_id: company_id,
+         source_kind: "manufacturing_order",
+         status: status
+       })
+       when status in ["awaiting_release", "available"] do
+    cond do
+      Backend.Production.lot_committed_to_downstream_mo?(company_id, lot_id) ->
+        # Sub-MO output being consumed by a parent MO — no release
+        # owed, put-away is a normal move.
+        "regular"
+
+      lot_has_terminal_release_row?(lot_id) ->
+        # Already released / held / rejected — normal move.
+        "regular"
+
+      true ->
+        "finished_quarantine"
+    end
+  end
+
+  defp move_target_purpose(_), do: "regular"
+
+  defp lot_has_terminal_release_row?(lot_id) do
+    Repo.exists?(
+      from r in Backend.Production.FinalRelease,
+        where:
+          r.stock_lot_id == ^lot_id and
+            r.status in ["released", "on_hold", "rejected"]
+    )
   end
 
   defp score_recommendation(row, item_tags) do
