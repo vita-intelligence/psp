@@ -1,46 +1,36 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import {
   Building2,
-  ChevronDown,
-  ChevronUp,
   ChevronRight,
   Layers,
   MapPin,
   Package,
   ShieldCheck,
 } from "lucide-react";
-import { FloorPlanMini } from "@/components/warehouses/floor-plan-mini";
 import type { StockLot } from "@/lib/types";
 
 /**
- * One row on the mobile /m/putaway list. Shows the breadcrumb
- * (warehouse → floor → rack → cell) so the operator knows where to
- * WALK to scan the lot; tap "Show map" to expand a floor-plan
- * thumbnail with the current cell pinned. The whole row is a
- * `<Link>` to the scan page — the map expand button intercepts the
- * click so the operator can peek at the location without leaving
- * the queue.
+ * One row on the mobile /m/putaway list. Compact — the location
+ * breadcrumb (warehouse → floor → rack → cell) gives the operator
+ * enough to walk somewhere; the floor plan itself lives on the lot
+ * detail page (tap the row) so the list stays scannable.
  */
 export function PutawayRow({ lot }: { lot: StockLot }) {
-  const [showMap, setShowMap] = useState(false);
   const active = firstActivePlacement(lot);
   const cell = active?.storage_cell ?? null;
   const loc = cell?.storage_location ?? null;
   const floor = cell?.floor ?? null;
   const warehouse = cell?.warehouse ?? null;
-  const canRenderPlan =
-    !!floor?.uuid && !!loc?.uuid && !cell?.system_kind && !floor.system_kind;
 
   return (
     <li>
-      <div className="rounded-lg border border-border/60 bg-card">
-        <Link
-          href={`/m/lots/${lot.uuid}`}
-          className="flex items-center gap-3 px-3 py-3 active:bg-muted rounded-t-lg"
-        >
+      <Link
+        href={`/m/lots/${lot.uuid}`}
+        className="block rounded-lg border border-border/60 bg-card active:bg-muted"
+      >
+        <div className="flex items-center gap-3 px-3 py-3">
           <div className="flex-1 space-y-1 min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono text-xs font-semibold">
@@ -71,11 +61,12 @@ export function PutawayRow({ lot }: { lot: StockLot }) {
             )}
           </div>
           <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-        </Link>
+        </div>
 
-        {/* Location breadcrumb — always visible so the operator can
-            read where the lot is at a glance without expanding the
-            map. */}
+        {/* Compact location breadcrumb — enough for the operator to
+            know where the lot LIVES right now without expanding
+            anything. Tap the row to open the lot page for the full
+            floor plan. */}
         <div className="grid grid-cols-2 gap-x-2 gap-y-1 border-t border-border/40 px-3 py-2 text-[11px]">
           <BreadcrumbRow
             icon={Building2}
@@ -104,51 +95,7 @@ export function PutawayRow({ lot }: { lot: StockLot }) {
             }
           />
         </div>
-
-        {/* Map expand — only meaningful when we have a real floor +
-            location to point at. System cells (Unregistered) skip
-            the map with a hint instead. */}
-        {canRenderPlan ? (
-          <div className="border-t border-border/40">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between gap-2 rounded-b-lg px-3 py-2 text-[11px] font-medium text-muted-foreground active:bg-muted"
-              onClick={() => setShowMap((v) => !v)}
-              aria-expanded={showMap}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <MapPin className="size-3.5" />
-                {showMap ? "Hide map" : "Show me on the floor plan"}
-              </span>
-              {showMap ? (
-                <ChevronUp className="size-3.5" />
-              ) : (
-                <ChevronDown className="size-3.5" />
-              )}
-            </button>
-            {showMap && (
-              <div className="border-t border-border/40 px-3 py-3">
-                <FloorPlanMini
-                  floorUuid={floor!.uuid}
-                  targetLocationUuid={loc!.uuid}
-                  apiPath={(uuid) =>
-                    `/api/stock/floors/${encodeURIComponent(uuid)}/plan`
-                  }
-                  footerLabel="Walk to the pinned rack — that's where the lot is."
-                />
-              </div>
-            )}
-          </div>
-        ) : cell?.system_kind === "unregistered" ? (
-          <div className="rounded-b-lg border-t border-border/40 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-            System cell (no floor plan). Find the lot at the
-            <span className="mx-1 font-medium text-foreground">
-              {cell.name ?? "receiving / staging"}
-            </span>
-            zone.
-          </div>
-        ) : null}
-      </div>
+      </Link>
     </li>
   );
 }

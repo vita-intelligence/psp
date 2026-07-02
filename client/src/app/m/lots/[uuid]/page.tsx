@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
   AlertTriangle,
+  Building2,
   Calendar,
   CheckCircle2,
   ChevronLeft,
   FileWarning,
+  Layers,
   MapPin,
   MoveRight,
   Package,
@@ -16,6 +18,7 @@ import { getDeviceToken } from "@/lib/devices/server";
 import { getLotForScan } from "@/lib/stock/mobile";
 import { computeLotHandlingTags } from "@/lib/stock/handling-tags";
 import type { StockLot } from "@/lib/types";
+import { FloorPlanMini } from "./move/floor-plan-mini";
 
 export const metadata = { title: "Lot · PSP Mobile" };
 
@@ -43,7 +46,11 @@ export default async function MobileLotPage({ params }: Props) {
   const placement = lot.placements?.find((p) => Number(p.qty) > 0);
   const cell = placement?.storage_cell;
   const location = cell?.storage_location;
+  const floor = cell?.floor;
+  const warehouse = cell?.warehouse;
   const symbol = lot.unit_of_measurement?.symbol ?? "";
+  const canRenderPlan =
+    !!floor?.uuid && !!location?.uuid && !cell?.system_kind && !floor.system_kind;
 
   // Put-away applies when the lot is still in the auto-managed
   // Unregistered cell. Once it lives in a real shelf the action
@@ -95,6 +102,59 @@ export default async function MobileLotPage({ params }: Props) {
               Pending put-away
             </span>
           )}
+        </section>
+
+        {/* Where it is — breadcrumb + floor plan so the operator can
+            walk straight to the shelf. System cells (Unregistered)
+            skip the plan since there's no geometry; the caption tells
+            the operator to look at the receiving / staging zone
+            instead. */}
+        <section className="space-y-3 rounded-lg border border-border/60 bg-card p-4">
+          <h2 className="text-xs uppercase tracking-wider text-muted-foreground">
+            Where it is
+          </h2>
+          <ol className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+            <BreadcrumbRow
+              icon={Building2}
+              label="Warehouse"
+              value={warehouse?.name ?? "—"}
+            />
+            <BreadcrumbRow
+              icon={Layers}
+              label="Floor"
+              value={floor?.name ?? "—"}
+            />
+            <BreadcrumbRow
+              icon={MapPin}
+              label="Rack"
+              value={location?.code ?? location?.name ?? "—"}
+              suffix={location?.code && location?.name ? location.name : null}
+            />
+            <BreadcrumbRow
+              icon={Package}
+              label="Cell"
+              value={cell?.name ?? (cell ? `Cell #${cell.id}` : "—")}
+              suffix={
+                cell && cell.ordinal !== null && cell.ordinal !== undefined
+                  ? `Level ${cell.ordinal + 1}`
+                  : null
+              }
+            />
+          </ol>
+          {canRenderPlan ? (
+            <FloorPlanMini
+              floorUuid={floor!.uuid}
+              targetLocationUuid={location!.uuid}
+            />
+          ) : cell?.system_kind === "unregistered" ? (
+            <p className="rounded-md bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+              System cell (no floor plan). Find the lot at the{" "}
+              <span className="font-medium text-foreground">
+                {cell.name ?? "receiving / staging"}
+              </span>{" "}
+              zone.
+            </p>
+          ) : null}
         </section>
 
         {/* Identity card — what a worker checks against the physical
@@ -205,6 +265,37 @@ const HANDLING_ICON = {
   warning: FileWarning,
   cold: Snowflake,
 } as const;
+
+function BreadcrumbRow({
+  icon: Icon,
+  label,
+  value,
+  suffix,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  suffix?: string | null;
+}) {
+  return (
+    <li className="flex items-start gap-2">
+      <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p className="truncate text-[13px] font-medium">
+          {value}
+          {suffix && (
+            <span className="ml-1 text-[11px] text-muted-foreground">
+              {suffix}
+            </span>
+          )}
+        </p>
+      </div>
+    </li>
+  );
+}
 
 function DetailRow({
   icon: Icon,
