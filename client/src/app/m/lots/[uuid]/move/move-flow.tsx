@@ -527,15 +527,18 @@ function DirectionsStep({
               type="text"
               inputMode="decimal"
               value={qty}
-              onChange={(e) => onQtyChange(e.target.value)}
-              className="h-12 font-mono text-lg"
+              readOnly
+              disabled
+              aria-readonly
+              className="h-12 font-mono text-lg opacity-90"
             />
             <span className="inline-flex items-center rounded-md border border-border/60 bg-muted px-3 text-sm font-medium text-muted-foreground">
               {lot.unit_of_measurement?.symbol ?? ""}
             </span>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Defaults to everything in {lot.code ?? `#${lot.id}`}.
+            The whole lot moves as one — partial moves aren&apos;t allowed here.
+            (A sealed box / drum / roll doesn&apos;t split on the shelf.)
           </p>
         </section>
 
