@@ -836,6 +836,7 @@ defmodule BackendWeb.Router do
       post "/route/:lot_uuid", ThreePLController, :route_lot
       post "/dispatch/:lot_uuid", ThreePLController, :dispatch_lot
       get "/inventory", ThreePLController, :inventory
+      get "/lots/:lot_uuid", ThreePLController, :lot_detail
       get "/capacity/:warehouse_uuid", ThreePLController, :capacity
     end
 

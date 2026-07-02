@@ -62,3 +62,60 @@ export interface DispatchLotInput {
   notes?: string | null;
   photo_url?: string | null;
 }
+
+/** Full bundle for the /three-pl/[lot_uuid] item page. */
+export interface ThreePLLotDetailResponse {
+  lot: StockLot;
+  summary: {
+    held_volume_m3: string;
+    original_qty: string | null;
+    held_qty: string | null;
+    dispatched_qty: string | null;
+    days_held: number;
+    accrued_amount: string | null;
+    currency: string;
+    rate: string | null;
+  };
+  dispatches: ThreePLDispatchRow[];
+  release: ThreePLReleaseBundle | null;
+}
+
+export interface ThreePLReleaseBundle {
+  uuid: string;
+  status: "pending" | "released" | "on_hold" | "rejected";
+  finalized_at: string | null;
+  finalized_by: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+  releaser: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+  approver: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+  files: ThreePLReleaseFile[];
+}
+
+export interface ThreePLReleaseFile {
+  uuid: string;
+  kind: string;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  uploaded_at: string;
+  uploaded_by: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+}

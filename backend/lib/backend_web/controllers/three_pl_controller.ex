@@ -172,6 +172,51 @@ defmodule BackendWeb.ThreePLController do
   end
 
   # ---------------------------------------------------------------
+  # GET /three-pl/lots/:lot_uuid
+  # ---------------------------------------------------------------
+  def lot_detail(conn, %{"lot_uuid" => lot_uuid}) do
+    actor = conn.assigns.current_user
+    company = Backend.Companies.current()
+
+    case ThreePL.get_bailee_lot_detail(actor.company_id, lot_uuid) do
+      nil ->
+        not_found(conn, "Lot not found in bailee custody.")
+
+      %{lot: lot, dispatches: dispatches, release: release} ->
+        rate = company.three_pl_rate_per_m3_per_day
+
+        json(conn, %{
+          lot: Payloads.stock_lot(lot),
+          summary: %{
+            held_volume_m3:
+              Decimal.to_string(Decimal.round(ThreePL.lot_held_volume_m3(lot), 4)),
+            original_qty: decimal_to_string(lot.qty_received),
+            held_qty: decimal_to_string(held_qty(lot)),
+            dispatched_qty:
+              decimal_to_string(sum_dispatch_qty(dispatches)),
+            days_held: days_since(lot.bailee_routed_at),
+            accrued_amount:
+              case rate do
+                nil -> nil
+                _ ->
+                  Decimal.to_string(
+                    Decimal.round(ThreePL.accrued_charge(lot, rate), 2)
+                  )
+              end,
+            currency: company.currency_code,
+            rate:
+              case rate do
+                nil -> nil
+                r -> decimal_to_string(r)
+              end
+          },
+          dispatches: Enum.map(dispatches, &dispatch_payload/1),
+          release: release_bundle_payload(release)
+        })
+    end
+  end
+
+  # ---------------------------------------------------------------
   # GET /three-pl/capacity/:warehouse_uuid
   # ---------------------------------------------------------------
   def capacity(conn, %{"warehouse_uuid" => warehouse_uuid}) do
@@ -213,6 +258,65 @@ defmodule BackendWeb.ThreePLController do
 
   defp resolve_route_opts(_company_id, _params), do: {:ok, []}
 
+  defp held_qty(%Lot{placements: placements}) when is_list(placements) do
+    placements
+    |> Enum.filter(fn p ->
+      p.storage_cell &&
+        p.storage_cell.purpose == "three_pl_storage" &&
+        p.qty &&
+        Decimal.compare(p.qty, Decimal.new(0)) == :gt
+    end)
+    |> Enum.reduce(Decimal.new(0), &Decimal.add(&2, &1.qty))
+  end
+
+  defp held_qty(_), do: Decimal.new(0)
+
+  defp sum_dispatch_qty(list) when is_list(list) do
+    Enum.reduce(list, Decimal.new(0), &Decimal.add(&2, &1.qty))
+  end
+
+  defp release_bundle_payload(nil), do: nil
+
+  defp release_bundle_payload(%Backend.Production.FinalRelease{} = r) do
+    %{
+      uuid: r.uuid,
+      status: r.status,
+      finalized_at: r.finalized_at,
+      finalized_by:
+        case r.finalized_by do
+          %Backend.Accounts.User{} = u ->
+            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+          _ ->
+            nil
+        end,
+      releaser:
+        case r.releaser do
+          %Backend.Accounts.User{} = u ->
+            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+          _ ->
+            nil
+        end,
+      approver:
+        case r.approver do
+          %Backend.Accounts.User{} = u ->
+            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+          _ ->
+            nil
+        end,
+      files:
+        case r.files do
+          list when is_list(list) ->
+            Enum.map(list, &Payloads.production_final_release_file/1)
+
+          _ ->
+            []
+        end
+    }
+  end
+
   defp dispatch_payload(%Backend.ThreePL.Dispatch{} = d) do
     %{
       uuid: d.uuid,
@@ -233,7 +337,7 @@ defmodule BackendWeb.ThreePLController do
   end
 
   defp bailee_lot_row(%Lot{} = l, rate) do
-    volume_m3 = ThreePL.lot_stored_volume_m3(l)
+    volume_m3 = ThreePL.lot_held_volume_m3(l)
     charge = if is_nil(rate), do: nil, else: ThreePL.accrued_charge(l, rate)
 
     %{

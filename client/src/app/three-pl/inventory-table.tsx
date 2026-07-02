@@ -237,8 +237,8 @@ function BaileeRow({
           )}
         >
           <MapPin className="size-3" />
-          {location?.name ?? "—"}
-          {cell?.name ? ` · ${cell.name}` : ""}
+          {locationLabel(location) ?? "—"}
+          {cellLabel(cell) ? ` · ${cellLabel(cell)}` : ""}
           {misplaced && " (needs move)"}
         </span>
       </Td>
@@ -261,7 +261,7 @@ function BaileeRow({
             Dispatch
           </Button>
           <Link
-            href={`/stock/lots/${encodeURIComponent(lot.uuid)}`}
+            href={`/three-pl/${encodeURIComponent(lot.uuid)}`}
             className="inline-flex items-center gap-1 text-[11px] text-brand hover:underline"
           >
             Open <ExternalLink className="size-3" />
@@ -270,6 +270,38 @@ function BaileeRow({
       </Td>
     </tr>
   );
+}
+
+/**
+ * Location + cell names are nullable AND sometimes stored as empty
+ * strings, so the display needs a real fallback chain: prefer human
+ * name, else the auto-generated code (SL00030 style), else a level
+ * derived from the cell's ordinal.
+ */
+function locationLabel(
+  loc: { name?: string | null; code?: string | null } | null | undefined,
+): string | null {
+  if (!loc) return null;
+  const name = loc.name?.trim();
+  if (name) return name;
+  const code = loc.code?.trim();
+  if (code) return code;
+  return null;
+}
+
+function cellLabel(
+  cell:
+    | { name?: string | null; code?: string | null; ordinal?: number | null }
+    | null
+    | undefined,
+): string | null {
+  if (!cell) return null;
+  const name = cell.name?.trim();
+  if (name) return name;
+  const code = cell.code?.trim();
+  if (code) return code;
+  if (typeof cell.ordinal === "number") return `Level ${cell.ordinal + 1}`;
+  return null;
 }
 
 function Th({

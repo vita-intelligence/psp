@@ -251,8 +251,8 @@ defmodule Backend.ThreePL do
 
   @doc """
   Volume, in cubic metres, a whole lot's worth of packaged qty would
-  occupy. Rounds up when the lot's dimensions are incomplete — caller
-  should ensure the lot has package dimensions before calling.
+  occupy — based on `qty_received`. Used by the wizard's pre-check to
+  decide whether a target purpose has capacity for the entire lot.
   """
   def lot_stored_volume_m3(%Lot{
         package_length_mm: l,
@@ -262,6 +262,44 @@ defmodule Backend.ThreePL do
         qty_received: qty
       })
       when is_integer(l) and is_integer(w) and is_integer(h) and not is_nil(qty) do
+    packages_volume(l, w, h, qty, units)
+  end
+
+  def lot_stored_volume_m3(_), do: Decimal.new(0)
+
+  @doc """
+  Volume currently held in bailee custody — sum of placement qty in
+  `three_pl_storage` cells × package dimensions. Drifts down as
+  dispatches consume placement qty. Used by the 3PL tab so the
+  displayed volume tracks what's really on the floor after partial
+  outbound sends.
+  """
+  def lot_held_volume_m3(%Lot{placements: placements} = lot)
+      when is_list(placements) do
+    held_qty =
+      placements
+      |> Enum.filter(fn p ->
+        p.storage_cell &&
+          p.storage_cell.purpose == "three_pl_storage" &&
+          p.qty &&
+          Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+      |> Enum.reduce(Decimal.new(0), &Decimal.add(&2, &1.qty))
+
+    l = lot.package_length_mm
+    w = lot.package_width_mm
+    h = lot.package_height_mm
+
+    if is_integer(l) and is_integer(w) and is_integer(h) do
+      packages_volume(l, w, h, held_qty, lot.units_per_package)
+    else
+      Decimal.new(0)
+    end
+  end
+
+  def lot_held_volume_m3(_), do: Decimal.new(0)
+
+  defp packages_volume(l, w, h, qty, units) do
     packages =
       qty
       |> Decimal.div(units || Decimal.new(1))
@@ -270,8 +308,6 @@ defmodule Backend.ThreePL do
     single_package_m3 = mm3_to_m3(l * w * h)
     Decimal.mult(packages, single_package_m3)
   end
-
-  def lot_stored_volume_m3(_), do: Decimal.new(0)
 
   # =====================================================================
   # Inventory query
@@ -297,7 +333,9 @@ defmodule Backend.ThreePL do
           0
       end
 
-    volume = lot_stored_volume_m3(lot)
+    # Bill against currently-held volume — after a partial dispatch
+    # the customer stops paying for the qty that's left the shelf.
+    volume = lot_held_volume_m3(lot)
 
     Decimal.new(days)
     |> Decimal.mult(volume)
@@ -305,6 +343,52 @@ defmodule Backend.ThreePL do
   end
 
   def accrued_charge(_lot, _rate), do: Decimal.new(0)
+
+  @doc """
+  Full bailee-lot bundle for the /three-pl/:lot_uuid detail page —
+  the lot itself, every dispatch we've recorded (newest first) with
+  actor + evidence, and the Positive Release paperwork attached at
+  release time (CoA, BMR, micro, label proof, retention sample).
+  Returns `nil` when the lot isn't in bailee custody so a caller
+  can 404 the operator instead of showing a blank page.
+  """
+  def get_bailee_lot_detail(company_id, lot_uuid)
+      when is_integer(company_id) and is_binary(lot_uuid) do
+    case Repo.get_by(Lot, uuid: lot_uuid, company_id: company_id) do
+      %Lot{ownership_kind: "bailee"} = lot ->
+        preloaded =
+          Repo.preload(lot, [
+            :item,
+            :unit_of_measurement,
+            :bailee_customer,
+            placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+          ])
+
+        %{
+          lot: preloaded,
+          dispatches: list_dispatches(preloaded),
+          release: fetch_release_bundle(preloaded)
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  # Positive Release row + files for this lot (BRCGS Issue 9 § 5.6
+  # paperwork). Nil when the lot came into bailee custody outside
+  # the release ceremony (opening balance / manual receive routed
+  # to 3PL manually).
+  defp fetch_release_bundle(%Lot{id: lot_id}) do
+    row =
+      Repo.one(
+        from r in Backend.Production.FinalRelease,
+          where: r.stock_lot_id == ^lot_id,
+          preload: [:files, :releaser, :approver, :finalized_by]
+      )
+
+    row
+  end
 
   @doc """
   Lots currently held under bailee custody for company `company_id`.
