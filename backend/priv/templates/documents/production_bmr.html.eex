@@ -220,42 +220,132 @@
   </table>
 </section>
 
-<%= if @roadmap != [] do %>
 <section>
-  <h3 class="section-title">
-    Product roadmap — <%= length(@roadmap) %> event<%= if length(@roadmap) == 1, do: "", else: "s" %> · chronological across the whole batch
-  </h3>
+  <h3 class="section-title">Quality checks — three gates the batch cleared</h3>
   <p style="font-size: 8.5pt; color: #666; margin: 0 0 10px 0;">
-    Every physical event on every lot the tree touched — goods-in receipt of raw materials → warehouse pickup → pre-production receipt → closeout → output QC → return-pickup → move to finished-quarantine. Individual photos remain viewable per lot on the operator UI.
+    Every batch passes three QC signatures before dispatch: (1) goods-in inspection on each raw material at delivery, (2) preflight receipt sign-off on each ingredient at the production-feed cell before the run started, (3) output QC verdict on every produced lot.
   </p>
-  <ol style="list-style: none; padding: 0; margin: 0; position: relative;">
-    <%= for {r, idx} <- Enum.with_index(@roadmap, 1) do %>
-      <li style="position: relative; padding: 0 0 8px 34px; page-break-inside: avoid;">
-        <span aria-hidden="true" style="position: absolute; left: 10px; top: 4px; bottom: -8px; width: 2px; background: #e5e5e5;"></span>
-        <span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 14px; height: 14px; border-radius: 50%; background: <%= r.dot_color %>; border: 2px solid #fff; box-shadow: 0 0 0 1px <%= r.dot_color %>;"></span>
 
-        <div style="border: 1px solid #eee; border-left: 3px solid <%= r.dot_color %>; border-radius: 3px; padding: 6px 8px; background: #fafafa;">
-          <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px;">
-            <span style="font-weight: 600; font-size: 9pt;"><%= idx %>. <%= r.kind_label %></span>
-            <span style="font-family: ui-monospace, monospace; font-size: 8.5pt; color: #555;"><%= r.when %></span>
-          </div>
-          <div style="font-size: 8.5pt; color: #333; margin-top: 3px;">
-            <%= r.item_name %> · <span style="font-family: ui-monospace, monospace;"><%= r.lot_code %></span>
-          </div>
-          <%= if r.location_change do %>
-            <div style="font-size: 8pt; color: #555; margin-top: 2px;">
-              <%= r.location_change %>
-            </div>
-          <% end %>
-          <div style="font-size: 8pt; color: #666; margin-top: 2px;">
-            <%= r.actor %><%= if r.qty && r.qty != "—", do: " · Δqty #{r.qty}", else: "" %><%= if r.reason && r.reason != "", do: " · #{r.reason}", else: "" %><%= if r.photo_recorded?, do: " · photo on record", else: "" %>
-          </div>
-        </div>
-      </li>
-    <% end %>
-  </ol>
+  <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 4px 0;">
+    1 · Goods-in inspections (raw material deliveries)
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24px;">#</th>
+        <th>Material</th>
+        <th>Lot</th>
+        <th>Supplier batch</th>
+        <th>PO</th>
+        <th>Delivered</th>
+        <th>Decision</th>
+        <th>Approver</th>
+        <th>Signed</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= if @goods_in_checks == [] do %>
+        <tr class="empty-row"><td colspan="9">No raw-material lots consumed on this batch — output produced from stock manufactured in-house only.</td></tr>
+      <% else %>
+        <%= for {r, idx} <- Enum.with_index(@goods_in_checks, 1) do %>
+          <tr>
+            <td class="num"><%= idx %></td>
+            <td><%= r.item_name %></td>
+            <td class="mono"><%= r.lot_code %></td>
+            <td class="mono"><%= r.supplier_batch %></td>
+            <td class="mono"><%= r.po_code %></td>
+            <td><%= r.delivery_date %></td>
+            <td>
+              <span style="display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 8pt; font-weight: 600; background: <%= r.decision_bg %>; color: <%= r.decision_fg %>;">
+                <%= r.decision %>
+              </span>
+            </td>
+            <td><%= r.approver %></td>
+            <td class="muted"><%= r.signed_at %></td>
+          </tr>
+        <% end %>
+      <% end %>
+    </tbody>
+  </table>
+
+  <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 4px 0;">
+    2 · Preflight receipt sign-offs (each ingredient confirmed at production feed)
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24px;">#</th>
+        <th>MO</th>
+        <th>Ingredient</th>
+        <th>Lot</th>
+        <th class="num">Received qty</th>
+        <th>Received by</th>
+        <th>Signed</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= if @preflight_checks == [] do %>
+        <tr class="empty-row"><td colspan="7">No bookings on this MO tree.</td></tr>
+      <% else %>
+        <%= for {r, idx} <- Enum.with_index(@preflight_checks, 1) do %>
+          <tr>
+            <td class="num"><%= idx %></td>
+            <td class="mono"><%= r.mo_code %></td>
+            <td><%= r.item_name %></td>
+            <td class="mono"><%= r.lot_code %></td>
+            <td class="num"><%= r.received_qty %></td>
+            <td><%= r.received_by %></td>
+            <td class="muted">
+              <%= if r.cleared? do %>
+                <%= r.received_at %>
+              <% else %>
+                <span style="color: #c4433e; font-weight: 600;">Missing</span>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      <% end %>
+    </tbody>
+  </table>
+
+  <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 4px 0;">
+    3 · Output QC verdicts (produced lots)
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24px;">#</th>
+        <th>MO</th>
+        <th>Produced item</th>
+        <th>Lot</th>
+        <th>Verdict</th>
+        <th>QC operator</th>
+        <th>Signed</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= if @output_qc_checks == [] do %>
+        <tr class="empty-row"><td colspan="7">No output lots produced.</td></tr>
+      <% else %>
+        <%= for {r, idx} <- Enum.with_index(@output_qc_checks, 1) do %>
+          <tr>
+            <td class="num"><%= idx %></td>
+            <td class="mono"><%= r.mo_code %></td>
+            <td><%= r.item_name %></td>
+            <td class="mono"><%= r.lot_code %></td>
+            <td>
+              <span style="display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 8pt; font-weight: 600; background: <%= r.verdict_bg %>; color: <%= r.verdict_fg %>;">
+                <%= r.verdict %>
+              </span>
+            </td>
+            <td><%= r.operator %></td>
+            <td class="muted"><%= r.signed_at %></td>
+          </tr>
+        <% end %>
+      <% end %>
+    </tbody>
+  </table>
 </section>
-<% end %>
 
 <section>
   <h3 class="section-title">Sign-offs — every MO in the chain + release ceremony</h3>

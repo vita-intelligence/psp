@@ -383,6 +383,7 @@ defmodule Backend.Production.FinalReleases do
           bookings: [
             :item,
             :picked_by,
+            :received_by,
             :consumed_by,
             stock_lot: []
           ],

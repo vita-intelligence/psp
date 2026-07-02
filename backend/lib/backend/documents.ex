@@ -257,13 +257,15 @@ defmodule Backend.Documents do
 
     output_rows = Enum.map(top_output_lots, &output_lot_row(&1, company))
 
-    # Product roadmap — a chronological event log covering every lot
-    # the tree touched (raw-material goods-in through the final
-    # move to finished_quarantine). Text-only so it fits in one
-    # scannable timeline; auditors get the whole story left-to-right
-    # without pulling in phone-camera JPEGs the PDF renderer can't
-    # handle.
-    roadmap = product_roadmap(mo_chain_raw(mo), top_output_lots, company)
+    # Quality checks — three gates the batch cleared before dispatch:
+    #   1. Goods-in inspection on each raw-material lot that fed
+    #      any MO in the tree (per BRCGS § 3.5).
+    #   2. Preflight receipt sign-off on every booking (operator
+    #      confirmed qty + quality at the production-feed cell
+    #      before the run started).
+    #   3. Output QC verdict on every produced lot (sub-MO
+    #      semi-finished + top-of-tree output).
+    quality = quality_checks(mo_chain_raw(mo), top_output_lots, company)
 
     lot_code = Backend.Numbering.render(lot.id, company, "stock_lot") || "#{lot.id}"
     mo_code = Backend.Numbering.render(mo.id, company, "manufacturing_order") || "#{mo.id}"
@@ -283,7 +285,9 @@ defmodule Backend.Documents do
       expiry_at: format_date(lot.expiry_at),
       mo_chain: mo_chain,
       output_lots: output_rows,
-      roadmap: roadmap,
+      goods_in_checks: quality.goods_in,
+      preflight_checks: quality.preflight,
+      output_qc_checks: quality.output_qc,
       signoffs: bmr_signoffs(release, mo_chain)
     }
   end
@@ -428,31 +432,28 @@ defmodule Backend.Documents do
     }
   end
 
-  # Full batch roadmap — every physical event on every lot the tree
-  # touched, ordered chronologically. Text-only so it renders fast
-  # regardless of the underlying photo count / size. The event list
-  # is the primary audit trail; individual photos are still viewable
-  # from the lot detail pages in the UI.
-  defp product_roadmap(mo_chain_raw, top_output_lots, company) do
-    booked_lot_ids =
+  # Three QC gates the batch cleared. Each returns a list of rows for
+  # the template's tables. Empty lists render as "None recorded" so
+  # the auditor sees the section deliberately covered every stage.
+  defp quality_checks(mo_chain_raw, top_output_lots, company) do
+    bookings =
       Enum.flat_map(mo_chain_raw, fn mo ->
         case mo.bookings do
-          list when is_list(list) ->
-            list
-            |> Enum.map(& &1.stock_lot_id)
-            |> Enum.reject(&is_nil/1)
-
-          _ ->
-            []
+          list when is_list(list) -> list
+          _ -> []
         end
       end)
 
-    output_lot_ids = Enum.map(top_output_lots, & &1.id)
+    input_lot_ids =
+      bookings
+      |> Enum.map(& &1.stock_lot_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
-    sub_output_lot_ids =
+    all_output_lot_ids =
       case mo_chain_raw do
         [] ->
-          []
+          Enum.map(top_output_lots, & &1.id)
 
         _ ->
           uuids = Enum.map(mo_chain_raw, & &1.uuid)
@@ -466,111 +467,231 @@ defmodule Backend.Documents do
           )
       end
 
-    lot_ids =
-      (booked_lot_ids ++ output_lot_ids ++ sub_output_lot_ids)
-      |> Enum.uniq()
-
-    if lot_ids == [] do
-      []
-    else
-      Backend.Repo.all(
-        from m in Backend.Stock.Movement,
-          where: m.stock_lot_id in ^lot_ids,
-          order_by: [asc: m.occurred_at, asc: m.id],
-          preload: [
-            stock_lot: [:item],
-            actor: [],
-            from_cell: [],
-            to_cell: []
-          ]
-      )
-      |> Enum.map(&roadmap_row(&1, company))
-    end
-  end
-
-  defp roadmap_row(movement, company) do
-    lot = movement.stock_lot
-    item_name = (lot && lot.item && lot.item.name) || "—"
-
-    lot_code =
-      if lot,
-        do:
-          Backend.Numbering.render(lot.id, company, "stock_lot") || "##{lot.id}",
-        else: "—"
-
-    from_label = cell_short_label(movement.from_cell)
-    to_label = cell_short_label(movement.to_cell)
-
-    location_change =
-      cond do
-        from_label && to_label -> "#{from_label} → #{to_label}"
-        to_label -> "Placed at #{to_label}"
-        from_label -> "From #{from_label}"
-        true -> nil
-      end
-
-    tone = roadmap_kind_tone(movement.kind)
-
     %{
-      kind: movement.kind,
-      kind_label: roadmap_kind_label(movement.kind, movement.reason),
-      tone: tone,
-      dot_color: roadmap_dot_color(tone),
-      item_name: item_name,
-      lot_code: lot_code,
-      qty: format_decimal(movement.delta_qty),
-      location_change: location_change,
-      reason: movement.reason,
-      when: format_date_time(movement.occurred_at),
-      actor: actor_name(movement.actor),
-      photo_recorded?: is_binary(movement.photo_url) and movement.photo_url != ""
+      goods_in: goods_in_rows(input_lot_ids, company),
+      preflight: preflight_rows(bookings, mo_chain_raw, company),
+      output_qc: output_qc_rows(all_output_lot_ids, mo_chain_raw, company)
     }
   end
 
-  defp roadmap_dot_color("receive"), do: "#2f8bd6"
-  defp roadmap_dot_color("move"), do: "#d78d33"
-  defp roadmap_dot_color("consume"), do: "#c4433e"
-  defp roadmap_dot_color("auto"), do: "#7758c7"
-  defp roadmap_dot_color(_), do: "#888"
+  # For each raw-material lot the tree consumed, find its parent PO
+  # and the goods-in inspection that cleared the delivery.
+  defp goods_in_rows([], _company), do: []
 
-  defp cell_short_label(nil), do: nil
+  defp goods_in_rows(lot_ids, company) do
+    lots =
+      Backend.Repo.all(
+        from l in Backend.Stock.Lot,
+          where:
+            l.id in ^lot_ids and
+              l.source_kind == "purchase_order" and
+              not is_nil(l.source_ref),
+          preload: [:item],
+          select: {l, l.source_ref}
+      )
 
-  defp cell_short_label(cell) do
-    name = Map.get(cell, :name)
-    purpose = Map.get(cell, :purpose)
+    if lots == [] do
+      []
+    else
+      # PO source_ref is the rendered code (e.g. "PO00168"). Reverse
+      # to the id via Numbering.parse_search, then batch-fetch the
+      # inspections keyed by po_id.
+      po_ids =
+        lots
+        |> Enum.map(fn {_, ref} ->
+          Backend.Numbering.parse_search(ref, company, "purchase_order")
+        end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
 
-    cond do
-      is_binary(name) and name != "" and is_binary(purpose) ->
-        "#{name} · #{purpose}"
+      inspections =
+        if po_ids == [] do
+          %{}
+        else
+          Backend.Repo.all(
+            from i in Backend.GoodsIn.Inspection,
+              where: i.purchase_order_id in ^po_ids and i.status != "draft",
+              preload: [:quality_approver, :goods_in_operator],
+              order_by: [asc: i.delivery_date, asc: i.id]
+          )
+          |> Enum.group_by(& &1.purchase_order_id)
+        end
 
-      is_binary(name) and name != "" ->
-        name
+      Enum.flat_map(lots, fn {lot, source_ref} ->
+        po_id =
+          Backend.Numbering.parse_search(source_ref, company, "purchase_order")
 
-      is_binary(purpose) ->
-        purpose
+        case Map.get(inspections, po_id, []) do
+          [] ->
+            [
+              %{
+                item_name: (lot.item && lot.item.name) || "—",
+                lot_code:
+                  Backend.Numbering.render(lot.id, company, "stock_lot") ||
+                    "##{lot.id}",
+                supplier_batch: lot.supplier_batch_no || "—",
+                po_code: source_ref || "—",
+                delivery_date: "—",
+                decision: "No inspection on file",
+                decision_tone: "muted",
+                decision_bg: decision_bg("muted"),
+                decision_fg: decision_fg("muted"),
+                approver: "—",
+                signed_at: ""
+              }
+            ]
 
-      true ->
-        nil
+          inspection_list ->
+            Enum.map(inspection_list, fn ins ->
+              tone = gi_decision_tone(ins.quality_decision)
+
+              %{
+                item_name: (lot.item && lot.item.name) || "—",
+                lot_code:
+                  Backend.Numbering.render(lot.id, company, "stock_lot") ||
+                    "##{lot.id}",
+                supplier_batch: lot.supplier_batch_no || "—",
+                po_code: source_ref || "—",
+                delivery_date: format_date(ins.delivery_date),
+                decision: humanize_gi_decision(ins.quality_decision),
+                decision_tone: tone,
+                decision_bg: decision_bg(tone),
+                decision_fg: decision_fg(tone),
+                approver: actor_name(ins.quality_approver),
+                signed_at: format_date_time(ins.quality_approver_signed_at)
+              }
+            end)
+        end
+      end)
     end
   end
 
-  defp roadmap_kind_label("receive", _), do: "Goods-in receipt"
-  defp roadmap_kind_label("consume", _), do: "Consumed on run"
-  defp roadmap_kind_label("auto_route", _), do: "Auto-routed by system"
+  # Tone → chip colour. Precomputed per row so the template stays
+  # simple string-interpolation.
+  defp decision_bg("good"), do: "#dff5e3"
+  defp decision_bg("warn"), do: "#fff2d6"
+  defp decision_bg("bad"), do: "#fbe0de"
+  defp decision_bg(_), do: "#eee"
 
-  defp roadmap_kind_label("move", reason) when is_binary(reason) and reason != "" do
-    "Move · " <> reason
+  defp decision_fg("good"), do: "#1f6a2b"
+  defp decision_fg("warn"), do: "#7a5510"
+  defp decision_fg("bad"), do: "#8f2b26"
+  defp decision_fg(_), do: "#555"
+
+  defp humanize_gi_decision(nil), do: "—"
+  defp humanize_gi_decision("approved"), do: "Approved"
+  defp humanize_gi_decision("hold"), do: "Hold"
+  defp humanize_gi_decision("rejected"), do: "Rejected"
+  defp humanize_gi_decision(other) when is_binary(other), do: String.capitalize(other)
+  defp humanize_gi_decision(_), do: "—"
+
+  defp gi_decision_tone("approved"), do: "good"
+  defp gi_decision_tone("hold"), do: "warn"
+  defp gi_decision_tone("rejected"), do: "bad"
+  defp gi_decision_tone(_), do: "muted"
+
+  # Preflight receipt sign-offs per booking. Each row = "operator
+  # confirmed this ingredient at the production feed before the
+  # run started". `received_at` nil means the booking never cleared
+  # preflight (shouldn't happen for a completed MO, but surface as
+  # "Missing" if it does).
+  defp preflight_rows([], _mos, _company), do: []
+
+  defp preflight_rows(bookings, mo_chain_raw, company) do
+    mo_code_by_id =
+      Enum.into(mo_chain_raw, %{}, fn mo ->
+        {mo.id,
+         Backend.Numbering.render(mo.id, company, "manufacturing_order") ||
+           "##{mo.id}"}
+      end)
+
+    bookings
+    |> Enum.sort_by(& &1.received_at, fn a, b -> compare_dt(a, b) end)
+    |> Enum.map(fn b ->
+      %{
+        mo_code: Map.get(mo_code_by_id, b.manufacturing_order_id, "—"),
+        item_name: (b.item && b.item.name) || "—",
+        lot_code: booking_lot_code(b, company),
+        received_qty: format_decimal(b.received_qty || b.quantity),
+        received_by: actor_name(b.received_by),
+        received_at: format_date_time(b.received_at),
+        notes: b.received_notes,
+        cleared?: not is_nil(b.received_at)
+      }
+    end)
   end
 
-  defp roadmap_kind_label("move", _), do: "Physical move"
-  defp roadmap_kind_label(kind, _) when is_binary(kind), do: String.capitalize(kind)
-  defp roadmap_kind_label(_, _), do: "Event"
+  defp booking_lot_code(%{stock_lot: %{id: id}}, company) do
+    Backend.Numbering.render(id, company, "stock_lot") || "##{id}"
+  end
 
-  defp roadmap_kind_tone("receive"), do: "receive"
-  defp roadmap_kind_tone("move"), do: "move"
-  defp roadmap_kind_tone("consume"), do: "consume"
-  defp roadmap_kind_tone("auto_route"), do: "auto"
-  defp roadmap_kind_tone(_), do: "other"
+  defp booking_lot_code(_, _), do: "—"
+
+  # Fallback: booking schema might not have :received_by preloaded on
+  # every code path. Actor_name/1 handles nil.
+
+  # Nil timestamps sort last.
+  defp compare_dt(nil, nil), do: false
+  defp compare_dt(nil, _), do: false
+  defp compare_dt(_, nil), do: true
+  defp compare_dt(a, b), do: NaiveDateTime.compare(a, b) != :gt
+
+  # Output QC — walk lot lifecycle events for every produced lot in
+  # the tree, take the last `qc_passed` / `output_qc_passed` /
+  # `qc_failed`, and record the verdict + signer.
+  defp output_qc_rows([], _mos, _company), do: []
+
+  defp output_qc_rows(lot_ids, mo_chain_raw, company) do
+    mo_code_by_uuid =
+      Enum.into(mo_chain_raw, %{}, fn mo ->
+        {mo.uuid,
+         Backend.Numbering.render(mo.id, company, "manufacturing_order") ||
+           "##{mo.id}"}
+      end)
+
+    lots =
+      Backend.Repo.all(
+        from l in Backend.Stock.Lot,
+          where: l.id in ^lot_ids,
+          preload: [:item]
+      )
+
+    events =
+      Backend.Repo.all(
+        from e in Backend.Stock.LotEvent,
+          where:
+            e.stock_lot_id in ^lot_ids and
+              e.kind in ["qc_passed", "output_qc_passed", "qc_failed"],
+          order_by: [asc: e.occurred_at, asc: e.id],
+          preload: [:actor]
+      )
+      |> Enum.group_by(& &1.stock_lot_id)
+
+    Enum.map(lots, fn lot ->
+      history = Map.get(events, lot.id, [])
+      latest = List.last(history)
+
+      {verdict, tone} =
+        case latest do
+          nil -> {"Pending", "muted"}
+          %{kind: "qc_failed"} -> {"Rejected", "bad"}
+          _ -> {"Passed", "good"}
+        end
+
+      %{
+        mo_code: Map.get(mo_code_by_uuid, lot.source_ref, "—"),
+        item_name: (lot.item && lot.item.name) || "—",
+        lot_code:
+          Backend.Numbering.render(lot.id, company, "stock_lot") || "##{lot.id}",
+        verdict: verdict,
+        verdict_tone: tone,
+        verdict_bg: decision_bg(tone),
+        verdict_fg: decision_fg(tone),
+        operator: actor_name(latest && latest.actor),
+        signed_at: (latest && format_date_time(latest.occurred_at)) || ""
+      }
+    end)
+  end
 
   defp booking_row(b, company) do
     %{
