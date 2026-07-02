@@ -22,6 +22,7 @@ import {
   Paperclip,
   ShieldCheck,
   Signature,
+  Smartphone,
   Sparkles,
   Trash2,
   Upload,
@@ -39,6 +40,7 @@ import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { pushNavigateToMyDevicesAction } from "@/lib/devices/actions";
 import {
   clearSignatureAction,
   generateBmrAction,
@@ -50,6 +52,7 @@ import {
   updateReleaseNotesAction,
 } from "@/lib/production-final-release/actions";
 import {
+  FILE_KIND_HINT,
   FILE_KIND_LABEL,
   FINAL_RELEASE_FILE_KINDS,
   type FinalRelease,
@@ -592,7 +595,7 @@ function FilesCard({
           <Paperclip className="size-4" />
           Evidence files
           <span className="text-xs font-normal text-muted-foreground">
-            All four kinds required
+            All {FINAL_RELEASE_FILE_KINDS.length} kinds required
           </span>
         </CardTitle>
       </CardHeader>
@@ -617,6 +620,15 @@ function FilesCard({
 // artefacts, so those stay upload-only.
 const AUTO_GENERATABLE: readonly FinalReleaseFileKind[] = ["bmr"] as const;
 
+// Camera-first kinds — pushing operators to a paired phone to snap
+// them via /m/final-release-capture makes sense here (label proof =
+// finished pack, retention = physical sample on the shelf). CoA /
+// BMR / Micro are typically PDFs so the button doesn't render.
+const CAMERA_KINDS: readonly FinalReleaseFileKind[] = [
+  "label_proof",
+  "retain_sample",
+] as const;
+
 function FileRow({
   kind,
   release,
@@ -632,7 +644,11 @@ function FileRow({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [pushingToDevice, setPushingToDevice] = useState(false);
+  const [awaitingCapture, setAwaitingCapture] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const canGenerate = AUTO_GENERATABLE.includes(kind);
+  const canSendToDevice = CAMERA_KINDS.includes(kind);
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -685,6 +701,73 @@ function FileRow({
 
   const attached = files.length > 0;
 
+  // The desktop form doesn't know when the mobile page uploads a
+  // photo — no collab channel between the two. After Send to device,
+  // poll the by-lot endpoint every 4 s for up to 60 s; the moment
+  // the file count on this kind bumps up, refetch + clear the flag.
+  useEffect(() => {
+    if (!awaitingCapture) return;
+    const startCount = files.length;
+    let elapsed = 0;
+    pollRef.current = setInterval(async () => {
+      elapsed += 4;
+      try {
+        const res = await fetch(
+          `/api/production/final-releases/by-lot/${encodeURIComponent(release.stock_lot?.uuid ?? "")}`,
+          { cache: "no-store" },
+        );
+        if (res.ok) {
+          const data = (await res.json()) as { release: FinalRelease };
+          const nextCount = data.release.files.filter(
+            (f) => f.kind === kind,
+          ).length;
+          if (nextCount > startCount) {
+            onChanged(data.release);
+            setAwaitingCapture(false);
+            toast.success("Photo arrived from mobile.");
+            return;
+          }
+        }
+      } catch {
+        // ignore transient network blips
+      }
+      if (elapsed >= 60) {
+        setAwaitingCapture(false);
+      }
+    }, 4000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+    };
+  }, [awaitingCapture, files.length, release.stock_lot?.uuid, kind, onChanged]);
+
+  const sendToDevice = async () => {
+    setPushingToDevice(true);
+    try {
+      const path = `/m/final-release-capture/${encodeURIComponent(release.uuid)}/${encodeURIComponent(kind)}`;
+      const res = await pushNavigateToMyDevicesAction(path);
+      if (!res.ok) {
+        toast.error(res.detail ?? "Couldn't push to your paired devices.");
+        return;
+      }
+      const count = res.pushed_to.length;
+      if (count === 0) {
+        toast.warning(
+          "No paired devices — open PSP on the warehouse phone first, then try again.",
+        );
+      } else {
+        toast.success(
+          count === 1
+            ? "Camera opened on your phone."
+            : `Camera opened on ${count} paired devices.`,
+        );
+        setAwaitingCapture(true);
+      }
+    } finally {
+      setPushingToDevice(false);
+    }
+  };
+
   const generate = async () => {
     setGenerating(true);
     try {
@@ -734,7 +817,10 @@ function FileRow({
           </span>
           <div className="min-w-0">
             <p className="text-sm font-medium">{FILE_KIND_LABEL[kind]}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+              {FILE_KIND_HINT[kind]}
+            </p>
+            <p className="mt-1 text-[11px] font-medium text-muted-foreground">
               {attached
                 ? `${files.length} file${files.length === 1 ? "" : "s"} attached`
                 : "No file attached"}
@@ -776,6 +862,23 @@ function FileRow({
               <Upload className="mr-1 size-3.5" />
               {uploading ? "Uploading…" : attached ? "Replace" : "Upload"}
             </Button>
+            {canSendToDevice && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={pushingToDevice || uploading || generating}
+                onClick={() => void sendToDevice()}
+                title="Open the camera on your paired warehouse phone. When you snap the photo it attaches straight to this form."
+              >
+                <Smartphone className="mr-1 size-3.5" />
+                {pushingToDevice
+                  ? "Sending…"
+                  : awaitingCapture
+                    ? "Waiting for photo…"
+                    : "Send to device"}
+              </Button>
+            )}
           </div>
         )}
       </div>

@@ -7,20 +7,41 @@ export type FinalReleaseStatus =
   | "on_hold"
   | "rejected";
 
-export type FinalReleaseFileKind = "coa" | "bmr" | "micro" | "label_retain";
+export type FinalReleaseFileKind =
+  | "coa"
+  | "bmr"
+  | "micro"
+  | "label_proof"
+  | "retain_sample";
 
 export const FINAL_RELEASE_FILE_KINDS: FinalReleaseFileKind[] = [
   "coa",
   "bmr",
   "micro",
-  "label_retain",
+  "label_proof",
+  "retain_sample",
 ];
 
 export const FILE_KIND_LABEL: Record<FinalReleaseFileKind, string> = {
   coa: "Certificate of Analysis",
   bmr: "Batch Manufacturing Record",
   micro: "Micro / potency test report",
-  label_retain: "Label proof + retain sample photo",
+  label_proof: "Label proof",
+  retain_sample: "Retention sample photo",
+};
+
+/**
+ * Sub-caption shown under the kind label on the release form so QA
+ * knows exactly what to snap without opening a separate SOP.
+ */
+export const FILE_KIND_HINT: Record<FinalReleaseFileKind, string> = {
+  coa: "Batch's Certificate of Analysis — actives, moisture, micro, heavy metals (BRCGS 5.3.4).",
+  bmr: "Full production record — auto-generated from the MO chain if you tap Generate.",
+  micro: "Micro or potency lab report signed off by the QC lab.",
+  label_proof:
+    "Photos of a finished retail unit with the printed label clearly readable — front + back panels showing product name, batch code, expiry, allergens, ingredients (BRCGS 5.4.2).",
+  retain_sample:
+    "Photo of the physical retention sample sitting on the retention shelf with the batch code visible (BRCGS 5.7).",
 };
 
 export interface FinalReleaseActor {

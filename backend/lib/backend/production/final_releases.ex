@@ -37,7 +37,7 @@ defmodule Backend.Production.FinalReleases do
   alias Backend.Storage
 
   @perm "production.final_release"
-  @required_file_kinds ~w(coa bmr micro label_retain)
+  @required_file_kinds ~w(coa bmr micro label_proof retain_sample)
   @allowed_file_mimes ~w(application/pdf image/jpeg image/png image/webp image/heic)
   @max_file_bytes 20 * 1024 * 1024
 

@@ -11,7 +11,14 @@ defmodule Backend.Production.FinalReleaseFile do
   alias Backend.Companies.Company
   alias Backend.Production.FinalRelease
 
-  @kinds ~w(coa bmr micro label_retain)
+  # `label_proof` = one or more photos of the finished retail unit
+  # with its printed label clearly readable (front + back panels;
+  # BRCGS Issue 9 § 5.4.2). Separate from `retain_sample`, which is
+  # a photo of the physical retention sample on the retention shelf
+  # with the batch code visible (BRCGS Issue 9 § 5.7). Keeping the
+  # legacy `label_retain` in the allowed set so any historical rows
+  # keep validating; new uploads should pick one of the split kinds.
+  @kinds ~w(coa bmr micro label_proof retain_sample label_retain)
   def kinds, do: @kinds
 
   schema "production_final_release_files" do
