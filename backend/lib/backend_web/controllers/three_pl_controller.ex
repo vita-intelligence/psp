@@ -98,12 +98,77 @@ defmodule BackendWeb.ThreePLController do
   end
 
   # ---------------------------------------------------------------
+  # POST /three-pl/dispatch/:lot_uuid
+  # ---------------------------------------------------------------
+  def dispatch_lot(conn, %{"lot_uuid" => lot_uuid} = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.put(params, "lot_uuid", lot_uuid)
+
+    case ThreePL.dispatch(actor, attrs) do
+      {:ok, %{lot: lot, dispatch: dispatched}} ->
+        preloaded = preload_for_payload(lot)
+
+        json(conn, %{
+          lot: Payloads.stock_lot(preloaded),
+          dispatch: dispatch_payload(dispatched)
+        })
+
+      {:error, :forbidden} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(Errors.payload("forbidden", "You lack production.final_release.", %{}))
+
+      {:error, :lot_not_found} ->
+        not_found(conn, "Lot not found.")
+
+      {:error, :not_bailee} ->
+        unprocessable(conn, "not_bailee",
+          "Only bailee-custody lots can be dispatched this way. Own stock ships via the standard move flow.")
+
+      {:error, :bad_qty} ->
+        unprocessable(conn, "bad_qty", "qty must be a positive decimal.")
+
+      {:error, :no_bailee_placement} ->
+        unprocessable(conn, "no_bailee_placement",
+          "The lot isn't currently sitting in a three_pl_storage cell. Move it there before dispatching.")
+
+      {:error, :insufficient_qty} ->
+        unprocessable(conn, "insufficient_qty",
+          "Requested qty exceeds what's currently in bailee custody.")
+
+      {:error, :no_dispatch_cell} ->
+        unprocessable(conn, "no_dispatch_cell",
+          "This warehouse has no dispatch cell. Add one under Settings → Warehouses → Plan.")
+
+      {:error, {:missing_key, key}} ->
+        unprocessable(conn, "missing_field", "#{key} is required.")
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+
+      {:error, reason} ->
+        unprocessable(conn, "dispatch_failed", inspect(reason))
+    end
+  end
+
+  # ---------------------------------------------------------------
   # GET /three-pl/inventory
   # ---------------------------------------------------------------
   def inventory(conn, _params) do
     actor = conn.assigns.current_user
+    company = Backend.Companies.current()
     lots = ThreePL.list_bailee_lots(actor.company_id)
-    json(conn, %{items: Enum.map(lots, &bailee_lot_row/1)})
+
+    json(conn, %{
+      # Currency + rate context so the FE can render a heading like
+      # "GBP 1.50/m³/day" without a second /company hit.
+      rate: %{
+        amount: decimal_to_string(company.three_pl_rate_per_m3_per_day),
+        currency: company.currency_code
+      },
+      items:
+        Enum.map(lots, &bailee_lot_row(&1, company.three_pl_rate_per_m3_per_day))
+    })
   end
 
   # ---------------------------------------------------------------
@@ -148,13 +213,38 @@ defmodule BackendWeb.ThreePLController do
 
   defp resolve_route_opts(_company_id, _params), do: {:ok, []}
 
-  defp bailee_lot_row(%Lot{} = l) do
+  defp dispatch_payload(%Backend.ThreePL.Dispatch{} = d) do
+    %{
+      uuid: d.uuid,
+      qty: Decimal.to_string(d.qty),
+      reference: d.reference,
+      notes: d.notes,
+      photo_url: d.photo_url,
+      dispatched_at: d.dispatched_at,
+      dispatched_by:
+        case d.dispatched_by do
+          %Backend.Accounts.User{} = u ->
+            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+          _ ->
+            nil
+        end
+    }
+  end
+
+  defp bailee_lot_row(%Lot{} = l, rate) do
     volume_m3 = ThreePL.lot_stored_volume_m3(l)
+    charge = if is_nil(rate), do: nil, else: ThreePL.accrued_charge(l, rate)
 
     %{
       lot: Payloads.stock_lot(l),
       stored_volume_m3: Decimal.to_string(Decimal.round(volume_m3, 4)),
-      days_held: days_since(l.bailee_routed_at)
+      days_held: days_since(l.bailee_routed_at),
+      accrued_amount:
+        case charge do
+          nil -> nil
+          %Decimal{} = d -> Decimal.to_string(Decimal.round(d, 2))
+        end
     }
   end
 
@@ -164,6 +254,9 @@ defmodule BackendWeb.ThreePLController do
     diff = DateTime.diff(DateTime.utc_now(), dt, :second)
     max(div(diff, 86_400), 0)
   end
+
+  defp decimal_to_string(nil), do: nil
+  defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d, :normal)
 
   defp get_lot(company_id, lot_uuid) when is_binary(lot_uuid) do
     case Repo.get_by(Lot, uuid: lot_uuid) do

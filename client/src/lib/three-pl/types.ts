@@ -12,12 +12,24 @@ export interface ThreePLInventoryRow {
    *  matches the wizard's capacity math. */
   stored_volume_m3: string;
   /** Whole days since `bailee_routed_at`. Used by the 3PL tab as a
-   *  quick eyeball of dwell time; the exact accrual will be computed
-   *  from the rate + this timestamp in Phase 2. */
+   *  quick eyeball of dwell time + as the multiplier for
+   *  `accrued_amount`. */
   days_held: number;
+  /** Running storage charge, decimal string, expressed in the company
+   *  base currency. Null when no rate is configured (settings card
+   *  empty). Rate lookup happens once per /inventory request; the
+   *  per-lot value is `days_held × stored_volume_m³ × rate`. */
+  accrued_amount: string | null;
 }
 
 export interface ThreePLInventoryResponse {
+  /** Rate + currency active at fetch time. `amount` is null when the
+   *  operator hasn't set a rate yet — the tab renders "no rate
+   *  configured" instead of £0.00 rollups. */
+  rate: {
+    amount: string | null;
+    currency: string;
+  };
   items: ThreePLInventoryRow[];
 }
 
@@ -27,4 +39,26 @@ export interface ThreePLCapacityResponse {
     three_pl_storage: string;
     dispatch: string;
   };
+}
+
+export interface ThreePLDispatchRow {
+  uuid: string;
+  qty: string;
+  reference: string | null;
+  notes: string | null;
+  photo_url: string | null;
+  dispatched_at: string;
+  dispatched_by: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+}
+
+export interface DispatchLotInput {
+  qty: string;
+  reference?: string | null;
+  notes?: string | null;
+  photo_url?: string | null;
 }

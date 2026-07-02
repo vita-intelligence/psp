@@ -34,7 +34,9 @@ defmodule Backend.ThreePL do
   alias Backend.Production.ManufacturingOrder
   alias Backend.RBAC
   alias Backend.Repo
+  alias Backend.Stock
   alias Backend.Stock.{Lifecycle, Lot, LotEvent, Placement}
+  alias Backend.ThreePL.Dispatch
   alias Backend.Warehouses.StorageCell
 
   # Same capability as Positive Release — routing the released lot is
@@ -134,6 +136,101 @@ defmodule Backend.ThreePL do
   end
 
   # =====================================================================
+  # Outbound dispatch (partial-lot)
+  # =====================================================================
+
+  @doc """
+  Send `qty` of a bailee lot out the door. Enforces:
+
+    * actor holds `production.final_release`
+    * lot is `ownership_kind = "bailee"` (own stock ships via the
+      standard move flow, not this partial-lot procedure)
+    * `qty > 0` AND `qty <= source placement qty` in the lot's
+      current `three_pl_storage` cell
+    * warehouse has at least one `dispatch` cell to receive the qty
+
+  Records:
+    * a `three_pl_dispatches` row with qty + evidence (photo, optional
+      reference / notes) + actor + timestamp — the audit trail we can
+      show a customer or auditor asking "when did I get X"
+    * a `Backend.Stock.Movement` from the three_pl_storage cell to the
+      target dispatch cell for the same qty. The move + the audit row
+      commit or roll back as one.
+
+  `attrs`:
+
+      %{
+        "lot_uuid" => "<uuid>",
+        "qty" => decimal-parseable,
+        "reference" => nil | binary,  # carrier waybill, customer PO ref
+        "notes" => nil | binary,
+        "photo_url" => nil | binary   # evidence link (required in the FE)
+      }
+
+  Returns `{:ok, %{dispatch: dispatch, lot: lot}}` on success or
+  `{:error, reason}` where reason is one of `:forbidden`,
+  `:not_bailee`, `:bad_qty`, `:no_bailee_placement`,
+  `:insufficient_qty`, `:no_dispatch_cell`, or an
+  `%Ecto.Changeset{}` / raw context error tuple.
+  """
+  def dispatch(%User{} = actor, attrs) when is_map(attrs) do
+    with :ok <- ensure_permission(actor),
+         {:ok, lot_uuid} <- fetch_key(attrs, "lot_uuid"),
+         {:ok, lot} <- fetch_bailee_lot(actor.company_id, lot_uuid),
+         {:ok, qty} <- parse_qty(Map.get(attrs, "qty")),
+         {:ok, from_placement} <- find_bailee_placement(lot),
+         :ok <- ensure_qty_available(from_placement, qty),
+         {:ok, to_cell} <- find_dispatch_cell(from_placement) do
+      Repo.transaction(fn ->
+        move_attrs = %{
+          "to_cell_uuid" => to_cell.uuid,
+          "from_cell_uuid" => from_placement.storage_cell.uuid,
+          "qty" => Decimal.to_string(qty),
+          "photo_url" => Map.get(attrs, "photo_url"),
+          "reason" => "3PL dispatch"
+        }
+
+        case Stock.move_placement(actor, lot.uuid, move_attrs) do
+          {:ok, _} ->
+            row_attrs = %{
+              company_id: actor.company_id,
+              stock_lot_id: lot.id,
+              qty: qty,
+              reference: Map.get(attrs, "reference"),
+              notes: Map.get(attrs, "notes"),
+              photo_url: Map.get(attrs, "photo_url"),
+              dispatched_by_id: actor.id,
+              dispatched_at: DateTime.utc_now() |> DateTime.truncate(:second)
+            }
+
+            case %Dispatch{} |> Dispatch.changeset(row_attrs) |> Repo.insert() do
+              {:ok, row} -> %{dispatch: row, lot: Repo.reload!(lot)}
+              {:error, cs} -> Repo.rollback(cs)
+            end
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Every dispatch on `lot`, newest first. Used by the 3PL tab's lot
+  drawer + downstream reporting.
+  """
+  def list_dispatches(%Lot{id: lot_id}) do
+    import Ecto.Query
+
+    from(d in Dispatch,
+      where: d.stock_lot_id == ^lot_id,
+      order_by: [desc: d.dispatched_at, desc: d.id],
+      preload: [:dispatched_by]
+    )
+    |> Repo.all()
+  end
+
+  # =====================================================================
   # Capacity math
   # =====================================================================
 
@@ -181,6 +278,35 @@ defmodule Backend.ThreePL do
   # =====================================================================
 
   @doc """
+  Charge accrued so far on `lot` at `rate` (currency-agnostic decimal
+  in company base currency, per m³ per day). Returns `Decimal.new(0)`
+  when the rate is nil, when the lot has no routing timestamp, or
+  when dimensions are missing (any of the three breaks the formula).
+  """
+  def accrued_charge(%Lot{} = lot, rate)
+      when not is_nil(rate) do
+    routed_at = lot.bailee_routed_at
+
+    days =
+      case routed_at do
+        %DateTime{} ->
+          seconds = DateTime.diff(DateTime.utc_now(), routed_at, :second)
+          max(div(seconds, 86_400), 0)
+
+        _ ->
+          0
+      end
+
+    volume = lot_stored_volume_m3(lot)
+
+    Decimal.new(days)
+    |> Decimal.mult(volume)
+    |> Decimal.mult(rate)
+  end
+
+  def accrued_charge(_lot, _rate), do: Decimal.new(0)
+
+  @doc """
   Lots currently held under bailee custody for company `company_id`.
   Returns lots preloaded for the 3PL tab: bailee customer, item,
   placements → cell → location → floor → warehouse. Terminal-status
@@ -218,6 +344,96 @@ defmodule Backend.ThreePL do
 
   defp ensure_permission(actor) do
     if RBAC.has_permission?(actor, @perm), do: :ok, else: {:error, :forbidden}
+  end
+
+  defp fetch_key(attrs, key) do
+    case Map.get(attrs, key) do
+      v when is_binary(v) and v != "" -> {:ok, v}
+      _ -> {:error, {:missing_key, key}}
+    end
+  end
+
+  defp fetch_bailee_lot(company_id, lot_uuid) do
+    case Repo.get_by(Lot, uuid: lot_uuid) do
+      %Lot{company_id: ^company_id, ownership_kind: "bailee"} = lot ->
+        {:ok,
+         Repo.preload(lot,
+           placements: [storage_cell: [storage_location: [:floor]]]
+         )}
+
+      %Lot{} ->
+        {:error, :not_bailee}
+
+      _ ->
+        {:error, :lot_not_found}
+    end
+  end
+
+  defp parse_qty(nil), do: {:error, :bad_qty}
+  defp parse_qty(%Decimal{} = d), do: check_positive(d)
+
+  defp parse_qty(v) when is_binary(v) do
+    case Decimal.new(v) do
+      %Decimal{} = d -> check_positive(d)
+    end
+  rescue
+    _ -> {:error, :bad_qty}
+  end
+
+  defp parse_qty(v) when is_integer(v) or is_float(v),
+    do: check_positive(Decimal.new("#{v}"))
+
+  defp parse_qty(_), do: {:error, :bad_qty}
+
+  defp check_positive(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new(0)) == :gt, do: {:ok, d}, else: {:error, :bad_qty}
+  end
+
+  defp find_bailee_placement(%Lot{placements: placements}) do
+    match =
+      Enum.find(placements, fn p ->
+        p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt and
+          p.storage_cell &&
+          p.storage_cell.purpose == "three_pl_storage"
+      end)
+
+    case match do
+      %Placement{} = p -> {:ok, p}
+      _ -> {:error, :no_bailee_placement}
+    end
+  end
+
+  defp ensure_qty_available(%Placement{qty: available}, qty) do
+    if Decimal.compare(available, qty) == :lt do
+      {:error, :insufficient_qty}
+    else
+      :ok
+    end
+  end
+
+  # Pick any dispatch cell in the same warehouse as the source
+  # placement. The mobile move flow does per-cell fit ranking; here
+  # we just need SOME dispatch cell to hand off to. If none exists,
+  # dispatch fails so the operator adds one before continuing.
+  defp find_dispatch_cell(%Placement{storage_cell: cell}) do
+    warehouse_id =
+      cell.storage_location.floor && cell.storage_location.floor.warehouse_id
+
+    row =
+      from(c in StorageCell,
+        join: loc in assoc(c, :storage_location),
+        where:
+          loc.warehouse_id == ^warehouse_id and
+            c.purpose == "dispatch",
+        preload: [storage_location: [:floor]],
+        limit: 1
+      )
+      |> Repo.one()
+
+    case row do
+      %StorageCell{} = r -> {:ok, r}
+      nil -> {:error, :no_dispatch_cell}
+    end
   end
 
   defp ensure_available(%Lot{status: "available"}), do: :ok

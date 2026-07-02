@@ -9,10 +9,18 @@ import {
   type ErrorResult,
 } from "../errors/server";
 import type { StockLot } from "../types";
-import type { RoutingChoice } from "./types";
+import type {
+  DispatchLotInput,
+  RoutingChoice,
+  ThreePLDispatchRow,
+} from "./types";
 
 export type RouteLotResult =
   | { ok: true; lot: StockLot }
+  | (ErrorResult & { ok: false });
+
+export type DispatchLotResult =
+  | { ok: true; lot: StockLot; dispatch: ThreePLDispatchRow }
   | (ErrorResult & { ok: false });
 
 function unauthorized(source: string): ErrorResult {
@@ -63,6 +71,41 @@ export async function routeLotAction(
     return toErrorResult(err, {
       source: "routeLotAction",
       fallbackDetail: "Couldn't record the routing decision.",
+    });
+  }
+}
+
+/**
+ * Partial-lot outbound dispatch on a bailee lot. Records the qty +
+ * evidence (photo + optional reference / notes), moves the qty from
+ * the three_pl_storage cell to a dispatch cell in the same warehouse,
+ * and returns the refreshed lot + the dispatch audit row. Backend
+ * validates that the lot is bailee-owned, qty > 0 and fits, and that
+ * the warehouse has at least one dispatch cell configured.
+ */
+export async function dispatchLotAction(
+  lotUuid: string,
+  input: DispatchLotInput,
+): Promise<DispatchLotResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorized("dispatchLotAction");
+
+  try {
+    const res = await api<{ lot: StockLot; dispatch: ThreePLDispatchRow }>(
+      `/api/three-pl/dispatch/${encodeURIComponent(lotUuid)}`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify(input),
+      },
+    );
+    revalidatePath("/three-pl");
+    revalidatePath(`/stock/lots/${lotUuid}`);
+    return { ok: true, lot: res.lot, dispatch: res.dispatch };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "dispatchLotAction",
+      fallbackDetail: "Couldn't record the dispatch.",
     });
   }
 }
