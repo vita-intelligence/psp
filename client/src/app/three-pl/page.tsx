@@ -1,0 +1,58 @@
+import { redirect } from "next/navigation";
+import { Package } from "lucide-react";
+import { requireUser } from "@/lib/auth/server";
+import { hasPermission } from "@/lib/rbac";
+import { TopBar } from "@/components/layout/top-bar";
+import { PresenceMount } from "@/components/realtime/presence-mount";
+import { getCompanyDefaults } from "@/lib/company/server";
+import { getThreePLInventory } from "@/lib/three-pl/server";
+import { ThreePLInventoryTable } from "./inventory-table";
+
+export const metadata = { title: "3PL storage · PSP" };
+export const dynamic = "force-dynamic";
+
+export default async function ThreePLInventoryPage() {
+  const user = await requireUser();
+  if (!hasPermission(user, "production.final_release")) {
+    redirect("/settings/profile");
+  }
+
+  const [inventory, defaults] = await Promise.all([
+    getThreePLInventory(),
+    getCompanyDefaults(),
+  ]);
+
+  const items = inventory?.items ?? [];
+
+  return (
+    <div className="flex flex-1 flex-col">
+      <TopBar user={user} />
+      <PresenceMount />
+
+      <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
+        <div className="mx-auto max-w-7xl space-y-6">
+          <header className="space-y-1.5">
+            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
+              <Package className="size-7 text-brand sm:size-8" />
+              3PL storage
+            </h1>
+            <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+              Customer-owned finished goods held under bailee custody after
+              Positive Release (BRCGS Issue 9 § 5.6 + § 4.4 segregation).
+              Storage billing is per m³ per day from the routing timestamp
+              until dispatch — the rate lives on {" "}
+              <span className="whitespace-nowrap">
+                Settings → Company
+              </span>{" "}
+              (Phase 2, wiring next). Physical goods sit in cells with
+              purpose `three_pl_storage`, physically segregated from our own
+              stock.
+            </p>
+          </header>
+
+          <ThreePLInventoryTable items={items} companyDefaults={defaults} />
+        </div>
+      </main>
+    </div>
+  );
+}

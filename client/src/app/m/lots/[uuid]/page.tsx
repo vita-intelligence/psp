@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
   AlertTriangle,
+  Boxes,
   Building2,
   Calendar,
   CheckCircle2,
@@ -79,6 +80,27 @@ export default async function MobileLotPage({ params }: Props) {
       </header>
 
       <main className="flex-1 space-y-4 px-4 py-4">
+        {lot.ownership_kind === "bailee" && (
+          <section className="rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <Boxes className="mt-0.5 size-4 shrink-0 text-violet-700 dark:text-violet-300" />
+              <div className="min-w-0 space-y-0.5">
+                <p className="text-xs font-semibold text-violet-900 dark:text-violet-100">
+                  Bailee custody
+                </p>
+                <p className="text-[11px] text-violet-800/90 dark:text-violet-200/90">
+                  Customer-owned — held for{" "}
+                  <span className="font-medium">
+                    {lot.bailee_customer?.name ?? "customer"}
+                  </span>
+                  . Physical goods must sit in a 3PL storage cell, segregated
+                  from our own stock. Storage charges accrue per m³ per day.
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Headline: current qty + where it lives right now. */}
         <section className="rounded-lg border border-border/60 bg-card p-4">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">

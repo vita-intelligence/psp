@@ -45,7 +45,8 @@ defmodule Backend.OrderWizard do
   alias Backend.Stock.Lot
 
   @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
-           :in_production, :closeout, :final_release, :ready_to_dispatch]
+           :in_production, :closeout, :final_release, :awaiting_routing,
+           :ready_to_dispatch]
   @total_phases length(@phases)
 
   @doc """
@@ -278,6 +279,16 @@ defmodule Backend.OrderWizard do
       Enum.any?(mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0)) ->
         :final_release
 
+      # Released lots now sit in finished_quarantine waiting for the
+      # operator to answer "3PL storage or direct shipment?" per lot.
+      # Records the answer as a lifecycle event on the lot + flips
+      # ownership_kind to bailee when the choice is 3PL (customer
+      # takes ownership, we hold as bailee — BRCGS § 4.4 segregation +
+      # § 5.6 handoff). Until every released lot has been routed the
+      # order can't advance to ready-to-dispatch.
+      Enum.any?(mos, &(Map.get(&1, :output_needs_routing_count, 0) > 0)) ->
+        :awaiting_routing
+
       true ->
         :ready_to_dispatch
     end
@@ -302,6 +313,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:in_production), do: "In production"
   defp phase_label(:closeout), do: "Closeout"
   defp phase_label(:final_release), do: "Release"
+  defp phase_label(:awaiting_routing), do: "Routing"
   defp phase_label(:ready_to_dispatch), do: "Ready to dispatch"
   defp phase_label(:cancelled), do: "Cancelled"
 
@@ -1215,6 +1227,64 @@ defmodule Backend.OrderWizard do
   defp plural_s(1), do: ""
   defp plural_s(_), do: "s"
 
+  defp next_action_for(:awaiting_routing, co, _line_states, mos, _signers) do
+    routing_mos =
+      Enum.filter(mos, &(Map.get(&1, :output_needs_routing_count, 0) > 0))
+
+    lot_count =
+      Enum.reduce(routing_mos, 0, fn mo, acc ->
+        acc + Map.get(mo, :output_needs_routing_count, 0)
+      end)
+
+    target = List.first(routing_mos)
+
+    target_lot_uuid =
+      case target && Map.get(target, :output_needs_routing_lot_uuids, []) do
+        [uuid | _] when is_binary(uuid) -> uuid
+        _ -> nil
+      end
+
+    href =
+      if target_lot_uuid,
+        do: "/production/final-releases/#{target_lot_uuid}",
+        else: "/customer-orders/#{co.uuid}"
+
+    %{
+      code: "route_released_lots",
+      title:
+        "Route #{lot_count} released lot#{plural_s(lot_count)}: 3PL storage or direct shipment.",
+      detail:
+        "QA cleared these for handoff — pick the next stop per lot. 3PL storage flips ownership to the customer (we hold as bailee, m³-per-day rate accrues from the routing timestamp). Direct shipment moves the lot to a dispatch cell for pickup. Capacity is checked before we accept the choice; you'll see the free m³ for each purpose inline.",
+      primary_cta: %{
+        label: "Open routing step",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas:
+        routing_mos
+        |> Enum.drop(1)
+        |> Enum.map(fn mo ->
+          lot_uuid =
+            case Map.get(mo, :output_needs_routing_lot_uuids, []) do
+              [u | _] when is_binary(u) -> u
+              _ -> nil
+            end
+
+          %{
+            label: "MO #{mo.code} — route lots",
+            kind: "link",
+            href:
+              if(lot_uuid,
+                do: "/production/final-releases/#{lot_uuid}",
+                else: "/customer-orders/#{co.uuid}"
+              ),
+            description:
+              "Choose 3PL or ship for the released output lot#{plural_s(Map.get(mo, :output_needs_routing_count, 0))}."
+          }
+        end)
+    }
+  end
+
   defp next_action_for(:ready_to_dispatch, co, _, _, _) do
     %{
       code: "ready_to_dispatch",
@@ -1431,6 +1501,16 @@ defmodule Backend.OrderWizard do
     output_release_ready_lot_uuids =
       Enum.map(release_ready_lots, & &1.uuid)
 
+    # Positively-released outputs that still owe a 3PL vs shipment
+    # routing decision. Feeds the awaiting_routing phase + wizard CTA.
+    needs_routing_lots =
+      Enum.filter(output_lots, &Map.get(&1, :needs_routing?, false))
+
+    output_needs_routing_count = length(needs_routing_lots)
+
+    output_needs_routing_lot_uuids =
+      Enum.map(needs_routing_lots, & &1.uuid)
+
     # Same rationale as `under_booked` above — a `completed` or
     # `cancelled` MO can't be acted on procurement-side, so any
     # leftover placeholder bookings are noise. The wizard would
@@ -1489,6 +1569,8 @@ defmodule Backend.OrderWizard do
       output_release_move_needed_count: output_release_move_needed_count,
       output_release_move_needed_lot_uuids: output_release_move_needed_lot_uuids,
       output_release_ready_count: output_release_ready_count,
+      output_needs_routing_count: output_needs_routing_count,
+      output_needs_routing_lot_uuids: output_needs_routing_lot_uuids,
       output_release_ready_lot_uuids: output_release_ready_lot_uuids,
       bookings_closeout_pending_count: bookings_closeout_pending_count,
       has_output_at_production_feed?:
@@ -1860,13 +1942,50 @@ defmodule Backend.OrderWizard do
         |> MapSet.new()
       end
 
+    # Successfully-released subset — narrower than
+    # released_or_finalized_ids because on_hold / rejected lots don't
+    # need routing. Only positively-released lots owe a 3PL vs
+    # shipment routing decision.
+    released_ok_ids =
+      if lot_ids == [] do
+        MapSet.new()
+      else
+        from(r in Backend.Production.FinalRelease,
+          where:
+            r.stock_lot_id in ^lot_ids and
+              r.status == "released",
+          select: r.stock_lot_id
+        )
+        |> Repo.all()
+        |> MapSet.new()
+      end
+
+    # Lots that already have a routing decision on the timeline —
+    # either routed_to_3pl or routed_to_shipment. No routing owed.
+    routed_ids =
+      if lot_ids == [] do
+        MapSet.new()
+      else
+        from(e in Backend.Stock.LotEvent,
+          where:
+            e.stock_lot_id in ^lot_ids and
+              e.kind in ["routed_to_3pl", "routed_to_shipment"],
+          select: e.stock_lot_id,
+          distinct: true
+        )
+        |> Repo.all()
+        |> MapSet.new()
+      end
+
     Enum.map(
       lots,
       &lot_with_placement(
         &1,
         committed_ids,
         downstream_reserved_ids,
-        released_or_finalized_ids
+        released_or_finalized_ids,
+        released_ok_ids,
+        routed_ids
       )
     )
   end
@@ -1875,7 +1994,9 @@ defmodule Backend.OrderWizard do
          %Lot{} = lot,
          committed_ids \\ MapSet.new(),
          downstream_reserved_ids \\ MapSet.new(),
-         released_or_finalized_ids \\ MapSet.new()
+         released_or_finalized_ids \\ MapSet.new(),
+         released_ok_ids \\ MapSet.new(),
+         routed_ids \\ MapSet.new()
        ) do
     # "At production side" = anywhere the warehouse picker can fetch
     # the lot from on return-pickup. Matches the queue-side rule in
@@ -1939,16 +2060,30 @@ defmodule Backend.OrderWizard do
           end)
       end
 
+    # `needs_routing?` = positively-released lot that hasn't yet been
+    # answered "3PL storage or direct shipment?". Guards against
+    # already-routed lots (routed_ids) + downstream-consumed lots
+    # (their routing rides the parent).
+    released_ok? = MapSet.member?(released_ok_ids, lot.id)
+    already_routed? = MapSet.member?(routed_ids, lot.id)
+
+    needs_routing? =
+      released_ok? and
+        not already_routed? and
+        not MapSet.member?(downstream_reserved_ids, lot.id)
+
     %{
       id: lot.id,
       uuid: lot.uuid,
       supplier_batch_no: lot.supplier_batch_no,
       status: lot.status,
       qty_received: lot.qty_received,
+      ownership_kind: lot.ownership_kind,
       placements: lot.placements,
       at_production_feed?: physically_at_feed? and not committed?,
       needs_release?: needs_release?,
-      in_finished_quarantine?: in_finished_quarantine?
+      in_finished_quarantine?: in_finished_quarantine?,
+      needs_routing?: needs_routing?
     }
   end
 
@@ -1964,7 +2099,12 @@ defmodule Backend.OrderWizard do
       supplier_batch_no: lot_state.supplier_batch_no,
       status: lot_state.status,
       qty: lot_state.qty_received,
-      at_production_feed?: lot_state.at_production_feed?
+      at_production_feed?: lot_state.at_production_feed?,
+      # 3PL routing follow-up flags. `needs_routing?` drives the
+      # wizard's awaiting_routing CTA; `ownership_kind` tells the FE
+      # to render the bailee custody chip once the choice has been made.
+      needs_routing?: Map.get(lot_state, :needs_routing?, false),
+      ownership_kind: Map.get(lot_state, :ownership_kind, "own")
     }
   end
 

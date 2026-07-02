@@ -134,6 +134,7 @@ defmodule Backend.Production.FinalReleases do
           :files,
           stock_lot: [
             :item,
+            :bailee_customer,
             placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
           ]
         ],
@@ -791,7 +792,11 @@ defmodule Backend.Production.FinalReleases do
       :approver,
       :finalized_by,
       :files,
-      stock_lot: [:item, placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]]
+      stock_lot: [
+        :item,
+        :bailee_customer,
+        placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+      ]
     ])
   end
 

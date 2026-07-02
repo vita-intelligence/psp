@@ -14,8 +14,10 @@ import { toast } from "sonner";
 import {
   AlertTriangle,
   ArrowLeft,
+  Boxes,
   CheckCircle2,
   FileText,
+  Loader2,
   Lock,
   LockKeyhole,
   Pause,
@@ -25,6 +27,7 @@ import {
   Smartphone,
   Sparkles,
   Trash2,
+  Truck,
   Upload,
   XCircle,
 } from "lucide-react";
@@ -59,6 +62,8 @@ import {
   type FinalReleaseFileKind,
   type FinalReleaseFileRow,
 } from "@/lib/production-final-release/types";
+import { routeLotAction } from "@/lib/three-pl/actions";
+import type { ThreePLCapacityResponse } from "@/lib/three-pl/types";
 
 interface Props {
   initialRelease: FinalRelease;
@@ -244,6 +249,20 @@ export function FinalReleaseForm({
       <LotInfoCard release={release} />
 
       {finalized && <FinalisedBanner release={release} />}
+
+      {release.status === "released" && (
+        <RoutingCard
+          release={release}
+          canRoute={canRelease}
+          onRouted={(next) => {
+            setRelease(next);
+            broadcastCommit({
+              kind: "release-updated",
+              status: next.status,
+            });
+          }}
+        />
+      )}
 
       {/* Placement check — if the lot slipped out of finished_quarantine
           AFTER the form opened (rare but possible during long-running
@@ -1399,5 +1418,244 @@ function JoinErrorCard({ error }: { error: JoinError }) {
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------- Routing (3PL vs shipment) ----------------
+
+function RoutingCard({
+  release,
+  canRoute,
+  onRouted,
+}: {
+  release: FinalRelease;
+  canRoute: boolean;
+  onRouted: (next: FinalRelease) => void;
+}) {
+  const lot = release.stock_lot;
+  const alreadyRouted =
+    !!lot && (lot.ownership_kind === "bailee" || lot.routing_choice !== null);
+
+  const warehouseUuid = lot?.placement?.warehouse?.uuid ?? null;
+
+  const [capacity, setCapacity] = useState<
+    ThreePLCapacityResponse["free_m3"] | null
+  >(null);
+  const [choice, setChoice] = useState<"three_pl" | "shipment" | null>(null);
+  const [pending, setPending] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [noCustomer, setNoCustomer] = useState(false);
+
+  useEffect(() => {
+    if (alreadyRouted || !warehouseUuid) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/three-pl/capacity/${encodeURIComponent(warehouseUuid)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as ThreePLCapacityResponse;
+        if (!cancelled) setCapacity(data.free_m3);
+      } catch {
+        // Non-blocking: capacity chips just render "—" if the fetch fails.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [alreadyRouted, warehouseUuid]);
+
+  if (alreadyRouted && lot) {
+    return (
+      <Card className="border-violet-500/40 bg-violet-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <CheckCircle2 className="size-4 text-violet-600" />
+            Routing decided
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1 text-xs">
+          {lot.ownership_kind === "bailee" ? (
+            <>
+              <p className="font-medium">
+                Routed to 3PL storage — held as bailee for{" "}
+                <span className="font-semibold">
+                  {lot.bailee_customer?.name ?? "customer"}
+                </span>
+                .
+              </p>
+              <p className="text-muted-foreground">
+                Storage charges accrue from{" "}
+                {lot.bailee_routed_at
+                  ? new Date(lot.bailee_routed_at).toLocaleString()
+                  : "—"}
+                . The warehouse team will move the lot into a
+                three_pl_storage cell via mobile put-away.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium">Routed for direct shipment.</p>
+              <p className="text-muted-foreground">
+                The warehouse team will move the lot into a dispatch cell via
+                mobile put-away.
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const submit = async () => {
+    if (!choice || !lot) return;
+    setPending(true);
+    setErrorDetail(null);
+    try {
+      const res = await routeLotAction(lot.uuid, choice);
+      if (!res.ok) {
+        if (res.code === "no_customer_for_lot") {
+          setNoCustomer(true);
+          setErrorDetail(res.detail);
+          return;
+        }
+        setErrorDetail(res.detail);
+        return;
+      }
+      try {
+        const r = await fetch(
+          `/api/production/final-releases/by-lot/${encodeURIComponent(lot.uuid)}`,
+          { cache: "no-store" },
+        );
+        if (r.ok) {
+          const data = (await r.json()) as { release: FinalRelease };
+          onRouted(data.release);
+          toast.success(
+            choice === "three_pl"
+              ? "Lot routed to 3PL storage."
+              : "Lot routed for direct shipment.",
+          );
+        }
+      } catch {
+        // Fine — parent will re-fetch on next collab commit.
+      }
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Route the released lot</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Positive Release cleared this batch. Pick where the lot goes next.
+          Warehouse will physically move it via mobile put-away once you
+          confirm; the choice is recorded as an audit-trailed lifecycle
+          event.
+        </p>
+
+        {errorDetail && <ErrorBanner detail={errorDetail} />}
+
+        <div className="grid gap-2 md:grid-cols-2">
+          <RoutingChoiceCard
+            label="3PL storage"
+            icon={<Boxes className="size-4" />}
+            description="Customer takes ownership. We hold as bailee; storage rate accrues per m³ per day."
+            capacityM3={capacity?.three_pl_storage ?? null}
+            selected={choice === "three_pl"}
+            disabled={!canRoute || pending || noCustomer}
+            onClick={() => setChoice("three_pl")}
+          />
+          <RoutingChoiceCard
+            label="Direct shipment"
+            icon={<Truck className="size-4" />}
+            description="Whole lot moves to a dispatch cell for outgoing pickup. No storage charge."
+            capacityM3={capacity?.dispatch ?? null}
+            selected={choice === "shipment"}
+            disabled={!canRoute || pending}
+            onClick={() => setChoice("shipment")}
+          />
+        </div>
+
+        {noCustomer && (
+          <p className="text-[11px] text-amber-700 dark:text-amber-300">
+            No customer order linked to this lot — 3PL routing needs a
+            customer to bill. Use direct shipment, or attach the lot to a
+            customer order first.
+          </p>
+        )}
+
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            disabled={!canRoute || !choice || pending}
+            onClick={() => void submit()}
+          >
+            {pending ? (
+              <>
+                <Loader2 className="mr-1 size-3.5 animate-spin" />
+                Recording…
+              </>
+            ) : (
+              "Confirm routing"
+            )}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RoutingChoiceCard({
+  label,
+  icon,
+  description,
+  capacityM3,
+  selected,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  description: string;
+  capacityM3: string | null;
+  selected: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const capacityLabel =
+    capacityM3 !== null
+      ? `${Number(capacityM3).toFixed(2)} m³ free`
+      : "capacity —";
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors",
+        selected
+          ? "border-primary bg-primary/5"
+          : "border-border/60 hover:border-border",
+        disabled && "cursor-not-allowed opacity-60",
+      )}
+    >
+      <div className="flex w-full items-center justify-between text-xs font-semibold">
+        <span className="inline-flex items-center gap-1.5">
+          {icon}
+          {label}
+        </span>
+        <span className="rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+          {capacityLabel}
+        </span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">{description}</p>
+    </button>
   );
 }

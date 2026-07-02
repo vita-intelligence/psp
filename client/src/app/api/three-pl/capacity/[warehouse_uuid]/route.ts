@@ -4,11 +4,11 @@ import { getSessionToken } from "@/lib/auth/server";
 import { toJsonError } from "@/lib/errors/server";
 
 interface Ctx {
-  params: Promise<{ warehouse_id: string }>;
+  params: Promise<{ warehouse_uuid: string }>;
 }
 
 export async function GET(_req: Request, { params }: Ctx) {
-  const { warehouse_id: warehouseId } = await params;
+  const { warehouse_uuid: warehouseUuid } = await params;
   const token = await getSessionToken();
   if (!token) {
     return NextResponse.json(
@@ -19,7 +19,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 
   try {
     const data = await api(
-      `/api/three-pl/capacity/${encodeURIComponent(warehouseId)}`,
+      `/api/three-pl/capacity/${encodeURIComponent(warehouseUuid)}`,
       { token },
     );
     return NextResponse.json(data);

@@ -22,7 +22,7 @@ export interface ThreePLInventoryResponse {
 }
 
 export interface ThreePLCapacityResponse {
-  warehouse_id: number;
+  warehouse_uuid: string;
   free_m3: {
     three_pl_storage: string;
     dispatch: string;

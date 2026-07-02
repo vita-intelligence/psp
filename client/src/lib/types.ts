@@ -2677,6 +2677,7 @@ export type OrderWizardPhaseKey =
   | "in_production"
   | "closeout"
   | "final_release"
+  | "awaiting_routing"
   | "ready_to_dispatch"
   | "cancelled";
 
@@ -2764,6 +2765,14 @@ export interface OrderWizardMoOutputLot {
   status: string;
   qty: string;
   at_production_feed: boolean;
+  /** Positively-released lot that still owes a 3PL vs shipment
+   *  routing answer. When true, the wizard renders the routing chip
+   *  and the release detail page shows the routing form. */
+  needs_routing: boolean;
+  /** Bailee custody flag. `own` = we own; `bailee` = customer-owned,
+   *  we hold post routing_to_3pl decision. Drives the "held for
+   *  {customer}" chip on 3PL views. */
+  ownership_kind: "own" | "bailee";
 }
 
 export interface OrderWizardMo {
@@ -2817,6 +2826,11 @@ export interface OrderWizardMo {
    *  finished_quarantine cell, ready for the QA sign-off ceremony. */
   output_release_ready_count: number;
   output_release_ready_lot_uuids: string[];
+  /** Positively-released lots still owing a 3PL vs shipment routing
+   *  decision. Drives the `awaiting_routing` phase + the wizard CTA
+   *  linking to the routing form. */
+  output_needs_routing_count: number;
+  output_needs_routing_lot_uuids: string[];
   has_output_at_production_feed: boolean;
   /** Cancelled MO whose picked bookings still hold physical stock at
    *  the production-side cell. Warehouse picker owes a return-pickup

@@ -34,7 +34,7 @@ defmodule Backend.ThreePL do
   alias Backend.Production.ManufacturingOrder
   alias Backend.RBAC
   alias Backend.Repo
-  alias Backend.Stock.{Lifecycle, Lot, Placement}
+  alias Backend.Stock.{Lifecycle, Lot, LotEvent, Placement}
   alias Backend.Warehouses.StorageCell
 
   # Same capability as Positive Release — routing the released lot is
@@ -81,33 +81,57 @@ defmodule Backend.ThreePL do
       when choice in @routing_choices do
     override = Keyword.get(opts, :override_customer_id)
 
-    with :ok <- ensure_permission(actor),
-         :ok <- ensure_available(lot),
-         :ok <- ensure_own(lot),
-         {:ok, warehouse_id} <- resolve_warehouse(lot),
-         :ok <- ensure_capacity(warehouse_id, lot, choice),
-         {:ok, customer_id} <- maybe_resolve_customer(lot, choice, override) do
-      Repo.transaction(fn ->
-        with {:ok, %{event: event}} <-
-               Lifecycle.record_event_in_transaction(lot, event_kind(choice), %{
-                 actor: actor,
-                 actor_kind: "user",
-                 metadata: %{
-                   "choice" => choice,
-                   "target_purpose" => target_purpose(choice),
-                   "customer_id_override" => override
-                 }
-               }),
-             {:ok, updated_lot} <- maybe_stamp_bailee(lot, choice, customer_id, actor) do
-          %{lot: updated_lot, event: event, choice: choice}
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+    result =
+      with :ok <- ensure_permission(actor),
+           :ok <- ensure_available(lot),
+           :ok <- ensure_not_already_routed(lot),
+           {:ok, warehouse_id} <- resolve_warehouse(lot),
+           :ok <- ensure_capacity(warehouse_id, lot, choice),
+           {:ok, customer_id} <- maybe_resolve_customer(lot, choice, override) do
+        Repo.transaction(fn ->
+          with {:ok, %{event: event}} <-
+                 Lifecycle.record_event_in_transaction(lot, event_kind(choice), %{
+                   actor: actor,
+                   actor_kind: "user",
+                   metadata: %{
+                     "choice" => choice,
+                     "target_purpose" => target_purpose(choice),
+                     "customer_id_override" => override
+                   }
+                 }),
+               {:ok, updated_lot} <- maybe_stamp_bailee(lot, choice, customer_id, actor) do
+            %{lot: updated_lot, event: event, choice: choice}
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+      end
+
+    # Nudge every wizard subscribed to the parent CO to refetch its
+    # snapshot. Without this the wizard stays on the awaiting_routing
+    # CTA for the operator until they manually reload, even though
+    # the lot has already advanced.
+    with {:ok, %{lot: routed}} <- result do
+      notify_wizard(routed)
+      result
+    else
+      _ -> result
     end
   end
 
   def route_released_lot(_actor, _lot, _choice, _opts), do: {:error, :invalid_choice}
+
+  defp notify_wizard(%Lot{id: lot_id}) do
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where: mo.produced_lot_id == ^lot_id,
+             select: mo.id,
+             limit: 1
+         ) do
+      nil -> :ok
+      mo_id -> Backend.OrderWizard.notify_via_mo(mo_id)
+    end
+  end
 
   # =====================================================================
   # Capacity math
@@ -199,8 +223,22 @@ defmodule Backend.ThreePL do
   defp ensure_available(%Lot{status: "available"}), do: :ok
   defp ensure_available(_), do: {:error, :not_available}
 
-  defp ensure_own(%Lot{ownership_kind: "own"}), do: :ok
-  defp ensure_own(_), do: {:error, :already_routed}
+  # A lot is "already routed" when it has a routed_to_3pl or
+  # routed_to_shipment event on its timeline. Guards against both
+  # (a) a bailee lot re-routed to shipment and (b) a shipment lot
+  # re-routed to shipment or 3PL. Rerouting requires a dedicated
+  # override action (out of scope for MVP).
+  defp ensure_not_already_routed(%Lot{id: lot_id}) do
+    routed? =
+      Repo.exists?(
+        from e in LotEvent,
+          where:
+            e.stock_lot_id == ^lot_id and
+              e.kind in ["routed_to_3pl", "routed_to_shipment"]
+      )
+
+    if routed?, do: {:error, :already_routed}, else: :ok
+  end
 
   defp ensure_capacity(warehouse_id, %Lot{} = lot, choice) do
     required = lot_stored_volume_m3(lot)

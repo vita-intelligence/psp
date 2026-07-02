@@ -1425,6 +1425,17 @@ defmodule Backend.Stock do
         select: l.id
       )
 
+    # Post-routing outputs — released lots the wizard has routed to
+    # 3PL or shipment but the warehouse team hasn't physically moved
+    # out of finished_quarantine yet. Surface them so the picker sees
+    # a "→ 3PL storage" / "→ dispatch" put-away job.
+    routed_lot_ids =
+      from(e in Backend.Stock.LotEvent,
+        where: e.kind in ["routed_to_3pl", "routed_to_shipment"],
+        select: e.stock_lot_id,
+        distinct: true
+      )
+
     from(l in Lot,
       join: p in Placement,
       on: p.stock_lot_id == l.id,
@@ -1436,11 +1447,14 @@ defmodule Backend.Stock do
           (c.system_kind == "unregistered" or
              (l.status == "available" and c.purpose == "quarantine") or
              (l.id in subquery(not_released_lot_ids) and
-                c.purpose != "finished_quarantine")),
+                c.purpose != "finished_quarantine") or
+             (l.id in subquery(routed_lot_ids) and
+                c.purpose == "finished_quarantine")),
       distinct: l.id,
       preload: [
         :item,
         :unit_of_measurement,
+        :bailee_customer,
         placements:
           ^from(p in Placement,
             preload: [storage_cell: [storage_location: [floor: [:warehouse]]]]
@@ -1461,6 +1475,7 @@ defmodule Backend.Stock do
         Repo.preload(lot, [
           :item,
           :unit_of_measurement,
+          :bailee_customer,
           placements: [storage_cell: [storage_location: [floor: [:warehouse]]]],
           movements: [:from_cell, :to_cell, :actor]
         ])

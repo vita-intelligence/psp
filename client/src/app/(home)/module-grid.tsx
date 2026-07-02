@@ -3,6 +3,7 @@ import {
   ClipboardList,
   Factory,
   HandCoins,
+  Package,
   Settings as SettingsIcon,
   ShoppingCart,
 } from "lucide-react";
@@ -58,6 +59,14 @@ export function ModuleGrid({ user }: { user: User }) {
       Icon: Factory,
       caption: "BOMs, manufacturing, routings",
       gate: hasPermission(user, "production.bom_view"),
+    },
+    {
+      key: "three_pl",
+      href: "/three-pl",
+      label: "3PL storage",
+      Icon: Package,
+      caption: "Bailee custody inventory",
+      gate: hasPermission(user, "production.final_release"),
     },
     {
       key: "settings",

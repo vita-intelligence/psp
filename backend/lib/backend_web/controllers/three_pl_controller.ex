@@ -107,22 +107,26 @@ defmodule BackendWeb.ThreePLController do
   end
 
   # ---------------------------------------------------------------
-  # GET /three-pl/capacity/:warehouse_id
+  # GET /three-pl/capacity/:warehouse_uuid
   # ---------------------------------------------------------------
-  def capacity(conn, %{"warehouse_id" => warehouse_id}) do
-    with {id, ""} <- Integer.parse(warehouse_id) do
-      free_three_pl = ThreePL.capacity_free_m3(id, "three_pl_storage")
-      free_dispatch = ThreePL.capacity_free_m3(id, "dispatch")
+  def capacity(conn, %{"warehouse_uuid" => warehouse_uuid}) do
+    actor = conn.assigns.current_user
 
-      json(conn, %{
-        warehouse_id: id,
-        free_m3: %{
-          three_pl_storage: Decimal.to_string(free_three_pl),
-          dispatch: Decimal.to_string(free_dispatch)
-        }
-      })
-    else
-      _ -> unprocessable(conn, "bad_warehouse_id", "warehouse_id must be an integer.")
+    case Repo.get_by(Backend.Warehouses.Warehouse, uuid: warehouse_uuid) do
+      %{id: id, company_id: company_id} when company_id == actor.company_id ->
+        free_three_pl = ThreePL.capacity_free_m3(id, "three_pl_storage")
+        free_dispatch = ThreePL.capacity_free_m3(id, "dispatch")
+
+        json(conn, %{
+          warehouse_uuid: warehouse_uuid,
+          free_m3: %{
+            three_pl_storage: Decimal.to_string(free_three_pl),
+            dispatch: Decimal.to_string(free_dispatch)
+          }
+        })
+
+      _ ->
+        not_found(conn, "Warehouse not found.")
     end
   end
 

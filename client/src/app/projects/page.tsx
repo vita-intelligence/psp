@@ -45,6 +45,7 @@ const PHASE_COLUMNS: ReadonlyArray<OrderWizardPhaseKey> = [
   "in_production",
   "closeout",
   "final_release",
+  "awaiting_routing",
   "ready_to_dispatch",
 ];
 
@@ -56,6 +57,7 @@ const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
   in_production: Cog,
   closeout: PackageOpen,
   final_release: ShieldCheck,
+  awaiting_routing: PackageOpen,
   ready_to_dispatch: CheckCircle2,
   cancelled: Ban,
 };
@@ -68,6 +70,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   in_production: "In production",
   closeout: "Awaiting closeout",
   final_release: "Awaiting release",
+  awaiting_routing: "Awaiting routing",
   ready_to_dispatch: "Ready to dispatch",
   cancelled: "Cancelled",
 };
@@ -93,6 +96,7 @@ const PHASE_ACCENT: Record<OrderWizardPhaseKey, string> = {
   in_production: "bg-amber-500/80 dark:bg-amber-400/80",
   closeout: "bg-amber-500/80 dark:bg-amber-400/80",
   final_release: "bg-sky-500/80 dark:bg-sky-400/80",
+  awaiting_routing: "bg-sky-500/80 dark:bg-sky-400/80",
   ready_to_dispatch: "bg-emerald-500/80 dark:bg-emerald-400/80",
   cancelled: "bg-destructive/70",
 };
@@ -108,6 +112,7 @@ const PHASE_COUNT_TONE: Record<
   in_production: "amber",
   closeout: "amber",
   final_release: "sky",
+  awaiting_routing: "sky",
   ready_to_dispatch: "emerald",
   cancelled: "destructive",
 };

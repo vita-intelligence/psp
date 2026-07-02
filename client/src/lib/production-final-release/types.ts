@@ -80,6 +80,18 @@ export interface FinalReleaseLotSummary {
     floor: { uuid: string; name: string | null } | null;
     warehouse: { uuid: string; name: string | null } | null;
   } | null;
+  /** 3PL routing snapshot. `ownership_kind = "bailee"` implies 3PL
+   *  routing already fired; `routing_choice = "shipment"` marks it
+   *  routed for direct dispatch. `null` for both means the released
+   *  lot still owes a routing decision. */
+  ownership_kind: "own" | "bailee";
+  bailee_customer: { id: number; uuid: string; name: string } | null;
+  bailee_routed_at: string | null;
+  routing_choice: "three_pl" | "shipment" | null;
+  package_length_mm: number | null;
+  package_width_mm: number | null;
+  package_height_mm: number | null;
+  units_per_package: number | null;
 }
 
 export interface FinalReleaseMoSummary {

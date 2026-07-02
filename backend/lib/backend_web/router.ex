@@ -834,7 +834,7 @@ defmodule BackendWeb.Router do
     scope "/three-pl" do
       post "/route/:lot_uuid", ThreePLController, :route_lot
       get "/inventory", ThreePLController, :inventory
-      get "/capacity/:warehouse_id", ThreePLController, :capacity
+      get "/capacity/:warehouse_uuid", ThreePLController, :capacity
     end
 
     # Goods-In Inspection — show / update / item / sign actions sit

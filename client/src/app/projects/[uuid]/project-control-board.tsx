@@ -56,6 +56,7 @@ import {
   ShieldCheck,
   ShoppingBag,
   Smartphone,
+  Split,
   Truck,
   User as UserIcon,
 } from "lucide-react";
@@ -133,6 +134,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "in_production",
   "closeout",
   "final_release",
+  "awaiting_routing",
   "ready_to_dispatch",
 ];
 
@@ -144,6 +146,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   in_production: "Production",
   closeout: "Closeout",
   final_release: "Release",
+  awaiting_routing: "Routing",
   ready_to_dispatch: "Ready",
   cancelled: "Cancelled",
 };
@@ -157,6 +160,8 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   closeout: "QC the outputs and move them to the warehouse.",
   final_release:
     "QA sign-off on finished product before dispatch (BRCGS § 5.6 Positive Release).",
+  awaiting_routing:
+    "Per released lot: 3PL bailee storage or direct shipment.",
   ready_to_dispatch: "Done — ship it to the customer.",
   cancelled: "Terminal — nothing else moves.",
 };
@@ -172,6 +177,7 @@ const PHASE_ICON: Record<
   in_production: Cog,
   closeout: PackageOpen,
   final_release: ShieldCheck,
+  awaiting_routing: Split,
   ready_to_dispatch: CheckCircle2,
   cancelled: Ban,
 };
@@ -217,6 +223,7 @@ type MoLiveStage =
   | "awaiting_warehouse_return"
   | "awaiting_release_move"
   | "awaiting_final_release"
+  | "awaiting_routing"
   | "completed";
 
 interface MoStageView {
@@ -328,6 +335,14 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
           tone: "sky",
         };
       }
+      if ((mo.output_needs_routing_count ?? 0) > 0) {
+        return {
+          key: "awaiting_routing",
+          label: `Route released lots (${mo.output_needs_routing_count})`,
+          hint: "Positive Release cleared these — pick 3PL storage (customer takes ownership, we hold as bailee + bill per m³/day) or direct shipment (whole lot to dispatch). Per-lot choice, capacity checked live.",
+          tone: "sky",
+        };
+      }
       return {
         key: "completed",
         label: "Closeout",
@@ -396,9 +411,14 @@ function phaseForMo(mo: OrderWizardMo): MoLifecyclePhase {
     // Post-QC / post-return-pickup outputs waiting on QA sign-off
     // (BRCGS Issue 9 § 5.6 Positive Release) get their own dot on
     // the rail — the finished lot is on the shelf but not yet
-    // dispatchable. Without this the MO card would jump to Done the
-    // moment return-pickup landed, hiding the release step.
-    if ((mo.output_awaiting_release_count ?? 0) > 0) {
+    // dispatchable. `needs_routing` extends the Release dot until the
+    // operator answers "3PL or ship?" for every positively-released
+    // lot; without it the MO card would jump to Done the moment
+    // Positive Release fires, hiding the routing follow-up.
+    if (
+      (mo.output_awaiting_release_count ?? 0) > 0 ||
+      (mo.output_needs_routing_count ?? 0) > 0
+    ) {
       return "release";
     }
     return "done";
@@ -1251,6 +1271,10 @@ const PHASE_EXPLAINER: Record<
   final_release: {
     title: "QA sign-off before dispatch.",
     body: "Finished lots are in a finished-quarantine cell awaiting Positive Release (BRCGS Issue 9 § 5.6). Attach the CoA, BMR, micro report, and label proof; collect two different signatures; then Release / Hold / Reject each batch.",
+  },
+  awaiting_routing: {
+    title: "Choose where each released lot goes.",
+    body: "Positive Release cleared the batch — now say 3PL storage (customer takes ownership, we bill per m³/day) or direct shipment (whole lot to dispatch for pickup). Per lot, capacity is checked live. Once every released lot has an answer the order rolls to Ready.",
   },
   ready_to_dispatch: {
     title: "Order is ready to ship.",
@@ -3395,6 +3419,8 @@ function phaseBadgeTone(
     case "closeout":
       return "amber";
     case "final_release":
+      return "sky";
+    case "awaiting_routing":
       return "sky";
     case "ready_to_dispatch":
       return "emerald";

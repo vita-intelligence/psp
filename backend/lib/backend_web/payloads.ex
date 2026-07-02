@@ -1164,6 +1164,9 @@ defmodule BackendWeb.Payloads do
       output_release_ready_count: Map.get(mo, :output_release_ready_count, 0),
       output_release_ready_lot_uuids:
         Map.get(mo, :output_release_ready_lot_uuids, []),
+      output_needs_routing_count: Map.get(mo, :output_needs_routing_count, 0),
+      output_needs_routing_lot_uuids:
+        Map.get(mo, :output_needs_routing_lot_uuids, []),
       bookings_closeout_pending_count: mo.bookings_closeout_pending_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
       cancelled_orphan_booking_count:
@@ -1187,7 +1190,9 @@ defmodule BackendWeb.Payloads do
             supplier_batch_no: Map.get(lot, :supplier_batch_no),
             status: lot.status,
             qty: decimal_to_string(lot.qty),
-            at_production_feed: lot.at_production_feed?
+            at_production_feed: lot.at_production_feed?,
+            needs_routing: Map.get(lot, :needs_routing?, false),
+            ownership_kind: Map.get(lot, :ownership_kind, "own")
           }
         end),
       children: Enum.map(Map.get(mo, :children, []) || [], &wizard_mo/1)
@@ -4902,8 +4907,56 @@ defmodule BackendWeb.Payloads do
           _ ->
             nil
         end,
-      placement: production_final_release_lot_placement(lot.placements)
+      placement: production_final_release_lot_placement(lot.placements),
+      # 3PL routing snapshot. `ownership_kind = bailee` implies
+      # routed_to_3pl fired; `routing_choice = "shipment"` marks the
+      # lot routed to dispatch. Both fields are nil until the release
+      # is positively finalised and the operator hits the wizard's
+      # routing step.
+      ownership_kind: lot.ownership_kind,
+      bailee_customer:
+        case lot.bailee_customer do
+          %Backend.Customers.Customer{} = c ->
+            %{id: c.id, uuid: c.uuid, name: c.name}
+
+          _ ->
+            nil
+        end,
+      bailee_routed_at: lot.bailee_routed_at,
+      routing_choice: latest_routing_choice(lot),
+      # Package dimensions — the routing form needs them to render the
+      # capacity chip / warn if they're missing. Nullable on legacy
+      # rows, populated on new receives.
+      package_length_mm: lot.package_length_mm,
+      package_width_mm: lot.package_width_mm,
+      package_height_mm: lot.package_height_mm,
+      units_per_package: lot.units_per_package
     }
+  end
+
+  # Most recent routed_to_3pl / routed_to_shipment event for the lot,
+  # translated back to a wizard-side `"three_pl" | "shipment" | nil`.
+  # One extra hit per release fetch — acceptable since the routing
+  # question only lives on this page.
+  defp latest_routing_choice(%Backend.Stock.Lot{id: lot_id}) do
+    import Ecto.Query
+
+    row =
+      from(e in Backend.Stock.LotEvent,
+        where:
+          e.stock_lot_id == ^lot_id and
+            e.kind in ["routed_to_3pl", "routed_to_shipment"],
+        order_by: [desc: e.occurred_at, desc: e.id],
+        select: e.kind,
+        limit: 1
+      )
+      |> Backend.Repo.one()
+
+    case row do
+      "routed_to_3pl" -> "three_pl"
+      "routed_to_shipment" -> "shipment"
+      _ -> nil
+    end
   end
 
   defp production_final_release_lot_summary(_), do: nil
