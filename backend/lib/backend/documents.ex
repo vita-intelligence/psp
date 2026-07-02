@@ -42,20 +42,7 @@ defmodule Backend.Documents do
   # NOTE: the ChromicPDF render timeout is bumped at supervisor boot
   # in `Backend.Application.chromic_pdf_child/0` via
   # `session_pool: [timeout: 60_000]`. Per-request `:timeout` opts to
-  # `print_to_pdf/2` do NOT override that value, so the BMR relies on
-  # the supervisor-level bump instead.
-
-  # Cap chain-of-custody photos per MO. Each phone JPEG is 1-3 MB, so
-  # even 12 photos per MO pushes ~24 MB of base64 into the HTML which
-  # Chrome's `Channel.run_protocol/3` refuses to parse inside the 5 s
-  # protocol timeout (the browser process itself hangs on the string
-  # parse, not the render). Small cap keeps the payload << 10 MB per
-  # MO. Everything else stays as text rows in the sign-off table.
-  @bmr_photo_cap 4
-  # Absolute payload cap — skip a photo if its raw bytes exceed this.
-  # Bigger than a 4K portrait is almost certainly a screenshot the
-  # operator uploaded by mistake.
-  @bmr_photo_max_bytes 1_500_000
+  # `print_to_pdf/2` do NOT override that value.
 
   @doc """
   Render the PO PDF for the given `audience`:
@@ -270,14 +257,13 @@ defmodule Backend.Documents do
 
     output_rows = Enum.map(top_output_lots, &output_lot_row(&1, company))
 
-    # Product history photos — one merged, chronological grid that
-    # covers EVERY lot the tree touched (raw material goods-in
-    # receipts, sub-MO output pickups, parent MO consumption,
-    # return-pickup back to the warehouse, move to
-    # finished_quarantine). Presented as its own section after the MO
-    # cards so an auditor can read the whole batch's physical journey
-    # in one place instead of hunting through per-MO subsections.
-    history = product_history_photos(mo_chain_raw(mo), top_output_lots)
+    # Product roadmap — a chronological event log covering every lot
+    # the tree touched (raw-material goods-in through the final
+    # move to finished_quarantine). Text-only so it fits in one
+    # scannable timeline; auditors get the whole story left-to-right
+    # without pulling in phone-camera JPEGs the PDF renderer can't
+    # handle.
+    roadmap = product_roadmap(mo_chain_raw(mo), top_output_lots, company)
 
     lot_code = Backend.Numbering.render(lot.id, company, "stock_lot") || "#{lot.id}"
     mo_code = Backend.Numbering.render(mo.id, company, "manufacturing_order") || "#{mo.id}"
@@ -297,8 +283,7 @@ defmodule Backend.Documents do
       expiry_at: format_date(lot.expiry_at),
       mo_chain: mo_chain,
       output_lots: output_rows,
-      history_photos: history.photos,
-      history_omitted_count: history.omitted_count,
+      roadmap: roadmap,
       signoffs: bmr_signoffs(release, mo_chain)
     }
   end
@@ -443,13 +428,12 @@ defmodule Backend.Documents do
     }
   end
 
-  # Full batch photo history — every lot that appears anywhere in
-  # the tree contributes its movement photos. Merged into a single
-  # chronological list so the auditor reads the whole physical story
-  # left-to-right: goods-in receipt of raw materials → warehouse
-  # pickup for the sub-MO → pickup for the parent MO → return-pickup
-  # of the finished output → move to finished_quarantine.
-  defp product_history_photos(mo_chain_raw, top_output_lots) do
+  # Full batch roadmap — every physical event on every lot the tree
+  # touched, ordered chronologically. Text-only so it renders fast
+  # regardless of the underlying photo count / size. The event list
+  # is the primary audit trail; individual photos are still viewable
+  # from the lot detail pages in the UI.
+  defp product_roadmap(mo_chain_raw, top_output_lots, company) do
     booked_lot_ids =
       Enum.flat_map(mo_chain_raw, fn mo ->
         case mo.bookings do
@@ -487,97 +471,106 @@ defmodule Backend.Documents do
       |> Enum.uniq()
 
     if lot_ids == [] do
-      %{photos: [], omitted_count: 0}
+      []
     else
-      all_movements =
-        Backend.Repo.all(
-          from m in Backend.Stock.Movement,
-            where:
-              m.stock_lot_id in ^lot_ids and
-                not is_nil(m.photo_url) and
-                m.photo_url != "",
-            order_by: [asc: m.occurred_at, asc: m.id],
-            preload: [stock_lot: [:item], actor: []]
-        )
-
-      selected = Enum.take(all_movements, @bmr_photo_cap)
-      omitted = length(all_movements) - length(selected)
-
-      rows =
-        selected
-        |> Enum.map(&photo_row/1)
-        |> Enum.reject(&is_nil/1)
-
-      %{photos: rows, omitted_count: max(omitted, 0)}
+      Backend.Repo.all(
+        from m in Backend.Stock.Movement,
+          where: m.stock_lot_id in ^lot_ids,
+          order_by: [asc: m.occurred_at, asc: m.id],
+          preload: [
+            stock_lot: [:item],
+            actor: [],
+            from_cell: [],
+            to_cell: []
+          ]
+      )
+      |> Enum.map(&roadmap_row(&1, company))
     end
   end
 
-  defp photo_row(movement) do
+  defp roadmap_row(movement, company) do
     lot = movement.stock_lot
     item_name = (lot && lot.item && lot.item.name) || "—"
-    data_uri = inline_photo(movement.photo_url)
 
-    if is_nil(data_uri) do
-      nil
-    else
-      %{
-        photo_url: data_uri,
-        kind_label: humanize_movement_kind(movement.kind, movement.reason),
-        item_name: item_name,
-        when: format_date_time(movement.occurred_at),
-        actor: actor_name(movement.actor)
-      }
-    end
+    lot_code =
+      if lot,
+        do:
+          Backend.Numbering.render(lot.id, company, "stock_lot") || "##{lot.id}",
+        else: "—"
+
+    from_label = cell_short_label(movement.from_cell)
+    to_label = cell_short_label(movement.to_cell)
+
+    location_change =
+      cond do
+        from_label && to_label -> "#{from_label} → #{to_label}"
+        to_label -> "Placed at #{to_label}"
+        from_label -> "From #{from_label}"
+        true -> nil
+      end
+
+    tone = roadmap_kind_tone(movement.kind)
+
+    %{
+      kind: movement.kind,
+      kind_label: roadmap_kind_label(movement.kind, movement.reason),
+      tone: tone,
+      dot_color: roadmap_dot_color(tone),
+      item_name: item_name,
+      lot_code: lot_code,
+      qty: format_decimal(movement.delta_qty),
+      location_change: location_change,
+      reason: movement.reason,
+      when: format_date_time(movement.occurred_at),
+      actor: actor_name(movement.actor),
+      photo_recorded?: is_binary(movement.photo_url) and movement.photo_url != ""
+    }
   end
 
-  # Chrome (via ChromicPDF) can't fetch our auth-gated photo URLs
-  # during PDF rendering — the session cookie doesn't propagate into
-  # the render tab. Read bytes off disk via Backend.Storage.Local and
-  # embed as a data URI so the images always show regardless of auth
-  # context. Falls back to nil if the file's missing (deleted or on a
-  # different storage adapter).
-  defp inline_photo(url) when is_binary(url) do
-    case Regex.run(~r{/movement-photos/([^/]+)/file}, url) do
-      [_, uuid] ->
-        Enum.find_value([".jpg", ".png", ".webp"], fn ext ->
-          blob = "movement_photos/" <> uuid <> ext
-          abs = Backend.Storage.Local.absolute_path(blob)
+  defp roadmap_dot_color("receive"), do: "#2f8bd6"
+  defp roadmap_dot_color("move"), do: "#d78d33"
+  defp roadmap_dot_color("consume"), do: "#c4433e"
+  defp roadmap_dot_color("auto"), do: "#7758c7"
+  defp roadmap_dot_color(_), do: "#888"
 
-          if File.exists?(abs) do
-            case File.stat(abs) do
-              {:ok, %{size: size}} when size <= @bmr_photo_max_bytes ->
-                bytes = File.read!(abs)
-                mime = mime_for(ext)
-                "data:#{mime};base64," <> Base.encode64(bytes)
+  defp cell_short_label(nil), do: nil
 
-              _ ->
-                # Photo too large to embed safely — skip inline, the
-                # movement still shows up in the sign-off timeline.
-                nil
-            end
-          end
-        end)
+  defp cell_short_label(cell) do
+    name = Map.get(cell, :name)
+    purpose = Map.get(cell, :purpose)
 
-      _ ->
+    cond do
+      is_binary(name) and name != "" and is_binary(purpose) ->
+        "#{name} · #{purpose}"
+
+      is_binary(name) and name != "" ->
+        name
+
+      is_binary(purpose) ->
+        purpose
+
+      true ->
         nil
     end
   end
 
-  defp inline_photo(_), do: nil
+  defp roadmap_kind_label("receive", _), do: "Goods-in receipt"
+  defp roadmap_kind_label("consume", _), do: "Consumed on run"
+  defp roadmap_kind_label("auto_route", _), do: "Auto-routed by system"
 
-  defp mime_for(".jpg"), do: "image/jpeg"
-  defp mime_for(".png"), do: "image/png"
-  defp mime_for(".webp"), do: "image/webp"
+  defp roadmap_kind_label("move", reason) when is_binary(reason) and reason != "" do
+    "Move · " <> reason
+  end
 
-  defp humanize_movement_kind(nil, reason), do: reason || "Move"
-  defp humanize_movement_kind("move", nil), do: "Move"
-  defp humanize_movement_kind("move", reason) when is_binary(reason), do: reason
-  defp humanize_movement_kind("adjust_up", _), do: "Qty adjust +"
-  defp humanize_movement_kind("adjust_down", _), do: "Qty adjust −"
-  defp humanize_movement_kind("consume", _), do: "Consumed"
-  defp humanize_movement_kind("dispose", _), do: "Disposed"
-  defp humanize_movement_kind(kind, _) when is_binary(kind), do: String.capitalize(kind)
-  defp humanize_movement_kind(_, _), do: "Move"
+  defp roadmap_kind_label("move", _), do: "Physical move"
+  defp roadmap_kind_label(kind, _) when is_binary(kind), do: String.capitalize(kind)
+  defp roadmap_kind_label(_, _), do: "Event"
+
+  defp roadmap_kind_tone("receive"), do: "receive"
+  defp roadmap_kind_tone("move"), do: "move"
+  defp roadmap_kind_tone("consume"), do: "consume"
+  defp roadmap_kind_tone("auto_route"), do: "auto"
+  defp roadmap_kind_tone(_), do: "other"
 
   defp booking_row(b, company) do
     %{
