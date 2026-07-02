@@ -485,9 +485,9 @@ defmodule Backend.Warehouses.ReturnPickup do
          :ok <- ensure_not_placed(pick),
          {:ok, to_cell} <-
            fetch_cell(actor.company_id, attrs["scanned_cell_uuid"]),
-         :ok <- ensure_placeable_cell(to_cell),
-         :ok <- ensure_not_same_cell(pick.picked_from_cell_id, to_cell.id),
-         {:ok, lot} <- fetch_lot_with_uuid(pick.stock_lot_id) do
+         {:ok, lot} <- fetch_lot_with_uuid(pick.stock_lot_id),
+         :ok <- ensure_placeable_cell(to_cell, lot),
+         :ok <- ensure_not_same_cell(pick.picked_from_cell_id, to_cell.id) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
       Repo.transaction(fn ->
@@ -697,16 +697,36 @@ defmodule Backend.Warehouses.ReturnPickup do
   defp ensure_not_placed(%ReturnPick{placed_at: nil}), do: :ok
   defp ensure_not_placed(_), do: {:error, :already_placed}
 
-  defp ensure_placeable_cell(%StorageCell{purpose: purpose})
+  # Finished-product output that passed output-QC but hasn't been
+  # QA-signed-off yet lives in `awaiting_release`. BRCGS Issue 9
+  # § 5.6 Positive Release + § 4.4 segregation say those lots MUST
+  # sit in a physically separate `finished_quarantine` bay until
+  # release — not on regular shelving alongside cleared stock.
+  defp ensure_placeable_cell(%StorageCell{purpose: "finished_quarantine"}, %Lot{
+         status: "awaiting_release"
+       }),
+       do: :ok
+
+  defp ensure_placeable_cell(%StorageCell{purpose: purpose}, %Lot{
+         status: "awaiting_release"
+       })
+       when purpose != "finished_quarantine" do
+    # Non-finished_quarantine destination for an awaiting-release
+    # output → refuse. Forces the picker to drop finished product
+    # in the release-holding bay, not on general shelving.
+    {:error, :requires_finished_quarantine}
+  end
+
+  defp ensure_placeable_cell(%StorageCell{purpose: purpose}, %Lot{})
        when purpose in ["regular", "quarantine"] do
-    # Returned lots are already "available" — they came back from
-    # production with status=available (QC passed). Routing them to
-    # a regular cell is the default; a quarantine cell is also OK
-    # when the warehouse wants to re-inspect on the way in.
+    # Non-release stock (raw-material leftovers from closeout,
+    # already-released output, ingredient returns from a cancelled
+    # MO). `regular` is the default; `quarantine` covers "we want to
+    # re-inspect on the way in".
     :ok
   end
 
-  defp ensure_placeable_cell(_), do: {:error, :destination_invalid}
+  defp ensure_placeable_cell(_, _), do: {:error, :destination_invalid}
 
   defp ensure_not_same_cell(from_id, to_id) when from_id == to_id,
     do: {:error, :same_cell}

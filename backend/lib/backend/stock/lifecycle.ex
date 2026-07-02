@@ -69,11 +69,20 @@ defmodule Backend.Stock.Lifecycle do
   #              follow-up is dispose. No "un-fail" event by design.
   # Terminal states (`depleted`, `disposed`, `canceled`) accept no
   # further events.
+  #
+  # `output_qc_passed` is the MO-output analogue of `qc_passed` — the
+  # in-process QC verdict cleared but the lot still owes a QA sign-off
+  # (Final Product Release) before dispatch. Lands the lot in
+  # `awaiting_release` and the auto-router parks it in a
+  # `finished_quarantine` cell. `released` from there flips to
+  # `available` (positive release, BRCGS 5.6); `held` drops it to
+  # `on_hold`; `qc_failed` drops it to `rejected`.
   @allowed_transitions %{
     "expected" => ~w(expected requested received canceled),
     "requested" => ~w(received canceled),
-    "received" => ~w(routed_to_quarantine qc_passed qc_failed held disposed consumed_to_zero canceled),
-    "quarantine" => ~w(qc_passed qc_failed held disposed canceled),
+    "received" => ~w(routed_to_quarantine qc_passed output_qc_passed qc_failed held disposed consumed_to_zero canceled),
+    "quarantine" => ~w(qc_passed output_qc_passed qc_failed held disposed canceled),
+    "awaiting_release" => ~w(released qc_failed held disposed canceled),
     "available" => ~w(held disposed consumed_to_zero),
     "on_hold" => ~w(released disposed consumed_to_zero),
     "rejected" => ~w(disposed),
@@ -227,6 +236,10 @@ defmodule Backend.Stock.Lifecycle do
       MapSet.member?(kinds, "qc_failed") -> "rejected"
       last_qc_or_hold == "held" -> "on_hold"
       last_qc_or_hold in ["qc_passed", "released"] -> "available"
+      # An MO output that passed in-process QC but hasn't been Final-
+      # Product-Released yet parks in `awaiting_release`. Ranked
+      # below `released` so a subsequent Release action wins.
+      last_qc_or_hold == "output_qc_passed" -> "awaiting_release"
       MapSet.member?(kinds, "routed_to_quarantine") -> "quarantine"
       MapSet.member?(kinds, "received") -> "received"
       MapSet.member?(kinds, "requested") -> "requested"
@@ -263,12 +276,17 @@ defmodule Backend.Stock.Lifecycle do
 
   ## ----- internals --------------------------------------------------
 
-  # The "last hold or QC verdict" decides on_hold vs available. We
-  # sort by occurred_at desc and pick the most recent of the three
-  # kinds; everything else is irrelevant to that branch.
+  # The "last hold or QC verdict" decides on_hold vs available vs
+  # awaiting_release. We sort by occurred_at desc and pick the most
+  # recent of the relevant kinds; everything else is irrelevant to
+  # that branch. `output_qc_passed` is ranked alongside its siblings
+  # so a Release (`released`) after an output QC pass wins the
+  # projection — same "most recent wins" rule as hold/release.
   defp last_qc_or_hold_event(events) do
     events
-    |> Enum.filter(fn e -> e.kind in ["qc_passed", "held", "released"] end)
+    |> Enum.filter(fn e ->
+      e.kind in ["qc_passed", "output_qc_passed", "held", "released"]
+    end)
     |> Enum.sort_by(fn e -> {ts(e.occurred_at), ts(e.inserted_at), e.id} end, :desc)
     |> case do
       [] -> nil

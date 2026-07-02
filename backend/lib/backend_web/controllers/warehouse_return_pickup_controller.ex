@@ -215,6 +215,13 @@ defmodule BackendWeb.WarehouseReturnPickupController do
           "Place into a regular or quarantine cell — not a dispatch / rejected / hold lane."
         )
 
+      {:error, :requires_finished_quarantine} ->
+        unprocessable(
+          conn,
+          "requires_finished_quarantine",
+          "This finished-product lot is awaiting QA release — it has to land in a Finished Quarantine cell, not general storage (BRCGS § 5.6)."
+        )
+
       {:error, :same_cell} ->
         unprocessable(
           conn,

@@ -21,12 +21,16 @@ defmodule Backend.Stock.Lot do
   # `expected` = PO line approved, no physical receipt yet (system-
   # created planned lot). `requested` = paperwork landed, available_from
   # is future-dated. `received` = goods landed. `quarantine` = held
-  # pending QC verdict. `available` = QC passed (or skipped on flows
-  # that auto-clear). `on_hold` = operator put it on hold post-QC.
-  # `rejected` = QC fail. `disposed` = written off. `depleted` =
-  # consumed to zero. `canceled` = paperwork voided before receipt.
-  @statuses ~w(expected requested received quarantine available on_hold
-               depleted disposed rejected canceled)
+  # pending QC verdict. `awaiting_release` = MO output past output-QC
+  # but not yet QA-signed-off for dispatch; sits in a
+  # `finished_quarantine` cell until Final Product Release fires
+  # (BRCGS Issue 9 § 5.6 Positive Release). `available` = QC passed
+  # (or skipped on flows that auto-clear) — dispatchable. `on_hold`
+  # = operator put it on hold post-QC. `rejected` = QC fail.
+  # `disposed` = written off. `depleted` = consumed to zero.
+  # `canceled` = paperwork voided before receipt.
+  @statuses ~w(expected requested received quarantine awaiting_release available
+               on_hold depleted disposed rejected canceled)
   @source_kinds ~w(purchase_order manufacturing_order opening_balance return adjustment manual)
   @risk_levels ~w(low medium high)
   @compliance_states ~w(pending requested received accepted rejected na)

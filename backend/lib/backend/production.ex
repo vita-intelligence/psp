@@ -7045,7 +7045,33 @@ defmodule Backend.Production do
   """
   def sign_off_output_qc(%User{} = actor, lot_uuid, "pass", attrs)
       when is_binary(lot_uuid) do
-    do_full_qc(actor, lot_uuid, "qc_passed", attrs)
+    # A "pass" verdict routes down one of two lifecycle paths
+    # depending on whether the lot has a downstream consumer:
+    #
+    #   * Sub-MO output already booked as an ingredient by a live
+    #     parent MO → `qc_passed` → `available`. The parent's
+    #     closeout will consume it directly from the feed cell; no
+    #     Final Product Release owed.
+    #
+    #   * Top-of-tree output (no downstream MO holding a booking) →
+    #     `output_qc_passed` → `awaiting_release`. Auto-router parks
+    #     it in a `finished_quarantine` cell; QA does Final Product
+    #     Release (BRCGS Issue 9 § 5.6) before it becomes
+    #     dispatchable.
+    kind =
+      case Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
+        %StockLot{id: lot_id, source_kind: "manufacturing_order"} ->
+          if lot_committed_to_downstream_mo?(actor.company_id, lot_id) do
+            "qc_passed"
+          else
+            "output_qc_passed"
+          end
+
+        _ ->
+          "qc_passed"
+      end
+
+    do_full_qc(actor, lot_uuid, kind, attrs)
   end
 
   def sign_off_output_qc(%User{} = actor, lot_uuid, "fail", attrs)
@@ -7089,7 +7115,8 @@ defmodule Backend.Production do
     end
   end
 
-  defp do_full_qc(%User{} = actor, lot_uuid, kind, attrs) do
+  defp do_full_qc(%User{} = actor, lot_uuid, kind, attrs)
+       when kind in ["qc_passed", "output_qc_passed", "qc_failed"] do
     with %StockLot{source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
       Repo.transaction(fn ->
@@ -7142,7 +7169,8 @@ defmodule Backend.Production do
   # carry an adjustment — bare {"pass", reason: nil} stays a no-op.
   defp maybe_apply_qc_adjustments(_actor, _lot, "qc_failed", _attrs), do: :ok
 
-  defp maybe_apply_qc_adjustments(%User{} = actor, %StockLot{} = lot, "qc_passed", attrs) do
+  defp maybe_apply_qc_adjustments(%User{} = actor, %StockLot{} = lot, kind, attrs)
+       when kind in ["qc_passed", "output_qc_passed"] do
     cast_attrs = stock_lot_adjust_attrs(attrs)
 
     if cast_attrs == %{} do
@@ -7777,6 +7805,47 @@ defmodule Backend.Production do
   end
 
   # ----- Production closeout (post-Finish hand-off) --------------
+
+  @doc """
+  Does `lot_id` sit on the ingredient side of a booking on a live MO?
+
+  "Live" = the consuming MO's status isn't `cancelled` AND the booking
+  is still `requested` (not consumed / released). Used by:
+
+    * `sign_off_output_qc/4` to decide `qc_passed` (sub-MO output the
+      parent will eat) vs `output_qc_passed` (top-of-tree output that
+      owes a Final Product Release before dispatch).
+    * `list_closeout_queue/1` to drop sub-MOs whose only remaining
+      output is already claimed by the parent (mirrors the shape as
+      an inline subquery — see the `committed_lot_ids` subquery
+      there).
+    * `Backend.OrderWizard.lot_with_placement/2`'s `committed?`
+      filter that hides those lots from the "output at feed" count on
+      the projects board (mirrored inline for the same reason).
+
+  Scalar helper (`true / false` for one lot) — callers that need a
+  MapSet across many lots keep their inline subquery for now to avoid
+  N+1 in list loops.
+  """
+  def lot_committed_to_downstream_mo?(company_id, lot_id)
+      when is_integer(company_id) and is_integer(lot_id) do
+    from(b in ManufacturingOrderBooking,
+      join: mo in ManufacturingOrder,
+      on: mo.id == b.manufacturing_order_id,
+      where:
+        b.stock_lot_id == ^lot_id and
+          b.status == "requested" and
+          mo.status != "cancelled" and
+          mo.company_id == ^company_id,
+      limit: 1,
+      select: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> false
+      _ -> true
+    end
+  end
 
   @doc """
   Mobile closeout queue. Returns MOs that are `completed` and still

@@ -48,6 +48,7 @@ defmodule Backend.Stock.AutoRouter do
   # explicit no-ops; new statuses must opt in by adding a row here.
   @status_to_purpose %{
     "quarantine" => "quarantine",
+    "awaiting_release" => "finished_quarantine",
     "on_hold" => "hold",
     "rejected" => "rejected"
   }

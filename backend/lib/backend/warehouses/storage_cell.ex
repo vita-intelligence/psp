@@ -26,7 +26,15 @@ defmodule Backend.Warehouses.StorageCell do
   # `production_feed` is the destination cell warehouse pickers
   # transfer a released MO's load to — sits in the production area,
   # picked up by floor operators when they start the run.
-  @purposes ~w(regular quarantine hold rejected dispatch production_feed)
+  #
+  # `finished_quarantine` holds finished-product output lots after
+  # closeout, physically segregated from raw-material `quarantine`
+  # (BRCGS Issue 9 § 5.6 Positive Release + § 4.4 segregation). Lots
+  # sit here in `awaiting_release` status until QA does Final Product
+  # Release; only then does the lot flip to `available` and move to
+  # `regular` (or `dispatch` if a shipment picks against it).
+  @purposes ~w(regular quarantine hold rejected dispatch production_feed
+               finished_quarantine)
   def purposes, do: @purposes
 
   schema "storage_cells" do

@@ -11,6 +11,10 @@ defmodule Backend.Warehouses.Readiness do
     * **hold** — lots awaiting investigation that aren't quarantine
       and aren't yet rejected (allergen review, supplier query, …)
     * **rejected** — lots failed by QC, awaiting disposal or return
+    * **finished_quarantine** — MO output lots waiting on Final
+      Product Release (BRCGS Issue 9 § 5.6 Positive Release, FSSC
+      § 8.6). Physically separated from raw-material `quarantine`
+      so incoming and outgoing "unproven" stock never share a bay.
 
   Without at least one cell of each purpose the auto-router on the
   goods-in verdict can't park lots, and the receive flow silently
@@ -33,8 +37,14 @@ defmodule Backend.Warehouses.Readiness do
   alias Backend.Warehouses.StorageCell
   alias Backend.Warehouses.StorageLocation
 
-  # Purposes the goods-in pipeline cannot operate without.
-  @required_purposes ~w(quarantine hold rejected)
+  # Purposes the goods-in + goods-out pipeline cannot operate without.
+  # `finished_quarantine` gets required alongside the incoming trio
+  # so any warehouse that runs production has a place to park output
+  # lots pending Final Product Release (BRCGS § 5.6). Dispatch-only
+  # warehouses without production still need it in case an inter-
+  # warehouse transfer lands a released-elsewhere output — one cell
+  # is trivial to add.
+  @required_purposes ~w(quarantine hold rejected finished_quarantine)
 
   @type blocker :: %{
           purpose: String.t(),
@@ -112,7 +122,8 @@ defmodule Backend.Warehouses.Readiness do
       "quarantine" => 0,
       "hold" => 0,
       "rejected" => 0,
-      "dispatch" => 0
+      "dispatch" => 0,
+      "finished_quarantine" => 0
     }
   end
 
@@ -129,6 +140,7 @@ defmodule Backend.Warehouses.Readiness do
   defp label_for("quarantine"), do: "Quarantine"
   defp label_for("hold"), do: "QA hold"
   defp label_for("rejected"), do: "Rejected"
+  defp label_for("finished_quarantine"), do: "Finished quarantine"
   defp label_for(other), do: String.capitalize(other)
 
   defp reason_for("quarantine") do
@@ -141,6 +153,10 @@ defmodule Backend.Warehouses.Readiness do
 
   defp reason_for("rejected") do
     "At least one cell marked Rejected is required so QC-failed lots can be segregated from usable stock until they're returned or disposed of (FSSC § 8.9.4)."
+  end
+
+  defp reason_for("finished_quarantine") do
+    "At least one cell marked Finished quarantine is required. Every MO output lot lands here after closeout pending QA Final Product Release (BRCGS Issue 9 § 5.6 Positive Release, FSSC § 8.6). Kept physically separate from raw-material quarantine so incoming and outgoing 'unproven' stock never share a bay."
   end
 
   defp reason_for(other), do: "Add at least one cell with purpose = #{other}."
