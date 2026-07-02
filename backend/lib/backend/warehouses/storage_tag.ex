@@ -29,7 +29,8 @@ defmodule Backend.Warehouses.StorageTag do
   # `quarantine` would expect the auto-router to send incoming lots
   # there, but the router only consumes `cell.purpose`. Blocking the
   # key here keeps the two systems disjoint and obvious.
-  @reserved_keys ~w(regular quarantine hold rejected dispatch)
+  @reserved_keys ~w(regular quarantine hold rejected dispatch
+                    production_feed finished_quarantine)
 
   def reserved_keys, do: @reserved_keys
 
