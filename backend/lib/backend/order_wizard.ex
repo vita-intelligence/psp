@@ -45,7 +45,7 @@ defmodule Backend.OrderWizard do
   alias Backend.Stock.Lot
 
   @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
-           :in_production, :closeout, :ready_to_dispatch]
+           :in_production, :closeout, :final_release, :ready_to_dispatch]
   @total_phases length(@phases)
 
   @doc """
@@ -272,12 +272,11 @@ defmodule Backend.OrderWizard do
         :closeout
 
       # Any awaiting-release output owes a Final Product Release
-      # ceremony (BRCGS 5.6) before the order can be considered ready
-      # to dispatch. Keeps the wizard on `:closeout` — the closeout
-      # phase now covers the whole post-run trail (QC → booking
-      # closeout → return-pickup → QA sign-off).
+      # ceremony (BRCGS Issue 9 § 5.6) before the order can be
+      # considered ready to dispatch. Distinct phase so operators see
+      # it as its own pipeline block, not folded into closeout.
       Enum.any?(mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0)) ->
-        :closeout
+        :final_release
 
       true ->
         :ready_to_dispatch
@@ -302,6 +301,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:awaiting_ingredients), do: "Awaiting ingredients"
   defp phase_label(:in_production), do: "In production"
   defp phase_label(:closeout), do: "Closeout"
+  defp phase_label(:final_release), do: "Release"
   defp phase_label(:ready_to_dispatch), do: "Ready to dispatch"
   defp phase_label(:cancelled), do: "Cancelled"
 
@@ -987,29 +987,6 @@ defmodule Backend.OrderWizard do
            mo_uuid: mo.uuid
          }}
 
-      Map.get(mo, :output_awaiting_release_count, 0) > 0 ->
-        # Post-closeout QA sign-off (BRCGS Issue 9 § 5.6). Point the CTA
-        # at the FIRST awaiting-release lot — the release ceremony
-        # binds per-lot, and if there's more than one they land on the
-        # dedicated queue anyway.
-        target_lot_uuid =
-          case Map.get(mo, :output_awaiting_release_lot_uuids, []) do
-            [uuid | _] when is_binary(uuid) -> uuid
-            _ -> nil
-          end
-
-        href =
-          if target_lot_uuid,
-            do: "/production/final-releases/#{target_lot_uuid}",
-            else: "/production/final-releases"
-
-        {"QA sign-off for MO #{mo.code} finished product (BRCGS § 5.6).",
-         %{
-           label: "Open Final Product Release",
-           kind: "link",
-           href: href
-         }}
-
       true ->
         {"MO #{mo.code} closed out.",
          %{
@@ -1095,6 +1072,66 @@ defmodule Backend.OrderWizard do
           step_cta
           |> Map.put(:label, "MO #{mo.code} — #{step_cta.label}")
           |> Map.put(:description, step_title)
+        end)
+    }
+  end
+
+  defp next_action_for(:final_release, _co, _line_states, mos, _signers) do
+    # Every MO that still owes a Final Product Release. Point the CTA
+    # at the first awaiting-release lot on the first pending MO —
+    # multiple lots go through the queue.
+    pending =
+      Enum.filter(mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0))
+
+    target = List.first(pending)
+
+    target_lot_uuid =
+      case target && Map.get(target, :output_awaiting_release_lot_uuids, []) do
+        [uuid | _] when is_binary(uuid) -> uuid
+        _ -> nil
+      end
+
+    primary_href =
+      if target_lot_uuid,
+        do: "/production/final-releases/#{target_lot_uuid}",
+        else: "/production/final-releases"
+
+    title =
+      if target,
+        do: "QA sign-off for MO #{target.code} finished product (BRCGS § 5.6).",
+        else: "Finished product awaiting QA sign-off (BRCGS § 5.6)."
+
+    %{
+      code: "final_release",
+      title: title,
+      detail:
+        "Everything's produced, closed-out, and back in the warehouse — but the finished lot sits in a finished-quarantine cell until QA does Positive Release. Two different signatures + CoA + BMR + micro report + label proof are required before the lot flips to `available` and can ship.",
+      primary_cta: %{
+        label: "Open Final Product Release",
+        kind: "link",
+        href: primary_href
+      },
+      secondary_ctas:
+        pending
+        |> Enum.drop(1)
+        |> Enum.map(fn mo ->
+          lot_uuid =
+            case Map.get(mo, :output_awaiting_release_lot_uuids, []) do
+              [u | _] when is_binary(u) -> u
+              _ -> nil
+            end
+
+          %{
+            label: "MO #{mo.code} — release",
+            kind: "link",
+            href:
+              if(lot_uuid,
+                do: "/production/final-releases/#{lot_uuid}",
+                else: "/production/final-releases"
+              ),
+            description:
+              "Attach evidence + collect two signatures on the awaiting-release output."
+          }
         end)
     }
   end

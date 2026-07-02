@@ -326,27 +326,35 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
 }
 
 // =============================================================================
-// MO lifecycle rail — 5-phase pipeline for the redesigned MO card
+// MO lifecycle rail — 6-phase pipeline for the redesigned MO card
 // =============================================================================
 //
-// Rolls the 10 live sub-stages up into 5 broad phases so the planner
+// Rolls the live sub-stages up into 6 broad phases so the planner
 // sees the shape of an MO's journey at a glance. Each phase is a
 // dot on a horizontal rail:
 //
-//   PLAN → SETUP → RUN → WRAP → DONE
-//   ●       ●      ○     ○       ○
+//   PLAN → SETUP → RUN → WRAP → RELEASE → DONE
+//   ●       ●      ○     ○       ○         ○
 //                  ↑
 //                  currently here — one callout + one action below
 //
 // Phase mapping:
-//   plan   — draft / prepared (planner still shaping the MO)
-//   setup  — approved / awaiting_pickup / picking / awaiting_preflight
-//   run    — ready_to_run / running (production floor's turn)
-//   wrap   — awaiting_output_qc / awaiting_closeout /
-//            awaiting_warehouse_return (post-run closeout chain)
-//   done   — everything cleared
+//   plan    — draft / prepared (planner still shaping the MO)
+//   setup   — approved / awaiting_pickup / picking / awaiting_preflight
+//   run     — ready_to_run / running (production floor's turn)
+//   wrap    — awaiting_output_qc / awaiting_closeout /
+//             awaiting_warehouse_return (post-run closeout chain)
+//   release — awaiting_final_release (BRCGS 5.6 QA sign-off before
+//             the finished lot can be dispatched)
+//   done    — everything cleared
 
-type MoLifecyclePhase = "plan" | "setup" | "run" | "wrap" | "done";
+type MoLifecyclePhase =
+  | "plan"
+  | "setup"
+  | "run"
+  | "wrap"
+  | "release"
+  | "done";
 
 const MO_PHASES: {
   key: MoLifecyclePhase;
@@ -357,6 +365,7 @@ const MO_PHASES: {
   { key: "setup", label: "Setup", short: "Setup" },
   { key: "run", label: "Run", short: "Run" },
   { key: "wrap", label: "Wrap", short: "Wrap" },
+  { key: "release", label: "Release", short: "Release" },
   { key: "done", label: "Done", short: "Done" },
 ];
 
@@ -366,14 +375,17 @@ function phaseForMo(mo: OrderWizardMo): MoLifecyclePhase {
     if (
       mo.output_qc_pending_count > 0 ||
       mo.bookings_closeout_pending_count > 0 ||
-      mo.output_at_feed_count > 0 ||
-      // Post-QC outputs waiting on QA sign-off (BRCGS § 5.6) — still
-      // wrap work, not done. Without this the MO card would jump to
-      // Done the moment output QC passes, even though the finished
-      // lot can't be dispatched until Final Product Release fires.
-      (mo.output_awaiting_release_count ?? 0) > 0
+      mo.output_at_feed_count > 0
     ) {
       return "wrap";
+    }
+    // Post-QC / post-return-pickup outputs waiting on QA sign-off
+    // (BRCGS Issue 9 § 5.6 Positive Release) get their own dot on
+    // the rail — the finished lot is on the shelf but not yet
+    // dispatchable. Without this the MO card would jump to Done the
+    // moment return-pickup landed, hiding the release step.
+    if ((mo.output_awaiting_release_count ?? 0) > 0) {
+      return "release";
     }
     return "done";
   }
