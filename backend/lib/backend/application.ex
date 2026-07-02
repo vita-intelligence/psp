@@ -60,7 +60,13 @@ defmodule Backend.Application do
     cfg = Application.get_env(:backend, :chromic_pdf, [])
 
     if Keyword.get(cfg, :start, true) do
-      {ChromicPDF, session_pool: [size: 3], disable_scripts: true}
+      # Session pool timeout is set at supervisor boot — the per-
+      # `print_to_pdf/2` `:timeout` opt does NOT override it. Bumped
+      # from ChromicPDF's default 5 s so BMR renders with embedded
+      # base64 photos (up to a few MB of payload) don't hit
+      # `Channel.run_protocol/3` timeout while Chrome parses them.
+      {ChromicPDF,
+       session_pool: [size: 3, timeout: 60_000], disable_scripts: true}
     end
   end
 end

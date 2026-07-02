@@ -39,18 +39,23 @@ defmodule Backend.Documents do
     }
   ]
 
-  # Bigger docs (BMRs with embedded photo grids) need more headroom
-  # than the ChromicPDF default 5s to render. Passed at the call site
-  # via `render_pdf/2`'s opts.
-  @bmr_render_timeout 60_000
+  # NOTE: the ChromicPDF render timeout is bumped at supervisor boot
+  # in `Backend.Application.chromic_pdf_child/0` via
+  # `session_pool: [timeout: 60_000]`. Per-request `:timeout` opts to
+  # `print_to_pdf/2` do NOT override that value, so the BMR relies on
+  # the supervisor-level bump instead.
 
-  # Cap chain-of-custody photos per MO — an MO with 20+ movements can
-  # easily push 40 MB of base64 into the HTML which Chrome refuses to
-  # paint within any reasonable timeout. First N chronological covers
-  # the audit story (pickup → preflight → closeout → return); the
-  # sign-off table already records every actor + timestamp for the
-  # rest, so no data is lost.
-  @bmr_photo_cap 12
+  # Cap chain-of-custody photos per MO. Each phone JPEG is 1-3 MB, so
+  # even 12 photos per MO pushes ~24 MB of base64 into the HTML which
+  # Chrome's `Channel.run_protocol/3` refuses to parse inside the 5 s
+  # protocol timeout (the browser process itself hangs on the string
+  # parse, not the render). Small cap keeps the payload << 10 MB per
+  # MO. Everything else stays as text rows in the sign-off table.
+  @bmr_photo_cap 4
+  # Absolute payload cap — skip a photo if its raw bytes exceed this.
+  # Bigger than a 4K portrait is almost certainly a screenshot the
+  # operator uploaded by mistake.
+  @bmr_photo_max_bytes 1_500_000
 
   @doc """
   Render the PO PDF for the given `audience`:
@@ -238,7 +243,7 @@ defmodule Backend.Documents do
   def production_bmr_pdf(release) do
     company = Companies.current()
     assigns = bmr_assigns(release, company)
-    render_pdf("production_bmr.html.eex", assigns, timeout: @bmr_render_timeout)
+    render_pdf("production_bmr.html.eex", assigns)
   end
 
   defp bmr_assigns(release, company) do
@@ -508,9 +513,17 @@ defmodule Backend.Documents do
           abs = Backend.Storage.Local.absolute_path(blob)
 
           if File.exists?(abs) do
-            bytes = File.read!(abs)
-            mime = mime_for(ext)
-            "data:#{mime};base64," <> Base.encode64(bytes)
+            case File.stat(abs) do
+              {:ok, %{size: size}} when size <= @bmr_photo_max_bytes ->
+                bytes = File.read!(abs)
+                mime = mime_for(ext)
+                "data:#{mime};base64," <> Base.encode64(bytes)
+
+              _ ->
+                # Photo too large to embed safely — skip inline, the
+                # movement still shows up in the sign-off timeline.
+                nil
+            end
           end
         end)
 
@@ -709,15 +722,13 @@ defmodule Backend.Documents do
 
   # ---------------------------------------------------------------- private
 
-  defp render_pdf(template, assigns, extra_opts \\ []) do
+  defp render_pdf(template, assigns) do
     html =
       @templates_dir
       |> Path.join(template)
       |> EEx.eval_file(assigns: assigns)
 
-    opts = Keyword.merge(@print_opts, extra_opts)
-
-    {:ok, base64} = ChromicPDF.print_to_pdf({:html, html}, opts)
+    {:ok, base64} = ChromicPDF.print_to_pdf({:html, html}, @print_opts)
     {:ok, Base.decode64!(base64)}
   end
 
