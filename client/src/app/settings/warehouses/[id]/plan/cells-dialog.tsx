@@ -739,6 +739,14 @@ function CellRow({
             help="These tags decide what stock can land here. Seeded from the rack when the level was created — add or remove freely to make this level more specific."
             readOnly={disabled}
             onCommit={(tags) => onPatch({ tags })}
+            systemReserved={CELL_PURPOSES.map((p) => ({
+              key: p.value,
+              label: p.label,
+              description: p.description,
+              chipClassName: p.chipClassName,
+              helpText:
+                "Reserved — set via the Purpose dropdown above, not as a tag.",
+            }))}
           />
           <FieldEditingIndicator peer={fieldEditors[keyFor("tags")]} />
         </div>

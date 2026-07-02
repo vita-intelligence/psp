@@ -2,11 +2,25 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Plus, X } from "lucide-react";
+import { ChevronDown, Lock, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { StorageTag } from "@/lib/types";
+
+/**
+ * System-reserved key. Rendered in the picker as a locked, non-
+ * selectable row above the freeform vocabulary so it's findable via
+ * search but can't be applied as a tag. `helpText` explains where the
+ * key is actually managed (e.g. "Set via Purpose dropdown above").
+ */
+export interface TagPickerSystemKey {
+  key: string;
+  label: string;
+  description?: string;
+  chipClassName?: string;
+  helpText?: string;
+}
 
 interface TagPickerProps {
   /** Currently selected tag keys (e.g. ["cold-zone", "pallet"]). */
@@ -24,6 +38,10 @@ interface TagPickerProps {
   help?: string;
   readOnly?: boolean;
   onCommit: (next: string[]) => void;
+  /** System-managed keys that live in the same conceptual space but
+   *  are managed elsewhere (e.g. cell.purpose). Rendered as locked
+   *  informational rows in the dropdown so searching finds them. */
+  systemReserved?: TagPickerSystemKey[];
 }
 
 /** Chip-based multi-select. Selected tags appear as chips at the
@@ -38,6 +56,7 @@ export function TagPicker({
   help,
   readOnly,
   onCommit,
+  systemReserved = [],
 }: TagPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -59,6 +78,17 @@ export function TagPicker({
         (t.description ?? "").toLowerCase().includes(q),
     );
   }, [available, query]);
+
+  const filteredSystem = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return systemReserved;
+    return systemReserved.filter(
+      (r) =>
+        r.key.includes(q) ||
+        r.label.toLowerCase().includes(q) ||
+        (r.description ?? "").toLowerCase().includes(q),
+    );
+  }, [systemReserved, query]);
 
   // Resolve selected keys to known tag rows; unknown selections (e.g.
   // tags that were deleted from the registry after they were
@@ -182,7 +212,60 @@ export function TagPicker({
                 />
               </div>
 
-              {filtered.length === 0 ? (
+              {filteredSystem.length > 0 && (
+                <div className="border-b border-border/60">
+                  <div className="flex items-center gap-1.5 px-3 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Lock className="size-2.5" />
+                    System reserved
+                  </div>
+                  <ul className="py-1">
+                    {filteredSystem.map((r) => (
+                      <li key={r.key}>
+                        <div
+                          className="flex items-start gap-2 px-3 py-1.5 text-xs opacity-90"
+                          title={
+                            r.helpText ??
+                            "Reserved by the system — managed elsewhere."
+                          }
+                        >
+                          <Lock className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-baseline gap-1.5">
+                              {r.chipClassName ? (
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                                    r.chipClassName,
+                                  )}
+                                >
+                                  {r.label}
+                                </span>
+                              ) : (
+                                <span className="font-medium">{r.label}</span>
+                              )}
+                              <span className="font-mono text-[10px] text-muted-foreground">
+                                {r.key}
+                              </span>
+                            </div>
+                            {r.description && (
+                              <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                                {r.description}
+                              </span>
+                            )}
+                            {r.helpText && (
+                              <span className="mt-0.5 block text-[10px] italic text-muted-foreground">
+                                {r.helpText}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {filtered.length === 0 && filteredSystem.length === 0 ? (
                 <p className="px-3 py-4 text-center text-[11px] text-muted-foreground">
                   No tags match. Manage the list at{" "}
                   <Link
