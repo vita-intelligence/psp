@@ -53,6 +53,14 @@ export const CELL_PURPOSES: PurposeMeta[] = [
     chipClassName:
       "bg-blue-500/10 text-blue-700 border border-blue-500/30 dark:text-blue-400",
   },
+  {
+    value: "finished_quarantine",
+    label: "Finished quarantine",
+    description:
+      "Holds finished-product output lots waiting on Final Product Release (BRCGS Issue 9 § 5.6). Physically separated from raw-material quarantine so incoming and outgoing 'unproven' stock never share a bay. The release form hard-blocks until the lot sits in one of these.",
+    chipClassName:
+      "bg-sky-500/10 text-sky-700 border border-sky-500/30 dark:text-sky-400",
+  },
 ];
 
 export const PURPOSE_BY_VALUE: Record<StorageCellPurpose, PurposeMeta> =

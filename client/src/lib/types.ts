@@ -1556,7 +1556,8 @@ export type StorageCellPurpose =
   | "quarantine"
   | "hold"
   | "rejected"
-  | "dispatch";
+  | "dispatch"
+  | "finished_quarantine";
 
 /** One physical level / subdivision of a storage location. A shelf
  *  with five usable levels has five cells, ordered bottom-to-top

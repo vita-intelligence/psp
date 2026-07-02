@@ -2245,8 +2245,21 @@ function ReadinessBanner({
 }) {
   const ready = readiness.ready;
   const counts = readiness.cell_counts_by_purpose;
-  const purposes: Array<"regular" | "quarantine" | "hold" | "rejected" | "dispatch"> =
-    ["regular", "quarantine", "hold", "rejected", "dispatch"];
+  const purposes: Array<
+    | "regular"
+    | "quarantine"
+    | "hold"
+    | "rejected"
+    | "dispatch"
+    | "finished_quarantine"
+  > = [
+    "regular",
+    "quarantine",
+    "hold",
+    "rejected",
+    "dispatch",
+    "finished_quarantine",
+  ];
 
   return (
     <section
@@ -2272,7 +2285,11 @@ function ReadinessBanner({
             const meta = purposeMeta(p);
             const count = counts[p] ?? 0;
             const isMissingRequired =
-              count === 0 && (p === "quarantine" || p === "hold" || p === "rejected");
+              count === 0 &&
+              (p === "quarantine" ||
+                p === "hold" ||
+                p === "rejected" ||
+                p === "finished_quarantine");
             return (
               <span
                 key={p}
