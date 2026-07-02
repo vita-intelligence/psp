@@ -270,6 +270,15 @@ defmodule Backend.Documents do
 
     output_rows = Enum.map(top_output_lots, &output_lot_row(&1, company))
 
+    # Product history photos — one merged, chronological grid that
+    # covers EVERY lot the tree touched (raw material goods-in
+    # receipts, sub-MO output pickups, parent MO consumption,
+    # return-pickup back to the warehouse, move to
+    # finished_quarantine). Presented as its own section after the MO
+    # cards so an auditor can read the whole batch's physical journey
+    # in one place instead of hunting through per-MO subsections.
+    history = product_history_photos(mo_chain_raw(mo), top_output_lots)
+
     lot_code = Backend.Numbering.render(lot.id, company, "stock_lot") || "#{lot.id}"
     mo_code = Backend.Numbering.render(mo.id, company, "manufacturing_order") || "#{mo.id}"
 
@@ -288,8 +297,26 @@ defmodule Backend.Documents do
       expiry_at: format_date(lot.expiry_at),
       mo_chain: mo_chain,
       output_lots: output_rows,
+      history_photos: history.photos,
+      history_omitted_count: history.omitted_count,
       signoffs: bmr_signoffs(release, mo_chain)
     }
+  end
+
+  # Same tree walk as collect_mo_chain/1 but returns the raw MO
+  # structs so we can pull their bookings' stock_lot_ids for the
+  # photo query (collect_mo_chain returns sections already mapped
+  # for the template).
+  defp mo_chain_raw(nil), do: []
+
+  defp mo_chain_raw(mo) do
+    children =
+      case Map.get(mo, :children) do
+        list when is_list(list) -> Enum.flat_map(list, &mo_chain_raw/1)
+        _ -> []
+      end
+
+    children ++ [mo]
   end
 
   # Depth-first collection of the whole MO tree, children BEFORE
@@ -383,13 +410,10 @@ defmodule Backend.Documents do
       _ -> []
     end
 
-    # Chain-of-custody photos — physical evidence for BRCGS auditors.
-    # We pull every stock_movements row with a photo tied to a lot
-    # this MO touched (booked inputs OR its own outputs) and order
-    # by occurred_at so the auditor can read pickup → preflight →
-    # closeout → return-pickup → move-to-quarantine left to right.
-    %{photos: chain_photos, omitted_count: omitted_photo_count} =
-      chain_of_custody(mo)
+    # Photos live in a dedicated top-level section (see
+    # `product_history_photos/2`), not on the per-MO card, so the
+    # audit story reads as one merged timeline instead of scattered
+    # sub-grids.
 
     planned_start =
       steps
@@ -415,39 +439,52 @@ defmodule Backend.Documents do
       materials: materials,
       operations: operations,
       output_lots: Enum.map(output_lots, &output_lot_row(&1, company)),
-      signoffs: signoffs,
-      photos: chain_photos,
-      omitted_photo_count: omitted_photo_count
+      signoffs: signoffs
     }
   end
 
-  # Collect every movement photo that touches this MO's lots — booked
-  # inputs (raw materials the pickers walked) AND its own outputs
-  # (return-pickups, moves to finished_quarantine, etc.). Ordered by
-  # occurred_at ascending so the auditor reads the chronological
-  # story of the batch's physical journey.
-  defp chain_of_custody(mo) do
-    input_lot_ids =
-      case mo.bookings do
-        list when is_list(list) ->
-          list
-          |> Enum.map(& &1.stock_lot_id)
-          |> Enum.reject(&is_nil/1)
+  # Full batch photo history — every lot that appears anywhere in
+  # the tree contributes its movement photos. Merged into a single
+  # chronological list so the auditor reads the whole physical story
+  # left-to-right: goods-in receipt of raw materials → warehouse
+  # pickup for the sub-MO → pickup for the parent MO → return-pickup
+  # of the finished output → move to finished_quarantine.
+  defp product_history_photos(mo_chain_raw, top_output_lots) do
+    booked_lot_ids =
+      Enum.flat_map(mo_chain_raw, fn mo ->
+        case mo.bookings do
+          list when is_list(list) ->
+            list
+            |> Enum.map(& &1.stock_lot_id)
+            |> Enum.reject(&is_nil/1)
+
+          _ ->
+            []
+        end
+      end)
+
+    output_lot_ids = Enum.map(top_output_lots, & &1.id)
+
+    sub_output_lot_ids =
+      case mo_chain_raw do
+        [] ->
+          []
 
         _ ->
-          []
+          uuids = Enum.map(mo_chain_raw, & &1.uuid)
+
+          Backend.Repo.all(
+            from l in Backend.Stock.Lot,
+              where:
+                l.source_kind == "manufacturing_order" and
+                  l.source_ref in ^uuids,
+              select: l.id
+          )
       end
 
-    output_lot_ids =
-      Backend.Repo.all(
-        from l in Backend.Stock.Lot,
-          where:
-            l.source_kind == "manufacturing_order" and
-              l.source_ref == ^mo.uuid,
-          select: l.id
-      )
-
-    lot_ids = Enum.uniq(input_lot_ids ++ output_lot_ids)
+    lot_ids =
+      (booked_lot_ids ++ output_lot_ids ++ sub_output_lot_ids)
+      |> Enum.uniq()
 
     if lot_ids == [] do
       %{photos: [], omitted_count: 0}
@@ -455,8 +492,6 @@ defmodule Backend.Documents do
       all_movements =
         Backend.Repo.all(
           from m in Backend.Stock.Movement,
-            left_join: lot in assoc(m, :stock_lot),
-            left_join: actor in assoc(m, :actor),
             where:
               m.stock_lot_id in ^lot_ids and
                 not is_nil(m.photo_url) and
@@ -465,10 +500,6 @@ defmodule Backend.Documents do
             preload: [stock_lot: [:item], actor: []]
         )
 
-      # Take the first N chronological — pickup / preflight / closeout
-      # / return-pickup normally happen in order, so the earliest
-      # captures cover the full audit story. The sign-off table still
-      # records every actor + timestamp for anything skipped.
       selected = Enum.take(all_movements, @bmr_photo_cap)
       omitted = length(all_movements) - length(selected)
 
