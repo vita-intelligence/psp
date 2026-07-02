@@ -1309,19 +1309,26 @@ defmodule Backend.OrderWizard do
     output_qc_pending_count =
       Enum.count(output_lots, &(&1.status == "received"))
 
-    # Output lots that passed output-QC but haven't been through Final
-    # Product Release yet (BRCGS Issue 9 § 5.6). QA still owes the
-    # sign-off ceremony (releaser + approver + CoA/BMR/micro/label-retain
-    # files); the lot can't dispatch until that lands. Surfaces as a
-    # `wrap` sub-stage on the projects board and drives the "Final
-    # Product Release" CTA on the MO card.
-    awaiting_release_lots =
-      Enum.filter(output_lots, &(&1.status == "awaiting_release"))
+    # Output lots that still owe a Final Product Release ceremony
+    # (BRCGS Issue 9 § 5.6 Positive Release). Includes both:
+    #
+    #   * `awaiting_release` — the new-flow path where output QC
+    #     parks the lot in a finished-quarantine cell.
+    #   * `available` legacy lots without a terminal release row —
+    #     these went through the pre-gate QC flow that flipped
+    #     straight to `available`, so an auditor asking "show me
+    #     the release record for lot X" would find nothing. Force
+    #     the ceremony retroactively rather than silently marking
+    #     the order Done.
+    #
+    # Sub-MO outputs reserved by a live parent MO ride the parent's
+    # release — they're filtered out by `needs_release?`.
+    needs_release_lots = Enum.filter(output_lots, & &1.needs_release?)
 
-    output_awaiting_release_count = length(awaiting_release_lots)
+    output_awaiting_release_count = length(needs_release_lots)
 
     output_awaiting_release_lot_uuids =
-      Enum.map(awaiting_release_lots, & &1.uuid)
+      Enum.map(needs_release_lots, & &1.uuid)
 
     # Same rationale as `under_booked` above — a `completed` or
     # `cancelled` MO can't be acted on procurement-side, so any
@@ -1708,10 +1715,63 @@ defmodule Backend.OrderWizard do
         |> MapSet.new()
       end
 
-    Enum.map(lots, &lot_with_placement(&1, committed_ids))
+    # `downstream_reserved_ids` = ANY downstream booking on the lot
+    # (any status, any lifecycle stage) as long as the consuming MO
+    # isn't cancelled. Broader than `committed_ids` on purpose — for
+    # release-owed math we want to skip lots that ANY parent MO ever
+    # reserved as an ingredient, even after that parent's own
+    # closeout consumed them. Those lots rode the parent's release,
+    # not their own.
+    downstream_reserved_ids =
+      if lot_ids == [] do
+        MapSet.new()
+      else
+        from(b in Backend.Production.ManufacturingOrderBooking,
+          join: mo in ManufacturingOrder,
+          on: mo.id == b.manufacturing_order_id,
+          where:
+            b.stock_lot_id in ^lot_ids and
+              mo.status != "cancelled",
+          select: b.stock_lot_id
+        )
+        |> Repo.all()
+        |> MapSet.new()
+      end
+
+    # Lots that already have a terminal Final Product Release row
+    # (released / on_hold / rejected). No more release owed on these
+    # — the ceremony has been completed one way or another.
+    released_or_finalized_ids =
+      if lot_ids == [] do
+        MapSet.new()
+      else
+        from(r in Backend.Production.FinalRelease,
+          where:
+            r.stock_lot_id in ^lot_ids and
+              r.status in ["released", "on_hold", "rejected"],
+          select: r.stock_lot_id
+        )
+        |> Repo.all()
+        |> MapSet.new()
+      end
+
+    Enum.map(
+      lots,
+      &lot_with_placement(
+        &1,
+        committed_ids,
+        downstream_reserved_ids,
+        released_or_finalized_ids
+      )
+    )
   end
 
-  defp lot_with_placement(%Lot{} = lot, committed_ids \\ MapSet.new()) do
+  defp lot_with_placement(
+         %Lot{} = lot,
+         committed_ids \\ MapSet.new(),
+         downstream_reserved_ids \\ MapSet.new(),
+         released_or_finalized_ids \\ MapSet.new()
+       ) do
     # "At production side" = anywhere the warehouse picker can fetch
     # the lot from on return-pickup. Matches the queue-side rule in
     # `Backend.Warehouses.ReturnPickup` (@return_pickup_purposes:
@@ -1733,6 +1793,28 @@ defmodule Backend.OrderWizard do
     # the corrected semantics without a rename cascade.
     committed? = MapSet.member?(committed_ids, lot.id)
 
+    # `needs_release?` = "QA still owes a Positive Release ceremony on
+    # this finished-goods lot" (BRCGS Issue 9 § 5.6). True when:
+    #   * lot is a top-of-tree output (no live downstream MO booking
+    #     — those ride the parent's release), AND
+    #   * lot doesn't already have a terminal release row, AND
+    #   * lot is at a status where release is applicable — either
+    #     `awaiting_release` (new-flow: parked in finished_quarantine
+    #     waiting for signatures) OR `available` (legacy pre-gate
+    #     lots that skipped the ceremony entirely and now need it
+    #     retroactively so the audit trail is complete).
+    reserved_downstream? =
+      MapSet.member?(downstream_reserved_ids, lot.id)
+
+    already_finalized? =
+      MapSet.member?(released_or_finalized_ids, lot.id)
+
+    needs_release? =
+      lot.source_kind == "manufacturing_order" and
+        lot.status in ["awaiting_release", "available"] and
+        not reserved_downstream? and
+        not already_finalized?
+
     %{
       id: lot.id,
       uuid: lot.uuid,
@@ -1740,7 +1822,8 @@ defmodule Backend.OrderWizard do
       status: lot.status,
       qty_received: lot.qty_received,
       placements: lot.placements,
-      at_production_feed?: physically_at_feed? and not committed?
+      at_production_feed?: physically_at_feed? and not committed?,
+      needs_release?: needs_release?
     }
   end
 

@@ -340,8 +340,16 @@ defmodule Backend.Production.FinalReleases do
 
   @doc """
   Finalise as Release. Requires dual sign-off + all four file kinds.
-  Emits the `released` lifecycle event on the lot → status flips to
-  `available` → auto-router moves it out of `finished_quarantine`.
+
+  Two paths:
+
+    * Lot is `awaiting_release` (new-flow) → emit the `released`
+      lifecycle event; status flips to `available`, auto-router moves
+      it out of `finished_quarantine`.
+    * Lot is `available` (legacy retroactive path — the ceremony was
+      never run under the old QC-pass flow) → skip the lifecycle
+      event, just record the release row + audit. The lot is already
+      dispatchable; this call only closes the compliance gap.
   """
   def release(%User{} = actor, %FinalRelease{} = release, attrs \\ %{}) do
     with :ok <- ensure_pending(release),
@@ -349,21 +357,16 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_dual_signatures(release),
          :ok <- ensure_all_files_present(release),
          {:ok, lot} <- fetch_lot(release),
-         :ok <- ensure_lot_awaiting_release(lot) do
+         :ok <- ensure_lot_releasable(lot) do
       notes = Map.get(attrs, "notes") || Map.get(attrs, :notes) || release.notes
 
       Repo.transaction(fn ->
         with {:ok, updated} <- finalise_row(actor, release, "released", %{notes: notes}),
-             {:ok, _lifecycle} <-
-               Lifecycle.record_event_in_transaction(lot, "released", %{
-                 actor: actor,
-                 actor_kind: "user",
-                 reason: notes,
-                 metadata: %{
-                   "final_release_uuid" => updated.uuid,
-                   "releaser_id" => updated.releaser_id,
-                   "approver_id" => updated.approver_id
-                 }
+             :ok <-
+               maybe_emit_release_event(lot, "released", actor, notes, %{
+                 "final_release_uuid" => updated.uuid,
+                 "releaser_id" => updated.releaser_id,
+                 "approver_id" => updated.approver_id
                }) do
           preload(updated)
         else
@@ -386,16 +389,13 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_actor_signed(release, actor),
          :ok <- ensure_reason(reason, :hold_reason),
          {:ok, lot} <- fetch_lot(release),
-         :ok <- ensure_lot_awaiting_release(lot) do
+         :ok <- ensure_lot_releasable(lot) do
       Repo.transaction(fn ->
         with {:ok, updated} <-
                finalise_row(actor, release, "on_hold", %{hold_reason: reason}),
-             {:ok, _lifecycle} <-
-               Lifecycle.record_event_in_transaction(lot, "held", %{
-                 actor: actor,
-                 actor_kind: "user",
-                 reason: reason,
-                 metadata: %{"final_release_uuid" => updated.uuid}
+             :ok <-
+               maybe_emit_release_event(lot, "held", actor, reason, %{
+                 "final_release_uuid" => updated.uuid
                }) do
           preload(updated)
         else
@@ -418,6 +418,11 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_reason(reason, :reject_reason),
          {:ok, lot} <- fetch_lot(release),
          :ok <- ensure_lot_awaiting_release(lot) do
+      # Reject stays gated on `awaiting_release` — an `available`
+      # legacy lot has already been on the market. Recalling it
+      # is a different (heavier) flow: quality incident + customer
+      # notifications + return-material paperwork. Force that path
+      # explicitly rather than treating it as a routine reject here.
       Repo.transaction(fn ->
         with {:ok, updated} <-
                finalise_row(actor, release, "rejected", %{reject_reason: reason}),
@@ -528,6 +533,46 @@ defmodule Backend.Production.FinalReleases do
 
   defp ensure_lot_awaiting_release(%Lot{status: "awaiting_release"}), do: :ok
   defp ensure_lot_awaiting_release(_), do: {:error, :lot_not_awaiting_release}
+
+  # Broader gate — accepts both the new-flow `awaiting_release` lots
+  # AND legacy `available` lots that missed the pre-gate ceremony and
+  # need it recorded retroactively.
+  defp ensure_lot_releasable(%Lot{status: status})
+       when status in ["awaiting_release", "available"],
+       do: :ok
+
+  defp ensure_lot_releasable(_), do: {:error, :lot_not_releasable}
+
+  # Emit the lot lifecycle event only when the current status supports
+  # the transition. Legacy `available` lots skip the emission — the
+  # lot is already at its terminal dispatchable state; the release
+  # row alone is the ceremony record. The state-machine matrix would
+  # reject `available` → `released` / `available` → `held` /
+  # `available` → `qc_failed` anyway, so we short-circuit rather than
+  # let the transition error out.
+  defp maybe_emit_release_event(
+         %Lot{status: "awaiting_release"} = lot,
+         kind,
+         actor,
+         reason,
+         metadata
+       ) do
+    case Lifecycle.record_event_in_transaction(lot, kind, %{
+           actor: actor,
+           actor_kind: "user",
+           reason: reason,
+           metadata: metadata
+         }) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_emit_release_event(%Lot{status: "available"}, _kind, _actor, _reason, _meta),
+    do: :ok
+
+  defp maybe_emit_release_event(%Lot{}, _kind, _actor, _reason, _meta),
+    do: {:error, :lot_not_releasable}
 
   defp fetch_lot(%FinalRelease{stock_lot_id: id}) do
     case Repo.get(Lot, id) do

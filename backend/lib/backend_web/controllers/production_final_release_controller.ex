@@ -295,6 +295,12 @@ defmodule BackendWeb.ProductionFinalReleaseController do
     )
   end
 
+  defp map_decision_error(conn, :lot_not_releasable) do
+    unprocessable(conn, "lot_not_releasable",
+      "This lot's lifecycle state doesn't support the requested action (rejected / disposed / held lots aren't re-releasable through this form)."
+    )
+  end
+
   defp map_decision_error(conn, :lot_not_found), do: not_found(conn)
 
   defp map_decision_error(conn, %Ecto.Changeset{} = cs), do: changeset_error(conn, cs)
