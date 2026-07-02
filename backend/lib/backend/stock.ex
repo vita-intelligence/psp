@@ -1687,16 +1687,30 @@ defmodule Backend.Stock do
          company_id: company_id,
          source_kind: "manufacturing_order",
          status: status
-       })
+       } = lot)
        when status in ["awaiting_release", "available"] do
     cond do
+      # Bailee custody flag OR a `routed_to_3pl` event → the lot's
+      # next physical stop is a three_pl_storage cell. Ranked ABOVE
+      # the terminal-release-row check because those lots ARE
+      # released (that's how they got to bailee); we want to steer
+      # them to the 3PL bay, not general shelving.
+      lot.ownership_kind == "bailee" or
+          lot_has_routing_event?(lot_id, "routed_to_3pl") ->
+        "three_pl_storage"
+
+      # Post-release routed for direct shipment → dispatch cell.
+      lot_has_routing_event?(lot_id, "routed_to_shipment") ->
+        "dispatch"
+
       Backend.Production.lot_committed_to_downstream_mo?(company_id, lot_id) ->
         # Sub-MO output being consumed by a parent MO — no release
         # owed, put-away is a normal move.
         "regular"
 
       lot_has_terminal_release_row?(lot_id) ->
-        # Already released / held / rejected — normal move.
+        # Already released / held / rejected, no routing decision on
+        # file — normal move (legacy or pre-routing lots).
         "regular"
 
       true ->
@@ -1705,6 +1719,13 @@ defmodule Backend.Stock do
   end
 
   defp move_target_purpose(_), do: "regular"
+
+  defp lot_has_routing_event?(lot_id, kind) do
+    Repo.exists?(
+      from e in Backend.Stock.LotEvent,
+        where: e.stock_lot_id == ^lot_id and e.kind == ^kind
+    )
+  end
 
   defp lot_has_terminal_release_row?(lot_id) do
     Repo.exists?(
