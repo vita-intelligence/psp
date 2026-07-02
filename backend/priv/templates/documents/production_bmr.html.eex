@@ -73,73 +73,124 @@
 </section>
 
 <section>
-  <h3 class="section-title">Materials consumed</h3>
-  <table>
-    <thead>
-      <tr>
-        <th style="width: 24px;">#</th>
-        <th>Material</th>
-        <th>Lot code</th>
-        <th>Supplier batch</th>
-        <th class="num">Booked</th>
-        <th class="num">Consumed</th>
-        <th>Picked by</th>
-        <th>Closed by</th>
-      </tr>
-    </thead>
-    <tbody>
-      <%= if @materials == [] do %>
-        <tr class="empty-row"><td colspan="8">No bookings recorded against this MO.</td></tr>
-      <% else %>
-        <%= for {m, idx} <- Enum.with_index(@materials, 1) do %>
+  <h3 class="section-title">Production route — <%= length(@mo_chain) %> MO<%= if length(@mo_chain) == 1, do: "", else: "s" %> in order</h3>
+  <p style="font-size: 8.5pt; color: #666; margin: 0 0 8px 0;">
+    Each MO below feeds the next: children (raw → semi) first, packaging / final assembly last. BRCGS Issue 9 § 3.9 traceability.
+  </p>
+
+  <%= for {section, idx} <- Enum.with_index(@mo_chain, 1) do %>
+    <div style="border: 1px solid #ccc; border-radius: 3px; padding: 8px; margin-top: 8px; page-break-inside: avoid;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #eee; padding-bottom: 4px; margin-bottom: 6px;">
+        <div>
+          <span style="font-family: ui-monospace, monospace; font-weight: 600;">Step <%= idx %> · <%= section.code %></span>
+          <span style="font-size: 8.5pt; color: #666; margin-left: 6px;"><%= section.role_label %></span>
+        </div>
+        <span style="font-size: 8pt; text-transform: uppercase; color: #555;"><%= section.status %></span>
+      </div>
+
+      <div class="grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 6px;">
+        <div class="cell"><div class="label">Output item</div><div class="value"><%= section.output_item %></div></div>
+        <div class="cell"><div class="label">Quantity</div><div class="value mono"><%= section.quantity %></div></div>
+        <div class="cell"><div class="label">Chain position</div><div class="value" style="font-size: 8.5pt;"><%= section.parent_ref %></div></div>
+        <div class="cell"><div class="label">Planned window</div><div class="value" style="font-size: 8pt; color: #444;"><%= section.planned_window %></div></div>
+        <div class="cell" style="grid-column: span 2;"><div class="label">Actual window</div><div class="value" style="font-size: 8pt; color: #444;"><%= section.actual_window %></div></div>
+      </div>
+
+      <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px 0;">Materials consumed</p>
+      <table>
+        <thead>
           <tr>
-            <td class="num"><%= idx %></td>
-            <td><%= m.item_name %></td>
-            <td class="mono"><%= m.lot_code %></td>
-            <td class="mono"><%= m.supplier_batch %></td>
-            <td class="num"><%= m.booked_qty %></td>
-            <td class="num"><%= m.consumed_qty %></td>
-            <td><%= m.picked_by %></td>
-            <td><%= m.consumed_by %></td>
+            <th style="width: 24px;">#</th>
+            <th>Material</th>
+            <th>Lot code</th>
+            <th>Supplier batch</th>
+            <th class="num">Booked</th>
+            <th class="num">Consumed</th>
+            <th>Picked by</th>
+            <th>Closed by</th>
           </tr>
-        <% end %>
-      <% end %>
-    </tbody>
-  </table>
+        </thead>
+        <tbody>
+          <%= if section.materials == [] do %>
+            <tr class="empty-row"><td colspan="8">No bookings recorded against this MO.</td></tr>
+          <% else %>
+            <%= for {m, midx} <- Enum.with_index(section.materials, 1) do %>
+              <tr>
+                <td class="num"><%= midx %></td>
+                <td><%= m.item_name %></td>
+                <td class="mono"><%= m.lot_code %></td>
+                <td class="mono"><%= m.supplier_batch %></td>
+                <td class="num"><%= m.booked_qty %></td>
+                <td class="num"><%= m.consumed_qty %></td>
+                <td><%= m.picked_by %></td>
+                <td><%= m.consumed_by %></td>
+              </tr>
+            <% end %>
+          <% end %>
+        </tbody>
+      </table>
+
+      <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px 0;">Routing operations</p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 24px;">#</th>
+            <th>Operation</th>
+            <th>Workstation</th>
+            <th>Planned</th>
+            <th>Actual</th>
+          </tr>
+        </thead>
+        <tbody>
+          <%= if section.operations == [] do %>
+            <tr class="empty-row"><td colspan="5">No routing operations logged.</td></tr>
+          <% else %>
+            <%= for {op, oidx} <- Enum.with_index(section.operations, 1) do %>
+              <tr>
+                <td class="num"><%= oidx %></td>
+                <td><%= op.description %></td>
+                <td><%= op.workstation %></td>
+                <td class="muted"><%= op.planned_window %></td>
+                <td class="muted"><%= op.actual_window %></td>
+              </tr>
+            <% end %>
+          <% end %>
+        </tbody>
+      </table>
+
+      <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px 0;">Output lots from this step</p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 24px;">#</th>
+            <th>Lot code</th>
+            <th>Supplier batch</th>
+            <th class="num">Qty received</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <%= if section.output_lots == [] do %>
+            <tr class="empty-row"><td colspan="5">No output lots.</td></tr>
+          <% else %>
+            <%= for {ol, olidx} <- Enum.with_index(section.output_lots, 1) do %>
+              <tr>
+                <td class="num"><%= olidx %></td>
+                <td class="mono"><%= ol.lot_code %></td>
+                <td class="mono"><%= ol.supplier_batch %></td>
+                <td class="num"><%= ol.qty %></td>
+                <td><%= ol.status %></td>
+              </tr>
+            <% end %>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
 </section>
 
 <section>
-  <h3 class="section-title">Routing operations</h3>
-  <table>
-    <thead>
-      <tr>
-        <th style="width: 24px;">#</th>
-        <th>Operation</th>
-        <th>Workstation</th>
-        <th>Planned</th>
-        <th>Actual</th>
-      </tr>
-    </thead>
-    <tbody>
-      <%= if @operations == [] do %>
-        <tr class="empty-row"><td colspan="5">No routing operations logged for this MO.</td></tr>
-      <% else %>
-        <%= for {op, idx} <- Enum.with_index(@operations, 1) do %>
-          <tr>
-            <td class="num"><%= idx %></td>
-            <td><%= op.description %></td>
-            <td><%= op.workstation %></td>
-            <td class="muted"><%= op.planned_window %></td>
-            <td class="muted"><%= op.actual_window %></td>
-          </tr>
-        <% end %>
-      <% end %>
-    </tbody>
-  </table>
-</section>
-
-<section>
-  <h3 class="section-title">Output</h3>
+  <h3 class="section-title">Final output (top-of-tree)</h3>
   <table>
     <thead>
       <tr>
@@ -169,12 +220,13 @@
 </section>
 
 <section>
-  <h3 class="section-title">Sign-offs</h3>
+  <h3 class="section-title">Sign-offs — every MO in the chain + release ceremony</h3>
   <div class="signoff-grid">
     <%= for s <- @signoffs do %>
-      <div class="signoff <%= if s.name == "—", do: "blank", else: "" %>">
+      <% blank = is_nil(s.name) or s.name == "" or s.name == "—" %>
+      <div class="signoff <%= if blank, do: "blank", else: "" %>">
         <div class="role"><%= s.role %></div>
-        <div class="name"><%= s.name %></div>
+        <div class="name"><%= if blank, do: "—", else: s.name %></div>
         <div class="when"><%= s.when %></div>
       </div>
     <% end %>

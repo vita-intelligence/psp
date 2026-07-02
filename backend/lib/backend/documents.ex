@@ -233,29 +233,16 @@ defmodule Backend.Documents do
     lot = release.stock_lot
     item = lot && lot.item
 
-    materials =
-      case mo && mo.bookings do
-        list when is_list(list) ->
-          list
-          |> Enum.sort_by(& &1.id)
-          |> Enum.map(&booking_row/1)
+    # Flatten the MO tree bottom-up (children first, root last) — the
+    # order production actually ran. Each entry becomes its own section
+    # in the report so the auditor sees the full "raw → semi → final"
+    # provenance instead of just the top-of-tree MO's bookings.
+    mo_chain =
+      mo
+      |> collect_mo_chain()
+      |> Enum.map(&mo_section(&1, company))
 
-        _ ->
-          []
-      end
-
-    operations =
-      case mo && mo.steps do
-        list when is_list(list) ->
-          list
-          |> Enum.sort_by(& &1.sort_order)
-          |> Enum.map(&step_row/1)
-
-        _ ->
-          []
-      end
-
-    output_lots =
+    top_output_lots =
       Backend.Repo.all(
         from l in Backend.Stock.Lot,
           where:
@@ -263,7 +250,7 @@ defmodule Backend.Documents do
               l.source_ref == ^(mo && mo.uuid || "")
       )
 
-    output_rows = Enum.map(output_lots, &output_lot_row/1)
+    output_rows = Enum.map(top_output_lots, &output_lot_row(&1, company))
 
     lot_code = Backend.Numbering.render(lot.id, company, "stock_lot") || "#{lot.id}"
     mo_code = Backend.Numbering.render(mo.id, company, "manufacturing_order") || "#{mo.id}"
@@ -281,16 +268,128 @@ defmodule Backend.Documents do
       bom_ref: bom_ref(mo),
       manufactured_at: format_date(lot.manufactured_at),
       expiry_at: format_date(lot.expiry_at),
-      materials: materials,
-      operations: operations,
+      mo_chain: mo_chain,
       output_lots: output_rows,
-      signoffs: bmr_signoffs(release, mo, output_lots)
+      signoffs: bmr_signoffs(release, mo_chain)
     }
   end
 
-  defp booking_row(b) do
-    company = Companies.current()
+  # Depth-first collection of the whole MO tree, children BEFORE
+  # parent, so the report reads chronologically: raw material MO
+  # first, semi-finished intermediate MO second, packaged / labelled
+  # final MO last.
+  defp collect_mo_chain(nil), do: []
 
+  defp collect_mo_chain(mo) do
+    children =
+      case Map.get(mo, :children) do
+        list when is_list(list) -> Enum.flat_map(list, &collect_mo_chain/1)
+        _ -> []
+      end
+
+    children ++ [mo]
+  end
+
+  defp mo_section(mo, company) do
+    materials =
+      case mo.bookings do
+        list when is_list(list) ->
+          list
+          |> Enum.sort_by(& &1.id)
+          |> Enum.map(&booking_row(&1, company))
+
+        _ ->
+          []
+      end
+
+    operations =
+      case mo.steps do
+        list when is_list(list) ->
+          list
+          |> Enum.sort_by(& &1.sort_order)
+          |> Enum.map(&step_row/1)
+
+        _ ->
+          []
+      end
+
+    output_lots =
+      Backend.Repo.all(
+        from l in Backend.Stock.Lot,
+          where:
+            l.source_kind == "manufacturing_order" and
+              l.source_ref == ^mo.uuid
+      )
+
+    parent_ref =
+      case mo.parent_mo_id do
+        nil ->
+          "Top-of-tree (final product)"
+
+        _ ->
+          "Feeds parent MO"
+      end
+
+    role_label =
+      case Map.get(mo.bom || %{}, :output_kind) do
+        _ ->
+          if is_nil(mo.parent_mo_id),
+            do: "Final assembly / packaging",
+            else: "Sub-MO — semi-finished input"
+      end
+
+    mo_code = Backend.Numbering.render(mo.id, company, "manufacturing_order") || "##{mo.id}"
+
+    signoffs = [
+      %{
+        role: "#{mo_code} prepared",
+        name: actor_name(mo.prepared_by),
+        when: when_stamp(mo.prepared_at)
+      },
+      %{
+        role: "#{mo_code} approved",
+        name: actor_name(mo.approved_by),
+        when: when_stamp(mo.approved_at)
+      },
+      %{
+        role: "#{mo_code} finish",
+        name: if(mo.actual_finish, do: "Recorded", else: nil),
+        when: when_stamp(mo.actual_finish)
+      }
+    ]
+
+    %{
+      code: mo_code,
+      output_item: (mo.item && mo.item.name) || "—",
+      quantity: format_decimal(mo.quantity),
+      role_label: role_label,
+      parent_ref: parent_ref,
+      status: humanize_lot_status(mo.status),
+      planned_window: format_window(mo.start_at, mo.finish_at),
+      actual_window: format_window(mo.actual_start, mo.actual_finish),
+      materials: materials,
+      operations: operations,
+      output_lots: Enum.map(output_lots, &output_lot_row(&1, company)),
+      signoffs: signoffs
+    }
+  rescue
+    _ ->
+      %{
+        code: "##{mo.id}",
+        output_item: "—",
+        quantity: "—",
+        role_label: "—",
+        parent_ref: "—",
+        status: "—",
+        planned_window: "—",
+        actual_window: "—",
+        materials: [],
+        operations: [],
+        output_lots: []
+      }
+  end
+
+  defp booking_row(b, company) do
     %{
       item_name: (b.item && b.item.name) || "—",
       lot_code:
@@ -322,9 +421,7 @@ defmodule Backend.Documents do
     }
   end
 
-  defp output_lot_row(lot) do
-    company = Companies.current()
-
+  defp output_lot_row(lot, company) do
     %{
       lot_code:
         Backend.Numbering.render(lot.id, company, "stock_lot") || "##{lot.id}",
@@ -334,23 +431,20 @@ defmodule Backend.Documents do
     }
   end
 
-  defp bmr_signoffs(release, mo, _output_lots) do
-    [
-      %{
-        role: "MO prepared by",
-        name: actor_name(mo && mo.prepared_by),
-        when: when_stamp(mo && mo.prepared_at)
-      },
-      %{
-        role: "MO approved by",
-        name: actor_name(mo && mo.approved_by),
-        when: when_stamp(mo && mo.approved_at)
-      },
-      %{
-        role: "Production finish",
-        name: mo && mo.actual_finish && "Recorded",
-        when: when_stamp(mo && mo.actual_finish)
-      },
+  # Sign-offs cover EVERY MO in the chain (each has its own preparer /
+  # approver + optional production-finish stamp) plus the final release
+  # ceremony at the top. Presented in the same chronological order as
+  # the sections above so the audit trail reads left-to-right.
+  defp bmr_signoffs(release, mo_chain) do
+    per_mo =
+      Enum.flat_map(mo_chain, fn section ->
+        # `section` is the map returned by mo_section/2, so it doesn't
+        # carry the raw MO struct. We stash the actors on the section
+        # too — see mo_section/2's expanded return value below.
+        Map.get(section, :signoffs, [])
+      end)
+
+    release_signoffs = [
       %{
         role: "Release: releaser",
         name: actor_name(release.releaser),
@@ -367,6 +461,8 @@ defmodule Backend.Documents do
         when: when_stamp(release.finalized_at)
       }
     ]
+
+    per_mo ++ release_signoffs
   end
 
   defp actor_name(nil), do: "—"

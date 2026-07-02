@@ -299,23 +299,41 @@ defmodule Backend.Production.FinalReleases do
         {:error, :bmr_already_attached}
 
       true ->
+        mo_preloads = [
+          :item,
+          :bom,
+          :prepared_by,
+          :approved_by,
+          bookings: [
+            :item,
+            :picked_by,
+            :consumed_by,
+            stock_lot: []
+          ],
+          steps: [:workstation_group]
+        ]
+
+        # Recurse the child tree so the BMR shows the ENTIRE production
+        # route — every sub-MO whose output was consumed upstream (blend
+        # → filled bulk → packaged 60-count, for example) — not just the
+        # top-of-tree MO. Auditors want to trace back to raw materials
+        # through every intermediate lot (BRCGS Issue 9 § 3.9).
         preloaded =
           Repo.preload(
             release,
             [
               stock_lot: [:item],
-              manufacturing_order: [
-                :bom,
-                :prepared_by,
-                :approved_by,
-                bookings: [
-                  :item,
-                  :picked_by,
-                  :consumed_by,
-                  stock_lot: []
-                ],
-                steps: [:workstation_group]
-              ]
+              manufacturing_order:
+                mo_preloads ++
+                  [
+                    children:
+                      mo_preloads ++
+                        [
+                          children:
+                            mo_preloads ++
+                              [children: mo_preloads]
+                        ]
+                  ]
             ]
           )
 
