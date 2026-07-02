@@ -1,7 +1,10 @@
 import { notFound, redirect } from "next/navigation";
 import { getSessionToken, getCurrentUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
+import { TopBar } from "@/components/layout/top-bar";
+import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getFinalReleaseByLot } from "@/lib/production-final-release/server";
+import { ProductionSubnav } from "../../production-subnav";
 import { FinalReleaseForm } from "./final-release-form";
 import { PlacementBlockScreen } from "./placement-block";
 
@@ -40,23 +43,29 @@ export default async function FinalReleasePage({ params }: Props) {
   const lotInFinishedQuarantine = cellPurpose === "finished_quarantine";
   const alreadyFinalized = release.status !== "pending";
 
-  if (!lotInFinishedQuarantine && !alreadyFinalized) {
-    return (
-      <div className="mx-auto w-full max-w-3xl px-4 py-6">
-        <PlacementBlockScreen release={release} lotUuid={lotUuid} />
-      </div>
-    );
-  }
-
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6">
-      <FinalReleaseForm
-        initialRelease={release}
-        lotUuid={lotUuid}
-        currentUserId={user.id}
-        currentUserName={user.name ?? user.email ?? "You"}
-        canRelease={canRelease}
-      />
+    <div className="flex flex-1 flex-col">
+      <TopBar user={user} />
+      <PresenceMount />
+      <ProductionSubnav />
+
+      <main className="flex-1 px-4 py-6 sm:px-8">
+        {!lotInFinishedQuarantine && !alreadyFinalized ? (
+          <div className="mx-auto w-full max-w-3xl">
+            <PlacementBlockScreen release={release} lotUuid={lotUuid} />
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-4xl">
+            <FinalReleaseForm
+              initialRelease={release}
+              lotUuid={lotUuid}
+              currentUserId={user.id}
+              currentUserName={user.name ?? user.email ?? "You"}
+              canRelease={canRelease}
+            />
+          </div>
+        )}
+      </main>
     </div>
   );
 }
