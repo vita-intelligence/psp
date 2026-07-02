@@ -383,6 +383,16 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "mo-pickup"),
     do: RBAC.has_permission?(user, "warehouse.pick")
 
+  # Final Product Release room — one channel per output lot awaiting
+  # QA sign-off (BRCGS Issue 9 § 5.6). Both signatories (releaser +
+  # approver) MUST be simultaneously present in the room to complete
+  # dual sign-off; the head-of-room is whichever one joined first and
+  # can drive the Release / Hold / Reject buttons. Gate on the
+  # single dedicated permission — the context still enforces
+  # releaser ≠ approver at signing time.
+  defp can_edit_resource?(user, "final-release"),
+    do: RBAC.has_permission?(user, "production.final_release")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

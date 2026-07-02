@@ -4802,4 +4802,125 @@ defmodule BackendWeb.Payloads do
   end
 
   defp render_code(_entity, _entity_key), do: nil
+
+  # ============================================================
+  # Final Product Release payloads — BRCGS Issue 9 § 5.6
+  # ============================================================
+
+  def production_final_release(%Backend.Production.FinalRelease{} = r) do
+    %{
+      uuid: r.uuid,
+      status: r.status,
+      notes: r.notes,
+      hold_reason: r.hold_reason,
+      reject_reason: r.reject_reason,
+      releaser_id: r.releaser_id,
+      releaser: actor(r, :releaser),
+      releaser_signed_at: r.releaser_signed_at,
+      approver_id: r.approver_id,
+      approver: actor(r, :approver),
+      approver_signed_at: r.approver_signed_at,
+      finalized_at: r.finalized_at,
+      finalized_by: actor(r, :finalized_by),
+      manufacturing_order:
+        case r.manufacturing_order do
+          %Backend.Production.ManufacturingOrder{} = mo ->
+            %{
+              id: mo.id,
+              uuid: mo.uuid,
+              code: render_code(mo, "manufacturing_order"),
+              quantity: decimal_to_string(mo.quantity),
+              status: mo.status
+            }
+
+          _ ->
+            nil
+        end,
+      stock_lot: production_final_release_lot_summary(r.stock_lot),
+      files:
+        case r.files do
+          list when is_list(list) -> Enum.map(list, &production_final_release_file/1)
+          _ -> []
+        end,
+      required_file_kinds: Backend.Production.FinalReleases.required_file_kinds(),
+      inserted_at: r.inserted_at,
+      updated_at: r.updated_at
+    }
+  end
+
+  def production_final_release(_), do: nil
+
+  def production_final_release_file(%Backend.Production.FinalReleaseFile{} = f) do
+    %{
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
+  def production_final_release_file(_), do: nil
+
+  defp production_final_release_lot_summary(%Backend.Stock.Lot{} = lot) do
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      status: lot.status,
+      qty_received: decimal_to_string(lot.qty_received),
+      expiry_at: lot.expiry_at,
+      item:
+        case lot.item do
+          %Backend.Items.Item{} = it ->
+            %{id: it.id, uuid: it.uuid, name: it.name, item_type: it.item_type}
+
+          _ ->
+            nil
+        end,
+      placement: production_final_release_lot_placement(lot.placements)
+    }
+  end
+
+  defp production_final_release_lot_summary(_), do: nil
+
+  defp production_final_release_lot_placement([%Backend.Stock.Placement{} = p | _]) do
+    cell = p.storage_cell
+
+    if match?(%Backend.Warehouses.StorageCell{}, cell) do
+      loc = cell.storage_location
+      floor = loc && loc.floor
+      warehouse = floor && floor.warehouse
+
+      %{
+        cell_uuid: cell.uuid,
+        cell_name: cell.name,
+        cell_purpose: cell.purpose,
+        location:
+          case loc do
+            %Backend.Warehouses.StorageLocation{} ->
+              %{uuid: loc.uuid, name: loc.name, code: loc.code}
+
+            _ ->
+              nil
+          end,
+        floor:
+          case floor do
+            %Backend.Warehouses.Floor{} -> %{uuid: floor.uuid, name: floor.name}
+            _ -> nil
+          end,
+        warehouse:
+          case warehouse do
+            %Backend.Warehouses.Warehouse{} -> %{uuid: warehouse.uuid, name: warehouse.name}
+            _ -> nil
+          end
+      }
+    else
+      nil
+    end
+  end
+
+  defp production_final_release_lot_placement(_), do: nil
 end

@@ -923,6 +923,59 @@ defmodule BackendWeb.Router do
       post "/return-pickup/picks/:pick_uuid/abort",
            WarehouseReturnPickupController,
            :abort
+
+      # Final Product Release (BRCGS Issue 9 § 5.6 Positive Release).
+      # Dual sign-off ceremony that flips an `awaiting_release`
+      # finished-product lot to `available` (or Hold / Reject).
+      # Every action gates on `production.final_release`; the context
+      # module enforces releaser ≠ approver.
+      get "/final-releases/queue",
+          ProductionFinalReleaseController,
+          :queue
+
+      get "/final-releases/by-lot/:lot_uuid",
+          ProductionFinalReleaseController,
+          :by_lot
+
+      patch "/final-releases/:uuid/notes",
+            ProductionFinalReleaseController,
+            :update_notes
+
+      post "/final-releases/:uuid/files",
+           ProductionFinalReleaseController,
+           :upload_file
+
+      delete "/final-releases/:uuid/files/:file_uuid",
+             ProductionFinalReleaseController,
+             :delete_file
+
+      get "/final-releases/:uuid/files/:file_uuid",
+          ProductionFinalReleaseController,
+          :serve_file
+
+      post "/final-releases/:uuid/sign-releaser",
+           ProductionFinalReleaseController,
+           :sign_releaser
+
+      post "/final-releases/:uuid/sign-approver",
+           ProductionFinalReleaseController,
+           :sign_approver
+
+      post "/final-releases/:uuid/clear-signature",
+           ProductionFinalReleaseController,
+           :clear_signature
+
+      post "/final-releases/:uuid/release",
+           ProductionFinalReleaseController,
+           :release
+
+      post "/final-releases/:uuid/hold",
+           ProductionFinalReleaseController,
+           :hold
+
+      post "/final-releases/:uuid/reject",
+           ProductionFinalReleaseController,
+           :reject
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

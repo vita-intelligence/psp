@@ -309,6 +309,8 @@ defmodule Backend.RBAC.Permissions do
      "Sign off the quality of a manufactured output lot (pass / fail) before it transfers to the warehouse"},
     {"production.closeout",
      "Close out a completed MO from the production line — scan + record how much of each booked material was consumed, hand the leftovers + produced output to the production-side dispatch cell"},
+    {"production.final_release",
+     "Final Product Release — sign off a finished output lot for dispatch (BRCGS Issue 9 § 5.6 Positive Release). Dual sign-off: two different holders of this permission must both sign before the lot flips from awaiting_release to available."},
     {"production.mo_delete", "Delete manufacturing orders"}
   ]
 
