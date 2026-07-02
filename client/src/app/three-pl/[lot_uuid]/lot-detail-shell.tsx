@@ -27,6 +27,7 @@ import { formatCompanyDate } from "@/lib/format/company";
 import { cn } from "@/lib/utils";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
+  ThreePLDispatchRow,
   ThreePLLotDetailResponse,
   ThreePLMoveInEvidence,
   ThreePLReleaseFile,
@@ -61,6 +62,13 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
   const location = cell?.storage_location;
   const misplaced = cell?.purpose && cell.purpose !== "three_pl_storage";
   const unit = lot.unit_of_measurement?.symbol ?? "";
+  const pendingDispatches = dispatches.filter((d) => d.status === "pending");
+  const completedDispatches = dispatches.filter(
+    (d) => d.status === "completed",
+  );
+  const cancelledDispatches = dispatches.filter(
+    (d) => d.status === "cancelled",
+  );
   const rateLine =
     summary.rate && summary.currency
       ? `${summary.rate} ${summary.currency}/m³/day`
@@ -258,66 +266,49 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
               title={
                 misplaced
                   ? "Move the lot into a three_pl_storage cell before dispatching."
-                  : "Record a new outbound dispatch."
+                  : "Queue a new dispatch for the warehouse picker."
               }
             >
               <Truck className="mr-1 size-3.5" />
-              New dispatch
+              Queue dispatch
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="space-y-4 p-0">
           {dispatches.length === 0 ? (
             <p className="px-4 py-4 text-xs text-muted-foreground">
               Nothing dispatched yet.
             </p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border/60 bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    <Th>When</Th>
-                    <Th className="text-right">Qty</Th>
-                    <Th>Reference</Th>
-                    <Th>By</Th>
-                    <Th>Evidence</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dispatches.map((d) => (
-                    <tr
-                      key={d.uuid}
-                      className="border-b border-border/40 last:border-b-0"
-                    >
-                      <Td>
-                        {formatCompanyDate(d.dispatched_at, companyDefaults)}
-                      </Td>
-                      <Td className="text-right font-mono">
-                        {d.qty}
-                        {unit ? ` ${unit}` : ""}
-                      </Td>
-                      <Td>{d.reference || "—"}</Td>
-                      <Td>{d.dispatched_by?.name ?? "—"}</Td>
-                      <Td>
-                        {d.photo_url ? (
-                          <a
-                            href={d.photo_url}
-                            target="_blank"
-                            rel="noopener"
-                            className="inline-flex items-center gap-1 text-brand hover:underline"
-                          >
-                            <Paperclip className="size-3" />
-                            Photo
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground/60">—</span>
-                        )}
-                      </Td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              {pendingDispatches.length > 0 && (
+                <DispatchTable
+                  title="Waiting for the picker"
+                  tone="pending"
+                  rows={pendingDispatches}
+                  unit={unit}
+                  companyDefaults={companyDefaults}
+                />
+              )}
+              {completedDispatches.length > 0 && (
+                <DispatchTable
+                  title="Completed"
+                  tone="completed"
+                  rows={completedDispatches}
+                  unit={unit}
+                  companyDefaults={companyDefaults}
+                />
+              )}
+              {cancelledDispatches.length > 0 && (
+                <DispatchTable
+                  title="Cancelled"
+                  tone="cancelled"
+                  rows={cancelledDispatches}
+                  unit={unit}
+                  companyDefaults={companyDefaults}
+                />
+              )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -327,6 +318,96 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
         onOpenChange={setDispatchOpen}
         row={dispatchRow}
       />
+    </div>
+  );
+}
+
+// ---------------- Dispatch table ----------------
+
+function DispatchTable({
+  title,
+  tone,
+  rows,
+  unit,
+  companyDefaults,
+}: {
+  title: string;
+  tone: "pending" | "completed" | "cancelled";
+  rows: ThreePLDispatchRow[];
+  unit: string;
+  companyDefaults: CompanyDefaults | null;
+}) {
+  const toneClass =
+    tone === "pending"
+      ? "text-sky-700 dark:text-sky-300"
+      : tone === "completed"
+        ? "text-emerald-700 dark:text-emerald-300"
+        : "text-muted-foreground";
+  return (
+    <div>
+      <div
+        className={cn(
+          "flex items-center gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider",
+          toneClass,
+        )}
+      >
+        {title}
+        <span className="rounded-full bg-background px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+          {rows.length}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+              <Th>Requested</Th>
+              <Th className="text-right">Qty</Th>
+              <Th>Reference</Th>
+              <Th>Requested by</Th>
+              <Th>Dispatched by</Th>
+              <Th>Evidence</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((d) => (
+              <tr
+                key={d.uuid}
+                className="border-b border-border/40 last:border-b-0"
+              >
+                <Td>
+                  {formatCompanyDate(d.requested_at, companyDefaults)}
+                </Td>
+                <Td className="text-right font-mono">
+                  {d.qty}
+                  {unit ? ` ${unit}` : ""}
+                </Td>
+                <Td>{d.reference || "—"}</Td>
+                <Td>{d.requested_by?.name ?? "—"}</Td>
+                <Td>
+                  {d.dispatched_by?.name ?? (
+                    <span className="text-muted-foreground/60">—</span>
+                  )}
+                </Td>
+                <Td>
+                  {d.photo_url ? (
+                    <a
+                      href={d.photo_url}
+                      target="_blank"
+                      rel="noopener"
+                      className="inline-flex items-center gap-1 text-brand hover:underline"
+                    >
+                      <Paperclip className="size-3" />
+                      Photo
+                    </a>
+                  ) : (
+                    <span className="text-muted-foreground/60">—</span>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

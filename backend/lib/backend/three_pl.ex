@@ -140,71 +140,107 @@ defmodule Backend.ThreePL do
   # =====================================================================
 
   @doc """
-  Send `qty` of a bailee lot out the door. Enforces:
+  Desktop step 1 — queue a dispatch request. Records qty + optional
+  reference / notes, flags `status = "pending"`, stamps the requester.
+  NO physical Stock.Movement fires here; that happens on mobile in
+  `complete_dispatch/3` when the warehouse picker executes the move.
+
+  Enforces:
 
     * actor holds `production.final_release`
-    * lot is `ownership_kind = "bailee"` (own stock ships via the
-      standard move flow, not this partial-lot procedure)
-    * `qty > 0` AND `qty <= source placement qty` in the lot's
-      current `three_pl_storage` cell
-    * warehouse has at least one `dispatch` cell to receive the qty
-
-  Records:
-    * a `three_pl_dispatches` row with qty + evidence (photo, optional
-      reference / notes) + actor + timestamp — the audit trail we can
-      show a customer or auditor asking "when did I get X"
-    * a `Backend.Stock.Movement` from the three_pl_storage cell to the
-      target dispatch cell for the same qty. The move + the audit row
-      commit or roll back as one.
+    * lot is `ownership_kind = "bailee"`
+    * `qty > 0` AND `qty <=` currently-held bailee qty (including
+      any qty already claimed by pending requests — one dispatch
+      can't over-book what another has already asked for)
 
   `attrs`:
 
       %{
         "lot_uuid" => "<uuid>",
         "qty" => decimal-parseable,
-        "reference" => nil | binary,  # carrier waybill, customer PO ref
-        "notes" => nil | binary,
-        "photo_url" => nil | binary   # evidence link (required in the FE)
+        "reference" => nil | binary,
+        "notes" => nil | binary
       }
 
-  Returns `{:ok, %{dispatch: dispatch, lot: lot}}` on success or
-  `{:error, reason}` where reason is one of `:forbidden`,
+  Returns `{:ok, %Dispatch{}}` or `{:error, reason}` — `:forbidden`,
   `:not_bailee`, `:bad_qty`, `:no_bailee_placement`,
-  `:insufficient_qty`, `:no_dispatch_cell`, or an
-  `%Ecto.Changeset{}` / raw context error tuple.
+  `:insufficient_qty`, `{:missing_key, key}`, or an
+  `%Ecto.Changeset{}`.
   """
-  def dispatch(%User{} = actor, attrs) when is_map(attrs) do
+  def request_dispatch(%User{} = actor, attrs) when is_map(attrs) do
     with :ok <- ensure_permission(actor),
          {:ok, lot_uuid} <- fetch_key(attrs, "lot_uuid"),
          {:ok, lot} <- fetch_bailee_lot(actor.company_id, lot_uuid),
          {:ok, qty} <- parse_qty(Map.get(attrs, "qty")),
+         :ok <- ensure_bailee_qty_available(lot, qty) do
+      %Dispatch{}
+      |> Dispatch.request_changeset(%{
+        company_id: actor.company_id,
+        stock_lot_id: lot.id,
+        qty: qty,
+        reference: Map.get(attrs, "reference"),
+        notes: Map.get(attrs, "notes"),
+        status: "pending",
+        requested_by_id: actor.id,
+        requested_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+      |> Repo.insert()
+    end
+  end
+
+  @doc """
+  Mobile step 2 — execute the physical dispatch. Called by the
+  warehouse picker after they've scanned the source three_pl_storage
+  cell, scanned the lot, walked the qty to the shipping bay, scanned
+  the destination dispatch cell, and captured a photo.
+
+  Runs inside a Repo.transaction so the Stock.Movement + placement
+  updates + dispatch row completion commit atomically. Rolls back if
+  any step fails.
+
+  `attrs`:
+
+      %{
+        "to_cell_uuid" => "<dispatch cell uuid>",
+        "photo_url" => "<evidence URL>"
+      }
+
+  Returns `{:ok, %{dispatch: dispatch, lot: lot}}` or `{:error, ...}`.
+  Errors: `:forbidden`, `:not_pending`, `:not_bailee`,
+  `:no_bailee_placement`, `:insufficient_qty`, `:bad_dispatch_cell`
+  (destination isn't a dispatch cell in the same warehouse), or an
+  `%Ecto.Changeset{}` from the move.
+  """
+  def complete_dispatch(%User{} = actor, dispatch_uuid, attrs)
+      when is_binary(dispatch_uuid) and is_map(attrs) do
+    with :ok <- ensure_permission(actor),
+         {:ok, dispatch, lot} <- fetch_pending_dispatch(actor.company_id, dispatch_uuid),
          {:ok, from_placement} <- find_bailee_placement(lot),
-         :ok <- ensure_qty_available(from_placement, qty),
-         {:ok, to_cell} <- find_dispatch_cell(from_placement) do
+         :ok <- ensure_qty_available(from_placement, dispatch.qty),
+         {:ok, to_cell} <- fetch_dispatch_cell(actor.company_id, attrs["to_cell_uuid"], from_placement) do
       Repo.transaction(fn ->
         move_attrs = %{
           "to_cell_uuid" => to_cell.uuid,
           "from_cell_uuid" => from_placement.storage_cell.uuid,
-          "qty" => Decimal.to_string(qty),
+          "qty" => Decimal.to_string(dispatch.qty),
           "photo_url" => Map.get(attrs, "photo_url"),
           "reason" => "3PL dispatch"
         }
 
         case Stock.move_placement(actor, lot.uuid, move_attrs) do
           {:ok, _} ->
-            row_attrs = %{
-              company_id: actor.company_id,
-              stock_lot_id: lot.id,
-              qty: qty,
-              reference: Map.get(attrs, "reference"),
-              notes: Map.get(attrs, "notes"),
+            now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+            dispatch
+            |> Dispatch.completion_changeset(%{
+              status: "completed",
               photo_url: Map.get(attrs, "photo_url"),
               dispatched_by_id: actor.id,
-              dispatched_at: DateTime.utc_now() |> DateTime.truncate(:second)
-            }
-
-            case %Dispatch{} |> Dispatch.changeset(row_attrs) |> Repo.insert() do
-              {:ok, row} -> %{dispatch: row, lot: Repo.reload!(lot)}
+              dispatched_at: now
+            })
+            |> Repo.update()
+            |> case do
+              {:ok, updated} -> %{dispatch: updated, lot: Repo.reload!(lot)}
               {:error, cs} -> Repo.rollback(cs)
             end
 
@@ -216,18 +252,83 @@ defmodule Backend.ThreePL do
   end
 
   @doc """
-  Every dispatch on `lot`, newest first. Used by the 3PL tab's lot
-  drawer + downstream reporting.
+  Every dispatch on `lot`, newest first. Includes pending, completed,
+  and cancelled — the tab renders them in separate sections.
   """
   def list_dispatches(%Lot{id: lot_id}) do
     import Ecto.Query
 
     from(d in Dispatch,
       where: d.stock_lot_id == ^lot_id,
-      order_by: [desc: d.dispatched_at, desc: d.id],
-      preload: [:dispatched_by]
+      order_by: [desc: d.requested_at, desc: d.id],
+      preload: [:requested_by, :dispatched_by]
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Pending dispatches across the whole company — feeds the mobile
+  picker queue. Preloaded so the FE renders lot + customer + volume
+  without a second round-trip.
+  """
+  def list_pending_dispatches(company_id) when is_integer(company_id) do
+    import Ecto.Query
+
+    from(d in Dispatch,
+      where: d.company_id == ^company_id and d.status == "pending",
+      order_by: [asc: d.requested_at, asc: d.id],
+      preload: [
+        :requested_by,
+        stock_lot: [
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+        ]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc "Look up a single pending dispatch by uuid, scoped to company."
+  def get_pending_dispatch(company_id, dispatch_uuid)
+      when is_integer(company_id) and is_binary(dispatch_uuid) do
+    import Ecto.Query
+
+    from(d in Dispatch,
+      where:
+        d.company_id == ^company_id and
+          d.uuid == ^dispatch_uuid and
+          d.status == "pending",
+      preload: [
+        :requested_by,
+        stock_lot: [
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+        ]
+      ]
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Cancel a pending dispatch — desktop only. Just flips status to
+  `cancelled` so the picker queue drops it. Rejects if the row has
+  already been completed.
+  """
+  def cancel_dispatch(%User{} = actor, dispatch_uuid) when is_binary(dispatch_uuid) do
+    with :ok <- ensure_permission(actor),
+         {:ok, dispatch, _lot} <- fetch_pending_dispatch(actor.company_id, dispatch_uuid) do
+      dispatch
+      |> Dispatch.completion_changeset(%{
+        status: "cancelled",
+        dispatched_by_id: actor.id,
+        dispatched_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+      |> Repo.update()
+    end
   end
 
   # =====================================================================
@@ -517,30 +618,91 @@ defmodule Backend.ThreePL do
     end
   end
 
-  # Pick any dispatch cell in the same warehouse as the source
-  # placement. The mobile move flow does per-cell fit ranking; here
-  # we just need SOME dispatch cell to hand off to. If none exists,
-  # dispatch fails so the operator adds one before continuing.
-  defp find_dispatch_cell(%Placement{storage_cell: cell}) do
-    warehouse_id =
-      cell.storage_location.floor && cell.storage_location.floor.warehouse_id
+  # Request-time guard — the desktop operator can't queue more than
+  # what's currently held in bailee custody, NET of any pending
+  # dispatches already on the queue. Otherwise two dispatch requests
+  # could over-book the same lot and the picker would hit
+  # insufficient_qty on the second one.
+  defp ensure_bailee_qty_available(%Lot{id: lot_id, placements: placements}, qty) do
+    held =
+      placements
+      |> Enum.filter(fn p ->
+        p.storage_cell &&
+          p.storage_cell.purpose == "three_pl_storage" &&
+          p.qty &&
+          Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+      |> Enum.reduce(Decimal.new(0), &Decimal.add(&2, &1.qty))
 
-    row =
-      from(c in StorageCell,
-        join: loc in assoc(c, :storage_location),
-        where:
-          loc.warehouse_id == ^warehouse_id and
-            c.purpose == "dispatch",
-        preload: [storage_location: [:floor]],
-        limit: 1
-      )
-      |> Repo.one()
+    pending_claim =
+      Repo.one(
+        from d in Dispatch,
+          where: d.stock_lot_id == ^lot_id and d.status == "pending",
+          select: sum(d.qty)
+      ) || Decimal.new(0)
 
-    case row do
-      %StorageCell{} = r -> {:ok, r}
-      nil -> {:error, :no_dispatch_cell}
+    free = Decimal.sub(held, pending_claim)
+
+    if Decimal.compare(free, qty) == :lt do
+      {:error, :insufficient_qty}
+    else
+      :ok
     end
   end
+
+  defp fetch_pending_dispatch(company_id, dispatch_uuid) do
+    case Repo.one(
+           from d in Dispatch,
+             where:
+               d.company_id == ^company_id and
+                 d.uuid == ^dispatch_uuid,
+             preload: [
+               stock_lot: [
+                 placements: [storage_cell: [storage_location: [:floor]]]
+               ]
+             ]
+         ) do
+      %Dispatch{status: "pending"} = d ->
+        case d.stock_lot do
+          %Lot{ownership_kind: "bailee"} = lot -> {:ok, d, lot}
+          %Lot{} -> {:error, :not_bailee}
+          _ -> {:error, :not_bailee}
+        end
+
+      %Dispatch{} ->
+        {:error, :not_pending}
+
+      _ ->
+        {:error, :dispatch_not_found}
+    end
+  end
+
+  # Scanned destination cell — must belong to the same company, be a
+  # dispatch cell, AND live in the same warehouse as the source 3PL
+  # cell so we can't accidentally cross-site.
+  defp fetch_dispatch_cell(company_id, cell_uuid, %Placement{storage_cell: from_cell})
+       when is_binary(cell_uuid) do
+    from_warehouse_id =
+      from_cell.storage_location.floor &&
+        from_cell.storage_location.floor.warehouse_id
+
+    case Repo.one(
+           from c in StorageCell,
+             join: loc in assoc(c, :storage_location),
+             where:
+               c.uuid == ^cell_uuid and
+                 c.company_id == ^company_id and
+                 c.purpose == "dispatch" and
+                 loc.warehouse_id == ^from_warehouse_id,
+             preload: [storage_location: [:floor]]
+         ) do
+      %StorageCell{} = c -> {:ok, c}
+      _ -> {:error, :bad_dispatch_cell}
+    end
+  end
+
+  defp fetch_dispatch_cell(_company_id, _, _), do: {:error, :bad_dispatch_cell}
+
 
   defp ensure_available(%Lot{status: "available"}), do: :ok
   defp ensure_available(_), do: {:error, :not_available}

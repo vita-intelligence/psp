@@ -32,6 +32,7 @@ interface Props {
   pendingPutawayCount: number;
   incomingTodayCount: number;
   submittedInspectionCount: number;
+  pendingThreePlDispatchCount: number;
 }
 
 /**
@@ -116,6 +117,15 @@ export const MOBILE_HOME_TILES = [
     badgeKey: null,
   },
   {
+    key: "three_pl_dispatch",
+    href: "/m/three-pl-dispatches",
+    label: "3PL dispatch",
+    description: "Pick bailee stock → walk to shipping",
+    icon: Truck,
+    permission: "stock.move",
+    badgeKey: "pendingThreePlDispatchCount",
+  },
+  {
     key: "scan",
     href: "/m/scan",
     label: "Scan QR",
@@ -163,6 +173,7 @@ export function MobileHomeShell({
   pendingPutawayCount,
   incomingTodayCount,
   submittedInspectionCount,
+  pendingThreePlDispatchCount,
 }: Props) {
   const router = useRouter();
   const { connected } = useDeviceChannel();
@@ -173,6 +184,8 @@ export function MobileHomeShell({
     if (key === "pendingPutawayCount") return pendingPutawayCount;
     if (key === "incomingTodayCount") return incomingTodayCount;
     if (key === "submittedInspectionCount") return submittedInspectionCount;
+    if (key === "pendingThreePlDispatchCount")
+      return pendingThreePlDispatchCount;
     return null;
   };
 

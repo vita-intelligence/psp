@@ -4825,14 +4825,14 @@ defmodule BackendWeb.Payloads do
     end
   end
 
-  defp render_code(%{id: id}, entity_key) when is_integer(id) do
+  def render_code(%{id: id}, entity_key) when is_integer(id) do
     case current_company() do
       nil -> nil
       company -> Numbering.render(id, company, entity_key)
     end
   end
 
-  defp render_code(_entity, _entity_key), do: nil
+  def render_code(_entity, _entity_key), do: nil
 
   # ============================================================
   # Final Product Release payloads — BRCGS Issue 9 § 5.6

@@ -834,7 +834,13 @@ defmodule BackendWeb.Router do
     # operator sees "no 3PL space" before we accept the choice.
     scope "/three-pl" do
       post "/route/:lot_uuid", ThreePLController, :route_lot
-      post "/dispatch/:lot_uuid", ThreePLController, :dispatch_lot
+      # Dispatch is a two-step flow: desktop queues the request, mobile
+      # picker executes the physical move + attaches the arrival photo.
+      post "/dispatch-requests", ThreePLController, :request_dispatch
+      get "/dispatch-requests", ThreePLController, :list_pending_dispatches
+      get "/dispatch-requests/:uuid", ThreePLController, :get_dispatch
+      post "/dispatch-requests/:uuid/complete", ThreePLController, :complete_dispatch
+      post "/dispatch-requests/:uuid/cancel", ThreePLController, :cancel_dispatch
       get "/inventory", ThreePLController, :inventory
       get "/lots/:lot_uuid", ThreePLController, :lot_detail
       get "/capacity/:warehouse_uuid", ThreePLController, :capacity

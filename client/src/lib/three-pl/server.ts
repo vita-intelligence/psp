@@ -1,9 +1,15 @@
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
+import { getDeviceToken } from "../devices/server";
 import type {
+  PendingDispatch,
   ThreePLInventoryResponse,
   ThreePLLotDetailResponse,
 } from "./types";
+
+async function anyToken(): Promise<string | null> {
+  return (await getSessionToken()) ?? (await getDeviceToken());
+}
 
 /** Bailee-custody inventory for the /three-pl tab. Guarded by
  *  `production.final_release` on the backend — a viewer without the
@@ -33,6 +39,40 @@ export async function getThreePLLotDetail(
       `/api/three-pl/lots/${encodeURIComponent(lotUuid)}`,
       { token },
     );
+  } catch {
+    return null;
+  }
+}
+
+/** Pending dispatches for the mobile picker queue — takes either a
+ *  device token (mobile flow) or a session token (desktop lookup). */
+export async function listPendingDispatches(): Promise<PendingDispatch[]> {
+  const token = await anyToken();
+  if (!token) return [];
+  try {
+    const res = await api<{ items: PendingDispatch[] }>(
+      "/api/three-pl/dispatch-requests",
+      { token, cache: "no-store" },
+    );
+    return res.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Single pending dispatch — the scan flow lands here after tapping
+ *  the row in the queue. */
+export async function getPendingDispatch(
+  uuid: string,
+): Promise<PendingDispatch | null> {
+  const token = await anyToken();
+  if (!token) return null;
+  try {
+    const res = await api<{ dispatch: PendingDispatch }>(
+      `/api/three-pl/dispatch-requests/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return res.dispatch;
   } catch {
     return null;
   }

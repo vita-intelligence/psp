@@ -98,56 +98,129 @@ defmodule BackendWeb.ThreePLController do
   end
 
   # ---------------------------------------------------------------
-  # POST /three-pl/dispatch/:lot_uuid
+  # POST /three-pl/dispatch-requests
   # ---------------------------------------------------------------
-  def dispatch_lot(conn, %{"lot_uuid" => lot_uuid} = params) do
+  def request_dispatch(conn, params) do
     actor = conn.assigns.current_user
-    attrs = Map.put(params, "lot_uuid", lot_uuid)
 
-    case ThreePL.dispatch(actor, attrs) do
+    case ThreePL.request_dispatch(actor, params) do
+      {:ok, dispatch} ->
+        preloaded = Repo.preload(dispatch, [:requested_by])
+        json(conn, %{dispatch: dispatch_payload(preloaded)})
+
+      {:error, reason} ->
+        dispatch_error(conn, reason)
+    end
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/dispatch-requests
+  # ---------------------------------------------------------------
+  def list_pending_dispatches(conn, _params) do
+    actor = conn.assigns.current_user
+    rows = ThreePL.list_pending_dispatches(actor.company_id)
+    json(conn, %{items: Enum.map(rows, &pending_dispatch_payload/1)})
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/dispatch-requests/:uuid
+  # ---------------------------------------------------------------
+  def get_dispatch(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case ThreePL.get_pending_dispatch(actor.company_id, uuid) do
+      nil ->
+        not_found(conn, "Pending dispatch not found (already completed or cancelled?).")
+
+      dispatch ->
+        json(conn, %{dispatch: pending_dispatch_payload(dispatch)})
+    end
+  end
+
+  # ---------------------------------------------------------------
+  # POST /three-pl/dispatch-requests/:uuid/complete
+  # ---------------------------------------------------------------
+  def complete_dispatch(conn, %{"uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case ThreePL.complete_dispatch(actor, uuid, params) do
       {:ok, %{lot: lot, dispatch: dispatched}} ->
         preloaded = preload_for_payload(lot)
 
         json(conn, %{
           lot: Payloads.stock_lot(preloaded),
-          dispatch: dispatch_payload(dispatched)
+          dispatch: dispatch_payload(Repo.preload(dispatched, [:requested_by, :dispatched_by]))
         })
 
-      {:error, :forbidden} ->
+      {:error, reason} ->
+        dispatch_error(conn, reason)
+    end
+  end
+
+  # ---------------------------------------------------------------
+  # POST /three-pl/dispatch-requests/:uuid/cancel
+  # ---------------------------------------------------------------
+  def cancel_dispatch(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case ThreePL.cancel_dispatch(actor, uuid) do
+      {:ok, dispatch} ->
+        json(conn, %{
+          dispatch:
+            dispatch_payload(
+              Repo.preload(dispatch, [:requested_by, :dispatched_by])
+            )
+        })
+
+      {:error, reason} ->
+        dispatch_error(conn, reason)
+    end
+  end
+
+  defp dispatch_error(conn, reason) do
+    case reason do
+      :forbidden ->
         conn
         |> put_status(:forbidden)
         |> json(Errors.payload("forbidden", "You lack production.final_release.", %{}))
 
-      {:error, :lot_not_found} ->
+      :lot_not_found ->
         not_found(conn, "Lot not found.")
 
-      {:error, :not_bailee} ->
-        unprocessable(conn, "not_bailee",
-          "Only bailee-custody lots can be dispatched this way. Own stock ships via the standard move flow.")
+      :dispatch_not_found ->
+        not_found(conn, "Dispatch request not found.")
 
-      {:error, :bad_qty} ->
+      :not_pending ->
+        unprocessable(conn, "not_pending",
+          "This dispatch has already been completed or cancelled.")
+
+      :not_bailee ->
+        unprocessable(conn, "not_bailee",
+          "Only bailee-custody lots can be dispatched here.")
+
+      :bad_qty ->
         unprocessable(conn, "bad_qty", "qty must be a positive decimal.")
 
-      {:error, :no_bailee_placement} ->
+      :no_bailee_placement ->
         unprocessable(conn, "no_bailee_placement",
-          "The lot isn't currently sitting in a three_pl_storage cell. Move it there before dispatching.")
+          "The lot isn't currently sitting in a three_pl_storage cell.")
 
-      {:error, :insufficient_qty} ->
+      :insufficient_qty ->
         unprocessable(conn, "insufficient_qty",
-          "Requested qty exceeds what's currently in bailee custody.")
+          "Requested qty exceeds what's currently in bailee custody (net of other pending dispatches).")
 
-      {:error, :no_dispatch_cell} ->
-        unprocessable(conn, "no_dispatch_cell",
-          "This warehouse has no dispatch cell. Add one under Settings → Warehouses → Plan.")
+      :bad_dispatch_cell ->
+        unprocessable(conn, "bad_dispatch_cell",
+          "The scanned destination isn't a dispatch cell in this warehouse.")
 
-      {:error, {:missing_key, key}} ->
+      {:missing_key, key} ->
         unprocessable(conn, "missing_field", "#{key} is required.")
 
-      {:error, %Ecto.Changeset{} = cs} ->
+      %Ecto.Changeset{} = cs ->
         changeset_error(conn, cs)
 
-      {:error, reason} ->
-        unprocessable(conn, "dispatch_failed", inspect(reason))
+      other ->
+        unprocessable(conn, "dispatch_failed", inspect(other))
     end
   end
 
@@ -365,17 +438,74 @@ defmodule BackendWeb.ThreePLController do
       reference: d.reference,
       notes: d.notes,
       photo_url: d.photo_url,
+      status: d.status,
+      requested_at: d.requested_at,
+      requested_by: user_summary(d.requested_by),
       dispatched_at: d.dispatched_at,
-      dispatched_by:
-        case d.dispatched_by do
-          %Backend.Accounts.User{} = u ->
-            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
-
-          _ ->
-            nil
-        end
+      dispatched_by: user_summary(d.dispatched_by)
     }
   end
+
+  # Richer payload used by the mobile picker queue — includes the lot
+  # + placement so the FE renders "walk to cell X, pick N of item Y
+  # from lot Z" without a second round-trip.
+  defp pending_dispatch_payload(%Backend.ThreePL.Dispatch{stock_lot: lot} = d)
+       when not is_nil(lot) do
+    placement =
+      Enum.find(lot.placements || [], fn p ->
+        p.storage_cell && p.storage_cell.purpose == "three_pl_storage" &&
+          p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+
+    cell = placement && placement.storage_cell
+    location = cell && cell.storage_location
+
+    Map.merge(dispatch_payload(d), %{
+      lot: %{
+        id: lot.id,
+        uuid: lot.uuid,
+        code: Payloads.render_code(lot, "stock_lot"),
+        supplier_batch_no: lot.supplier_batch_no,
+        item: lot.item && %{id: lot.item.id, uuid: lot.item.uuid, name: lot.item.name},
+        bailee_customer:
+          lot.bailee_customer &&
+            %{
+              id: lot.bailee_customer.id,
+              uuid: lot.bailee_customer.uuid,
+              name: lot.bailee_customer.name
+            },
+        unit_symbol: lot.unit_of_measurement && lot.unit_of_measurement.symbol
+      },
+      source_cell:
+        cell &&
+          %{
+            id: cell.id,
+            uuid: cell.uuid,
+            name: cell.name,
+            ordinal: cell.ordinal,
+            code: Payloads.render_code(cell, "storage_cell"),
+            purpose: cell.purpose
+          },
+      source_location:
+        location &&
+          %{
+            id: location.id,
+            uuid: location.uuid,
+            name: location.name,
+            code: location.code
+          }
+    })
+  end
+
+  defp pending_dispatch_payload(%Backend.ThreePL.Dispatch{} = d) do
+    Map.merge(dispatch_payload(d), %{lot: nil, source_cell: nil, source_location: nil})
+  end
+
+  defp user_summary(%Backend.Accounts.User{} = u) do
+    %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+  end
+
+  defp user_summary(_), do: nil
 
   defp bailee_lot_row(%Lot{} = l, rate) do
     volume_m3 = ThreePL.lot_held_volume_m3(l)

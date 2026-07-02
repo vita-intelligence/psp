@@ -41,13 +41,23 @@ export interface ThreePLCapacityResponse {
   };
 }
 
+export type DispatchStatus = "pending" | "completed" | "cancelled";
+
 export interface ThreePLDispatchRow {
   uuid: string;
   qty: string;
   reference: string | null;
   notes: string | null;
   photo_url: string | null;
-  dispatched_at: string;
+  status: DispatchStatus;
+  requested_at: string | null;
+  requested_by: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+  dispatched_at: string | null;
   dispatched_by: {
     id: number;
     uuid: string;
@@ -56,11 +66,44 @@ export interface ThreePLDispatchRow {
   } | null;
 }
 
-export interface DispatchLotInput {
+export interface RequestDispatchInput {
+  lot_uuid: string;
   qty: string;
   reference?: string | null;
   notes?: string | null;
-  photo_url?: string | null;
+}
+
+export interface CompleteDispatchInput {
+  to_cell_uuid: string;
+  photo_url: string;
+}
+
+/** Mobile picker queue row — dispatch + the lot / source cell
+ *  breadcrumb the picker needs to walk to the source. */
+export interface PendingDispatch extends ThreePLDispatchRow {
+  lot: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    supplier_batch_no: string | null;
+    item: { id: number; uuid: string; name: string } | null;
+    bailee_customer: { id: number; uuid: string; name: string } | null;
+    unit_symbol: string | null;
+  } | null;
+  source_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    ordinal: number;
+    code: string | null;
+    purpose: string;
+  } | null;
+  source_location: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    code: string | null;
+  } | null;
 }
 
 /** Full bundle for the /three-pl/[lot_uuid] item page. */

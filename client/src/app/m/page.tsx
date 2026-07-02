@@ -3,6 +3,7 @@ import { getDeviceDisplay, getDeviceToken } from "@/lib/devices/server";
 import { getInspectionViewer } from "@/lib/goods-in/server";
 import { getMobileIncoming } from "@/lib/goods-in/server";
 import { listPendingPutaway } from "@/lib/stock/mobile";
+import { listPendingDispatches } from "@/lib/three-pl/server";
 import { MobileHomeShell } from "./mobile-home-shell";
 
 export const metadata = { title: "PSP Mobile" };
@@ -17,10 +18,11 @@ export default async function MobileHome() {
   // Pull everything the menu needs in parallel — counts for the tile
   // badges + the full user payload (carries `permissions: string[]`)
   // so each tile can decide whether to render.
-  const [viewer, pendingLots, incoming] = await Promise.all([
+  const [viewer, pendingLots, incoming, pendingDispatches] = await Promise.all([
     getInspectionViewer(),
     listPendingPutaway(),
     getMobileIncoming(),
+    listPendingDispatches(),
   ]);
 
   // Submitted inspections are the ones waiting on QC sign-off. The
@@ -39,6 +41,7 @@ export default async function MobileHome() {
       pendingPutawayCount={pendingLots.length}
       incomingTodayCount={incoming?.items.length ?? 0}
       submittedInspectionCount={submittedInspectionCount}
+      pendingThreePlDispatchCount={pendingDispatches.length}
     />
   );
 }
