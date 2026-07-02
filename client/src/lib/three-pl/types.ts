@@ -78,6 +78,37 @@ export interface ThreePLLotDetailResponse {
   };
   dispatches: ThreePLDispatchRow[];
   release: ThreePLReleaseBundle | null;
+  /** Most recent Stock.Movement that landed the lot in a
+   *  three_pl_storage cell — carries the arrival photo the mobile
+   *  put-away flow captured. Null until the warehouse team has
+   *  physically moved the lot into 3PL storage (routing decision on
+   *  its own doesn't create a Movement row). */
+  move_in_evidence: ThreePLMoveInEvidence | null;
+}
+
+export interface ThreePLMoveInEvidence {
+  uuid: string;
+  photo_url: string | null;
+  skip_photo_reason: string | null;
+  occurred_at: string;
+  actor: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+  from_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    purpose: string;
+  } | null;
+  to_cell: {
+    id: number;
+    uuid: string;
+    name: string | null;
+    purpose: string;
+  } | null;
 }
 
 export interface ThreePLReleaseBundle {

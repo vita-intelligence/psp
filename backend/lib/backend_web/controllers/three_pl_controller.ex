@@ -182,7 +182,12 @@ defmodule BackendWeb.ThreePLController do
       nil ->
         not_found(conn, "Lot not found in bailee custody.")
 
-      %{lot: lot, dispatches: dispatches, release: release} ->
+      %{
+        lot: lot,
+        dispatches: dispatches,
+        release: release,
+        move_in_evidence: move_in
+      } ->
         rate = company.three_pl_rate_per_m3_per_day
 
         json(conn, %{
@@ -211,7 +216,8 @@ defmodule BackendWeb.ThreePLController do
               end
           },
           dispatches: Enum.map(dispatches, &dispatch_payload/1),
-          release: release_bundle_payload(release)
+          release: release_bundle_payload(release),
+          move_in_evidence: move_in_payload(move_in)
         })
     end
   end
@@ -273,6 +279,41 @@ defmodule BackendWeb.ThreePLController do
 
   defp sum_dispatch_qty(list) when is_list(list) do
     Enum.reduce(list, Decimal.new(0), &Decimal.add(&2, &1.qty))
+  end
+
+  defp move_in_payload(nil), do: nil
+
+  defp move_in_payload(%Backend.Stock.Movement{} = m) do
+    %{
+      uuid: m.uuid,
+      photo_url: m.photo_url,
+      skip_photo_reason: m.skip_photo_reason,
+      occurred_at: m.occurred_at,
+      actor:
+        case m.actor do
+          %Backend.Accounts.User{} = u ->
+            %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+
+          _ ->
+            nil
+        end,
+      from_cell:
+        case m.from_cell do
+          %Backend.Warehouses.StorageCell{} = c ->
+            %{id: c.id, uuid: c.uuid, name: c.name, purpose: c.purpose}
+
+          _ ->
+            nil
+        end,
+      to_cell:
+        case m.to_cell do
+          %Backend.Warehouses.StorageCell{} = c ->
+            %{id: c.id, uuid: c.uuid, name: c.name, purpose: c.purpose}
+
+          _ ->
+            nil
+        end
+    }
   end
 
   defp release_bundle_payload(nil), do: nil

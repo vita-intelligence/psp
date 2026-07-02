@@ -367,7 +367,8 @@ defmodule Backend.ThreePL do
         %{
           lot: preloaded,
           dispatches: list_dispatches(preloaded),
-          release: fetch_release_bundle(preloaded)
+          release: fetch_release_bundle(preloaded),
+          move_in_evidence: fetch_move_in_evidence(preloaded)
         }
 
       _ ->
@@ -388,6 +389,27 @@ defmodule Backend.ThreePL do
       )
 
     row
+  end
+
+  # Most-recent physical move that landed the lot in a
+  # three_pl_storage cell. Carries the arrival photo the mobile
+  # put-away flow captured (`kind = "move"`, `to_cell.purpose =
+  # three_pl_storage`). Nil when the lot hasn't been physically
+  # moved yet — the routing action alone doesn't create a Movement
+  # row, only the mobile scan flow does.
+  defp fetch_move_in_evidence(%Lot{id: lot_id}) do
+    Repo.one(
+      from m in Backend.Stock.Movement,
+        join: to_cell in Backend.Warehouses.StorageCell,
+        on: to_cell.id == m.to_cell_id,
+        where:
+          m.stock_lot_id == ^lot_id and
+            m.kind == "move" and
+            to_cell.purpose == "three_pl_storage",
+        order_by: [desc: m.occurred_at, desc: m.id],
+        limit: 1,
+        preload: [:actor, :from_cell, :to_cell]
+    )
   end
 
   @doc """

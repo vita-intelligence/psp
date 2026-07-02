@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import {
+  AlertTriangle,
   Boxes,
   Calendar,
+  Camera,
   CheckCircle2,
   FileText,
   MapPin,
@@ -26,6 +28,7 @@ import { cn } from "@/lib/utils";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
   ThreePLLotDetailResponse,
+  ThreePLMoveInEvidence,
   ThreePLReleaseFile,
 } from "@/lib/three-pl/types";
 import { DispatchDialog } from "../dispatch-dialog";
@@ -52,7 +55,7 @@ interface Props {
  */
 export function LotDetailShell({ detail, companyDefaults }: Props) {
   const [dispatchOpen, setDispatchOpen] = useState(false);
-  const { lot, summary, dispatches, release } = detail;
+  const { lot, summary, dispatches, release, move_in_evidence } = detail;
   const placement = lot.placements?.[0];
   const cell = placement?.storage_cell;
   const location = cell?.storage_location;
@@ -180,6 +183,9 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
           />
         </CardContent>
       </Card>
+
+      {/* -------- Arrival evidence (mobile put-away photo) -------- */}
+      <ArrivalEvidenceCard evidence={move_in_evidence} />
 
       {/* -------- Paperwork (Positive Release) -------- */}
       <Card>
@@ -322,6 +328,107 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
         row={dispatchRow}
       />
     </div>
+  );
+}
+
+// ---------------- Arrival evidence ----------------
+
+function ArrivalEvidenceCard({
+  evidence,
+}: {
+  evidence: ThreePLMoveInEvidence | null;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Camera className="size-4" />
+          Arrival evidence
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!evidence ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-300" />
+            <div>
+              <p className="font-medium text-amber-900 dark:text-amber-100">
+                Not yet moved into a 3PL cell
+              </p>
+              <p className="mt-0.5 text-amber-800/90 dark:text-amber-200/90">
+                Photo lands here the moment the warehouse team scans the
+                lot into a three_pl_storage cell via /m/putaway.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-[minmax(200px,240px)_1fr]">
+            {evidence.photo_url ? (
+              <a
+                href={evidence.photo_url}
+                target="_blank"
+                rel="noopener"
+                className="block overflow-hidden rounded-md border border-border/60 bg-muted/40"
+                title="Open full-size"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={evidence.photo_url}
+                  alt="Warehouse put-away evidence"
+                  className="aspect-square w-full object-cover"
+                />
+              </a>
+            ) : (
+              <div className="flex aspect-square w-full items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/20 text-[11px] text-muted-foreground">
+                No photo
+              </div>
+            )}
+            <div className="space-y-2 text-xs">
+              <div className="flex items-start gap-1.5">
+                <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
+                <div>
+                  <p className="font-medium">
+                    Landed in bailee custody
+                  </p>
+                  <p className="text-muted-foreground">
+                    {new Date(evidence.occurred_at).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+              <DetailRow
+                label="Moved by"
+                value={evidence.actor?.name ?? "—"}
+              />
+              <DetailRow
+                label="From"
+                value={
+                  evidence.from_cell?.name ||
+                  evidence.from_cell?.purpose ||
+                  "—"
+                }
+              />
+              <DetailRow
+                label="To"
+                value={
+                  evidence.to_cell?.name ||
+                  evidence.to_cell?.purpose ||
+                  "—"
+                }
+              />
+              {!evidence.photo_url && evidence.skip_photo_reason && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px]">
+                  <p className="font-medium text-amber-900 dark:text-amber-100">
+                    Photo skipped
+                  </p>
+                  <p className="text-amber-800/90 dark:text-amber-200/90">
+                    Reason: {evidence.skip_photo_reason}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
