@@ -1422,6 +1422,27 @@ function LineCard({
   const rollup = lineOverallRollup(line.mos);
   const overallPhase = MO_PHASES[rollup.minPhaseIdx];
   const isLineDone = rollup.totalCount > 0 && rollup.doneCount === rollup.totalCount;
+  // Rail = slowest MO in the tree, not the done count. When the
+  // done-count already reads like meaningful progress (e.g. "2/3
+  // MOs done") but the bar is still at Setup, spell out WHY —
+  // otherwise the two feel contradictory. If just one MO is
+  // holding it back, name it; if several share the phase, count
+  // them.
+  const bottleneckSuffix =
+    !isLineDone && rollup.doneCount > 0 && rollup.bottleneckMos.length > 0
+      ? rollup.bottleneckMos.length === 1
+        ? `${rollup.bottleneckMos[0].code ?? `MO #${rollup.bottleneckMos[0].id}`} in ${overallPhase.label}`
+        : `${rollup.bottleneckMos.length} MOs still in ${overallPhase.label}`
+      : null;
+  const railTooltip = isLineDone
+    ? "Every MO in the tree is done."
+    : `Overall progress tracks the slowest MO — the line can't finish before every MO does.${
+        rollup.bottleneckMos.length > 0
+          ? ` Currently: ${rollup.bottleneckMos
+              .map((m) => m.code ?? `MO #${m.id}`)
+              .join(", ")} in ${overallPhase.label}.`
+          : ""
+      }`;
 
   return (
     <section className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm">
@@ -1449,6 +1470,14 @@ function LineCard({
                   {rollup.doneCount}/{rollup.totalCount} MO
                   {rollup.totalCount === 1 ? "" : "s"} done
                 </span>
+                {bottleneckSuffix && (
+                  <>
+                    <span className="text-border">·</span>
+                    <span className="text-sky-700 dark:text-sky-400">
+                      {bottleneckSuffix}
+                    </span>
+                  </>
+                )}
                 {rollup.aheadCount > 0 && (
                   <>
                     <span className="text-border">·</span>
@@ -1468,7 +1497,10 @@ function LineCard({
             create-MO / awaiting-confirmation action chip. */}
         <div className="flex flex-col items-end gap-2 sm:min-w-[16rem]">
           {rollup.totalCount > 0 && (
-            <div className="flex w-full flex-col items-end gap-1">
+            <div
+              className="flex w-full flex-col items-end gap-1"
+              title={railTooltip}
+            >
               <LinePhaseRail currentIdx={rollup.minPhaseIdx} />
               <span
                 className={cn(
@@ -1534,10 +1566,21 @@ function lineOverallRollup(mos: OrderWizardMo[]): {
   doneCount: number;
   aheadCount: number;
   totalCount: number;
+  /** MOs sitting at the bottleneck phase — the ones actually holding
+   *  the rail back. Surfacing them lets the caption say "· MO00027 in
+   *  Setup" so the operator knows why the bar isn't further along
+   *  when the done-count already reads like meaningful progress. */
+  bottleneckMos: OrderWizardMo[];
 } {
   const flat = flattenMoTree(mos);
   if (flat.length === 0) {
-    return { minPhaseIdx: 0, doneCount: 0, aheadCount: 0, totalCount: 0 };
+    return {
+      minPhaseIdx: 0,
+      doneCount: 0,
+      aheadCount: 0,
+      totalCount: 0,
+      bottleneckMos: [],
+    };
   }
   const phaseIndices = flat.map((mo) => phaseIndex(phaseForMo(mo)));
   const minPhaseIdx = Math.min(...phaseIndices);
@@ -1547,11 +1590,15 @@ function lineOverallRollup(mos: OrderWizardMo[]): {
   const aheadCount = phaseIndices.filter(
     (idx) => idx > minPhaseIdx && idx < MO_PHASES.length - 1,
   ).length;
+  const bottleneckMos = flat.filter(
+    (mo) => phaseIndex(phaseForMo(mo)) === minPhaseIdx,
+  );
   return {
     minPhaseIdx,
     doneCount,
     aheadCount,
     totalCount: flat.length,
+    bottleneckMos,
   };
 }
 
