@@ -90,4 +90,5 @@ export interface FinalRelease {
 
 export interface FinalReleaseQueueResponse {
   items: FinalRelease[];
+  next_cursor?: string | null;
 }

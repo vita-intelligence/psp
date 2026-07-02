@@ -10,6 +10,7 @@ import {
   Play,
   Route,
   Settings2,
+  ShieldCheck,
   TrendingUp,
   Workflow,
 } from "lucide-react";
@@ -65,6 +66,13 @@ const SECTIONS: ProdSection[] = [
     description:
       "Pass / fail manufactured output lots. Until cleared, output stays in `received` status and can't be transferred to the warehouse.",
     Icon: Microscope,
+  },
+  {
+    href: "/production/final-releases",
+    label: "Final release",
+    description:
+      "QA sign-off on finished product before dispatch — dual signature + CoA / BMR / micro / label proof (BRCGS Issue 9 § 5.6 Positive Release).",
+    Icon: ShieldCheck,
   },
   {
     href: "/production/mps",

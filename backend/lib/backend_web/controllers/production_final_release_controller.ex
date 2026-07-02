@@ -36,11 +36,36 @@ defmodule BackendWeb.ProductionFinalReleaseController do
 
   # ----- Queue + fetch --------------------------------------------
 
-  def queue(conn, _params) do
+  def queue(conn, params) do
     actor = conn.assigns.current_user
-    rows = FinalReleases.list_pending(actor.company_id)
-    json(conn, %{items: Enum.map(rows, &Payloads.production_final_release/1)})
+
+    opts = [
+      status: Map.get(params, "status", "pending"),
+      limit: parse_int(Map.get(params, "limit"), 25),
+      cursor: Map.get(params, "cursor"),
+      search: Map.get(params, "search")
+    ]
+
+    {items, next_cursor} = FinalReleases.list_queue(actor.company_id, opts)
+
+    json(conn, %{
+      items: Enum.map(items, &Payloads.production_final_release/1),
+      next_cursor: next_cursor
+    })
   end
+
+  defp parse_int(nil, default), do: default
+  defp parse_int("", default), do: default
+
+  defp parse_int(v, default) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, _} -> n
+      _ -> default
+    end
+  end
+
+  defp parse_int(v, _default) when is_integer(v), do: v
+  defp parse_int(_, default), do: default
 
   def by_lot(conn, %{"lot_uuid" => lot_uuid}) do
     actor = conn.assigns.current_user

@@ -64,6 +64,11 @@ const ITEMS: SubnavItem[] = [
     Icon: Microscope,
   },
   {
+    href: "/production/final-releases",
+    label: "Final release",
+    Icon: ShieldCheck,
+  },
+  {
     href: "/production/mps",
     label: "MPS",
     Icon: TrendingUp,

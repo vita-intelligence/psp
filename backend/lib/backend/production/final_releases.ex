@@ -88,20 +88,128 @@ defmodule Backend.Production.FinalReleases do
     end
   end
 
-  @doc "Pending release queue for the mobile + desktop CTAs."
+  @doc """
+  Release queue with keyset pagination. Backs both the "just the
+  pending queue" callers (wizard, release form's `server.ts`
+  helper — pass nothing, get every pending row) AND the desktop
+  DataTable on `/production/final-releases` (pass status="all" or a
+  specific value + limit + cursor + search).
+
+  Opts:
+    * `:status`   — "pending" (default) | "all" | terminal status
+    * `:limit`    — result cap (default 200 for the "just give me
+                     everything" callers; the DataTable overrides
+                     with 25). Hard-capped at 500.
+    * `:cursor`   — string "inserted_at_iso|id" from a prior
+                     `next_cursor`
+    * `:search`   — matches lot code (via numbering), item name,
+                     or MO code (case-insensitive substring)
+  """
+  def list_queue(company_id, opts \\ []) when is_integer(company_id) do
+    status = Keyword.get(opts, :status, "pending")
+    limit = opts |> Keyword.get(:limit, 200) |> min(500) |> max(1)
+    cursor = Keyword.get(opts, :cursor)
+    search = opts |> Keyword.get(:search) |> normalize_search()
+
+    query =
+      from(fr in FinalRelease,
+        as: :release,
+        where: fr.company_id == ^company_id,
+        preload: [
+          :manufacturing_order,
+          :releaser,
+          :approver,
+          :files,
+          stock_lot: [
+            :item,
+            placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+          ]
+        ],
+        order_by: [asc: fr.inserted_at, asc: fr.id],
+        limit: ^(limit + 1)
+      )
+      |> maybe_filter_status(status)
+      |> maybe_apply_cursor(cursor)
+      |> maybe_apply_search(search)
+
+    rows = Repo.all(query)
+
+    {items, next_cursor} =
+      case Enum.split(rows, limit) do
+        {items, [next | _]} ->
+          {items, encode_cursor(next)}
+
+        {items, []} ->
+          {items, nil}
+      end
+
+    {items, next_cursor}
+  end
+
+  @doc "Legacy convenience — the pending-only shape callers depended on."
   def list_pending(company_id) when is_integer(company_id) do
-    from(fr in FinalRelease,
-      where: fr.company_id == ^company_id and fr.status == "pending",
-      preload: [
-        :manufacturing_order,
-        :releaser,
-        :approver,
-        :files,
-        stock_lot: [:item, placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]]
-      ],
-      order_by: [asc: fr.inserted_at, asc: fr.id]
-    )
-    |> Repo.all()
+    {items, _next} = list_queue(company_id, status: "pending", limit: 500)
+    items
+  end
+
+  defp maybe_filter_status(query, "all"), do: query
+
+  defp maybe_filter_status(query, status)
+       when status in ["pending", "released", "on_hold", "rejected"] do
+    from [release: fr] in query, where: fr.status == ^status
+  end
+
+  defp maybe_filter_status(query, _), do: query
+
+  defp maybe_apply_cursor(query, nil), do: query
+  defp maybe_apply_cursor(query, ""), do: query
+
+  defp maybe_apply_cursor(query, cursor) when is_binary(cursor) do
+    case decode_cursor(cursor) do
+      {:ok, {ts, id}} ->
+        from [release: fr] in query,
+          where:
+            fr.inserted_at > ^ts or (fr.inserted_at == ^ts and fr.id > ^id)
+
+      :error ->
+        query
+    end
+  end
+
+  defp maybe_apply_search(query, nil), do: query
+  defp maybe_apply_search(query, ""), do: query
+
+  defp maybe_apply_search(query, search) do
+    like = "%#{search}%"
+
+    from [release: fr] in query,
+      left_join: mo in assoc(fr, :manufacturing_order),
+      left_join: lot in assoc(fr, :stock_lot),
+      left_join: item in assoc(lot, :item),
+      where:
+        ilike(coalesce(item.name, ""), ^like) or
+          ilike(coalesce(fr.uuid, ""), ^like) or
+          fragment("CAST(? AS TEXT) ILIKE ?", mo.id, ^like) or
+          fragment("CAST(? AS TEXT) ILIKE ?", lot.id, ^like)
+  end
+
+  defp normalize_search(nil), do: nil
+  defp normalize_search(""), do: nil
+  defp normalize_search(str) when is_binary(str), do: String.trim(str)
+  defp normalize_search(_), do: nil
+
+  defp encode_cursor(%FinalRelease{inserted_at: ts, id: id}) do
+    "#{DateTime.to_iso8601(ts)}|#{id}"
+  end
+
+  defp decode_cursor(cursor) do
+    with [ts_part, id_part] <- String.split(cursor, "|", parts: 2),
+         {:ok, ts, _offset} <- DateTime.from_iso8601(ts_part),
+         {id, ""} <- Integer.parse(id_part) do
+      {:ok, {ts, id}}
+    else
+      _ -> :error
+    end
   end
 
   # ============================================================
