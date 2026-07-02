@@ -365,6 +365,13 @@ defmodule Backend.Documents do
       _ -> []
     end
 
+    # Chain-of-custody photos — physical evidence for BRCGS auditors.
+    # We pull every stock_movements row with a photo tied to a lot
+    # this MO touched (booked inputs OR its own outputs) and order
+    # by occurred_at so the auditor can read pickup → preflight →
+    # closeout → return-pickup → move-to-quarantine left to right.
+    chain_photos = chain_of_custody(mo)
+
     planned_start =
       steps
       |> Enum.map(& &1.planned_start)
@@ -389,9 +396,116 @@ defmodule Backend.Documents do
       materials: materials,
       operations: operations,
       output_lots: Enum.map(output_lots, &output_lot_row(&1, company)),
-      signoffs: signoffs
+      signoffs: signoffs,
+      photos: chain_photos
     }
   end
+
+  # Collect every movement photo that touches this MO's lots — booked
+  # inputs (raw materials the pickers walked) AND its own outputs
+  # (return-pickups, moves to finished_quarantine, etc.). Ordered by
+  # occurred_at ascending so the auditor reads the chronological
+  # story of the batch's physical journey.
+  defp chain_of_custody(mo) do
+    input_lot_ids =
+      case mo.bookings do
+        list when is_list(list) ->
+          list
+          |> Enum.map(& &1.stock_lot_id)
+          |> Enum.reject(&is_nil/1)
+
+        _ ->
+          []
+      end
+
+    output_lot_ids =
+      Backend.Repo.all(
+        from l in Backend.Stock.Lot,
+          where:
+            l.source_kind == "manufacturing_order" and
+              l.source_ref == ^mo.uuid,
+          select: l.id
+      )
+
+    lot_ids = Enum.uniq(input_lot_ids ++ output_lot_ids)
+
+    if lot_ids == [] do
+      []
+    else
+      Backend.Repo.all(
+        from m in Backend.Stock.Movement,
+          left_join: lot in assoc(m, :stock_lot),
+          left_join: actor in assoc(m, :actor),
+          where:
+            m.stock_lot_id in ^lot_ids and
+              not is_nil(m.photo_url) and
+              m.photo_url != "",
+          order_by: [asc: m.occurred_at, asc: m.id],
+          preload: [stock_lot: [:item], actor: []]
+      )
+      |> Enum.map(&photo_row/1)
+      |> Enum.reject(&is_nil/1)
+    end
+  end
+
+  defp photo_row(movement) do
+    lot = movement.stock_lot
+    item_name = (lot && lot.item && lot.item.name) || "—"
+    data_uri = inline_photo(movement.photo_url)
+
+    if is_nil(data_uri) do
+      nil
+    else
+      %{
+        photo_url: data_uri,
+        kind_label: humanize_movement_kind(movement.kind, movement.reason),
+        item_name: item_name,
+        when: format_date_time(movement.occurred_at),
+        actor: actor_name(movement.actor)
+      }
+    end
+  end
+
+  # Chrome (via ChromicPDF) can't fetch our auth-gated photo URLs
+  # during PDF rendering — the session cookie doesn't propagate into
+  # the render tab. Read bytes off disk via Backend.Storage.Local and
+  # embed as a data URI so the images always show regardless of auth
+  # context. Falls back to nil if the file's missing (deleted or on a
+  # different storage adapter).
+  defp inline_photo(url) when is_binary(url) do
+    case Regex.run(~r{/movement-photos/([^/]+)/file}, url) do
+      [_, uuid] ->
+        Enum.find_value([".jpg", ".png", ".webp"], fn ext ->
+          blob = "movement_photos/" <> uuid <> ext
+          abs = Backend.Storage.Local.absolute_path(blob)
+
+          if File.exists?(abs) do
+            bytes = File.read!(abs)
+            mime = mime_for(ext)
+            "data:#{mime};base64," <> Base.encode64(bytes)
+          end
+        end)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp inline_photo(_), do: nil
+
+  defp mime_for(".jpg"), do: "image/jpeg"
+  defp mime_for(".png"), do: "image/png"
+  defp mime_for(".webp"), do: "image/webp"
+
+  defp humanize_movement_kind(nil, reason), do: reason || "Move"
+  defp humanize_movement_kind("move", nil), do: "Move"
+  defp humanize_movement_kind("move", reason) when is_binary(reason), do: reason
+  defp humanize_movement_kind("adjust_up", _), do: "Qty adjust +"
+  defp humanize_movement_kind("adjust_down", _), do: "Qty adjust −"
+  defp humanize_movement_kind("consume", _), do: "Consumed"
+  defp humanize_movement_kind("dispose", _), do: "Disposed"
+  defp humanize_movement_kind(kind, _) when is_binary(kind), do: String.capitalize(kind)
+  defp humanize_movement_kind(_, _), do: "Move"
 
   defp booking_row(b, company) do
     %{

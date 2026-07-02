@@ -79,7 +79,7 @@
   </p>
 
   <%= for {section, idx} <- Enum.with_index(@mo_chain, 1) do %>
-    <div style="border: 1px solid #ccc; border-radius: 3px; padding: 8px; margin-top: 8px; page-break-inside: avoid;">
+    <div style="border: 1px solid #ccc; border-radius: 3px; padding: 8px; margin-top: 8px;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #eee; padding-bottom: 4px; margin-bottom: 6px;">
         <div>
           <span style="font-family: ui-monospace, monospace; font-weight: 600;">Step <%= idx %> · <%= section.code %></span>
@@ -185,6 +185,25 @@
           <% end %>
         </tbody>
       </table>
+
+      <%= if section.photos != [] do %>
+        <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px 0;">
+          Chain of custody — <%= length(section.photos) %> photo<%= if length(section.photos) == 1, do: "", else: "s" %> · chronological
+        </p>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
+          <%= for p <- section.photos do %>
+            <figure style="margin: 0; border: 1px solid #ddd; border-radius: 3px; overflow: hidden; background: #fafafa;">
+              <img src="<%= p.photo_url %>" alt="" style="display: block; width: 100%; height: 110px; object-fit: cover;" />
+              <figcaption style="padding: 4px 6px; font-size: 7.5pt; color: #444; line-height: 1.35;">
+                <div style="font-weight: 600; color: #111;"><%= p.kind_label %></div>
+                <div><%= p.item_name %></div>
+                <div style="font-family: ui-monospace, monospace; color: #666;"><%= p.when %></div>
+                <div style="color: #666;"><%= p.actor %></div>
+              </figcaption>
+            </figure>
+          <% end %>
+        </div>
+      <% end %>
     </div>
   <% end %>
 </section>
