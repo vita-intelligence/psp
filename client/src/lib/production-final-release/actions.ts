@@ -30,10 +30,8 @@ function revalidate(release: FinalRelease) {
   const lot = release.stock_lot?.uuid;
   if (lot) {
     revalidatePath(`/production/final-releases/${lot}`);
-    revalidatePath(`/m/final-release/${lot}`);
   }
   revalidatePath(`/production/final-releases/queue`);
-  revalidatePath(`/m/final-release`);
 }
 
 export async function updateReleaseNotesAction(
