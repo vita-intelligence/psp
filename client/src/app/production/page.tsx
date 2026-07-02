@@ -10,6 +10,7 @@ import {
   Play,
   Route,
   Settings2,
+  Shield,
   ShieldCheck,
   TrendingUp,
   Workflow,
@@ -38,6 +39,13 @@ const SECTIONS: ProdSection[] = [
     description:
       "Open MOs, their status, consumed stock, and yield. Drives the floor schedule.",
     Icon: Factory,
+  },
+  {
+    href: "/production/approvals",
+    label: "Approvals",
+    description:
+      "MOs awaiting the 2nd signature — preparer + countersigner shows here, oldest first. Two different holders of `production.mo_approve` required.",
+    Icon: Shield,
   },
   {
     href: "/production/schedule",
