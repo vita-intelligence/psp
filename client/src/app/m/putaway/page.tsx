@@ -1,14 +1,10 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import {
-  ChevronLeft,
-  ChevronRight,
-  PackageOpen,
-  ShieldCheck,
-} from "lucide-react";
+import { ChevronLeft, PackageOpen } from "lucide-react";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getSessionToken } from "@/lib/auth/server";
 import { listPendingPutaway } from "@/lib/stock/mobile";
+import { PutawayRow } from "./putaway-row";
 
 export const metadata = { title: "Pending put-away · PSP Mobile" };
 
@@ -60,45 +56,9 @@ export default async function MobilePutawayPage() {
             </p>
           </div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-3">
             {pendingLots.map((lot) => (
-              <li key={lot.uuid}>
-                <Link
-                  href={`/m/lots/${lot.uuid}`}
-                  className="flex items-center gap-3 rounded-lg border border-border/60 bg-card px-3 py-3 active:bg-muted"
-                >
-                  <div className="flex-1 space-y-0.5 min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-mono text-xs font-semibold">
-                        {lot.code ?? `#${lot.id}`}
-                      </span>
-                      {lot.needs_release_quarantine_move ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
-                          <ShieldCheck className="size-2.5" />
-                          → Finished quarantine
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                          Unregistered
-                        </span>
-                      )}
-                    </div>
-                    <p className="truncate text-sm font-medium">
-                      {lot.item?.name ?? "—"}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {lot.qty_on_hand ?? "—"}{" "}
-                      {lot.unit_of_measurement?.symbol ?? ""}
-                    </p>
-                    {lot.needs_release_quarantine_move && (
-                      <p className="text-[10px] text-sky-700 dark:text-sky-400">
-                        BRCGS 5.6 — scan into any finished-quarantine cell.
-                      </p>
-                    )}
-                  </div>
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                </Link>
-              </li>
+              <PutawayRow key={lot.uuid} lot={lot} />
             ))}
           </ul>
         )}
