@@ -1133,19 +1133,25 @@ defmodule Backend.OrderWizard do
         "Move #{move_lot_count} finished lot#{plural_s(move_lot_count)} to finished-quarantine (BRCGS § 5.6).",
       detail:
         "The lot#{plural_s(move_lot_count)} still on general shelving can't be released until the warehouse team scans #{if move_lot_count == 1, do: "it", else: "them"} into a finished-quarantine cell (standard scan-lot → scan-cell → photo procedure). Once the move records a Stock.Movement with photo evidence, the QA release form unblocks.#{if ready_lot_count > 0, do: " (#{ready_lot_count} other lot#{plural_s(ready_lot_count)} already in the release bay — release those separately.)", else: ""}",
+      # Push the target to a paired mobile device — the move flow
+      # only exists on the phone (needs the camera for the required
+      # photo). Opening /m/putaway in the laptop browser is
+      # useless.
       primary_cta: %{
-        label: "Open pending put-away",
-        kind: "link",
-        href: "/m/putaway"
+        label: "Send put-away to phone",
+        kind: "send_to_device",
+        href: "/m/putaway",
+        mo_uuid: target && Map.get(target, :uuid)
       },
       secondary_ctas:
         mos
         |> Enum.drop(1)
         |> Enum.map(fn mo ->
           %{
-            label: "MO #{mo.code} — move to finished-quarantine",
-            kind: "link",
+            label: "MO #{mo.code} — send put-away to phone",
+            kind: "send_to_device",
             href: "/m/putaway",
+            mo_uuid: mo.uuid,
             description:
               "Warehouse picker scans the output lot into a finished-quarantine cell."
           }

@@ -1994,14 +1994,24 @@ function MiniMoCard({
 
         {/* Pre-release move — finished lot on general shelving needs
             to physically land in a finished_quarantine cell before
-            QA can even open the form. Point straight at the mobile
-            pending-putaway queue where the lot's already listed. */}
+            QA can even open the form. Push the target at a paired
+            phone (the move flow needs the camera) rather than
+            navigating the current laptop tab to /m/putaway. */}
         {stage?.key === "awaiting_release_move" && (
-          <Button asChild size="sm" variant="outline">
-            <Link href="/m/putaway">
-              <Smartphone className="mr-1 size-3" />
-              Send move to phone
-            </Link>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              onSendToDevice({
+                label: "Send put-away to phone",
+                kind: "send_to_device",
+                href: `/m/putaway`,
+                mo_uuid: mo.uuid,
+              })
+            }
+          >
+            <Smartphone className="mr-1 size-3" />
+            Send put-away to phone
           </Button>
         )}
 
@@ -2762,11 +2772,20 @@ function MoModal({
               </Button>
             )}
             {stage?.key === "awaiting_release_move" && (
-              <Button asChild size="sm" variant="outline">
-                <Link href="/m/putaway">
-                  <Smartphone className="mr-1 size-3" />
-                  Send move to phone
-                </Link>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  onSendToDevice({
+                    label: "Send put-away to phone",
+                    kind: "send_to_device",
+                    href: `/m/putaway`,
+                    mo_uuid: mo.uuid,
+                  })
+                }
+              >
+                <Smartphone className="mr-1 size-3" />
+                Send put-away to phone
               </Button>
             )}
             {stage?.key === "awaiting_final_release" && (

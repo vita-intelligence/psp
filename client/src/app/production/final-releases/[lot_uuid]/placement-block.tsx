@@ -10,10 +10,13 @@ import {
   QrCode,
   RefreshCw,
   ShieldAlert,
+  Smartphone,
 } from "lucide-react";
 import { useTransition } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { pushNavigateToMyDevicesAction } from "@/lib/devices/actions";
 import type { FinalRelease } from "@/lib/production-final-release/types";
 
 /**
@@ -34,10 +37,32 @@ export function PlacementBlockScreen({
 }) {
   const router = useRouter();
   const [refreshing, startRefresh] = useTransition();
+  const [pushing, startPush] = useTransition();
   const lot = release.stock_lot;
   const placement = lot?.placement;
   const currentCellName = placement?.cell_name ?? "an unrecorded cell";
   const currentPurpose = placement?.cell_purpose ?? "unknown";
+
+  const sendPutawayToPhone = () =>
+    startPush(async () => {
+      const res = await pushNavigateToMyDevicesAction("/m/putaway");
+      if (!res.ok) {
+        toast.error(res.detail ?? "Couldn't push to your paired devices.");
+        return;
+      }
+      const count = res.pushed_to.length;
+      if (count === 0) {
+        toast.warning(
+          "No paired devices. Open PSP on the warehouse phone first, then try again.",
+        );
+      } else {
+        toast.success(
+          count === 1
+            ? "Put-away opened on your phone."
+            : `Put-away opened on ${count} paired devices.`,
+        );
+      }
+    });
 
   return (
     <div className="space-y-4">
@@ -99,14 +124,10 @@ export function PlacementBlockScreen({
                   1
                 </div>
                 <span>
-                  Open{" "}
-                  <Link
-                    href="/m/putaway"
-                    className="font-medium text-brand underline-offset-2 hover:underline"
-                  >
-                    /m/putaway
-                  </Link>{" "}
-                  on the warehouse phone. This lot is listed there with a{" "}
+                  Open put-away on the warehouse phone (use{" "}
+                  <span className="font-medium">Send put-away to phone</span>{" "}
+                  below to push it there — the move flow needs the camera, so
+                  don&apos;t use the desktop tab). This lot is listed with a{" "}
                   <span className="font-medium">→ Finished quarantine</span>{" "}
                   chip.
                 </span>
@@ -139,6 +160,15 @@ export function PlacementBlockScreen({
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
+              onClick={sendPutawayToPhone}
+              disabled={pushing}
+            >
+              <Smartphone className="mr-2 size-4" />
+              {pushing ? "Pushing…" : "Send put-away to phone"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
               onClick={() =>
                 startRefresh(() => {
                   router.refresh();
