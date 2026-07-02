@@ -215,6 +215,7 @@ type MoLiveStage =
   | "awaiting_output_qc"
   | "awaiting_closeout"
   | "awaiting_warehouse_return"
+  | "awaiting_release_move"
   | "awaiting_final_release"
   | "completed";
 
@@ -311,10 +312,18 @@ function deriveMoLiveStage(mo: OrderWizardMo): MoStageView | null {
           tone: "amber",
         };
       }
-      if ((mo.output_awaiting_release_count ?? 0) > 0) {
+      if ((mo.output_release_move_needed_count ?? 0) > 0) {
+        return {
+          key: "awaiting_release_move",
+          label: `Move to finished-quarantine (${mo.output_release_move_needed_count})`,
+          hint: "Finished product is on general shelving but the release ceremony (BRCGS Issue 9 § 5.6 + § 4.4 segregation) needs it in a finished-quarantine bay first. Send the warehouse worker to /m/putaway — scan the lot, scan a finished-quarantine cell, take the required photo. Until that Stock.Movement lands the QA form stays walled off.",
+          tone: "amber",
+        };
+      }
+      if ((mo.output_release_ready_count ?? 0) > 0) {
         return {
           key: "awaiting_final_release",
-          label: `Awaiting Final Product Release (${mo.output_awaiting_release_count})`,
+          label: `Awaiting Final Product Release (${mo.output_release_ready_count})`,
           hint: "Finished product is on the shelf in a finished-quarantine cell. QA owes the release ceremony — attach CoA + BMR + micro + label-retain, collect two signatures, then Release / Hold / Reject (BRCGS Issue 9 § 5.6 Positive Release).",
           tone: "sky",
         };
@@ -1983,16 +1992,28 @@ function MiniMoCard({
           </Button>
         )}
 
-        {/* Final Product Release — after return-pickup lands the
-            finished lot in a finished-quarantine cell, QA owes the
-            release ceremony. Deep-link straight to the first
-            awaiting-release lot's dialog. */}
+        {/* Pre-release move — finished lot on general shelving needs
+            to physically land in a finished_quarantine cell before
+            QA can even open the form. Point straight at the mobile
+            pending-putaway queue where the lot's already listed. */}
+        {stage?.key === "awaiting_release_move" && (
+          <Button asChild size="sm" variant="outline">
+            <Link href="/m/putaway">
+              <Smartphone className="mr-1 size-3" />
+              Send move to phone
+            </Link>
+          </Button>
+        )}
+
+        {/* Final Product Release — lot is in a finished-quarantine
+            cell and ready for the QA sign-off ceremony. Deep-link
+            straight to the first ready lot's dialog. */}
         {stage?.key === "awaiting_final_release" && (
           <Button asChild size="sm" variant="outline">
             <Link
               href={
-                mo.output_awaiting_release_lot_uuids?.[0]
-                  ? `/production/final-releases/${mo.output_awaiting_release_lot_uuids[0]}`
+                mo.output_release_ready_lot_uuids?.[0]
+                  ? `/production/final-releases/${mo.output_release_ready_lot_uuids[0]}`
                   : "/production/final-releases"
               }
             >
@@ -2740,12 +2761,20 @@ function MoModal({
                 Closeout on device
               </Button>
             )}
+            {stage?.key === "awaiting_release_move" && (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/m/putaway">
+                  <Smartphone className="mr-1 size-3" />
+                  Send move to phone
+                </Link>
+              </Button>
+            )}
             {stage?.key === "awaiting_final_release" && (
               <Button asChild size="sm" variant="outline">
                 <Link
                   href={
-                    mo.output_awaiting_release_lot_uuids?.[0]
-                      ? `/production/final-releases/${mo.output_awaiting_release_lot_uuids[0]}`
+                    mo.output_release_ready_lot_uuids?.[0]
+                      ? `/production/final-releases/${mo.output_release_ready_lot_uuids[0]}`
                       : "/production/final-releases"
                   }
                 >

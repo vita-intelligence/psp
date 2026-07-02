@@ -1157,6 +1157,13 @@ defmodule BackendWeb.Payloads do
         Map.get(mo, :output_awaiting_release_count, 0),
       output_awaiting_release_lot_uuids:
         Map.get(mo, :output_awaiting_release_lot_uuids, []),
+      output_release_move_needed_count:
+        Map.get(mo, :output_release_move_needed_count, 0),
+      output_release_move_needed_lot_uuids:
+        Map.get(mo, :output_release_move_needed_lot_uuids, []),
+      output_release_ready_count: Map.get(mo, :output_release_ready_count, 0),
+      output_release_ready_lot_uuids:
+        Map.get(mo, :output_release_ready_lot_uuids, []),
       bookings_closeout_pending_count: mo.bookings_closeout_pending_count,
       has_output_at_production_feed: mo.has_output_at_production_feed?,
       cancelled_orphan_booking_count:

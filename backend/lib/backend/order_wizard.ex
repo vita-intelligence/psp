@@ -1077,46 +1077,116 @@ defmodule Backend.OrderWizard do
   end
 
   defp next_action_for(:final_release, _co, _line_states, mos, _signers) do
-    # Every MO that still owes a Final Product Release. Point the CTA
-    # at the first awaiting-release lot on the first pending MO —
-    # multiple lots go through the queue.
-    pending =
-      Enum.filter(mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0))
+    # STRICT ORDER: warehouse move FIRST (physical segregation into
+    # finished_quarantine), THEN QA sign-off. Attempting the ceremony
+    # while the lot's on general shelving hard-blocks at the form
+    # entry (BRCGS Issue 9 § 5.6 + § 4.4), so the wizard must not
+    # propose it until the move has landed.
+    move_needed_mos =
+      Enum.filter(
+        mos,
+        &(Map.get(&1, :output_release_move_needed_count, 0) > 0)
+      )
 
-    target = List.first(pending)
+    ready_mos =
+      Enum.filter(mos, &(Map.get(&1, :output_release_ready_count, 0) > 0))
+
+    cond do
+      move_needed_mos != [] ->
+        final_release_move_needed_action(move_needed_mos)
+
+      ready_mos != [] ->
+        final_release_ready_action(ready_mos)
+
+      true ->
+        %{
+          code: "final_release",
+          title: "Finished product awaiting QA sign-off (BRCGS § 5.6).",
+          detail:
+            "Every finished lot on this order still owes a Final Product Release ceremony.",
+          primary_cta: %{
+            label: "Open release queue",
+            kind: "link",
+            href: "/production/final-releases"
+          },
+          secondary_ctas: []
+        }
+    end
+  end
+
+  defp final_release_move_needed_action(mos) do
+    target = List.first(mos)
+
+    move_lot_count =
+      Enum.reduce(mos, 0, fn mo, acc ->
+        acc + Map.get(mo, :output_release_move_needed_count, 0)
+      end)
+
+    ready_lot_count =
+      Enum.reduce(mos, 0, fn mo, acc ->
+        acc + Map.get(mo, :output_release_ready_count, 0)
+      end)
+
+    %{
+      code: "final_release_move",
+      title:
+        "Move #{move_lot_count} finished lot#{plural_s(move_lot_count)} to finished-quarantine (BRCGS § 5.6).",
+      detail:
+        "The lot#{plural_s(move_lot_count)} still on general shelving can't be released until the warehouse team scans #{if move_lot_count == 1, do: "it", else: "them"} into a finished-quarantine cell (standard scan-lot → scan-cell → photo procedure). Once the move records a Stock.Movement with photo evidence, the QA release form unblocks.#{if ready_lot_count > 0, do: " (#{ready_lot_count} other lot#{plural_s(ready_lot_count)} already in the release bay — release those separately.)", else: ""}",
+      primary_cta: %{
+        label: "Open pending put-away",
+        kind: "link",
+        href: "/m/putaway"
+      },
+      secondary_ctas:
+        mos
+        |> Enum.drop(1)
+        |> Enum.map(fn mo ->
+          %{
+            label: "MO #{mo.code} — move to finished-quarantine",
+            kind: "link",
+            href: "/m/putaway",
+            description:
+              "Warehouse picker scans the output lot into a finished-quarantine cell."
+          }
+        end)
+    }
+  end
+
+  defp final_release_ready_action(mos) do
+    target = List.first(mos)
 
     target_lot_uuid =
-      case target && Map.get(target, :output_awaiting_release_lot_uuids, []) do
+      case target && Map.get(target, :output_release_ready_lot_uuids, []) do
         [uuid | _] when is_binary(uuid) -> uuid
         _ -> nil
       end
 
-    primary_href =
+    href =
       if target_lot_uuid,
         do: "/production/final-releases/#{target_lot_uuid}",
         else: "/production/final-releases"
 
-    title =
-      if target,
-        do: "QA sign-off for MO #{target.code} finished product (BRCGS § 5.6).",
-        else: "Finished product awaiting QA sign-off (BRCGS § 5.6)."
-
     %{
       code: "final_release",
-      title: title,
+      title:
+        if(target,
+          do: "QA sign-off for MO #{target.code} finished product (BRCGS § 5.6).",
+          else: "Finished product awaiting QA sign-off (BRCGS § 5.6)."
+        ),
       detail:
-        "Everything's produced, closed-out, and back in the warehouse — but the finished lot sits in a finished-quarantine cell until QA does Positive Release. Two different signatures + CoA + BMR + micro report + label proof are required before the lot flips to `available` and can ship.",
+        "Everything's produced, closed out, and parked in finished-quarantine — QA can now attach evidence, collect two signatures, and Release. CoA + BMR + micro report + label proof required.",
       primary_cta: %{
         label: "Open Final Product Release",
         kind: "link",
-        href: primary_href
+        href: href
       },
       secondary_ctas:
-        pending
+        mos
         |> Enum.drop(1)
         |> Enum.map(fn mo ->
           lot_uuid =
-            case Map.get(mo, :output_awaiting_release_lot_uuids, []) do
+            case Map.get(mo, :output_release_ready_lot_uuids, []) do
               [u | _] when is_binary(u) -> u
               _ -> nil
             end
@@ -1135,6 +1205,9 @@ defmodule Backend.OrderWizard do
         end)
     }
   end
+
+  defp plural_s(1), do: ""
+  defp plural_s(_), do: "s"
 
   defp next_action_for(:ready_to_dispatch, co, _, _, _) do
     %{
@@ -1330,6 +1403,28 @@ defmodule Backend.OrderWizard do
     output_awaiting_release_lot_uuids =
       Enum.map(needs_release_lots, & &1.uuid)
 
+    # Split by placement so the wizard can propose the correct next
+    # step. A release-owed lot that isn't in a finished_quarantine
+    # cell needs the warehouse move FIRST (via /m/putaway, standard
+    # scan-lot → scan-cell → photo procedure). Only once it's
+    # physically parked in the release-holding bay does the QA form
+    # unblock — hitting "Open Final Product Release" earlier just
+    # walls the operator off at the form entry.
+    release_move_needed_lots =
+      Enum.filter(needs_release_lots, &(not &1.in_finished_quarantine?))
+
+    release_ready_lots =
+      Enum.filter(needs_release_lots, & &1.in_finished_quarantine?)
+
+    output_release_move_needed_count = length(release_move_needed_lots)
+    output_release_ready_count = length(release_ready_lots)
+
+    output_release_move_needed_lot_uuids =
+      Enum.map(release_move_needed_lots, & &1.uuid)
+
+    output_release_ready_lot_uuids =
+      Enum.map(release_ready_lots, & &1.uuid)
+
     # Same rationale as `under_booked` above — a `completed` or
     # `cancelled` MO can't be acted on procurement-side, so any
     # leftover placeholder bookings are noise. The wizard would
@@ -1385,6 +1480,10 @@ defmodule Backend.OrderWizard do
       output_qc_pending_count: output_qc_pending_count,
       output_awaiting_release_count: output_awaiting_release_count,
       output_awaiting_release_lot_uuids: output_awaiting_release_lot_uuids,
+      output_release_move_needed_count: output_release_move_needed_count,
+      output_release_move_needed_lot_uuids: output_release_move_needed_lot_uuids,
+      output_release_ready_count: output_release_ready_count,
+      output_release_ready_lot_uuids: output_release_ready_lot_uuids,
       bookings_closeout_pending_count: bookings_closeout_pending_count,
       has_output_at_production_feed?:
         mo.status == "completed" and feed_lots != [],
@@ -1815,6 +1914,25 @@ defmodule Backend.OrderWizard do
         not reserved_downstream? and
         not already_finalized?
 
+    # `in_finished_quarantine?` = every active placement sits in a
+    # finished_quarantine cell (BRCGS § 4.4 segregation). Splits the
+    # release owe into "needs the warehouse move first" vs "ready for
+    # QA sign-off" so the wizard proposes the correct next step —
+    # attempting the ceremony while the lot's on general shelving
+    # hard-blocks at the form entry.
+    in_finished_quarantine? =
+      case Enum.filter(lot.placements, fn p ->
+             p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt
+           end) do
+        [] ->
+          false
+
+        active ->
+          Enum.all?(active, fn p ->
+            p.storage_cell && p.storage_cell.purpose == "finished_quarantine"
+          end)
+      end
+
     %{
       id: lot.id,
       uuid: lot.uuid,
@@ -1823,7 +1941,8 @@ defmodule Backend.OrderWizard do
       qty_received: lot.qty_received,
       placements: lot.placements,
       at_production_feed?: physically_at_feed? and not committed?,
-      needs_release?: needs_release?
+      needs_release?: needs_release?,
+      in_finished_quarantine?: in_finished_quarantine?
     }
   end
 

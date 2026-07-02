@@ -2800,6 +2800,15 @@ export interface OrderWizardMo {
   /** Uuids of the awaiting-release lots — used by the "Open Final
    *  Product Release" CTA to link straight to the dialog. */
   output_awaiting_release_lot_uuids: string[];
+  /** Subset of `output_awaiting_release_*` — lots that still need to
+   *  be physically moved to a finished_quarantine cell before the
+   *  release form will unblock (BRCGS § 5.6 + § 4.4 segregation). */
+  output_release_move_needed_count: number;
+  output_release_move_needed_lot_uuids: string[];
+  /** Subset of `output_awaiting_release_*` — lots already parked in a
+   *  finished_quarantine cell, ready for the QA sign-off ceremony. */
+  output_release_ready_count: number;
+  output_release_ready_lot_uuids: string[];
   has_output_at_production_feed: boolean;
   /** Cancelled MO whose picked bookings still hold physical stock at
    *  the production-side cell. Warehouse picker owes a return-pickup
