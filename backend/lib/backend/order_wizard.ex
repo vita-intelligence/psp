@@ -2006,10 +2006,23 @@ defmodule Backend.OrderWizard do
     # output lot to a `dispatch` cell and the wizard stopped surfacing
     # the "send return-pickup" CTA — the warehouse picker would never
     # be paged for output lots that came out of closeout.
+    #
+    # `dispatch` cells serve TWO purposes now: the closeout-side
+    # "stranded ingredient" bay AND the outbound-shipment destination
+    # for released lots the operator sent via 3PL or direct shipment.
+    # Those outbound-path lots are done — pulling them back would
+    # undo the customer handoff. Exclude any lot with a routing
+    # event (routed_to_3pl / routed_to_shipment) OR bailee ownership
+    # so the wizard doesn't drag the order back to Closeout after
+    # the mobile put-away drops the lot in a dispatch cell.
+    outbound_path? =
+      MapSet.member?(routed_ids, lot.id) or lot.ownership_kind == "bailee"
+
     physically_at_feed? =
-      Enum.any?(lot.placements, fn p ->
-        p.storage_cell && p.storage_cell.purpose in ["production_feed", "dispatch"]
-      end)
+      not outbound_path? and
+        Enum.any?(lot.placements, fn p ->
+          p.storage_cell && p.storage_cell.purpose in ["production_feed", "dispatch"]
+        end)
 
     # `at_production_feed?` = "warehouse picker owes a return trip on
     # this lot". If a live downstream MO already picked it as an

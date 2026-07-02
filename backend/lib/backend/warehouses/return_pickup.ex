@@ -93,6 +93,25 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: b.manufacturing_order_id
       )
 
+    # Lots already on the outbound path — bailee custody OR a
+    # `routed_to_shipment` event. Those are en-route to the customer;
+    # walking them back would undo the handoff. Also excludes
+    # completed 3PL dispatches that landed in a dispatch cell as
+    # part of the outbound flow, not the closeout stranded-material
+    # flow.
+    outbound_path_lot_ids =
+      from(l in Lot,
+        left_join: e in Backend.Stock.LotEvent,
+        on:
+          e.stock_lot_id == l.id and
+            e.kind in ["routed_to_3pl", "routed_to_shipment"],
+        where:
+          l.company_id == ^company_id and
+            (l.ownership_kind == "bailee" or not is_nil(e.id)),
+        distinct: true,
+        select: l.id
+      )
+
     # MOs whose produced output (source_kind=manufacturing_order)
     # still sits at a production-side cell — AND hasn't been picked
     # into another live MO. When an MO's outputs are already picked
@@ -115,6 +134,7 @@ defmodule Backend.Warehouses.ReturnPickup do
             c.purpose in @return_pickup_purposes and
             l.id not in subquery(open_picks_subq) and
             l.id not in subquery(lots_committed_to_open_bookings) and
+            l.id not in subquery(outbound_path_lot_ids) and
             m.id not in subquery(mos_with_pending_closeout),
         distinct: true,
         select: m.id
