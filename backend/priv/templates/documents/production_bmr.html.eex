@@ -188,7 +188,7 @@
 
       <%= if section.photos != [] do %>
         <p style="font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px 0;">
-          Chain of custody — <%= length(section.photos) %> photo<%= if length(section.photos) == 1, do: "", else: "s" %> · chronological
+          Chain of custody — <%= length(section.photos) %> photo<%= if length(section.photos) == 1, do: "", else: "s" %> · chronological<%= if section.omitted_photo_count > 0, do: " · #{section.omitted_photo_count} more captured, see sign-off timestamps", else: "" %>
         </p>
         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
           <%= for p <- section.photos do %>

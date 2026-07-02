@@ -39,6 +39,19 @@ defmodule Backend.Documents do
     }
   ]
 
+  # Bigger docs (BMRs with embedded photo grids) need more headroom
+  # than the ChromicPDF default 5s to render. Passed at the call site
+  # via `render_pdf/2`'s opts.
+  @bmr_render_timeout 60_000
+
+  # Cap chain-of-custody photos per MO — an MO with 20+ movements can
+  # easily push 40 MB of base64 into the HTML which Chrome refuses to
+  # paint within any reasonable timeout. First N chronological covers
+  # the audit story (pickup → preflight → closeout → return); the
+  # sign-off table already records every actor + timestamp for the
+  # rest, so no data is lost.
+  @bmr_photo_cap 12
+
   @doc """
   Render the PO PDF for the given `audience`:
 
@@ -225,7 +238,7 @@ defmodule Backend.Documents do
   def production_bmr_pdf(release) do
     company = Companies.current()
     assigns = bmr_assigns(release, company)
-    render_pdf("production_bmr.html.eex", assigns)
+    render_pdf("production_bmr.html.eex", assigns, timeout: @bmr_render_timeout)
   end
 
   defp bmr_assigns(release, company) do
@@ -370,7 +383,8 @@ defmodule Backend.Documents do
     # this MO touched (booked inputs OR its own outputs) and order
     # by occurred_at so the auditor can read pickup → preflight →
     # closeout → return-pickup → move-to-quarantine left to right.
-    chain_photos = chain_of_custody(mo)
+    %{photos: chain_photos, omitted_count: omitted_photo_count} =
+      chain_of_custody(mo)
 
     planned_start =
       steps
@@ -397,7 +411,8 @@ defmodule Backend.Documents do
       operations: operations,
       output_lots: Enum.map(output_lots, &output_lot_row(&1, company)),
       signoffs: signoffs,
-      photos: chain_photos
+      photos: chain_photos,
+      omitted_photo_count: omitted_photo_count
     }
   end
 
@@ -430,21 +445,34 @@ defmodule Backend.Documents do
     lot_ids = Enum.uniq(input_lot_ids ++ output_lot_ids)
 
     if lot_ids == [] do
-      []
+      %{photos: [], omitted_count: 0}
     else
-      Backend.Repo.all(
-        from m in Backend.Stock.Movement,
-          left_join: lot in assoc(m, :stock_lot),
-          left_join: actor in assoc(m, :actor),
-          where:
-            m.stock_lot_id in ^lot_ids and
-              not is_nil(m.photo_url) and
-              m.photo_url != "",
-          order_by: [asc: m.occurred_at, asc: m.id],
-          preload: [stock_lot: [:item], actor: []]
-      )
-      |> Enum.map(&photo_row/1)
-      |> Enum.reject(&is_nil/1)
+      all_movements =
+        Backend.Repo.all(
+          from m in Backend.Stock.Movement,
+            left_join: lot in assoc(m, :stock_lot),
+            left_join: actor in assoc(m, :actor),
+            where:
+              m.stock_lot_id in ^lot_ids and
+                not is_nil(m.photo_url) and
+                m.photo_url != "",
+            order_by: [asc: m.occurred_at, asc: m.id],
+            preload: [stock_lot: [:item], actor: []]
+        )
+
+      # Take the first N chronological — pickup / preflight / closeout
+      # / return-pickup normally happen in order, so the earliest
+      # captures cover the full audit story. The sign-off table still
+      # records every actor + timestamp for anything skipped.
+      selected = Enum.take(all_movements, @bmr_photo_cap)
+      omitted = length(all_movements) - length(selected)
+
+      rows =
+        selected
+        |> Enum.map(&photo_row/1)
+        |> Enum.reject(&is_nil/1)
+
+      %{photos: rows, omitted_count: max(omitted, 0)}
     end
   end
 
@@ -681,13 +709,15 @@ defmodule Backend.Documents do
 
   # ---------------------------------------------------------------- private
 
-  defp render_pdf(template, assigns) do
+  defp render_pdf(template, assigns, extra_opts \\ []) do
     html =
       @templates_dir
       |> Path.join(template)
       |> EEx.eval_file(assigns: assigns)
 
-    {:ok, base64} = ChromicPDF.print_to_pdf({:html, html}, @print_opts)
+    opts = Keyword.merge(@print_opts, extra_opts)
+
+    {:ok, base64} = ChromicPDF.print_to_pdf({:html, html}, opts)
     {:ok, Base.decode64!(base64)}
   end
 
