@@ -39,6 +39,7 @@ import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 import { CellsDialog } from "./cells-dialog";
 import { RackElevationSvg } from "./rack-elevation-svg";
 import { TagPicker } from "./tag-picker";
+import { CELL_PURPOSES } from "@/lib/storage-cells/purpose";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -892,6 +893,14 @@ function LocationBody({
           help="Seeds new levels with these tags. Existing levels keep their own — edit the rack's tags later and you'll be asked whether to push to existing levels too. Manage the vocabulary at /settings/storage-tags."
           readOnly={readOnly}
           onCommit={commitTags}
+          systemReserved={CELL_PURPOSES.map((p) => ({
+            key: p.value,
+            label: p.label,
+            description: p.description,
+            chipClassName: p.chipClassName,
+            helpText:
+              "Reserved — cell purposes are set per-level in the cell dialog, not as a rack tag.",
+          }))}
         />
 
         <AlertDialog
