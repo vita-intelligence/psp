@@ -1380,7 +1380,7 @@ defmodule Backend.Stock do
   Used by the mobile /m pending-putaway list.
   """
   def list_pending_putaway(company_id) when is_integer(company_id) do
-    # Two flavours of "pending putaway":
+    # Three flavours of "pending putaway":
     #
     #   1. Anything physically in the auto-managed `unregistered`
     #      staging cell — that's the manual-receive flow's parking
@@ -1391,6 +1391,40 @@ defmodule Backend.Stock do
     #      these (`Backend.Stock.AutoRouter`'s status->purpose matrix
     #      excludes `available`) so put-away stays an operator
     #      decision, not a silent system move.
+    #   3. Finished-goods lots owing a Final Product Release (BRCGS
+    #      Issue 9 § 5.6) that ISN'T currently sitting in a
+    #      `finished_quarantine` cell. Includes both new-flow
+    #      `awaiting_release` lots (auto-router points at
+    #      finished_quarantine but the picker hasn't walked them from
+    #      production yet) AND legacy `available` lots on general
+    #      shelving that pre-date the release gate. The release form
+    #      refuses to fire until the lot is physically in a
+    #      finished_quarantine cell, so surfacing them here is the
+    #      operator's cue.
+
+    # `not_released_lot_ids` = source_kind=manufacturing_order lots
+    # that need a release ceremony (no terminal release row) AND
+    # aren't reserved by any live downstream MO (those ride the
+    # parent's release).
+    not_released_lot_ids =
+      from(l in Lot,
+        left_join: r in Backend.Production.FinalRelease,
+        on:
+          r.stock_lot_id == l.id and
+            r.status in ["released", "on_hold", "rejected"],
+        left_join: b in Backend.Production.ManufacturingOrderBooking,
+        on: b.stock_lot_id == l.id,
+        left_join: mo in Backend.Production.ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id and mo.status != "cancelled",
+        where:
+          l.company_id == ^company_id and
+            l.source_kind == "manufacturing_order" and
+            l.status in ["awaiting_release", "available"] and
+            is_nil(r.id) and
+            is_nil(mo.id),
+        select: l.id
+      )
+
     from(l in Lot,
       join: p in Placement,
       on: p.stock_lot_id == l.id,
@@ -1400,7 +1434,9 @@ defmodule Backend.Stock do
         l.company_id == ^company_id and
           p.qty > 0 and
           (c.system_kind == "unregistered" or
-             (l.status == "available" and c.purpose == "quarantine")),
+             (l.status == "available" and c.purpose == "quarantine") or
+             (l.id in subquery(not_released_lot_ids) and
+                c.purpose != "finished_quarantine")),
       distinct: l.id,
       preload: [
         :item,

@@ -15,6 +15,8 @@ defmodule BackendWeb.StockLotController do
 
   use BackendWeb, :controller
 
+  import Ecto.Query, only: [from: 2]
+
   alias Backend.Stock
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
@@ -447,7 +449,55 @@ defmodule BackendWeb.StockLotController do
     actor = conn.assigns.current_user
     lots = Stock.list_pending_putaway(actor.company_id)
 
-    json(conn, %{items: Enum.map(lots, &Payloads.stock_lot/1)})
+    # Decorate each lot with a `needs_release_quarantine_move` hint so
+    # the mobile queue can tag the row with a "→ Finished quarantine"
+    # badge instead of the generic put-away instructions. Lots hit
+    # this flavour when they're finished-goods that owe a Final
+    # Product Release ceremony (BRCGS 5.6) but aren't yet in a
+    # finished_quarantine cell.
+    items =
+      Enum.map(lots, fn lot ->
+        base = Payloads.stock_lot(lot)
+        Map.put(base, :needs_release_quarantine_move, needs_release_move?(lot))
+      end)
+
+    json(conn, %{items: items})
+  end
+
+  defp needs_release_move?(%Backend.Stock.Lot{} = lot) do
+    cond do
+      lot.source_kind != "manufacturing_order" ->
+        false
+
+      lot.status not in ["awaiting_release", "available"] ->
+        false
+
+      not currently_outside_finished_quarantine?(lot) ->
+        false
+
+      Backend.Production.lot_committed_to_downstream_mo?(lot.company_id, lot.id) ->
+        false
+
+      true ->
+        not finalized_release_row?(lot)
+    end
+  end
+
+  defp currently_outside_finished_quarantine?(%Backend.Stock.Lot{placements: placements})
+       when is_list(placements) do
+    Enum.any?(placements, fn p ->
+      p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt and
+        p.storage_cell && p.storage_cell.purpose != "finished_quarantine"
+    end)
+  end
+
+  defp currently_outside_finished_quarantine?(_), do: false
+
+  defp finalized_release_row?(%Backend.Stock.Lot{id: lot_id}) do
+    Backend.Repo.exists?(
+      from r in Backend.Production.FinalRelease,
+        where: r.stock_lot_id == ^lot_id and r.status in ["released", "on_hold", "rejected"]
+    )
   end
 
   @doc """

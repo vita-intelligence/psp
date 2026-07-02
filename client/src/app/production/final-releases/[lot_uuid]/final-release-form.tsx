@@ -182,8 +182,20 @@ export function FinalReleaseForm({
     !!release.releaser_id &&
     !!release.approver_id &&
     release.releaser_id !== release.approver_id;
+  // BRCGS Issue 9 § 5.6 + § 4.4 segregation: lot must physically sit
+  // in a finished_quarantine cell during the release ceremony. When
+  // it's not (legacy stock on general shelving, or the picker hasn't
+  // moved it back from production yet), block every finalisation
+  // action until the warehouse team completes the move.
+  const cellPurpose = release.stock_lot?.placement?.cell_purpose ?? null;
+  const lotInFinishedQuarantine = cellPurpose === "finished_quarantine";
+  const lotHasPlacement = !!release.stock_lot?.placement;
+
   const canFinalizeRelease =
-    !finalized && hasDualSigs && missingFileKinds.length === 0;
+    !finalized &&
+    hasDualSigs &&
+    missingFileKinds.length === 0 &&
+    lotInFinishedQuarantine;
 
   const currentUserIsReleaser = release.releaser_id === currentUserId;
   const currentUserIsApprover = release.approver_id === currentUserId;
@@ -226,6 +238,14 @@ export function FinalReleaseForm({
       <LotInfoCard release={release} />
 
       {finalized && <FinalisedBanner release={release} />}
+
+      {!finalized && !lotInFinishedQuarantine && (
+        <FinishedQuarantineWarning
+          hasPlacement={lotHasPlacement}
+          cellPurpose={cellPurpose}
+          onRefresh={() => void refetchRelease()}
+        />
+      )}
 
       {!finalized && !isCreator && creator && (
         <CreatorLockBanner creator={creator} action="finalize" />
@@ -278,6 +298,7 @@ export function FinalReleaseForm({
           canFinalizeRelease={canFinalizeRelease}
           missingFileKinds={missingFileKinds}
           hasDualSigs={hasDualSigs}
+          lotInFinishedQuarantine={lotInFinishedQuarantine}
           currentUserIsReleaser={currentUserIsReleaser}
           currentUserIsApprover={currentUserIsApprover}
           canRelease={canRelease}
@@ -874,6 +895,7 @@ function DecisionCard({
   canFinalizeRelease,
   missingFileKinds,
   hasDualSigs,
+  lotInFinishedQuarantine,
   currentUserIsReleaser,
   currentUserIsApprover,
   canRelease,
@@ -886,6 +908,7 @@ function DecisionCard({
   canFinalizeRelease: boolean;
   missingFileKinds: FinalReleaseFileKind[];
   hasDualSigs: boolean;
+  lotInFinishedQuarantine: boolean;
   currentUserIsReleaser: boolean;
   currentUserIsApprover: boolean;
   canRelease: boolean;
@@ -897,7 +920,9 @@ function DecisionCard({
   const [holdReason, setHoldReason] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const canHoldOrReject =
-    canRelease && (currentUserIsReleaser || currentUserIsApprover);
+    canRelease &&
+    lotInFinishedQuarantine &&
+    (currentUserIsReleaser || currentUserIsApprover);
 
   return (
     <Card>
@@ -918,6 +943,14 @@ function DecisionCard({
                 <XCircle className="size-3 text-muted-foreground" />
               )}
               Two different signatures on file
+            </li>
+            <li className="flex items-center gap-1.5">
+              {lotInFinishedQuarantine ? (
+                <CheckCircle2 className="size-3 text-emerald-600" />
+              ) : (
+                <XCircle className="size-3 text-muted-foreground" />
+              )}
+              Lot in a finished-quarantine cell
             </li>
             <li className="flex items-center gap-1.5">
               {missingFileKinds.length === 0 ? (
@@ -1053,6 +1086,57 @@ function FinalisedBanner({ release }: { release: FinalRelease }) {
               : null}
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- Placement gate ----------------
+
+function FinishedQuarantineWarning({
+  hasPlacement,
+  cellPurpose,
+  onRefresh,
+}: {
+  hasPlacement: boolean;
+  cellPurpose: string | null;
+  onRefresh: () => void;
+}) {
+  const title = hasPlacement
+    ? "Lot isn't in finished-quarantine yet"
+    : "Lot isn't on a shelf yet";
+
+  const body = hasPlacement
+    ? `Currently in a ${cellPurpose ?? "different"} cell. BRCGS Issue 9 § 5.6 + § 4.4 require this lot to sit in a finished-quarantine cell during the release ceremony — physically segregated from cleared stock so an auditor can tell "released" apart from "waiting on release" at the shelf.`
+    : "This lot has no active placement. It has to be dropped in a finished-quarantine cell before the release ceremony can complete.";
+
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400" />
+      <div className="flex-1 space-y-2">
+        <div>
+          <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+            {title}
+          </p>
+          <p className="mt-0.5 text-xs text-amber-800 dark:text-amber-200">
+            {body}
+          </p>
+        </div>
+        <p className="text-[11px] text-amber-800 dark:text-amber-200">
+          Send the warehouse worker to the mobile pending-putaway queue — the
+          lot's already listed there with a "→ finished quarantine" hint. Once
+          they scan it into the correct cell, hit refresh here and the release
+          buttons unlock.
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onRefresh}
+          className="border-amber-500/60 text-amber-800 hover:bg-amber-500/10"
+        >
+          I&apos;ve moved it — refresh
+        </Button>
       </div>
     </div>
   );

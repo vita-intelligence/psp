@@ -357,7 +357,8 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_dual_signatures(release),
          :ok <- ensure_all_files_present(release),
          {:ok, lot} <- fetch_lot(release),
-         :ok <- ensure_lot_releasable(lot) do
+         :ok <- ensure_lot_releasable(lot),
+         :ok <- ensure_lot_in_finished_quarantine(lot) do
       notes = Map.get(attrs, "notes") || Map.get(attrs, :notes) || release.notes
 
       Repo.transaction(fn ->
@@ -389,7 +390,8 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_actor_signed(release, actor),
          :ok <- ensure_reason(reason, :hold_reason),
          {:ok, lot} <- fetch_lot(release),
-         :ok <- ensure_lot_releasable(lot) do
+         :ok <- ensure_lot_releasable(lot),
+         :ok <- ensure_lot_in_finished_quarantine(lot) do
       Repo.transaction(fn ->
         with {:ok, updated} <-
                finalise_row(actor, release, "on_hold", %{hold_reason: reason}),
@@ -417,7 +419,8 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_actor_signed(release, actor),
          :ok <- ensure_reason(reason, :reject_reason),
          {:ok, lot} <- fetch_lot(release),
-         :ok <- ensure_lot_awaiting_release(lot) do
+         :ok <- ensure_lot_awaiting_release(lot),
+         :ok <- ensure_lot_in_finished_quarantine(lot) do
       # Reject stays gated on `awaiting_release` — an `available`
       # legacy lot has already been on the market. Recalling it
       # is a different (heavier) flow: quality incident + customer
@@ -542,6 +545,35 @@ defmodule Backend.Production.FinalReleases do
        do: :ok
 
   defp ensure_lot_releasable(_), do: {:error, :lot_not_releasable}
+
+  # BRCGS Issue 9 § 5.6 + § 4.4 segregation: a finished lot can't be
+  # released while it's sitting on general shelving with cleared
+  # stock. Every active placement must be in a `finished_quarantine`
+  # cell. Applies to both new-flow (`awaiting_release`) and legacy
+  # retroactive (`available`) paths — auditors don't care which flow
+  # got the lot to the shelf, they care where the lot physically is
+  # while the ceremony is pending.
+  defp ensure_lot_in_finished_quarantine(%Lot{id: lot_id}) do
+    active_cell_purposes =
+      from(p in Backend.Stock.Placement,
+        join: c in Backend.Warehouses.StorageCell,
+        on: c.id == p.storage_cell_id,
+        where: p.stock_lot_id == ^lot_id and p.qty > 0,
+        select: c.purpose
+      )
+      |> Repo.all()
+
+    cond do
+      active_cell_purposes == [] ->
+        {:error, :lot_not_placed}
+
+      Enum.all?(active_cell_purposes, &(&1 == "finished_quarantine")) ->
+        :ok
+
+      true ->
+        {:error, :lot_not_in_finished_quarantine}
+    end
+  end
 
   # Emit the lot lifecycle event only when the current status supports
   # the transition. Legacy `available` lots skip the emission — the

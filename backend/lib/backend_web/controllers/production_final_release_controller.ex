@@ -301,6 +301,18 @@ defmodule BackendWeb.ProductionFinalReleaseController do
     )
   end
 
+  defp map_decision_error(conn, :lot_not_placed) do
+    unprocessable(conn, "lot_not_placed",
+      "This lot has no active placement — put it on a shelf before releasing."
+    )
+  end
+
+  defp map_decision_error(conn, :lot_not_in_finished_quarantine) do
+    unprocessable(conn, "lot_not_in_finished_quarantine",
+      "This lot has to sit in a finished-quarantine cell during the release ceremony (BRCGS Issue 9 § 5.6 + § 4.4 segregation). Move it via the mobile pending-putaway queue, then come back."
+    )
+  end
+
   defp map_decision_error(conn, :lot_not_found), do: not_found(conn)
 
   defp map_decision_error(conn, %Ecto.Changeset{} = cs), do: changeset_error(conn, cs)

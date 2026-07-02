@@ -1846,6 +1846,11 @@ export interface StockLot {
   mo_bookings?: StockLotMoBooking[];
   /** Return picks (production_feed → warehouse) for output lots. */
   return_picks?: StockLotReturnPick[];
+  /** Decorated by the pending-putaway endpoint. True when this
+   *  finished-goods lot owes a Final Product Release ceremony and
+   *  isn't yet in a `finished_quarantine` cell. Drives the "→
+   *  Finished quarantine" hint chip on the mobile queue. */
+  needs_release_quarantine_move?: boolean;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

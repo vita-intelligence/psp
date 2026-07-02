@@ -1,6 +1,11 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, PackageOpen } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  PackageOpen,
+  ShieldCheck,
+} from "lucide-react";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getSessionToken } from "@/lib/auth/server";
 import { listPendingPutaway } from "@/lib/stock/mobile";
@@ -38,8 +43,9 @@ export default async function MobilePutawayPage() {
         <div className="min-w-0">
           <p className="text-sm font-semibold">Pending put-away</p>
           <p className="text-xs text-muted-foreground">
-            Lots still sitting in Unregistered — pick one to scan-move
-            it onto a shelf.
+            Lots waiting on a shelf decision — Unregistered arrivals,
+            QC-cleared inbound, and finished goods heading to
+            finished-quarantine before Final Product Release.
           </p>
         </div>
       </header>
@@ -62,13 +68,20 @@ export default async function MobilePutawayPage() {
                   className="flex items-center gap-3 rounded-lg border border-border/60 bg-card px-3 py-3 active:bg-muted"
                 >
                   <div className="flex-1 space-y-0.5 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-mono text-xs font-semibold">
                         {lot.code ?? `#${lot.id}`}
                       </span>
-                      <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                        Unregistered
-                      </span>
+                      {lot.needs_release_quarantine_move ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">
+                          <ShieldCheck className="size-2.5" />
+                          → Finished quarantine
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                          Unregistered
+                        </span>
+                      )}
                     </div>
                     <p className="truncate text-sm font-medium">
                       {lot.item?.name ?? "—"}
@@ -77,6 +90,11 @@ export default async function MobilePutawayPage() {
                       {lot.qty_on_hand ?? "—"}{" "}
                       {lot.unit_of_measurement?.symbol ?? ""}
                     </p>
+                    {lot.needs_release_quarantine_move && (
+                      <p className="text-[10px] text-sky-700 dark:text-sky-400">
+                        BRCGS 5.6 — scan into any finished-quarantine cell.
+                      </p>
+                    )}
                   </div>
                   <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
                 </Link>
