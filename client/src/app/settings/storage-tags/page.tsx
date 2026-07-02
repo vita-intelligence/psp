@@ -10,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Plus } from "lucide-react";
+import { Info, Plus } from "lucide-react";
 import { listStorageTagsPage } from "@/lib/storage-tags/server";
 import { StorageTagsTable } from "./storage-tags-table";
 
@@ -48,7 +48,41 @@ export default async function StorageTagsPage() {
           )}
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {/* Signpost: cell purposes vs storage tags is the #1 source
+            of confusion here. The auto-router only reads
+            `cell.purpose` (a fixed enum baked into the schema); tags
+            are freeform classification only. Point people at the
+            right place when they can't find "finished_quarantine" /
+            "quarantine" / "hold" etc. in this list. */}
+        <div className="flex items-start gap-2 rounded-md border border-sky-500/40 bg-sky-500/5 px-3 py-2 text-xs text-sky-900 dark:text-sky-100">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <div className="space-y-1">
+            <p className="font-semibold">
+              Cell purposes are separate from tags.
+            </p>
+            <p>
+              <span className="font-mono">
+                regular · quarantine · hold · rejected · dispatch ·
+                production_feed · finished_quarantine
+              </span>{" "}
+              are the seven typed <span className="font-semibold">cell purposes</span>{" "}
+              — set them per cell in the{" "}
+              <Link
+                href="/settings/warehouses"
+                className="font-medium underline underline-offset-2"
+              >
+                Warehouses plan editor
+              </Link>{" "}
+              under the cell dialog&apos;s <span className="font-semibold">Purpose</span>{" "}
+              dropdown. The auto-router only reads that column; a
+              freeform tag with the same key won&apos;t route
+              anything, so those keys are reserved and can&apos;t be
+              added below.
+            </p>
+          </div>
+        </div>
+
         <StorageTagsTable
           initialPage={initialPage ?? { items: [], next_cursor: null }}
         />
