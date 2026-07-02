@@ -25,8 +25,16 @@ defmodule Backend.Stock.LotEvent do
   # Event kinds — the verbs an operator can record against a lot.
   # `expected` is system-emitted on PO line approval; `received` is
   # the physical landing. Everything else is operator-initiated.
+  #
+  # `routed_to_3pl` / `routed_to_shipment` are post-release routing
+  # actions taken from the customer-order wizard. They don't change
+  # lot status (the lot is already `available` when they fire) — they
+  # write an audit-trailed decision row so operators know where the
+  # next put-away should land + so the 3PL tab can show when a lot
+  # entered bailee custody.
   @kinds ~w(expected requested received routed_to_quarantine qc_passed qc_failed
-            held released disposed consumed_to_zero canceled)
+            held released disposed consumed_to_zero canceled
+            routed_to_3pl routed_to_shipment)
 
   # Actor source. `user` = operator pressed the button; `system` =
   # background job / migration backfill; `cron` = scheduled task

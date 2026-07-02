@@ -4501,6 +4501,17 @@ defmodule BackendWeb.Payloads do
       package_weight_kg: l.package_weight_kg,
       units_per_package: l.units_per_package,
       stack_factor: l.stack_factor,
+      # 3PL / bailee custody snapshot. `own` = we own the goods (default);
+      # `bailee` = customer-owned, held by us post Positive Release +
+      # 3PL routing. `bailee_customer` + `bailee_routed_at` populate
+      # only in the bailee case; the wizard-driven route action stamps
+      # them atomically with `ownership_kind`.
+      ownership_kind: l.ownership_kind,
+      bailee_routed_at: l.bailee_routed_at,
+      bailee_customer:
+        preloaded_or_nil(l, :bailee_customer, fn c ->
+          %{id: c.id, uuid: c.uuid, name: c.name}
+        end),
       # Goods-In Inspection that produced this lot (when applicable).
       # Carries the full QA story so the lot detail page can render
       # vehicle/paperwork/physical sections + sign-offs + photos

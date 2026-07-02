@@ -83,7 +83,10 @@ defmodule Backend.Stock.Lifecycle do
     "received" => ~w(routed_to_quarantine qc_passed output_qc_passed qc_failed held disposed consumed_to_zero canceled),
     "quarantine" => ~w(qc_passed output_qc_passed qc_failed held disposed canceled),
     "awaiting_release" => ~w(released qc_failed held disposed canceled),
-    "available" => ~w(held disposed consumed_to_zero),
+    # `routed_to_3pl` / `routed_to_shipment` are post-release routing
+    # decisions on an already-`available` lot; they log the decision
+    # but don't change status (`project_status` ignores them).
+    "available" => ~w(held disposed consumed_to_zero routed_to_3pl routed_to_shipment),
     "on_hold" => ~w(released disposed consumed_to_zero),
     "rejected" => ~w(disposed),
     "depleted" => [],

@@ -1557,7 +1557,8 @@ export type StorageCellPurpose =
   | "hold"
   | "rejected"
   | "dispatch"
-  | "finished_quarantine";
+  | "finished_quarantine"
+  | "three_pl_storage";
 
 /** One physical level / subdivision of a storage location. A shelf
  *  with five usable levels has five cells, ordered bottom-to-top
@@ -1852,6 +1853,12 @@ export interface StockLot {
    *  isn't yet in a `finished_quarantine` cell. Drives the "→
    *  Finished quarantine" hint chip on the mobile queue. */
   needs_release_quarantine_move?: boolean;
+  /** 3PL / bailee custody snapshot. Set by the customer-order wizard's
+   *  routing step after Positive Release. `own` = default; `bailee` =
+   *  customer-owned, held by us, billed per m³ per day. */
+  ownership_kind: "own" | "bailee";
+  bailee_routed_at: string | null;
+  bailee_customer: { id: number; uuid: string; name: string } | null;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

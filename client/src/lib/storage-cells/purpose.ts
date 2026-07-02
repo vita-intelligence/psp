@@ -61,6 +61,14 @@ export const CELL_PURPOSES: PurposeMeta[] = [
     chipClassName:
       "bg-sky-500/10 text-sky-700 border border-sky-500/30 dark:text-sky-400",
   },
+  {
+    value: "three_pl_storage",
+    label: "3PL storage",
+    description:
+      "Bailee custody — customer-owned finished goods stored on our floor. Released lots the operator routes to 3PL land here and accrue storage charges (per m³ per day, rate from company settings) until dispatched. Physically segregated from own stock so a warehouse audit can distinguish bailed vs owned inventory.",
+    chipClassName:
+      "bg-violet-500/10 text-violet-700 border border-violet-500/30 dark:text-violet-400",
+  },
 ];
 
 export const PURPOSE_BY_VALUE: Record<StorageCellPurpose, PurposeMeta> =

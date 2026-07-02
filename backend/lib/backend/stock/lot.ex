@@ -13,6 +13,7 @@ defmodule Backend.Stock.Lot do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
+  alias Backend.Customers.Customer
   alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
   alias Backend.Stock.{LotEvent, Movement, Placement}
@@ -34,11 +35,17 @@ defmodule Backend.Stock.Lot do
   @source_kinds ~w(purchase_order manufacturing_order opening_balance return adjustment manual)
   @risk_levels ~w(low medium high)
   @compliance_states ~w(pending requested received accepted rejected na)
+  # `own` = we own the goods, freely dispatchable. `bailee` = we hold
+  # customer-owned finished goods after a 3PL routing action; billing
+  # accrues from `bailee_routed_at` until dispatch. Set by
+  # `Backend.ThreePL.route_released_lot/3`, not by an operator picker.
+  @ownership_kinds ~w(own bailee)
 
   def statuses, do: @statuses
   def source_kinds, do: @source_kinds
   def risk_levels, do: @risk_levels
   def compliance_states, do: @compliance_states
+  def ownership_kinds, do: @ownership_kinds
 
   schema "stock_lots" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -82,11 +89,20 @@ defmodule Backend.Stock.Lot do
     field :units_per_package, :decimal, default: 1
     field :stack_factor, :integer, default: 1
 
+    # Bailee custody snapshot. `ownership_kind` = `own` until the
+    # release wizard routes the lot to 3PL, at which point it flips
+    # to `bailee`, `bailee_customer_id` locks the party we're holding
+    # for, and `bailee_routed_at` starts the billing clock. See
+    # `Backend.ThreePL.route_released_lot/3`.
+    field :ownership_kind, :string, default: "own"
+    field :bailee_routed_at, :utc_datetime
+
     belongs_to :company, Company
     belongs_to :item, Item
     belongs_to :unit_of_measurement, UnitOfMeasurement
     belongs_to :created_by, User
     belongs_to :updated_by, User
+    belongs_to :bailee_customer, Customer
     # Back-pointer to the goods-in inspection that governs this lot's
     # QC verdict. Nullable: manual receives and legacy lots stay null
     # and route through the existing quarantine-by-default flow.
@@ -146,6 +162,9 @@ defmodule Backend.Stock.Lot do
       :package_weight_kg,
       :units_per_package,
       :stack_factor,
+      :ownership_kind,
+      :bailee_customer_id,
+      :bailee_routed_at,
       :created_by_id,
       :updated_by_id,
       :goods_in_inspection_id
@@ -178,6 +197,8 @@ defmodule Backend.Stock.Lot do
     |> validate_number(:stack_factor, greater_than: 0, less_than_or_equal_to: 50)
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:source_kind, @source_kinds)
+    |> validate_inclusion(:ownership_kind, @ownership_kinds)
+    |> validate_bailee_consistency()
     |> maybe_validate_inclusion(:overall_risk, @risk_levels)
     |> maybe_validate_inclusion(:allergen_status, @compliance_states)
     |> maybe_validate_inclusion(:coa_status, @compliance_states)
@@ -326,6 +347,45 @@ defmodule Backend.Stock.Lot do
     case get_field(changeset, field) do
       nil -> changeset
       _ -> validate_inclusion(changeset, field, allowed)
+    end
+  end
+
+  # Mirror of the DB CHECK constraint: ownership_kind = 'bailee'
+  # requires both bailee_customer_id and bailee_routed_at; ownership_kind
+  # = 'own' requires both to be null. Caught at the changeset boundary
+  # so the operator sees a field-level error instead of a raw
+  # constraint violation.
+  defp validate_bailee_consistency(changeset) do
+    case get_field(changeset, :ownership_kind) do
+      "bailee" ->
+        changeset
+        |> validate_required([:bailee_customer_id, :bailee_routed_at])
+
+      "own" ->
+        cust = get_field(changeset, :bailee_customer_id)
+        routed = get_field(changeset, :bailee_routed_at)
+
+        cond do
+          not is_nil(cust) ->
+            add_error(
+              changeset,
+              :bailee_customer_id,
+              "must be blank when ownership_kind is 'own'"
+            )
+
+          not is_nil(routed) ->
+            add_error(
+              changeset,
+              :bailee_routed_at,
+              "must be blank when ownership_kind is 'own'"
+            )
+
+          true ->
+            changeset
+        end
+
+      _ ->
+        changeset
     end
   end
 end

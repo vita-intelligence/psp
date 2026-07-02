@@ -826,6 +826,17 @@ defmodule BackendWeb.Router do
            :reject
     end
 
+    # 3PL — third-party logistics / bailee custody. Routing action
+    # runs immediately after Positive Release (BRCGS Issue 9 § 5.6
+    # follow-up + § 4.4 segregation). The routing decision is a
+    # lifecycle event on the lot; capacity is pre-checked so the
+    # operator sees "no 3PL space" before we accept the choice.
+    scope "/three-pl" do
+      post "/route/:lot_uuid", ThreePLController, :route_lot
+      get "/inventory", ThreePLController, :inventory
+      get "/capacity/:warehouse_id", ThreePLController, :capacity
+    end
+
     # Goods-In Inspection — show / update / item / sign actions sit
     # outside the PO scope because the inspection has its own uuid
     # and the operator may move between inspections without first

@@ -2252,6 +2252,7 @@ function ReadinessBanner({
     | "rejected"
     | "dispatch"
     | "finished_quarantine"
+    | "three_pl_storage"
   > = [
     "regular",
     "quarantine",
@@ -2259,6 +2260,7 @@ function ReadinessBanner({
     "rejected",
     "dispatch",
     "finished_quarantine",
+    "three_pl_storage",
   ];
 
   return (

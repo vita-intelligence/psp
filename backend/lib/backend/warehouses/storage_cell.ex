@@ -33,8 +33,15 @@ defmodule Backend.Warehouses.StorageCell do
   # sit here in `awaiting_release` status until QA does Final Product
   # Release; only then does the lot flip to `available` and move to
   # `regular` (or `dispatch` if a shipment picks against it).
+  #
+  # `three_pl_storage` holds customer-owned finished goods (bailee
+  # custody) after Positive Release has flipped a lot to
+  # `ownership_kind = bailee`. Physically segregated from own stock
+  # so a warehouse audit can trace bailed vs owned inventory without
+  # crossing paperwork. Billing accrues from the day a lot lands here
+  # until it dispatches.
   @purposes ~w(regular quarantine hold rejected dispatch production_feed
-               finished_quarantine)
+               finished_quarantine three_pl_storage)
   def purposes, do: @purposes
 
   schema "storage_cells" do
