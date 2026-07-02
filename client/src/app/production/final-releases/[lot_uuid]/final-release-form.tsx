@@ -20,6 +20,7 @@ import {
   LockKeyhole,
   Pause,
   Paperclip,
+  ShieldCheck,
   Signature,
   Trash2,
   Upload,
@@ -373,37 +374,45 @@ function Header({
   onBack: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-3 min-w-0">
+    <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border/60 pb-4">
+      <div className="flex items-start gap-3 min-w-0">
         <Button
           variant="ghost"
           size="icon"
           onClick={onBack}
           aria-label="Back"
-          className="shrink-0"
+          className="mt-0.5 shrink-0"
         >
           <ArrowLeft className="size-4" />
         </Button>
-        <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        <div className="min-w-0 space-y-1">
+          <p className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <ShieldCheck className="size-3" />
             Final Product Release · BRCGS 5.6
           </p>
-          <h1 className="truncate text-lg font-semibold tracking-tight">
+          <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">
             {release.stock_lot?.item?.name ?? "Finished lot"}
           </h1>
-          <p className="text-xs text-muted-foreground truncate">
-            Lot {release.stock_lot?.code ?? release.stock_lot?.uuid.slice(0, 8)}
-            {release.manufacturing_order?.code
-              ? ` · ${release.manufacturing_order.code}`
-              : null}
+          <p className="truncate text-xs text-muted-foreground">
+            <span className="font-mono">
+              Lot {release.stock_lot?.code ?? release.stock_lot?.uuid.slice(0, 8)}
+            </span>
+            {release.manufacturing_order?.code && (
+              <>
+                <span className="mx-1.5 text-border">·</span>
+                <span className="font-mono">
+                  {release.manufacturing_order.code}
+                </span>
+              </>
+            )}
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
-        <StatusPill status={release.status} />
+      <div className="flex items-center gap-3">
         <CollabAvatars peers={peers} />
+        <StatusPill status={release.status} />
       </div>
-    </div>
+    </header>
   );
 }
 
@@ -443,27 +452,68 @@ function StatusPill({ status }: { status: FinalRelease["status"] }) {
 function LotInfoCard({ release }: { release: FinalRelease }) {
   const lot = release.stock_lot;
   const placement = lot?.placement;
+
+  // Same fallback chain as the release worklist + pickup + closeout:
+  // named cell wins, then Level N derived from ordinal, then blank.
+  // Filter out null segments so the crumb never renders "· —".
+  const rack =
+    placement?.location?.code ?? placement?.location?.name ?? null;
+  const cellLabel =
+    placement?.cell_name ??
+    (typeof placement?.cell_ordinal === "number"
+      ? `Level ${placement.cell_ordinal + 1}`
+      : null);
+  const locationCrumb = placement
+    ? [placement.warehouse?.name, placement.floor?.name, rack, cellLabel]
+        .filter((x): x is string => !!x)
+        .join(" · ") || "—"
+    : "Not on shelf";
+
+  const purposeLabel = placement?.cell_purpose
+    ? placement.cell_purpose === "finished_quarantine"
+      ? "Finished quarantine"
+      : placement.cell_purpose
+          .split("_")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ")
+    : "—";
+  const purposeTone =
+    placement?.cell_purpose === "finished_quarantine"
+      ? "bg-sky-500/15 text-sky-700 dark:text-sky-300"
+      : "bg-muted text-muted-foreground";
+
   return (
     <Card>
-      <CardContent className="grid gap-3 py-4 text-sm sm:grid-cols-2">
+      <CardContent className="grid gap-4 py-4 text-sm sm:grid-cols-2">
         <InfoRow label="Product" value={lot?.item?.name ?? "—"} />
-        <InfoRow label="Lot code" value={lot?.code ?? "—"} />
+        <InfoRow
+          label="Lot code"
+          value={
+            <span className="font-mono">{lot?.code ?? "—"}</span>
+          }
+        />
         <InfoRow label="Batch qty" value={lot?.qty_received ?? "—"} />
         <InfoRow
           label="Expiry"
-          value={lot?.expiry_at ? new Date(lot.expiry_at).toLocaleDateString() : "—"}
-        />
-        <InfoRow
-          label="Location"
           value={
-            placement
-              ? `${placement.warehouse?.name ?? "—"} · ${placement.floor?.name ?? "—"} · ${placement.cell_name ?? "—"}`
-              : "Not on shelf"
+            lot?.expiry_at
+              ? new Date(lot.expiry_at).toLocaleDateString()
+              : "—"
           }
         />
+        <InfoRow label="Location" value={locationCrumb} />
         <InfoRow
           label="Cell purpose"
-          value={placement?.cell_purpose ?? "—"}
+          value={
+            <span
+              className={cn(
+                "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+                purposeTone,
+              )}
+            >
+              {purposeLabel}
+            </span>
+          }
         />
       </CardContent>
     </Card>
@@ -472,11 +522,11 @@ function LotInfoCard({ release }: { release: FinalRelease }) {
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div>
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+    <div className="space-y-0.5">
+      <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      <p className="mt-0.5 text-sm font-medium">{value}</p>
+      <div className="text-sm font-medium">{value}</div>
     </div>
   );
 }
@@ -623,16 +673,41 @@ function FileRow({
     }
   };
 
+  const attached = files.length > 0;
+
   return (
-    <div className="rounded-md border border-border/60 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <p className="text-sm font-medium">{FILE_KIND_LABEL[kind]}</p>
-          <p className="text-[11px] text-muted-foreground">
-            {files.length === 0
-              ? "No file attached"
-              : `${files.length} file${files.length === 1 ? "" : "s"} attached`}
-          </p>
+    <div
+      className={cn(
+        "rounded-md border p-3 transition-colors",
+        attached
+          ? "border-emerald-500/40 bg-emerald-500/[0.03]"
+          : "border-border/60 bg-muted/20",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <span
+            className={cn(
+              "mt-0.5 grid size-5 shrink-0 place-items-center rounded-full",
+              attached
+                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                : "bg-muted text-muted-foreground",
+            )}
+          >
+            {attached ? (
+              <CheckCircle2 className="size-3" />
+            ) : (
+              <XCircle className="size-3" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-medium">{FILE_KIND_LABEL[kind]}</p>
+            <p className="text-[11px] text-muted-foreground">
+              {attached
+                ? `${files.length} file${files.length === 1 ? "" : "s"} attached`
+                : "No file attached"}
+            </p>
+          </div>
         </div>
         {canEdit && (
           <>
@@ -652,25 +727,25 @@ function FileRow({
               size="sm"
               disabled={uploading}
               onClick={() => fileInputRef.current?.click()}
+              className="shrink-0"
             >
               <Upload className="mr-1 size-3.5" />
-              {uploading ? "Uploading…" : "Upload"}
+              {uploading ? "Uploading…" : attached ? "Replace" : "Upload"}
             </Button>
           </>
         )}
       </div>
-      {files.length > 0 && (
-        <ul className="mt-2 space-y-1">
+      {attached && (
+        <ul className="mt-2 space-y-1 pl-7">
           {files.map((f) => (
             <li
               key={f.uuid}
-              className="flex items-center justify-between gap-2 rounded border border-border/40 bg-muted/30 px-2 py-1 text-xs"
+              className="flex items-center justify-between gap-2 rounded border border-border/40 bg-background px-2 py-1 text-xs"
             >
               <div className="min-w-0 flex-1 truncate">
                 <FileLink release={release} file={f} />
                 <span className="ml-2 text-[10px] text-muted-foreground">
-                  {formatSize(f.byte_size)} · uploaded by{" "}
-                  {f.uploaded_by?.name ?? "unknown"}
+                  {formatSize(f.byte_size)} · {f.uploaded_by?.name ?? "unknown"}
                 </span>
               </div>
               {canEdit && (
