@@ -10,6 +10,7 @@ import {
   PackageCheck,
   PackageOpen,
   PackagePlus,
+  ShieldCheck,
   Truck,
   Wifi,
   WifiOff,
@@ -113,6 +114,15 @@ export const MOBILE_HOME_TILES = [
     description: "Pull closed-out stock back to warehouse storage",
     icon: PackagePlus,
     permission: "warehouse.return_pickup",
+    badgeKey: null,
+  },
+  {
+    key: "final_release",
+    href: "/m/final-release",
+    label: "Final release",
+    description: "QA sign-off before dispatch (BRCGS 5.6)",
+    icon: ShieldCheck,
+    permission: "production.final_release",
     badgeKey: null,
   },
   {

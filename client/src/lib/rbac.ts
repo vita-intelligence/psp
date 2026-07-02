@@ -120,6 +120,7 @@ export type PermissionCode =
   | "production.preflight"
   | "production.qc_output"
   | "production.closeout"
+  | "production.final_release"
   | "production.mo_delete"
   | "warehouse.pick"
   | "warehouse.return_pickup";

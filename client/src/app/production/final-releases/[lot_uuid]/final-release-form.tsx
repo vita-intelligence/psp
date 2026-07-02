@@ -1,0 +1,1123 @@
+"use client";
+
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { toast } from "sonner";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  FileText,
+  Lock,
+  LockKeyhole,
+  Pause,
+  Paperclip,
+  Signature,
+  Trash2,
+  Upload,
+  XCircle,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
+import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
+import { ErrorBanner } from "@/components/forms/error-banner";
+import {
+  clearSignatureAction,
+  holdAction,
+  rejectAction,
+  releaseAction,
+  signApproverAction,
+  signReleaserAction,
+  updateReleaseNotesAction,
+} from "@/lib/production-final-release/actions";
+import {
+  FILE_KIND_LABEL,
+  FINAL_RELEASE_FILE_KINDS,
+  type FinalRelease,
+  type FinalReleaseFileKind,
+  type FinalReleaseFileRow,
+} from "@/lib/production-final-release/types";
+
+interface Props {
+  initialRelease: FinalRelease;
+  lotUuid: string;
+  currentUserId: number;
+  currentUserName: string;
+  canRelease: boolean;
+}
+
+interface CommitPayload {
+  kind: "release-updated" | "release-finalized";
+  status: FinalRelease["status"];
+}
+
+// Draft state that peers in the room see live — only the freeform
+// notes. Signatures + files + finalisation are one-shot server-side
+// actions, so they don't need a broadcast draft representation.
+interface FormState {
+  notes: string;
+}
+
+export function FinalReleaseForm({
+  initialRelease,
+  lotUuid,
+  currentUserId,
+  currentUserName,
+  canRelease,
+}: Props) {
+  const router = useRouter();
+  const [release, setRelease] = useState<FinalRelease>(initialRelease);
+  const [pending, startTransition] = useTransition();
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+
+  useFormPresenceBeacon(`final-release:${lotUuid}`);
+
+  const initialState: FormState = useMemo(
+    () => ({ notes: release.notes ?? "" }),
+    // Only seed once — subsequent server refreshes come through onCommit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const {
+    state,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<FormState>({
+    resource: `final-release:${lotUuid}`,
+    disabled: !canRelease,
+    initialState,
+    onCommit: (raw) => {
+      const msg = raw as CommitPayload | null;
+      if (!msg) return;
+      // Peer just fired an action — refetch through the proxy so
+      // every observer sees the latest signatures / files / status.
+      void refetchRelease();
+    },
+  });
+
+  const refetchRelease = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/production/final-releases/by-lot/${encodeURIComponent(lotUuid)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as { release: FinalRelease };
+      setRelease(data.release);
+      resetState({ notes: data.release.notes ?? "" });
+    } catch {
+      // Network blip — ignore; the next explicit action will refetch.
+    }
+  }, [lotUuid, resetState]);
+
+  const cursorAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [anchorSize, setAnchorSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = cursorAnchorRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      setAnchorSize({ w: rect.width, h: rect.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Debounced notes autosave — peer-drafted through the channel + a
+  // server round-trip when the creator pauses typing.
+  const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!isCreator || release.status !== "pending") return;
+    if (state.notes === (release.notes ?? "")) return;
+    if (notesTimer.current) clearTimeout(notesTimer.current);
+    notesTimer.current = setTimeout(async () => {
+      const res = await updateReleaseNotesAction(release.uuid, state.notes);
+      if (res.ok) {
+        setRelease(res.release);
+        broadcastCommit({ kind: "release-updated", status: res.release.status });
+      }
+    }, 800);
+    return () => {
+      if (notesTimer.current) clearTimeout(notesTimer.current);
+    };
+  }, [state.notes, isCreator, release, broadcastCommit]);
+
+  if (joinError) return <JoinErrorCard error={joinError} />;
+
+  const finalized = release.status !== "pending";
+  const missingFileKinds = FINAL_RELEASE_FILE_KINDS.filter(
+    (kind) => !release.files.some((f) => f.kind === kind),
+  );
+  const hasDualSigs =
+    !!release.releaser_id &&
+    !!release.approver_id &&
+    release.releaser_id !== release.approver_id;
+  const canFinalizeRelease =
+    !finalized && hasDualSigs && missingFileKinds.length === 0;
+
+  const currentUserIsReleaser = release.releaser_id === currentUserId;
+  const currentUserIsApprover = release.approver_id === currentUserId;
+
+  return (
+    <div
+      className="relative space-y-4"
+      ref={cursorAnchorRef}
+      onMouseMove={(e) => {
+        const el = cursorAnchorRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        setCursor(
+          (e.clientX - rect.left) / rect.width,
+          (e.clientY - rect.top) / rect.height,
+        );
+      }}
+      onMouseLeave={() => hideCursor()}
+    >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.values(cursors).map((c) => (
+          <RemoteCursor
+            key={c.peer.id}
+            cursor={c}
+            anchorWidth={anchorSize.w}
+            anchorHeight={anchorSize.h}
+          />
+        ))}
+      </div>
+
+      <Header
+        release={release}
+        peers={presence}
+        onBack={() => router.back()}
+      />
+
+      {errorDetail && <ErrorBanner detail={errorDetail} />}
+
+      <LotInfoCard release={release} />
+
+      {finalized && <FinalisedBanner release={release} />}
+
+      {!finalized && !isCreator && creator && (
+        <CreatorLockBanner creator={creator} action="finalize" />
+      )}
+
+      <NotesCard
+        notes={state.notes}
+        onChange={(v) => setField("notes", v)}
+        onFocus={() => focusField("notes")}
+        onBlur={() => blurField("notes")}
+        editor={fieldEditors.notes}
+        disabled={finalized || !canRelease}
+      />
+
+      <FilesCard
+        release={release}
+        canEdit={!finalized && canRelease}
+        onChanged={(next) => {
+          setRelease(next);
+          broadcastCommit({ kind: "release-updated", status: next.status });
+        }}
+      />
+
+      <SignaturesCard
+        release={release}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        canSign={!finalized && canRelease}
+        pending={pending}
+        onAction={(fn) =>
+          startTransition(async () => {
+            const res = await fn();
+            if (res.ok) {
+              setRelease(res.release);
+              broadcastCommit({
+                kind: "release-updated",
+                status: res.release.status,
+              });
+              setErrorDetail(null);
+            } else {
+              setErrorDetail(res.detail);
+            }
+          })
+        }
+      />
+
+      {!finalized && (
+        <DecisionCard
+          release={release}
+          canFinalizeRelease={canFinalizeRelease}
+          missingFileKinds={missingFileKinds}
+          hasDualSigs={hasDualSigs}
+          currentUserIsReleaser={currentUserIsReleaser}
+          currentUserIsApprover={currentUserIsApprover}
+          canRelease={canRelease}
+          pending={pending}
+          onRelease={() =>
+            startTransition(async () => {
+              const res = await releaseAction(release.uuid, state.notes);
+              if (res.ok) {
+                setRelease(res.release);
+                broadcastCommit({
+                  kind: "release-finalized",
+                  status: res.release.status,
+                });
+                toast.success("Final Product Released.", {
+                  description: "Lot is now available for dispatch.",
+                });
+                setErrorDetail(null);
+              } else {
+                setErrorDetail(res.detail);
+              }
+            })
+          }
+          onHold={(reason) =>
+            startTransition(async () => {
+              const res = await holdAction(release.uuid, reason);
+              if (res.ok) {
+                setRelease(res.release);
+                broadcastCommit({
+                  kind: "release-finalized",
+                  status: res.release.status,
+                });
+                toast.success("Lot placed on hold.");
+                setErrorDetail(null);
+              } else {
+                setErrorDetail(res.detail);
+              }
+            })
+          }
+          onReject={(reason) =>
+            startTransition(async () => {
+              const res = await rejectAction(release.uuid, reason);
+              if (res.ok) {
+                setRelease(res.release);
+                broadcastCommit({
+                  kind: "release-finalized",
+                  status: res.release.status,
+                });
+                toast.success("Lot rejected.");
+                setErrorDetail(null);
+              } else {
+                setErrorDetail(res.detail);
+              }
+            })
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------- Header ----------------
+
+function Header({
+  release,
+  peers,
+  onBack,
+}: {
+  release: FinalRelease;
+  peers: CollabPeer[];
+  onBack: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-3 min-w-0">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onBack}
+          aria-label="Back"
+          className="shrink-0"
+        >
+          <ArrowLeft className="size-4" />
+        </Button>
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Final Product Release · BRCGS 5.6
+          </p>
+          <h1 className="truncate text-lg font-semibold tracking-tight">
+            {release.stock_lot?.item?.name ?? "Finished lot"}
+          </h1>
+          <p className="text-xs text-muted-foreground truncate">
+            Lot {release.stock_lot?.code ?? release.stock_lot?.uuid.slice(0, 8)}
+            {release.manufacturing_order?.code
+              ? ` · ${release.manufacturing_order.code}`
+              : null}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <StatusPill status={release.status} />
+        <CollabAvatars peers={peers} />
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: FinalRelease["status"] }) {
+  const cfg = {
+    pending: {
+      label: "Awaiting release",
+      cls: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+    },
+    released: {
+      label: "Released",
+      cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    },
+    on_hold: {
+      label: "On hold",
+      cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    },
+    rejected: {
+      label: "Rejected",
+      cls: "bg-destructive/15 text-destructive",
+    },
+  }[status];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+        cfg.cls,
+      )}
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
+// ---------------- Lot info ----------------
+
+function LotInfoCard({ release }: { release: FinalRelease }) {
+  const lot = release.stock_lot;
+  const placement = lot?.placement;
+  return (
+    <Card>
+      <CardContent className="grid gap-3 py-4 text-sm sm:grid-cols-2">
+        <InfoRow label="Product" value={lot?.item?.name ?? "—"} />
+        <InfoRow label="Lot code" value={lot?.code ?? "—"} />
+        <InfoRow label="Batch qty" value={lot?.qty_received ?? "—"} />
+        <InfoRow
+          label="Expiry"
+          value={lot?.expiry_at ? new Date(lot.expiry_at).toLocaleDateString() : "—"}
+        />
+        <InfoRow
+          label="Location"
+          value={
+            placement
+              ? `${placement.warehouse?.name ?? "—"} · ${placement.floor?.name ?? "—"} · ${placement.cell_name ?? "—"}`
+              : "Not on shelf"
+          }
+        />
+        <InfoRow
+          label="Cell purpose"
+          value={placement?.cell_purpose ?? "—"}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-0.5 text-sm font-medium">{value}</p>
+    </div>
+  );
+}
+
+// ---------------- Notes ----------------
+
+function NotesCard({
+  notes,
+  onChange,
+  onFocus,
+  onBlur,
+  editor,
+  disabled,
+}: {
+  notes: string;
+  onChange: (v: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+  editor: CollabPeer | null;
+  disabled: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <FileText className="size-4" />
+          Release notes
+          <FieldEditingIndicator peer={editor} />
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Textarea
+          value={notes}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          disabled={disabled}
+          placeholder="Summary of batch review — actives verified vs spec, deviations noted, corrective actions taken. (Test detail lives in the attached CoA / micro reports.)"
+          rows={4}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------- Files ----------------
+
+function FilesCard({
+  release,
+  canEdit,
+  onChanged,
+}: {
+  release: FinalRelease;
+  canEdit: boolean;
+  onChanged: (release: FinalRelease) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Paperclip className="size-4" />
+          Evidence files
+          <span className="text-xs font-normal text-muted-foreground">
+            All four kinds required
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {FINAL_RELEASE_FILE_KINDS.map((kind) => (
+          <FileRow
+            key={kind}
+            kind={kind}
+            release={release}
+            canEdit={canEdit}
+            onChanged={onChanged}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function FileRow({
+  kind,
+  release,
+  canEdit,
+  onChanged,
+}: {
+  kind: FinalReleaseFileKind;
+  release: FinalRelease;
+  canEdit: boolean;
+  onChanged: (release: FinalRelease) => void;
+}) {
+  const files = release.files.filter((f) => f.kind === kind);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const upload = async (file: File) => {
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("kind", kind);
+      form.append("file", file);
+      const res = await fetch(
+        `/api/production/final-releases/${encodeURIComponent(release.uuid)}/files`,
+        { method: "POST", body: form },
+      );
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { detail?: string };
+        toast.error(err.detail ?? "Couldn't upload the file.");
+        return;
+      }
+      // Refetch the release to get the freshly appended file row.
+      const detail = await fetch(
+        `/api/production/final-releases/by-lot/${encodeURIComponent(release.stock_lot?.uuid ?? "")}`,
+        { cache: "no-store" },
+      );
+      if (detail.ok) {
+        const data = (await detail.json()) as { release: FinalRelease };
+        onChanged(data.release);
+      }
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const remove = async (fileUuid: string) => {
+    const res = await fetch(
+      `/api/production/final-releases/${encodeURIComponent(release.uuid)}/files/${encodeURIComponent(fileUuid)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      toast.error("Couldn't delete the file.");
+      return;
+    }
+    const detail = await fetch(
+      `/api/production/final-releases/by-lot/${encodeURIComponent(release.stock_lot?.uuid ?? "")}`,
+      { cache: "no-store" },
+    );
+    if (detail.ok) {
+      const data = (await detail.json()) as { release: FinalRelease };
+      onChanged(data.release);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-border/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium">{FILE_KIND_LABEL[kind]}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {files.length === 0
+              ? "No file attached"
+              : `${files.length} file${files.length === 1 ? "" : "s"} attached`}
+          </p>
+        </div>
+        {canEdit && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,image/webp,image/heic"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void upload(f);
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={uploading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Upload className="mr-1 size-3.5" />
+              {uploading ? "Uploading…" : "Upload"}
+            </Button>
+          </>
+        )}
+      </div>
+      {files.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {files.map((f) => (
+            <li
+              key={f.uuid}
+              className="flex items-center justify-between gap-2 rounded border border-border/40 bg-muted/30 px-2 py-1 text-xs"
+            >
+              <div className="min-w-0 flex-1 truncate">
+                <FileLink release={release} file={f} />
+                <span className="ml-2 text-[10px] text-muted-foreground">
+                  {formatSize(f.byte_size)} · uploaded by{" "}
+                  {f.uploaded_by?.name ?? "unknown"}
+                </span>
+              </div>
+              {canEdit && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => void remove(f.uuid)}
+                  aria-label="Delete file"
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function FileLink({
+  release,
+  file,
+}: {
+  release: FinalRelease;
+  file: FinalReleaseFileRow;
+}) {
+  return (
+    <a
+      href={`/api/production/final-releases/${encodeURIComponent(release.uuid)}/files/${encodeURIComponent(file.uuid)}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-brand underline-offset-2 hover:underline"
+    >
+      {file.filename}
+    </a>
+  );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// ---------------- Signatures ----------------
+
+function SignaturesCard({
+  release,
+  currentUserId,
+  currentUserName,
+  canSign,
+  pending,
+  onAction,
+}: {
+  release: FinalRelease;
+  currentUserId: number;
+  currentUserName: string;
+  canSign: boolean;
+  pending: boolean;
+  onAction: (
+    fn: () => Promise<{
+      ok: boolean;
+      release?: FinalRelease;
+      detail?: string;
+    } & { ok: false; detail: string } | { ok: true; release: FinalRelease }>,
+  ) => void;
+}) {
+  const releaserFilled = !!release.releaser_id;
+  const approverFilled = !!release.approver_id;
+  const currentIsReleaser = release.releaser_id === currentUserId;
+  const currentIsApprover = release.approver_id === currentUserId;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Signature className="size-4" />
+          Dual sign-off
+          <span className="text-xs font-normal text-muted-foreground">
+            Two different users required
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-2">
+        <SignatureSlot
+          role="releaser"
+          label="Releaser"
+          filledById={release.releaser_id}
+          filledByName={release.releaser?.name ?? release.releaser?.email ?? null}
+          signedAt={release.releaser_signed_at}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          blocked={currentIsApprover}
+          blockedReason="You already signed as approver."
+          canSign={canSign}
+          pending={pending}
+          onSign={() =>
+            onAction(async () => signReleaserAction(release.uuid, null))
+          }
+          onClear={() =>
+            onAction(async () => clearSignatureAction(release.uuid, "releaser"))
+          }
+        />
+        <SignatureSlot
+          role="approver"
+          label="Approver"
+          filledById={release.approver_id}
+          filledByName={release.approver?.name ?? release.approver?.email ?? null}
+          signedAt={release.approver_signed_at}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          blocked={currentIsReleaser}
+          blockedReason="You already signed as releaser."
+          canSign={canSign}
+          pending={pending}
+          onSign={() =>
+            onAction(async () => signApproverAction(release.uuid, null))
+          }
+          onClear={() =>
+            onAction(async () => clearSignatureAction(release.uuid, "approver"))
+          }
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function SignatureSlot({
+  role,
+  label,
+  filledById,
+  filledByName,
+  signedAt,
+  currentUserId,
+  blocked,
+  blockedReason,
+  canSign,
+  pending,
+  onSign,
+  onClear,
+}: {
+  role: "releaser" | "approver";
+  label: string;
+  filledById: number | null;
+  filledByName: string | null;
+  signedAt: string | null;
+  currentUserId: number;
+  currentUserName: string;
+  blocked: boolean;
+  blockedReason: string;
+  canSign: boolean;
+  pending: boolean;
+  onSign: () => void;
+  onClear: () => void;
+}) {
+  const isMine = filledById === currentUserId;
+  return (
+    <div
+      className={cn(
+        "rounded-md border p-3",
+        filledById
+          ? "border-emerald-500/40 bg-emerald-500/5"
+          : "border-border/60 bg-muted/20",
+      )}
+    >
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      {filledById ? (
+        <div className="mt-1 space-y-1">
+          <p className="text-sm font-medium">
+            {filledByName ?? "Signed"}
+            {isMine && (
+              <span className="ml-1 text-[10px] text-muted-foreground">
+                (you)
+              </span>
+            )}
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            {signedAt ? new Date(signedAt).toLocaleString() : ""}
+          </p>
+          {isMine && canSign && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 text-[11px]"
+              disabled={pending}
+              onClick={onClear}
+            >
+              Clear signature
+            </Button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {blocked ? (
+            <p className="text-xs text-muted-foreground">{blockedReason}</p>
+          ) : canSign ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending}
+              onClick={onSign}
+            >
+              <Signature className="mr-1 size-3.5" />
+              Sign as {role}
+            </Button>
+          ) : (
+            <p className="text-xs text-muted-foreground">Not signed yet.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- Decision ----------------
+
+function DecisionCard({
+  release,
+  canFinalizeRelease,
+  missingFileKinds,
+  hasDualSigs,
+  currentUserIsReleaser,
+  currentUserIsApprover,
+  canRelease,
+  pending,
+  onRelease,
+  onHold,
+  onReject,
+}: {
+  release: FinalRelease;
+  canFinalizeRelease: boolean;
+  missingFileKinds: FinalReleaseFileKind[];
+  hasDualSigs: boolean;
+  currentUserIsReleaser: boolean;
+  currentUserIsApprover: boolean;
+  canRelease: boolean;
+  pending: boolean;
+  onRelease: () => void;
+  onHold: (reason: string) => void;
+  onReject: (reason: string) => void;
+}) {
+  const [holdReason, setHoldReason] = useState("");
+  const [rejectReason, setRejectReason] = useState("");
+  const canHoldOrReject =
+    canRelease && (currentUserIsReleaser || currentUserIsApprover);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Decision</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Release */}
+        <div className="space-y-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3">
+          <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
+            Release for dispatch
+          </p>
+          <ul className="text-[11px] text-muted-foreground space-y-0.5">
+            <li className="flex items-center gap-1.5">
+              {hasDualSigs ? (
+                <CheckCircle2 className="size-3 text-emerald-600" />
+              ) : (
+                <XCircle className="size-3 text-muted-foreground" />
+              )}
+              Two different signatures on file
+            </li>
+            <li className="flex items-center gap-1.5">
+              {missingFileKinds.length === 0 ? (
+                <CheckCircle2 className="size-3 text-emerald-600" />
+              ) : (
+                <XCircle className="size-3 text-muted-foreground" />
+              )}
+              All four required files attached
+              {missingFileKinds.length > 0 && (
+                <span className="text-[10px]">
+                  {" "}
+                  (missing:{" "}
+                  {missingFileKinds
+                    .map((k) => FILE_KIND_LABEL[k])
+                    .join(", ")}
+                  )
+                </span>
+              )}
+            </li>
+          </ul>
+          <Button
+            type="button"
+            disabled={!canFinalizeRelease || !canRelease || pending}
+            onClick={onRelease}
+          >
+            <CheckCircle2 className="mr-1 size-4" />
+            Release {release.stock_lot?.code ?? "lot"}
+          </Button>
+        </div>
+
+        {/* Hold */}
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+          <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+            Place on hold
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            Pause the lot pending investigation (allergen review, out-of-spec
+            follow-up, supplier query). Stays in the finished-quarantine bay.
+          </p>
+          <Input
+            value={holdReason}
+            onChange={(e) => setHoldReason(e.target.value)}
+            placeholder="Reason for hold — what's under investigation?"
+            disabled={!canHoldOrReject || pending}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            className="border-amber-500/60 text-amber-800 hover:bg-amber-500/10"
+            disabled={
+              !canHoldOrReject || pending || holdReason.trim().length === 0
+            }
+            onClick={() => onHold(holdReason.trim())}
+          >
+            <Pause className="mr-1 size-4" />
+            Place on hold
+          </Button>
+        </div>
+
+        {/* Reject */}
+        <div className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+          <p className="text-sm font-semibold text-destructive">
+            Reject
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            Lot failed final QA. Moves to a rejected cell awaiting disposal per
+            SOP. Immutable — a rejected lot can only be disposed, not
+            re-released.
+          </p>
+          <Input
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Reason for reject — what went wrong?"
+            disabled={!canHoldOrReject || pending}
+          />
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={
+              !canHoldOrReject || pending || rejectReason.trim().length === 0
+            }
+            onClick={() => onReject(rejectReason.trim())}
+          >
+            <XCircle className="mr-1 size-4" />
+            Reject
+          </Button>
+        </div>
+
+        {!canHoldOrReject && (
+          <p className="text-[11px] text-muted-foreground">
+            Sign as releaser or approver before Hold / Reject becomes
+            available.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------- Finalised banner ----------------
+
+function FinalisedBanner({ release }: { release: FinalRelease }) {
+  const cfg = {
+    released: {
+      Icon: CheckCircle2,
+      cls: "border-emerald-500/40 bg-emerald-500/5",
+      msg: "Batch released for dispatch.",
+    },
+    on_hold: {
+      Icon: Pause,
+      cls: "border-amber-500/40 bg-amber-500/5",
+      msg: `On hold: ${release.hold_reason ?? "no reason recorded"}.`,
+    },
+    rejected: {
+      Icon: XCircle,
+      cls: "border-destructive/40 bg-destructive/5",
+      msg: `Rejected: ${release.reject_reason ?? "no reason recorded"}.`,
+    },
+    pending: null,
+  }[release.status];
+  if (!cfg) return null;
+  const { Icon } = cfg;
+  return (
+    <div className={cn("flex items-start gap-2 rounded-md border p-3", cfg.cls)}>
+      <Icon className="mt-0.5 size-4 shrink-0" />
+      <div className="text-sm">
+        <p className="font-semibold">{cfg.msg}</p>
+        {release.finalized_at && (
+          <p className="text-[11px] text-muted-foreground">
+            Finalised {new Date(release.finalized_at).toLocaleString()}{" "}
+            {release.finalized_by?.name
+              ? `by ${release.finalized_by.name}`
+              : null}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- Shared collab helpers ----------------
+
+function CreatorLockBanner({
+  creator,
+  action = "finalize",
+}: {
+  creator: CollabPeer | null;
+  action?: string;
+}) {
+  if (!creator) return null;
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+      <Lock className="mt-0.5 size-3.5 shrink-0" />
+      <span>
+        Only <span className="font-medium text-foreground">{creator.name}</span>{" "}
+        can {action} from this room. Your edits sync to them live.
+      </span>
+    </div>
+  );
+}
+
+function JoinErrorCard({ error }: { error: JoinError }) {
+  const cfg = {
+    form_full: {
+      Icon: AlertTriangle,
+      title: "Form is at capacity",
+      detail: error.limit
+        ? `Up to ${error.limit} people can review this release at once. Wait for someone to leave, then refresh.`
+        : "Wait for someone to leave, then refresh.",
+    },
+    forbidden: {
+      Icon: LockKeyhole,
+      title: "You can't sign here",
+      detail:
+        "Ask an admin for the `production.final_release` permission to join this ceremony.",
+    },
+    bad_topic: {
+      Icon: AlertTriangle,
+      title: "Unknown release",
+      detail: "We couldn't find this release. The link may be malformed.",
+    },
+    unknown: {
+      Icon: AlertTriangle,
+      title: "Couldn't open the form",
+      detail: "Something went wrong on our end. Please try again.",
+    },
+  }[error.reason];
+  const { Icon } = cfg;
+  return (
+    <Card>
+      <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+        <div className="flex size-12 items-center justify-center rounded-full bg-background">
+          <Icon className="size-6" />
+        </div>
+        <p className="text-sm font-semibold">{cfg.title}</p>
+        <p className="text-xs text-muted-foreground">{cfg.detail}</p>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/production/runs">Back to runs</Link>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
