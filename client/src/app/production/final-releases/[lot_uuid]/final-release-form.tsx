@@ -22,6 +22,7 @@ import {
   Paperclip,
   ShieldCheck,
   Signature,
+  Sparkles,
   Trash2,
   Upload,
   XCircle,
@@ -40,6 +41,7 @@ import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import {
   clearSignatureAction,
+  generateBmrAction,
   holdAction,
   rejectAction,
   releaseAction,
@@ -609,6 +611,12 @@ function FilesCard({
   );
 }
 
+// Which file kinds can PSP assemble from the DB? BMR is a full
+// production record (MO, materials consumed, routing, output, sign-
+// offs). CoA / Micro / Label need external test data or physical
+// artefacts, so those stay upload-only.
+const AUTO_GENERATABLE: readonly FinalReleaseFileKind[] = ["bmr"] as const;
+
 function FileRow({
   kind,
   release,
@@ -623,6 +631,8 @@ function FileRow({
   const files = release.files.filter((f) => f.kind === kind);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const canGenerate = AUTO_GENERATABLE.includes(kind);
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -675,6 +685,28 @@ function FileRow({
 
   const attached = files.length > 0;
 
+  const generate = async () => {
+    setGenerating(true);
+    try {
+      const res = await generateBmrAction(release.uuid);
+      if (!res.ok) {
+        toast.error(res.detail ?? "Couldn't generate the PDF.");
+        return;
+      }
+      toast.success("Batch Manufacturing Record generated.");
+      const detail = await fetch(
+        `/api/production/final-releases/by-lot/${encodeURIComponent(release.stock_lot?.uuid ?? "")}`,
+        { cache: "no-store" },
+      );
+      if (detail.ok) {
+        const data = (await detail.json()) as { release: FinalRelease };
+        onChanged(data.release);
+      }
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   return (
     <div
       className={cn(
@@ -710,7 +742,7 @@ function FileRow({
           </div>
         </div>
         {canEdit && (
-          <>
+          <div className="flex shrink-0 items-center gap-1.5">
             <input
               ref={fileInputRef}
               type="file"
@@ -721,18 +753,30 @@ function FileRow({
                 if (f) void upload(f);
               }}
             />
+            {canGenerate && !attached && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={generating || uploading}
+                onClick={() => void generate()}
+                title="Auto-assemble this document from the MO's production record."
+              >
+                <Sparkles className="mr-1 size-3.5" />
+                {generating ? "Generating…" : "Generate"}
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
               size="sm"
-              disabled={uploading}
+              disabled={uploading || generating}
               onClick={() => fileInputRef.current?.click()}
-              className="shrink-0"
             >
               <Upload className="mr-1 size-3.5" />
               {uploading ? "Uploading…" : attached ? "Replace" : "Upload"}
             </Button>
-          </>
+          </div>
         )}
       </div>
       {attached && (

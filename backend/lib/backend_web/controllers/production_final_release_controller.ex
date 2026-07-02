@@ -130,6 +130,45 @@ defmodule BackendWeb.ProductionFinalReleaseController do
     unprocessable(conn, "missing_file", "Send file under `file` (multipart) with a `kind`.")
   end
 
+  def generate_bmr(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %FinalRelease{} = release <- get_release(actor, uuid),
+         release = Repo.preload(release, [:files]),
+         {:ok, file} <- FinalReleases.generate_bmr(actor, release) do
+      conn
+      |> put_status(:created)
+      |> json(%{file: Payloads.production_final_release_file(file)})
+    else
+      nil ->
+        not_found(conn)
+
+      {:error, :already_finalized} ->
+        conflict_finalized(conn)
+
+      {:error, :bmr_already_attached} ->
+        unprocessable(conn, "bmr_already_attached",
+          "A Batch Manufacturing Record is already attached — delete it first if you want to regenerate."
+        )
+
+      {:error, {:pdf_render_failed, reason}} ->
+        unprocessable(conn, "pdf_render_failed",
+          "Couldn't render the BMR PDF: #{inspect(reason)}."
+        )
+
+      {:error, {:storage_failed, reason}} ->
+        unprocessable(conn, "storage_failed",
+          "Couldn't store the generated PDF: #{inspect(reason)}."
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+
+      {:error, reason} ->
+        unprocessable(conn, "generate_failed", inspect(reason))
+    end
+  end
+
   def delete_file(conn, %{"uuid" => uuid, "file_uuid" => file_uuid}) do
     actor = conn.assigns.current_user
 

@@ -184,6 +184,26 @@ export async function holdAction(
   }
 }
 
+/** Kick off server-side BMR PDF assembly and attach it. */
+export async function generateBmrAction(
+  uuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const t = await token();
+  if (!t) return unauthorized("generateBmrAction");
+  try {
+    await api(
+      `/api/production/final-releases/${encodeURIComponent(uuid)}/generate/bmr`,
+      { method: "POST", token: t, body: JSON.stringify({}) },
+    );
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "generateBmrAction",
+      fallbackDetail: "Couldn't generate the BMR PDF.",
+    });
+  }
+}
+
 export async function rejectAction(
   uuid: string,
   reason: string,

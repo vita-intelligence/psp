@@ -15,6 +15,8 @@ defmodule Backend.Documents do
   `csv_separator` so non-comma locales survive Excel import.
   """
 
+  import Ecto.Query, warn: false
+
   alias Backend.Companies
   alias Backend.CustomerInvoices.CustomerInvoice
   alias Backend.Numbering
@@ -206,6 +208,261 @@ defmodule Backend.Documents do
       subject: subject,
       body: body
     }
+  end
+
+  @doc """
+  Batch Manufacturing Record PDF — assembled from the parent MO's
+  data: BOM, materials consumed (bookings), routing operations
+  (steps), output lots, and the sign-off chain (preparer, approver,
+  picker, closeout operator, output QC). Attached to the release row
+  as the required `bmr` evidence file (BRCGS Issue 9 § 3.9 + § 5.6).
+
+  `release` MUST come preloaded with :manufacturing_order (bom, lines,
+  bookings with item + stock_lot + picked_by + consumed_by, steps),
+  :stock_lot (:item). The caller in
+  `Backend.Production.FinalReleases.generate_bmr/2` does that.
+  """
+  def production_bmr_pdf(release) do
+    company = Companies.current()
+    assigns = bmr_assigns(release, company)
+    render_pdf("production_bmr.html.eex", assigns)
+  end
+
+  defp bmr_assigns(release, company) do
+    mo = release.manufacturing_order
+    lot = release.stock_lot
+    item = lot && lot.item
+
+    materials =
+      case mo && mo.bookings do
+        list when is_list(list) ->
+          list
+          |> Enum.sort_by(& &1.id)
+          |> Enum.map(&booking_row/1)
+
+        _ ->
+          []
+      end
+
+    operations =
+      case mo && mo.steps do
+        list when is_list(list) ->
+          list
+          |> Enum.sort_by(& &1.sort_order)
+          |> Enum.map(&step_row/1)
+
+        _ ->
+          []
+      end
+
+    output_lots =
+      Backend.Repo.all(
+        from l in Backend.Stock.Lot,
+          where:
+            l.source_kind == "manufacturing_order" and
+              l.source_ref == ^(mo && mo.uuid || "")
+      )
+
+    output_rows = Enum.map(output_lots, &output_lot_row/1)
+
+    lot_code = Backend.Numbering.render(lot.id, company, "stock_lot") || "#{lot.id}"
+    mo_code = Backend.Numbering.render(mo.id, company, "manufacturing_order") || "#{mo.id}"
+
+    %{
+      company: company,
+      now: format_date_time(DateTime.utc_now()),
+      batch_ref: "#{mo_code} · #{lot_code}",
+      product_name: (item && item.name) || "—",
+      product_type: (item && humanize_item_type(item.item_type)) || "—",
+      lot_code: lot_code,
+      mo_code: mo_code,
+      batch_qty: format_decimal(lot.qty_received),
+      batch_uom: uom_symbol(item),
+      bom_ref: bom_ref(mo),
+      manufactured_at: format_date(lot.manufactured_at),
+      expiry_at: format_date(lot.expiry_at),
+      materials: materials,
+      operations: operations,
+      output_lots: output_rows,
+      signoffs: bmr_signoffs(release, mo, output_lots)
+    }
+  end
+
+  defp booking_row(b) do
+    company = Companies.current()
+
+    %{
+      item_name: (b.item && b.item.name) || "—",
+      lot_code:
+        (b.stock_lot &&
+           (Backend.Numbering.render(b.stock_lot.id, company, "stock_lot") ||
+              "##{b.stock_lot.id}")) ||
+          "—",
+      supplier_batch:
+        (b.stock_lot && b.stock_lot.supplier_batch_no) || "—",
+      booked_qty: format_decimal(b.quantity),
+      consumed_qty: format_decimal(b.consumed_quantity),
+      picked_by:
+        actor_name(b.picked_by) <> when_stamp(b.picked_at),
+      consumed_by:
+        actor_name(b.consumed_by) <> when_stamp(b.consumed_at)
+    }
+  end
+
+  defp step_row(step) do
+    %{
+      description: step.operation_description || "—",
+      workstation:
+        (Map.get(step, :workstation_group) && step.workstation_group.name) ||
+          "—",
+      planned_window:
+        format_window(step.planned_start, step.planned_finish),
+      actual_window:
+        format_window(step.actual_start, step.actual_finish)
+    }
+  end
+
+  defp output_lot_row(lot) do
+    company = Companies.current()
+
+    %{
+      lot_code:
+        Backend.Numbering.render(lot.id, company, "stock_lot") || "##{lot.id}",
+      supplier_batch: lot.supplier_batch_no || "—",
+      qty: format_decimal(lot.qty_received),
+      status: humanize_lot_status(lot.status)
+    }
+  end
+
+  defp bmr_signoffs(release, mo, _output_lots) do
+    [
+      %{
+        role: "MO prepared by",
+        name: actor_name(mo && mo.prepared_by),
+        when: when_stamp(mo && mo.prepared_at)
+      },
+      %{
+        role: "MO approved by",
+        name: actor_name(mo && mo.approved_by),
+        when: when_stamp(mo && mo.approved_at)
+      },
+      %{
+        role: "Production finish",
+        name: mo && mo.actual_finish && "Recorded",
+        when: when_stamp(mo && mo.actual_finish)
+      },
+      %{
+        role: "Release: releaser",
+        name: actor_name(release.releaser),
+        when: when_stamp(release.releaser_signed_at)
+      },
+      %{
+        role: "Release: approver",
+        name: actor_name(release.approver),
+        when: when_stamp(release.approver_signed_at)
+      },
+      %{
+        role: "Release: decision",
+        name: humanize_release_status(release.status),
+        when: when_stamp(release.finalized_at)
+      }
+    ]
+  end
+
+  defp actor_name(nil), do: "—"
+  defp actor_name(%{name: n}) when is_binary(n) and n != "", do: n
+  defp actor_name(%{email: e}) when is_binary(e), do: e
+  defp actor_name(_), do: "—"
+
+  defp when_stamp(nil), do: ""
+
+  defp when_stamp(%DateTime{} = dt),
+    do: " · " <> format_date_time(dt)
+
+  defp when_stamp(%NaiveDateTime{} = ndt) do
+    " · " <>
+      (ndt |> DateTime.from_naive!("Etc/UTC") |> format_date_time())
+  end
+
+  defp when_stamp(_), do: ""
+
+  defp bom_ref(nil), do: "—"
+
+  defp bom_ref(mo) do
+    case mo.bom do
+      %{code: code, revision: rev} when is_binary(code) ->
+        code <> if(is_binary(rev), do: " · rev " <> rev, else: "")
+
+      %{revision: rev} when is_binary(rev) ->
+        "rev " <> rev
+
+      _ ->
+        "—"
+    end
+  end
+
+  defp humanize_item_type(nil), do: "—"
+
+  defp humanize_item_type(t) when is_binary(t) do
+    t
+    |> String.replace("_", " ")
+    |> String.split(" ")
+    |> Enum.map_join(" ", &String.capitalize/1)
+  end
+
+  defp humanize_lot_status(nil), do: "—"
+  defp humanize_lot_status(s), do: String.replace(s, "_", " ")
+
+  defp humanize_release_status("pending"), do: "Pending"
+  defp humanize_release_status("released"), do: "Released"
+  defp humanize_release_status("on_hold"), do: "On hold"
+  defp humanize_release_status("rejected"), do: "Rejected"
+  defp humanize_release_status(other) when is_binary(other), do: other
+  defp humanize_release_status(_), do: "—"
+
+  defp uom_symbol(nil), do: ""
+
+  defp uom_symbol(item) do
+    case Map.get(item, :stock_uom) do
+      %{symbol: s} when is_binary(s) -> s
+      _ -> ""
+    end
+  end
+
+  defp format_decimal(nil), do: "—"
+
+  defp format_decimal(%Decimal{} = d),
+    do: d |> Decimal.to_string(:normal)
+
+  defp format_decimal(n) when is_number(n), do: to_string(n)
+  defp format_decimal(_), do: "—"
+
+  defp format_date(nil), do: "—"
+
+  defp format_date(%Date{} = d),
+    do: Calendar.strftime(d, "%Y-%m-%d")
+
+  defp format_date(%DateTime{} = dt),
+    do: Calendar.strftime(dt, "%Y-%m-%d")
+
+  defp format_date(%NaiveDateTime{} = ndt),
+    do: Calendar.strftime(ndt, "%Y-%m-%d")
+
+  defp format_date(_), do: "—"
+
+  defp format_date_time(%DateTime{} = dt),
+    do: Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
+
+  defp format_date_time(%NaiveDateTime{} = ndt) do
+    ndt |> DateTime.from_naive!("Etc/UTC") |> format_date_time()
+  end
+
+  defp format_date_time(_), do: "—"
+
+  defp format_window(nil, nil), do: "—"
+
+  defp format_window(a, b) do
+    "#{format_date_time(a)} → #{format_date_time(b)}"
   end
 
   # ---------------------------------------------------------------- private

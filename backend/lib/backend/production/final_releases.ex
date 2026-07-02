@@ -283,6 +283,110 @@ defmodule Backend.Production.FinalReleases do
     end
   end
 
+  @doc """
+  Auto-generate the Batch Manufacturing Record PDF from the parent
+  MO + release row and attach it as the required `bmr` evidence file
+  on this release. Refuses if the release is already finalised or if
+  a bmr file is already attached (delete the existing one first to
+  regenerate — same rule as an operator-uploaded file).
+  """
+  def generate_bmr(%User{} = actor, %FinalRelease{} = release) do
+    cond do
+      release.status != "pending" ->
+        {:error, :already_finalized}
+
+      Enum.any?(preloaded_files(release), &(&1.kind == "bmr")) ->
+        {:error, :bmr_already_attached}
+
+      true ->
+        preloaded =
+          Repo.preload(
+            release,
+            [
+              stock_lot: [:item],
+              manufacturing_order: [
+                :bom,
+                :prepared_by,
+                :approved_by,
+                bookings: [
+                  :item,
+                  :picked_by,
+                  :consumed_by,
+                  stock_lot: []
+                ],
+                steps: [:workstation_group]
+              ]
+            ]
+          )
+
+        case Backend.Documents.production_bmr_pdf(preloaded) do
+          {:ok, bytes} when is_binary(bytes) ->
+            attach_generated_pdf(actor, release, "bmr", bmr_filename(preloaded), bytes)
+
+          {:error, reason} ->
+            {:error, {:pdf_render_failed, reason}}
+        end
+    end
+  end
+
+  defp bmr_filename(release) do
+    mo_uuid =
+      (release.manufacturing_order && release.manufacturing_order.uuid) || release.uuid
+
+    stamp =
+      DateTime.utc_now()
+      |> DateTime.truncate(:second)
+      |> DateTime.to_iso8601()
+      |> String.replace(~r/[^0-9]/, "")
+
+    "BMR_" <> String.slice(mo_uuid, 0, 8) <> "_" <> stamp <> ".pdf"
+  end
+
+  # Convenience — mirrors upload_file/4's Storage.put + FinalReleaseFile
+  # insert path but seeds bytes from an in-memory PDF rather than a
+  # Plug.Upload.
+  defp attach_generated_pdf(%User{} = actor, %FinalRelease{} = release, kind, filename, bytes)
+       when kind in @required_file_kinds and is_binary(bytes) do
+    key =
+      "production_final_release_files/" <>
+        release.uuid <>
+        "/" <>
+        kind <>
+        "_" <>
+        Ecto.UUID.generate() <>
+        ".pdf"
+
+    case Storage.put(key, bytes, content_type: "application/pdf") do
+      {:ok, blob_path} ->
+        %FinalReleaseFile{}
+        |> FinalReleaseFile.changeset(%{
+          company_id: release.company_id,
+          production_final_release_id: release.id,
+          kind: kind,
+          filename: filename,
+          mime: "application/pdf",
+          byte_size: byte_size(bytes),
+          blob_path: blob_path,
+          uploaded_by_id: actor.id
+        })
+        |> Repo.insert()
+        |> case do
+          {:ok, file} ->
+            {:ok, Repo.preload(file, :uploaded_by)}
+
+          {:error, cs} ->
+            _ = Storage.delete(blob_path)
+            {:error, cs}
+        end
+
+      {:error, reason} ->
+        {:error, {:storage_failed, reason}}
+    end
+  end
+
+  defp preloaded_files(%FinalRelease{files: files}) when is_list(files), do: files
+  defp preloaded_files(%FinalRelease{} = release), do: Repo.preload(release, :files).files
+
   @doc "Hard-delete a file row + its blob. Allowed only while pending."
   def delete_file(%User{} = actor, %FinalRelease{} = release, file_uuid)
       when is_binary(file_uuid) do

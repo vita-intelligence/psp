@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BMR <%= @batch_ref %></title>
+<style>
+  @page { size: A4; margin: 16mm 12mm; }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #111; margin: 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 10px; }
+  .from { max-width: 55%; }
+  .from h1 { font-size: 12pt; margin: 0 0 4px 0; }
+  .from .meta { font-size: 9pt; color: #444; white-space: pre-line; }
+  .doc-block { text-align: right; }
+  .doc-block h2 { font-size: 16pt; margin: 0; letter-spacing: 1px; text-transform: uppercase; }
+  .doc-block .code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11pt; }
+  .doc-block .brcgs { display: inline-block; margin-top: 4px; padding: 2px 6px; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.4px; border: 1px solid #6ea1c8; color: #285a83; background: #eaf3fa; border-radius: 3px; }
+
+  section { margin-top: 14px; page-break-inside: avoid; }
+  h3.section-title { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.7px; color: #666; margin: 0 0 6px 0; border-bottom: 1px solid #ddd; padding-bottom: 3px; }
+
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .grid .cell { border: 1px solid #ddd; padding: 5px 7px; border-radius: 3px; font-size: 9pt; }
+  .grid .label { color: #666; text-transform: uppercase; font-size: 7.5pt; letter-spacing: 0.5px; }
+  .grid .value { font-weight: 600; margin-top: 2px; }
+  .grid .value.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 4px; }
+  table th, table td { padding: 5px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+  table thead th { background: #f4f4f4; text-align: left; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.4px; color: #555; border-bottom: 1px solid #ccc; }
+  table td.num, table th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9pt; }
+  .muted { color: #666; }
+  .empty-row td { color: #999; font-style: italic; text-align: center; }
+
+  .signoff-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .signoff { border: 1px solid #ddd; padding: 8px; border-radius: 3px; min-height: 62px; }
+  .signoff .role { color: #666; text-transform: uppercase; font-size: 7.5pt; letter-spacing: 0.5px; }
+  .signoff .name { font-weight: 600; margin-top: 3px; }
+  .signoff .when { color: #666; font-size: 8pt; margin-top: 2px; }
+  .signoff.blank { border-style: dashed; color: #999; }
+
+  footer { margin-top: 22px; border-top: 1px solid #ddd; padding-top: 8px; display: flex; justify-content: space-between; font-size: 8pt; color: #777; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="from">
+    <h1><%= @company.name || "Company" %></h1>
+    <div class="meta"><%= @company.legal_address || "" %><%= if @company.tax_number, do: "\nVAT " <> @company.tax_number, else: "" %><%= if @company.registration_number, do: "\nReg " <> @company.registration_number, else: "" %></div>
+  </div>
+  <div class="doc-block">
+    <h2>Batch Manufacturing Record</h2>
+    <div class="code"><%= @batch_ref %></div>
+    <div class="brcgs">BRCGS Issue 9 · § 3.9 Traceability · § 5.6 Positive Release</div>
+    <div style="margin-top: 4px; font-size: 8.5pt; color: #444;">Printed <%= @now %></div>
+  </div>
+</header>
+
+<section>
+  <h3 class="section-title">Batch identity</h3>
+  <div class="grid">
+    <div class="cell"><div class="label">Product</div><div class="value"><%= @product_name %></div></div>
+    <div class="cell"><div class="label">Item type</div><div class="value"><%= @product_type %></div></div>
+    <div class="cell"><div class="label">Lot code</div><div class="value mono"><%= @lot_code %></div></div>
+    <div class="cell"><div class="label">MO code</div><div class="value mono"><%= @mo_code %></div></div>
+    <div class="cell"><div class="label">Batch qty</div><div class="value mono"><%= @batch_qty %> <%= @batch_uom %></div></div>
+    <div class="cell"><div class="label">BOM revision</div><div class="value mono"><%= @bom_ref %></div></div>
+    <div class="cell"><div class="label">Manufactured</div><div class="value"><%= @manufactured_at %></div></div>
+    <div class="cell"><div class="label">Expiry</div><div class="value"><%= @expiry_at %></div></div>
+  </div>
+</section>
+
+<section>
+  <h3 class="section-title">Materials consumed</h3>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24px;">#</th>
+        <th>Material</th>
+        <th>Lot code</th>
+        <th>Supplier batch</th>
+        <th class="num">Booked</th>
+        <th class="num">Consumed</th>
+        <th>Picked by</th>
+        <th>Closed by</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= if @materials == [] do %>
+        <tr class="empty-row"><td colspan="8">No bookings recorded against this MO.</td></tr>
+      <% else %>
+        <%= for {m, idx} <- Enum.with_index(@materials, 1) do %>
+          <tr>
+            <td class="num"><%= idx %></td>
+            <td><%= m.item_name %></td>
+            <td class="mono"><%= m.lot_code %></td>
+            <td class="mono"><%= m.supplier_batch %></td>
+            <td class="num"><%= m.booked_qty %></td>
+            <td class="num"><%= m.consumed_qty %></td>
+            <td><%= m.picked_by %></td>
+            <td><%= m.consumed_by %></td>
+          </tr>
+        <% end %>
+      <% end %>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h3 class="section-title">Routing operations</h3>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24px;">#</th>
+        <th>Operation</th>
+        <th>Workstation</th>
+        <th>Planned</th>
+        <th>Actual</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= if @operations == [] do %>
+        <tr class="empty-row"><td colspan="5">No routing operations logged for this MO.</td></tr>
+      <% else %>
+        <%= for {op, idx} <- Enum.with_index(@operations, 1) do %>
+          <tr>
+            <td class="num"><%= idx %></td>
+            <td><%= op.description %></td>
+            <td><%= op.workstation %></td>
+            <td class="muted"><%= op.planned_window %></td>
+            <td class="muted"><%= op.actual_window %></td>
+          </tr>
+        <% end %>
+      <% end %>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h3 class="section-title">Output</h3>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24px;">#</th>
+        <th>Lot code</th>
+        <th>Supplier batch</th>
+        <th class="num">Qty received</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <%= if @output_lots == [] do %>
+        <tr class="empty-row"><td colspan="5">No output lots recorded.</td></tr>
+      <% else %>
+        <%= for {ol, idx} <- Enum.with_index(@output_lots, 1) do %>
+          <tr>
+            <td class="num"><%= idx %></td>
+            <td class="mono"><%= ol.lot_code %></td>
+            <td class="mono"><%= ol.supplier_batch %></td>
+            <td class="num"><%= ol.qty %></td>
+            <td><%= ol.status %></td>
+          </tr>
+        <% end %>
+      <% end %>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h3 class="section-title">Sign-offs</h3>
+  <div class="signoff-grid">
+    <%= for s <- @signoffs do %>
+      <div class="signoff <%= if s.name == "—", do: "blank", else: "" %>">
+        <div class="role"><%= s.role %></div>
+        <div class="name"><%= s.name %></div>
+        <div class="when"><%= s.when %></div>
+      </div>
+    <% end %>
+  </div>
+</section>
+
+<footer>
+  <div>Batch Manufacturing Record · <%= @batch_ref %></div>
+  <div>Page 1 · Auto-generated <%= @now %></div>
+</footer>
+
+</body>
+</html>

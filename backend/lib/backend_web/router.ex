@@ -786,6 +786,13 @@ defmodule BackendWeb.Router do
            ProductionFinalReleaseController,
            :upload_file
 
+      # Auto-generate the BMR PDF from the MO's production data and
+      # attach it as the required `bmr` evidence file. See
+      # `Backend.Documents.production_bmr_pdf/1`.
+      post "/final-releases/:uuid/generate/bmr",
+           ProductionFinalReleaseController,
+           :generate_bmr
+
       delete "/final-releases/:uuid/files/:file_uuid",
              ProductionFinalReleaseController,
              :delete_file
