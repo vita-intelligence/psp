@@ -51,6 +51,9 @@ export interface FinalReleaseLotSummary {
   placement: {
     cell_uuid: string;
     cell_name: string | null;
+    /** 0-based shelf level inside the rack. Used to derive "Level N"
+     *  when `cell_name` is null. */
+    cell_ordinal: number | null;
     cell_purpose: string;
     location: { uuid: string; name: string | null; code: string | null } | null;
     floor: { uuid: string; name: string | null } | null;

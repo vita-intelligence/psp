@@ -4908,6 +4908,10 @@ defmodule BackendWeb.Payloads do
       %{
         cell_uuid: cell.uuid,
         cell_name: cell.name,
+        # Ordinal is the 0-based shelf level inside a rack. Only useful
+        # when `cell_name` is nil — the FE derives "Level 1" style
+        # display from it so the release list doesn't render "— · —".
+        cell_ordinal: cell.ordinal,
         cell_purpose: cell.purpose,
         location:
           case loc do

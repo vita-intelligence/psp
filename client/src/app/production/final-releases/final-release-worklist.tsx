@@ -129,11 +129,31 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
                 Move required
               </span>
             );
+
+          // Build the crumb from every non-null segment. Named cell
+          // wins; when it's null the derived "Level N" from the
+          // ordinal keeps the crumb legible. Same fallback chain the
+          // rest of the app uses.
+          const rack =
+            p.location?.code ?? p.location?.name ?? null;
+          const cellLabel =
+            p.cell_name ??
+            (typeof p.cell_ordinal === "number"
+              ? `Level ${p.cell_ordinal + 1}`
+              : null);
+
+          const crumb = [
+            p.warehouse?.name,
+            p.floor?.name,
+            rack,
+            cellLabel,
+          ]
+            .filter((x): x is string => !!x)
+            .join(" · ");
+
           return (
             <div className="min-w-0 space-y-0.5">
-              <p className="truncate text-xs">
-                {p.warehouse?.name ?? "—"} · {p.cell_name ?? "—"}
-              </p>
+              <p className="truncate text-xs">{crumb || "—"}</p>
               {purposeChip}
             </div>
           );
