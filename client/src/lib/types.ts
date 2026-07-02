@@ -2663,6 +2663,7 @@ export type OrderWizardPhaseKey =
   | "awaiting_ingredients"
   | "in_production"
   | "closeout"
+  | "final_release"
   | "ready_to_dispatch"
   | "cancelled";
 

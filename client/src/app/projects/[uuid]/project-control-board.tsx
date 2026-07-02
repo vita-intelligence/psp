@@ -132,6 +132,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "awaiting_ingredients",
   "in_production",
   "closeout",
+  "final_release",
   "ready_to_dispatch",
 ];
 
@@ -142,6 +143,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   awaiting_ingredients: "Ingredients",
   in_production: "Production",
   closeout: "Closeout",
+  final_release: "Release",
   ready_to_dispatch: "Ready",
   cancelled: "Cancelled",
 };
@@ -153,6 +155,8 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   awaiting_ingredients: "Waiting on POs covering placeholder bookings.",
   in_production: "Lines are being made on the floor.",
   closeout: "QC the outputs and move them to the warehouse.",
+  final_release:
+    "QA sign-off on finished product before dispatch (BRCGS § 5.6 Positive Release).",
   ready_to_dispatch: "Done — ship it to the customer.",
   cancelled: "Terminal — nothing else moves.",
 };
@@ -167,6 +171,7 @@ const PHASE_ICON: Record<
   awaiting_ingredients: Truck,
   in_production: Cog,
   closeout: PackageOpen,
+  final_release: ShieldCheck,
   ready_to_dispatch: CheckCircle2,
   cancelled: Ban,
 };
@@ -1233,6 +1238,10 @@ const PHASE_EXPLAINER: Record<
   closeout: {
     title: "Move output to warehouse storage.",
     body: "Runs are finished but output lots are still in production-feed. Send the closeout flow to a device so the warehouse team can transfer the goods to a regular / dispatch cell.",
+  },
+  final_release: {
+    title: "QA sign-off before dispatch.",
+    body: "Finished lots are in a finished-quarantine cell awaiting Positive Release (BRCGS Issue 9 § 5.6). Attach the CoA, BMR, micro report, and label proof; collect two different signatures; then Release / Hold / Reject each batch.",
   },
   ready_to_dispatch: {
     title: "Order is ready to ship.",
@@ -3337,6 +3346,8 @@ function phaseBadgeTone(
     case "in_production":
     case "closeout":
       return "amber";
+    case "final_release":
+      return "sky";
     case "ready_to_dispatch":
       return "emerald";
     case "cancelled":
