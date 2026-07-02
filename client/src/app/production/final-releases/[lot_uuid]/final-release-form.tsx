@@ -239,12 +239,14 @@ export function FinalReleaseForm({
 
       {finalized && <FinalisedBanner release={release} />}
 
+      {/* Placement check — if the lot slipped out of finished_quarantine
+          AFTER the form opened (rare but possible during long-running
+          collab sessions), block finalisation with a lightweight
+          reminder and let the page.tsx re-decide on next refresh.
+          The heavy "Move the lot first" splash is served by the
+          server component's PlacementBlockScreen. */}
       {!finalized && !lotInFinishedQuarantine && (
-        <FinishedQuarantineWarning
-          hasPlacement={lotHasPlacement}
-          cellPurpose={cellPurpose}
-          onRefresh={() => void refetchRelease()}
-        />
+        <PlacementSlippedBanner cellPurpose={cellPurpose} />
       )}
 
       {!finalized && !isCreator && creator && (
@@ -1091,52 +1093,24 @@ function FinalisedBanner({ release }: { release: FinalRelease }) {
   );
 }
 
-// ---------------- Placement gate ----------------
+// ---------------- Placement drift banner ----------------
 
-function FinishedQuarantineWarning({
-  hasPlacement,
+function PlacementSlippedBanner({
   cellPurpose,
-  onRefresh,
 }: {
-  hasPlacement: boolean;
   cellPurpose: string | null;
-  onRefresh: () => void;
 }) {
-  const title = hasPlacement
-    ? "Lot isn't in finished-quarantine yet"
-    : "Lot isn't on a shelf yet";
-
-  const body = hasPlacement
-    ? `Currently in a ${cellPurpose ?? "different"} cell. BRCGS Issue 9 § 5.6 + § 4.4 require this lot to sit in a finished-quarantine cell during the release ceremony — physically segregated from cleared stock so an auditor can tell "released" apart from "waiting on release" at the shelf.`
-    : "This lot has no active placement. It has to be dropped in a finished-quarantine cell before the release ceremony can complete.";
-
   return (
-    <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
-      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400" />
-      <div className="flex-1 space-y-2">
-        <div>
-          <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-            {title}
-          </p>
-          <p className="mt-0.5 text-xs text-amber-800 dark:text-amber-200">
-            {body}
-          </p>
-        </div>
-        <p className="text-[11px] text-amber-800 dark:text-amber-200">
-          Send the warehouse worker to the mobile pending-putaway queue — the
-          lot's already listed there with a "→ finished quarantine" hint. Once
-          they scan it into the correct cell, hit refresh here and the release
-          buttons unlock.
+    <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+      <div className="space-y-1">
+        <p className="font-semibold">Lot slipped out of finished-quarantine.</p>
+        <p className="text-destructive/90">
+          Someone moved this lot to a{" "}
+          <span className="font-mono">{cellPurpose ?? "different"}</span> cell
+          while this room was open. Finalisation is blocked — refresh the page
+          to re-run the placement check.
         </p>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={onRefresh}
-          className="border-amber-500/60 text-amber-800 hover:bg-amber-500/10"
-        >
-          I&apos;ve moved it — refresh
-        </Button>
       </div>
     </div>
   );
