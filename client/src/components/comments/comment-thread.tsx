@@ -334,8 +334,12 @@ export function CommentThread({
   );
 
   return (
-    <Card className="border-border/60">
-      <CardHeader>
+    // Fixed-height messenger surface: header + composer stay pinned,
+    // the message list scrolls in between. Mirrors Hatyna's chat shell
+    // so a long thread doesn't push the composer offscreen and the
+    // author's most-recent context stays visible.
+    <Card className="flex h-[640px] flex-col overflow-hidden border-border/60 py-0 gap-0">
+      <CardHeader className="shrink-0 border-b border-border/60 bg-card px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -353,12 +357,13 @@ export function CommentThread({
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-4">
         {joinError && (
           <ErrorBanner
             tone="warning"
             detail={joinErrorDetail(joinError)}
             code={"channel_" + joinError.reason}
+            className="mb-3"
           />
         )}
 
@@ -367,11 +372,12 @@ export function CommentThread({
             detail={error.detail}
             code={error.code}
             debug={error.debug}
+            className="mb-3"
           />
         )}
 
         {comments.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border/60 py-10 text-center text-xs text-muted-foreground">
+          <div className="flex flex-1 flex-col items-center justify-center rounded-md border border-dashed border-border/60 py-10 text-center text-xs text-muted-foreground">
             No comments yet.
             {effectiveCanComment ? " Start the discussion below." : ""}
           </div>
@@ -393,7 +399,9 @@ export function CommentThread({
             onReact={submitReact}
           />
         )}
+      </div>
 
+      <div className="shrink-0 border-t border-border/60 bg-card px-6 py-3">
         {effectiveCanComment ? (
           <CommentComposer
             pending={pending}
@@ -410,7 +418,7 @@ export function CommentThread({
             You can read this discussion but don&apos;t have permission to post.
           </div>
         )}
-      </CardContent>
+      </div>
     </Card>
   );
 }

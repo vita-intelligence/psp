@@ -215,8 +215,16 @@ export const RichComposer = forwardRef<RichComposerRef, Props>(function RichComp
       }}
       onPaste={handlePaste}
       className={cn(
-        "rich-composer outline-none",
+        "rich-composer relative outline-none",
+        // Placeholder rendered via a :before pseudo. `absolute` +
+        // `inset-*` pins it to the top-left of the editor so the
+        // caret starts at the true content origin (position 0) —
+        // otherwise the pseudo sits inline and the caret lands
+        // AFTER the placeholder glyphs.
         "data-[empty]:before:content-[attr(data-placeholder)]",
+        "data-[empty]:before:absolute",
+        "data-[empty]:before:left-0",
+        "data-[empty]:before:top-0",
         "data-[empty]:before:text-muted-foreground",
         "data-[empty]:before:pointer-events-none",
         className,

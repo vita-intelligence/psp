@@ -35,6 +35,7 @@ export function EmojiPicker({
   align = "start",
   side = "top",
   buttonClassName,
+  closeOnSelect = true,
 }: {
   onSelect: (emoji: string) => void;
   triggerAriaLabel?: string;
@@ -44,6 +45,10 @@ export function EmojiPicker({
   align?: "start" | "center" | "end";
   side?: "top" | "right" | "bottom" | "left";
   buttonClassName?: string;
+  /** Reactions pick one emoji then dismiss; composer emoji insertion
+   *  benefits from staying open so the user can chain multiple picks
+   *  without reopening. Default true (react semantics). */
+  closeOnSelect?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -76,7 +81,7 @@ export function EmojiPicker({
                 type="button"
                 onClick={() => {
                   onSelect(emoji);
-                  setOpen(false);
+                  if (closeOnSelect) setOpen(false);
                 }}
                 aria-label={emoji}
                 aria-pressed={isActive}
@@ -96,7 +101,7 @@ export function EmojiPicker({
         <Picker
           onEmojiClick={(data) => {
             onSelect(data.emoji);
-            setOpen(false);
+            if (closeOnSelect) setOpen(false);
           }}
           width={340}
           height={380}
