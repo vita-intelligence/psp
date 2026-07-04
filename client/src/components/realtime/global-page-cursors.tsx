@@ -1,20 +1,28 @@
 "use client";
 
-// Viewport-anchored cursor overlay. Sits as a fixed `pointer-events-none`
+// Content-anchored cursor overlay. Sits as a fixed `pointer-events-none`
 // layer above the app body so remote cursors are visible on EVERY route
-// — home, lists, ledgers, wizards, forms — not just detail pages that
-// carry an explicit <PageCursorAnchor>.
+// — home, lists, ledgers, wizards, forms.
 //
-// The anchor is the viewport itself: emits use clientX / clientY
-// normalised against window.innerWidth / innerHeight, and remote
-// cursors are positioned in fixed screen coords.
+// Two users on different resolutions used to see cursors at
+// mismatched CONTENT positions because we normalised against the
+// viewport. Now we anchor cursor coordinates to a shared, max-width-
+// constrained CONTENT element. Since every page in this app centers
+// its content in a `mx-auto max-w-Nxl` wrapper, both users get an
+// anchor of the same pixel width (when their viewport exceeds the
+// max-w — always on desktop). Cursor fraction → same pixel offset
+// into the content on both sides → same element highlighted.
 //
-// Detail pages that ALSO mount a per-page <PageCursors> pass
-// `publishLocal={false}` there, since this global publisher owns the
-// stream. The overlay renders in both places (twice-rendered cursors
-// coalesce because they share the same store state).
+// Anchor discovery:
+//   1. Explicit `[data-cursor-anchor]` attribute (opt-in per page)
+//   2. First `mx-auto` descendant of the first <main> (matches
+//      99% of pages in this codebase — the PageHeader / RecordHero /
+//      LotHeader all live inside such a wrapper)
+//   3. <main> itself (still resolution-dependent, but at least the
+//      vertical scroll math stays honest)
+//   4. `document.documentElement` fallback
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { usePagePresence } from "@/lib/realtime/use-page-presence";
 import type {
@@ -23,6 +31,19 @@ import type {
 } from "@/lib/realtime/use-page-presence";
 
 const DISABLED_PREFIXES = ["/login", "/logout", "/auth"];
+
+function findAnchor(): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  const explicit = document.querySelector<HTMLElement>("[data-cursor-anchor]");
+  if (explicit) return explicit;
+  const main = document.querySelector("main");
+  if (main) {
+    const constrained = main.querySelector<HTMLElement>('div[class*="max-w-"]');
+    if (constrained) return constrained;
+    return main as HTMLElement;
+  }
+  return document.documentElement;
+}
 
 export function GlobalPageCursors() {
   const pathname = usePathname();
@@ -36,7 +57,6 @@ export function GlobalPageCursors() {
     disabled,
   });
 
-  // Publish local cursor against the viewport. Skip on touch pointers.
   useEffect(() => {
     if (disabled) return;
 
@@ -46,12 +66,16 @@ export function GlobalPageCursors() {
     if (isTouch) return;
 
     const emit = (e: MouseEvent) => {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      if (w === 0 || h === 0) return;
-      const x = e.clientX / w;
-      const y = e.clientY / h;
-      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      const anchor = findAnchor();
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      // Emit as a normalised FRACTION of the anchor's own width/height.
+      // Same content → same rect.width on both users' anchors, so the
+      // fraction lands on the same content element.
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      if (x < -0.05 || x > 1.05 || y < -0.5 || y > 1.5) return;
       setCursor(x, y);
     };
 
@@ -59,8 +83,6 @@ export function GlobalPageCursors() {
 
     window.addEventListener("mousemove", emit);
     window.addEventListener("mouseout", (e) => {
-      // Only hide when the mouse actually leaves the browser window,
-      // not on child-element transitions.
       if (!e.relatedTarget && !(e as MouseEvent & { toElement?: unknown }).toElement) {
         leave();
       }
@@ -109,12 +131,41 @@ function ViewportCursorPointer({ cursor }: { cursor: RemoteCursor }) {
   const posRef = useRef({ x: 0, y: 0 });
   const lastPosRef = useRef({ x: 0, y: 0 });
   const colourRef = useRef(colourFor(cursor.peer));
+  // Track anchor rect so we can re-derive absolute cursor position
+  // when the receiver scrolls (rect.top moves with scroll) or resizes.
+  const [anchorRect, setAnchorRect] = useState<{ left: number; top: number; width: number; height: number }>({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+  });
 
   useEffect(() => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    posRef.current = { x: cursor.x * w, y: cursor.y * h };
-  }, [cursor.x, cursor.y]);
+    const measure = () => {
+      const el = findAnchor();
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setAnchorRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    const el = findAnchor();
+    if (el) ro.observe(el);
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  useEffect(() => {
+    posRef.current = {
+      x: anchorRect.left + cursor.x * anchorRect.width,
+      y: anchorRect.top + cursor.y * anchorRect.height,
+    };
+  }, [cursor.x, cursor.y, anchorRect]);
 
   useEffect(() => {
     let raf: number;
