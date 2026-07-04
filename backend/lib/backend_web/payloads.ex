@@ -4895,6 +4895,109 @@ defmodule BackendWeb.Payloads do
 
   def production_final_release_file(_), do: nil
 
+  # =========================================================================
+  # Shipments (outbound dispatch record — BRCGS Issue 9 § 5.4.6)
+  # =========================================================================
+
+  def shipment(%Backend.Shipments.Shipment{} = s) do
+    %{
+      uuid: s.uuid,
+      status: s.status,
+      qty: decimal_to_string(s.qty),
+      recipient_name: s.recipient_name,
+      ship_to_address: s.ship_to_address,
+      ship_to_country: s.ship_to_country,
+      carrier: s.carrier,
+      vehicle_registration: s.vehicle_registration,
+      driver_name: s.driver_name,
+      consignment_note_ref: s.consignment_note_ref,
+      seal_number: s.seal_number,
+      temperature_c: decimal_to_string(s.temperature_c),
+      planned_ship_at: s.planned_ship_at,
+      notes: s.notes,
+      loading_photo_url: s.loading_photo_url,
+      customer: shipment_customer(s.customer),
+      customer_order: shipment_customer_order(s.customer_order),
+      stock_lot: shipment_lot_summary(s.stock_lot),
+      created_at: s.inserted_at,
+      created_by: actor(s, :created_by),
+      ready_at: s.ready_at,
+      ready_by: actor(s, :ready_by),
+      picked_up_at: s.picked_up_at,
+      picked_up_by: actor(s, :picked_up_by),
+      cancelled_at: s.cancelled_at,
+      cancelled_by: actor(s, :cancelled_by),
+      cancel_reason: s.cancel_reason,
+      updated_at: s.updated_at
+    }
+  end
+
+  def shipment(_), do: nil
+
+  defp shipment_customer(%Backend.Customers.Customer{} = c) do
+    %{id: c.id, uuid: c.uuid, name: c.name}
+  end
+
+  defp shipment_customer(_), do: nil
+
+  defp shipment_customer_order(%Backend.CustomerOrders.CustomerOrder{} = co) do
+    %{id: co.id, uuid: co.uuid, status: co.status}
+  end
+
+  defp shipment_customer_order(_), do: nil
+
+  defp shipment_lot_summary(%Backend.Stock.Lot{} = lot) do
+    placement =
+      case lot.placements do
+        list when is_list(list) ->
+          Enum.find(list, fn p ->
+            p.storage_cell && p.qty &&
+              Decimal.compare(p.qty, Decimal.new(0)) == :gt
+          end)
+
+        _ ->
+          nil
+      end
+
+    cell = placement && placement.storage_cell
+    location = cell && cell.storage_location
+    floor = location && location.floor
+    warehouse = floor && floor.warehouse
+
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      supplier_batch_no: lot.supplier_batch_no,
+      qty_received: decimal_to_string(lot.qty_received),
+      expiry_at: lot.expiry_at,
+      ownership_kind: lot.ownership_kind,
+      item: shipment_item_summary(lot.item),
+      unit_symbol: lot.unit_of_measurement && lot.unit_of_measurement.symbol,
+      bailee_customer: shipment_customer(lot.bailee_customer),
+      placement:
+        cell &&
+          %{
+            cell_uuid: cell.uuid,
+            cell_name: cell.name,
+            cell_code: render_code(cell, "storage_cell"),
+            cell_purpose: cell.purpose,
+            location_name: location && location.name,
+            location_code: location && location.code,
+            floor_name: floor && floor.name,
+            warehouse_name: warehouse && warehouse.name
+          }
+    }
+  end
+
+  defp shipment_lot_summary(_), do: nil
+
+  defp shipment_item_summary(%Backend.Items.Item{} = it) do
+    %{id: it.id, uuid: it.uuid, name: it.name, item_type: it.item_type}
+  end
+
+  defp shipment_item_summary(_), do: nil
+
   defp production_final_release_lot_summary(%Backend.Stock.Lot{} = lot) do
     %{
       id: lot.id,

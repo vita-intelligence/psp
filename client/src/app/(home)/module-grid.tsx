@@ -6,6 +6,7 @@ import {
   Package,
   Settings as SettingsIcon,
   ShoppingCart,
+  Truck,
 } from "lucide-react";
 import type { User } from "@/lib/types";
 import { hasPermission } from "@/lib/rbac";
@@ -66,6 +67,14 @@ export function ModuleGrid({ user }: { user: User }) {
       label: "3PL storage",
       Icon: Package,
       caption: "Bailee custody inventory",
+      gate: hasPermission(user, "production.final_release"),
+    },
+    {
+      key: "shipments",
+      href: "/shipments",
+      label: "Shipments",
+      Icon: Truck,
+      caption: "Outbound dispatch records",
       gate: hasPermission(user, "production.final_release"),
     },
     {

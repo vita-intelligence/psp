@@ -1285,19 +1285,117 @@ defmodule Backend.OrderWizard do
     }
   end
 
-  defp next_action_for(:ready_to_dispatch, co, _, _, _) do
-    %{
-      code: "ready_to_dispatch",
-      title: "All MOs complete and stock is back in the warehouse.",
-      detail:
-        "This order is ready to ship. (Dispatch module isn't built yet — generate the invoice and arrange a courier manually.)",
-      primary_cta: %{
-        label: "Generate invoice",
-        kind: "link",
-        href: "/sales/orders/#{co.uuid}"
-      },
-      secondary_ctas: []
-    }
+  defp next_action_for(:ready_to_dispatch, co, _line_states, mos, _signers) do
+    # An output lot sitting in a dispatch cell without any live
+    # shipment row (draft / ready / picked_up) is what the operator
+    # needs to record next. Once every lot has paperwork, we fall
+    # through to the invoice CTA.
+    lots_awaiting_shipment_paperwork = lots_needing_shipment_paperwork(mos)
+
+    cond do
+      lots_awaiting_shipment_paperwork != [] ->
+        [target_lot | rest] = lots_awaiting_shipment_paperwork
+
+        %{
+          code: "create_shipment",
+          title:
+            "Record the outbound shipment (BRCGS Issue 9 § 5.4.6).",
+          detail:
+            "Finished goods are staged in the dispatch cell — capture the recipient + carrier + vehicle + waybill on a shipment record so the traceability trail closes. Scan the lot QR to start; on desktop you can push the scan to a paired phone.",
+          primary_cta: %{
+            label: "Create shipment",
+            kind: "link",
+            href: "/shipments/new?lot_uuid=#{target_lot.uuid}"
+          },
+          secondary_ctas:
+            Enum.map(rest, fn lot ->
+              %{
+                label: "Lot #{lot.code || lot.uuid} — shipment record",
+                kind: "link",
+                href: "/shipments/new?lot_uuid=#{lot.uuid}",
+                description:
+                  "One shipment row per lot; open this to fill the paperwork for the extra lot."
+              }
+            end) ++
+              [
+                %{
+                  label: "Generate invoice",
+                  kind: "link",
+                  href: "/sales/orders/#{co.uuid}",
+                  description:
+                    "Optional — the invoice can be generated in parallel with dispatch paperwork."
+                }
+              ]
+        }
+
+      true ->
+        %{
+          code: "ready_to_dispatch",
+          title:
+            "Shipment paperwork is on file — you can invoice the customer.",
+          detail:
+            "Every lot on this order either has a live shipment record or is already picked up. Generate the invoice next; the courier side is tracked on the /shipments tab.",
+          primary_cta: %{
+            label: "Generate invoice",
+            kind: "link",
+            href: "/sales/orders/#{co.uuid}"
+          },
+          secondary_ctas: [
+            %{
+              label: "Open shipments",
+              kind: "link",
+              href: "/shipments",
+              description:
+                "See the outbound shipment records for this order + rest of the warehouse."
+            }
+          ]
+        }
+    end
+  end
+
+  # Output lots on THIS order's MOs that are currently placed in a
+  # dispatch cell but have no live shipment row yet. Wizard uses this
+  # to surface the "Create shipment" CTA in ready_to_dispatch.
+  defp lots_needing_shipment_paperwork(mos) do
+    lot_ids_in_dispatch =
+      mos
+      |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
+      |> Enum.filter(fn lot ->
+        Enum.any?(lot.placements || [], fn p ->
+          p.storage_cell &&
+            p.storage_cell.purpose == "dispatch" &&
+            p.qty &&
+            Decimal.compare(p.qty, Decimal.new(0)) == :gt
+        end)
+      end)
+
+    if lot_ids_in_dispatch == [] do
+      []
+    else
+      ids = Enum.map(lot_ids_in_dispatch, & &1.id)
+
+      lots_with_open_shipment =
+        from(s in Backend.Shipments.Shipment,
+          where:
+            s.stock_lot_id in ^ids and
+              s.status in ["draft", "ready", "picked_up"],
+          select: s.stock_lot_id,
+          distinct: true
+        )
+        |> Repo.all()
+        |> MapSet.new()
+
+      lot_ids_in_dispatch
+      |> Enum.reject(&MapSet.member?(lots_with_open_shipment, &1.id))
+      |> Enum.map(fn lot ->
+        %{
+          id: lot.id,
+          uuid: lot.uuid,
+          code:
+            BackendWeb.Payloads.render_code(%{id: lot.id}, "stock_lot")
+        }
+      end)
+    end
   end
 
   # ----- line state ----------------------------------------------

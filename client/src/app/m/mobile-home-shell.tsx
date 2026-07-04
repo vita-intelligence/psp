@@ -126,6 +126,15 @@ export const MOBILE_HOME_TILES = [
     badgeKey: "pendingThreePlDispatchCount",
   },
   {
+    key: "shipment_scan",
+    href: "/m/shipment-scan",
+    label: "New shipment",
+    description: "Scan a dispatch-cell lot to open the paperwork",
+    icon: Truck,
+    permission: "production.final_release",
+    badgeKey: null,
+  },
+  {
     key: "scan",
     href: "/m/scan",
     label: "Scan QR",

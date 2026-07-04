@@ -832,6 +832,20 @@ defmodule BackendWeb.Router do
     # follow-up + § 4.4 segregation). The routing decision is a
     # lifecycle event on the lot; capacity is pre-checked so the
     # operator sees "no 3PL space" before we accept the choice.
+    # Outbound shipments — customer-facing dispatch record. Triggered
+    # once a released lot is physically staged in a dispatch cell
+    # (BRCGS Issue 9 § 5.4.6). Draft → ready → picked_up.
+    scope "/shipments" do
+      post "/", ShipmentController, :create
+      get "/", ShipmentController, :index
+      get "/:uuid", ShipmentController, :show
+      patch "/:uuid", ShipmentController, :update
+      post "/:uuid/mark-ready", ShipmentController, :mark_ready
+      post "/:uuid/mark-draft", ShipmentController, :mark_draft
+      post "/:uuid/pickup", ShipmentController, :pickup
+      post "/:uuid/cancel", ShipmentController, :cancel
+    end
+
     scope "/three-pl" do
       post "/route/:lot_uuid", ThreePLController, :route_lot
       # Dispatch is a two-step flow: desktop queues the request, mobile
