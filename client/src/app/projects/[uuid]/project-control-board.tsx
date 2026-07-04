@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
@@ -39,6 +40,8 @@ import {
   Ban,
   Calendar,
   CheckCircle2,
+  ArrowDown,
+  ArrowUp,
   ChevronLeft,
   ClipboardList,
   Cog,
@@ -2478,65 +2481,153 @@ function TimelineCard({
   timeline: OrderWizardTimelineEntry[];
   prefs: CompanyDefaults;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollHint, setScrollHint] = useState<"top" | "bottom" | null>(null);
+
+  // Auto-scroll to bottom on first render so the operator opens the
+  // card looking at the newest event. New events landing later on
+  // (via a wizard refresh) also snap the view to the latest, unless
+  // the user has scrolled up to browse older events.
+  const stuckToBottomRef = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stuckToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+    recomputeHint(el, setScrollHint);
+  }, [timeline.length]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    stuckToBottomRef.current = atBottom;
+    recomputeHint(el, setScrollHint);
+  };
+
+  const jumpTo = (where: "top" | "bottom") => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: where === "top" ? 0 : el.scrollHeight,
+      behavior: "smooth",
+    });
+  };
+
   return (
-    <Card className="flex grow flex-col border-border/60">
+    // Fixed height so the card never grows past its lane on a
+    // long-running project. The stream scrolls inside; the header
+    // and jump-to buttons stay pinned.
+    <Card className="flex h-[520px] flex-col border-border/60">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <ClipboardList className="size-4 text-muted-foreground" />
           Timeline
+          {timeline.length > 0 && (
+            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
+              {timeline.length}
+            </span>
+          )}
         </CardTitle>
       </CardHeader>
-      <CardContent className="grow overflow-y-auto">
-        {timeline.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No events yet.</p>
-        ) : (
-          <ol className="space-y-3">
-            {timeline.map((entry, idx) => {
-              const { icon: Icon, chip } = scopeChrome(entry.scope);
-              return (
-                <li
-                  key={`${entry.at}-${idx}`}
-                  className="flex gap-3 text-sm"
-                >
-                  <div className="flex flex-col items-center">
-                    <span
-                      className={cn(
-                        "mt-1 flex size-5 items-center justify-center rounded-full",
-                        chip,
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="h-full overflow-y-auto px-6 pb-4"
+        >
+          {timeline.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No events yet.</p>
+          ) : (
+            <ol className="space-y-3">
+              {timeline.map((entry, idx) => {
+                const { icon: Icon, chip } = scopeChrome(entry.scope);
+                return (
+                  <li
+                    key={`${entry.at}-${idx}`}
+                    className="flex gap-3 text-sm"
+                  >
+                    <div className="flex flex-col items-center">
+                      <span
+                        className={cn(
+                          "mt-1 flex size-5 items-center justify-center rounded-full",
+                          chip,
+                        )}
+                      >
+                        <Icon className="size-2.5" />
+                      </span>
+                      {idx < timeline.length - 1 && (
+                        <span className="my-1 w-px flex-1 bg-border" />
                       )}
-                    >
-                      <Icon className="size-2.5" />
-                    </span>
-                    {idx < timeline.length - 1 && (
-                      <span className="my-1 w-px flex-1 bg-border" />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1 pb-1">
-                    <p className="leading-snug">{entry.label}</p>
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {formatCompanyDate(entry.at, prefs)}
-                      {entry.actor ? ` · ${entry.actor}` : ""}
-                      {entry.mo_uuid && (
-                        <>
-                          {" · "}
-                          <Link
-                            href={`/production/manufacturing-orders/${entry.mo_uuid}`}
-                            className="text-brand underline-offset-2 hover:underline"
-                          >
-                            open MO
-                          </Link>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+                    </div>
+                    <div className="min-w-0 flex-1 pb-1">
+                      <p className="leading-snug">{entry.label}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                        {formatCompanyDate(entry.at, prefs)}
+                        {entry.actor ? ` · ${entry.actor}` : ""}
+                        {entry.mo_uuid && (
+                          <>
+                            {" · "}
+                            <Link
+                              href={`/production/manufacturing-orders/${entry.mo_uuid}`}
+                              className="text-brand underline-offset-2 hover:underline"
+                            >
+                              open MO
+                            </Link>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+
+        {/* Jump-to affordances — pinned bottom-right of the scroll
+            frame. Only render the direction that's actually useful
+            given the current scroll position. */}
+        {scrollHint === "top" && (
+          <button
+            type="button"
+            onClick={() => jumpTo("top")}
+            aria-label="Scroll to earliest event"
+            className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ArrowUp className="size-3" aria-hidden />
+            Earliest
+          </button>
         )}
-      </CardContent>
+        {scrollHint === "bottom" && (
+          <button
+            type="button"
+            onClick={() => jumpTo("bottom")}
+            aria-label="Scroll to latest event"
+            className="absolute right-3 bottom-3 inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ArrowDown className="size-3" aria-hidden />
+            Latest
+          </button>
+        )}
+      </div>
     </Card>
   );
+}
+
+function recomputeHint(
+  el: HTMLDivElement,
+  set: (h: "top" | "bottom" | null) => void,
+) {
+  const atTop = el.scrollTop <= 4;
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+  const scrollable = el.scrollHeight > el.clientHeight + 4;
+
+  if (!scrollable) return set(null);
+  if (atBottom) return set("top"); // at latest — offer earliest
+  if (atTop) return set("bottom"); // at earliest — offer latest
+  return set("bottom"); // mid-scroll — nudge back to latest
 }
 
 // Per-scope icon + tone chip for the timeline dot. Each workstream
