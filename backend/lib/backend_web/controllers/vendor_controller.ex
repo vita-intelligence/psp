@@ -416,6 +416,7 @@ defmodule BackendWeb.VendorController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       approval_status: params["approval_status"],
       vendor_risk: params["vendor_risk"],
       is_active: params["is_active"]

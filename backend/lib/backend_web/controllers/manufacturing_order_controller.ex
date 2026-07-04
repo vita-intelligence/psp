@@ -44,6 +44,7 @@ defmodule BackendWeb.ManufacturingOrderController do
         limit: params["limit"],
         sort: parse_sort(params["sort"]),
         search: params["search"],
+        column_filter: params["column_filter"],
         status: params["status"],
         item_id: params["item_id"],
         warehouse_id: params["warehouse_id"]

@@ -64,6 +64,7 @@ defmodule Backend.CustomerOrders do
       |> ListQueries.apply_search(opts[:search], @co_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @co_sortable)
       |> ListQueries.apply_sort(sort, @co_sortable, @co_default_sort)
       |> preload([
         :customer,

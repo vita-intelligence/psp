@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { ShieldCheck } from "lucide-react";
 import { TemplateEditorsBadge } from "./active-sessions";
@@ -28,6 +30,7 @@ async function fetchTemplatesPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<PermissionTemplate>> {
   const qs = new URLSearchParams();
@@ -36,6 +39,7 @@ async function fetchTemplatesPage(params: {
   if (params.sort)
     qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/roles?${qs.toString()}`, {
     cache: "no-store",

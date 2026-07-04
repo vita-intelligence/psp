@@ -5,11 +5,13 @@ import { useMemo } from "react";
 import { AlertTriangle, ExternalLink, ShoppingCart } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Button } from "@/components/ui/button";
 import {
   formatCompanyDate,
@@ -49,6 +51,7 @@ async function fetchShortagesPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<ShortageRow>> {
   const qs = new URLSearchParams();
@@ -60,6 +63,7 @@ async function fetchShortagesPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(`filter[${k}]`, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(
     `/api/procurement/shortages?${qs.toString()}`,

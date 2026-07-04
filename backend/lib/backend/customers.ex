@@ -71,6 +71,7 @@ defmodule Backend.Customers do
       |> maybe_status_filter(opts[:approval_status])
       |> maybe_active_filter(opts[:is_active])
       |> maybe_account_manager_filter(opts[:account_manager_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @customer_sortable)
       |> ListQueries.apply_sort(sort, @customer_sortable, @customer_default_sort)
       |> preload([:created_by, :updated_by, :approved_by, :account_manager])
 

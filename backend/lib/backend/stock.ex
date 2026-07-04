@@ -50,6 +50,7 @@ defmodule Backend.Stock do
       |> maybe_cell_filter(opts[:cell_id])
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> apply_lot_search(company_id, opts[:search])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([
         :item,

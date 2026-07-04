@@ -64,6 +64,7 @@ defmodule Backend.CustomerInvoices do
       |> ListQueries.apply_search(opts[:search], @invoice_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
       |> ListQueries.apply_sort(sort, @invoice_sortable, @invoice_default_sort)
       |> preload([
         :customer,

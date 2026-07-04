@@ -72,6 +72,140 @@ defmodule Backend.ListQueries do
     end)
   end
 
+  ## Column filters (structured) -----------------------------------
+
+  @doc """
+  Apply structured per-column filters emitted by the DataTable v2
+  header dropdown. Shape:
+
+      %{
+        "field_name" => %{"op" => "contains" | "eq" | "range" | "in",
+                          "value" => ...}
+      }
+
+  Range accepts either `%{"min" => n, "max" => n}` (numeric) OR
+  `%{"from" => "2026-01-01", "to" => "2026-06-30"}` (date). Either
+  bound may be absent (open-ended).
+
+  Only fields in `allowed_fields` are applied — every other field is
+  silently dropped. This is the SQL-injection allowlist; controllers
+  MUST pass it explicitly.
+
+  Unrecognised ops are dropped. Empty strings / nil values are dropped
+  so a filter chip with an empty input is a no-op instead of
+  `WHERE field = ''` (which would match nothing on most columns).
+  """
+  def apply_column_filters(query, nil, _allowed), do: query
+  def apply_column_filters(query, filters, _allowed) when filters == %{}, do: query
+
+  def apply_column_filters(query, filters, allowed_fields) when is_map(filters) do
+    Enum.reduce(filters, query, fn {field_key, spec}, acc ->
+      case to_safe_atom(field_key, allowed_fields) do
+        nil -> acc
+        field_atom -> apply_column_filter_op(acc, field_atom, spec)
+      end
+    end)
+  end
+
+  defp apply_column_filter_op(query, field, %{"op" => "contains", "value" => value})
+       when is_binary(value) and value != "" do
+    needle = "%" <> escape_like(String.trim(value)) <> "%"
+    from row in query, where: ilike(field(row, ^field), ^needle)
+  end
+
+  defp apply_column_filter_op(query, field, %{"op" => "eq", "value" => value})
+       when not is_nil(value) do
+    where(query, [row], field(row, ^field) == ^cast_filter_value(value))
+  end
+
+  defp apply_column_filter_op(query, field, %{"op" => "in", "value" => values})
+       when is_list(values) and values != [] do
+    cast = Enum.map(values, &cast_filter_value/1)
+    where(query, [row], field(row, ^field) in ^cast)
+  end
+
+  # Numeric range: {min, max}. Either bound may be missing.
+  defp apply_column_filter_op(query, field, %{"op" => "range"} = spec) do
+    query
+    |> apply_range_bound(field, :min, spec)
+    |> apply_range_bound(field, :max, spec)
+    |> apply_range_bound(field, :from, spec)
+    |> apply_range_bound(field, :to, spec)
+  end
+
+  defp apply_column_filter_op(query, _field, _spec), do: query
+
+  defp apply_range_bound(query, field, :min, %{"min" => value}) when not is_nil(value) do
+    case cast_number(value) do
+      {:ok, n} -> where(query, [row], field(row, ^field) >= ^n)
+      :error -> query
+    end
+  end
+
+  defp apply_range_bound(query, field, :max, %{"max" => value}) when not is_nil(value) do
+    case cast_number(value) do
+      {:ok, n} -> where(query, [row], field(row, ^field) <= ^n)
+      :error -> query
+    end
+  end
+
+  defp apply_range_bound(query, field, :from, %{"from" => value}) when is_binary(value) and value != "" do
+    case cast_date(value) do
+      {:ok, d} -> where(query, [row], field(row, ^field) >= ^d)
+      :error -> query
+    end
+  end
+
+  defp apply_range_bound(query, field, :to, %{"to" => value}) when is_binary(value) and value != "" do
+    case cast_date(value) do
+      # `<=` on a date bound matches any timestamp on that day up to
+      # 23:59:59. For datetime columns we widen to end-of-day so
+      # "until 2026-06-30" includes rows stamped `2026-06-30 15:12:00`.
+      {:ok, d} -> where(query, [row], field(row, ^field) < ^Date.add(d, 1))
+      :error -> query
+    end
+  end
+
+  defp apply_range_bound(query, _field, _bound, _spec), do: query
+
+  defp cast_number(n) when is_number(n), do: {:ok, n}
+
+  defp cast_number(s) when is_binary(s) do
+    trimmed = String.trim(s)
+
+    with :error <- integer_parse_strict(trimmed),
+         :error <- float_parse_strict(trimmed) do
+      :error
+    else
+      {:ok, _} = ok -> ok
+    end
+  end
+
+  defp cast_number(_), do: :error
+
+  defp integer_parse_strict(s) do
+    case Integer.parse(s) do
+      {n, ""} -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp float_parse_strict(s) do
+    case Float.parse(s) do
+      {n, ""} -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp cast_date(s) when is_binary(s) do
+    case Date.from_iso8601(s) do
+      {:ok, d} -> {:ok, d}
+      _ -> :error
+    end
+  end
+
+  defp cast_date(_), do: :error
+
   ## Sort -----------------------------------------------------------
 
   @doc """

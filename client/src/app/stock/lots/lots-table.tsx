@@ -7,11 +7,13 @@ import { Filter, FilePlus, Printer, X } from "lucide-react";
 import { PrintLabelDialog } from "./print-label-dialog";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { Button } from "@/components/ui/button";
 import { auditColumns } from "@/components/audit/audit-table-columns";
@@ -82,6 +84,7 @@ function makeFetchLotsPage(itemFilterId: number | null) {
     limit: number;
     sort: SortSpec | null;
     filters: Record<string, string | boolean | number>;
+    columnFilters: Record<string, ColumnFilterValue>;
     search: string;
   }): Promise<PageResult<StockLot>> {
     const qs = new URLSearchParams();
@@ -93,6 +96,7 @@ function makeFetchLotsPage(itemFilterId: number | null) {
     for (const [k, v] of Object.entries(params.filters)) {
       qs.set(k, String(v));
     }
+    serializeColumnFilters(qs, params.columnFilters);
     // Deep-link filter is server-pinned — it stays applied on every
     // paginated fetch until the user clears the chip in the banner.
     if (itemFilterId !== null) {

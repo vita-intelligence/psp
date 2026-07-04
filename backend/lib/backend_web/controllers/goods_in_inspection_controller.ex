@@ -80,6 +80,7 @@ defmodule BackendWeb.GoodsInInspectionController do
         limit: params["limit"],
         sort: parse_sort(params["sort"]),
         search: params["search"],
+        column_filter: params["column_filter"],
         status: params["status"],
         purchase_order_id: parse_int(params["purchase_order_id"]),
         warehouse_id: parse_int(params["warehouse_id"]),

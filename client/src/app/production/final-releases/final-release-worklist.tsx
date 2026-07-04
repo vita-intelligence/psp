@@ -6,11 +6,13 @@ import { CheckCircle2, PauseCircle, ShieldCheck, XCircle } from "lucide-react";
 import { formatDistanceToNowStrict } from "date-fns";
 import { DataTable } from "@/components/data-table/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterValue,
   PageResult,
   SortSpec,
 } from "@/components/data-table/types";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { cn } from "@/lib/utils";
 import {
   FINAL_RELEASE_FILE_KINDS,
@@ -29,6 +31,7 @@ async function fetchPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: FilterValue;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<FinalRelease>> {
   const qs = new URLSearchParams();
@@ -39,6 +42,7 @@ async function fetchPage(params: {
   }
   if (params.cursor) qs.set("cursor", params.cursor);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(
     `/api/production/final-releases/queue?${qs.toString()}`,

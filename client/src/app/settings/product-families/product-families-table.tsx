@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { ProductFamily } from "@/lib/types";
@@ -23,6 +25,7 @@ async function fetchFamiliesPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<ProductFamily>> {
   const qs = new URLSearchParams();
@@ -31,6 +34,7 @@ async function fetchFamiliesPage(params: {
   if (params.sort)
     qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/product-families?${qs.toString()}`, {
     cache: "no-store",

@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { StorageTag } from "@/lib/types";
@@ -35,6 +37,7 @@ async function fetchTagsPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<StorageTag>> {
   const qs = new URLSearchParams();
@@ -43,6 +46,7 @@ async function fetchTagsPage(params: {
   if (params.sort)
     qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/storage-tags?${qs.toString()}`, {
     cache: "no-store",

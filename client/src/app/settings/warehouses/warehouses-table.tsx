@@ -4,11 +4,13 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import type { Warehouse } from "@/lib/types";
 import { WarehouseEditorsBadge } from "./active-sessions";
 import { Badge } from "@/components/ui/badge-mini";
@@ -39,6 +41,7 @@ async function fetchWarehousesPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<Warehouse>> {
   const qs = new URLSearchParams();
@@ -50,6 +53,7 @@ async function fetchWarehousesPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(`filter[${k}]`, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/warehouses?${qs.toString()}`, {
     cache: "no-store",

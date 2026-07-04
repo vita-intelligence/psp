@@ -6,11 +6,13 @@ import { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, CircleDashed, ShieldX } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import type {
   Vendor,
@@ -94,6 +96,7 @@ async function fetchVendorsPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<Vendor>> {
   const qs = new URLSearchParams();
@@ -105,6 +108,7 @@ async function fetchVendorsPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(k, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/vendors?${qs.toString()}`, {
     cache: "no-store",

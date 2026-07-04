@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Boxes, MapPin, Timer } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterValue,
   PageResult,
@@ -154,6 +155,7 @@ export function ThreePLInventoryTable({
       limit: number;
       sort: SortSpec | null;
       filters: FilterValue;
+      columnFilters: Record<string, ColumnFilterValue>;
       search: string;
     }): Promise<PageResult<ThreePLInventoryRow>> => {
       // /api/three-pl/inventory currently returns every bailee lot in

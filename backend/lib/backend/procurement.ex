@@ -66,6 +66,7 @@ defmodule Backend.Procurement do
       |> maybe_vendor_filter(opts[:vendor_id])
       |> maybe_po_filter(opts[:purchase_order_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
       |> ListQueries.apply_sort(sort, @invoice_sortable, @invoice_default_sort)
       |> preload([:created_by, :updated_by, :paid_by, purchase_order: :vendor])
 
@@ -88,6 +89,7 @@ defmodule Backend.Procurement do
     |> maybe_vendor_filter(opts[:vendor_id])
     |> maybe_po_filter(opts[:purchase_order_id])
     |> maybe_date_range(opts[:from_date], opts[:to_date])
+    |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
     |> group_by([i], i.currency_code)
     |> select([i], %{
       currency_code: i.currency_code,

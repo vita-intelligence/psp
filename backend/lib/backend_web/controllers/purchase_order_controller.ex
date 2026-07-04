@@ -84,6 +84,7 @@ defmodule BackendWeb.PurchaseOrderController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       status: params["status"],
       vendor_id: params["vendor_id"]
     ]

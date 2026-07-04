@@ -212,6 +212,7 @@ defmodule BackendWeb.ItemController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       item_type: params["item_type"]
     ]
   end

@@ -67,6 +67,7 @@ defmodule Backend.Purchasing do
       |> ListQueries.apply_search(opts[:search], @po_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_vendor_filter(opts[:vendor_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @po_sortable)
       |> ListQueries.apply_sort(sort, @po_sortable, @po_default_sort)
       |> preload([:vendor, :created_by, :submitted_by, :default_warehouse, :lines])
 

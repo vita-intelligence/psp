@@ -102,7 +102,8 @@ defmodule BackendWeb.UnitOfMeasurementController do
       cursor: params["cursor"],
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
-      search: params["search"]
+      search: params["search"],
+      column_filter: params["column_filter"]
     ]
   end
 

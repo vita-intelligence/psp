@@ -111,6 +111,7 @@ defmodule Backend.GoodsIn do
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
       |> maybe_actor_filter(opts[:actor_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @inspection_sortable)
       |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
       |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
 

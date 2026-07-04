@@ -32,6 +32,7 @@ defmodule Backend.Certificates do
       Certificate
       |> where([c], c.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @cert_search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @cert_sortable)
       |> ListQueries.apply_sort(sort, @cert_sortable, @cert_default_sort)
       |> preload([:created_by, :updated_by])
 

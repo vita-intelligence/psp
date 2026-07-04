@@ -89,6 +89,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
         cursor: params["cursor"],
         limit: params["limit"],
         search: params["search"],
+        column_filter: params["column_filter"],
         status: params["status"],
         vendor_id: parse_int(params["vendor_id"]),
         purchase_order_id: parse_int(params["purchase_order_id"]),

@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { Truck } from "lucide-react";
 import { DataTable } from "@/components/data-table/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterValue,
   PageResult,
   SortSpec,
 } from "@/components/data-table/types";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { formatCompanyDate } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
 import type {
@@ -57,6 +59,7 @@ async function fetchPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: FilterValue;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<Shipment>> {
   const qs = new URLSearchParams();
@@ -65,6 +68,7 @@ async function fetchPage(params: {
   const status = params.filters.status;
   if (typeof status === "string" && status.length > 0) qs.set("status", status);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/shipments?${qs.toString()}`, {
     cache: "no-store",

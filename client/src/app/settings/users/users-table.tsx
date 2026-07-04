@@ -4,11 +4,13 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { Badge } from "@/components/ui/badge-mini";
 import { auditColumns } from "@/components/audit/audit-table-columns";
@@ -36,6 +38,7 @@ async function fetchUsersPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<UserListEntry>> {
   const qs = new URLSearchParams();
@@ -47,6 +50,7 @@ async function fetchUsersPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(`filter[${k}]`, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/users?${qs.toString()}`, {
     cache: "no-store",

@@ -82,6 +82,7 @@ defmodule Backend.Production do
       |> ListQueries.apply_search(opts[:search], @bom_search)
       |> maybe_item_filter(opts[:item_id])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @bom_sortable)
       |> ListQueries.apply_sort(sort, @bom_sortable, @bom_default_sort)
       |> preload([:item, :created_by, :updated_by])
 
@@ -536,6 +537,7 @@ defmodule Backend.Production do
       |> ListQueries.apply_search(opts[:search], @wg_search)
       |> maybe_wg_kind_filter(opts[:kind])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @wg_sortable)
       |> ListQueries.apply_sort(sort, @wg_sortable, @wg_default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -721,6 +723,7 @@ defmodule Backend.Production do
       |> maybe_ws_group_filter(opts[:workstation_group_id])
       |> maybe_ws_warehouse_filter(opts[:warehouse_id])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @ws_sortable)
       |> ListQueries.apply_sort(sort, @ws_sortable, @ws_default_sort)
       |> preload([:workstation_group, :warehouse, :created_by, :updated_by])
 
@@ -1032,6 +1035,7 @@ defmodule Backend.Production do
       |> maybe_routing_item_filter(opts[:item_id])
       |> maybe_routing_bom_filter(opts[:bom_id])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @routing_sortable)
       |> ListQueries.apply_sort(sort, @routing_sortable, @routing_default_sort)
       |> preload([:item, :bom, :created_by, :updated_by])
 
@@ -1349,6 +1353,7 @@ defmodule Backend.Production do
       |> maybe_mo_status_filter(opts[:status])
       |> maybe_mo_item_filter(opts[:item_id])
       |> maybe_mo_warehouse_filter(opts[:warehouse_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @mo_sortable)
       |> ListQueries.apply_sort(sort, @mo_sortable, @mo_default_sort)
       |> preload([
         :item,

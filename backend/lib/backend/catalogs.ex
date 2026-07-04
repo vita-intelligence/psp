@@ -28,6 +28,7 @@ defmodule Backend.Catalogs do
       ProductFamily
       |> where([f], f.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @family_search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @family_sortable)
       |> ListQueries.apply_sort(sort, @family_sortable, @family_default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -144,6 +145,7 @@ defmodule Backend.Catalogs do
       |> where([a], a.company_id == ^company_id)
       |> maybe_scope_filter(scope_filter)
       |> ListQueries.apply_search(opts[:search], @attr_search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @attr_sortable)
       |> ListQueries.apply_sort(sort, @attr_sortable, @attr_default_sort)
       |> preload([:created_by, :updated_by])
 

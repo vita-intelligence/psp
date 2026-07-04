@@ -52,6 +52,7 @@ defmodule Backend.Pricelists do
       |> where([p], p.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @pricelist_search)
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @pricelist_sortable)
       |> ListQueries.apply_sort(sort, @pricelist_sortable, @pricelist_default_sort)
       |> preload([:created_by, :updated_by])
 

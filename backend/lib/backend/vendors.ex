@@ -44,6 +44,7 @@ defmodule Backend.Vendors do
       |> maybe_status_filter(opts[:approval_status])
       |> maybe_risk_filter(opts[:vendor_risk])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @vendor_sortable)
       |> ListQueries.apply_sort(sort, @vendor_sortable, @vendor_default_sort)
       |> preload([:created_by, :updated_by, :approved_by])
 

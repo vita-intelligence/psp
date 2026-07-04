@@ -13,11 +13,13 @@ import {
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import type { CustomerInvoice, CustomerInvoiceStatus } from "@/lib/types";
 import { formatCompanyDate, formatCompanyNumber } from "@/lib/format/company";
@@ -70,6 +72,7 @@ async function fetchPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<CustomerInvoice>> {
   const qs = new URLSearchParams();
@@ -78,6 +81,7 @@ async function fetchPage(params: {
   if (params.sort) qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
   for (const [k, v] of Object.entries(params.filters)) qs.set(k, String(v));
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/customer-invoices?${qs.toString()}`, {
     cache: "no-store",

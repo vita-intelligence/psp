@@ -44,6 +44,7 @@ defmodule BackendWeb.StockLotController do
       limit: parse_limit(params["limit"]),
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       status: params["status"],
       item_id: parse_int(params["item_id"]),
       cell_id: parse_int(params["cell_id"]),

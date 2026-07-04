@@ -85,6 +85,7 @@ defmodule Backend.Accounts do
       |> where([u], u.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @search_fields)
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 

@@ -4,11 +4,13 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import type { PurchaseOrder, PurchaseOrderStatus } from "@/lib/types";
 import {
@@ -62,6 +64,7 @@ async function fetchPOPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<PurchaseOrder>> {
   const qs = new URLSearchParams();
@@ -73,6 +76,7 @@ async function fetchPOPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(k, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
   const res = await fetch(`/api/purchase-orders?${qs.toString()}`, {
     cache: "no-store",
   });

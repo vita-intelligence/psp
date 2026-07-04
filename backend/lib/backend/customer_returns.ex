@@ -49,6 +49,7 @@ defmodule Backend.CustomerReturns do
       |> ListQueries.apply_search(opts[:search], @rma_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @rma_sortable)
       |> ListQueries.apply_sort(sort, @rma_sortable, @rma_default_sort)
       |> preload([
         :customer,

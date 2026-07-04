@@ -96,6 +96,7 @@ defmodule BackendWeb.AttributeDefinitionController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       scope: params["scope"]
     ]
   end
