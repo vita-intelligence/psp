@@ -706,16 +706,22 @@ export function ProjectControlBoard({
           </div>
 
           {/* ===================== RIGHT — context lane ===================== */}
-          {/* `min-h-full` lets the lane stretch to the left column's height so
-              the Timeline's `flex-1` has real space to expand into (the grid
-              row is `align-items: stretch` by default). */}
-          <div className="flex min-h-full flex-col gap-6">
-            <CustomerCard
-              co={co}
-              prefs={prefs}
-              onClick={() => setCustomerModalOpen(true)}
-            />
-            <TimelineCard timeline={timeline} prefs={prefs} />
+          {/* The trick: the outer cell is `relative` and the actual content
+              floats inside as `absolute inset-0`. That way the Timeline can
+              use `flex-1 min-h-0` to fill remaining height WITHOUT its own
+              content pushing the grid row taller than the left lane's
+              natural height — the absolute layer doesn't feed back into
+              grid sizing. Net effect: the right lane matches the left
+              lane's height, no matter which one has more content. */}
+          <div className="relative min-h-[500px]">
+            <div className="absolute inset-0 flex flex-col gap-6">
+              <CustomerCard
+                co={co}
+                prefs={prefs}
+                onClick={() => setCustomerModalOpen(true)}
+              />
+              <TimelineCard timeline={timeline} prefs={prefs} />
+            </div>
           </div>
         </div>
 
@@ -2520,11 +2526,11 @@ function TimelineCard({
 
   return (
     // Fills the right lane so the card's bottom lines up with the
-    // Lines & MO card on the left (right above the Discussion). Grows
-    // as the left lane grows; scrolls inside its own frame once the
-    // stream overflows. Floor at 400px so on a shallow project the
-    // card doesn't shrink to a strip.
-    <Card className="flex min-h-[400px] flex-1 flex-col border-border/60">
+    // Lines & MO card on the left (right above the Discussion). The
+    // parent lane is an absolute-positioned overlay on a `relative`
+    // grid cell — flex-1 + min-h-0 means we take remaining height in
+    // that overlay and scroll internally.
+    <Card className="flex min-h-0 flex-1 flex-col border-border/60">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <ClipboardList className="size-4 text-muted-foreground" />
