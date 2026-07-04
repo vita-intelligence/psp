@@ -3,6 +3,7 @@ import { Receipt } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { listInvoicesPage } from "@/lib/invoices/server";
@@ -33,19 +34,11 @@ export default async function ProcurementInvoicesPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1.5">
-              <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-                <Receipt className="size-7 text-brand sm:size-8" />
-                Incoming invoices
-              </h1>
-              <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-                AP ledger of vendor invoices. New invoices are added from
-                their parent PO so the ledger always traces back to the
-                approved purchase.
-              </p>
-            </div>
-          </header>
+          <PageHeader
+            icon={Receipt}
+            title="Incoming invoices"
+            description="AP ledger of vendor invoices. New invoices are added from their parent PO so the ledger always traces back to the approved purchase."
+          />
 
           <InvoicesLedger
             initialPage={

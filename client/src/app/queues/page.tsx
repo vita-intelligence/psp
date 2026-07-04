@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import {
   Card,
@@ -48,29 +49,25 @@ export default async function QueuesPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-6xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/settings">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to Settings
-              </Link>
-            </Button>
-          </div>
-
-          <header className="space-y-1.5">
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-              Queues
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Things needing attention in the next 30 days. Already overdue
-              entries surface first.
-            </p>
-          </header>
+          <PageHeader
+            title="Queues"
+            description="Things needing attention in the next 30 days. Already overdue entries surface first."
+            backSlot={
+              <div>
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                >
+                  <Link href="/settings">
+                    <ChevronLeft className="mr-1 size-4" />
+                    Back to Settings
+                  </Link>
+                </Button>
+              </div>
+            }
+          />
 
           <div className="grid gap-6 lg:grid-cols-2">
             <ReviewsDueCard rows={reviews?.items ?? []} />

@@ -17,6 +17,7 @@ import {
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listCustomersPage } from "@/lib/customers/server";
 import { listPricelistsPage } from "@/lib/pricelists/server";
@@ -60,18 +61,11 @@ export default async function SalesOverviewPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-8">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <HandCoins className="size-7 text-brand sm:size-8" />
-              Sales
-            </h1>
-            <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
-              The sell-side of PSP. Customers and pricelists are live;
-              the rest of the workflow (orders, invoices, returns, cash
-              flow, statistics) is being built in dependency order so
-              each module unlocks the next.
-            </p>
-          </header>
+          <PageHeader
+            icon={HandCoins}
+            title="Sales"
+            description="The sell-side of PSP. Customers and pricelists are live; the rest of the workflow (orders, invoices, returns, cash flow, statistics) is being built in dependency order so each module unlocks the next."
+          />
 
           {/* Live modules */}
           <section className="space-y-3">

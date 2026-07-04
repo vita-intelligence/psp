@@ -3,6 +3,7 @@ import { Package } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getThreePLInventory } from "@/lib/three-pl/server";
@@ -32,44 +33,36 @@ export default async function ThreePLInventoryPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <Package className="size-7 text-brand sm:size-8" />
-              3PL storage
-            </h1>
-            <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
-              Customer-owned finished goods held under bailee custody after
-              Positive Release (BRCGS Issue 9 § 5.6 + § 4.4 segregation).
-              Storage billing is per m³ per day from the routing timestamp
-              until dispatch. Physical goods sit in cells with purpose
-              `three_pl_storage`, physically segregated from our own stock.
+          <PageHeader
+            icon={Package}
+            title="3PL storage"
+            description="Customer-owned finished goods held under bailee custody after Positive Release (BRCGS Issue 9 § 5.6 + § 4.4 segregation). Storage billing is per m³ per day from the routing timestamp until dispatch. Physical goods sit in cells with purpose `three_pl_storage`, physically segregated from our own stock."
+          />
+          {rate && (
+            <p className="text-xs text-muted-foreground">
+              {rate.amount === null ? (
+                <>
+                  No storage rate configured — set one on{" "}
+                  <span className="whitespace-nowrap">
+                    Settings → Company → 3PL storage rate
+                  </span>{" "}
+                  to start billing.
+                </>
+              ) : (
+                <>
+                  Current rate:{" "}
+                  <span className="font-semibold text-foreground">
+                    {rate.amount} {rate.currency}/m³/day
+                  </span>
+                  . Change it on{" "}
+                  <span className="whitespace-nowrap">
+                    Settings → Company
+                  </span>
+                  .
+                </>
+              )}
             </p>
-            {rate && (
-              <p className="text-xs text-muted-foreground">
-                {rate.amount === null ? (
-                  <>
-                    No storage rate configured — set one on{" "}
-                    <span className="whitespace-nowrap">
-                      Settings → Company → 3PL storage rate
-                    </span>{" "}
-                    to start billing.
-                  </>
-                ) : (
-                  <>
-                    Current rate:{" "}
-                    <span className="font-semibold text-foreground">
-                      {rate.amount} {rate.currency}/m³/day
-                    </span>
-                    . Change it on{" "}
-                    <span className="whitespace-nowrap">
-                      Settings → Company
-                    </span>
-                    .
-                  </>
-                )}
-              </p>
-            )}
-          </header>
+          )}
 
           <ThreePLInventoryTable
             items={items}

@@ -3,6 +3,7 @@ import { Play } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getProductionRunQueue } from "@/lib/production-run/server";
 import { getCompanyDefaults } from "@/lib/company/server";
@@ -36,18 +37,11 @@ export default async function ProductionRunsPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <Play className="size-7 text-brand sm:size-8" />
-              Production runs
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Start and finish MOs on the floor. Tap a row to open its
-              run page; Finish captures the actual times + produced
-              quantity and auto-creates the output stock lot at the
-              production-feed cell.
-            </p>
-          </header>
+          <PageHeader
+            icon={Play}
+            title="Production runs"
+            description="Start and finish MOs on the floor. Tap a row to open its run page; Finish captures the actual times + produced quantity and auto-creates the output stock lot at the production-feed cell."
+          />
 
           <ProductionRunsList
             initialQueue={queue?.items ?? []}

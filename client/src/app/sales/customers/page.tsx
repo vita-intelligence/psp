@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { listCustomersPage } from "@/lib/customers/server";
@@ -34,28 +35,28 @@ export default async function CustomersPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1.5">
-              <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-                <Users className="size-7 text-brand sm:size-8" />
-                Customers
-              </h1>
-              <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
+          <PageHeader
+            icon={Users}
+            title="Customers"
+            description={
+              <>
                 Sell-side counterparty registry. Identity, payment
                 terms, account-manager assignment, and the contact log
                 that drives the &ldquo;Today&rsquo;s contacts&rdquo;
                 queue.
-              </p>
-            </div>
-            {canCreate && (
-              <Button asChild size="sm" className="shrink-0">
-                <Link href="/sales/customers/new">
-                  <Plus className="mr-1.5 size-4" />
-                  New customer
-                </Link>
-              </Button>
-            )}
-          </header>
+              </>
+            }
+            actions={
+              canCreate && (
+                <Button asChild size="sm" className="shrink-0">
+                  <Link href="/sales/customers/new">
+                    <Plus className="mr-1.5 size-4" />
+                    New customer
+                  </Link>
+                </Button>
+              )
+            }
+          />
 
           <ActiveSessionsBanner
             currentUserId={user.id}

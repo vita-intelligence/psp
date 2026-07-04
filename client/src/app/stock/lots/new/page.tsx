@@ -4,6 +4,7 @@ import { ArrowLeft, FilePlus } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { StockSubnav } from "../../stock-subnav";
 import { ReceiveForm } from "./receive-form";
@@ -37,20 +38,20 @@ export default async function ReceiveLotPage() {
             Back to stock lots
           </Link>
 
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <FilePlus className="size-7 text-brand sm:size-8" />
-              Create manual lot
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              For ad-hoc entries — opening balances, adjustments,
-              anything that didn&apos;t come through a Purchase Order.
-              Real PO receives will land here from the Procurement
-              module once it ships. Source is recorded as{" "}
-              <span className="font-mono">manual</span>, with your name
-              + timestamp on the audit trail.
-            </p>
-          </header>
+          <PageHeader
+            icon={FilePlus}
+            title="Create manual lot"
+            description={
+              <>
+                For ad-hoc entries — opening balances, adjustments,
+                anything that didn&apos;t come through a Purchase Order.
+                Real PO receives will land here from the Procurement
+                module once it ships. Source is recorded as{" "}
+                <span className="font-mono">manual</span>, with your name
+                + timestamp on the audit trail.
+              </>
+            }
+          />
 
           <ReceiveForm canEdit={true} />
         </div>
