@@ -1,21 +1,19 @@
 "use client";
 
-// Lightweight emoji picker. NOT a full Unicode-database picker — that
-// would require the `emoji-mart` package we're deliberately not
-// depending on. Instead we ship a hand-curated set covering the
-// emoji people actually reach for in a manufacturing / procurement
-// discussion (thumbs up, warning, tick, cross, plus a small emotional
-// spread). A follow-up can wire `@emoji-mart/react` if a broader
-// vocabulary becomes necessary.
-
 import { useState } from "react";
 import { Smile } from "lucide-react";
+import dynamic from "next/dynamic";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+
+// Full Unicode picker — 1800+ emojis with search, skin-tone variants,
+// category tabs. Loaded on-demand so the initial page bundle stays
+// slim; the picker itself is fairly heavy (~200 KB gzipped).
+const Picker = dynamic(() => import("emoji-picker-react"), { ssr: false });
 
 /** Quick-react emojis rendered as a horizontal bar at the top of the
  *  picker — same shortlist the bubble's hover-quick-react uses so a
@@ -29,34 +27,6 @@ export const QUICK_REACT_EMOJIS = [
   "🙏",
   "🔥",
 ] as const;
-
-// Larger set exposed by the "full" tab. Curated for PSP's audience —
-// heavy on approve / block / warn / follow-up signals plus a modest
-// social spread. Categorised in-source so we can render section
-// headers without a Unicode block lookup at runtime.
-const FULL_SET: { label: string; items: string[] }[] = [
-  {
-    label: "Reactions",
-    items: [
-      "👍", "👎", "❤️", "😂", "😮", "😢", "🙏", "🔥",
-      "🎉", "🚀", "💯", "👀", "🤔", "🙌", "👏", "🤝",
-    ],
-  },
-  {
-    label: "Signals",
-    items: [
-      "✅", "❌", "⚠️", "🚫", "🛑", "⏳", "⏰", "📌",
-      "📎", "📝", "🔒", "🔓", "🔍", "📦", "🏷️", "⭐",
-    ],
-  },
-  {
-    label: "People",
-    items: [
-      "😀", "😅", "😊", "😉", "😍", "😎", "🤗", "🤨",
-      "😴", "🥱", "😤", "😳", "😱", "🤯", "🥳", "😇",
-    ],
-  },
-];
 
 export function EmojiPicker({
   onSelect,
@@ -95,9 +65,9 @@ export function EmojiPicker({
         side={side}
         align={align}
         sideOffset={6}
-        className="w-72 p-2"
+        className="w-auto border-0 bg-transparent p-0 shadow-none"
       >
-        <div className="mb-2 flex items-center gap-0.5 rounded-full border border-border bg-muted/40 p-1">
+        <div className="mb-1 flex items-center gap-0.5 rounded-full border border-border bg-popover p-1 shadow-md">
           {QUICK_REACT_EMOJIS.map((emoji) => {
             const isActive = emoji === activeEmoji;
             return (
@@ -123,39 +93,17 @@ export function EmojiPicker({
           })}
         </div>
 
-        <div className="max-h-64 overflow-y-auto pr-1">
-          {FULL_SET.map((section) => (
-            <div key={section.label} className="mb-2 last:mb-0">
-              <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
-                {section.label}
-              </p>
-              <div className="grid grid-cols-8 gap-0.5">
-                {section.items.map((emoji) => {
-                  const isActive = emoji === activeEmoji;
-                  return (
-                    <button
-                      key={section.label + emoji}
-                      type="button"
-                      onClick={() => {
-                        onSelect(emoji);
-                        setOpen(false);
-                      }}
-                      aria-label={emoji}
-                      className={cn(
-                        "flex size-8 items-center justify-center rounded-md text-[18px] leading-none transition-colors",
-                        isActive
-                          ? "bg-brand/25 ring-1 ring-brand/50"
-                          : "hover:bg-foreground/[0.06]",
-                      )}
-                    >
-                      <span aria-hidden>{emoji}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
+        <Picker
+          onEmojiClick={(data) => {
+            onSelect(data.emoji);
+            setOpen(false);
+          }}
+          width={340}
+          height={380}
+          previewConfig={{ showPreview: false }}
+          searchPlaceholder="Search emoji"
+          lazyLoadEmojis
+        />
       </PopoverContent>
     </Popover>
   );

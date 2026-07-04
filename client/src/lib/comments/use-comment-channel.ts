@@ -3,13 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import type { Channel } from "phoenix";
 import { getSocket } from "../realtime/socket";
-import type { Comment, CommentEntityType } from "./types";
+import type { Comment, CommentEntityType, CommentFile } from "./types";
 
 export type JoinError =
   | { reason: "forbidden" }
   | { reason: "not_found" }
   | { reason: "bad_topic" }
   | { reason: "unknown"; raw?: unknown };
+
+/** Payload the backend broadcasts on `file:attached`. Partial — carries
+ *  just the newly-attached file + its parent comment uuid so the client
+ *  can append without re-serializing the whole comment. */
+export interface FileAttachedEvent {
+  comment_uuid: string;
+  file: CommentFile;
+}
 
 /** Payload the backend broadcasts on `file:removed`. */
 export interface FileRemovedEvent {
@@ -37,11 +45,10 @@ interface Options {
   /** Apply a `comment:deleted` payload to local state (soft-delete —
    *  the row stays, body becomes `[deleted]`). */
   onDelete: (c: Comment) => void;
-  /** Backend broadcasts the full updated comment (with the new file
-   *  merged into `files`) after a successful attachment upload — same
-   *  shape as `comment:updated`, so callers just re-use the upsert
-   *  path. */
-  onFileAttached: (c: Comment) => void;
+  /** Backend broadcasts a partial payload — comment_uuid + the freshly-
+   *  serialized file. Caller finds the parent comment locally and
+   *  appends. */
+  onFileAttached: (evt: FileAttachedEvent) => void;
   /** File removal is a partial event — backend sends the comment_uuid
    *  + file_uuid rather than the whole comment because the delete case
    *  is common enough that re-serializing the parent is wasteful. */
@@ -141,8 +148,8 @@ export function useCommentChannel({
       channel.on("comment:deleted", (msg: { comment: Comment }) => {
         onDeleteRef.current(msg.comment);
       });
-      channel.on("file:attached", (msg: { comment: Comment }) => {
-        onFileAttachedRef.current(msg.comment);
+      channel.on("file:attached", (msg: FileAttachedEvent) => {
+        onFileAttachedRef.current(msg);
       });
       channel.on("file:removed", (msg: FileRemovedEvent) => {
         onFileRemovedRef.current(msg);

@@ -30,6 +30,7 @@ import {
 } from "@/lib/comments/actions";
 import {
   useCommentChannel,
+  type FileAttachedEvent,
   type FileRemovedEvent,
   type JoinError,
   type ReactionEvent,
@@ -111,6 +112,16 @@ export function CommentThread({
     });
   }, []);
 
+  const attachFile = useCallback((evt: FileAttachedEvent) => {
+    setComments((prev) =>
+      prev.map((c) => {
+        if (c.uuid !== evt.comment_uuid) return c;
+        if (c.files.some((f) => f.uuid === evt.file.uuid)) return c;
+        return { ...c, files: [...c.files, evt.file] };
+      }),
+    );
+  }, []);
+
   const removeFile = useCallback((evt: FileRemovedEvent) => {
     setComments((prev) =>
       prev.map((c) =>
@@ -139,7 +150,7 @@ export function CommentThread({
     onCreate: upsertComment,
     onUpdate: upsertComment,
     onDelete: upsertComment,
-    onFileAttached: upsertComment,
+    onFileAttached: attachFile,
     onFileRemoved: removeFile,
     onReactionAdded: (evt) => applyReaction(evt, 1),
     onReactionRemoved: (evt) => applyReaction(evt, -1),
