@@ -6,8 +6,14 @@
 // close. Uses PSP's own Dialog primitive so it inherits the app's
 // focus-trap + return-focus behaviour.
 
+import { X } from "lucide-react";
 import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export function Lightbox({
   open,
@@ -23,12 +29,18 @@ export function Lightbox({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        showCloseButton
+        showCloseButton={false}
         className="max-w-[92vw] border-none bg-transparent p-0 shadow-none sm:max-w-[92vw]"
       >
         <VisuallyHidden.Root>
           <DialogTitle>{alt}</DialogTitle>
         </VisuallyHidden.Root>
+        <DialogClose
+          aria-label="Close preview"
+          className="absolute right-3 top-3 z-10 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        >
+          <X className="size-5" aria-hidden />
+        </DialogClose>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src}
