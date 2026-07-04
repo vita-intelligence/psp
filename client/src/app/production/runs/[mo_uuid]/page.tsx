@@ -1,11 +1,10 @@
 import { notFound, redirect } from "next/navigation";
-import Link from "next/link";
-import { ChevronLeft, Factory } from "lucide-react";
+import { Factory } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageHeader } from "@/components/layout/page-header";
 import { getManufacturingOrder } from "@/lib/production/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { ProductionSubnav } from "../../production-subnav";
@@ -46,45 +45,34 @@ export default async function ProductionRunDetailPage({
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-6xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/production/runs">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to production runs
-              </Link>
-            </Button>
-          </div>
-
-          <header className="space-y-2">
-            <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-              <Factory className="size-6 text-brand" />
-              {mo.item ? mo.item.name : "Manufacturing order"}
-            </h1>
-            <p className="font-mono text-xs text-muted-foreground">
-              {mo.code ?? `#${mo.id}`}
-              {mo.warehouse && (
-                <>
-                  {" "}· Site:{" "}
-                  <span className="font-medium text-foreground">
-                    {mo.warehouse.name}
-                  </span>
-                </>
-              )}
-              {mo.bom && (
-                <>
-                  {" "}· BOM:{" "}
-                  <span className="font-medium text-foreground">
-                    {mo.bom.code ?? mo.bom.name}
-                  </span>
-                </>
-              )}
-            </p>
-          </header>
+          <PageHeader
+            size="detail"
+            icon={Factory}
+            title={mo.item ? mo.item.name : "Manufacturing order"}
+            description={
+              <span className="font-mono text-xs">
+                {mo.code ?? `#${mo.id}`}
+                {mo.warehouse && (
+                  <>
+                    {" "}· Site:{" "}
+                    <span className="font-medium text-foreground">
+                      {mo.warehouse.name}
+                    </span>
+                  </>
+                )}
+                {mo.bom && (
+                  <>
+                    {" "}· BOM:{" "}
+                    <span className="font-medium text-foreground">
+                      {mo.bom.code ?? mo.bom.name}
+                    </span>
+                  </>
+                )}
+              </span>
+            }
+            backHref="/production/runs"
+            backLabel="Back to production runs"
+          />
 
           <MOParentBreadcrumb mo={mo} />
 

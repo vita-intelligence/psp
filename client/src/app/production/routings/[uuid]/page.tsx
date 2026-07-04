@@ -1,12 +1,11 @@
 import { notFound, redirect } from "next/navigation";
-import Link from "next/link";
-import { ChevronLeft, Route } from "lucide-react";
+import { Route } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getRouting } from "@/lib/production/server";
 import { listCommentsForEntity } from "@/lib/comments/server";
@@ -52,48 +51,39 @@ export default async function RoutingDetailPage({ params }: Props) {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/production/routings">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to routings
-              </Link>
-            </Button>
-          </div>
-
-          <header className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                <Route className="size-6 text-brand" />
-                {routing.name}
-              </h1>
-              {!routing.is_active && <Badge tone="muted">Archived</Badge>}
-            </div>
-            <p className="font-mono text-xs text-muted-foreground">
-              {routing.code ?? `#${routing.id}`}
-              {routing.item && (
-                <>
-                  {" "}· Output:{" "}
-                  <span className="font-medium text-foreground">
-                    {routing.item.name}
-                  </span>
-                </>
-              )}
-              {routing.bom && (
-                <>
-                  {" "}· BOM:{" "}
-                  <span className="font-medium text-foreground">
-                    {routing.bom.code ?? routing.bom.name}
-                  </span>
-                </>
-              )}
-            </p>
-          </header>
+          <PageHeader
+            size="detail"
+            icon={Route}
+            title={
+              <>
+                <span>{routing.name}</span>
+                {!routing.is_active && <Badge tone="muted">Archived</Badge>}
+              </>
+            }
+            description={
+              <span className="font-mono text-xs">
+                {routing.code ?? `#${routing.id}`}
+                {routing.item && (
+                  <>
+                    {" "}· Output:{" "}
+                    <span className="font-medium text-foreground">
+                      {routing.item.name}
+                    </span>
+                  </>
+                )}
+                {routing.bom && (
+                  <>
+                    {" "}· BOM:{" "}
+                    <span className="font-medium text-foreground">
+                      {routing.bom.code ?? routing.bom.name}
+                    </span>
+                  </>
+                )}
+              </span>
+            }
+            backHref="/production/routings"
+            backLabel="Back to routings"
+          />
 
           <EditModeToggle canEdit={canEdit}>
             <RoutingForm

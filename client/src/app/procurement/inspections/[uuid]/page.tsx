@@ -1,7 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  ArrowLeft,
   ClipboardCheck,
   FileText,
   FileWarning,
@@ -20,8 +19,8 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge-mini";
-import { Button } from "@/components/ui/button";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { formatCompanyDate } from "@/lib/format/company";
 import { getInspection } from "@/lib/goods-in/server";
@@ -140,22 +139,14 @@ export default async function ProcurementInspectionDetailPage({
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-4xl space-y-6">
-          <Button asChild variant="ghost" size="sm" className="-ml-2">
-            <Link href="/procurement/inspections">
-              <ArrowLeft className="mr-1 size-4" />
-              All inspections
-            </Link>
-          </Button>
-
-          <header className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1.5">
-              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                <Microscope className="size-6 text-brand" />
-                {/* The numbering format isn't always configured, so fall back
-                    to the integer id. */}
-                Inspection #{inspection.id}
-              </h1>
-              <div className="flex flex-wrap items-center gap-1.5">
+          <PageHeader
+            size="detail"
+            icon={Microscope}
+            // The numbering format isn't always configured, so fall back
+            // to the integer id.
+            title={`Inspection #${inspection.id}`}
+            description={
+              <span className="flex flex-wrap items-center gap-1.5">
                 <Badge tone={STATUS_TONE[inspection.status]}>
                   {STATUS_LABEL[inspection.status]}
                 </Badge>
@@ -164,9 +155,11 @@ export default async function ProcurementInspectionDetailPage({
                     QC · {DECISION_LABEL[inspection.quality_decision]}
                   </Badge>
                 )}
-              </div>
-            </div>
-          </header>
+              </span>
+            }
+            backHref="/procurement/inspections"
+            backLabel="All inspections"
+          />
 
           <StatusActionBanner
             inspection={inspection}
