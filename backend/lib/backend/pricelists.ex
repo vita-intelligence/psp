@@ -37,8 +37,8 @@ defmodule Backend.Pricelists do
 
   @pricelist_audit_fields ~w(name currency_code is_default is_active
                              valid_from valid_until notes)a
-  @pricelist_sortable ~w(id name currency_code is_default valid_from
-                         valid_until inserted_at)a
+  @pricelist_sortable ~w(id name currency_code is_default is_active valid_from
+                         valid_until inserted_at updated_at)a
   @pricelist_search ~w(name notes)a
   @pricelist_default_sort {:name, :asc}
 

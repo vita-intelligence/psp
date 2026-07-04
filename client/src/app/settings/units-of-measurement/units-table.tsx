@@ -41,6 +41,10 @@ const DIMENSION_LABEL: Record<UnitDimension, string> = {
   time: "Time",
 };
 
+const DIMENSION_OPTIONS = (
+  Object.keys(DIMENSION_LABEL) as UnitDimension[]
+).map((d) => ({ label: DIMENSION_LABEL[d], value: d }));
+
 async function fetchUnitsPage(params: {
   cursor: string | null;
   limit: number;
@@ -84,6 +88,11 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "UM00001…",
+        group: "Identity",
+        description: "Auto-numbered unit code.",
         cell: (u) =>
           u.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -99,6 +108,11 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
         sortField: "symbol",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
+        filterField: "symbol",
+        filterKind: "text",
+        filterPlaceholder: "kg…",
+        group: "Identity",
+        description: "Short display symbol (kg, g, L, …).",
         cell: (u) => (
           <span className="font-mono text-sm font-semibold">{u.symbol}</span>
         ),
@@ -110,6 +124,11 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[12rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Kilogram…",
+        group: "Identity",
+        description: "Human-readable name of this unit.",
         cell: (u) => <span className="truncate font-medium">{u.name}</span>,
       },
       {
@@ -118,6 +137,11 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
         sortField: "dimension",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-32",
+        filterField: "dimension",
+        filterKind: "select",
+        filterOptions: DIMENSION_OPTIONS,
+        group: "Identity",
+        description: "Physical dimension (mass, volume, count, …).",
         cell: (u) => (
           <Badge tone={DIMENSION_TONE[u.dimension]}>
             {DIMENSION_LABEL[u.dimension]}
@@ -131,6 +155,10 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
         sortLabels: { asc: "Smallest first", desc: "Largest first" },
         widthClassName: "w-40",
         align: "right",
+        filterField: "factor_to_base",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Multiplier to convert this unit to the base unit of its dimension.",
         cell: (u) =>
           u.is_base ? (
             <span className="text-xs text-muted-foreground">
@@ -148,9 +176,29 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
         sortField: "is_active",
         sortLabels: { asc: "Inactive first", desc: "Active first" },
         widthClassName: "w-28",
+        filterField: "is_active",
+        filterKind: "boolean",
+        group: "Status",
+        description: "Whether this unit is currently active.",
         cell: (u) => (
           <Badge tone={u.is_active ? "emerald" : "muted"}>
             {u.is_active ? "Active" : "Inactive"}
+          </Badge>
+        ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "is_base",
+        header: "Base unit",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        filterField: "is_base",
+        filterKind: "boolean",
+        group: "Amounts",
+        description: "Base unit of its dimension (factor 1). One per dimension.",
+        cell: (u) => (
+          <Badge tone={u.is_base ? "brand" : "muted"}>
+            {u.is_base ? "Base" : "Derived"}
           </Badge>
         ),
       },

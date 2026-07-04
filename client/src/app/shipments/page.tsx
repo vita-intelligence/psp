@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { listShipments } from "@/lib/shipments/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { ShipmentList } from "./shipment-list";
 
 export const metadata = { title: "Shipments · PSP" };
@@ -18,9 +19,10 @@ export default async function ShipmentsPage() {
     redirect("/settings/profile");
   }
 
-  const [initial, defaults] = await Promise.all([
+  const [initial, defaults, locationFilters] = await Promise.all([
     listShipments(),
     getCompanyDefaults(),
+    buildLocationFilters({ warehouse: true, productionSite: false }),
   ]);
 
   return (
@@ -39,6 +41,7 @@ export default async function ShipmentsPage() {
           <ShipmentList
             initialPage={initial}
             companyDefaults={defaults}
+            locationFilters={locationFilters}
           />
         </div>
       </main>

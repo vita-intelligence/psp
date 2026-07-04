@@ -42,7 +42,8 @@ defmodule Backend.GoodsIn do
   @allowed_file_mimes ~w(application/pdf image/jpeg image/png image/webp image/heic)
   @max_file_bytes 20 * 1024 * 1024
 
-  @inspection_sortable ~w(id delivery_date status inserted_at)a
+  @inspection_sortable ~w(id delivery_date status inserted_at updated_at quality_decision
+                          goods_in_operator_signed_at quality_approver_signed_at)a
   @inspection_search ~w(transport_company vehicle_registration seal_number)a
   @inspection_default_sort {:delivery_date, :desc}
 

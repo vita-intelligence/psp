@@ -7,6 +7,7 @@ import { DataTable } from "@/components/data-table";
 import type {
   ColumnFilterValue,
   DataTableColumn,
+  FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
@@ -21,6 +22,20 @@ interface Props {
 }
 
 const DEFAULT_SORT: SortSpec = { field: "inserted_at", direction: "desc" };
+
+const IS_ACTIVE_FILTER: FilterDef = {
+  field: "is_active",
+  label: "Active",
+  options: [
+    { label: "Active only", value: "true" },
+    { label: "Archived only", value: "false" },
+  ],
+};
+
+const BOOL_OPTIONS = [
+  { label: "Yes", value: true },
+  { label: "No", value: false },
+];
 
 async function fetchBOMsPage(params: {
   cursor: string | null;
@@ -65,12 +80,16 @@ export function BOMsLedger({ initialPage }: Props) {
   const router = useRouter();
   const prefs = useFormatPrefs();
 
+  const filters = useMemo<FilterDef[]>(() => [IS_ACTIVE_FILTER], []);
+
   const columns = useMemo<DataTableColumn<BOMSummary>[]>(
     () => [
       {
         id: "code",
         header: "BOM #",
         widthClassName: "w-32",
+        group: "Identity",
+        description: "Auto-numbered BOM code.",
         cell: (b) => (
           <span className="font-mono text-xs font-semibold">
             {b.code ?? `#${b.id}`}
@@ -81,7 +100,12 @@ export function BOMsLedger({ initialPage }: Props) {
         id: "name",
         header: "Name",
         sortField: "name",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Vitamin C 500mg…",
         widthClassName: "min-w-[18rem]",
+        group: "Identity",
+        description: "Human-readable BOM name.",
         cell: (b) => (
           <div className="flex items-center gap-2 min-w-0">
             <span className="truncate text-sm font-medium">{b.name}</span>
@@ -94,6 +118,8 @@ export function BOMsLedger({ initialPage }: Props) {
         id: "item",
         header: "Item",
         widthClassName: "min-w-[14rem]",
+        group: "Identity",
+        description: "Output item this recipe produces.",
         cell: (b) =>
           b.item ? (
             <div className="min-w-0 space-y-0.5">
@@ -112,7 +138,11 @@ export function BOMsLedger({ initialPage }: Props) {
         id: "updated_at",
         header: "Updated",
         sortField: "updated_at",
+        filterField: "updated_at",
+        filterKind: "date-range",
         widthClassName: "w-32",
+        group: "Dates",
+        description: "When this BOM was last modified.",
         cell: (b) => (
           <span className="text-xs text-muted-foreground">
             {formatCompanyDate(b.updated_at, prefs)}
@@ -124,12 +154,129 @@ export function BOMsLedger({ initialPage }: Props) {
         header: "By",
         widthClassName: "min-w-[10rem]",
         defaultHidden: true,
+        group: "Meta",
+        description: "User who last modified this BOM.",
         cell: (b) =>
           b.updated_by ? (
             <span className="truncate text-sm">{b.updated_by.name}</span>
           ) : (
             <span className="text-xs text-muted-foreground/50">—</span>
           ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "item_code",
+        header: "Item code",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Auto-numbered code for the output item.",
+        cell: (b) =>
+          b.item?.code ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {b.item.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "item_type",
+        header: "Item type",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Type of output — finished vs semi-finished.",
+        cell: (b) =>
+          b.item?.item_type ? (
+            <span className="text-xs text-muted-foreground">
+              {b.item.item_type}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "is_primary",
+        header: "Primary",
+        widthClassName: "w-24",
+        align: "center",
+        defaultHidden: true,
+        filterField: "is_primary",
+        filterKind: "select",
+        filterOptions: BOOL_OPTIONS,
+        group: "Status",
+        description: "Whether this BOM is the default recipe for the item.",
+        cell: (b) =>
+          b.is_primary ? (
+            <Badge tone="emerald">Primary</Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "is_active",
+        header: "Active",
+        widthClassName: "w-20",
+        align: "center",
+        defaultHidden: true,
+        filterField: "is_active",
+        filterKind: "select",
+        filterOptions: BOOL_OPTIONS,
+        group: "Status",
+        description: "Archived BOMs are hidden from item pickers.",
+        cell: (b) =>
+          b.is_active ? (
+            <Badge tone="emerald">Yes</Badge>
+          ) : (
+            <Badge tone="muted">No</Badge>
+          ),
+      },
+      {
+        id: "external_sku",
+        header: "Item SKU",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Output item's external SKU.",
+        cell: (b) =>
+          b.item?.external_sku ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {b.item.external_sku}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "created_by",
+        header: "Created by",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        group: "Meta",
+        description: "User who created this BOM.",
+        cell: (b) =>
+          b.created_by ? (
+            <span className="truncate text-xs">{b.created_by.name}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "inserted_at",
+        header: "Created",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "inserted_at",
+        filterField: "inserted_at",
+        filterKind: "date-range",
+        group: "Meta",
+        description: "When this BOM was created.",
+        cell: (b) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(b.inserted_at, prefs)}
+          </span>
+        ),
       },
     ],
     [prefs],
@@ -147,6 +294,7 @@ export function BOMsLedger({ initialPage }: Props) {
       }}
       defaultSort={DEFAULT_SORT}
       searchPlaceholder="Search BOMs by name…"
+      filters={filters}
       onRowClick={(b) => {
         router.push(`/production/boms/${b.uuid}`);
       }}

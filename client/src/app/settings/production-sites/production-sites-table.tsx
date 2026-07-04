@@ -84,6 +84,11 @@ export function ProductionSitesTable({
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "PF00001…",
+        group: "Identity",
+        description: "Auto-numbered production-facility code.",
         cell: (w) =>
           w.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -100,12 +105,22 @@ export function ProductionSitesTable({
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[14rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Facility name…",
+        group: "Identity",
+        description: "Display name of this production facility.",
         cell: (w) => <span className="truncate font-medium">{w.name}</span>,
       },
       {
         id: "address",
         header: "Address",
         widthClassName: "min-w-[14rem]",
+        filterField: "address",
+        filterKind: "text",
+        filterPlaceholder: "Address…",
+        group: "Location",
+        description: "Physical postal address of this facility.",
         cell: (w) =>
           w.address ? (
             <span className="line-clamp-1 text-sm text-muted-foreground">
@@ -121,9 +136,104 @@ export function ProductionSitesTable({
         sortField: "is_active",
         sortLabels: { asc: "Inactive first", desc: "Active first" },
         widthClassName: "w-28",
+        filterField: "is_active",
+        filterKind: "boolean",
+        group: "Status",
+        description: "Whether this facility is currently active.",
         cell: (w) => (
           <Badge tone={w.is_active ? "emerald" : "muted"}>
             {w.is_active ? "Active" : "Inactive"}
+          </Badge>
+        ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "timezone",
+        header: "Timezone",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Location",
+        description: "Local timezone override — null inherits from the company.",
+        cell: (w) =>
+          w.timezone ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {w.timezone}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">
+              inherit
+            </span>
+          ),
+      },
+      {
+        id: "contacts_count",
+        header: "Contacts",
+        widthClassName: "w-24",
+        align: "right",
+        defaultHidden: true,
+        group: "Meta",
+        description: "How many contact rows are stored on this facility.",
+        cell: (w) => (
+          <span className="font-mono text-xs">
+            {w.contacts?.items?.length ?? 0}
+          </span>
+        ),
+      },
+      {
+        id: "notes",
+        header: "Notes",
+        widthClassName: "min-w-[14rem]",
+        defaultHidden: true,
+        filterField: "notes",
+        filterKind: "text",
+        filterPlaceholder: "Notes…",
+        group: "Meta",
+        description: "Free-form operator notes about this facility.",
+        cell: (w) =>
+          w.notes ? (
+            <span className="line-clamp-1 text-xs text-muted-foreground">
+              {w.notes}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "has_plan",
+        header: "Has plan",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Location",
+        description: "Whether a floor plan has been drawn for this facility.",
+        cell: (w) => (
+          <Badge tone={w.plan ? "emerald" : "muted"}>
+            {w.plan ? "Yes" : "No"}
+          </Badge>
+        ),
+      },
+      {
+        id: "has_holidays",
+        header: "Holiday override",
+        widthClassName: "w-36",
+        defaultHidden: true,
+        group: "Location",
+        description: "Whether this facility overrides company holidays.",
+        cell: (w) => (
+          <Badge tone={w.holidays ? "sky" : "muted"}>
+            {w.holidays ? "Custom" : "Inherit"}
+          </Badge>
+        ),
+      },
+      {
+        id: "has_working_hours",
+        header: "Working hours override",
+        widthClassName: "w-44",
+        defaultHidden: true,
+        group: "Location",
+        description: "Whether this facility overrides company working hours.",
+        cell: (w) => (
+          <Badge tone={w.working_hours ? "sky" : "muted"}>
+            {w.working_hours ? "Custom" : "Inherit"}
           </Badge>
         ),
       },

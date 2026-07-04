@@ -37,7 +37,8 @@ defmodule Backend.Procurement do
   @invoice_audit_fields ~w(invoice_number invoice_date due_date currency_code
                            subtotal tax_amount total_inc_tax paid_amount status
                            notes paid_at)a
-  @invoice_sortable ~w(invoice_date due_date inserted_at total_inc_tax paid_amount status)a
+  @invoice_sortable ~w(invoice_date due_date inserted_at updated_at total_inc_tax
+                       paid_amount status invoice_number)a
   @invoice_search ~w(invoice_number notes)a
   @invoice_default_sort {:invoice_date, :desc}
 

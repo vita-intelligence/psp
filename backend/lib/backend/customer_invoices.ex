@@ -49,7 +49,10 @@ defmodule Backend.CustomerInvoices do
                            billing_address customer_reference free_text
                            sent_at cancelled_at cancellation_reason)a
 
-  @invoice_sortable ~w(id status invoice_date due_date grand_total inserted_at)a
+  @invoice_sortable ~w(id status kind customer_id currency_code
+                       subtotal tax_amount grand_total
+                       invoice_date due_date sent_at cancelled_at
+                       inserted_at updated_at)a
   @invoice_search ~w(customer_reference free_text billing_address)a
   @invoice_default_sort {:invoice_date, :desc}
 

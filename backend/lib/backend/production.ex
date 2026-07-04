@@ -59,7 +59,7 @@ defmodule Backend.Production do
   @bommable_item_types ~w(finished_product semi_finished)
 
   @bom_search [:name, :notes]
-  @bom_sortable [:inserted_at, :updated_at, :name]
+  @bom_sortable [:inserted_at, :updated_at, :name, :is_primary, :is_active, :item_id]
   @bom_default_sort {:inserted_at, :desc}
 
   # ----- list / get -----------------------------------------------
@@ -516,7 +516,7 @@ defmodule Backend.Production do
   # Hourly rate, custom working hours / holidays, Colour, Notes).
 
   @wg_search [:name, :notes]
-  @wg_sortable [:inserted_at, :updated_at, :name]
+  @wg_sortable [:inserted_at, :updated_at, :name, :kind, :is_active]
   @wg_default_sort {:inserted_at, :desc}
 
   @doc """
@@ -710,7 +710,7 @@ defmodule Backend.Production do
   # vita-performance keys on `external_id` (UUID).
 
   @ws_search [:name, :notes]
-  @ws_sortable [:inserted_at, :updated_at, :name]
+  @ws_sortable [:inserted_at, :updated_at, :name, :is_active, :workstation_group_id, :warehouse_id]
   @ws_default_sort {:inserted_at, :desc}
 
   def list_workstations_page(company_id, opts \\ []) when is_integer(company_id) do
@@ -1022,7 +1022,7 @@ defmodule Backend.Production do
   # event per save instead of one per step.
 
   @routing_search [:name, :notes]
-  @routing_sortable [:inserted_at, :updated_at, :name]
+  @routing_sortable [:inserted_at, :updated_at, :name, :is_active, :item_id, :bom_id]
   @routing_default_sort {:inserted_at, :desc}
 
   def list_routings_page(company_id, opts \\ []) when is_integer(company_id) do

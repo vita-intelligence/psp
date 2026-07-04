@@ -95,6 +95,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         sortField: "item_name",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
+        group: "Identity",
+        description: "Raw material or packaging item that's short.",
         cell: (r) => (
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">
@@ -113,6 +115,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         sortLabels: { asc: "Smallest", desc: "Largest" },
         align: "right",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Total qty every open MO needs of this item.",
         cell: (r) => (
           <span className="font-mono text-xs">
             {formatCompanyNumber(r.required_qty, companyDateFormat)} {uomOf(r)}
@@ -126,6 +130,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         sortLabels: { asc: "Smallest", desc: "Largest" },
         align: "right",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Qty already reserved from existing stock via MO bookings.",
         cell: (r) => (
           <span className="font-mono text-xs text-muted-foreground">
             {formatCompanyNumber(r.booked_qty, companyDateFormat)} {uomOf(r)}
@@ -139,6 +145,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         sortLabels: { asc: "Smallest", desc: "Largest" },
         align: "right",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Qty already on open POs (ordered / partially received).",
         cell: (r) => {
           const v = Number(r.expecting_qty);
           return (
@@ -164,6 +172,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         align: "right",
         widthClassName: "w-32",
         defaultHidden: true,
+        group: "Amounts",
+        description: "Currently on-hand qty in `available` cells (unreserved).",
         cell: (r) => (
           <span className="font-mono text-xs text-muted-foreground">
             {formatCompanyNumber(r.on_hand_qty, companyDateFormat)} {uomOf(r)}
@@ -177,6 +187,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         sortLabels: { asc: "Smallest gap", desc: "Largest gap" },
         align: "right",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Net gap = required − booked − expecting.",
         cell: (r) => (
           <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-red-700 dark:text-red-300">
             <AlertTriangle className="size-3" />
@@ -187,6 +199,8 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
       {
         id: "mos",
         header: "Waiting MOs",
+        group: "Compliance",
+        description: "Open MOs blocked on this shortage.",
         cell: (r) => {
           if (r.dependent_mos.length === 0) {
             return <span className="text-xs text-muted-foreground/50">—</span>;
@@ -219,6 +233,100 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
                 </span>
               )}
             </div>
+          );
+        },
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "item_type",
+        header: "Item type",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Item category (raw material or packaging).",
+        cell: (r) =>
+          r.item?.item_type ? (
+            <span className="text-xs text-muted-foreground">
+              {r.item.item_type}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "uom",
+        header: "UoM",
+        widthClassName: "w-20",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Stock unit of measurement (symbol).",
+        cell: (r) =>
+          r.item?.stock_uom ? (
+            <span className="font-mono text-xs">{r.item.stock_uom.symbol}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "coverage_pct",
+        header: "Coverage",
+        align: "right",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "(booked + expecting) / required — 100% means no shortage.",
+        cell: (r) => {
+          const required = Number(r.required_qty);
+          if (required <= 0) {
+            return <span className="text-xs text-muted-foreground/50">—</span>;
+          }
+          const covered =
+            Number(r.booked_qty) + Number(r.expecting_qty);
+          const pct = Math.round((covered / required) * 100);
+          return (
+            <span
+              className={
+                pct >= 100
+                  ? "font-mono text-xs text-emerald-700 dark:text-emerald-400"
+                  : "font-mono text-xs text-amber-700 dark:text-amber-400"
+              }
+            >
+              {pct}%
+            </span>
+          );
+        },
+      },
+      {
+        id: "dependent_count",
+        header: "MOs blocked",
+        align: "right",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Count of open MOs blocked by this shortage.",
+        cell: (r) => (
+          <span className="font-mono text-xs">{r.dependent_mos.length}</span>
+        ),
+      },
+      {
+        id: "earliest_planned",
+        header: "Earliest need",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Dates",
+        description: "Earliest planned start across MOs waiting on this item.",
+        cell: (r) => {
+          const dates = r.dependent_mos
+            .map((mo) => mo.planned_start)
+            .filter((d): d is string => !!d)
+            .sort();
+          const earliest = dates[0];
+          return earliest ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(earliest, companyDateFormat)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
           );
         },
       },

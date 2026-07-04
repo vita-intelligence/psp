@@ -21,7 +21,7 @@ defmodule Backend.Accounts do
   # Whitelisted columns the Users table can sort by. `code` from the
   # FE is translated to `:id` in normalise_sort (display code is
   # `prefix + lpad(id)`, so id order = code order).
-  @sortable_fields ~w(id name email is_active inserted_at)a
+  @sortable_fields ~w(id name email is_active is_admin confirmed_at inserted_at updated_at)a
   # Equality filters available on the list endpoint.
   @filter_fields ~w(is_active)a
   # Free-text ILIKE search hits these columns.

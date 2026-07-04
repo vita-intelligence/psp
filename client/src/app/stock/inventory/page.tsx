@@ -9,6 +9,7 @@ import {
   listInventoryFirstPage,
   listWarehousesForReceive,
 } from "@/lib/stock/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { StockSubnav } from "../stock-subnav";
 import { InventoryTable } from "./inventory-table";
 
@@ -20,9 +21,10 @@ export default async function StockInventoryPage() {
     redirect("/settings/profile");
   }
 
-  const [initialPage, warehouses] = await Promise.all([
+  const [initialPage, warehouses, locationFilters] = await Promise.all([
     listInventoryFirstPage(),
     listWarehousesForReceive(),
+    buildLocationFilters({ warehouse: true, productionSite: false }),
   ]);
   const seededPage = initialPage ?? { items: [], next_cursor: null };
 
@@ -40,7 +42,11 @@ export default async function StockInventoryPage() {
             description="One row per item with on-hand qty + cost value rolled up across every lot and shelf. Click a row to see its lots."
           />
 
-          <InventoryTable initialPage={seededPage} warehouses={warehouses} />
+          <InventoryTable
+            initialPage={seededPage}
+            warehouses={warehouses}
+            locationFilters={locationFilters}
+          />
         </div>
       </main>
     </div>

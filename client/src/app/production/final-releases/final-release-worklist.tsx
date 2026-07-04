@@ -13,6 +13,8 @@ import type {
   SortSpec,
 } from "@/components/data-table/types";
 import { serializeColumnFilters } from "@/lib/data-table/serialize";
+import { formatCompanyDate } from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { cn } from "@/lib/utils";
 import {
   FINAL_RELEASE_FILE_KINDS,
@@ -52,6 +54,8 @@ async function fetchPage(params: {
   return (await res.json()) as PageResult<FinalRelease>;
 }
 
+// Full @statuses list from Backend.Production.FinalRelease. Every value
+// has an entry so the badge lookup never returns undefined.
 const STATUS_META: Record<
   FinalReleaseStatus,
   { label: string; Icon: typeof ShieldCheck; className: string }
@@ -78,14 +82,21 @@ const STATUS_META: Record<
   },
 };
 
+const STATUS_OPTIONS = (
+  Object.keys(STATUS_META) as FinalReleaseStatus[]
+).map((s) => ({ label: STATUS_META[s].label, value: s }));
+
 export function FinalReleaseWorklist({ initialPage }: Props) {
   const router = useRouter();
+  const prefs = useFormatPrefs();
 
   const columns: DataTableColumn<FinalRelease>[] = useMemo(
     () => [
       {
         id: "lot",
         header: "Lot",
+        group: "Identity",
+        description: "Finished-goods lot awaiting positive release.",
         cell: (r) => (
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">
@@ -100,6 +111,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
       {
         id: "mo",
         header: "MO",
+        group: "Identity",
+        description: "Parent manufacturing order that produced this lot.",
         cell: (r) => (
           <span className="font-mono text-xs">
             {r.manufacturing_order?.code ?? "—"}
@@ -110,6 +123,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
         id: "qty",
         header: "Qty",
         align: "right",
+        group: "Amounts",
+        description: "Produced quantity on the lot.",
         cell: (r) => (
           <span className="font-mono text-xs">
             {r.stock_lot?.qty_received ?? "—"}
@@ -119,6 +134,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
       {
         id: "location",
         header: "Location",
+        group: "Location",
+        description: "Where the lot currently sits (quarantine vs regular cell).",
         cell: (r) => {
           const p = r.stock_lot?.placement;
           if (!p) return <span className="text-xs text-muted-foreground">—</span>;
@@ -166,6 +183,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
       {
         id: "status",
         header: "Status",
+        group: "Status",
+        description: "Final release state — pending → released / on hold / rejected.",
         cell: (r) => {
           const meta = STATUS_META[r.status];
           const Icon = meta.Icon;
@@ -185,6 +204,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
       {
         id: "signatures",
         header: "Signatures",
+        group: "Compliance",
+        description: "Releaser + approver sign-off progress (2/2 required).",
         cell: (r) => {
           const releaser = r.releaser_id ? 1 : 0;
           const approver = r.approver_id ? 1 : 0;
@@ -219,6 +240,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
       {
         id: "files",
         header: "Files",
+        group: "Compliance",
+        description: "Attached-evidence progress vs required kinds (CoA, BMR, micro, label, retain).",
         cell: (r) => {
           const kinds = new Set(r.files.map((f) => f.kind));
           const attached = FINAL_RELEASE_FILE_KINDS.filter((k) => kinds.has(k))
@@ -242,6 +265,8 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
         id: "age",
         header: "Awaiting since",
         sortField: "inserted_at",
+        group: "Dates",
+        description: "How long the release has been pending.",
         cell: (r) => (
           <span className="text-[11px] text-muted-foreground">
             {formatDistanceToNowStrict(new Date(r.inserted_at), {
@@ -250,8 +275,195 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
           </span>
         ),
       },
+      // ---- defaultHidden columns below ----
+      {
+        id: "status_filter",
+        header: "Status (filter)",
+        defaultHidden: true,
+        filterField: "status",
+        filterKind: "select",
+        filterOptions: STATUS_OPTIONS,
+        group: "Status",
+        description: "Filter-only helper — mirrors the top-level status filter.",
+        cell: (r) => {
+          const meta = STATUS_META[r.status];
+          return (
+            <span className="text-xs text-muted-foreground">{meta.label}</span>
+          );
+        },
+      },
+      {
+        id: "item_type",
+        header: "Item type",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Finished vs semi-finished output classification.",
+        cell: (r) =>
+          r.stock_lot?.item?.item_type ? (
+            <span className="text-xs text-muted-foreground">
+              {r.stock_lot.item.item_type}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "expiry_at",
+        header: "Expiry",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Dates",
+        description: "Lot's shelf-life expiry date.",
+        cell: (r) =>
+          r.stock_lot?.expiry_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(r.stock_lot.expiry_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "releaser_signed_at",
+        header: "Releaser signed",
+        widthClassName: "w-36",
+        defaultHidden: true,
+        group: "Dates",
+        description: "When the releaser signed off (1st ESIGN).",
+        cell: (r) =>
+          r.releaser_signed_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(r.releaser_signed_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "approver_signed_at",
+        header: "Approver signed",
+        widthClassName: "w-36",
+        defaultHidden: true,
+        group: "Dates",
+        description: "When the approver signed off (2nd ESIGN).",
+        cell: (r) =>
+          r.approver_signed_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(r.approver_signed_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "finalized_at",
+        header: "Finalized",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Dates",
+        description: "When the release row was terminal-committed.",
+        cell: (r) =>
+          r.finalized_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(r.finalized_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "hold_reason",
+        header: "Hold reason",
+        widthClassName: "min-w-[12rem]",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Reason recorded when the release was placed on hold.",
+        cell: (r) =>
+          r.hold_reason ? (
+            <span className="truncate text-xs text-muted-foreground">
+              {r.hold_reason}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "reject_reason",
+        header: "Reject reason",
+        widthClassName: "min-w-[12rem]",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Reason recorded when the release was rejected.",
+        cell: (r) =>
+          r.reject_reason ? (
+            <span className="truncate text-xs text-muted-foreground">
+              {r.reject_reason}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "warehouse",
+        header: "Warehouse",
+        widthClassName: "min-w-[12rem]",
+        defaultHidden: true,
+        group: "Location",
+        description: "Warehouse holding the lot.",
+        cell: (r) =>
+          r.stock_lot?.placement?.warehouse?.name ? (
+            <span className="truncate text-xs text-muted-foreground">
+              {r.stock_lot.placement.warehouse.name}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "ownership",
+        header: "Ownership",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Own vs bailee (3PL) ownership on the lot.",
+        cell: (r) =>
+          r.stock_lot?.ownership_kind ? (
+            <span className="text-xs text-muted-foreground">
+              {r.stock_lot.ownership_kind}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "inserted_at",
+        header: "Created",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Meta",
+        description: "When this release row was materialized.",
+        cell: (r) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(r.inserted_at, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "updated_at",
+        header: "Updated",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Meta",
+        description: "When this release row was last touched.",
+        cell: (r) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(r.updated_at, prefs)}
+          </span>
+        ),
+      },
     ],
-    [],
+    [prefs],
   );
 
   return (

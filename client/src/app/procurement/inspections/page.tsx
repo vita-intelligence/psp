@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listInspectionsPage } from "@/lib/inspections/server";
 import { listWarehousesForReceive } from "@/lib/stock/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { ProcurementSubnav } from "../procurement-subnav";
 import { InspectionsLedger } from "./inspections-ledger";
 
@@ -18,9 +19,10 @@ export default async function ProcurementInspectionsPage() {
     redirect("/settings/profile");
   }
 
-  const [initialPage, warehouses] = await Promise.all([
+  const [initialPage, warehouses, locationFilters] = await Promise.all([
     listInspectionsPage(),
     listWarehousesForReceive(),
+    buildLocationFilters({ warehouse: true, productionSite: false }),
   ]);
 
   return (
@@ -45,6 +47,7 @@ export default async function ProcurementInspectionsPage() {
               }
             }
             warehouses={warehouses}
+            locationFilters={locationFilters}
           />
         </div>
       </main>

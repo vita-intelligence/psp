@@ -20,7 +20,7 @@ defmodule Backend.Warehouses.StorageTags do
   @audit_fields ~w(key label description kind)a
   # `code` sorts are remapped to `:id` in normalise_sort/1 — the
   # display code is computed on the fly so id order = code order.
-  @sortable_fields ~w(id key label kind inserted_at)a
+  @sortable_fields ~w(id key label kind description inserted_at updated_at)a
   @search_fields ~w(key label description)a
   @default_sort {:label, :asc}
 

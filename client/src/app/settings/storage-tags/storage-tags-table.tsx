@@ -32,6 +32,10 @@ const KIND_LABEL: Record<StorageTag["kind"], string> = {
   cell: "Shelves / levels",
 };
 
+const KIND_OPTIONS = (Object.keys(KIND_LABEL) as StorageTag["kind"][]).map(
+  (k) => ({ label: KIND_LABEL[k], value: k }),
+);
+
 async function fetchTagsPage(params: {
   cursor: string | null;
   limit: number;
@@ -75,6 +79,11 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "TA00001…",
+        group: "Identity",
+        description: "Auto-numbered tag code (TA00001, …).",
         cell: (t) =>
           t.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -90,6 +99,11 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
         sortField: "key",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-44",
+        filterField: "key",
+        filterKind: "text",
+        filterPlaceholder: "cold-zone…",
+        group: "Identity",
+        description: "Lowercase slug allocation joins on (immutable once set).",
         cell: (t) => (
           <span className="font-mono text-xs text-muted-foreground">
             {t.key}
@@ -103,6 +117,11 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[14rem]",
+        filterField: "label",
+        filterKind: "text",
+        filterPlaceholder: "Label…",
+        group: "Identity",
+        description: "Human-readable label shown in pickers.",
         cell: (t) => <span className="truncate font-medium">{t.label}</span>,
       },
       {
@@ -111,6 +130,11 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
         sortField: "kind",
         sortLabels: { asc: "Both first", desc: "Cell first" },
         widthClassName: "w-44",
+        filterField: "kind",
+        filterKind: "select",
+        filterOptions: KIND_OPTIONS,
+        group: "Compliance",
+        description: "Which container this tag can be applied to.",
         cell: (t) => (
           <Badge tone={KIND_TONE[t.kind]}>{KIND_LABEL[t.kind]}</Badge>
         ),
@@ -119,6 +143,11 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
         id: "description",
         header: "Description",
         widthClassName: "min-w-[16rem]",
+        filterField: "description",
+        filterKind: "text",
+        filterPlaceholder: "Description…",
+        group: "Meta",
+        description: "Free-form description of what this tag means.",
         cell: (t) =>
           t.description ? (
             <span className="line-clamp-1 text-sm text-muted-foreground">

@@ -8,6 +8,7 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listWorkstationsPage } from "@/lib/production/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { ProductionSubnav } from "../production-subnav";
 import { WorkstationsLedger } from "./workstations-ledger";
 
@@ -19,7 +20,10 @@ export default async function WorkstationsPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = await listWorkstationsPage();
+  const [initialPage, locationFilters] = await Promise.all([
+    listWorkstationsPage(),
+    buildLocationFilters({ warehouse: false, productionSite: true }),
+  ]);
   const canCreate = hasPermission(user, "production.workstation_create");
 
   return (
@@ -48,6 +52,7 @@ export default async function WorkstationsPage() {
 
           <WorkstationsLedger
             initialPage={initialPage ?? { items: [], next_cursor: null }}
+            locationFilters={locationFilters}
           />
         </div>
       </main>

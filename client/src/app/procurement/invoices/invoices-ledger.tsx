@@ -58,16 +58,20 @@ const STATUS_TONE: Record<
   void: "destructive",
 };
 
+// STATUS_OPTIONS covers every backend @statuses value + the derived
+// `overdue` bucket the ledger endpoint resolves server-side.
+const STATUS_OPTIONS = [
+  { label: "Received", value: "received" },
+  { label: "Disputed", value: "disputed" },
+  { label: "Paid", value: "paid" },
+  { label: "Void", value: "void" },
+  { label: "Overdue", value: "overdue" },
+];
+
 const STATUS_FILTER: FilterDef = {
   field: "status",
   label: "Status",
-  options: [
-    { label: "Received", value: "received" },
-    { label: "Disputed", value: "disputed" },
-    { label: "Paid", value: "paid" },
-    { label: "Void", value: "void" },
-    { label: "Overdue", value: "overdue" },
-  ],
+  options: STATUS_OPTIONS,
 };
 
 const DEFAULT_SORT: SortSpec = { field: "invoice_date", direction: "desc" };
@@ -134,6 +138,8 @@ export function InvoicesLedger({
         id: "po_code",
         header: "PO",
         widthClassName: "w-28",
+        group: "Identity",
+        description: "Parent purchase order this invoice landed against.",
         cell: (i) =>
           i.purchase_order ? (
             <Link
@@ -153,6 +159,11 @@ export function InvoicesLedger({
         id: "invoice_number",
         header: "Invoice ID",
         widthClassName: "min-w-[10rem]",
+        filterField: "invoice_number",
+        filterKind: "text",
+        filterPlaceholder: "INV-2026-…",
+        group: "Identity",
+        description: "Supplier-issued invoice number (unique per PO).",
         cell: (i) => (
           <div className="min-w-0">
             <p className="truncate font-mono text-sm font-semibold">
@@ -172,6 +183,10 @@ export function InvoicesLedger({
         header: "Invoice date",
         sortField: "invoice_date",
         widthClassName: "w-32",
+        filterField: "invoice_date",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Invoice date printed by the supplier.",
         cell: (i) => (
           <span className="text-xs text-muted-foreground">
             {formatCompanyDate(i.invoice_date, prefs)}
@@ -183,6 +198,10 @@ export function InvoicesLedger({
         header: "Due date",
         sortField: "due_date",
         widthClassName: "w-32",
+        filterField: "due_date",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Payment due date — drives the derived `overdue` bucket.",
         cell: (i) =>
           i.due_date ? (
             <span className="text-xs text-muted-foreground">
@@ -196,6 +215,8 @@ export function InvoicesLedger({
         id: "vendor",
         header: "Vendor",
         widthClassName: "min-w-[12rem]",
+        group: "Identity",
+        description: "Supplier issuing the invoice.",
         cell: (i) =>
           i.purchase_order?.vendor ? (
             <span className="truncate text-sm">
@@ -211,6 +232,8 @@ export function InvoicesLedger({
         align: "right",
         widthClassName: "w-28",
         defaultHidden: true,
+        group: "Amounts",
+        description: "Net subtotal before tax.",
         cell: (i) => (
           <span className="font-mono text-xs text-muted-foreground">
             {formatCompanyMoney(i.subtotal, prefs, {
@@ -225,6 +248,8 @@ export function InvoicesLedger({
         align: "right",
         widthClassName: "w-24",
         defaultHidden: true,
+        group: "Amounts",
+        description: "Tax portion (subtotal × company tax_rate by default).",
         cell: (i) => (
           <span className="font-mono text-xs text-muted-foreground">
             {formatCompanyMoney(i.tax_amount, prefs, {
@@ -239,6 +264,10 @@ export function InvoicesLedger({
         sortField: "total_inc_tax",
         align: "right",
         widthClassName: "w-32",
+        filterField: "total_inc_tax",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Final invoice-facing amount (subtotal + tax).",
         cell: (i) => (
           <span className="font-mono text-sm font-semibold">
             {formatCompanyMoney(i.total_inc_tax, prefs, {
@@ -253,6 +282,10 @@ export function InvoicesLedger({
         sortField: "paid_amount",
         align: "right",
         widthClassName: "w-28",
+        filterField: "paid_amount",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Amount settled to date — capped at total_inc_tax.",
         cell: (i) => (
           <span className="font-mono text-sm text-muted-foreground">
             {formatCompanyMoney(i.paid_amount, prefs, {
@@ -266,6 +299,11 @@ export function InvoicesLedger({
         header: "Status",
         sortField: "status",
         widthClassName: "w-28",
+        filterField: "status",
+        filterKind: "select",
+        filterOptions: STATUS_OPTIONS,
+        group: "Status",
+        description: "Invoice lifecycle — received → paid, plus disputed/void/derived-overdue.",
         cell: (i) => (
           <Badge tone={STATUS_TONE[i.status]}>{STATUS_LABEL[i.status]}</Badge>
         ),
@@ -276,6 +314,8 @@ export function InvoicesLedger({
         widthClassName: "w-16",
         hideable: true,
         defaultHidden: true,
+        group: "Meta",
+        description: "PDF / evidence attached to this invoice.",
         cell: (i) =>
           i.file ? (
             <a
@@ -291,6 +331,149 @@ export function InvoicesLedger({
           ) : (
             <span className="text-xs text-muted-foreground/40">—</span>
           ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "currency_code",
+        header: "Currency",
+        widthClassName: "w-20",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "ISO-4217 currency the invoice is denominated in.",
+        cell: (i) => (
+          <span className="font-mono text-xs">{i.currency_code}</span>
+        ),
+      },
+      {
+        id: "outstanding",
+        header: "Outstanding",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "Remaining balance (total_inc_tax − paid_amount).",
+        cell: (i) => {
+          const outstanding =
+            Number(i.total_inc_tax) - Number(i.paid_amount);
+          return (
+            <span
+              className={
+                outstanding > 0
+                  ? "font-mono text-xs font-semibold text-amber-700 dark:text-amber-400"
+                  : "font-mono text-xs text-muted-foreground/60"
+              }
+            >
+              {formatCompanyMoney(String(outstanding), prefs, {
+                currency_code: i.currency_code,
+              })}
+            </span>
+          );
+        },
+      },
+      {
+        id: "vendor_code",
+        header: "Vendor code",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Auto-numbered vendor code.",
+        cell: (i) =>
+          i.purchase_order?.vendor?.code ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {i.purchase_order.vendor.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "paid_at",
+        header: "Paid at",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Dates",
+        description: "When this invoice was marked paid.",
+        cell: (i) =>
+          i.paid_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(i.paid_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "paid_by",
+        header: "Paid by",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        group: "Meta",
+        description: "User who marked the invoice paid.",
+        cell: (i) =>
+          i.paid_by ? (
+            <span className="truncate text-xs">{i.paid_by.name}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "created_by",
+        header: "Created by",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        group: "Meta",
+        description: "AP clerk who recorded the invoice.",
+        cell: (i) =>
+          i.created_by ? (
+            <span className="truncate text-xs">{i.created_by.name}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "notes",
+        header: "Notes",
+        widthClassName: "min-w-[12rem]",
+        defaultHidden: true,
+        group: "Meta",
+        description: "Freeform notes captured on the invoice.",
+        cell: (i) =>
+          i.notes ? (
+            <span className="truncate text-xs text-muted-foreground">
+              {i.notes}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "inserted_at",
+        header: "Created",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "inserted_at",
+        filterField: "inserted_at",
+        filterKind: "date-range",
+        group: "Meta",
+        description: "When this invoice row was created.",
+        cell: (i) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(i.inserted_at, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "updated_at",
+        header: "Updated",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Meta",
+        description: "When this invoice was last modified.",
+        cell: (i) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(i.updated_at, prefs)}
+          </span>
+        ),
       },
     ],
     [prefs],

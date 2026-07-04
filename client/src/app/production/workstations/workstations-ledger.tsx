@@ -7,12 +7,13 @@ import { DataTable } from "@/components/data-table";
 import type {
   ColumnFilterValue,
   DataTableColumn,
+  FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
 import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
-import { formatCompanyMoney, formatCompanyNumber } from "@/lib/format/company";
+import { formatCompanyDate, formatCompanyMoney, formatCompanyNumber } from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import type {
   WorkstationLedgerPage,
@@ -21,9 +22,25 @@ import type {
 
 interface Props {
   initialPage: WorkstationLedgerPage;
+  /** Location filters built server-side via `buildLocationFilters()`. */
+  locationFilters?: FilterDef[];
 }
 
 const DEFAULT_SORT: SortSpec = { field: "inserted_at", direction: "desc" };
+
+const IS_ACTIVE_FILTER: FilterDef = {
+  field: "is_active",
+  label: "Active",
+  options: [
+    { label: "Active only", value: "true" },
+    { label: "Archived only", value: "false" },
+  ],
+};
+
+const BOOL_OPTIONS = [
+  { label: "Yes", value: true },
+  { label: "No", value: false },
+];
 
 async function fetchPage(params: {
   cursor: string | null;
@@ -60,9 +77,14 @@ async function fetchPage(params: {
   return (await res.json()) as PageResult<WorkstationSummary>;
 }
 
-export function WorkstationsLedger({ initialPage }: Props) {
+export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
   const router = useRouter();
   const prefs = useFormatPrefs();
+
+  const filters = useMemo<FilterDef[]>(
+    () => [IS_ACTIVE_FILTER, ...(locationFilters ?? [])],
+    [locationFilters],
+  );
 
   const columns = useMemo<DataTableColumn<WorkstationSummary>[]>(
     () => [
@@ -70,6 +92,8 @@ export function WorkstationsLedger({ initialPage }: Props) {
         id: "code",
         header: "Number",
         widthClassName: "w-28",
+        group: "Identity",
+        description: "Auto-numbered workstation code.",
         cell: (w) => (
           <span className="font-mono text-xs font-semibold">
             {w.code ?? `#${w.id}`}
@@ -80,7 +104,12 @@ export function WorkstationsLedger({ initialPage }: Props) {
         id: "name",
         header: "Name",
         sortField: "name",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Encapsulator A…",
         widthClassName: "min-w-[16rem]",
+        group: "Identity",
+        description: "Human-readable workstation name.",
         cell: (w) => (
           <div className="flex items-center gap-2 min-w-0">
             <span className="truncate text-sm font-medium">{w.name}</span>
@@ -92,6 +121,8 @@ export function WorkstationsLedger({ initialPage }: Props) {
         id: "group",
         header: "Group",
         widthClassName: "min-w-[12rem]",
+        group: "Identity",
+        description: "Parent workstation group this station belongs to.",
         cell: (w) =>
           w.workstation_group ? (
             <div className="flex items-center gap-2 min-w-0">
@@ -114,6 +145,8 @@ export function WorkstationsLedger({ initialPage }: Props) {
         id: "site",
         header: "Site",
         widthClassName: "min-w-[12rem]",
+        group: "Location",
+        description: "Production site (facility) this workstation lives at.",
         cell: (w) =>
           w.warehouse ? (
             <span className="truncate text-sm text-muted-foreground">
@@ -127,6 +160,8 @@ export function WorkstationsLedger({ initialPage }: Props) {
         id: "productivity",
         header: "Productivity",
         widthClassName: "w-28",
+        group: "Amounts",
+        description: "Speed multiplier (1.0 = baseline; 2.0 = double).",
         cell: (w) => (
           <span className="font-mono text-xs">
             {formatCompanyNumber(w.productivity, prefs)}×
@@ -137,6 +172,8 @@ export function WorkstationsLedger({ initialPage }: Props) {
         id: "hourly_rate",
         header: "Hourly rate",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Cost per hour when override enabled — otherwise inherits from the group.",
         cell: (w) =>
           w.hourly_rate_enabled && w.hourly_rate ? (
             <span className="font-mono text-xs">
@@ -147,6 +184,152 @@ export function WorkstationsLedger({ initialPage }: Props) {
               Inherits
             </span>
           ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "is_active",
+        header: "Active",
+        widthClassName: "w-20",
+        align: "center",
+        defaultHidden: true,
+        filterField: "is_active",
+        filterKind: "select",
+        filterOptions: BOOL_OPTIONS,
+        group: "Status",
+        description: "Archived workstations are hidden from schedule pickers.",
+        cell: (w) =>
+          w.is_active ? (
+            <Badge tone="emerald">Yes</Badge>
+          ) : (
+            <Badge tone="muted">No</Badge>
+          ),
+      },
+      {
+        id: "group_code",
+        header: "Group code",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Auto-numbered code for the parent group.",
+        cell: (w) =>
+          w.workstation_group?.code ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {w.workstation_group.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "group_kind",
+        header: "Group kind",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        group: "Status",
+        description: "Active vs passive processing on the parent group.",
+        cell: (w) =>
+          w.workstation_group?.kind ? (
+            <span className="text-xs text-muted-foreground">
+              {w.workstation_group.kind}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "hourly_rate_enabled",
+        header: "Rate on",
+        widthClassName: "w-20",
+        align: "center",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "Whether this station's own hourly rate override is enabled.",
+        cell: (w) =>
+          w.hourly_rate_enabled ? (
+            <Badge tone="emerald">Yes</Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "idle_from",
+        header: "Idle from",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Dates",
+        description: "Start of the maintenance / idle window (scheduler blocks bookings inside it).",
+        cell: (w) =>
+          w.idle_from ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(w.idle_from, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "idle_to",
+        header: "Idle to",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Dates",
+        description: "End of the maintenance / idle window.",
+        cell: (w) =>
+          w.idle_to ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(w.idle_to, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "warehouse_kind",
+        header: "Site kind",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Location",
+        description: "Kind of hosting site (should always be production_facility).",
+        cell: (w) =>
+          w.warehouse?.kind ? (
+            <span className="text-xs text-muted-foreground">
+              {w.warehouse.kind}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "inserted_at",
+        header: "Created",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "inserted_at",
+        filterField: "inserted_at",
+        filterKind: "date-range",
+        group: "Meta",
+        description: "When this workstation was created.",
+        cell: (w) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(w.inserted_at, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "updated_at",
+        header: "Updated",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "updated_at",
+        filterField: "updated_at",
+        filterKind: "date-range",
+        group: "Meta",
+        description: "When this workstation was last modified.",
+        cell: (w) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(w.updated_at, prefs)}
+          </span>
+        ),
       },
     ],
     [prefs],
@@ -164,6 +347,7 @@ export function WorkstationsLedger({ initialPage }: Props) {
       }}
       defaultSort={DEFAULT_SORT}
       searchPlaceholder="Search workstations…"
+      filters={filters}
       onRowClick={(w) => {
         router.push(`/production/workstations/${w.uuid}`);
       }}

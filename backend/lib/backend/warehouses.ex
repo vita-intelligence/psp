@@ -27,7 +27,7 @@ defmodule Backend.Warehouses do
   # `code` is a render-time field (prefix + padded id) — sorting by it
   # is equivalent to sorting by :id, so the list_for_company helper
   # translates `:code` → `:id` before passing to ListQueries.
-  @sortable_fields ~w(id name is_active inserted_at)a
+  @sortable_fields ~w(id name address notes is_active inserted_at updated_at)a
   # Equality filters the API will honour.
   @filter_fields ~w(is_active)a
   # Columns the free-text `search` parameter ILIKE'es against. `code`
