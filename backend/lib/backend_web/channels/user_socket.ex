@@ -18,6 +18,7 @@ defmodule BackendWeb.UserSocket do
 
   channel "lobby", BackendWeb.LobbyChannel
   channel "form:*", BackendWeb.FormChannel
+  channel "page:*", BackendWeb.PageChannel
   channel "plan:warehouse:*", BackendWeb.WarehousePlanChannel
   channel "device:*", BackendWeb.DeviceChannel
   channel "pairing:*", BackendWeb.PairingChannel
