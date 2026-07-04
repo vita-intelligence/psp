@@ -9,7 +9,6 @@ import {
   ArrowUp,
   ChevronsUpDown,
   EyeOff,
-  Filter,
   GripVertical,
   X,
 } from "lucide-react";
@@ -21,33 +20,26 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ColumnFilterEditor } from "./column-filter";
-import type {
-  ColumnFilterValue,
-  DataTableColumn,
-  SortSpec,
-} from "./types";
+import type { DataTableColumn, SortSpec } from "./types";
 
 interface DraggableHeaderProps<T> {
   column: DataTableColumn<T>;
   sort: SortSpec | null;
   onSort: (direction: "asc" | "desc" | null) => void;
-  filterValue: ColumnFilterValue | null;
-  onFilterChange: (value: ColumnFilterValue | null) => void;
   onHide: () => void;
 }
 
-/** Column header. Clicking anywhere in the label opens a dropdown with
- *  Sort ↑ / Sort ↓ / Filter… / Hide. The drag handle stays as a
- *  dedicated grip on the left so accidental drags don't interrupt
- *  header clicks. When a filter or sort is active, chip indicators in
- *  the header make the state visible at a glance. */
+/** Column header. Clicking the label opens a dropdown with Sort ↑ /
+ *  Sort ↓ / Clear sort / Hide column. The per-column filter lives on
+ *  the persistent filter row underneath, not in this dropdown, so a
+ *  user can filter and sort without dropping and re-picking.
+ *
+ *  The drag handle is a dedicated grip on the left so accidental
+ *  drags don't interrupt header clicks. */
 export function DraggableHeader<T>({
   column,
   sort,
   onSort,
-  filterValue,
-  onFilterChange,
   onHide,
 }: DraggableHeaderProps<T>) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -73,10 +65,8 @@ export function DraggableHeader<T>({
         : "text-left justify-start";
 
   const canSort = Boolean(column.sortField);
-  const canFilter = Boolean(column.filterKind && column.filterField);
   const canHide = column.hideable !== false;
-  const canOpenMenu = canSort || canFilter || canHide;
-  const hasFilter = filterValue !== null;
+  const canOpenMenu = canSort || canHide;
 
   const sortLabels = column.sortLabels ?? { asc: "Ascending", desc: "Descending" };
 
@@ -108,7 +98,7 @@ export function DraggableHeader<T>({
                 type="button"
                 className={cn(
                   "inline-flex items-center gap-1 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground",
-                  (isSorted || hasFilter) && "text-foreground",
+                  isSorted && "text-foreground",
                 )}
               >
                 <span className="truncate">{column.header}</span>
@@ -120,15 +110,9 @@ export function DraggableHeader<T>({
                     )}
                   />
                 )}
-                {hasFilter && (
-                  <span
-                    className="ml-0.5 inline-block size-1.5 rounded-full bg-brand"
-                    aria-label="Filter active"
-                  />
-                )}
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-64">
+            <DropdownMenuContent align="start" className="w-48">
               <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
                 {column.header}
               </DropdownMenuLabel>
@@ -162,41 +146,13 @@ export function DraggableHeader<T>({
                 </>
               )}
 
-              {canSort && canFilter && <DropdownMenuSeparator />}
-
-              {canFilter && column.filterKind && (
-                <div className="px-1.5 py-1.5">
-                  <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    <Filter className="size-3" aria-hidden />
-                    Filter
-                    {hasFilter && (
-                      <button
-                        type="button"
-                        onClick={() => onFilterChange(null)}
-                        className="ml-auto text-[10px] font-normal normal-case text-muted-foreground hover:text-foreground"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                  <ColumnFilterEditor
-                    kind={column.filterKind}
-                    value={filterValue}
-                    onChange={onFilterChange}
-                    options={column.filterOptions}
-                    placeholder={column.filterPlaceholder ?? column.header}
-                  />
-                </div>
-              )}
+              {canSort && canHide && <DropdownMenuSeparator />}
 
               {canHide && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={onHide}>
-                    <EyeOff className="mr-1.5 size-3.5" aria-hidden />
-                    Hide column
-                  </DropdownMenuItem>
-                </>
+                <DropdownMenuItem onClick={onHide}>
+                  <EyeOff className="mr-1.5 size-3.5" aria-hidden />
+                  Hide column
+                </DropdownMenuItem>
               )}
             </DropdownMenuContent>
           </DropdownMenu>

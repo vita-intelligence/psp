@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, Loader2, RefreshCw } from "lucide-react";
 import { Toolbar } from "./toolbar";
 import { DraggableHeader } from "./draggable-header";
+import { FilterRow } from "./filter-row";
 import { useTableState } from "./use-table-state";
 import type {
   ColumnFilterValue,
@@ -332,20 +333,23 @@ export function DataTable<T>({
                       onSort={(direction) =>
                         onHeaderSortPick(col.sortField, direction)
                       }
-                      filterValue={
-                        col.filterField
-                          ? (columnFilters[col.filterField] ?? null)
-                          : null
-                      }
-                      onFilterChange={(value) => {
-                        if (!col.filterField) return;
-                        setColumnFilter(col.filterField, value);
-                      }}
                       onHide={() => toggleColumn(col.id, true)}
                     />
                   ))}
                 </SortableContext>
               </TableRow>
+              {/* Persistent filter row — one compact input per column,
+                  always visible so the operator sees every available
+                  filter without opening a dropdown. Matches the
+                  MRPEasy / Airtable convention. Only renders when at
+                  least one column has a filterKind declared. */}
+              {orderedColumns.some((c) => c.filterKind && c.filterField) && (
+                <FilterRow
+                  columns={orderedColumns}
+                  values={columnFilters}
+                  onChange={(field, value) => setColumnFilter(field, value)}
+                />
+              )}
             </TableHeader>
             <TableBody>
               {isInitialLoading ? (
