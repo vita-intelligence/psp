@@ -4019,7 +4019,9 @@ defmodule BackendWeb.Payloads do
   `parent_comment_id` is exposed so the v2 threaded UI can stitch
   replies. `mentioned_user_ids` is the v2 notification fan-out target.
   """
-  def comment(c) do
+  def comment(c), do: comment(c, nil)
+
+  def comment(c, current_user_id) do
     %{
       id: c.id,
       uuid: c.uuid,
@@ -4028,13 +4030,82 @@ defmodule BackendWeb.Payloads do
       body: c.body,
       visibility: c.visibility,
       parent_comment_id: c.parent_comment_id,
+      parent: comment_parent(c),
       mentioned_user_ids: c.mentioned_user_ids || [],
       edited_at: c.edited_at,
       created_at: c.inserted_at,
       updated_at: c.updated_at,
-      author: actor(c, :author)
+      author: actor(c, :author),
+      files: preloaded_list(c, :files, &comment_file/1),
+      reactions: comment_reactions(c, current_user_id)
     }
   end
+
+  # Compact parent reference for threaded replies. `snippet` is the first
+  # 80 chars of the parent body so the reply bubble can show "in reply
+  # to: 'Please double-check the COA…'" without a second fetch.
+  defp comment_parent(%{parent_comment: %Ecto.Association.NotLoaded{}}), do: nil
+  defp comment_parent(%{parent_comment: nil}), do: nil
+
+  defp comment_parent(%{parent_comment: %Backend.Comments.Comment{} = parent}) do
+    %{
+      id: parent.id,
+      uuid: parent.uuid,
+      author_name: parent_author_name(parent),
+      snippet: comment_snippet(parent.body)
+    }
+  end
+
+  defp comment_parent(_), do: nil
+
+  defp parent_author_name(%Backend.Comments.Comment{author: %Ecto.Association.NotLoaded{}}), do: nil
+
+  defp parent_author_name(%Backend.Comments.Comment{author: %{name: name}}) when is_binary(name),
+    do: name
+
+  defp parent_author_name(_), do: nil
+
+  defp comment_snippet(nil), do: ""
+
+  defp comment_snippet(body) when is_binary(body) do
+    trimmed = String.trim(body)
+
+    if String.length(trimmed) > 80 do
+      String.slice(trimmed, 0, 80) <> "…"
+    else
+      trimmed
+    end
+  end
+
+  def comment_file(%Backend.Comments.CommentFile{} = f) do
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      url: Backend.Storage.public_url(f.blob_path),
+      width_px: f.width_px,
+      height_px: f.height_px,
+      duration_ms: f.duration_ms,
+      waveform: f.waveform,
+      uploaded_at: f.inserted_at,
+      uploaded_by: actor(f, :uploaded_by)
+    }
+  end
+
+  defp comment_reactions(%{reactions: %Ecto.Association.NotLoaded{}}, _), do: []
+  defp comment_reactions(%{reactions: nil}, _), do: []
+
+  defp comment_reactions(%{reactions: reactions}, current_user_id) when is_list(reactions) do
+    Backend.Comments.collapse_reactions(reactions, current_user_id)
+    |> Enum.map(fn %{emoji: emoji, count: count, user_ids: user_ids, own_reacted: own} ->
+      %{emoji: emoji, count: count, user_ids: user_ids, own_reacted: own}
+    end)
+  end
+
+  defp comment_reactions(_, _), do: []
 
   @doc """
   Goods-In Inspection — BRCGS / FSSC 22000 incoming-inspection record.

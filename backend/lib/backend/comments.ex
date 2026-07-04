@@ -25,9 +25,10 @@ defmodule Backend.Comments do
 
   alias Backend.Accounts.User
   alias Backend.Audit
-  alias Backend.Comments.Comment
+  alias Backend.Comments.{Comment, CommentFile, CommentReaction}
   alias Backend.RBAC
   alias Backend.Repo
+  alias Backend.Storage
 
   # Each entity type maps to a list of permission codes — holding ANY
   # of them grants comment-write on that entity. Mirrors the channel
@@ -98,7 +99,12 @@ defmodule Backend.Comments do
             c.entity_type == ^entity_type and
             c.entity_id == ^entity_id,
         order_by: [asc: c.inserted_at, asc: c.id],
-        preload: [:author],
+        preload: [
+          :author,
+          :parent_comment,
+          :files,
+          reactions: :user
+        ],
         limit: ^limit
       )
     )
@@ -128,7 +134,12 @@ defmodule Backend.Comments do
         Repo.one(
           from(c in Comment,
             where: c.company_id == ^company_id and c.uuid == ^cast,
-            preload: [:author]
+            preload: [
+              :author,
+              :parent_comment,
+              :files,
+              reactions: :user
+            ]
           )
         )
 
@@ -152,33 +163,77 @@ defmodule Backend.Comments do
   """
   def create_comment(%User{} = actor, entity_type, entity_id, attrs)
       when is_binary(entity_type) and is_integer(entity_id) do
-    if entity_type not in @entity_types do
-      {:error, :unknown_entity_type}
-    else
-      attrs =
-        attrs
-        |> stringify_keys()
-        |> Map.merge(%{
-          "entity_type" => entity_type,
-          "entity_id" => entity_id,
-          "company_id" => actor.company_id,
-          "author_id" => actor.id
-        })
+    cond do
+      entity_type not in @entity_types ->
+        {:error, :unknown_entity_type}
 
-      %Comment{}
-      |> Comment.create_changeset(attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, comment} ->
-          comment = Repo.preload(comment, :author)
-          Audit.record_created(actor, "comment", comment, comment_audit_snapshot(comment))
-          {:ok, comment}
+      true ->
+        attrs =
+          attrs
+          |> stringify_keys()
+          |> Map.merge(%{
+            "entity_type" => entity_type,
+            "entity_id" => entity_id,
+            "company_id" => actor.company_id,
+            "author_id" => actor.id
+          })
 
-        other ->
-          other
-      end
+        with :ok <- validate_parent_scope(actor, entity_type, entity_id, attrs["parent_comment_id"]) do
+          %Comment{}
+          |> Comment.create_changeset(attrs)
+          |> Repo.insert()
+          |> case do
+            {:ok, comment} ->
+              comment =
+                Repo.preload(comment, [
+                  :author,
+                  :parent_comment,
+                  :files,
+                  reactions: :user
+                ])
+
+              Audit.record_created(actor, "comment", comment, comment_audit_snapshot(comment))
+              {:ok, comment}
+
+            other ->
+              other
+          end
+        end
     end
   end
+
+  # Parent-comment must belong to the same tenant AND reference the same
+  # entity_type + entity_id. Anything else lets a caller stitch a reply
+  # under a comment on another vendor / another company, which would
+  # leak scoped data through the parent snippet on render.
+  defp validate_parent_scope(_actor, _entity_type, _entity_id, nil), do: :ok
+  defp validate_parent_scope(_actor, _entity_type, _entity_id, ""), do: :ok
+
+  defp validate_parent_scope(actor, entity_type, entity_id, parent_id)
+       when is_integer(parent_id) do
+    case Repo.one(
+           from(c in Comment,
+             where:
+               c.id == ^parent_id and
+                 c.company_id == ^actor.company_id and
+                 c.entity_type == ^entity_type and
+                 c.entity_id == ^entity_id,
+             select: c.id
+           )
+         ) do
+      nil -> {:error, :parent_comment_not_found}
+      _ -> :ok
+    end
+  end
+
+  defp validate_parent_scope(actor, entity_type, entity_id, parent_id) when is_binary(parent_id) do
+    case Integer.parse(parent_id) do
+      {parsed, ""} -> validate_parent_scope(actor, entity_type, entity_id, parsed)
+      _ -> {:error, :parent_comment_not_found}
+    end
+  end
+
+  defp validate_parent_scope(_actor, _entity_type, _entity_id, _), do: {:error, :parent_comment_not_found}
 
   @doc """
   Edit an existing comment. Only the original author may edit — the
@@ -261,6 +316,291 @@ defmodule Backend.Comments do
   @doc "Permission codes guarding comment writes on the given entity type."
   def write_permissions_for(entity_type) when is_binary(entity_type),
     do: Map.get(@write_perms, entity_type, [])
+
+  # ----- attachments ----------------------------------------------
+
+  # Cap the number of attachments per comment. Matches the FE composer's
+  # own guard, but re-checked server-side so a scripted client can't
+  # smuggle an unbounded gallery in.
+  @max_files_per_comment 20
+  @max_reactions_per_comment 100
+
+  @doc "Attachment cap per comment (mirrored on the FE composer)."
+  def max_files_per_comment, do: @max_files_per_comment
+
+  @doc "Reaction cap per comment (mirrored on the FE composer)."
+  def max_reactions_per_comment, do: @max_reactions_per_comment
+
+  @doc """
+  Attach an already-uploaded blob to a comment. Caller has already
+  called `Storage.put/3` and holds the blob path — this function
+  writes the metadata row + fires the audit event.
+
+  Author-or-admin gate re-checks the entity edit permission on every
+  call so a peer whose role was revoked mid-thread can't silently add
+  files to a comment they wrote earlier.
+  """
+  def attach_file(%User{} = actor, %Comment{} = comment, attrs) do
+    with :ok <- authorize_file_write(actor, comment),
+         :ok <- ensure_file_capacity(comment.id) do
+      full_attrs =
+        attrs
+        |> stringify_keys()
+        |> Map.put("company_id", comment.company_id)
+        |> Map.put("comment_id", comment.id)
+        |> Map.put("uploaded_by_id", actor.id)
+
+      %CommentFile{}
+      |> CommentFile.changeset(full_attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, file} ->
+          file = Repo.preload(file, :uploaded_by)
+          Audit.record_created(actor, "comment_file", file, comment_file_audit_snapshot(file, comment))
+          {:ok, file}
+
+        other ->
+          other
+      end
+    end
+  end
+
+  @doc "Files attached to a comment, oldest-first (insertion order)."
+  def list_files(comment_id) when is_integer(comment_id) do
+    Repo.all(
+      from(f in CommentFile,
+        where: f.comment_id == ^comment_id,
+        order_by: [asc: f.inserted_at, asc: f.id],
+        preload: [:uploaded_by]
+      )
+    )
+  end
+
+  @doc """
+  Look up a single file scoped to a comment. Cross-tenant / cross-comment
+  uuids return nil so the controller can 404 cleanly.
+  """
+  def get_file(comment_id, uuid) when is_integer(comment_id) and is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(f in CommentFile,
+            where: f.comment_id == ^comment_id and f.uuid == ^cast,
+            preload: [:uploaded_by]
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  def get_file(_, _), do: nil
+
+  @doc """
+  Hard-delete a file row + drop the underlying blob. Comment author OR
+  admin only. The audit event is written before the delete so we can
+  recover the metadata if someone asks "who deleted that image".
+  """
+  def delete_file(%User{} = actor, %CommentFile{} = file) do
+    comment = Repo.get(Comment, file.comment_id)
+
+    cond do
+      is_nil(comment) ->
+        {:error, :not_found}
+
+      not can_manage_file?(actor, comment) ->
+        {:error, :forbidden}
+
+      true ->
+        Audit.record_deleted(actor, "comment_file", file, comment_file_audit_snapshot(file, comment))
+        _ = Storage.delete(file.blob_path)
+        Repo.delete(file)
+    end
+  end
+
+  # File-write permission: the comment author OR an admin OR a user
+  # who still holds the entity's edit perm. The fresh RBAC check
+  # prevents a revoked role from continuing to attach files via a
+  # long-lived socket / cached token.
+  defp authorize_file_write(%User{is_admin: true}, _comment), do: :ok
+
+  defp authorize_file_write(%User{id: id}, %Comment{author_id: id}), do: :ok
+
+  defp authorize_file_write(%User{} = actor, %Comment{entity_type: type}) do
+    if can_comment_on?(actor, type), do: :ok, else: {:error, :forbidden}
+  end
+
+  defp can_manage_file?(%User{is_admin: true}, _), do: true
+  defp can_manage_file?(%User{id: id}, %Comment{author_id: id}), do: true
+  defp can_manage_file?(_, _), do: false
+
+  defp ensure_file_capacity(comment_id) do
+    count =
+      Repo.aggregate(
+        from(f in CommentFile, where: f.comment_id == ^comment_id),
+        :count,
+        :id
+      )
+
+    if count >= @max_files_per_comment do
+      {:error, :file_limit_reached}
+    else
+      :ok
+    end
+  end
+
+  # ----- reactions ------------------------------------------------
+
+  @doc """
+  Add an emoji reaction. Idempotent: if the same user has already
+  reacted with the same emoji we return the existing row instead of
+  bubbling the unique-constraint error to the caller.
+
+  Callers need write perm on the entity (peers, not just the comment
+  author, can react — that's the whole point).
+  """
+  def add_reaction(%User{} = actor, %Comment{} = comment, emoji) when is_binary(emoji) do
+    with :ok <- authorize_reaction(actor, comment),
+         :ok <- ensure_reaction_capacity(comment.id) do
+      attrs = %{
+        "company_id" => comment.company_id,
+        "comment_id" => comment.id,
+        "user_id" => actor.id,
+        "emoji" => emoji
+      }
+
+      %CommentReaction{}
+      |> CommentReaction.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, reaction} ->
+          {:ok, Repo.preload(reaction, :user)}
+
+        {:error, %Ecto.Changeset{errors: errors}} = err ->
+          case Keyword.get(errors, :emoji) do
+            {"already reacted", _} ->
+              existing =
+                Repo.one(
+                  from(r in CommentReaction,
+                    where:
+                      r.comment_id == ^comment.id and
+                        r.user_id == ^actor.id and
+                        r.emoji == ^String.trim(emoji),
+                    preload: [:user]
+                  )
+                )
+
+              if existing, do: {:ok, existing}, else: err
+
+            _ ->
+              err
+          end
+      end
+    end
+  end
+
+  def add_reaction(_actor, _comment, _emoji), do: {:error, :invalid_emoji}
+
+  @doc "Remove a reaction the caller previously left. No-op if it's not there."
+  def remove_reaction(%User{} = actor, %Comment{} = comment, emoji) when is_binary(emoji) do
+    trimmed = String.trim(emoji)
+
+    query =
+      from(r in CommentReaction,
+        where:
+          r.comment_id == ^comment.id and
+            r.user_id == ^actor.id and
+            r.emoji == ^trimmed
+      )
+
+    case Repo.one(query) do
+      nil -> {:ok, :noop}
+      reaction -> Repo.delete(reaction)
+    end
+  end
+
+  def remove_reaction(_actor, _comment, _emoji), do: {:error, :invalid_emoji}
+
+  @doc """
+  Reactions on a comment collapsed by emoji.
+
+  Returns `[%{emoji: "👍", count: 3, user_ids: [1, 2, 3], own_reacted: true}]`
+  with `own_reacted` set relative to the caller. Order is by first
+  reaction time — the "who kicked off this cluster" order matches
+  Slack / Messenger.
+  """
+  def list_reactions(comment_id, current_user_id \\ nil) when is_integer(comment_id) do
+    comment_id
+    |> load_reactions()
+    |> collapse_reactions(current_user_id)
+  end
+
+  @doc """
+  Collapse an already-preloaded list of reactions into the grouped
+  payload shape. Used by the payload serializer to avoid re-querying
+  when the reactions were fetched with the comment.
+  """
+  def collapse_reactions(reactions, current_user_id) when is_list(reactions) do
+    reactions
+    |> Enum.group_by(& &1.emoji)
+    |> Enum.map(fn {emoji, rows} ->
+      sorted = Enum.sort_by(rows, & &1.inserted_at, {:asc, DateTime})
+      user_ids = Enum.map(sorted, & &1.user_id)
+
+      %{
+        emoji: emoji,
+        count: length(sorted),
+        user_ids: user_ids,
+        own_reacted: current_user_id != nil and current_user_id in user_ids
+      }
+    end)
+    |> Enum.sort_by(fn %{user_ids: [first | _]} -> first end)
+  end
+
+  defp load_reactions(comment_id) do
+    Repo.all(
+      from(r in CommentReaction,
+        where: r.comment_id == ^comment_id,
+        order_by: [asc: r.inserted_at, asc: r.id]
+      )
+    )
+  end
+
+  defp authorize_reaction(%User{is_admin: true}, _comment), do: :ok
+
+  defp authorize_reaction(%User{} = actor, %Comment{entity_type: type}) do
+    if can_comment_on?(actor, type), do: :ok, else: {:error, :forbidden}
+  end
+
+  defp ensure_reaction_capacity(comment_id) do
+    count =
+      Repo.aggregate(
+        from(r in CommentReaction, where: r.comment_id == ^comment_id),
+        :count,
+        :id
+      )
+
+    if count >= @max_reactions_per_comment do
+      {:error, :reaction_limit_reached}
+    else
+      :ok
+    end
+  end
+
+  defp comment_file_audit_snapshot(%CommentFile{} = f, %Comment{} = c) do
+    %{
+      comment_id: c.id,
+      entity_type: c.entity_type,
+      entity_id: c.entity_id,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      blob_path: f.blob_path,
+      uploaded_by_id: f.uploaded_by_id
+    }
+  end
 
   # ----- internals -------------------------------------------------
 

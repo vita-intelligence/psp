@@ -61,6 +61,14 @@ defmodule Backend.Comments.Comment do
     belongs_to :author, User
     belongs_to :parent_comment, __MODULE__
 
+    has_many :files, Backend.Comments.CommentFile,
+      foreign_key: :comment_id,
+      preload_order: [asc: :inserted_at, asc: :id]
+
+    has_many :reactions, Backend.Comments.CommentReaction,
+      foreign_key: :comment_id,
+      preload_order: [asc: :inserted_at, asc: :id]
+
     timestamps(type: :utc_datetime)
   end
 

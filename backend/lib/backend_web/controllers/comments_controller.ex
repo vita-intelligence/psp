@@ -19,10 +19,33 @@ defmodule BackendWeb.CommentsController do
 
   use BackendWeb, :controller
 
-  alias Backend.{Comments, Purchasing, Stock, Vendors}
+  alias Backend.{Comments, Purchasing, Stock, Storage, Vendors}
+  alias Backend.Comments.Comment
   alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
+
+  # Attachment constraints — mirrored on the FE composer.
+  @max_attachment_bytes 25 * 1024 * 1024
+
+  @allowed_image_mimes ~w(image/jpeg image/jpg image/png image/gif image/webp)
+  @allowed_video_mimes ~w(video/mp4 video/webm)
+  @allowed_audio_mimes ~w(audio/webm audio/mp4 audio/m4a audio/x-m4a audio/mpeg audio/ogg audio/wav)
+  @allowed_document_mimes ~w(
+    application/pdf
+    application/msword
+    application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    application/vnd.ms-excel
+    application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    application/vnd.ms-powerpoint
+    application/vnd.openxmlformats-officedocument.presentationml.presentation
+    text/plain
+    text/csv
+  )
+  @allowed_attachment_mimes @allowed_image_mimes ++
+                              @allowed_video_mimes ++
+                              @allowed_audio_mimes ++
+                              @allowed_document_mimes
 
   # Permission gates are inline because the read perm varies by
   # entity_type — a single `plug RequirePermission, ...` can't
@@ -38,7 +61,7 @@ defmodule BackendWeb.CommentsController do
     with :ok <- check_view_perm(actor, entity_type),
          {:ok, entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid) do
       items = Comments.list_for(actor.company_id, entity_type, entity_id)
-      json(conn, %{items: Enum.map(items, &Payloads.comment/1)})
+      json(conn, %{items: Enum.map(items, &Payloads.comment(&1, actor.id))})
     else
       {:error, :forbidden} -> forbidden(conn, entity_type, :read)
       {:error, :not_found} -> {:error, :not_found}
@@ -53,18 +76,22 @@ defmodule BackendWeb.CommentsController do
 
     with :ok <- check_view_perm(actor, entity_type),
          :ok <- check_write_perm(actor, entity_type),
-         {:ok, entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid) do
-      attrs = params |> Map.take(["body", "visibility", "parent_comment_id", "mentioned_user_ids"])
+         {:ok, entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid),
+         {:ok, parent_id} <- resolve_parent_comment_id(actor, params) do
+      attrs =
+        params
+        |> Map.take(["body", "visibility", "mentioned_user_ids"])
+        |> Map.put("parent_comment_id", parent_id)
 
       case Comments.create_comment(actor, entity_type, entity_id, attrs) do
         {:ok, comment} ->
           broadcast_event(entity_type, entity_uuid, "comment:created", %{
-            comment: Payloads.comment(comment)
+            comment: Payloads.comment(comment, nil)
           })
 
           conn
           |> put_status(:created)
-          |> json(%{comment: Payloads.comment(comment)})
+          |> json(%{comment: Payloads.comment(comment, actor.id)})
 
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)
@@ -73,10 +100,45 @@ defmodule BackendWeb.CommentsController do
           unprocessable(conn, "unknown_entity_type",
             "Comments aren't enabled for that entity type."
           )
+
+        {:error, :parent_comment_not_found} ->
+          unprocessable(conn, "parent_comment_not_found",
+            "The reply target doesn't belong to this thread."
+          )
       end
     else
       {:error, :forbidden} -> forbidden(conn, entity_type, :write)
       {:error, :not_found} -> {:error, :not_found}
+      {:error, :parent_comment_not_found} ->
+        unprocessable(conn, "parent_comment_not_found",
+          "The reply target doesn't belong to this thread."
+        )
+    end
+  end
+
+  # Frontend never sees integer PKs — it sends `parent_comment_uuid`.
+  # Resolve that here so `Comments.create_comment` can keep working
+  # against the integer FK. Legacy `parent_comment_id` still accepted
+  # for internal callers / test fixtures.
+  defp resolve_parent_comment_id(actor, params) do
+    cond do
+      is_binary(params["parent_comment_uuid"]) and params["parent_comment_uuid"] != "" ->
+        case Comments.get_for_company(actor.company_id, params["parent_comment_uuid"]) do
+          %Comment{id: id} -> {:ok, id}
+          _ -> {:error, :parent_comment_not_found}
+        end
+
+      is_integer(params["parent_comment_id"]) ->
+        {:ok, params["parent_comment_id"]}
+
+      is_binary(params["parent_comment_id"]) and params["parent_comment_id"] != "" ->
+        case Integer.parse(params["parent_comment_id"]) do
+          {parsed, ""} -> {:ok, parsed}
+          _ -> {:error, :parent_comment_not_found}
+        end
+
+      true ->
+        {:ok, nil}
     end
   end
 
@@ -95,10 +157,10 @@ defmodule BackendWeb.CommentsController do
       case Comments.update_comment(actor, comment, Map.take(params, ["body", "visibility"])) do
         {:ok, updated} ->
           broadcast_event(entity_type, entity_uuid, "comment:updated", %{
-            comment: Payloads.comment(updated)
+            comment: Payloads.comment(updated, nil)
           })
 
-          json(conn, %{comment: Payloads.comment(updated)})
+          json(conn, %{comment: Payloads.comment(updated, actor.id)})
 
         {:error, :forbidden} ->
           forbidden_comment_edit(conn)
@@ -129,15 +191,252 @@ defmodule BackendWeb.CommentsController do
       case Comments.delete_comment(actor, comment) do
         {:ok, updated} ->
           broadcast_event(entity_type, entity_uuid, "comment:deleted", %{
-            comment: Payloads.comment(updated)
+            comment: Payloads.comment(updated, nil)
           })
 
-          json(conn, %{comment: Payloads.comment(updated)})
+          json(conn, %{comment: Payloads.comment(updated, actor.id)})
 
         {:error, :forbidden} ->
           forbidden_comment_delete(conn)
       end
     else
+      {:error, :forbidden} -> forbidden(conn, entity_type, :write)
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, :mismatched_entity} -> {:error, :not_found}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  # ----- attachments -----------------------------------------------
+
+  def upload_file(
+        conn,
+        %{
+          "entity_uuid" => entity_uuid,
+          "comment_uuid" => comment_uuid,
+          "file" => %Plug.Upload{} = upload
+        } = params
+      ) do
+    actor = conn.assigns.current_user
+    entity_type = conn.assigns.entity_type
+
+    with :ok <- check_view_perm(actor, entity_type),
+         :ok <- check_write_perm(actor, entity_type),
+         {:ok, _entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid),
+         %Comment{} = comment <- Comments.get_for_company(actor.company_id, comment_uuid),
+         :ok <- check_entity_match(comment, entity_type),
+         kind = classify_kind(params["kind"], upload.content_type),
+         :ok <- validate_attachment_mime(upload.content_type),
+         {:ok, bytes} <- read_upload(upload),
+         :ok <- validate_attachment_size(bytes) do
+      key = build_storage_key(comment, kind, upload)
+
+      case Storage.put(key, bytes, content_type: upload.content_type) do
+        {:ok, blob_path} ->
+          attrs = %{
+            "kind" => kind,
+            "filename" => upload.filename || "upload",
+            "mime" => upload.content_type || "application/octet-stream",
+            "byte_size" => byte_size(bytes),
+            "blob_path" => blob_path,
+            "width_px" => parse_int(params["width_px"]),
+            "height_px" => parse_int(params["height_px"]),
+            "duration_ms" => parse_int(params["duration_ms"]),
+            "waveform" => params["waveform"]
+          }
+
+          case Comments.attach_file(actor, comment, attrs) do
+            {:ok, file} ->
+              payload = Payloads.comment_file(file)
+
+              broadcast_event(entity_type, entity_uuid, "file:attached", %{
+                comment_uuid: comment.uuid,
+                file: payload
+              })
+
+              conn
+              |> put_status(:created)
+              |> json(%{file: payload})
+
+            {:error, :forbidden} ->
+              forbidden_file_write(conn)
+
+            {:error, :file_limit_reached} ->
+              unprocessable(conn, "attachment_limit_reached",
+                "This comment already has the maximum #{Comments.max_files_per_comment()} attachments.")
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              # The bytes are already on disk — clean up so we don't
+              # leak orphans on a validation bounce.
+              _ = Storage.delete(blob_path)
+              changeset_error(conn, cs)
+          end
+
+        {:error, reason} ->
+          unprocessable(conn, "storage_failed",
+            "Couldn't store the file (#{inspect(reason)}).")
+      end
+    else
+      {:error, :forbidden} -> forbidden(conn, entity_type, :write)
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, :mismatched_entity} -> {:error, :not_found}
+      {:error, {:invalid_mime, detail}} -> unprocessable(conn, "invalid_mime_type", detail)
+      {:error, {:too_large, bytes}} -> file_too_large(conn, bytes)
+      {:error, {:read_failed, reason}} ->
+        unprocessable(conn, "read_failed", "Couldn't read the upload: #{inspect(reason)}.")
+
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def upload_file(conn, _params) do
+    unprocessable(conn, "missing_file", "Send the file under `file` (multipart).")
+  end
+
+  def delete_file(conn, %{
+        "entity_uuid" => entity_uuid,
+        "comment_uuid" => comment_uuid,
+        "file_uuid" => file_uuid
+      }) do
+    actor = conn.assigns.current_user
+    entity_type = conn.assigns.entity_type
+
+    with :ok <- check_view_perm(actor, entity_type),
+         :ok <- check_write_perm(actor, entity_type),
+         {:ok, _entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid),
+         %Comment{} = comment <- Comments.get_for_company(actor.company_id, comment_uuid),
+         :ok <- check_entity_match(comment, entity_type),
+         %Backend.Comments.CommentFile{} = file <- Comments.get_file(comment.id, file_uuid) do
+      case Comments.delete_file(actor, file) do
+        {:ok, _} ->
+          broadcast_event(entity_type, entity_uuid, "file:removed", %{
+            comment_uuid: comment.uuid,
+            file_uuid: file.uuid
+          })
+
+          conn |> put_status(:ok) |> json(%{ok: true})
+
+        {:error, :forbidden} ->
+          forbidden_file_delete(conn)
+
+        {:error, :not_found} ->
+          {:error, :not_found}
+      end
+    else
+      {:error, :forbidden} -> forbidden(conn, entity_type, :write)
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, :mismatched_entity} -> {:error, :not_found}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def serve_file(conn, %{
+        "entity_uuid" => entity_uuid,
+        "comment_uuid" => comment_uuid,
+        "file_uuid" => file_uuid
+      }) do
+    actor = conn.assigns.current_user
+    entity_type = conn.assigns.entity_type
+
+    with :ok <- check_view_perm(actor, entity_type),
+         {:ok, _entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid),
+         %Comment{} = comment <- Comments.get_for_company(actor.company_id, comment_uuid),
+         :ok <- check_entity_match(comment, entity_type),
+         %Backend.Comments.CommentFile{} = file <- Comments.get_file(comment.id, file_uuid),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_content_type(file.mime || "application/octet-stream")
+      |> put_resp_header(
+        "content-disposition",
+        ~s|inline; filename="#{file.filename}"|
+      )
+      |> send_file(200, abs_path)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # ----- reactions -------------------------------------------------
+
+  def add_reaction(conn, %{
+        "entity_uuid" => entity_uuid,
+        "comment_uuid" => comment_uuid,
+        "emoji" => emoji
+      })
+      when is_binary(emoji) do
+    actor = conn.assigns.current_user
+    entity_type = conn.assigns.entity_type
+
+    with :ok <- check_view_perm(actor, entity_type),
+         :ok <- check_write_perm(actor, entity_type),
+         {:ok, _entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid),
+         %Comment{} = comment <- Comments.get_for_company(actor.company_id, comment_uuid),
+         :ok <- check_entity_match(comment, entity_type) do
+      case Comments.add_reaction(actor, comment, emoji) do
+        {:ok, reaction} ->
+          broadcast_event(entity_type, entity_uuid, "reaction:added", %{
+            comment_uuid: comment.uuid,
+            emoji: reaction.emoji,
+            user_id: actor.id
+          })
+
+          json(conn, %{ok: true, emoji: reaction.emoji})
+
+        {:error, :forbidden} ->
+          forbidden(conn, entity_type, :write)
+
+        {:error, :reaction_limit_reached} ->
+          unprocessable(conn, "reaction_limit_reached",
+            "This comment already has the maximum #{Comments.max_reactions_per_comment()} reactions.")
+
+        {:error, :invalid_emoji} ->
+          unprocessable(conn, "invalid_emoji", "Emoji is required.")
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      {:error, :forbidden} -> forbidden(conn, entity_type, :write)
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, :mismatched_entity} -> {:error, :not_found}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def add_reaction(conn, _params) do
+    unprocessable(conn, "missing_emoji", "Send an emoji in the request body under `emoji`.")
+  end
+
+  def remove_reaction(conn, %{
+        "entity_uuid" => entity_uuid,
+        "comment_uuid" => comment_uuid
+      } = params) do
+    actor = conn.assigns.current_user
+    entity_type = conn.assigns.entity_type
+    emoji = params["emoji"]
+
+    with true <- is_binary(emoji) and emoji != "",
+         :ok <- check_view_perm(actor, entity_type),
+         :ok <- check_write_perm(actor, entity_type),
+         {:ok, _entity_id} <- resolve_entity_id(actor, entity_type, entity_uuid),
+         %Comment{} = comment <- Comments.get_for_company(actor.company_id, comment_uuid),
+         :ok <- check_entity_match(comment, entity_type) do
+      case Comments.remove_reaction(actor, comment, emoji) do
+        {:ok, _} ->
+          broadcast_event(entity_type, entity_uuid, "reaction:removed", %{
+            comment_uuid: comment.uuid,
+            emoji: String.trim(emoji),
+            user_id: actor.id
+          })
+
+          json(conn, %{ok: true})
+
+        {:error, :invalid_emoji} ->
+          unprocessable(conn, "invalid_emoji", "Emoji is required.")
+      end
+    else
+      false -> unprocessable(conn, "missing_emoji", "Include `emoji` in the query string.")
       {:error, :forbidden} -> forbidden(conn, entity_type, :write)
       {:error, :not_found} -> {:error, :not_found}
       {:error, :mismatched_entity} -> {:error, :not_found}
@@ -390,4 +689,102 @@ defmodule BackendWeb.CommentsController do
       )
     )
   end
+
+  # ----- attachment helpers ----------------------------------------
+
+  defp forbidden_file_write(conn) do
+    conn
+    |> put_status(:forbidden)
+    |> json(
+      Errors.payload(
+        "comment_file_write_forbidden",
+        "You need edit permission on this entity to attach files to comments."
+      )
+    )
+  end
+
+  defp forbidden_file_delete(conn) do
+    conn
+    |> put_status(:forbidden)
+    |> json(
+      Errors.payload(
+        "comment_file_delete_forbidden",
+        "Only the comment author or an admin can remove an attachment."
+      )
+    )
+  end
+
+  defp classify_kind(kind, _mime) when kind in ~w(image video audio gif file), do: kind
+
+  defp classify_kind(_kind, mime) when is_binary(mime) do
+    cond do
+      mime == "image/gif" -> "gif"
+      mime in @allowed_image_mimes -> "image"
+      mime in @allowed_video_mimes -> "video"
+      mime in @allowed_audio_mimes -> "audio"
+      true -> "file"
+    end
+  end
+
+  defp classify_kind(_, _), do: "file"
+
+  defp validate_attachment_mime(mime) when mime in @allowed_attachment_mimes, do: :ok
+
+  defp validate_attachment_mime(mime) do
+    {:error,
+     {:invalid_mime,
+      "Unsupported file type (#{mime || "unknown"}). Allowed: images, videos, voice notes, PDFs, and common office formats."}}
+  end
+
+  defp validate_attachment_size(bytes) when byte_size(bytes) > @max_attachment_bytes do
+    {:error, {:too_large, byte_size(bytes)}}
+  end
+
+  defp validate_attachment_size(_), do: :ok
+
+  defp read_upload(%Plug.Upload{path: path}) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, reason} -> {:error, {:read_failed, reason}}
+    end
+  end
+
+  defp build_storage_key(%Comment{} = comment, kind, %Plug.Upload{filename: filename}) do
+    "comment_files/" <>
+      comment.uuid <>
+      "/" <>
+      kind <>
+      "_" <>
+      Ecto.UUID.generate() <>
+      extension_for(filename)
+  end
+
+  defp extension_for(nil), do: ""
+
+  defp extension_for(filename) when is_binary(filename) do
+    case Path.extname(filename) do
+      "" -> ""
+      ext -> String.downcase(ext)
+    end
+  end
+
+  defp file_too_large(conn, bytes) do
+    mb = Float.round(bytes / 1024 / 1024, 1)
+    max_mb = Float.round(@max_attachment_bytes / 1024 / 1024, 1)
+
+    unprocessable(conn, "file_too_large",
+      "File is #{mb} MB; max allowed is #{max_mb} MB.")
+  end
+
+  defp parse_int(nil), do: nil
+  defp parse_int(n) when is_integer(n), do: n
+
+  defp parse_int(n) when is_binary(n) do
+    case Integer.parse(n) do
+      {parsed, ""} -> parsed
+      _ -> nil
+    end
+  end
+
+  defp parse_int(_), do: nil
 end
