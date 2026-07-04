@@ -706,7 +706,10 @@ export function ProjectControlBoard({
           </div>
 
           {/* ===================== RIGHT — context lane ===================== */}
-          <div className="flex flex-col gap-6">
+          {/* `min-h-full` lets the lane stretch to the left column's height so
+              the Timeline's `flex-1` has real space to expand into (the grid
+              row is `align-items: stretch` by default). */}
+          <div className="flex min-h-full flex-col gap-6">
             <CustomerCard
               co={co}
               prefs={prefs}
@@ -2516,10 +2519,12 @@ function TimelineCard({
   };
 
   return (
-    // Fixed height so the card never grows past its lane on a
-    // long-running project. The stream scrolls inside; the header
-    // and jump-to buttons stay pinned.
-    <Card className="flex h-[520px] flex-col border-border/60">
+    // Fills the right lane so the card's bottom lines up with the
+    // Lines & MO card on the left (right above the Discussion). Grows
+    // as the left lane grows; scrolls inside its own frame once the
+    // stream overflows. Floor at 400px so on a shallow project the
+    // card doesn't shrink to a strip.
+    <Card className="flex min-h-[400px] flex-1 flex-col border-border/60">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <ClipboardList className="size-4 text-muted-foreground" />
