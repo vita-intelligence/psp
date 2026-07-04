@@ -327,18 +327,31 @@ defmodule Backend.OrderWizard do
   end
 
   defp collect_dispatchable_lot_ids(mos) do
-    mos
-    |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
-    |> Enum.filter(fn lot ->
-      Enum.any?(lot.placements || [], fn p ->
-        p.storage_cell &&
-          p.storage_cell.purpose == "dispatch" &&
-          p.qty &&
-          Decimal.compare(p.qty, Decimal.new(0)) == :gt
-      end)
-    end)
-    |> Enum.map(& &1.id)
-    |> Enum.uniq()
+    # Walk the mo_state maps to collect candidate lot ids, then check
+    # placement purpose in the DB. The slim `lot_summary` payload
+    # exposed by mo_state doesn't carry `placements`, so `lot.placements`
+    # would raise KeyError — hitting the DB is the correct read here.
+    candidate_ids =
+      mos
+      |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
+      |> Enum.map(& &1.id)
+      |> Enum.uniq()
+
+    if candidate_ids == [] do
+      []
+    else
+      from(p in Backend.Stock.Placement,
+        join: c in Backend.Warehouses.StorageCell,
+        on: c.id == p.storage_cell_id,
+        where:
+          p.stock_lot_id in ^candidate_ids and
+            c.purpose == "dispatch" and
+            p.qty > 0,
+        select: p.stock_lot_id,
+        distinct: true
+      )
+      |> Repo.all()
+    end
   end
 
   # Look at every live shipment (draft/ready/picked_up — cancelled is
@@ -1487,27 +1500,18 @@ defmodule Backend.OrderWizard do
   # dispatch cell but have no live shipment row yet. Wizard uses this
   # to surface the "Create shipment" CTA in ready_to_dispatch.
   defp lots_needing_shipment_paperwork(mos) do
-    lot_ids_in_dispatch =
-      mos
-      |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
-      |> Enum.filter(fn lot ->
-        Enum.any?(lot.placements || [], fn p ->
-          p.storage_cell &&
-            p.storage_cell.purpose == "dispatch" &&
-            p.qty &&
-            Decimal.compare(p.qty, Decimal.new(0)) == :gt
-        end)
-      end)
+    # Same trap as collect_dispatchable_lot_ids/1 — the wizard's slim
+    # lot_summary map doesn't have :placements, so we hit the DB
+    # instead of walking it.
+    ids_in_dispatch = collect_dispatchable_lot_ids(mos)
 
-    if lot_ids_in_dispatch == [] do
+    if ids_in_dispatch == [] do
       []
     else
-      ids = Enum.map(lot_ids_in_dispatch, & &1.id)
-
       lots_with_open_shipment =
         from(s in Backend.Shipments.Shipment,
           where:
-            s.stock_lot_id in ^ids and
+            s.stock_lot_id in ^ids_in_dispatch and
               s.status in ["draft", "ready", "picked_up"],
           select: s.stock_lot_id,
           distinct: true
@@ -1515,14 +1519,22 @@ defmodule Backend.OrderWizard do
         |> Repo.all()
         |> MapSet.new()
 
-      lot_ids_in_dispatch
-      |> Enum.reject(&MapSet.member?(lots_with_open_shipment, &1.id))
-      |> Enum.map(fn lot ->
+      missing_ids =
+        Enum.reject(ids_in_dispatch, &MapSet.member?(lots_with_open_shipment, &1))
+
+      # Grab uuid + code for the CTA links in one shot.
+      lots_by_id =
+        from(l in Lot,
+          where: l.id in ^missing_ids,
+          select: %{id: l.id, uuid: l.uuid}
+        )
+        |> Repo.all()
+
+      Enum.map(lots_by_id, fn row ->
         %{
-          id: lot.id,
-          uuid: lot.uuid,
-          code:
-            BackendWeb.Payloads.render_code(%{id: lot.id}, "stock_lot")
+          id: row.id,
+          uuid: row.uuid,
+          code: BackendWeb.Payloads.render_code(%{id: row.id}, "stock_lot")
         }
       end)
     end
