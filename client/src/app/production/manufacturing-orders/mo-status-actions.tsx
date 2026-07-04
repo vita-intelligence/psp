@@ -31,6 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { cn } from "@/lib/utils";
 import { format as formatDateFns } from "date-fns";
 import { invalidateAudit } from "@/lib/audit/invalidator";
@@ -57,6 +58,7 @@ interface Props {
   canEdit: boolean;
   currentUserId: number;
   company: CompanyDefaults;
+  pageId?: string;
 }
 
 const STATUS_STYLES: Record<
@@ -125,8 +127,11 @@ export function MOStatusActions({
   canEdit,
   currentUserId,
   company,
+  pageId,
 }: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [pending, startTransition] = useTransition();
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -147,6 +152,7 @@ export function MOStatusActions({
     to: ManufacturingOrderStatus,
     confirmMsg?: string,
   ) {
+    if (locked) return;
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     setActionError(null);
     setPendingLabel(label);
@@ -174,6 +180,7 @@ export function MOStatusActions({
       | "request_purchases"
       | "cancel_purchase_request",
   ) {
+    if (locked) return;
     setActionError(null);
     setPendingLabel(label);
     startTransition(async () => {
@@ -190,6 +197,7 @@ export function MOStatusActions({
   }
 
   function submitReject(reason: string) {
+    if (locked) return;
     setActionError(null);
     setPendingLabel("Reject");
     startTransition(async () => {
@@ -279,6 +287,7 @@ export function MOStatusActions({
           isPreparer={isPreparer}
           pending={pending}
           pendingLabel={pendingLabel}
+          locked={locked}
           onPrepare={() => runSignature("Mark prepared", "prepare")}
           onUnprepare={() => runSignature("Unprepare", "unprepare")}
           onApprove={() => runSignature("Approve", "approve")}
@@ -401,6 +410,7 @@ interface ActionStripProps {
   isPreparer: boolean;
   pending: boolean;
   pendingLabel: string | null;
+  locked?: boolean;
   onPrepare: () => void;
   onUnprepare: () => void;
   onApprove: () => void;
@@ -426,6 +436,7 @@ function ActionStrip(props: ActionStripProps) {
     isPreparer,
     pending,
     pendingLabel,
+    locked = false,
   } = props;
 
   // Buttons rendered for the current status. Child MOs hide the
@@ -450,9 +461,9 @@ function ActionStrip(props: ActionStripProps) {
         type="button"
         size="sm"
         variant={opts.variant ?? "default"}
-        disabled={pending || opts.disabled}
+        disabled={pending || opts.disabled || locked}
         onClick={opts.onClick}
-        title={opts.title}
+        title={locked ? "Only the head of the room can act here." : opts.title}
         className={
           opts.destructive
             ? "text-destructive hover:bg-destructive/10 hover:text-destructive"

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -73,7 +74,10 @@ export default async function InvoiceDetailPage({
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/sales/invoices/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <RecordHero
             icon={Receipt}
             code={inv.code ?? `#${inv.id}`}
@@ -117,6 +121,7 @@ export default async function InvoiceDetailPage({
             canEdit={canEdit}
             canSend={canSend}
             prefs={company}
+            pageId={`/sales/invoices/${uuid}`}
           />
 
           <EditModeToggle canEdit={canEdit && isDraft}>
@@ -136,6 +141,7 @@ export default async function InvoiceDetailPage({
             invoice={inv}
             canRecordPayment={canRecordPayment}
             prefs={company}
+            pageId={`/sales/invoices/${uuid}`}
           />
 
           <CommentThread
@@ -153,7 +159,7 @@ export default async function InvoiceDetailPage({
             updated_by={inv.updated_by ?? null}
           />
           <AuditHistoryCard entityType="customer_invoice" entityId={inv.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

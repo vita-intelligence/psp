@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -110,7 +111,10 @@ export default async function CustomerDetailPage({
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/sales/customers/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <RecordHero
             icon={Users}
             code={customer.code ?? `#${customer.id}`}
@@ -166,6 +170,7 @@ export default async function CustomerDetailPage({
             canApprove={canApprove}
             currentUserId={user.id}
             prefs={company}
+            pageId={`/sales/customers/${uuid}`}
           />
 
           <EditModeToggle canEdit={canEdit}>
@@ -227,7 +232,7 @@ export default async function CustomerDetailPage({
             updated_by={customer.updated_by ?? null}
           />
           <AuditHistoryCard entityType="customer" entityId={customer.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

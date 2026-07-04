@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge-mini";
 import { TopBar } from "@/components/layout/top-bar";
 import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { CommentThread } from "@/components/comments/comment-thread";
@@ -96,7 +97,10 @@ export default async function PODetailPage({
       <ProcurementSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/procurement/purchase-orders/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <RecordHero
             icon={ShoppingCart}
             code={po.code ?? `#${po.id}`}
@@ -130,6 +134,7 @@ export default async function PODetailPage({
             canApprove={canApprove}
             canDirectorApprove={canDirectorApprove}
             canCancel={canCreate}
+            pageId={`/procurement/purchase-orders/${uuid}`}
           />
 
           <PODocumentsToolbar po={po} />
@@ -177,7 +182,7 @@ export default async function PODetailPage({
             updated_by={po.updated_by ?? null}
           />
           <AuditHistoryCard entityType="purchase_order" entityId={po.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

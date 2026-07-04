@@ -26,6 +26,7 @@ import {
   SearchPicker,
   type SearchPickerOption,
 } from "@/components/forms/search-picker";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type { CompanyDefaults, Pricelist, PricelistItemRow } from "@/lib/types";
 import {
   addPricelistLineAction,
@@ -73,10 +74,19 @@ interface Props {
   pricelist: Pricelist;
   canEdit: boolean;
   prefs: CompanyDefaults;
+  pageId?: string;
 }
 
-export function PricelistLinesCard({ pricelist, canEdit, prefs }: Props) {
+export function PricelistLinesCard({
+  pricelist,
+  canEdit,
+  prefs,
+  pageId,
+}: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
+  const effectiveCanEdit = canEdit && !locked;
   const [pending, startTransition] = useTransition();
   const [pickerValue, setPickerValue] = useState<ItemPickerOption | null>(null);
   const [newPrice, setNewPrice] = useState("");
@@ -148,7 +158,7 @@ export function PricelistLinesCard({ pricelist, canEdit, prefs }: Props) {
                 row={row}
                 pricelistUuid={pricelist.uuid}
                 currencyCode={pricelist.currency_code}
-                canEdit={canEdit}
+                canEdit={effectiveCanEdit}
                 prefs={prefs}
                 pending={pending}
                 startTransition={startTransition}
@@ -157,7 +167,7 @@ export function PricelistLinesCard({ pricelist, canEdit, prefs }: Props) {
           </ul>
         )}
 
-        {canEdit && (
+        {effectiveCanEdit && (
           <div className="space-y-2 rounded-md border border-border/40 bg-muted/30 p-3">
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
               Add a tier

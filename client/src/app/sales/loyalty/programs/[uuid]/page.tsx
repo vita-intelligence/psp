@@ -6,6 +6,7 @@ import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -48,7 +49,10 @@ export default async function LoyaltyProgramDetailPage({
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/sales/loyalty/programs/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <div>
             <Button
               asChild
@@ -103,6 +107,7 @@ export default async function LoyaltyProgramDetailPage({
             program={program}
             prefs={company}
             canManage={canManage}
+            pageId={`/sales/loyalty/programs/${uuid}`}
           />
 
           <CommentThread
@@ -123,7 +128,7 @@ export default async function LoyaltyProgramDetailPage({
             entityType="loyalty_program"
             entityId={program.id}
           />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

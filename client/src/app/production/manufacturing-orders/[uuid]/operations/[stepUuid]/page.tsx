@@ -6,6 +6,7 @@ import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import {
   getManufacturingOrder,
   getManufacturingOrderStep,
@@ -51,7 +52,10 @@ export default async function ModifyOperationPage({ params }: Props) {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/production/manufacturing-orders/${uuid}/operations/${stepUuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <div>
             <Button
               asChild
@@ -118,7 +122,7 @@ export default async function ModifyOperationPage({ params }: Props) {
             entityId={step.id}
             canRestore={false}
           />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

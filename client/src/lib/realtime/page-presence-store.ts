@@ -86,14 +86,22 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
       const rebuildPeers = () => {
         const list: CollabPeer[] = [];
         presence.list((id, { metas }) => {
+          // One user with multiple tabs shows up as multiple metas
+          // under the same id. Pick the EARLIEST joined_at so
+          // leadership is stable across tab counts — name/email/avatar
+          // are the same across metas so metas[0] is fine for those.
           const meta = metas[0] ?? {};
+          let joinedAt = Number.MAX_SAFE_INTEGER;
+          for (const m of metas) {
+            const t = (m.joined_at as number) ?? Number.MAX_SAFE_INTEGER;
+            if (t < joinedAt) joinedAt = t;
+          }
           list.push({
             id,
             name: (meta.name as string) ?? "",
             email: (meta.email as string) ?? "",
             avatar: (meta.avatar as string) ?? null,
-            joinedAt:
-              (meta.joined_at as number) ?? Number.MAX_SAFE_INTEGER,
+            joinedAt,
           });
           return list;
         });

@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -46,7 +47,10 @@ export default async function PricelistDetailPage({
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/sales/pricelists/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <RecordHero
             icon={Tags}
             code={pricelist.code ?? `#${pricelist.id}`}
@@ -85,6 +89,7 @@ export default async function PricelistDetailPage({
             pricelist={pricelist}
             canEdit={canEdit}
             prefs={company}
+            pageId={`/sales/pricelists/${uuid}`}
           />
 
           <CommentThread
@@ -102,7 +107,7 @@ export default async function PricelistDetailPage({
             updated_by={pricelist.updated_by ?? null}
           />
           <AuditHistoryCard entityType="pricelist" entityId={pricelist.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

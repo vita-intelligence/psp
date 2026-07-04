@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { getVendor, listVendorPriceHistory } from "@/lib/vendors/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -70,7 +71,10 @@ export default async function VendorDetailPage({
       <ProcurementSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/procurement/vendors/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <RecordHero
             icon={Users}
             code={vendor.code ?? `#${vendor.id}`}
@@ -89,9 +93,17 @@ export default async function VendorDetailPage({
             backLabel="Back to vendors"
           />
 
-          <VendorApprovalCard vendor={vendor} canApprove={canApprove} />
+          <VendorApprovalCard
+            vendor={vendor}
+            canApprove={canApprove}
+            pageId={`/procurement/vendors/${uuid}`}
+          />
 
-          <VendorQualificationCard vendor={vendor} canEdit={canEdit} />
+          <VendorQualificationCard
+            vendor={vendor}
+            canEdit={canEdit}
+            pageId={`/procurement/vendors/${uuid}`}
+          />
 
           <EditModeToggle canEdit={canEdit}>
             <VendorForm vendor={vendor} canEdit={canEdit} />
@@ -118,7 +130,7 @@ export default async function VendorDetailPage({
             updated_by={vendor.updated_by ?? null}
           />
           <AuditHistoryCard entityType="vendor" entityId={vendor.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

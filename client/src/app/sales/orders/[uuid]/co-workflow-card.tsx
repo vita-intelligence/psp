@@ -51,6 +51,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { Badge } from "@/components/ui/badge-mini";
 import type { CompanyDefaults, CustomerOrder, CustomerOrderStatus } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
@@ -104,6 +105,7 @@ interface Props {
   canDirectorApprove: boolean;
   canCreateInvoice: boolean;
   prefs: CompanyDefaults;
+  pageId?: string;
 }
 
 export function COWorkflowCard({
@@ -115,7 +117,10 @@ export function COWorkflowCard({
   canDirectorApprove,
   canCreateInvoice,
   prefs,
+  pageId,
 }: Props) {
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [openAction, setOpenAction] = useState<ActionKey | null>(null);
 
   const Icon = STATUS_ICON[co.status];
@@ -258,10 +263,15 @@ export function COWorkflowCard({
               {showSubmit && (
                 <Button
                   size="sm"
-                  onClick={() => setOpenAction("submit")}
-                  disabled={!submitReady}
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("submit");
+                  }}
+                  disabled={!submitReady || locked}
                   title={
-                    submitReady
+                    locked
+                      ? "Only the head of the room can act here."
+                      : submitReady
                       ? undefined
                       : "Finish the setup steps above before submitting."
                   }
@@ -271,7 +281,14 @@ export function COWorkflowCard({
                 </Button>
               )}
               {showSignApprover && (
-                <Button size="sm" onClick={() => setOpenAction("sign_approver")}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("sign_approver");
+                  }}
+                  disabled={locked}
+                >
                   <ShieldCheck className="mr-1.5 size-3.5" />
                   Sign as approver
                 </Button>
@@ -279,10 +296,15 @@ export function COWorkflowCard({
               {showSignDirector && (
                 <Button
                   size="sm"
-                  onClick={() => setOpenAction("sign_director")}
-                  disabled={actorIsApprover}
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("sign_director");
+                  }}
+                  disabled={actorIsApprover || locked}
                   title={
-                    actorIsApprover
+                    locked
+                      ? "Only the head of the room can act here."
+                      : actorIsApprover
                       ? "You signed as approver — a different reviewer must sign as director."
                       : undefined
                   }
@@ -292,18 +314,29 @@ export function COWorkflowCard({
                 </Button>
               )}
               {showMarkConfirmed && (
-                <Button size="sm" onClick={() => setOpenAction("mark_confirmed")}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("mark_confirmed");
+                  }}
+                  disabled={locked}
+                >
                   <Truck className="mr-1.5 size-3.5" />
                   Mark confirmed
                 </Button>
               )}
-              {showGenerateInvoice && <GenerateInvoiceButton co={co} />}
+              {showGenerateInvoice && <GenerateInvoiceButton co={co} locked={locked} />}
               {showCancel && (
                 <Button
                   size="sm"
                   variant="outline"
                   className="text-destructive hover:bg-destructive/10"
-                  onClick={() => setOpenAction("cancel")}
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("cancel");
+                  }}
+                  disabled={locked}
                 >
                   <ShieldX className="mr-1.5 size-3.5" />
                   Cancel
@@ -699,11 +732,18 @@ function CancelDialog({ open, onClose, co }: DialogProps) {
 // line is fully billed it returns 422 and we surface a toast.
 // ============================================================
 
-function GenerateInvoiceButton({ co }: { co: CustomerOrder }) {
+function GenerateInvoiceButton({
+  co,
+  locked = false,
+}: {
+  co: CustomerOrder;
+  locked?: boolean;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
   function generate() {
+    if (locked) return;
     startTransition(async () => {
       const res = await createInvoiceFromCOAction(co.uuid, {});
       if (res.ok) {
@@ -716,7 +756,7 @@ function GenerateInvoiceButton({ co }: { co: CustomerOrder }) {
   }
 
   return (
-    <Button size="sm" onClick={generate} disabled={pending}>
+    <Button size="sm" onClick={generate} disabled={pending || locked}>
       {pending ? (
         <Loader2 className="mr-1.5 size-4 animate-spin" />
       ) : (

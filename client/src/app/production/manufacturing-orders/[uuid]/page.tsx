@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getManufacturingOrder } from "@/lib/production/server";
@@ -60,7 +61,10 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-6xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/production/manufacturing-orders/${uuid}`}
+          className="mx-auto max-w-6xl space-y-6"
+        >
           <PageHeader
             size="detail"
             icon={Factory}
@@ -98,6 +102,7 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             canEdit={canEdit}
             currentUserId={user.id}
             company={company}
+            pageId={`/production/manufacturing-orders/${uuid}`}
           />
 
           <MOParentBreadcrumb mo={mo} />
@@ -143,7 +148,7 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             entityId={mo.id}
             canRestore={false}
           />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

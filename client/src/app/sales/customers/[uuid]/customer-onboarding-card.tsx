@@ -72,6 +72,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type {
   Customer,
   CustomerAmlOutcome,
@@ -93,6 +94,7 @@ interface Props {
   canApprove: boolean;
   currentUserId: number;
   prefs: FormatPrefs;
+  pageId?: string;
 }
 
 const APPROVAL_LABEL: Record<CustomerApprovalStatus, string> = {
@@ -140,8 +142,11 @@ export function CustomerOnboardingCard({
   canApprove,
   currentUserId,
   prefs,
+  pageId,
 }: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [openSection, setOpenSection] = useState<SectionKey | null>(null);
   const [openAction, setOpenAction] = useState<ActionKey | null>(null);
 
@@ -294,8 +299,11 @@ export function CustomerOnboardingCard({
             {canShowApprove && (
               <Button
                 size="sm"
-                onClick={() => setOpenAction("approve")}
-                disabled={!checklistComplete}
+                onClick={() => {
+                  if (locked) return;
+                  setOpenAction("approve");
+                }}
+                disabled={!checklistComplete || locked}
                 title={
                   !checklistComplete
                     ? "Complete the onboarding checklist first."
@@ -312,7 +320,11 @@ export function CustomerOnboardingCard({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setOpenAction("suspend")}
+                onClick={() => {
+                  if (locked) return;
+                  setOpenAction("suspend");
+                }}
+                disabled={locked}
               >
                 <ShieldAlert className="mr-1.5 size-3.5" />
                 Suspend
@@ -323,7 +335,11 @@ export function CustomerOnboardingCard({
                 size="sm"
                 variant="outline"
                 className="text-destructive hover:bg-destructive/10"
-                onClick={() => setOpenAction("reject")}
+                onClick={() => {
+                  if (locked) return;
+                  setOpenAction("reject");
+                }}
+                disabled={locked}
               >
                 <ShieldX className="mr-1.5 size-3.5" />
                 Reject
@@ -333,7 +349,11 @@ export function CustomerOnboardingCard({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setOpenAction("reopen")}
+                onClick={() => {
+                  if (locked) return;
+                  setOpenAction("reopen");
+                }}
+                disabled={locked}
               >
                 <RotateCcw className="mr-1.5 size-3.5" />
                 Reopen

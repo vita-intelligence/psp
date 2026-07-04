@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/rbac";
 import { Badge } from "@/components/ui/badge-mini";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getWorkstation } from "@/lib/production/server";
@@ -50,7 +51,11 @@ export default async function WorkstationDetailPage({ params }: Props) {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/production/workstations/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+          suppressBanner
+        >
           <PageHeader
             size="detail"
             icon={Settings2}
@@ -120,7 +125,7 @@ export default async function WorkstationDetailPage({ params }: Props) {
             entityId={ws.id}
             canRestore={false}
           />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

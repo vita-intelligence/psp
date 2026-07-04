@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Move, Printer, Package, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type { StockLot } from "@/lib/types";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { formatCompanyNumber } from "@/lib/format/company";
@@ -19,12 +20,16 @@ export function LotHeader({
   lot,
   canMove,
   canAdjust,
+  pageId,
 }: {
   lot: StockLot;
   canMove: boolean;
   canAdjust: boolean;
+  pageId?: string;
 }) {
   const prefs = useFormatPrefs();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [printOpen, setPrintOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
@@ -68,14 +73,27 @@ export function LotHeader({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => setAdjustOpen(true)}
+              onClick={() => {
+                if (locked) return;
+                setAdjustOpen(true);
+              }}
+              disabled={locked}
+              title={locked ? "Only the head of the room can act here." : undefined}
             >
               <Scale className="mr-1.5 size-4" />
               Adjust qty
             </Button>
           )}
           {canMove && (
-            <Button size="sm" onClick={() => setMoveOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (locked) return;
+                setMoveOpen(true);
+              }}
+              disabled={locked}
+              title={locked ? "Only the head of the room can act here." : undefined}
+            >
               <Move className="mr-1.5 size-4" />
               Move
             </Button>

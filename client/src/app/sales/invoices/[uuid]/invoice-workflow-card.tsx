@@ -39,6 +39,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { Badge } from "@/components/ui/badge-mini";
 import type {
   CompanyDefaults,
@@ -89,6 +90,7 @@ interface Props {
   canEdit: boolean;
   canSend: boolean;
   prefs: CompanyDefaults;
+  pageId?: string;
 }
 
 export function InvoiceWorkflowCard({
@@ -96,7 +98,10 @@ export function InvoiceWorkflowCard({
   canEdit,
   canSend,
   prefs,
+  pageId,
 }: Props) {
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [openAction, setOpenAction] = useState<ActionKey | null>(null);
   const Icon = STATUS_ICON[invoice.status];
 
@@ -201,7 +206,15 @@ export function InvoiceWorkflowCard({
             </p>
             <div className="flex flex-wrap gap-2">
               {showSend && (
-                <Button size="sm" onClick={() => setOpenAction("send")}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("send");
+                  }}
+                  disabled={locked}
+                  title={locked ? "Only the head of the room can act here." : undefined}
+                >
                   <Send className="mr-1.5 size-3.5" />
                   Send invoice
                 </Button>
@@ -211,7 +224,12 @@ export function InvoiceWorkflowCard({
                   size="sm"
                   variant="outline"
                   className="text-destructive hover:bg-destructive/10"
-                  onClick={() => setOpenAction("cancel")}
+                  disabled={locked}
+                  title={locked ? "Only the head of the room can act here." : undefined}
+                  onClick={() => {
+                    if (locked) return;
+                    setOpenAction("cancel");
+                  }}
                 >
                   <ShieldX className="mr-1.5 size-3.5" />
                   Cancel

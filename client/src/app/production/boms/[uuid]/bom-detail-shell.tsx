@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRef, useState, useTransition } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { ListChecks, Pencil, Star } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CommentThread } from "@/components/comments/comment-thread";
+import { PageCursors } from "@/components/realtime/page-cursors";
+import { PageLockBanner } from "@/components/realtime/page-lock-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { formatCompanyMoney, formatCompanyNumber } from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { invalidateAudit } from "@/lib/audit/invalidator";
@@ -46,6 +49,10 @@ export function BOMDetailShell({
 }: Props) {
   const router = useRouter();
   const prefs = useFormatPrefs();
+  const pathname = usePathname() ?? "";
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const { isLeader, leader } = usePageLeadership(pathname);
+  const locked = !isLeader && !!leader;
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<{
@@ -55,6 +62,7 @@ export function BOMDetailShell({
   } | null>(null);
 
   function onSetPrimary() {
+    if (locked) return;
     if (!canEdit || pending || bom.is_primary) return;
     startTransition(async () => {
       const res = await setBOMPrimaryAction(bom.uuid);
@@ -71,7 +79,9 @@ export function BOMDetailShell({
   const printHref = `/api/production/boms/${encodeURIComponent(bom.uuid)}/print.pdf`;
 
   return (
-    <div className="space-y-6">
+    <div ref={anchorRef} className="relative space-y-6">
+      <PageCursors pageId={pathname} anchorRef={anchorRef} />
+      {locked && mode === "view" && <PageLockBanner leader={leader} />}
       {error && (
         <ErrorBanner
           detail={error.detail}
@@ -83,7 +93,7 @@ export function BOMDetailShell({
       {mode === "view" ? (
         <ReadOnlyView
           bom={bom}
-          canEdit={canEdit}
+          canEdit={canEdit && !locked}
           pending={pending}
           onEdit={() => setMode("edit")}
           onSetPrimary={onSetPrimary}
