@@ -78,6 +78,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "shipment"
   end
 
+  pipeline :comments_purchase_order_line do
+    plug :put_entity_type, "purchase_order_line"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -1249,6 +1253,18 @@ defmodule BackendWeb.Router do
 
   scope "/api/shipments/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_shipment]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  # PO-line comments — line uuid is globally unique. The controller
+  # + channel resolve to the PurchaseOrderLine row and check the
+  # parent PO belongs to the actor's company.
+  scope "/api/purchase-order-lines/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_purchase_order_line]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

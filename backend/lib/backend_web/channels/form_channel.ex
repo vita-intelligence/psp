@@ -393,6 +393,14 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "final-release"),
     do: RBAC.has_permission?(user, "production.final_release")
 
+  # Shipment paperwork room — head-of-room lock over recipient /
+  # delivery address / country / planned ship time / qty / notes.
+  # View-only viewers (`shipments.view` alone) never see this
+  # channel; the FE gates the join on canEdit. Server-side gate is
+  # the same permission that unlocks editing.
+  defp can_edit_resource?(user, "shipment"),
+    do: RBAC.has_permission?(user, "shipments.edit")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

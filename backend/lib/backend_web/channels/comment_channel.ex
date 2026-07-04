@@ -151,6 +151,9 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "shipment"),
     do: gate(user, "shipments.view")
 
+  defp check_view_perm(user, "purchase_order_line"),
+    do: gate(user, "procurement.po_view")
+
   defp check_view_perm(_user, _other), do: {:error, :forbidden}
 
   defp gate(user, code) do
@@ -258,6 +261,21 @@ defmodule BackendWeb.CommentChannel do
   defp resolve_entity_id(user, "shipment", uuid) do
     case Backend.Shipments.get_shipment(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "purchase_order_line", uuid) do
+    import Ecto.Query
+
+    case Backend.Repo.one(
+           from l in Backend.Purchasing.PurchaseOrderLine,
+             join: po in assoc(l, :purchase_order),
+             where: l.uuid == ^uuid and po.company_id == ^user.company_id,
+             select: l.id,
+             limit: 1
+         ) do
+      id when is_integer(id) -> {:ok, id}
       _ -> {:error, :not_found}
     end
   end

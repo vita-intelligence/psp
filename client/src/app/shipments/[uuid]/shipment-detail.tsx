@@ -1,14 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   CheckCircle2,
   ClipboardList,
   ExternalLink,
   Loader2,
+  Lock,
+  LockKeyhole,
   MapPin,
   Package,
   Pencil,
@@ -34,7 +43,11 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { CountryPicker } from "@/components/forms/country-picker";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
-import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
+import { RemoteCursor } from "@/components/realtime/remote-cursor";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import type { JoinError } from "@/lib/realtime/use-live-form";
 import { formatCompanyDate } from "@/lib/format/company";
 import { findCountry } from "@/lib/iso/countries";
 import { cn } from "@/lib/utils";
@@ -108,39 +121,87 @@ export function ShipmentDetail({
 }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const [state, setState] = useState<FormState>(() => initialFrom(shipment));
   const [error, setError] = useState<ErrorResult | null>(null);
   const [saving, startSave] = useTransition();
   const [busy, startTransition] = useTransition();
 
-  useFormPresenceBeacon(`shipment:${shipment.uuid}`);
+  const initialState = useMemo(() => initialFrom(shipment), [shipment]);
 
-  // Reset local form + close edit mode whenever the server payload
-  // changes (e.g. after Mark ready refreshes the row).
+  // HARD RULE: every editable form is realtime + collaborative. The
+  // channel is gated on `shipments.edit` server-side; view-only
+  // viewers skip the join via `disabled: !canEdit`.
+  const {
+    state,
+    setField,
+    resetState,
+    presence,
+    fieldEditors,
+    focusField,
+    blurField,
+    joinError,
+    creator,
+    isCreator,
+    cursors,
+    setCursor,
+    hideCursor,
+    broadcastCommit,
+  } = useLiveForm<FormState>({
+    resource: `shipment:${shipment.uuid}`,
+    disabled: !canEdit,
+    initialState,
+    onCommit: () => {
+      // Any peer save → refetch to pick up fresh server state.
+      router.refresh();
+    },
+  });
+
+  // Reset live-form state + close edit mode whenever the server
+  // payload changes (e.g. after Mark ready refreshes the row).
   useEffect(() => {
-    setState(initialFrom(shipment));
+    resetState(initialFrom(shipment));
     setEditing(false);
     setError(null);
-  }, [shipment]);
+  }, [shipment, resetState]);
+
+  const cursorAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [anchorSize, setAnchorSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = cursorAnchorRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      setAnchorSize({ w: rect.width, h: rect.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const editable = shipment.status === "draft" || shipment.status === "ready";
   const finalized =
     shipment.status === "picked_up" || shipment.status === "cancelled";
-  const setField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setState((prev) => ({ ...prev, [key]: value }));
 
   const original = useMemo(() => initialFrom(shipment), [shipment]);
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
+  // Head-of-room lock. Non-heads can join + watch, but only the
+  // creator (first joiner) can Save / Mark ready / Reopen / Cancel.
+  // Pickup is a separate physical event — gated on canPickup, not
+  // isCreator, since whoever's at the desk when the truck rolls in
+  // hits the button.
+  const canDrive = canEdit && isCreator;
 
   const autofillFromCustomer = () => {
     const c = shipment.customer;
     if (!c) return;
-    setState((prev) => ({
-      ...prev,
-      recipient_name: prev.recipient_name || c.name,
-      ship_to_address: prev.ship_to_address || c.legal_address || "",
-      ship_to_country: prev.ship_to_country || c.country_code || null,
-    }));
+    // Auto-fill the empty fields only — never stomp a manual override.
+    if (!state.recipient_name) setField("recipient_name", c.name);
+    if (!state.ship_to_address && c.legal_address) {
+      setField("ship_to_address", c.legal_address);
+    }
+    if (!state.ship_to_country && c.country_code) {
+      setField("ship_to_country", c.country_code);
+    }
     toast.success("Filled from the customer record.");
   };
 
@@ -154,12 +215,15 @@ export function ShipmentDetail({
       }
       toast.success("Shipment saved.");
       setEditing(false);
+      // Nudge peers to refetch through the collab channel before we
+      // refresh ourselves.
+      broadcastCommit({ kind: "shipment-updated" });
       router.refresh();
     });
   };
 
   const discard = () => {
-    setState(original);
+    resetState(original);
     setEditing(false);
     setError(null);
   };
@@ -172,6 +236,7 @@ export function ShipmentDetail({
         return;
       }
       toast.success("Ready for pickup.");
+      broadcastCommit({ kind: "shipment-updated" });
       router.refresh();
     });
 
@@ -183,6 +248,7 @@ export function ShipmentDetail({
         return;
       }
       toast.info("Reopened for edits.");
+      broadcastCommit({ kind: "shipment-updated" });
       router.refresh();
     });
 
@@ -200,6 +266,7 @@ export function ShipmentDetail({
         return;
       }
       toast.success("Pickup confirmed.");
+      broadcastCommit({ kind: "shipment-updated" });
       router.refresh();
     });
   };
@@ -214,6 +281,7 @@ export function ShipmentDetail({
         return;
       }
       toast.success("Shipment cancelled.");
+      broadcastCommit({ kind: "shipment-updated" });
       router.refresh();
     });
   };
@@ -226,15 +294,44 @@ export function ShipmentDetail({
     ? `/projects/${encodeURIComponent(shipment.customer_order.uuid)}`
     : null;
 
+  if (joinError) return <JoinErrorCard error={joinError} />;
+
   return (
     // pb-24 keeps the last card clear of the sticky action bar
     <div
+      ref={cursorAnchorRef}
+      onMouseMove={(e) => {
+        const el = cursorAnchorRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        setCursor(
+          (e.clientX - rect.left) / rect.width,
+          (e.clientY - rect.top) / rect.height,
+        );
+      }}
+      onMouseLeave={() => hideCursor()}
       className={cn(
-        "space-y-4",
-        !finalized && canEdit && "pb-24",
+        "relative space-y-4",
+        !finalized && (canEdit || canPickup) && "pb-24",
       )}
     >
+      <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+        {Object.values(cursors).map((c) => (
+          <RemoteCursor
+            key={c.peer.id}
+            cursor={c}
+            anchorWidth={anchorSize.w}
+            anchorHeight={anchorSize.h}
+          />
+        ))}
+      </div>
+
       <StatusBanner shipment={shipment} companyDefaults={companyDefaults} />
+
+      {canEdit && !isCreator && creator && (
+        <CreatorLockBanner creator={creator} />
+      )}
 
       {error && <ErrorBanner detail={error.detail} code={error.code} />}
 
@@ -346,117 +443,171 @@ export function ShipmentDetail({
                 captured on the mobile truck-arrival flow (spec pending).
               </p>
             </div>
-            {editable && canEdit && (
-              <div className="flex flex-wrap items-center gap-2">
-                {editing && shipment.customer && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={autofillFromCustomer}
-                    title="Copy recipient + address + country from the customer record."
-                  >
-                    <Sparkles className="mr-1 size-3.5" />
-                    Fill from customer
-                  </Button>
-                )}
-                {editing ? (
-                  <>
+            <div className="flex flex-wrap items-center gap-2">
+              {canEdit && <CollabAvatars peers={presence} />}
+              {editable && canEdit && (
+                <>
+                  {editing && shipment.customer && canDrive && (
                     <Button
                       type="button"
                       size="sm"
-                      variant="ghost"
-                      onClick={discard}
-                      disabled={saving}
+                      variant="outline"
+                      onClick={autofillFromCustomer}
+                      title="Copy recipient + address + country from the customer record."
                     >
-                      <X className="mr-1 size-3.5" />
-                      Discard
+                      <Sparkles className="mr-1 size-3.5" />
+                      Fill from customer
                     </Button>
+                  )}
+                  {editing ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={discard}
+                        disabled={saving}
+                      >
+                        <X className="mr-1 size-3.5" />
+                        Discard
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!dirty || saving || !canDrive}
+                        onClick={save}
+                        title={
+                          !canDrive
+                            ? `Only ${creator?.name ?? "the head of the room"} can save from this room.`
+                            : undefined
+                        }
+                      >
+                        {saving && <Loader2 className="mr-2 size-4 animate-spin" />}
+                        Save
+                      </Button>
+                    </>
+                  ) : (
                     <Button
                       type="button"
                       size="sm"
-                      disabled={!dirty || saving}
-                      onClick={save}
+                      variant="outline"
+                      onClick={() => setEditing(true)}
+                      disabled={!canDrive}
+                      title={
+                        !canDrive
+                          ? `Only ${creator?.name ?? "the head of the room"} can edit from this room.`
+                          : undefined
+                      }
                     >
-                      {saving && <Loader2 className="mr-2 size-4 animate-spin" />}
-                      Save
+                      <Pencil className="mr-1 size-3.5" />
+                      Edit
                     </Button>
-                  </>
-                ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setEditing(true)}
-                  >
-                    <Pencil className="mr-1 size-3.5" />
-                    Edit
-                  </Button>
-                )}
-              </div>
-            )}
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
           {editing ? (
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Recipient" htmlFor="recipient_name">
-                <Input
-                  id="recipient_name"
-                  value={state.recipient_name}
-                  onChange={(e) => setField("recipient_name", e.target.value)}
-                  placeholder="e.g. Acme Ltd receiving desk"
-                />
+                <div className="relative">
+                  <Input
+                    id="recipient_name"
+                    value={state.recipient_name}
+                    onChange={(e) =>
+                      setField("recipient_name", e.target.value)
+                    }
+                    onFocus={() => focusField("recipient_name")}
+                    onBlur={() => blurField("recipient_name")}
+                    placeholder="e.g. Acme Ltd receiving desk"
+                  />
+                  <FieldEditingIndicator peer={fieldEditors.recipient_name} />
+                </div>
               </Field>
               <Field label="Country" htmlFor="ship_to_country">
-                <CountryPicker
-                  id="ship_to_country"
-                  value={state.ship_to_country}
-                  onChange={(code) => setField("ship_to_country", code)}
-                />
+                <div className="relative">
+                  <CountryPicker
+                    id="ship_to_country"
+                    value={state.ship_to_country}
+                    onChange={(code) => setField("ship_to_country", code)}
+                    onFocus={() => focusField("ship_to_country")}
+                    onBlur={() => blurField("ship_to_country")}
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors.ship_to_country}
+                  />
+                </div>
               </Field>
               <Field
                 label="Delivery address"
                 htmlFor="ship_to_address"
                 className="sm:col-span-2"
               >
-                <Textarea
-                  id="ship_to_address"
-                  value={state.ship_to_address}
-                  onChange={(e) => setField("ship_to_address", e.target.value)}
-                  rows={3}
-                  placeholder="Street, city, postcode"
-                />
+                <div className="relative">
+                  <Textarea
+                    id="ship_to_address"
+                    value={state.ship_to_address}
+                    onChange={(e) =>
+                      setField("ship_to_address", e.target.value)
+                    }
+                    onFocus={() => focusField("ship_to_address")}
+                    onBlur={() => blurField("ship_to_address")}
+                    rows={3}
+                    placeholder="Street, city, postcode"
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors.ship_to_address}
+                  />
+                </div>
               </Field>
               <Field label="Planned ship time" htmlFor="planned_ship_at">
-                <Input
-                  id="planned_ship_at"
-                  type="datetime-local"
-                  value={state.planned_ship_at}
-                  onChange={(e) => setField("planned_ship_at", e.target.value)}
-                />
+                <div className="relative">
+                  <Input
+                    id="planned_ship_at"
+                    type="datetime-local"
+                    value={state.planned_ship_at}
+                    onChange={(e) =>
+                      setField("planned_ship_at", e.target.value)
+                    }
+                    onFocus={() => focusField("planned_ship_at")}
+                    onBlur={() => blurField("planned_ship_at")}
+                  />
+                  <FieldEditingIndicator peer={fieldEditors.planned_ship_at} />
+                </div>
               </Field>
               <Field label="Qty" htmlFor="qty">
-                <Input
-                  id="qty"
-                  type="number"
-                  step="0.0001"
-                  value={state.qty}
-                  onChange={(e) => setField("qty", e.target.value)}
-                />
+                <div className="relative">
+                  <Input
+                    id="qty"
+                    type="number"
+                    step="0.0001"
+                    value={state.qty}
+                    onChange={(e) => setField("qty", e.target.value)}
+                    onFocus={() => focusField("qty")}
+                    onBlur={() => blurField("qty")}
+                  />
+                  <FieldEditingIndicator peer={fieldEditors.qty} />
+                </div>
               </Field>
               <Field
                 label="Notes"
                 htmlFor="notes"
                 className="sm:col-span-2"
               >
-                <Textarea
-                  id="notes"
-                  value={state.notes}
-                  onChange={(e) => setField("notes", e.target.value)}
-                  rows={2}
-                  placeholder="Anything the truck arrival team should know."
-                />
+                <div className="relative">
+                  <Textarea
+                    id="notes"
+                    value={state.notes}
+                    onChange={(e) => setField("notes", e.target.value)}
+                    onFocus={() => focusField("notes")}
+                    onBlur={() => blurField("notes")}
+                    rows={2}
+                    placeholder="Anything the truck arrival team should know."
+                  />
+                  <FieldEditingIndicator peer={fieldEditors.notes} />
+                </div>
               </Field>
             </div>
           ) : (
@@ -641,11 +792,13 @@ export function ShipmentDetail({
               <Button
                 variant="outline"
                 onClick={markReady}
-                disabled={busy || editing || dirty}
+                disabled={busy || editing || dirty || !canDrive}
                 title={
-                  editing || dirty
-                    ? "Save your edits first."
-                    : "Flip to Ready once recipient + delivery address + country are filled."
+                  !canDrive
+                    ? `Only ${creator?.name ?? "the head of the room"} can drive paperwork state.`
+                    : editing || dirty
+                      ? "Save your edits first."
+                      : "Flip to Ready once recipient + delivery address + country are filled."
                 }
               >
                 <CheckCircle2 className="mr-1 size-4" />
@@ -656,7 +809,12 @@ export function ShipmentDetail({
               <Button
                 variant="outline"
                 onClick={markDraft}
-                disabled={busy}
+                disabled={busy || !canDrive}
+                title={
+                  !canDrive
+                    ? `Only ${creator?.name ?? "the head of the room"} can reopen for edits.`
+                    : undefined
+                }
               >
                 Reopen for edits
               </Button>
@@ -671,7 +829,12 @@ export function ShipmentDetail({
               <Button
                 variant="ghost"
                 onClick={cancelShipment}
-                disabled={busy}
+                disabled={busy || !canDrive}
+                title={
+                  !canDrive
+                    ? `Only ${creator?.name ?? "the head of the room"} can cancel.`
+                    : undefined
+                }
                 className="ml-auto text-destructive hover:text-destructive"
               >
                 <XCircle className="mr-1 size-4" />
@@ -682,6 +845,78 @@ export function ShipmentDetail({
         </div>
       )}
     </div>
+  );
+}
+
+// ================================================================
+// Collab helpers — local per HARD RULE pattern (mirrors warehouse-
+// form + final-release-form). Each editable form re-declares its own
+// so a copy stays close to the fields it protects.
+// ================================================================
+
+function CreatorLockBanner({
+  creator,
+}: {
+  creator: { name?: string | null } | null;
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
+      <Lock className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-300" />
+      <div>
+        <p className="font-semibold text-amber-900 dark:text-amber-100">
+          {creator?.name ?? "Another operator"} is driving this shipment
+        </p>
+        <p className="text-xs text-amber-800/90 dark:text-amber-200/90">
+          You can watch + comment, but only the head of the room can
+          save paperwork edits, mark ready, reopen, or cancel. The
+          truck-arrival button stays available to any pickup-perm
+          holder.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function JoinErrorCard({ error }: { error: JoinError }) {
+  const cfg = {
+    form_full: {
+      Icon: AlertTriangle,
+      title: "Room is full",
+      detail: error.limit
+        ? `Up to ${error.limit} people can edit this shipment at once. Wait for someone to leave, then refresh.`
+        : "Wait for someone to leave, then refresh.",
+    },
+    forbidden: {
+      Icon: LockKeyhole,
+      title: "You can't edit here",
+      detail:
+        "Ask an admin for the `shipments.edit` permission to join this shipment's edit room.",
+    },
+    bad_topic: {
+      Icon: AlertTriangle,
+      title: "Unknown shipment",
+      detail: "We couldn't find this shipment. The link may be malformed.",
+    },
+    unknown: {
+      Icon: AlertTriangle,
+      title: "Couldn't open the form",
+      detail: "Something went wrong on our end. Please try again.",
+    },
+  }[error.reason];
+  const { Icon } = cfg;
+  return (
+    <Card>
+      <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+        <div className="flex size-12 items-center justify-center rounded-full bg-background">
+          <Icon className="size-6" />
+        </div>
+        <p className="text-sm font-semibold">{cfg.title}</p>
+        <p className="text-xs text-muted-foreground">{cfg.detail}</p>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/shipments">Back to shipments</Link>
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 

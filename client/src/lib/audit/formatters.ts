@@ -594,6 +594,17 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     cancelled_by_id: "Cancelled by",
     cancel_reason: "Cancel reason",
   },
+  three_pl_dispatch: {
+    status: "Status",
+    qty: "Qty",
+    reference: "Reference",
+    notes: "Notes",
+    photo_url: "Evidence photo",
+    requested_at: "Requested at",
+    requested_by_id: "Requested by",
+    dispatched_at: "Completed at",
+    dispatched_by_id: "Completed by",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

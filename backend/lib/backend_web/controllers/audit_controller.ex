@@ -84,6 +84,9 @@ defmodule BackendWeb.AuditController do
     # Outbound shipment paperwork (BRCGS Issue 9 § 5.4.6). Read is
     # broad-audience — same gate as the /shipments tab.
     "shipment" => "shipments.view",
+    # 3PL dispatch requests (desktop) + completions (mobile). Read
+    # rides on the same perm as the /three-pl tab.
+    "three_pl_dispatch" => "three_pl.view",
     "loyalty_program" => "loyalty.view",
     "loyalty_program_tier" => "loyalty.view",
     "customer_credit" => "loyalty.view",
@@ -622,6 +625,13 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "shipment", entity_id) do
     case Backend.Repo.get(Backend.Shipments.Shipment, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "three_pl_dispatch", entity_id) do
+    case Backend.Repo.get(Backend.ThreePL.Dispatch, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

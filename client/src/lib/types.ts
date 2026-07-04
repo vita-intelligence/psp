@@ -201,7 +201,8 @@ export interface AuditEvent {
     | "manufacturing_order"
     | "manufacturing_order_step"
     | "manufacturing_order_booking"
-    | "shipment";
+    | "shipment"
+    | "three_pl_dispatch";
   entity_id: number;
   entity_uuid: string | null;
   event: "created" | "updated" | "deleted";

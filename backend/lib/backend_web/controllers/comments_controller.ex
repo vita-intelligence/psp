@@ -269,6 +269,24 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  defp resolve_entity_id(actor, "purchase_order_line", uuid) do
+    # PO-line uuid is globally unique. Walk to the parent PO to
+    # enforce the company scope — a stray uuid from another tenant
+    # shouldn't leak a resolution.
+    import Ecto.Query
+
+    case Backend.Repo.one(
+           from l in Backend.Purchasing.PurchaseOrderLine,
+             join: po in assoc(l, :purchase_order),
+             where: l.uuid == ^uuid and po.company_id == ^actor.company_id,
+             select: l.id,
+             limit: 1
+         ) do
+      id when is_integer(id) -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp resolve_entity_id(_actor, _other, _uuid), do: {:error, :not_found}
 
   defp view_perm_for("vendor"), do: "vendors.view"
@@ -287,6 +305,7 @@ defmodule BackendWeb.CommentsController do
   defp view_perm_for("manufacturing_order"), do: "production.mo_view"
   defp view_perm_for("manufacturing_order_step"), do: "production.mo_view"
   defp view_perm_for("shipment"), do: "shipments.view"
+  defp view_perm_for("purchase_order_line"), do: "procurement.po_view"
   defp view_perm_for(_), do: nil
 
   defp check_view_perm(actor, entity_type) do

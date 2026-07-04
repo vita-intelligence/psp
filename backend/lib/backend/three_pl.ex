@@ -33,6 +33,7 @@ defmodule Backend.ThreePL do
   alias Backend.CustomerOrders.{CustomerOrder, CustomerOrderLine}
   alias Backend.Production.ManufacturingOrder
   alias Backend.RBAC
+  alias Backend.Audit
   alias Backend.Repo
   alias Backend.Stock
   alias Backend.Stock.{Lifecycle, Lot, LotEvent, Placement}
@@ -86,6 +87,7 @@ defmodule Backend.ThreePL do
   def route_released_lot(%User{} = actor, %Lot{} = lot, choice, opts)
       when choice in @routing_choices do
     override = Keyword.get(opts, :override_customer_id)
+    lot_before = lot_routing_snapshot(lot)
 
     result =
       with :ok <- ensure_permission_route(actor),
@@ -118,6 +120,18 @@ defmodule Backend.ThreePL do
     # CTA for the operator until they manually reload, even though
     # the lot has already advanced.
     with {:ok, %{lot: routed}} <- result do
+      # Field-level audit on the LOT (ownership_kind + bailee snapshot).
+      # The LotEvent lifecycle log already captured the semantic
+      # routed_to_3pl / routed_to_shipment event; this one shows the
+      # column-level diff on the stock_lot audit rail.
+      Audit.record_updated(
+        actor,
+        "stock_lot",
+        routed,
+        lot_before,
+        lot_routing_snapshot(routed)
+      )
+
       notify_wizard(routed)
       result
     else
@@ -189,7 +203,57 @@ defmodule Backend.ThreePL do
         requested_at: DateTime.utc_now() |> DateTime.truncate(:second)
       })
       |> Repo.insert()
+      |> tap_audit_created_dispatch(actor)
     end
+  end
+
+  defp tap_audit_created_dispatch({:ok, %Dispatch{} = row}, actor) do
+    Audit.record_created(actor, "three_pl_dispatch", row, dispatch_snapshot(row))
+    {:ok, row}
+  end
+
+  defp tap_audit_created_dispatch(other, _actor), do: other
+
+  defp tap_audit_updated_dispatch({:ok, %Dispatch{} = row}, actor, before_state) do
+    Audit.record_updated(
+      actor,
+      "three_pl_dispatch",
+      row,
+      before_state,
+      dispatch_snapshot(row)
+    )
+
+    {:ok, row}
+  end
+
+  defp tap_audit_updated_dispatch(other, _actor, _before), do: other
+
+  # Snapshot the fields the audit rail cares about. Placement pointers
+  # + cell relationships are captured via the Stock.Movement audit
+  # trail, so the dispatch snapshot itself stays tight.
+  defp dispatch_snapshot(%Dispatch{} = row) do
+    %{
+      status: row.status,
+      qty: row.qty,
+      reference: row.reference,
+      notes: row.notes,
+      photo_url: row.photo_url,
+      requested_at: row.requested_at,
+      requested_by_id: row.requested_by_id,
+      dispatched_at: row.dispatched_at,
+      dispatched_by_id: row.dispatched_by_id
+    }
+  end
+
+  # Snapshot the fields the routing action mutates on the lot itself.
+  # Placement + Stock.Movement mutations already emit their own audit
+  # rows via the Stock context.
+  defp lot_routing_snapshot(%Lot{} = lot) do
+    %{
+      ownership_kind: lot.ownership_kind,
+      bailee_customer_id: lot.bailee_customer_id,
+      bailee_routed_at: lot.bailee_routed_at
+    }
   end
 
   @doc """
@@ -222,6 +286,8 @@ defmodule Backend.ThreePL do
          {:ok, from_placement} <- find_bailee_placement(lot),
          :ok <- ensure_qty_available(from_placement, dispatch.qty),
          {:ok, to_cell} <- fetch_dispatch_cell(actor.company_id, attrs["to_cell_uuid"], from_placement) do
+      dispatch_before = dispatch_snapshot(dispatch)
+
       Repo.transaction(fn ->
         move_attrs = %{
           "to_cell_uuid" => to_cell.uuid,
@@ -243,6 +309,7 @@ defmodule Backend.ThreePL do
               dispatched_at: now
             })
             |> Repo.update()
+            |> tap_audit_updated_dispatch(actor, dispatch_before)
             |> case do
               {:ok, updated} -> %{dispatch: updated, lot: Repo.reload!(lot)}
               {:error, cs} -> Repo.rollback(cs)
@@ -325,6 +392,8 @@ defmodule Backend.ThreePL do
   def cancel_dispatch(%User{} = actor, dispatch_uuid) when is_binary(dispatch_uuid) do
     with :ok <- ensure_permission_dispatch_request(actor),
          {:ok, dispatch, _lot} <- fetch_pending_dispatch(actor.company_id, dispatch_uuid) do
+      before_state = dispatch_snapshot(dispatch)
+
       dispatch
       |> Dispatch.completion_changeset(%{
         status: "cancelled",
@@ -332,6 +401,7 @@ defmodule Backend.ThreePL do
         dispatched_at: DateTime.utc_now() |> DateTime.truncate(:second)
       })
       |> Repo.update()
+      |> tap_audit_updated_dispatch(actor, before_state)
     end
   end
 
