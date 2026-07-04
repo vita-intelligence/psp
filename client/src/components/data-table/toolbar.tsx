@@ -28,7 +28,9 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { ColumnPickerDrawer } from "./column-picker";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   FilterValue,
@@ -52,6 +54,12 @@ interface ToolbarProps<T> {
   columns: DataTableColumn<T>[];
   hiddenColumns: Set<string>;
   onToggleColumn: (id: string, hidden: boolean) => void;
+  /** Per-column structured filters — displayed as chips beside the
+   *  toolbar so a user can drop individual filters without opening the
+   *  header dropdown again. */
+  columnFilters: Record<string, ColumnFilterValue>;
+  onClearColumnFilter: (field: string) => void;
+  onClearAllColumnFilters: () => void;
   /** Active sort spec. Sort menu shows it + lets the user change it
    *  without relying on clickable column headers (which only exist on
    *  the desktop table layout). */
@@ -76,6 +84,9 @@ export function Toolbar<T>({
   columns,
   hiddenColumns,
   onToggleColumn,
+  columnFilters,
+  onClearColumnFilter,
+  onClearAllColumnFilters,
   sort,
   onSort,
   actions,
@@ -160,16 +171,85 @@ export function Toolbar<T>({
       <SortMenu columns={columns} sort={sort} onSort={onSort} />
 
       {hideableColumns.length > 0 && (
-        <ColumnsMenu
-          columns={hideableColumns}
-          hidden={hiddenColumns}
+        <ColumnPickerDrawer
+          columns={columns}
+          hiddenColumns={hiddenColumns}
           onToggle={onToggleColumn}
         />
       )}
 
       <div className="ml-auto flex items-center gap-2">{actions}</div>
+
+      {/* Active per-column filter chips — the header dropdown owns the
+          editor, but the chips let a viewer see + drop filters without
+          hunting through every column header. */}
+      {Object.keys(columnFilters).length > 0 && (
+        <div className="flex basis-full flex-wrap items-center gap-1.5 pt-1">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Filters
+          </span>
+          {Object.entries(columnFilters).map(([field, fv]) => {
+            const col = columns.find((c) => c.filterField === field);
+            const label = col?.header ?? field;
+            return (
+              <span
+                key={field}
+                className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[11px] text-brand"
+              >
+                <span className="font-medium">{label}</span>
+                <span className="text-brand/80">
+                  {describeColumnFilter(fv)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onClearColumnFilter(field)}
+                  aria-label={`Clear ${label} filter`}
+                  className="ml-0.5 rounded-full hover:bg-brand/20"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            );
+          })}
+          <button
+            type="button"
+            onClick={onClearAllColumnFilters}
+            className="text-[10px] text-muted-foreground hover:text-foreground"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
     </div>
   );
+}
+
+function describeColumnFilter(fv: ColumnFilterValue): string {
+  switch (fv.op) {
+    case "contains":
+      return `contains "${fv.value}"`;
+    case "eq":
+      return `= ${String(fv.value)}`;
+    case "range":
+      if ("min" in fv || "max" in fv) {
+        const min = "min" in fv ? fv.min : undefined;
+        const max = "max" in fv ? fv.max : undefined;
+        if (min !== undefined && max !== undefined) return `${min}–${max}`;
+        if (min !== undefined) return `≥ ${min}`;
+        if (max !== undefined) return `≤ ${max}`;
+        return "range";
+      }
+      if ("from" in fv || "to" in fv) {
+        const from = "from" in fv ? fv.from : undefined;
+        const to = "to" in fv ? fv.to : undefined;
+        if (from && to) return `${from} → ${to}`;
+        if (from) return `from ${from}`;
+        if (to) return `until ${to}`;
+      }
+      return "range";
+    case "in":
+      return fv.value.length === 1 ? `= ${fv.value[0]}` : `∈ ${fv.value.length}`;
+  }
 }
 
 function SortMenu<T>({

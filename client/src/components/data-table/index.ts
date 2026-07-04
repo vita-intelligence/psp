@@ -1,5 +1,7 @@
 export { DataTable } from "./data-table";
 export type {
+  ColumnFilterKind,
+  ColumnFilterValue,
   DataTableColumn,
   DataTableProps,
   FilterDef,
@@ -8,4 +10,5 @@ export type {
   PersistedTableState,
   SortDirection,
   SortSpec,
+  StructuredFilters,
 } from "./types";

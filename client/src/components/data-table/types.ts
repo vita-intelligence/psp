@@ -3,6 +3,16 @@
 // Every list page in PSP feeds the same shape: a server-side endpoint
 // returning `{items, next_cursor}`, a list of column definitions, and
 // callbacks for delete / edit / etc.
+//
+// The v2 refactor added MRPEasy-style column controls:
+//   - Column-header dropdown (Sort ↑ / Sort ↓ / Filter… / Hide)
+//   - Per-column filter kinds (text / number-range / date-range / select /
+//     boolean) applied via the header dropdown
+//   - "Add column" side drawer, grouped by section (Identity, Dates,
+//     Amounts, Compliance, Meta, …) so a table can expose every DB
+//     column as an opt-in
+//   - Optional global toolbar filters (kept from v1 — warehouse /
+//     production site / status / etc.)
 
 import type { ReactNode } from "react";
 
@@ -13,8 +23,51 @@ export interface SortSpec {
   direction: SortDirection;
 }
 
+/** Per-column filter kinds. The header dropdown renders the matching
+ *  input; the value ships to the backend as-is under the column's
+ *  filterField key. */
+export type ColumnFilterKind =
+  | "text"
+  | "number-range"
+  | "date-range"
+  | "select"
+  | "multi-select"
+  | "boolean";
+
+/** In-flight value for one column filter. Shape depends on the kind:
+ *
+ *  - text:         { op: "contains" | "eq", value: string }
+ *  - number-range: { op: "range", min?: number, max?: number }
+ *  - date-range:   { op: "range", from?: string, to?: string }  (ISO date)
+ *  - select:       { op: "eq", value: string | number | boolean }
+ *  - multi-select: { op: "in", value: Array<string | number> }
+ *  - boolean:      { op: "eq", value: boolean }
+ *
+ *  The controller allow-lists the fields it accepts and routes each op
+ *  to the right Ecto clause via Backend.Query. Keep the JSON shape
+ *  simple so the URL-encoded form is legible in dev tools.
+ */
+export type ColumnFilterValue =
+  | { op: "contains" | "eq"; value: string }
+  | { op: "range"; min?: number; max?: number }
+  | { op: "range"; from?: string; to?: string }
+  | { op: "eq"; value: string | number | boolean }
+  | { op: "in"; value: Array<string | number> };
+
+/** Old-style toolbar filter — one dropdown per key, single value.
+ *  Preserved for backward compatibility; new code should prefer the
+ *  per-column `filterKind` route. */
 export interface FilterValue {
   [field: string]: string | boolean | number;
+}
+
+/** New-style structured filter state — the union of per-column filters
+ *  and legacy toolbar filters, keyed by backend field name. */
+export interface StructuredFilters {
+  /** Per-column filters keyed by backend field name. */
+  columns?: Record<string, ColumnFilterValue>;
+  /** Legacy toolbar filters (single value per field). */
+  toolbar?: FilterValue;
 }
 
 export interface PageResult<T> {
@@ -44,6 +97,15 @@ export interface DataTableColumn<T> {
    *    - date:    `{asc: "Oldest first", desc: "Newest first"}`
    *    - boolean: `{asc: "Inactive first", desc: "Active first"}` */
   sortLabels?: { asc: string; desc: string };
+  /** Backend field name for filter. Required when `filterKind` is set. */
+  filterField?: string;
+  /** What input the header dropdown renders when the user hits
+   *  "Filter…". Omit to make the column unfilterable. */
+  filterKind?: ColumnFilterKind;
+  /** Choices for `select` / `multi-select` filters. Ignored otherwise. */
+  filterOptions?: Array<{ label: string; value: string | number | boolean }>;
+  /** Optional placeholder for `text` / `range` inputs. */
+  filterPlaceholder?: string;
   /** Whether the column can be hidden from the column-visibility menu.
    *  Defaults to true. */
   hideable?: boolean;
@@ -53,6 +115,18 @@ export interface DataTableColumn<T> {
    *  the very first visit. Use for audit / debugging columns that
    *  most users don't need by default. */
   defaultHidden?: boolean;
+  /** Grouping label in the column-picker drawer. Columns without a
+   *  group land in "Other". Recommended groupings:
+   *    - "Identity"    — code, name, kind
+   *    - "Status"      — lifecycle flags
+   *    - "Dates"       — timestamps
+   *    - "Amounts"     — money, quantities, percentages
+   *    - "Compliance"  — audit / traceability fields
+   *    - "Location"    — warehouse, production site, cell
+   *    - "Meta"        — created_by, updated_at, etc. */
+  group?: string;
+  /** Short description shown in the column-picker drawer. */
+  description?: string;
   /** Optional alignment for the cell content. */
   align?: "left" | "right" | "center";
   /** Tailwind width hint applied to the header (`w-32`, `min-w-[12rem]`). */
@@ -81,12 +155,16 @@ export interface DataTableProps<T> {
   columns: DataTableColumn<T>[];
   /** Stable row key — usually `(row) => String(row.id)`. */
   rowKey: (row: T) => string;
-  /** Server fetcher — returns one page. The table drives the params. */
+  /** Server fetcher — returns one page. The table drives the params.
+   *  `columnFilters` carries the new per-column structured filter map;
+   *  `filters` keeps the legacy toolbar filter shape for backward
+   *  compatibility. Endpoints that opted into v2 read both. */
   fetchPage: (params: {
     cursor: string | null;
     limit: number;
     sort: SortSpec | null;
     filters: FilterValue;
+    columnFilters: Record<string, ColumnFilterValue>;
     search: string;
   }) => Promise<PageResult<T>>;
   /** Pre-fetched first page (from a server component). Optional —
@@ -121,4 +199,7 @@ export interface PersistedTableState {
   columnOrder?: string[];
   /** Column ids that are hidden. */
   hiddenColumns?: string[];
+  /** Per-column filters — persist so a user's saved view survives
+   *  reloads. Cleared via the "Reset filters" chip. */
+  columnFilters?: Record<string, ColumnFilterValue>;
 }

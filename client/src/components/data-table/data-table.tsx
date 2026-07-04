@@ -31,6 +31,7 @@ import { Toolbar } from "./toolbar";
 import { DraggableHeader } from "./draggable-header";
 import { useTableState } from "./use-table-state";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   DataTableProps,
   FilterValue,
@@ -82,8 +83,11 @@ export function DataTable<T>({
   const {
     columnOrder: persistedOrder,
     hiddenColumns,
+    columnFilters,
     setColumnOrder,
     toggleColumn,
+    setColumnFilter,
+    clearAllColumnFilters,
   } = useTableState(tableId, defaultHiddenIds);
 
   const [sort, setSort] = useState<SortSpec | null>(defaultSort ?? null);
@@ -121,6 +125,7 @@ export function DataTable<T>({
     sort?.field ?? "",
     sort?.direction ?? "",
     JSON.stringify(appliedFilters),
+    JSON.stringify(columnFilters),
     pageSize,
   ];
 
@@ -133,6 +138,7 @@ export function DataTable<T>({
   const isPristine =
     appliedSearch === "" &&
     Object.keys(appliedFilters).length === 0 &&
+    Object.keys(columnFilters).length === 0 &&
     (!sort ||
       (sort.field === (defaultSort?.field ?? null) &&
         sort.direction === (defaultSort?.direction ?? "asc")));
@@ -146,6 +152,7 @@ export function DataTable<T>({
         limit: pageSize,
         sort,
         filters: appliedFilters,
+        columnFilters,
         search: appliedSearch,
       }),
     getNextPageParam: (last) => last.next_cursor,
@@ -189,7 +196,9 @@ export function DataTable<T>({
   const hasNoData =
     !isInitialLoading && rows.length === 0 && !query.isError;
   const isFiltered =
-    appliedSearch.length > 0 || Object.keys(appliedFilters).length > 0;
+    appliedSearch.length > 0 ||
+    Object.keys(appliedFilters).length > 0 ||
+    Object.keys(columnFilters).length > 0;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -226,6 +235,18 @@ export function DataTable<T>({
     });
   }
 
+  function onHeaderSortPick(
+    field: string | undefined,
+    direction: "asc" | "desc" | null,
+  ) {
+    if (!field) return;
+    if (direction === null) {
+      setSort(null);
+      return;
+    }
+    setSort({ field, direction });
+  }
+
   return (
     <div className="space-y-3">
       <Toolbar
@@ -238,6 +259,9 @@ export function DataTable<T>({
         columns={columns}
         hiddenColumns={hiddenColumns}
         onToggleColumn={toggleColumn}
+        columnFilters={columnFilters}
+        onClearColumnFilter={(field) => setColumnFilter(field, null)}
+        onClearAllColumnFilters={clearAllColumnFilters}
         sort={sort}
         onSort={setSort}
         actions={toolbarActions}
@@ -305,7 +329,19 @@ export function DataTable<T>({
                       key={col.id}
                       column={col}
                       sort={sort}
-                      onSort={() => onSort(col.sortField)}
+                      onSort={(direction) =>
+                        onHeaderSortPick(col.sortField, direction)
+                      }
+                      filterValue={
+                        col.filterField
+                          ? (columnFilters[col.filterField] ?? null)
+                          : null
+                      }
+                      onFilterChange={(value) => {
+                        if (!col.filterField) return;
+                        setColumnFilter(col.filterField, value);
+                      }}
+                      onHide={() => toggleColumn(col.id, true)}
                     />
                   ))}
                 </SortableContext>

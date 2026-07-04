@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { PersistedTableState } from "./types";
+import type { ColumnFilterValue, PersistedTableState } from "./types";
 
 const STORAGE_PREFIX = "dataTable";
 
@@ -88,11 +88,36 @@ export function useTableState(tableId: string, defaultHiddenIds: string[] = []) 
     });
   }
 
+  function setColumnFilter(field: string, value: ColumnFilterValue | null) {
+    setState((s) => {
+      const current = { ...(s.columnFilters ?? {}) };
+      if (value === null) {
+        delete current[field];
+      } else {
+        current[field] = value;
+      }
+      const next = { ...s, columnFilters: current };
+      writeState(tableId, next);
+      return next;
+    });
+  }
+
+  function clearAllColumnFilters() {
+    setState((s) => {
+      const next = { ...s, columnFilters: {} };
+      writeState(tableId, next);
+      return next;
+    });
+  }
+
   return {
     columnOrder: state.columnOrder ?? null,
     hiddenColumns: new Set(state.hiddenColumns ?? []),
+    columnFilters: state.columnFilters ?? {},
     setColumnOrder,
     setHiddenColumns,
     toggleColumn,
+    setColumnFilter,
+    clearAllColumnFilters,
   };
 }
