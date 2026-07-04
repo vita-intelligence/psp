@@ -11,9 +11,13 @@
 //
 // Every branch reserves its own aspect ratio when width/height are
 // known so the bubble doesn't jump when the media resolves.
+//
+// Note: no per-file remove affordance. Removing an attachment is done
+// by deleting the whole comment via the bubble's 3-dot menu, which
+// cascades to files server-side (comment_files FK on_delete: :delete_all).
 
 import { useState } from "react";
-import { Download, FileText, Trash2 } from "lucide-react";
+import { Download, FileText } from "lucide-react";
 import { Lightbox } from "./lightbox";
 import { cn } from "@/lib/utils";
 import type { CommentFile } from "@/lib/comments/types";
@@ -21,13 +25,9 @@ import type { CommentFile } from "@/lib/comments/types";
 export function FileAttachment({
   file,
   isSelf,
-  canDelete,
-  onDelete,
 }: {
   file: CommentFile;
   isSelf: boolean;
-  canDelete: boolean;
-  onDelete?: () => void;
 }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
@@ -41,29 +41,26 @@ export function FileAttachment({
         : undefined;
     return (
       <>
-        <div className="relative inline-block max-w-full">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setLightboxOpen(true);
-            }}
-            className={cn(
-              "block max-w-full overflow-hidden rounded-lg border transition-shadow hover:shadow-md",
-              isSelf ? "border-brand-foreground/20" : "border-border",
-            )}
-            style={{ aspectRatio: aspect }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={file.url}
-              alt={file.filename}
-              loading="lazy"
-              className="block h-full max-h-72 w-auto object-cover"
-            />
-          </button>
-          {canDelete && onDelete && <DeleteFileButton onDelete={onDelete} />}
-        </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setLightboxOpen(true);
+          }}
+          className={cn(
+            "block max-w-full overflow-hidden rounded-lg border transition-shadow hover:shadow-md",
+            isSelf ? "border-brand-foreground/20" : "border-border",
+          )}
+          style={{ aspectRatio: aspect }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={file.url}
+            alt={file.filename}
+            loading="lazy"
+            className="block h-full max-h-72 w-auto object-cover"
+          />
+        </button>
         <Lightbox
           open={lightboxOpen}
           onOpenChange={setLightboxOpen}
@@ -78,7 +75,7 @@ export function FileAttachment({
     return (
       <div
         className={cn(
-          "relative overflow-hidden rounded-lg border",
+          "overflow-hidden rounded-lg border",
           isSelf ? "border-brand-foreground/20" : "border-border",
         )}
       >
@@ -88,7 +85,6 @@ export function FileAttachment({
           preload="metadata"
           className="block max-h-72 w-full bg-black"
         />
-        {canDelete && onDelete && <DeleteFileButton onDelete={onDelete} />}
       </div>
     );
   }
@@ -97,7 +93,7 @@ export function FileAttachment({
     return (
       <div
         className={cn(
-          "relative flex items-center gap-2 rounded-lg border px-2 py-2",
+          "flex items-center gap-2 rounded-lg border px-2 py-2",
           isSelf
             ? "border-brand-foreground/20 bg-brand-foreground/[0.06]"
             : "border-border bg-background",
@@ -109,7 +105,6 @@ export function FileAttachment({
           preload="metadata"
           className="h-8 max-w-full flex-1"
         />
-        {canDelete && onDelete && <DeleteFileButton onDelete={onDelete} />}
       </div>
     );
   }
@@ -118,7 +113,7 @@ export function FileAttachment({
   return (
     <div
       className={cn(
-        "relative flex items-center gap-2.5 rounded-lg border p-2 pr-3",
+        "flex items-center gap-2.5 rounded-lg border p-2 pr-3",
         isSelf
           ? "border-brand-foreground/20 bg-brand-foreground/[0.06]"
           : "border-border bg-background",
@@ -170,36 +165,7 @@ export function FileAttachment({
       >
         <Download className="size-4" aria-hidden />
       </a>
-      {canDelete && onDelete && <DeleteFileButton onDelete={onDelete} inline />}
     </div>
-  );
-}
-
-function DeleteFileButton({
-  onDelete,
-  inline = false,
-}: {
-  onDelete: () => void;
-  inline?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onDelete();
-      }}
-      aria-label="Remove attachment"
-      className={cn(
-        "inline-flex size-7 items-center justify-center rounded-full text-destructive/80 transition-colors hover:bg-destructive/10 hover:text-destructive",
-        inline
-          ? "shrink-0"
-          : "absolute right-1.5 top-1.5 bg-background/80 backdrop-blur",
-      )}
-    >
-      <Trash2 className="size-3.5" aria-hidden />
-    </button>
   );
 }
 

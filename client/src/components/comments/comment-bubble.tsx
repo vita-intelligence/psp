@@ -45,7 +45,6 @@ export interface CommentBubbleProps {
   onDelete: () => void;
   onReact: (emoji: string) => void;
   onJumpToParent: (parentUuid: string) => void;
-  onDeleteFile: (fileUuid: string) => void;
 }
 
 export function CommentBubble({
@@ -60,10 +59,9 @@ export function CommentBubble({
   onDelete,
   onReact,
   onJumpToParent,
-  onDeleteFile,
 }: CommentBubbleProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const isDeleted = comment.body === "[deleted]" && comment.files.length === 0;
+  const isDeleted = comment.body === "[deleted]";
   const editedAt = comment.edited_at ? new Date(comment.edited_at) : null;
   const createdAt = new Date(comment.created_at);
   const activeEmoji =
@@ -132,13 +130,7 @@ export function CommentBubble({
         {comment.files.length > 0 && (
           <div className="mb-1 space-y-1.5">
             {comment.files.map((f) => (
-              <FileAttachment
-                key={f.uuid}
-                file={f}
-                isSelf={isSelf}
-                canDelete={canModify}
-                onDelete={() => onDeleteFile(f.uuid)}
-              />
+              <FileAttachment key={f.uuid} file={f} isSelf={isSelf} />
             ))}
           </div>
         )}

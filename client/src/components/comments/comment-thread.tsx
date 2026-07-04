@@ -23,7 +23,6 @@ import {
   attachFileAction,
   createCommentAction,
   deleteCommentAction,
-  deleteFileAction,
   listCommentsAction,
   removeReactionAction,
   updateCommentAction,
@@ -277,31 +276,6 @@ export function CommentThread({
     [comments, entityType, entityUuid],
   );
 
-  const submitDeleteFile = useCallback(
-    (commentUuid: string, fileUuid: string) => {
-      setComments((prev) =>
-        prev.map((c) =>
-          c.uuid === commentUuid
-            ? { ...c, files: c.files.filter((f) => f.uuid !== fileUuid) }
-            : c,
-        ),
-      );
-      startTransition(async () => {
-        const res = await deleteFileAction(
-          entityType,
-          entityUuid,
-          commentUuid,
-          fileUuid,
-        );
-        if (!res.ok) {
-          setError({ detail: res.detail, code: res.code, debug: res.debug });
-          void refresh();
-        }
-      });
-    },
-    [entityType, entityUuid, refresh],
-  );
-
   const submitFiles = useCallback(
     async (files: StagedFile[], caption: string) => {
       if (!effectiveCanComment || files.length === 0) return;
@@ -417,7 +391,6 @@ export function CommentThread({
             onEdit={(c) => setEditing({ uuid: c.uuid, body: c.body })}
             onDelete={submitDelete}
             onReact={submitReact}
-            onDeleteFile={submitDeleteFile}
           />
         )}
 

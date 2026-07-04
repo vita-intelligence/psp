@@ -35,18 +35,20 @@ export function Lightbox({
         <VisuallyHidden.Root>
           <DialogTitle>{alt}</DialogTitle>
         </VisuallyHidden.Root>
-        <DialogClose
-          aria-label="Close preview"
-          className="absolute right-3 top-3 z-10 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
-        >
-          <X className="size-5" aria-hidden />
-        </DialogClose>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={src}
-          alt={alt}
-          className="mx-auto max-h-[85vh] w-auto rounded-md object-contain shadow-2xl"
-        />
+        <div className="relative mx-auto inline-block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt={alt}
+            className="block max-h-[85vh] w-auto rounded-md object-contain shadow-2xl"
+          />
+          <DialogClose
+            aria-label="Close preview"
+            className="absolute right-2 top-2 z-10 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          >
+            <X className="size-5" aria-hidden />
+          </DialogClose>
+        </div>
       </DialogContent>
     </Dialog>
   );

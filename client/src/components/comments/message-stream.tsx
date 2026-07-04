@@ -25,7 +25,6 @@ interface Props {
   onEdit: (comment: Comment) => void;
   onDelete: (commentUuid: string) => void;
   onReact: (commentUuid: string, emoji: string) => void;
-  onDeleteFile: (commentUuid: string, fileUuid: string) => void;
 }
 
 interface TreeNode {
@@ -44,9 +43,15 @@ export function MessageStream({
   onEdit,
   onDelete,
   onReact,
-  onDeleteFile,
 }: Props) {
-  const tree = useMemo(() => buildTree(comments), [comments]);
+  // Soft-deleted comments vanish from the timeline entirely — no
+  // tombstone. Their children get promoted to top level by the tree
+  // builder's orphan-fallback so a thread doesn't lose its replies.
+  const visible = useMemo(
+    () => comments.filter((c) => c.body !== "[deleted]"),
+    [comments],
+  );
+  const tree = useMemo(() => buildTree(visible), [visible]);
 
   const jumpToParent = (parentUuid: string) => {
     if (typeof document === "undefined") return;
@@ -91,7 +96,6 @@ export function MessageStream({
               onEdit={onEdit}
               onDelete={onDelete}
               onReact={onReact}
-              onDeleteFile={onDeleteFile}
               onJumpToParent={jumpToParent}
             />
           </div>
@@ -111,7 +115,6 @@ function ThreadNode({
   onEdit,
   onDelete,
   onReact,
-  onDeleteFile,
   onJumpToParent,
 }: {
   node: TreeNode;
@@ -123,7 +126,6 @@ function ThreadNode({
   onEdit: (comment: Comment) => void;
   onDelete: (commentUuid: string) => void;
   onReact: (commentUuid: string, emoji: string) => void;
-  onDeleteFile: (commentUuid: string, fileUuid: string) => void;
   onJumpToParent: (parentUuid: string) => void;
 }) {
   // Build a flat list of (comment) for this node + its direct
@@ -161,7 +163,6 @@ function ThreadNode({
               onEdit={() => onEdit(c)}
               onDelete={() => onDelete(c.uuid)}
               onReact={(emoji) => onReact(c.uuid, emoji)}
-              onDeleteFile={(fileUuid) => onDeleteFile(c.uuid, fileUuid)}
               onJumpToParent={onJumpToParent}
             />
           );
@@ -185,7 +186,6 @@ function ThreadNode({
             onEdit={onEdit}
             onDelete={onDelete}
             onReact={onReact}
-            onDeleteFile={onDeleteFile}
             onJumpToParent={onJumpToParent}
           />
         ))}
