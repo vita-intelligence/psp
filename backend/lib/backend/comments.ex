@@ -398,6 +398,30 @@ defmodule Backend.Comments do
   def get_file(_, _), do: nil
 
   @doc """
+  Look up a file by uuid within the caller's company, joining the
+  parent comment so the serve endpoint can gate on the comment's
+  entity_type view perm without a second query.
+  """
+  def get_file_for_company(company_id, file_uuid)
+      when is_integer(company_id) and is_binary(file_uuid) do
+    case Ecto.UUID.cast(file_uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(f in CommentFile,
+            join: c in assoc(f, :comment),
+            where: f.company_id == ^company_id and f.uuid == ^cast,
+            preload: [comment: c]
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  def get_file_for_company(_, _), do: nil
+
+  @doc """
   Hard-delete a file row + drop the underlying blob. Comment author OR
   admin only. The audit event is written before the delete so we can
   recover the metadata if someone asks "who deleted that image".

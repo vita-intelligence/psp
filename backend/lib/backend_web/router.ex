@@ -113,6 +113,11 @@ defmodule BackendWeb.Router do
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label
+    # Entity-agnostic comment-file streamer. Public URLs stamped into
+    # CommentFile payloads point here; the controller re-derives the
+    # RBAC gate from the parent comment's entity_type at fetch time.
+    get "/comment-files/:file_uuid/serve", CommentsController, :serve_file_bare
+
     get "/team", UserController, :team
     get "/users", UserController, :index
     get "/users/:id", UserController, :show

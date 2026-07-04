@@ -41,27 +41,29 @@ export function FileAttachment({
         : undefined;
     return (
       <>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setLightboxOpen(true);
-          }}
-          className={cn(
-            "relative block max-w-full overflow-hidden rounded-lg border transition-shadow hover:shadow-md",
-            isSelf ? "border-brand-foreground/20" : "border-border",
-          )}
-          style={{ aspectRatio: aspect }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={file.url}
-            alt={file.filename}
-            loading="lazy"
-            className="block h-full max-h-72 w-auto object-cover"
-          />
+        <div className="relative inline-block max-w-full">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setLightboxOpen(true);
+            }}
+            className={cn(
+              "block max-w-full overflow-hidden rounded-lg border transition-shadow hover:shadow-md",
+              isSelf ? "border-brand-foreground/20" : "border-border",
+            )}
+            style={{ aspectRatio: aspect }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={file.url}
+              alt={file.filename}
+              loading="lazy"
+              className="block h-full max-h-72 w-auto object-cover"
+            />
+          </button>
           {canDelete && onDelete && <DeleteFileButton onDelete={onDelete} />}
-        </button>
+        </div>
         <Lightbox
           open={lightboxOpen}
           onOpenChange={setLightboxOpen}

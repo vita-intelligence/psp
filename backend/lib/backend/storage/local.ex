@@ -50,6 +50,20 @@ defmodule Backend.Storage.Local do
         uuid = filename |> Path.rootname()
         "/api/stock/movement-photos/#{uuid}/file"
 
+      ["comment_files", _comment_uuid, filename] ->
+        # `comment_files/<comment_uuid>/<kind>_<file_uuid>.<ext>`. The
+        # trailing UUID is what the bare serve endpoint looks up; kind
+        # + comment_uuid are storage-layout hints and don't need to
+        # appear in the URL since the controller re-derives entity
+        # scope from the file's parent comment at fetch time.
+        file_uuid =
+          filename
+          |> Path.rootname()
+          |> String.split("_", parts: 2)
+          |> List.last()
+
+        "/api/comment-files/#{file_uuid}/serve"
+
       _ ->
         nil
     end

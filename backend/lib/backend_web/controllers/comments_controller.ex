@@ -330,6 +330,34 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  @doc """
+  Entity-agnostic serve — used by URLs stamped into `CommentFile.url`
+  by `Backend.Storage.public_url/1`. The stored blob path only carries
+  the comment_uuid (not the parent entity's uuid), so we can't
+  reconstruct the scoped URL; instead the endpoint looks up the file,
+  loads the parent comment, and re-checks the comment's entity view
+  perm on the fly. Tenanted by company on the file itself.
+  """
+  def serve_file_bare(conn, %{"file_uuid" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Backend.Comments.CommentFile{} = file <-
+           Comments.get_file_for_company(actor.company_id, file_uuid),
+         :ok <- check_view_perm(actor, file.comment.entity_type),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_content_type(file.mime || "application/octet-stream")
+      |> put_resp_header(
+        "content-disposition",
+        ~s|inline; filename="#{file.filename}"|
+      )
+      |> send_file(200, abs_path)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
   def serve_file(conn, %{
         "entity_uuid" => entity_uuid,
         "comment_uuid" => comment_uuid,
