@@ -229,11 +229,13 @@ defmodule BackendWeb.CommentsController do
          :ok <- validate_attachment_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
          :ok <- validate_attachment_size(bytes) do
-      key = build_storage_key(comment, kind, upload)
+      file_uuid = Ecto.UUID.generate()
+      key = build_storage_key(comment, kind, upload, file_uuid)
 
       case Storage.put(key, bytes, content_type: upload.content_type) do
         {:ok, blob_path} ->
           attrs = %{
+            "uuid" => file_uuid,
             "kind" => kind,
             "filename" => upload.filename || "upload",
             "mime" => upload.content_type || "application/octet-stream",
@@ -777,13 +779,21 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
-  defp build_storage_key(%Comment{} = comment, kind, %Plug.Upload{filename: filename}) do
+  defp build_storage_key(
+         %Comment{} = comment,
+         kind,
+         %Plug.Upload{filename: filename},
+         file_uuid
+       ) do
+    # File uuid IS the storage-key token — `Backend.Storage.Local.public_url/2`
+    # parses this exact shape to build the serve URL, so the two must
+    # stay in lockstep. Do not rearrange without updating the adapter.
     "comment_files/" <>
       comment.uuid <>
       "/" <>
       kind <>
       "_" <>
-      Ecto.UUID.generate() <>
+      file_uuid <>
       extension_for(filename)
   end
 

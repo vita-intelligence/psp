@@ -45,6 +45,7 @@ defmodule Backend.Comments.CommentFile do
   def changeset(file, attrs) do
     file
     |> cast(attrs, [
+      :uuid,
       :company_id,
       :comment_id,
       :kind,
