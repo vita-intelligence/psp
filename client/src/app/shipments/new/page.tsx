@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { createShipmentAction } from "@/lib/shipments/actions";
+import { createShipmentServer } from "@/lib/shipments/server";
 import {
   Card,
   CardContent,
@@ -32,10 +32,11 @@ export default async function NewShipmentPage({ searchParams }: Props) {
   const { lot_uuid } = await searchParams;
 
   // Happy path: the wizard passes ?lot_uuid=... — create the draft
-  // and jump straight into the desktop edit form. No scan step; scan
-  // is for the truck-arrival flow (spec pending).
+  // and jump straight into the desktop edit form. Uses the
+  // render-safe helper (createShipmentAction calls revalidatePath,
+  // which Next 16 disallows from inside a page render).
   if (lot_uuid && typeof lot_uuid === "string") {
-    const res = await createShipmentAction(lot_uuid);
+    const res = await createShipmentServer(lot_uuid);
     if (res.ok) {
       redirect(`/shipments/${res.shipment.uuid}`);
     }
