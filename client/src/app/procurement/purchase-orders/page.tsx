@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { listPurchaseOrdersPage } from "@/lib/purchase-orders/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { ProcurementSubnav } from "../procurement-subnav";
 import { PurchaseOrdersTable } from "./purchase-orders-table";
 
@@ -20,10 +21,12 @@ export default async function PurchaseOrdersPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = (await listPurchaseOrdersPage()) ?? {
-    items: [],
-    next_cursor: null,
-  };
+  const [initialPage, locationFilters] = await Promise.all([
+    listPurchaseOrdersPage().then(
+      (p) => p ?? { items: [], next_cursor: null },
+    ),
+    buildLocationFilters({ warehouse: true, productionSite: false }),
+  ]);
 
   const canCreate = hasPermission(user, "procurement.po_create");
 
@@ -59,7 +62,10 @@ export default async function PurchaseOrdersPage() {
             canCreate={canCreate}
           />
 
-          <PurchaseOrdersTable initialPage={initialPage} />
+          <PurchaseOrdersTable
+            initialPage={initialPage}
+            locationFilters={locationFilters}
+          />
         </div>
       </main>
     </div>

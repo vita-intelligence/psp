@@ -8,6 +8,7 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listManufacturingOrdersPage } from "@/lib/production/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { ProductionSubnav } from "../production-subnav";
 import { ManufacturingOrdersLedger } from "./mos-ledger";
 
@@ -19,7 +20,10 @@ export default async function ManufacturingOrdersPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = await listManufacturingOrdersPage();
+  const [initialPage, locationFilters] = await Promise.all([
+    listManufacturingOrdersPage(),
+    buildLocationFilters({ warehouse: true, productionSite: true }),
+  ]);
   const canCreate = hasPermission(user, "production.mo_create");
 
   return (
@@ -48,6 +52,7 @@ export default async function ManufacturingOrdersPage() {
 
           <ManufacturingOrdersLedger
             initialPage={initialPage ?? { items: [], next_cursor: null }}
+            locationFilters={locationFilters}
           />
         </div>
       </main>

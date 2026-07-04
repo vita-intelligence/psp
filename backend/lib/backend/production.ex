@@ -1322,7 +1322,30 @@ defmodule Backend.Production do
   #   cancelled   → (terminal)
 
   @mo_search [:revision, :notes]
-  @mo_sortable [:inserted_at, :updated_at, :due_date]
+  @mo_sortable [
+    :id,
+    :status,
+    :quantity,
+    :quantity_produced,
+    :due_date,
+    :expiry_date,
+    :revision,
+    :needs_replan,
+    :item_id,
+    :bom_id,
+    :warehouse_id,
+    :assigned_to_id,
+    :prepared_at,
+    :approved_at,
+    :purchasing_requested_at,
+    :released_to_warehouse_at,
+    :pickup_started_at,
+    :pickup_completed_at,
+    :actual_start,
+    :actual_finish,
+    :inserted_at,
+    :updated_at
+  ]
   @mo_default_sort {:inserted_at, :desc}
 
   # Status-change pairs that the generic transition endpoint accepts.

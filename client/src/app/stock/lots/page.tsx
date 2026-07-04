@@ -5,8 +5,9 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { listStockLotsPage, listWarehousesForReceive } from "@/lib/stock/server";
+import { listStockLotsPage } from "@/lib/stock/server";
 import { listItemsForPicker } from "@/lib/items/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { StockSubnav } from "../stock-subnav";
 import { LotsTable } from "./lots-table";
 
@@ -31,11 +32,11 @@ export default async function StockLotsPage({ searchParams }: PageProps) {
   const itemFilterId =
     Number.isFinite(itemIdParam) && itemIdParam > 0 ? itemIdParam : null;
 
-  const [initialPage, warehouses, items] = await Promise.all([
+  const [initialPage, locationFilters, items] = await Promise.all([
     listStockLotsPage(
       itemFilterId !== null ? { item_id: itemFilterId } : {},
     ),
-    listWarehousesForReceive(),
+    buildLocationFilters({ warehouse: true, productionSite: false }),
     itemFilterId !== null ? listItemsForPicker() : Promise.resolve([]),
   ]);
   const seededPage = initialPage ?? { items: [], next_cursor: null };
@@ -60,7 +61,7 @@ export default async function StockLotsPage({ searchParams }: PageProps) {
 
           <LotsTable
             initialPage={seededPage}
-            warehouses={warehouses}
+            locationFilters={locationFilters}
             canReceive={hasPermission(user, "stock.receive")}
             itemFilter={
               itemFilterId !== null
