@@ -225,7 +225,13 @@ export function ShipmentDetail({
     : null;
 
   return (
-    <div className="space-y-4">
+    // pb-24 keeps the last card clear of the sticky action bar
+    <div
+      className={cn(
+        "space-y-4",
+        !finalized && canEdit && "pb-24",
+      )}
+    >
       <StatusBanner shipment={shipment} companyDefaults={companyDefaults} />
 
       {error && <ErrorBanner detail={error.detail} code={error.code} />}
@@ -608,10 +614,23 @@ export function ShipmentDetail({
         </CardContent>
       </Card>
 
-      {/* -------- Actions -------- */}
+      {/* -------- Activity (detailed audit log) -------- */}
+      <AuditHistoryCard entityType="shipment" entityId={shipment.id} />
+
+      {/* -------- Discussion — CommentThread has its own header,
+                  so no outer Card wrapper.               -------- */}
+      <CommentThread
+        entityType="shipment"
+        entityUuid={shipment.uuid}
+        initial={initialComments}
+        canComment={canComment}
+        currentUserId={currentUserId}
+      />
+
+      {/* -------- Sticky action bar -------- */}
       {!finalized && canEdit && (
-        <Card>
-          <CardContent className="flex flex-wrap items-center gap-2 py-4">
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border/60 bg-background/95 shadow-lg backdrop-blur">
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-2 px-4 py-3 sm:px-8">
             {shipment.status === "draft" && (
               <Button
                 variant="outline"
@@ -629,7 +648,11 @@ export function ShipmentDetail({
             )}
             {shipment.status === "ready" && (
               <>
-                <Button variant="outline" onClick={markDraft} disabled={busy}>
+                <Button
+                  variant="outline"
+                  onClick={markDraft}
+                  disabled={busy}
+                >
                   Reopen for edits
                 </Button>
                 <Button onClick={confirmPickup} disabled={busy}>
@@ -647,27 +670,9 @@ export function ShipmentDetail({
               <XCircle className="mr-1 size-4" />
               Cancel shipment
             </Button>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
-
-      {/* -------- Activity + Comments -------- */}
-      <AuditHistoryCard entityType="shipment" entityId={shipment.id} />
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Discussion</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <CommentThread
-            entityType="shipment"
-            entityUuid={shipment.uuid}
-            initial={initialComments}
-            canComment={canComment}
-            currentUserId={currentUserId}
-          />
-        </CardContent>
-      </Card>
     </div>
   );
 }
