@@ -2931,7 +2931,7 @@ export interface OrderWizardSigners {
 export interface OrderWizardTimelineEntry {
   at: string;
   label: string;
-  scope: "co" | "mo";
+  scope: "co" | "mo" | "po" | "shipment" | "invoice";
   mo_uuid?: string;
   actor?: string | null;
 }

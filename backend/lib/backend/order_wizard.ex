@@ -42,6 +42,7 @@ defmodule Backend.OrderWizard do
   alias Backend.Production.{BOM, ManufacturingOrder}
   alias Backend.Purchasing.PurchaseOrder
   alias Backend.Repo
+  alias Backend.Shipments.Shipment
   alias Backend.Stock.Lot
 
   @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
@@ -2434,13 +2435,33 @@ defmodule Backend.OrderWizard do
 
   # ----- timeline ------------------------------------------------
 
+  # Rich process-history timeline. Concatenates events from every
+  # workstream the project touches — CO signatures, MO lifecycle
+  # (create → prepare → approve → purchasing → release → pickup →
+  # start → finish), PO lifecycle (create → submit → confirm →
+  # receive → cancel), Shipment lifecycle (create → ready → picked up
+  # → cancel), and invoice creation — then sorts everything by
+  # timestamp. The FE renders it as a vertical stream so the operator
+  # can trace exactly how the order got to where it is.
   defp timeline(co, _mos, signers) do
+    (co_events(co, signers) ++
+       mo_events(co) ++
+       po_events(co) ++
+       shipment_events(co) ++
+       invoice_events(co))
+    |> Enum.reject(&is_nil(&1.at))
+    |> Enum.sort_by(& &1.at, {:asc, DateTime})
+  end
+
+  # ----- CO events ------------------------------------------------
+
+  defp co_events(co, signers) do
     approver_event =
       signers.approver &&
         %{
           at: signers.approver.signed_at,
           label:
-            "Approver: #{(signers.approver.signed_by && signers.approver.signed_by.name) || "—"}",
+            "Approver signed off — #{(signers.approver.signed_by && signers.approver.signed_by.name) || "—"}",
           scope: "co"
         }
 
@@ -2449,26 +2470,239 @@ defmodule Backend.OrderWizard do
         %{
           at: signers.director.signed_at,
           label:
-            "Director: #{(signers.director.signed_by && signers.director.signed_by.name) || "—"}",
+            "Director signed off — #{(signers.director.signed_by && signers.director.signed_by.name) || "—"}",
           scope: "co"
         }
 
-    co_events =
-      [
-        co.inserted_at && %{at: co.inserted_at, label: "Order created", scope: "co"},
-        co.submitted_at &&
-          %{at: co.submitted_at, label: "Submitted for approval", scope: "co"},
-        approver_event,
-        director_event,
-        co.confirmed_at &&
-          %{at: co.confirmed_at, label: "Confirmed — released for production", scope: "co"},
-        co.cancelled_at && %{at: co.cancelled_at, label: "Cancelled", scope: "co"}
-      ]
-      |> Enum.reject(&is_nil/1)
+    [
+      co.inserted_at &&
+        %{at: co.inserted_at, label: "Order drafted", scope: "co"},
+      co.submitted_at &&
+        %{at: co.submitted_at, label: "Submitted for approval", scope: "co"},
+      approver_event,
+      director_event,
+      co.confirmed_at &&
+        %{
+          at: co.confirmed_at,
+          label: "Confirmed — released for production",
+          scope: "co"
+        },
+      co.cancelled_at &&
+        %{at: co.cancelled_at, label: "Order cancelled", scope: "co"}
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
 
-    co_events
-    |> Enum.reject(&is_nil(&1.at))
-    |> Enum.sort_by(& &1.at, {:asc, DateTime})
+  # ----- MO events ------------------------------------------------
+  #
+  # One MO can emit up to ten process markers as it walks the
+  # draft → prepared → approved → purchasing → released → pickup
+  # started → pickup completed → in-progress → completed pipeline.
+  # We label each event with the MO code so the reader can trace a
+  # specific manufacturing order through the stream when the project
+  # has more than one.
+
+  defp mo_events(co) do
+    from(mo in ManufacturingOrder,
+      join: line in assoc(mo, :customer_order_line),
+      where: line.customer_order_id == ^co.id,
+      order_by: [asc: mo.id]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(&mo_event_rows/1)
+  end
+
+  defp mo_event_rows(%ManufacturingOrder{} = mo) do
+    tag = mo_tag(mo)
+
+    [
+      mo.inserted_at &&
+        row("mo", mo.inserted_at, "MO #{tag} drafted", mo),
+      mo.prepared_at &&
+        row("mo", mo.prepared_at, "MO #{tag} prepared for approval", mo),
+      mo.approved_at &&
+        row("mo", mo.approved_at, "MO #{tag} approved for scheduling", mo),
+      mo.purchasing_requested_at &&
+        row(
+          "mo",
+          mo.purchasing_requested_at,
+          "MO #{tag} purchasing requested — shortages sent to procurement",
+          mo
+        ),
+      mo.released_to_warehouse_at &&
+        row(
+          "mo",
+          mo.released_to_warehouse_at,
+          "MO #{tag} released to warehouse for material pickup",
+          mo
+        ),
+      mo.pickup_started_at &&
+        row(
+          "mo",
+          mo.pickup_started_at,
+          "MO #{tag} pickup started — picker walking the bookings",
+          mo
+        ),
+      mo.pickup_completed_at &&
+        row(
+          "mo",
+          mo.pickup_completed_at,
+          "MO #{tag} materials staged at production feed",
+          mo
+        ),
+      mo.actual_start &&
+        row("mo", mo.actual_start, "MO #{tag} production started", mo),
+      mo.actual_finish &&
+        row("mo", mo.actual_finish, "MO #{tag} production finished", mo),
+      mo.needs_replan_at &&
+        row("mo", mo.needs_replan_at, "MO #{tag} needs replan", mo)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp mo_tag(%ManufacturingOrder{} = mo) do
+    render_code(mo, "manufacturing_order") || "##{mo.id}"
+  end
+
+  defp row("mo", at, label, %ManufacturingOrder{uuid: uuid}) do
+    %{at: at, label: label, scope: "mo", mo_uuid: uuid}
+  end
+
+  # ----- PO events ------------------------------------------------
+  #
+  # POs are attached to the project via placeholder bookings on the
+  # project's MOs (a booking whose lot_id is nil but references a PO
+  # line). We walk the join to find every PO whose line the MO booked
+  # a placeholder against, then emit its lifecycle.
+
+  defp po_events(co) do
+    po_ids =
+      from(mo in ManufacturingOrder,
+        join: line in assoc(mo, :customer_order_line),
+        join: b in Backend.Production.ManufacturingOrderBooking,
+        on: b.manufacturing_order_id == mo.id,
+        join: pol in Backend.Purchasing.PurchaseOrderLine,
+        on: pol.id == b.purchase_order_line_id,
+        where: line.customer_order_id == ^co.id,
+        distinct: pol.purchase_order_id,
+        select: pol.purchase_order_id
+      )
+      |> Repo.all()
+
+    case po_ids do
+      [] ->
+        []
+
+      ids ->
+        from(po in PurchaseOrder,
+          where: po.id in ^ids,
+          order_by: [asc: po.id]
+        )
+        |> Repo.all()
+        |> Enum.flat_map(&po_event_rows/1)
+    end
+  end
+
+  defp po_event_rows(%PurchaseOrder{} = po) do
+    tag = render_code(po, "purchase_order") || "##{po.id}"
+
+    [
+      po.inserted_at &&
+        %{at: po.inserted_at, label: "PO #{tag} drafted", scope: "po"},
+      po.submitted_at &&
+        %{
+          at: po.submitted_at,
+          label: "PO #{tag} submitted for approval",
+          scope: "po"
+        },
+      po.ordered_at &&
+        %{
+          at: po.ordered_at,
+          label: "PO #{tag} sent to vendor",
+          scope: "po"
+        },
+      po.received_at &&
+        %{
+          at: po.received_at,
+          label: "PO #{tag} fully received",
+          scope: "po"
+        },
+      po.cancelled_at &&
+        %{
+          at: po.cancelled_at,
+          label: "PO #{tag} cancelled",
+          scope: "po"
+        }
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  # ----- Shipment events ------------------------------------------
+
+  defp shipment_events(co) do
+    from(s in Shipment,
+      where: s.customer_order_id == ^co.id,
+      order_by: [asc: s.id]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(&shipment_event_rows/1)
+  end
+
+  defp shipment_event_rows(%Shipment{} = s) do
+    tag = render_code(s, "shipment") || "##{s.id}"
+
+    [
+      s.inserted_at &&
+        %{
+          at: s.inserted_at,
+          label: "Shipment #{tag} drafted",
+          scope: "shipment"
+        },
+      s.ready_at &&
+        %{
+          at: s.ready_at,
+          label: "Shipment #{tag} ready for carrier pickup",
+          scope: "shipment"
+        },
+      s.picked_up_at &&
+        %{
+          at: s.picked_up_at,
+          label: "Shipment #{tag} picked up by carrier",
+          scope: "shipment"
+        },
+      s.cancelled_at &&
+        %{
+          at: s.cancelled_at,
+          label: "Shipment #{tag} cancelled",
+          scope: "shipment"
+        }
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  # ----- Invoice events -------------------------------------------
+
+  defp invoice_events(co) do
+    from(i in CustomerInvoice,
+      where: i.customer_order_id == ^co.id,
+      order_by: [asc: i.id]
+    )
+    |> Repo.all()
+    |> Enum.flat_map(&invoice_event_rows/1)
+  end
+
+  defp invoice_event_rows(%CustomerInvoice{} = i) do
+    tag = render_code(i, "customer_invoice") || "##{i.id}"
+
+    [
+      i.inserted_at &&
+        %{
+          at: i.inserted_at,
+          label: "Invoice #{tag} issued",
+          scope: "invoice"
+        }
+    ]
+    |> Enum.reject(&is_nil/1)
   end
 
   # ----- helpers --------------------------------------------------

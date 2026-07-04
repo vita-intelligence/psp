@@ -55,6 +55,7 @@ import {
   Receipt,
   ShieldCheck,
   ShoppingBag,
+  ShoppingCart,
   Smartphone,
   Split,
   Truck,
@@ -2491,7 +2492,7 @@ function TimelineCard({
         ) : (
           <ol className="space-y-3">
             {timeline.map((entry, idx) => {
-              const Icon = entry.scope === "mo" ? Factory : ShoppingBag;
+              const { icon: Icon, chip } = scopeChrome(entry.scope);
               return (
                 <li
                   key={`${entry.at}-${idx}`}
@@ -2501,9 +2502,7 @@ function TimelineCard({
                     <span
                       className={cn(
                         "mt-1 flex size-5 items-center justify-center rounded-full",
-                        entry.scope === "mo"
-                          ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                          : "bg-brand/15 text-brand",
+                        chip,
                       )}
                     >
                       <Icon className="size-2.5" />
@@ -2538,6 +2537,44 @@ function TimelineCard({
       </CardContent>
     </Card>
   );
+}
+
+// Per-scope icon + tone chip for the timeline dot. Each workstream
+// (customer order, manufacturing order, purchase order, shipment,
+// invoice) reads at a glance from its own colour so the operator
+// can trace one thread through a busy timeline.
+function scopeChrome(scope: OrderWizardTimelineEntry["scope"]): {
+  icon: typeof Factory;
+  chip: string;
+} {
+  switch (scope) {
+    case "mo":
+      return {
+        icon: Factory,
+        chip: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+      };
+    case "po":
+      return {
+        icon: ShoppingCart,
+        chip: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+      };
+    case "shipment":
+      return {
+        icon: Truck,
+        chip: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+      };
+    case "invoice":
+      return {
+        icon: Receipt,
+        chip: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+      };
+    case "co":
+    default:
+      return {
+        icon: ShoppingBag,
+        chip: "bg-brand/15 text-brand",
+      };
+  }
 }
 
 // =============================================================================
