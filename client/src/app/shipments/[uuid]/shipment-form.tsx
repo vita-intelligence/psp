@@ -4,10 +4,8 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
-  Camera,
   CheckCircle2,
   Loader2,
-  RefreshCw,
   ShieldAlert,
   Truck,
   XCircle,
@@ -45,16 +43,15 @@ interface Props {
   companyDefaults: CompanyDefaults | null;
 }
 
+/**
+ * Only pre-truck fields. Everything you learn AT PICKUP (vehicle
+ * registration, driver, waybill, seal, temperature, loading photo)
+ * lives in the truck-arrival mobile flow — spec pending.
+ */
 interface FormState {
   recipient_name: string;
   ship_to_address: string;
   ship_to_country: string;
-  carrier: string;
-  vehicle_registration: string;
-  driver_name: string;
-  consignment_note_ref: string;
-  seal_number: string;
-  temperature_c: string;
   planned_ship_at: string;
   notes: string;
   qty: string;
@@ -65,12 +62,6 @@ function initialFrom(s: Shipment): FormState {
     recipient_name: s.recipient_name ?? "",
     ship_to_address: s.ship_to_address ?? "",
     ship_to_country: s.ship_to_country ?? "",
-    carrier: s.carrier ?? "",
-    vehicle_registration: s.vehicle_registration ?? "",
-    driver_name: s.driver_name ?? "",
-    consignment_note_ref: s.consignment_note_ref ?? "",
-    seal_number: s.seal_number ?? "",
-    temperature_c: s.temperature_c ?? "",
     planned_ship_at: s.planned_ship_at ? s.planned_ship_at.slice(0, 16) : "",
     notes: s.notes ?? "",
     qty: s.qty ?? "",
@@ -84,12 +75,6 @@ function toEditable(state: FormState): ShipmentEditableFields {
     ship_to_country: state.ship_to_country
       ? state.ship_to_country.toUpperCase()
       : null,
-    carrier: state.carrier || null,
-    vehicle_registration: state.vehicle_registration || null,
-    driver_name: state.driver_name || null,
-    consignment_note_ref: state.consignment_note_ref || null,
-    seal_number: state.seal_number || null,
-    temperature_c: state.temperature_c || null,
     planned_ship_at: state.planned_ship_at
       ? new Date(state.planned_ship_at).toISOString()
       : null,
@@ -104,10 +89,6 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
   const [original, setOriginal] = useState<FormState>(() =>
     initialFrom(shipment),
   );
-  const [photoUrl, setPhotoUrl] = useState<string | null>(
-    shipment.loading_photo_url,
-  );
-  const [photoUploading, setPhotoUploading] = useState(false);
   const [error, setError] = useState<ErrorResult | null>(null);
   const [saving, startSave] = useTransition();
   const [busy, startTransition] = useTransition();
@@ -118,7 +99,6 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
     const fresh = initialFrom(shipment);
     setState(fresh);
     setOriginal(fresh);
-    setPhotoUrl(shipment.loading_photo_url);
   }, [shipment]);
 
   const editable = shipment.status === "draft" || shipment.status === "ready";
@@ -128,49 +108,6 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
 
   const setField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setState((prev) => ({ ...prev, [key]: value }));
-
-  async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setError(null);
-    setPhotoUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", f);
-      const res = await fetch("/api/stock/movement-photos", {
-        method: "POST",
-        body: fd,
-      });
-      const data = (await res.json()) as {
-        photo_url?: string;
-        detail?: string;
-      };
-      if (!res.ok || !data.photo_url) {
-        setError({
-          ok: false,
-          code: "photo_upload_failed",
-          detail: data.detail ?? "Photo upload failed.",
-          debug: { source: "ShipmentForm.onPhoto" },
-        } as ErrorResult);
-        return;
-      }
-      // Persist the URL against the shipment straight away — no
-      // separate Save click needed for evidence.
-      const upd = await updateShipmentAction(shipment.uuid, {
-        loading_photo_url: data.photo_url,
-      });
-      if (!upd.ok) {
-        setError(upd);
-        return;
-      }
-      setPhotoUrl(data.photo_url);
-      toast.success("Loading photo saved.");
-      router.refresh();
-    } finally {
-      setPhotoUploading(false);
-      e.target.value = "";
-    }
-  }
 
   const save = () => {
     setError(null);
@@ -211,7 +148,12 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
   };
 
   const confirmPickup = () => {
-    if (!confirm("Truck has arrived and taken the shipment?")) return;
+    if (
+      !confirm(
+        "Truck has arrived and taken the shipment? The full truck-arrival form isn't built yet — this just marks the goods as picked up for now.",
+      )
+    )
+      return;
     startTransition(async () => {
       const res = await confirmShipmentPickupAction(shipment.uuid);
       if (!res.ok) {
@@ -287,33 +229,18 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
         </CardContent>
       </Card>
 
-      {/* -------- Recipient -------- */}
+      {/* -------- Delivery -------- */}
       <FieldsCard
-        title="Recipient"
-        subtitle="Who's receiving the goods."
-        disabled={!editable}
+        title="Delivery"
+        subtitle="What we can fill in before the truck arrives — recipient + address + timing."
       >
-        <Field label="Recipient name" htmlFor="recipient_name">
+        <Field label="Delivery to (recipient)" htmlFor="recipient_name">
           <Input
             id="recipient_name"
             value={state.recipient_name}
             onChange={(e) => setField("recipient_name", e.target.value)}
             disabled={!editable}
             placeholder="e.g. Acme Ltd receiving desk"
-          />
-        </Field>
-        <Field
-          label="Ship-to address"
-          htmlFor="ship_to_address"
-          className="sm:col-span-2"
-        >
-          <Textarea
-            id="ship_to_address"
-            value={state.ship_to_address}
-            onChange={(e) => setField("ship_to_address", e.target.value)}
-            disabled={!editable}
-            rows={3}
-            placeholder="Street, city, postcode"
           />
         </Field>
         <Field label="Country (ISO)" htmlFor="ship_to_country">
@@ -332,88 +259,18 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
             maxLength={2}
           />
         </Field>
-      </FieldsCard>
-
-      {/* -------- Carrier -------- */}
-      <FieldsCard
-        title="Carrier + vehicle"
-        subtitle="Who's driving it, on what plate."
-        disabled={!editable}
-      >
-        <Field label="Carrier / haulier" htmlFor="carrier">
-          <Input
-            id="carrier"
-            value={state.carrier}
-            onChange={(e) => setField("carrier", e.target.value)}
+        <Field
+          label="Delivery address"
+          htmlFor="ship_to_address"
+          className="sm:col-span-2"
+        >
+          <Textarea
+            id="ship_to_address"
+            value={state.ship_to_address}
+            onChange={(e) => setField("ship_to_address", e.target.value)}
             disabled={!editable}
-            placeholder="e.g. DPD, Palletways"
-          />
-        </Field>
-        <Field label="Vehicle registration" htmlFor="vehicle_registration">
-          <Input
-            id="vehicle_registration"
-            value={state.vehicle_registration}
-            onChange={(e) => setField("vehicle_registration", e.target.value)}
-            disabled={!editable}
-            placeholder="e.g. AB12 CDE"
-            className="font-mono uppercase"
-          />
-        </Field>
-        <Field label="Driver name" htmlFor="driver_name">
-          <Input
-            id="driver_name"
-            value={state.driver_name}
-            onChange={(e) => setField("driver_name", e.target.value)}
-            disabled={!editable}
-          />
-        </Field>
-        <Field label="Consignment note / waybill" htmlFor="consignment_note_ref">
-          <Input
-            id="consignment_note_ref"
-            value={state.consignment_note_ref}
-            onChange={(e) => setField("consignment_note_ref", e.target.value)}
-            disabled={!editable}
-            placeholder="e.g. WB123456"
-            className="font-mono"
-          />
-        </Field>
-        <Field label="Seal number (if sealed)" htmlFor="seal_number">
-          <Input
-            id="seal_number"
-            value={state.seal_number}
-            onChange={(e) => setField("seal_number", e.target.value)}
-            disabled={!editable}
-            placeholder="Optional"
-            className="font-mono"
-          />
-        </Field>
-        <Field label="Trailer temp °C (if chilled)" htmlFor="temperature_c">
-          <Input
-            id="temperature_c"
-            type="number"
-            step="0.1"
-            value={state.temperature_c}
-            onChange={(e) => setField("temperature_c", e.target.value)}
-            disabled={!editable}
-            placeholder="Optional"
-          />
-        </Field>
-      </FieldsCard>
-
-      {/* -------- Load -------- */}
-      <FieldsCard
-        title="Load"
-        subtitle="Qty leaving + when the truck is booked."
-        disabled={!editable}
-      >
-        <Field label="Qty" htmlFor="qty">
-          <Input
-            id="qty"
-            type="number"
-            step="0.0001"
-            value={state.qty}
-            onChange={(e) => setField("qty", e.target.value)}
-            disabled={!editable}
+            rows={3}
+            placeholder="Street, city, postcode"
           />
         </Field>
         <Field label="Planned ship time" htmlFor="planned_ship_at">
@@ -425,83 +282,75 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
             disabled={!editable}
           />
         </Field>
+        <Field label="Qty" htmlFor="qty">
+          <Input
+            id="qty"
+            type="number"
+            step="0.0001"
+            value={state.qty}
+            onChange={(e) => setField("qty", e.target.value)}
+            disabled={!editable}
+          />
+        </Field>
         <Field label="Notes" htmlFor="notes" className="sm:col-span-2">
           <Textarea
             id="notes"
             value={state.notes}
             onChange={(e) => setField("notes", e.target.value)}
             disabled={!editable}
-            rows={3}
-            placeholder="Anything unusual — split pallets, dietary flags, etc."
+            rows={2}
+            placeholder="Anything the truck arrival team should know."
           />
         </Field>
       </FieldsCard>
 
-      {/* -------- Loading photo -------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <Camera className="size-4" />
-            Loading photo
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {photoUrl ? (
-            <div className="space-y-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={photoUrl}
-                alt="Loading evidence"
-                className="max-h-64 rounded-md border border-border/60"
-              />
-              {editable && (
-                <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-1 text-xs hover:bg-muted">
-                  {photoUploading ? (
-                    <>
-                      <RefreshCw className="size-3.5 animate-spin" />
-                      Uploading…
-                    </>
-                  ) : (
-                    <>
-                      <Camera className="size-3.5" />
-                      Replace photo
-                    </>
-                  )}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    className="hidden"
-                    onChange={(e) => void onPhoto(e)}
-                  />
-                </label>
-              )}
-            </div>
-          ) : (
-            <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-border/60 p-6 text-sm active:bg-muted">
-              {photoUploading ? (
-                <>
-                  <RefreshCw className="size-4 animate-spin" />
-                  Uploading…
-                </>
-              ) : (
-                <>
-                  <Camera className="size-4" />
-                  Attach loading photo
-                </>
-              )}
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="hidden"
-                onChange={(e) => void onPhoto(e)}
-                disabled={!editable}
-              />
-            </label>
-          )}
-        </CardContent>
-      </Card>
+      {/* -------- Truck-arrival read-only strip -------- */}
+      {shipment.status === "picked_up" && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Truck className="size-4" />
+              Truck arrival record
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Filled in from the mobile truck-arrival flow (once we build it).
+              Empty rows just mean the current pickup was confirmed via the
+              placeholder button.
+            </p>
+          </CardHeader>
+          <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
+            <DetailRow
+              label="Carrier"
+              value={shipment.carrier ?? "—"}
+            />
+            <DetailRow
+              label="Vehicle registration"
+              value={shipment.vehicle_registration ?? "—"}
+              mono
+            />
+            <DetailRow
+              label="Driver"
+              value={shipment.driver_name ?? "—"}
+            />
+            <DetailRow
+              label="Waybill / consignment"
+              value={shipment.consignment_note_ref ?? "—"}
+              mono
+            />
+            <DetailRow
+              label="Seal number"
+              value={shipment.seal_number ?? "—"}
+              mono
+            />
+            <DetailRow
+              label="Trailer temperature"
+              value={
+                shipment.temperature_c ? `${shipment.temperature_c} °C` : "—"
+              }
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {/* -------- Actions -------- */}
       {!finalized && (
@@ -521,7 +370,7 @@ export function ShipmentForm({ shipment, companyDefaults }: Props) {
                 title={
                   dirty
                     ? "Save your edits first."
-                    : "Flip to Ready once every mandatory field is filled."
+                    : "Flip to Ready once recipient + delivery address + country are filled."
                 }
               >
                 <CheckCircle2 className="mr-1 size-4" />
@@ -571,7 +420,7 @@ function StatusBanner({
       Icon: ShieldAlert,
       cls: "border-border/60 bg-muted/40",
       title: "Draft — paperwork in progress",
-      body: "Fill in recipient, carrier, vehicle, driver, waybill. Mark ready once everything's captured.",
+      body: "Fill in recipient + delivery address + country. Mark ready once those three are captured; the truck-arrival flow (vehicle reg, driver, waybill, seal, photo) is a follow-up.",
     },
     ready: {
       Icon: CheckCircle2,
@@ -623,16 +472,14 @@ function StatusBanner({
 function FieldsCard({
   title,
   subtitle,
-  disabled,
   children,
 }: {
   title: string;
   subtitle: string;
-  disabled: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <Card className={cn(disabled && "opacity-90")}>
+    <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-sm">{title}</CardTitle>
         <p className="text-xs text-muted-foreground">{subtitle}</p>

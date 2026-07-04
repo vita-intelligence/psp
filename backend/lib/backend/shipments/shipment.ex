@@ -164,20 +164,12 @@ defmodule Backend.Shipments.Shipment do
     |> validate_length(:cancel_reason, max: 500)
   end
 
-  # BRCGS 5.4.6 wants recipient + address + carrier + vehicle + driver
-  # + waybill on file before the truck leaves. Temperature + seal are
-  # conditional on chill / sealed loads but we're not modelling those
-  # gates yet — added when the item type carries a flag.
+  # Pre-truck paperwork: only recipient + delivery address + country.
+  # Everything the operator learns AT PICKUP (vehicle registration,
+  # driver, waybill, seal, temperature, loading photo) belongs to the
+  # truck-arrival flow the user will spec later.
   defp validate_ready_prereqs(changeset) do
-    required = [
-      :recipient_name,
-      :ship_to_address,
-      :ship_to_country,
-      :carrier,
-      :vehicle_registration,
-      :driver_name,
-      :consignment_note_ref
-    ]
+    required = [:recipient_name, :ship_to_address, :ship_to_country]
 
     Enum.reduce(required, changeset, fn field, cs ->
       case get_field(cs, field) do
