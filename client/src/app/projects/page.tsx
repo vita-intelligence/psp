@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
+import { EmptyState } from "@/components/layout/empty-state";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listProjects } from "@/lib/projects/server";
 import { Badge } from "@/components/ui/badge-mini";
@@ -146,14 +148,11 @@ export default async function ProjectsPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-10">
         <div className="mx-auto max-w-[1600px] space-y-6">
-          {/* ---------- Header ---------- */}
-          <header className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0 space-y-1.5">
-              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                <ClipboardList className="size-6 text-brand sm:size-7" />
-                Production pipeline
-              </h1>
-              <p className="max-w-3xl text-sm text-muted-foreground">
+          <PageHeader
+            icon={ClipboardList}
+            title="Production pipeline"
+            description={
+              <>
                 Every customer order in flight, by phase. Click a card to
                 open the project control board — it tells you what to do
                 next without leaving the page.
@@ -165,50 +164,47 @@ export default async function ProjectsPage() {
                     </span>
                   </>
                 )}
-              </p>
-            </div>
-            {canCreate && (
-              <Button asChild size="sm" className="shrink-0">
-                <Link href="/sales/orders/new">
-                  <Plus className="mr-1.5 size-4" />
-                  Start new project
-                </Link>
-              </Button>
-            )}
-          </header>
+              </>
+            }
+            actions={
+              canCreate && (
+                <Button asChild size="sm" className="shrink-0">
+                  <Link href="/sales/orders/new">
+                    <Plus className="mr-1.5 size-4" />
+                    Start new project
+                  </Link>
+                </Button>
+              )
+            }
+          />
 
           {total === 0 ? (
-            <EmptyState />
+            <EmptyState
+              icon={ClipboardList}
+              title="No active projects"
+              body={
+                <>
+                  Once a customer order is submitted for approval, it shows
+                  up here with its current phase + the next action you need
+                  to take. Drafts don&rsquo;t appear until they&rsquo;re
+                  submitted.
+                </>
+              }
+              cta={
+                <Link
+                  href="/sales/orders/new"
+                  className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                >
+                  Start a new customer order
+                  <ArrowRight className="size-3.5" />
+                </Link>
+              }
+            />
           ) : (
             <KanbanBoard grouped={grouped} />
           )}
         </div>
       </main>
-    </div>
-  );
-}
-
-// ============================================================================
-// Empty state — nothing yet in flight.
-// ============================================================================
-
-function EmptyState() {
-  return (
-    <div className="rounded-xl border border-dashed border-border/60 bg-card/40 px-6 py-16 text-center">
-      <ClipboardList className="mx-auto size-10 text-muted-foreground" />
-      <h2 className="mt-3 text-sm font-semibold">No active projects</h2>
-      <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-        Once a customer order is submitted for approval, it shows up here
-        with its current phase + the next action you need to take. Drafts
-        don&rsquo;t appear until they&rsquo;re submitted.
-      </p>
-      <Link
-        href="/sales/orders/new"
-        className="mt-4 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-      >
-        Start a new customer order
-        <ArrowRight className="size-3.5" />
-      </Link>
     </div>
   );
 }
