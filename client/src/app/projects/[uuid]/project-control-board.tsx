@@ -136,6 +136,8 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "final_release",
   "awaiting_routing",
   "ready_to_dispatch",
+  "awaiting_pickup",
+  "dispatched",
 ];
 
 const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
@@ -147,7 +149,9 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   closeout: "Closeout",
   final_release: "Release",
   awaiting_routing: "Routing",
-  ready_to_dispatch: "Ready",
+  ready_to_dispatch: "Paperwork",
+  awaiting_pickup: "Awaiting pickup",
+  dispatched: "Dispatched",
   cancelled: "Cancelled",
 };
 
@@ -162,7 +166,10 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
     "QA sign-off on finished product before dispatch (BRCGS § 5.6 Positive Release).",
   awaiting_routing:
     "Per released lot: 3PL bailee storage or direct shipment.",
-  ready_to_dispatch: "Done — ship it to the customer.",
+  ready_to_dispatch:
+    "Create the shipment record for each staged lot (BRCGS § 5.4.6).",
+  awaiting_pickup: "Shipment paperwork is signed off — waiting for the truck.",
+  dispatched: "Every shipment picked up. Goods have left the warehouse.",
   cancelled: "Terminal — nothing else moves.",
 };
 
@@ -178,7 +185,9 @@ const PHASE_ICON: Record<
   closeout: PackageOpen,
   final_release: ShieldCheck,
   awaiting_routing: Split,
-  ready_to_dispatch: CheckCircle2,
+  ready_to_dispatch: FileText,
+  awaiting_pickup: Truck,
+  dispatched: CheckCircle2,
   cancelled: Ban,
 };
 
@@ -1277,8 +1286,16 @@ const PHASE_EXPLAINER: Record<
     body: "Positive Release cleared the batch — now say 3PL storage (customer takes ownership, we bill per m³/day) or direct shipment (whole lot to dispatch for pickup). Per lot, capacity is checked live. Once every released lot has an answer the order rolls to Ready.",
   },
   ready_to_dispatch: {
-    title: "Order is ready to ship.",
-    body: "All output is in warehouse cells. Generate the invoice (if needed) and arrange a courier. Dispatch module isn't built yet — for now this is the terminal state.",
+    title: "Fill in the shipment paperwork.",
+    body: "Every staged lot needs an outbound record with recipient, carrier, vehicle, driver, waybill, and evidence photo (BRCGS Issue 9 § 5.4.6). Open the CTA to create the shipment; on desktop you can push the scan to a paired phone.",
+  },
+  awaiting_pickup: {
+    title: "Waiting for the truck.",
+    body: "Paperwork is signed off — the physical goods are staged in a dispatch cell and the shipment record is Ready. When the driver pulls in, open the shipment and tap “Truck arrived — confirm pickup”.",
+  },
+  dispatched: {
+    title: "Goods have left the warehouse.",
+    body: "Every shipment on this order is picked up. Generate the invoice if you haven't already; the shipment records stay live for the BRCGS audit trail + customer queries.",
   },
   cancelled: null,
 };
@@ -3423,6 +3440,10 @@ function phaseBadgeTone(
     case "awaiting_routing":
       return "sky";
     case "ready_to_dispatch":
+      return "sky";
+    case "awaiting_pickup":
+      return "amber";
+    case "dispatched":
       return "emerald";
     case "cancelled":
       return "destructive";

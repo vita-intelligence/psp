@@ -46,7 +46,7 @@ defmodule Backend.OrderWizard do
 
   @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
            :in_production, :closeout, :final_release, :awaiting_routing,
-           :ready_to_dispatch]
+           :ready_to_dispatch, :awaiting_pickup, :dispatched]
   @total_phases length(@phases)
 
   @doc """
@@ -290,7 +290,88 @@ defmodule Backend.OrderWizard do
         :awaiting_routing
 
       true ->
-        :ready_to_dispatch
+        derive_dispatch_phase(mos)
+    end
+  end
+
+  # Once every output lot has finished the routing decision, the
+  # dispatch story splits three ways:
+  #
+  # * `ready_to_dispatch` — some lot is either in a dispatch cell
+  #   without any live shipment paperwork, OR the paperwork is still
+  #   in draft. The operator still owes a shipment record / mark_ready.
+  # * `awaiting_pickup`  — every lot has a live shipment (ready or
+  #   picked_up), but at least one shipment is still waiting for the
+  #   truck.
+  # * `dispatched`       — every live shipment on every lot has been
+  #   marked picked_up. The order has physically left the warehouse.
+  #
+  # Cancelled shipments do NOT count as coverage — the physical goods
+  # are still on our floor. The operator has to create a fresh
+  # shipment for the same lot after cancelling.
+  defp derive_dispatch_phase(mos) do
+    dispatchable_lots = collect_dispatchable_lot_ids(mos)
+
+    if dispatchable_lots == [] do
+      # No lot has crossed into the dispatch cell yet (edge case: order
+      # completed via a legacy path that skipped routing). Keep the
+      # current terminal phase so we don't confuse anything downstream.
+      :ready_to_dispatch
+    else
+      case shipment_coverage(dispatchable_lots) do
+        {:not_ready, _} -> :ready_to_dispatch
+        {:awaiting_pickup, _} -> :awaiting_pickup
+        {:dispatched, _} -> :dispatched
+      end
+    end
+  end
+
+  defp collect_dispatchable_lot_ids(mos) do
+    mos
+    |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
+    |> Enum.filter(fn lot ->
+      Enum.any?(lot.placements || [], fn p ->
+        p.storage_cell &&
+          p.storage_cell.purpose == "dispatch" &&
+          p.qty &&
+          Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+    end)
+    |> Enum.map(& &1.id)
+    |> Enum.uniq()
+  end
+
+  # Look at every live shipment (draft/ready/picked_up — cancelled is
+  # exclusive of a shipment covering the goods) for the given lot ids
+  # and decide which of the three dispatch phases applies.
+  defp shipment_coverage(lot_ids) when is_list(lot_ids) do
+    shipments =
+      from(s in Backend.Shipments.Shipment,
+        where:
+          s.stock_lot_id in ^lot_ids and
+            s.status in ["draft", "ready", "picked_up"],
+        select: %{stock_lot_id: s.stock_lot_id, status: s.status}
+      )
+      |> Repo.all()
+
+    covered_ids = shipments |> Enum.map(& &1.stock_lot_id) |> MapSet.new()
+
+    cond do
+      # Some lot has no live shipment at all → paperwork owed.
+      not Enum.all?(lot_ids, &MapSet.member?(covered_ids, &1)) ->
+        {:not_ready, shipments}
+
+      # Some shipment is still a draft → paperwork owed.
+      Enum.any?(shipments, &(&1.status == "draft")) ->
+        {:not_ready, shipments}
+
+      # Every shipment picked_up → order is out the door.
+      Enum.all?(shipments, &(&1.status == "picked_up")) ->
+        {:dispatched, shipments}
+
+      # Otherwise at least one is still Ready → waiting for the truck.
+      true ->
+        {:awaiting_pickup, shipments}
     end
   end
 
@@ -314,7 +395,9 @@ defmodule Backend.OrderWizard do
   defp phase_label(:closeout), do: "Closeout"
   defp phase_label(:final_release), do: "Release"
   defp phase_label(:awaiting_routing), do: "Routing"
-  defp phase_label(:ready_to_dispatch), do: "Ready to dispatch"
+  defp phase_label(:ready_to_dispatch), do: "Shipment paperwork"
+  defp phase_label(:awaiting_pickup), do: "Awaiting pickup"
+  defp phase_label(:dispatched), do: "Dispatched"
   defp phase_label(:cancelled), do: "Cancelled"
 
   # ----- next_action derivation ----------------------------------
@@ -1286,71 +1369,118 @@ defmodule Backend.OrderWizard do
   end
 
   defp next_action_for(:ready_to_dispatch, co, _line_states, mos, _signers) do
-    # An output lot sitting in a dispatch cell without any live
-    # shipment row (draft / ready / picked_up) is what the operator
-    # needs to record next. Once every lot has paperwork, we fall
-    # through to the invoice CTA.
-    lots_awaiting_shipment_paperwork = lots_needing_shipment_paperwork(mos)
+    # A lot in a dispatch cell without paperwork OR with paperwork
+    # still in draft. Everything past that (all Ready / Picked-up) is
+    # a different wizard phase now (`awaiting_pickup` / `dispatched`).
+    paperwork_owed = lots_needing_shipment_paperwork(mos)
+    draft_shipments = draft_shipments_for_order(mos)
 
-    cond do
-      lots_awaiting_shipment_paperwork != [] ->
-        [target_lot | rest] = lots_awaiting_shipment_paperwork
+    if paperwork_owed != [] do
+      [target_lot | rest] = paperwork_owed
 
-        %{
-          code: "create_shipment",
-          title:
-            "Record the outbound shipment (BRCGS Issue 9 § 5.4.6).",
-          detail:
-            "Finished goods are staged in the dispatch cell — capture the recipient + carrier + vehicle + waybill on a shipment record so the traceability trail closes. Scan the lot QR to start; on desktop you can push the scan to a paired phone.",
-          primary_cta: %{
-            label: "Create shipment",
-            kind: "link",
-            href: "/shipments/new?lot_uuid=#{target_lot.uuid}"
-          },
-          secondary_ctas:
-            Enum.map(rest, fn lot ->
-              %{
-                label: "Lot #{lot.code || lot.uuid} — shipment record",
-                kind: "link",
-                href: "/shipments/new?lot_uuid=#{lot.uuid}",
-                description:
-                  "One shipment row per lot; open this to fill the paperwork for the extra lot."
-              }
-            end) ++
-              [
-                %{
-                  label: "Generate invoice",
-                  kind: "link",
-                  href: "/sales/orders/#{co.uuid}",
-                  description:
-                    "Optional — the invoice can be generated in parallel with dispatch paperwork."
-                }
-              ]
-        }
-
-      true ->
-        %{
-          code: "ready_to_dispatch",
-          title:
-            "Shipment paperwork is on file — you can invoice the customer.",
-          detail:
-            "Every lot on this order either has a live shipment record or is already picked up. Generate the invoice next; the courier side is tracked on the /shipments tab.",
-          primary_cta: %{
-            label: "Generate invoice",
-            kind: "link",
-            href: "/sales/orders/#{co.uuid}"
-          },
-          secondary_ctas: [
+      %{
+        code: "create_shipment",
+        title:
+          "Record the outbound shipment (BRCGS Issue 9 § 5.4.6).",
+        detail:
+          "Finished goods are staged in the dispatch cell — capture the recipient + carrier + vehicle + waybill on a shipment record so the traceability trail closes. Scan the lot QR to start; on desktop you can push the scan to a paired phone.",
+        primary_cta: %{
+          label: "Create shipment",
+          kind: "link",
+          href: "/shipments/new?lot_uuid=#{target_lot.uuid}"
+        },
+        secondary_ctas:
+          Enum.map(rest, fn lot ->
             %{
-              label: "Open shipments",
+              label: "Lot #{lot.code || lot.uuid} — shipment record",
               kind: "link",
-              href: "/shipments",
+              href: "/shipments/new?lot_uuid=#{lot.uuid}",
               description:
-                "See the outbound shipment records for this order + rest of the warehouse."
+                "One shipment row per lot; open this to fill the paperwork for the extra lot."
             }
-          ]
-        }
+          end) ++
+            [
+              %{
+                label: "Generate invoice",
+                kind: "link",
+                href: "/sales/orders/#{co.uuid}",
+                description:
+                  "Optional — the invoice can be generated in parallel with dispatch paperwork."
+              }
+            ]
+      }
+    else
+      # All lots covered; the paperwork owed is on the draft rows —
+      # finish + mark ready.
+      [first | _] = draft_shipments
+
+      %{
+        code: "finish_shipment_paperwork",
+        title:
+          "Finish the shipment paperwork so the truck can arrive.",
+        detail:
+          "The dispatch record is a draft — fill in recipient + carrier + vehicle + driver + waybill, then Mark ready so warehouse knows the load is signed off.",
+        primary_cta: %{
+          label: "Open draft shipment",
+          kind: "link",
+          href: "/shipments/#{first.uuid}"
+        },
+        secondary_ctas: []
+      }
     end
+  end
+
+  defp next_action_for(:awaiting_pickup, co, _line_states, mos, _signers) do
+    # Every lot has ready paperwork. Waiting on the truck now — the
+    # "Truck arrived" button lives on the shipment detail page.
+    ready = ready_shipments_for_order(mos)
+    first = List.first(ready)
+
+    %{
+      code: "awaiting_pickup",
+      title:
+        "Shipments are ready — waiting for the truck.",
+      detail:
+        "Every lot has a Ready shipment on file. When the driver pulls in, open the shipment record and tap “Truck arrived — confirm pickup”. Cancel from that page if the load slips.",
+      primary_cta: %{
+        label: "Open shipment",
+        kind: "link",
+        href:
+          if(first, do: "/shipments/#{first.uuid}", else: "/shipments")
+      },
+      secondary_ctas: [
+        %{
+          label: "Generate invoice",
+          kind: "link",
+          href: "/sales/orders/#{co.uuid}",
+          description:
+            "You can invoice now or wait for pickup — the finance record and physical dispatch are decoupled."
+        }
+      ]
+    }
+  end
+
+  defp next_action_for(:dispatched, co, _line_states, _mos, _signers) do
+    %{
+      code: "dispatched",
+      title: "Every shipment picked up — the goods have left the warehouse.",
+      detail:
+        "This order is physically dispatched. Generate the invoice if you haven't already; the shipment records stay live for BRCGS audit + customer queries.",
+      primary_cta: %{
+        label: "Generate invoice",
+        kind: "link",
+        href: "/sales/orders/#{co.uuid}"
+      },
+      secondary_ctas: [
+        %{
+          label: "Open shipments",
+          kind: "link",
+          href: "/shipments",
+          description:
+            "See the audit trail — every truck that took part of this order."
+        }
+      ]
+    }
   end
 
   # Output lots on THIS order's MOs that are currently placed in a
@@ -1395,6 +1525,39 @@ defmodule Backend.OrderWizard do
             BackendWeb.Payloads.render_code(%{id: lot.id}, "stock_lot")
         }
       end)
+    end
+  end
+
+  # Shipments in `draft` linked to any of this order's dispatchable
+  # output lots. Feeds the `ready_to_dispatch` CTA when there's no
+  # missing paperwork but at least one row is still being filled in.
+  defp draft_shipments_for_order(mos) do
+    shipments_by_status(mos, ["draft"])
+  end
+
+  # Shipments in `ready` linked to any of this order's dispatchable
+  # output lots. Feeds the `awaiting_pickup` CTA — clicking the row
+  # opens the shipment where "Truck arrived — confirm pickup" lives.
+  defp ready_shipments_for_order(mos) do
+    shipments_by_status(mos, ["ready"])
+  end
+
+  defp shipments_by_status(mos, statuses) do
+    lot_ids =
+      mos
+      |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
+      |> Enum.map(& &1.id)
+      |> Enum.uniq()
+
+    if lot_ids == [] do
+      []
+    else
+      from(s in Backend.Shipments.Shipment,
+        where: s.stock_lot_id in ^lot_ids and s.status in ^statuses,
+        order_by: [asc: s.inserted_at, asc: s.id],
+        select: %{uuid: s.uuid, status: s.status, stock_lot_id: s.stock_lot_id}
+      )
+      |> Repo.all()
     end
   end
 

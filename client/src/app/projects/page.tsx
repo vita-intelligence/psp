@@ -47,6 +47,8 @@ const PHASE_COLUMNS: ReadonlyArray<OrderWizardPhaseKey> = [
   "final_release",
   "awaiting_routing",
   "ready_to_dispatch",
+  "awaiting_pickup",
+  "dispatched",
 ];
 
 const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
@@ -58,7 +60,9 @@ const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
   closeout: PackageOpen,
   final_release: ShieldCheck,
   awaiting_routing: PackageOpen,
-  ready_to_dispatch: CheckCircle2,
+  ready_to_dispatch: FileText,
+  awaiting_pickup: Truck,
+  dispatched: CheckCircle2,
   cancelled: Ban,
 };
 
@@ -71,7 +75,9 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   closeout: "Awaiting closeout",
   final_release: "Awaiting release",
   awaiting_routing: "Awaiting routing",
-  ready_to_dispatch: "Ready to dispatch",
+  ready_to_dispatch: "Shipment paperwork",
+  awaiting_pickup: "Awaiting pickup",
+  dispatched: "Dispatched",
   cancelled: "Cancelled",
 };
 
@@ -97,7 +103,9 @@ const PHASE_ACCENT: Record<OrderWizardPhaseKey, string> = {
   closeout: "bg-amber-500/80 dark:bg-amber-400/80",
   final_release: "bg-sky-500/80 dark:bg-sky-400/80",
   awaiting_routing: "bg-sky-500/80 dark:bg-sky-400/80",
-  ready_to_dispatch: "bg-emerald-500/80 dark:bg-emerald-400/80",
+  ready_to_dispatch: "bg-sky-500/80 dark:bg-sky-400/80",
+  awaiting_pickup: "bg-amber-500/80 dark:bg-amber-400/80",
+  dispatched: "bg-emerald-500/80 dark:bg-emerald-400/80",
   cancelled: "bg-destructive/70",
 };
 
@@ -113,7 +121,9 @@ const PHASE_COUNT_TONE: Record<
   closeout: "amber",
   final_release: "sky",
   awaiting_routing: "sky",
-  ready_to_dispatch: "emerald",
+  ready_to_dispatch: "sky",
+  awaiting_pickup: "amber",
+  dispatched: "emerald",
   cancelled: "destructive",
 };
 

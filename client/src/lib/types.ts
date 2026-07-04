@@ -2688,6 +2688,8 @@ export type OrderWizardPhaseKey =
   | "final_release"
   | "awaiting_routing"
   | "ready_to_dispatch"
+  | "awaiting_pickup"
+  | "dispatched"
   | "cancelled";
 
 export interface OrderWizardPhase {
