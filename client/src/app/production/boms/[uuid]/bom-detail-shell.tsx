@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ListChecks, Pencil, Star } from "lucide-react";
 import { toast } from "sonner";
@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { CommentThread } from "@/components/comments/comment-thread";
-import { PageCursors } from "@/components/realtime/page-cursors";
 import { PageLockBanner } from "@/components/realtime/page-lock-banner";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { formatCompanyMoney, formatCompanyNumber } from "@/lib/format/company";
@@ -50,7 +49,6 @@ export function BOMDetailShell({
   const router = useRouter();
   const prefs = useFormatPrefs();
   const pathname = usePathname() ?? "";
-  const anchorRef = useRef<HTMLDivElement>(null);
   const { isLeader, leader } = usePageLeadership(pathname);
   const locked = !isLeader && !!leader;
   const [mode, setMode] = useState<"view" | "edit">("view");
@@ -79,8 +77,7 @@ export function BOMDetailShell({
   const printHref = `/api/production/boms/${encodeURIComponent(bom.uuid)}/print.pdf`;
 
   return (
-    <div ref={anchorRef} className="relative space-y-6">
-      <PageCursors pageId={pathname} anchorRef={anchorRef} />
+    <div className="relative space-y-6">
       {locked && mode === "view" && <PageLockBanner leader={leader} />}
       {error && (
         <ErrorBanner
