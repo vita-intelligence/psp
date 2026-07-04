@@ -2456,41 +2456,57 @@ defmodule Backend.OrderWizard do
   # ----- CO events ------------------------------------------------
 
   defp co_events(co, signers) do
+    co = Repo.preload(co, [:created_by, :submitted_by, :confirmed_by, :cancelled_by])
+
     approver_event =
       signers.approver &&
-        %{
-          at: signers.approver.signed_at,
-          label:
-            "Approver signed off — #{(signers.approver.signed_by && signers.approver.signed_by.name) || "—"}",
-          scope: "co"
-        }
+        co_event(
+          signers.approver.signed_at,
+          "Approver signed off",
+          co,
+          signers.approver.signed_by
+        )
 
     director_event =
       signers.director &&
-        %{
-          at: signers.director.signed_at,
-          label:
-            "Director signed off — #{(signers.director.signed_by && signers.director.signed_by.name) || "—"}",
-          scope: "co"
-        }
+        co_event(
+          signers.director.signed_at,
+          "Director signed off",
+          co,
+          signers.director.signed_by
+        )
 
     [
       co.inserted_at &&
-        %{at: co.inserted_at, label: "Order drafted", scope: "co"},
+        co_event(co.inserted_at, "Order drafted", co, co.created_by),
       co.submitted_at &&
-        %{at: co.submitted_at, label: "Submitted for approval", scope: "co"},
+        co_event(co.submitted_at, "Submitted for approval", co, co.submitted_by),
       approver_event,
       director_event,
       co.confirmed_at &&
-        %{
-          at: co.confirmed_at,
-          label: "Confirmed — released for production",
-          scope: "co"
-        },
+        co_event(
+          co.confirmed_at,
+          "Confirmed — released for production",
+          co,
+          co.confirmed_by
+        ),
       co.cancelled_at &&
-        %{at: co.cancelled_at, label: "Order cancelled", scope: "co"}
+        co_event(co.cancelled_at, "Order cancelled", co, co.cancelled_by)
     ]
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp co_event(at, label, co, actor) do
+    %{
+      at: at,
+      label: label,
+      scope: "co",
+      actor: actor_name(actor),
+      record_ref: "Order",
+      record_code: render_code(co, "customer_order") || "##{co.id}",
+      href: "/sales/orders/#{co.uuid}",
+      href_label: "Open order"
+    }
   end
 
   # ----- MO events ------------------------------------------------
@@ -2506,66 +2522,84 @@ defmodule Backend.OrderWizard do
     from(mo in ManufacturingOrder,
       join: line in assoc(mo, :customer_order_line),
       where: line.customer_order_id == ^co.id,
-      order_by: [asc: mo.id]
+      order_by: [asc: mo.id],
+      preload: [
+        :created_by,
+        :prepared_by,
+        :approved_by,
+        :purchasing_requested_by,
+        :released_to_warehouse_by,
+        :pickup_started_by,
+        :pickup_completed_by,
+        :updated_by
+      ]
     )
     |> Repo.all()
     |> Enum.flat_map(&mo_event_rows/1)
   end
 
   defp mo_event_rows(%ManufacturingOrder{} = mo) do
-    tag = mo_tag(mo)
-
     [
       mo.inserted_at &&
-        row("mo", mo.inserted_at, "MO #{tag} drafted", mo),
+        mo_event(mo.inserted_at, "drafted", mo, mo.created_by),
       mo.prepared_at &&
-        row("mo", mo.prepared_at, "MO #{tag} prepared for approval", mo),
+        mo_event(mo.prepared_at, "prepared for approval", mo, mo.prepared_by),
       mo.approved_at &&
-        row("mo", mo.approved_at, "MO #{tag} approved for scheduling", mo),
+        mo_event(mo.approved_at, "approved for scheduling", mo, mo.approved_by),
       mo.purchasing_requested_at &&
-        row(
-          "mo",
+        mo_event(
           mo.purchasing_requested_at,
-          "MO #{tag} purchasing requested — shortages sent to procurement",
-          mo
+          "purchasing requested — shortages sent to procurement",
+          mo,
+          mo.purchasing_requested_by
         ),
       mo.released_to_warehouse_at &&
-        row(
-          "mo",
+        mo_event(
           mo.released_to_warehouse_at,
-          "MO #{tag} released to warehouse for material pickup",
-          mo
+          "released to warehouse for material pickup",
+          mo,
+          mo.released_to_warehouse_by
         ),
       mo.pickup_started_at &&
-        row(
-          "mo",
+        mo_event(
           mo.pickup_started_at,
-          "MO #{tag} pickup started — picker walking the bookings",
-          mo
+          "pickup started — picker walking the bookings",
+          mo,
+          mo.pickup_started_by
         ),
       mo.pickup_completed_at &&
-        row(
-          "mo",
+        mo_event(
           mo.pickup_completed_at,
-          "MO #{tag} materials staged at production feed",
-          mo
+          "materials staged at production feed",
+          mo,
+          mo.pickup_completed_by
         ),
       mo.actual_start &&
-        row("mo", mo.actual_start, "MO #{tag} production started", mo),
+        mo_event(mo.actual_start, "production started", mo, mo.updated_by),
       mo.actual_finish &&
-        row("mo", mo.actual_finish, "MO #{tag} production finished", mo),
+        mo_event(mo.actual_finish, "production finished", mo, mo.updated_by),
       mo.needs_replan_at &&
-        row("mo", mo.needs_replan_at, "MO #{tag} needs replan", mo)
+        mo_event(mo.needs_replan_at, "needs replan", mo, mo.updated_by)
     ]
     |> Enum.reject(&is_nil/1)
   end
 
-  defp mo_tag(%ManufacturingOrder{} = mo) do
-    render_code(mo, "manufacturing_order") || "##{mo.id}"
-  end
+  defp mo_event(at, action, mo, actor) do
+    code = render_code(mo, "manufacturing_order") || "##{mo.id}"
 
-  defp row("mo", at, label, %ManufacturingOrder{uuid: uuid}) do
-    %{at: at, label: label, scope: "mo", mo_uuid: uuid}
+    %{
+      at: at,
+      label: "MO #{code} #{action}",
+      scope: "mo",
+      actor: actor_name(actor),
+      record_ref: "Manufacturing order",
+      record_code: code,
+      href: "/production/manufacturing-orders/#{mo.uuid}",
+      href_label: "Open MO",
+      # Legacy — kept so pre-refactor callers still resolve. Frontend
+      # should read `href` instead.
+      mo_uuid: mo.uuid
+    }
   end
 
   # ----- PO events ------------------------------------------------
@@ -2596,7 +2630,8 @@ defmodule Backend.OrderWizard do
       ids ->
         from(po in PurchaseOrder,
           where: po.id in ^ids,
-          order_by: [asc: po.id]
+          order_by: [asc: po.id],
+          preload: [:created_by, :submitted_by, :ordered_by, :received_by, :cancelled_by]
         )
         |> Repo.all()
         |> Enum.flat_map(&po_event_rows/1)
@@ -2604,37 +2639,34 @@ defmodule Backend.OrderWizard do
   end
 
   defp po_event_rows(%PurchaseOrder{} = po) do
-    tag = render_code(po, "purchase_order") || "##{po.id}"
-
     [
       po.inserted_at &&
-        %{at: po.inserted_at, label: "PO #{tag} drafted", scope: "po"},
+        po_event(po.inserted_at, "drafted", po, po.created_by),
       po.submitted_at &&
-        %{
-          at: po.submitted_at,
-          label: "PO #{tag} submitted for approval",
-          scope: "po"
-        },
+        po_event(po.submitted_at, "submitted for approval", po, po.submitted_by),
       po.ordered_at &&
-        %{
-          at: po.ordered_at,
-          label: "PO #{tag} sent to vendor",
-          scope: "po"
-        },
+        po_event(po.ordered_at, "sent to vendor", po, po.ordered_by),
       po.received_at &&
-        %{
-          at: po.received_at,
-          label: "PO #{tag} fully received",
-          scope: "po"
-        },
+        po_event(po.received_at, "fully received", po, po.received_by),
       po.cancelled_at &&
-        %{
-          at: po.cancelled_at,
-          label: "PO #{tag} cancelled",
-          scope: "po"
-        }
+        po_event(po.cancelled_at, "cancelled", po, po.cancelled_by)
     ]
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp po_event(at, action, po, actor) do
+    code = render_code(po, "purchase_order") || "##{po.id}"
+
+    %{
+      at: at,
+      label: "PO #{code} #{action}",
+      scope: "po",
+      actor: actor_name(actor),
+      record_ref: "Purchase order",
+      record_code: code,
+      href: "/procurement/purchase-orders/#{po.uuid}",
+      href_label: "Open PO"
+    }
   end
 
   # ----- Shipment events ------------------------------------------
@@ -2642,42 +2674,40 @@ defmodule Backend.OrderWizard do
   defp shipment_events(co) do
     from(s in Shipment,
       where: s.customer_order_id == ^co.id,
-      order_by: [asc: s.id]
+      order_by: [asc: s.id],
+      preload: [:created_by, :ready_by, :picked_up_by, :cancelled_by]
     )
     |> Repo.all()
     |> Enum.flat_map(&shipment_event_rows/1)
   end
 
   defp shipment_event_rows(%Shipment{} = s) do
-    tag = render_code(s, "shipment") || "##{s.id}"
-
     [
       s.inserted_at &&
-        %{
-          at: s.inserted_at,
-          label: "Shipment #{tag} drafted",
-          scope: "shipment"
-        },
+        shipment_event(s.inserted_at, "drafted", s, s.created_by),
       s.ready_at &&
-        %{
-          at: s.ready_at,
-          label: "Shipment #{tag} ready for carrier pickup",
-          scope: "shipment"
-        },
+        shipment_event(s.ready_at, "ready for carrier pickup", s, s.ready_by),
       s.picked_up_at &&
-        %{
-          at: s.picked_up_at,
-          label: "Shipment #{tag} picked up by carrier",
-          scope: "shipment"
-        },
+        shipment_event(s.picked_up_at, "picked up by carrier", s, s.picked_up_by),
       s.cancelled_at &&
-        %{
-          at: s.cancelled_at,
-          label: "Shipment #{tag} cancelled",
-          scope: "shipment"
-        }
+        shipment_event(s.cancelled_at, "cancelled", s, s.cancelled_by)
     ]
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp shipment_event(at, action, s, actor) do
+    code = render_code(s, "shipment") || "##{s.id}"
+
+    %{
+      at: at,
+      label: "Shipment #{code} #{action}",
+      scope: "shipment",
+      actor: actor_name(actor),
+      record_ref: "Shipment",
+      record_code: code,
+      href: "/shipments/#{s.uuid}",
+      href_label: "Open shipment"
+    }
   end
 
   # ----- Invoice events -------------------------------------------
@@ -2685,27 +2715,40 @@ defmodule Backend.OrderWizard do
   defp invoice_events(co) do
     from(i in CustomerInvoice,
       where: i.customer_order_id == ^co.id,
-      order_by: [asc: i.id]
+      order_by: [asc: i.id],
+      preload: [:created_by, :sent_by, :cancelled_by]
     )
     |> Repo.all()
     |> Enum.flat_map(&invoice_event_rows/1)
   end
 
   defp invoice_event_rows(%CustomerInvoice{} = i) do
-    tag = render_code(i, "customer_invoice") || "##{i.id}"
-
     [
       i.inserted_at &&
-        %{
-          at: i.inserted_at,
-          label: "Invoice #{tag} issued",
-          scope: "invoice"
-        }
+        invoice_event(i.inserted_at, "issued", i, i.created_by)
     ]
     |> Enum.reject(&is_nil/1)
   end
 
+  defp invoice_event(at, action, i, actor) do
+    code = render_code(i, "customer_invoice") || "##{i.id}"
+
+    %{
+      at: at,
+      label: "Invoice #{code} #{action}",
+      scope: "invoice",
+      actor: actor_name(actor),
+      record_ref: "Invoice",
+      record_code: code,
+      href: "/sales/invoices/#{i.uuid}",
+      href_label: "Open invoice"
+    }
+  end
+
   # ----- helpers --------------------------------------------------
+
+  defp actor_name(%{name: name}) when is_binary(name), do: name
+  defp actor_name(_), do: nil
 
   defp preload_co(%CustomerOrder{} = co) do
     Repo.preload(co, [

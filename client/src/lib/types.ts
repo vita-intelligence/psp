@@ -2932,8 +2932,20 @@ export interface OrderWizardTimelineEntry {
   at: string;
   label: string;
   scope: "co" | "mo" | "po" | "shipment" | "invoice";
-  mo_uuid?: string;
+  /** Who did it — nil for pre-audit rows or system-generated events. */
   actor?: string | null;
+  /** Which record this event belongs to. `record_ref` is the human
+   *  label ("Manufacturing order"), `record_code` is the rendered
+   *  numbering code so the reader can trace one thread through a busy
+   *  stream. */
+  record_ref?: string | null;
+  record_code?: string | null;
+  /** Deep link + label to the specific record the event describes. */
+  href?: string | null;
+  href_label?: string | null;
+  /** Legacy — kept so pre-refactor callers still resolve. Prefer
+   *  `href` for new code. */
+  mo_uuid?: string;
 }
 
 export interface OrderWizardInvoice {

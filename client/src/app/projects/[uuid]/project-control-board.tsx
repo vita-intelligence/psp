@@ -2574,21 +2574,38 @@ function TimelineCard({
                     </div>
                     <div className="min-w-0 flex-1 pb-1">
                       <p className="leading-snug">{entry.label}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">
-                        {formatCompanyDate(entry.at, prefs)}
-                        {entry.actor ? ` · ${entry.actor}` : ""}
-                        {entry.mo_uuid && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                        <time>{formatCompanyDate(entry.at, prefs)}</time>
+                        {entry.actor && (
                           <>
-                            {" · "}
+                            <span aria-hidden>·</span>
+                            <span className="inline-flex items-center gap-0.5">
+                              <UserIcon
+                                className="size-2.5"
+                                aria-hidden
+                              />
+                              <span className="font-medium text-foreground">
+                                {entry.actor}
+                              </span>
+                            </span>
+                          </>
+                        )}
+                        {entry.href && entry.href_label && (
+                          <>
+                            <span aria-hidden>·</span>
                             <Link
-                              href={`/production/manufacturing-orders/${entry.mo_uuid}`}
-                              className="text-brand underline-offset-2 hover:underline"
+                              href={entry.href}
+                              className="inline-flex items-center gap-0.5 text-brand underline-offset-2 hover:underline"
                             >
-                              open MO
+                              <ExternalLink
+                                className="size-2.5"
+                                aria-hidden
+                              />
+                              {entry.href_label}
                             </Link>
                           </>
                         )}
-                      </p>
+                      </div>
                     </div>
                   </li>
                 );
