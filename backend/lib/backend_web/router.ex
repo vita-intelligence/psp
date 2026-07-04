@@ -74,6 +74,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "manufacturing_order_step"
   end
 
+  pipeline :comments_shipment do
+    plug :put_entity_type, "shipment"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -1236,6 +1240,15 @@ defmodule BackendWeb.Router do
   scope "/api/production/manufacturing-order-steps/:entity_uuid/comments",
         BackendWeb do
     pipe_through [:api_authed, :comments_manufacturing_order_step]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+  end
+
+  scope "/api/shipments/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_shipment]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

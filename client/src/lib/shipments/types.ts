@@ -31,6 +31,7 @@ export interface ShipmentLotSummary {
 }
 
 export interface Shipment {
+  id: number;
   uuid: string;
   status: ShipmentStatus;
   qty: string;
@@ -46,7 +47,15 @@ export interface Shipment {
   planned_ship_at: string | null;
   notes: string | null;
   loading_photo_url: string | null;
-  customer: { id: number; uuid: string; name: string } | null;
+  customer: {
+    id: number;
+    uuid: string;
+    name: string;
+    legal_name: string | null;
+    contact_name: string | null;
+    legal_address: string | null;
+    country_code: string | null;
+  } | null;
   customer_order: { id: number; uuid: string; status: string } | null;
   stock_lot: ShipmentLotSummary | null;
   created_at: string;

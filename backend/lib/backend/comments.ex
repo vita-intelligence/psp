@@ -65,7 +65,8 @@ defmodule Backend.Comments do
     "manufacturing_order_step" => [
       "production.mo_edit",
       "production.mo_execute"
-    ]
+    ],
+    "shipment" => ["production.final_release"]
   }
 
   @entity_types Map.keys(@write_perms)

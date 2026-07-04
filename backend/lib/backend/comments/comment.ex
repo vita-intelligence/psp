@@ -39,6 +39,7 @@ defmodule Backend.Comments.Comment do
     manufacturing_order
     manufacturing_order_step
     loyalty_program
+    shipment
   )
   @visibilities ~w(internal shared)
   @body_max 4_000

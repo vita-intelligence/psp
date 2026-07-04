@@ -7,7 +7,8 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getShipment } from "@/lib/shipments/server";
-import { ShipmentForm } from "./shipment-form";
+import { listCommentsForEntity } from "@/lib/comments/server";
+import { ShipmentDetail } from "./shipment-detail";
 
 export const metadata = { title: "Shipment · PSP" };
 export const dynamic = "force-dynamic";
@@ -23,9 +24,10 @@ export default async function ShipmentDetailPage({ params }: Props) {
   }
 
   const { uuid } = await params;
-  const [shipment, defaults] = await Promise.all([
+  const [shipment, defaults, comments] = await Promise.all([
     getShipment(uuid),
     getCompanyDefaults(),
+    listCommentsForEntity("shipment", uuid),
   ]);
 
   if (!shipment) notFound();
@@ -36,7 +38,7 @@ export default async function ShipmentDetailPage({ params }: Props) {
       <PresenceMount />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-4xl space-y-6">
+        <div className="mx-auto max-w-5xl space-y-6">
           <div className="text-sm">
             <Link
               href="/shipments"
@@ -61,7 +63,14 @@ export default async function ShipmentDetailPage({ params }: Props) {
             </p>
           </header>
 
-          <ShipmentForm shipment={shipment} companyDefaults={defaults} />
+          <ShipmentDetail
+            shipment={shipment}
+            companyDefaults={defaults}
+            initialComments={comments ?? []}
+            currentUserId={user.id}
+            canComment={hasPermission(user, "production.final_release")}
+            canEdit={hasPermission(user, "production.final_release")}
+          />
         </div>
       </main>
     </div>

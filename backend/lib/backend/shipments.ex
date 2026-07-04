@@ -25,6 +25,7 @@ defmodule Backend.Shipments do
   import Ecto.Query
 
   alias Backend.Accounts.User
+  alias Backend.Audit
   alias Backend.CustomerOrders.CustomerOrderLine
   alias Backend.Customers.Customer
   alias Backend.Production.ManufacturingOrder
@@ -76,7 +77,60 @@ defmodule Backend.Shipments do
         status: "draft"
       })
       |> Repo.insert()
+      |> tap_audit_created(actor)
     end
+  end
+
+  defp tap_audit_created({:ok, %Shipment{} = row}, actor) do
+    Audit.record_created(actor, "shipment", row, shipment_snapshot(row))
+    {:ok, row}
+  end
+
+  defp tap_audit_created(other, _actor), do: other
+
+  defp tap_audit_updated({:ok, %Shipment{} = row}, actor, before_state) do
+    Audit.record_updated(
+      actor,
+      "shipment",
+      row,
+      before_state,
+      shipment_snapshot(row)
+    )
+
+    {:ok, row}
+  end
+
+  defp tap_audit_updated(other, _actor, _before), do: other
+
+  # Snapshot used by the audit log's before / after diff. Keep in
+  # sync with @editable_fields + the lifecycle columns so field-level
+  # changes render meaningfully on the history rail.
+  defp shipment_snapshot(%Shipment{} = row) do
+    %{
+      status: row.status,
+      qty: row.qty,
+      customer_id: row.customer_id,
+      customer_order_id: row.customer_order_id,
+      recipient_name: row.recipient_name,
+      ship_to_address: row.ship_to_address,
+      ship_to_country: row.ship_to_country,
+      carrier: row.carrier,
+      vehicle_registration: row.vehicle_registration,
+      driver_name: row.driver_name,
+      consignment_note_ref: row.consignment_note_ref,
+      seal_number: row.seal_number,
+      temperature_c: row.temperature_c,
+      planned_ship_at: row.planned_ship_at,
+      notes: row.notes,
+      loading_photo_url: row.loading_photo_url,
+      ready_at: row.ready_at,
+      ready_by_id: row.ready_by_id,
+      picked_up_at: row.picked_up_at,
+      picked_up_by_id: row.picked_up_by_id,
+      cancelled_at: row.cancelled_at,
+      cancelled_by_id: row.cancelled_by_id,
+      cancel_reason: row.cancel_reason
+    }
   end
 
   # ==================================================================
@@ -87,9 +141,12 @@ defmodule Backend.Shipments do
   def update(%User{} = actor, %Shipment{} = shipment, attrs) do
     with :ok <- ensure_permission(actor),
          :ok <- ensure_editable(shipment) do
+      before_state = shipment_snapshot(shipment)
+
       shipment
       |> Shipment.update_changeset(attrs)
       |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
     end
   end
 
@@ -97,12 +154,15 @@ defmodule Backend.Shipments do
   def mark_ready(%User{} = actor, %Shipment{} = shipment) do
     with :ok <- ensure_permission(actor),
          :ok <- ensure_status(shipment, "draft") do
+      before_state = shipment_snapshot(shipment)
+
       shipment
       |> Shipment.ready_changeset(%{
         ready_at: DateTime.utc_now() |> DateTime.truncate(:second),
         ready_by_id: actor.id
       })
       |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
     end
   end
 
@@ -111,9 +171,12 @@ defmodule Backend.Shipments do
   def mark_draft(%User{} = actor, %Shipment{} = shipment) do
     with :ok <- ensure_permission(actor),
          :ok <- ensure_status(shipment, "ready") do
+      before_state = shipment_snapshot(shipment)
+
       shipment
       |> Shipment.unready_changeset()
       |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
     end
   end
 
@@ -125,12 +188,15 @@ defmodule Backend.Shipments do
   def confirm_pickup(%User{} = actor, %Shipment{} = shipment) do
     with :ok <- ensure_permission(actor),
          :ok <- ensure_status(shipment, "ready") do
+      before_state = shipment_snapshot(shipment)
+
       shipment
       |> Shipment.pickup_changeset(%{
         picked_up_at: DateTime.utc_now() |> DateTime.truncate(:second),
         picked_up_by_id: actor.id
       })
       |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
     end
   end
 
@@ -138,6 +204,8 @@ defmodule Backend.Shipments do
   def cancel(%User{} = actor, %Shipment{} = shipment, reason) do
     with :ok <- ensure_permission(actor),
          :ok <- ensure_cancelable(shipment) do
+      before_state = shipment_snapshot(shipment)
+
       shipment
       |> Shipment.cancel_changeset(%{
         cancelled_at: DateTime.utc_now() |> DateTime.truncate(:second),
@@ -145,6 +213,7 @@ defmodule Backend.Shipments do
         cancel_reason: reason
       })
       |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
     end
   end
 

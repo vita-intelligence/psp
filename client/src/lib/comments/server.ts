@@ -23,6 +23,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   routing: "production/routings",
   manufacturing_order: "production/manufacturing-orders",
   manufacturing_order_step: "production/manufacturing-order-steps",
+  shipment: "shipments",
 };
 
 /** Server-component-friendly initial timeline fetch. Returns null on

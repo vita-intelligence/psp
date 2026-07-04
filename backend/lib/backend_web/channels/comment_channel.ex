@@ -148,6 +148,9 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "manufacturing_order"),
     do: gate(user, "production.mo_view")
 
+  defp check_view_perm(user, "shipment"),
+    do: gate(user, "production.final_release")
+
   defp check_view_perm(_user, _other), do: {:error, :forbidden}
 
   defp gate(user, code) do
@@ -247,6 +250,13 @@ defmodule BackendWeb.CommentChannel do
 
   defp resolve_entity_id(user, "manufacturing_order", uuid) do
     case Backend.Production.get_manufacturing_order(user.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "shipment", uuid) do
+    case Backend.Shipments.get_shipment(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
       _ -> {:error, :not_found}
     end

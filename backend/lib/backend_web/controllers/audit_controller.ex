@@ -81,6 +81,10 @@ defmodule BackendWeb.AuditController do
     "customer_return" => "customer_returns.view",
     "customer_return_line" => "customer_returns.view",
     "customer_return_file" => "customer_returns.view",
+    # Outbound shipment paperwork (BRCGS Issue 9 § 5.4.6). Ride the
+    # same permission as final release since the same operator drives
+    # both.
+    "shipment" => "production.final_release",
     "loyalty_program" => "loyalty.view",
     "loyalty_program_tier" => "loyalty.view",
     "customer_credit" => "loyalty.view",
@@ -612,6 +616,13 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "manufacturing_order_booking", entity_id) do
     case Backend.Repo.get(Backend.Production.ManufacturingOrderBooking, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "shipment", entity_id) do
+    case Backend.Repo.get(Backend.Shipments.Shipment, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

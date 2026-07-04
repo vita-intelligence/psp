@@ -4901,6 +4901,7 @@ defmodule BackendWeb.Payloads do
 
   def shipment(%Backend.Shipments.Shipment{} = s) do
     %{
+      id: s.id,
       uuid: s.uuid,
       status: s.status,
       qty: decimal_to_string(s.qty),
@@ -4935,7 +4936,15 @@ defmodule BackendWeb.Payloads do
   def shipment(_), do: nil
 
   defp shipment_customer(%Backend.Customers.Customer{} = c) do
-    %{id: c.id, uuid: c.uuid, name: c.name}
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      name: c.name,
+      legal_name: c.legal_name,
+      contact_name: c.contact_name,
+      legal_address: c.legal_address,
+      country_code: c.country_code
+    }
   end
 
   defp shipment_customer(_), do: nil

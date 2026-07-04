@@ -64,7 +64,8 @@ type EntityType =
   | "routing"
   | "manufacturing_order"
   | "manufacturing_order_step"
-  | "manufacturing_order_booking";
+  | "manufacturing_order_booking"
+  | "shipment";
 type Listener = () => void;
 
 const listeners = new Map<string, Set<Listener>>();
