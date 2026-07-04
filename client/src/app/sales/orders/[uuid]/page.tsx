@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -108,27 +109,21 @@ export default async function CustomerOrderDetailPage({
             )}
           </div>
 
-          <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <ShoppingBag className="size-4 text-muted-foreground" />
-                  <span className="font-mono text-xs font-semibold text-muted-foreground">
-                    {co.code ?? `#${co.id}`}
-                  </span>
-                  <Badge tone={STATUS_TONE[co.status]}>{STATUS_LABEL[co.status]}</Badge>
-                </div>
-                <h1 className="truncate text-2xl font-semibold tracking-tight">
-                  {co.customer?.name ?? "—"}
-                </h1>
-                {co.customer_reference && (
-                  <p className="text-xs text-muted-foreground">
-                    Customer ref: {co.customer_reference}
-                  </p>
-                )}
-              </div>
-            </div>
-          </header>
+          <RecordHero
+            icon={ShoppingBag}
+            code={co.code ?? `#${co.id}`}
+            chips={
+              <Badge tone={STATUS_TONE[co.status]}>{STATUS_LABEL[co.status]}</Badge>
+            }
+            title={co.customer?.name ?? "—"}
+            subtitle={
+              co.customer_reference ? (
+                <p className="text-xs text-muted-foreground">
+                  Customer ref: {co.customer_reference}
+                </p>
+              ) : undefined
+            }
+          />
 
           <COWorkflowCard
             co={co}
