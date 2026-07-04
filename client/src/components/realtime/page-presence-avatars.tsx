@@ -73,11 +73,15 @@ function PeerAvatar({
   peer: CollabPeer;
   isLeader: boolean;
 }) {
+  const viewport =
+    peer.viewportW && peer.viewportH
+      ? ` · ${peer.viewportW}×${peer.viewportH}`
+      : "";
+  const label = isLeader
+    ? `${peer.name} — head of room${viewport}`
+    : `${peer.name}${viewport}`;
   return (
-    <div
-      title={isLeader ? `${peer.name} — head of room` : peer.name}
-      className="relative"
-    >
+    <div title={label} className="relative">
       <UserAvatar
         name={peer.name}
         email={peer.email}

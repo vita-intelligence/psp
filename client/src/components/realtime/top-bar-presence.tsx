@@ -8,6 +8,7 @@
 import { usePathname } from "next/navigation";
 import { PagePresenceAvatars } from "./page-presence-avatars";
 import { GlobalPageCursors } from "./global-page-cursors";
+import { GlobalPointGesture } from "./global-point-gesture";
 
 const DISABLED_PREFIXES = ["/login", "/logout", "/auth"];
 
@@ -21,6 +22,7 @@ export function TopBarPresence() {
     <>
       <PagePresenceAvatars pageId={pathname ?? ""} disabled={disabled} />
       <GlobalPageCursors />
+      <GlobalPointGesture />
     </>
   );
 }

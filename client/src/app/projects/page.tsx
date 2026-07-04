@@ -294,6 +294,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   return (
     <Link
       href={`/projects/${co.uuid}`}
+      data-collab-id={`project:${co.uuid}`}
       className="group block rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-brand/60 hover:shadow-md"
     >
       {/* CO code — top, monospace, small */}

@@ -34,12 +34,27 @@ export interface CollabPeer {
   avatar?: string | null;
   /** Unix epoch seconds. Lowest wins leadership. */
   joinedAt: number;
+  /** Reported viewport dimensions in CSS pixels — used by the
+   *  avatar-tooltip chip to warn about screen-size mismatches. */
+  viewportW?: number | null;
+  viewportH?: number | null;
 }
 
 export interface RemoteCursor {
   x: number;
   y: number;
   peer: CollabPeer;
+}
+
+/** A "point at this element" burst — one peer clicked Alt+element and
+ *  the receiver should pulse the DOM node whose `data-collab-id`
+ *  matches. Reflow-safe: works even when the element is at a
+ *  different pixel location on the receiver's screen. */
+export interface PointBurst {
+  peerId: string;
+  collabId: string;
+  /** Unix ms when the burst arrived — used as a stable id + expiry. */
+  at: number;
 }
 
 export interface PagePresenceJoinError {
@@ -63,6 +78,12 @@ interface Result {
   cursors: RemoteCursor[];
   setCursor: (x: number, y: number) => void;
   hideCursor: () => void;
+  /** Inbound "point at this element" bursts. Consumers pulse the
+   *  matching DOM node then call `clearPointBurst(at)` to acknowledge. */
+  pointBursts: PointBurst[];
+  clearPointBurst: (at: number) => void;
+  /** Send a "point at this element" burst to peers. */
+  point: (collabId: string) => void;
   connected: boolean;
   joinError: PagePresenceJoinError | null;
 }
@@ -72,6 +93,8 @@ export function usePagePresence({ pageId, disabled = false }: Options): Result {
   const releaseRoom = usePagePresenceStore((s) => s.releaseRoom);
   const pushCursor = usePagePresenceStore((s) => s.pushCursor);
   const hidePeerCursor = usePagePresenceStore((s) => s.hideCursor);
+  const pushPoint = usePagePresenceStore((s) => s.pushPoint);
+  const clearBurst = usePagePresenceStore((s) => s.clearPointBurst);
 
   useEffect(() => {
     if (disabled || !pageId) return;
@@ -83,6 +106,7 @@ export function usePagePresence({ pageId, disabled = false }: Options): Result {
 
   const peers = room?.peers ?? [];
   const cursorsByPeer = room?.cursorsByPeer ?? {};
+  const pointBursts = room?.pointBursts ?? [];
   const myUserId = room?.myUserId ?? null;
 
   const leader = selectLeader(peers);
@@ -102,6 +126,22 @@ export function usePagePresence({ pageId, disabled = false }: Options): Result {
     hidePeerCursor(pageId);
   }, [pageId, hidePeerCursor]);
 
+  const point = useCallback(
+    (collabId: string) => {
+      if (!pageId) return;
+      pushPoint(pageId, collabId);
+    },
+    [pageId, pushPoint],
+  );
+
+  const clearPointBurst = useCallback(
+    (at: number) => {
+      if (!pageId) return;
+      clearBurst(pageId, at);
+    },
+    [pageId, clearBurst],
+  );
+
   return {
     peers,
     isLeader,
@@ -109,6 +149,9 @@ export function usePagePresence({ pageId, disabled = false }: Options): Result {
     cursors,
     setCursor,
     hideCursor,
+    pointBursts,
+    clearPointBurst,
+    point,
     connected: room?.connected ?? false,
     joinError: room?.joinError ?? null,
   };

@@ -49,7 +49,7 @@ defmodule BackendWeb.PageChannel do
   @default_room_limit 25
 
   @impl true
-  def join("page:" <> path, _params, socket) do
+  def join("page:" <> path, params, socket) do
     # Re-read the user for the same reason FormChannel does — an admin
     # may have granted a permission since the socket opened.
     cached = socket.assigns.current_user
@@ -69,6 +69,7 @@ defmodule BackendWeb.PageChannel do
           socket
           |> assign(:current_user, user)
           |> assign(:page_path, path)
+          |> assign(:join_viewport, viewport_from_params(params))
 
         {:ok, %{user_id: user.id, limit: @default_room_limit}, socket}
     end
@@ -78,16 +79,35 @@ defmodule BackendWeb.PageChannel do
   def handle_info(:after_join, socket) do
     user = socket.assigns.current_user
     now = System.system_time(:second)
+    viewport = socket.assigns[:join_viewport]
 
     {:ok, _ref} =
       Presence.track(socket, "#{user.id}", %{
         name: user.name,
         email: user.email,
         avatar: user.avatar,
-        joined_at: now
+        joined_at: now,
+        viewport_w: viewport[:w],
+        viewport_h: viewport[:h]
       })
 
     push(socket, "presence_state", Presence.list(socket))
+    {:noreply, socket}
+  end
+
+  # Alt+click "point at this element" gesture — collab_id refers to a
+  # `data-collab-id` attribute on the sender's DOM; receiver looks for
+  # the matching element and pulses it. Reflow-safe: the element may
+  # be at a different pixel location on the receiver's screen, but
+  # it's the same data.
+  @impl true
+  def handle_in("point:element", %{"collab_id" => collab_id}, socket)
+      when is_binary(collab_id) do
+    broadcast_from!(socket, "point:element", %{
+      from: socket.assigns.current_user.id,
+      collab_id: collab_id
+    })
+
     {:noreply, socket}
   end
 
@@ -133,4 +153,19 @@ defmodule BackendWeb.PageChannel do
   end
 
   defp clamp_unit(_), do: 0.0
+
+  # Parse {viewport_w, viewport_h} out of the join params. Clamp to
+  # sane bounds so a hostile client can't stuff nonsense.
+  defp viewport_from_params(%{"viewport_w" => w, "viewport_h" => h}) do
+    %{w: clamp_dim(w), h: clamp_dim(h)}
+  end
+
+  defp viewport_from_params(_), do: %{w: nil, h: nil}
+
+  defp clamp_dim(n) when is_integer(n) and n > 0 and n < 20_000, do: n
+
+  defp clamp_dim(n) when is_number(n) and n > 0 and n < 20_000,
+    do: trunc(n)
+
+  defp clamp_dim(_), do: nil
 end

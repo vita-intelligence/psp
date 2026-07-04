@@ -372,6 +372,7 @@ export function DataTable<T>({
                 rows.map((row) => (
                   <TableRow
                     key={rowKey(row)}
+                    data-collab-id={`row:${tableId}:${rowKey(row)}`}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     className={cn(
                       onRowClick && "cursor-pointer",
@@ -415,6 +416,7 @@ export function DataTable<T>({
               <button
                 key={rowKey(row)}
                 type="button"
+                data-collab-id={`row:${tableId}:${rowKey(row)}`}
                 onClick={() => onRowClick?.(row)}
                 className={cn(
                   "block w-full rounded-md border border-border/60 bg-background p-3 text-left",

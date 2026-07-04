@@ -14,6 +14,7 @@ import { getSocket } from "./socket";
 import type {
   CollabPeer,
   PagePresenceJoinError,
+  PointBurst,
   RemoteCursor,
 } from "./use-page-presence";
 
@@ -22,6 +23,10 @@ interface Room {
   refCount: number;
   peers: CollabPeer[];
   cursorsByPeer: Record<string, { x: number; y: number }>;
+  /** Latest inbound point:element bursts. Consumers read + clear via
+   *  clearPointBurst. Cheap incremental array of {peerId, collabId,
+   *  at} — only the tail matters for UI (last one wins). */
+  pointBursts: PointBurst[];
   connected: boolean;
   joinError: PagePresenceJoinError | null;
   myUserId: string | null;
@@ -33,6 +38,8 @@ interface StoreState {
   releaseRoom: (pageId: string) => void;
   pushCursor: (pageId: string, x: number, y: number) => void;
   hideCursor: (pageId: string) => void;
+  pushPoint: (pageId: string, collabId: string) => void;
+  clearPointBurst: (pageId: string, at: number) => void;
 }
 
 const CURSOR_THROTTLE_MS = 33;
@@ -64,6 +71,7 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
           refCount: 1,
           peers: [],
           cursorsByPeer: {},
+          pointBursts: [],
           connected: false,
           joinError: null,
           myUserId: null,
@@ -80,7 +88,13 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
       if (!current) return;
 
       const topic = `page:${encodeURIComponent(pageId)}`;
-      const channel = socket.channel(topic, {});
+      // Include the local viewport so peers can see each other's
+      // screen size — used by the top-bar avatar tooltip.
+      const viewport =
+        typeof window !== "undefined"
+          ? { viewport_w: window.innerWidth, viewport_h: window.innerHeight }
+          : {};
+      const channel = socket.channel(topic, viewport);
       const presence = new Presence(channel);
 
       const rebuildPeers = () => {
@@ -96,12 +110,16 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
             const t = (m.joined_at as number) ?? Number.MAX_SAFE_INTEGER;
             if (t < joinedAt) joinedAt = t;
           }
+          const viewportW = (meta.viewport_w as number | null) ?? null;
+          const viewportH = (meta.viewport_h as number | null) ?? null;
           list.push({
             id,
             name: (meta.name as string) ?? "",
             email: (meta.email as string) ?? "",
             avatar: (meta.avatar as string) ?? null,
             joinedAt,
+            viewportW,
+            viewportH,
           });
           return list;
         });
@@ -153,6 +171,30 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
           };
         });
       });
+
+      channel.on(
+        "point:element",
+        (msg: { from: number; collab_id: string }) => {
+          set((s) => {
+            const r = s.rooms[pageId];
+            if (!r) return s;
+            const burst: PointBurst = {
+              peerId: String(msg.from),
+              collabId: msg.collab_id,
+              at: Date.now(),
+            };
+            return {
+              rooms: {
+                ...s.rooms,
+                [pageId]: {
+                  ...r,
+                  pointBursts: [...r.pointBursts, burst],
+                },
+              },
+            };
+          });
+        },
+      );
 
       channel
         .join()
@@ -254,6 +296,27 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
       window.clearTimeout(throttleTimers[pageId]);
       delete throttleTimers[pageId];
     }
+  },
+
+  pushPoint: (pageId, collabId) => {
+    const room = get().rooms[pageId];
+    if (!room?.channel) return;
+    room.channel.push("point:element", { collab_id: collabId });
+  },
+
+  clearPointBurst: (pageId, at) => {
+    set((s) => {
+      const r = s.rooms[pageId];
+      if (!r) return s;
+      const kept = r.pointBursts.filter((b) => b.at !== at);
+      if (kept.length === r.pointBursts.length) return s;
+      return {
+        rooms: {
+          ...s.rooms,
+          [pageId]: { ...r, pointBursts: kept },
+        },
+      };
+    });
   },
 }));
 
