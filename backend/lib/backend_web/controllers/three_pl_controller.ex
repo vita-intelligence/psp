@@ -2,16 +2,17 @@ defmodule BackendWeb.ThreePLController do
   @moduledoc """
   3PL (bailee-custody) endpoints — mount under `/api/three-pl`.
 
-    * `POST /route/:lot_uuid`             — route a released lot to
-                                            three_pl_storage or dispatch
-    * `GET  /inventory`                   — bailee lots for the 3PL tab
-    * `GET  /capacity/:warehouse_id`      — free m³ per purpose, for the
-                                            wizard's inline capacity hint
+  Gate matrix (personas genuinely differ):
 
-  All actions gate on `production.final_release` — the routing decision
-  belongs to the same operator who just signed the release. Capacity
-  and inventory reads use the same gate so a viewer without release
-  perms doesn't see bailee inventory (compliance-flavoured info).
+    * `route_lot` — production.final_release (part of the release
+      ceremony; whoever signs picks the route).
+    * `inventory` / `lot_detail` / `capacity` — three_pl.view (broad
+      audience: sales, finance, customer service, warehouse mgr).
+    * `request_dispatch` / `list_pending_dispatches` / `get_dispatch`
+      / `cancel_dispatch` — three_pl.dispatch_request (desktop
+      shipping coordinator).
+    * `complete_dispatch` — three_pl.dispatch_execute (mobile
+      warehouse operator scanning the pick).
   """
 
   use BackendWeb, :controller
@@ -22,7 +23,24 @@ defmodule BackendWeb.ThreePLController do
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "production.final_release"
+  plug RequirePermission,
+       "production.final_release" when action in [:route_lot]
+
+  plug RequirePermission,
+       "three_pl.view"
+       when action in [:inventory, :lot_detail, :capacity]
+
+  plug RequirePermission,
+       "three_pl.dispatch_request"
+       when action in [
+              :request_dispatch,
+              :list_pending_dispatches,
+              :get_dispatch,
+              :cancel_dispatch
+            ]
+
+  plug RequirePermission,
+       "three_pl.dispatch_execute" when action in [:complete_dispatch]
 
   action_fallback BackendWeb.FallbackController
 

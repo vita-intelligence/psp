@@ -21,7 +21,27 @@ defmodule BackendWeb.ShipmentController do
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "production.final_release"
+  # Split per persona:
+  # - view (index / show): shipments.view — broad audience.
+  # - edit (create + update + mark_ready + mark_draft + cancel):
+  #   shipments.edit — paperwork side, shipping coordinator.
+  # - pickup: shipments.pickup — physical truck-arrival event
+  #   (placeholder button today; mobile arrival form lands here later).
+  plug RequirePermission,
+       "shipments.view" when action in [:index, :show]
+
+  plug RequirePermission,
+       "shipments.edit"
+       when action in [
+              :create,
+              :update,
+              :mark_ready,
+              :mark_draft,
+              :cancel
+            ]
+
+  plug RequirePermission,
+       "shipments.pickup" when action in [:pickup]
 
   action_fallback BackendWeb.FallbackController
 

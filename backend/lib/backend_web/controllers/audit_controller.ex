@@ -81,10 +81,9 @@ defmodule BackendWeb.AuditController do
     "customer_return" => "customer_returns.view",
     "customer_return_line" => "customer_returns.view",
     "customer_return_file" => "customer_returns.view",
-    # Outbound shipment paperwork (BRCGS Issue 9 § 5.4.6). Ride the
-    # same permission as final release since the same operator drives
-    # both.
-    "shipment" => "production.final_release",
+    # Outbound shipment paperwork (BRCGS Issue 9 § 5.4.6). Read is
+    # broad-audience — same gate as the /shipments tab.
+    "shipment" => "shipments.view",
     "loyalty_program" => "loyalty.view",
     "loyalty_program_tier" => "loyalty.view",
     "customer_credit" => "loyalty.view",

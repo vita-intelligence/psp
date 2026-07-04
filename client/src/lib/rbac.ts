@@ -123,7 +123,13 @@ export type PermissionCode =
   | "production.final_release"
   | "production.mo_delete"
   | "warehouse.pick"
-  | "warehouse.return_pickup";
+  | "warehouse.return_pickup"
+  | "three_pl.view"
+  | "three_pl.dispatch_request"
+  | "three_pl.dispatch_execute"
+  | "shipments.view"
+  | "shipments.edit"
+  | "shipments.pickup";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

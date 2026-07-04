@@ -61,6 +61,7 @@ interface Props {
   currentUserId: number;
   canComment: boolean;
   canEdit: boolean;
+  canPickup: boolean;
 }
 
 interface FormState {
@@ -103,6 +104,7 @@ export function ShipmentDetail({
   currentUserId,
   canComment,
   canEdit,
+  canPickup,
 }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -627,11 +629,15 @@ export function ShipmentDetail({
         currentUserId={currentUserId}
       />
 
-      {/* -------- Sticky action bar -------- */}
-      {!finalized && canEdit && (
+      {/* -------- Sticky action bar --------
+           Per-persona: canEdit = shipments.edit (Mark ready / Reopen /
+           Cancel). canPickup = shipments.pickup (Truck arrived). Bar
+           renders whenever the shipment is still open AND the viewer
+           holds at least one relevant perm. */}
+      {!finalized && (canEdit || canPickup) && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border/60 bg-background/95 shadow-lg backdrop-blur">
           <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-2 px-4 py-3 sm:px-8">
-            {shipment.status === "draft" && (
+            {shipment.status === "draft" && canEdit && (
               <Button
                 variant="outline"
                 onClick={markReady}
@@ -646,30 +652,32 @@ export function ShipmentDetail({
                 Mark ready for pickup
               </Button>
             )}
-            {shipment.status === "ready" && (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={markDraft}
-                  disabled={busy}
-                >
-                  Reopen for edits
-                </Button>
-                <Button onClick={confirmPickup} disabled={busy}>
-                  <Truck className="mr-1 size-4" />
-                  Truck arrived — confirm pickup
-                </Button>
-              </>
+            {shipment.status === "ready" && canEdit && (
+              <Button
+                variant="outline"
+                onClick={markDraft}
+                disabled={busy}
+              >
+                Reopen for edits
+              </Button>
             )}
-            <Button
-              variant="ghost"
-              onClick={cancelShipment}
-              disabled={busy}
-              className="ml-auto text-destructive hover:text-destructive"
-            >
-              <XCircle className="mr-1 size-4" />
-              Cancel shipment
-            </Button>
+            {shipment.status === "ready" && canPickup && (
+              <Button onClick={confirmPickup} disabled={busy}>
+                <Truck className="mr-1 size-4" />
+                Truck arrived — confirm pickup
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="ghost"
+                onClick={cancelShipment}
+                disabled={busy}
+                className="ml-auto text-destructive hover:text-destructive"
+              >
+                <XCircle className="mr-1 size-4" />
+                Cancel shipment
+              </Button>
+            )}
           </div>
         </div>
       )}

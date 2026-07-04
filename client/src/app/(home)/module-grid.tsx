@@ -67,7 +67,7 @@ export function ModuleGrid({ user }: { user: User }) {
       label: "3PL storage",
       Icon: Package,
       caption: "Bailee custody inventory",
-      gate: hasPermission(user, "production.final_release"),
+      gate: hasPermission(user, "three_pl.view"),
     },
     {
       key: "shipments",
@@ -75,7 +75,7 @@ export function ModuleGrid({ user }: { user: User }) {
       label: "Shipments",
       Icon: Truck,
       caption: "Outbound dispatch records",
-      gate: hasPermission(user, "production.final_release"),
+      gate: hasPermission(user, "shipments.view"),
     },
     {
       key: "settings",

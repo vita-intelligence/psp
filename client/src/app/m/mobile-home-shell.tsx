@@ -122,7 +122,7 @@ export const MOBILE_HOME_TILES = [
     label: "3PL dispatch",
     description: "Pick bailee stock → walk to shipping",
     icon: Truck,
-    permission: "stock.move",
+    permission: "three_pl.dispatch_execute",
     badgeKey: "pendingThreePlDispatchCount",
   },
   {

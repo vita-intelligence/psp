@@ -36,10 +36,12 @@ defmodule Backend.Shipments do
   alias Backend.Warehouses.StorageCell
   alias Backend.Stock.Placement
 
-  # Same capability as final release + 3PL routing — this is the
-  # follow-up paperwork on the same operator's plate. Splitting into
-  # its own permission is overkill.
-  @perm "production.final_release"
+  # Three perms for three personas: view (broad audience — sales,
+  # finance, customer service, warehouse manager), edit (shipping
+  # coordinator filling paperwork + mark_ready / mark_draft / cancel),
+  # and pickup (physical truck-arrival confirmation).
+  @perm_edit "shipments.edit"
+  @perm_pickup "shipments.pickup"
 
   # ==================================================================
   # Creation
@@ -59,7 +61,7 @@ defmodule Backend.Shipments do
   `%Ecto.Changeset{}`.
   """
   def create_from_lot(%User{} = actor, lot_uuid) when is_binary(lot_uuid) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_edit(actor),
          {:ok, lot} <- fetch_lot(actor.company_id, lot_uuid),
          {:ok, dispatch_qty} <- find_dispatch_placement_qty(lot),
          :ok <- ensure_no_open_shipment(lot) do
@@ -139,7 +141,7 @@ defmodule Backend.Shipments do
 
   @doc "Edit fields on a draft or ready shipment."
   def update(%User{} = actor, %Shipment{} = shipment, attrs) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_edit(actor),
          :ok <- ensure_editable(shipment) do
       before_state = shipment_snapshot(shipment)
 
@@ -152,7 +154,7 @@ defmodule Backend.Shipments do
 
   @doc "Draft → ready. Required paperwork fields must be filled."
   def mark_ready(%User{} = actor, %Shipment{} = shipment) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_edit(actor),
          :ok <- ensure_status(shipment, "draft") do
       before_state = shipment_snapshot(shipment)
 
@@ -169,7 +171,7 @@ defmodule Backend.Shipments do
   @doc "Ready → draft. Reopens editing when the desktop team spots " <>
          "something missing before the truck arrives."
   def mark_draft(%User{} = actor, %Shipment{} = shipment) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_edit(actor),
          :ok <- ensure_status(shipment, "ready") do
       before_state = shipment_snapshot(shipment)
 
@@ -186,7 +188,7 @@ defmodule Backend.Shipments do
   the goods left so the wizard can advance.
   """
   def confirm_pickup(%User{} = actor, %Shipment{} = shipment) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_pickup(actor),
          :ok <- ensure_status(shipment, "ready") do
       before_state = shipment_snapshot(shipment)
 
@@ -202,7 +204,7 @@ defmodule Backend.Shipments do
 
   @doc "Draft | Ready → cancelled with a reason."
   def cancel(%User{} = actor, %Shipment{} = shipment, reason) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_edit(actor),
          :ok <- ensure_cancelable(shipment) do
       before_state = shipment_snapshot(shipment)
 
@@ -318,8 +320,16 @@ defmodule Backend.Shipments do
   # Private helpers
   # ==================================================================
 
-  defp ensure_permission(actor) do
-    if RBAC.has_permission?(actor, @perm), do: :ok, else: {:error, :forbidden}
+  defp ensure_edit(actor) do
+    if RBAC.has_permission?(actor, @perm_edit),
+      do: :ok,
+      else: {:error, :forbidden}
+  end
+
+  defp ensure_pickup(actor) do
+    if RBAC.has_permission?(actor, @perm_pickup),
+      do: :ok,
+      else: {:error, :forbidden}
   end
 
   defp ensure_editable(%Shipment{status: s}) when s in ~w(draft ready), do: :ok

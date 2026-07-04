@@ -325,6 +325,36 @@ defmodule Backend.RBAC.Permissions do
      "Pick up closed-out MO materials + produced output from the production-side dispatch cell and place them back into warehouse storage"}
   ]
 
+  # 3PL — customer-owned finished goods held under bailee custody
+  # after a released lot is routed to `three_pl_storage` (BRCGS Issue
+  # 9 § 4.4 segregation + § 5.6 handoff). Split into three because the
+  # personas are genuinely different: read-only visibility (sales /
+  # finance / customer service), request a dispatch from the desk
+  # (shipping coordinator), and physically execute the pick on the
+  # warehouse floor (mobile-only operator).
+  @three_pl [
+    {"three_pl.view",
+     "View bailee-custody inventory (customer-owned finished goods) — the /three-pl tab, per-item pages, and paperwork trails. Read-only."},
+    {"three_pl.dispatch_request",
+     "Queue a partial-lot dispatch from bailee custody: qty + optional reference / notes. Creates a pending pick task for the warehouse floor. Also allows cancelling a pending request."},
+    {"three_pl.dispatch_execute",
+     "Execute a queued 3PL dispatch on mobile — scan the source three_pl_storage cell + lot, walk the qty to a dispatch cell, take a photo, confirm. Flips the dispatch row to completed atomically with the physical move."}
+  ]
+
+  # Shipments — customer-facing outbound record (BRCGS Issue 9 §
+  # 5.4.6 receipt trail). One row per truck / lot. Draft → ready →
+  # picked_up lifecycle. Split into three: broad-audience read,
+  # paperwork edit (recipient / carrier / waybill / mark-ready /
+  # cancel), and the physical truck-arrival confirmation.
+  @shipments [
+    {"shipments.view",
+     "View the /shipments list + detail pages. Broad audience — sales, finance, customer service, warehouse. Read-only."},
+    {"shipments.edit",
+     "Create + edit shipment paperwork (recipient, delivery address, country, carrier, notes, etc.), mark ready for pickup, reopen for edits, cancel with a reason."},
+    {"shipments.pickup",
+     "Confirm truck arrived and picked up the shipment. Flips status to picked_up (immutable). Currently a placeholder button; the mobile truck-arrival form with signature + BOL photo lands here later."}
+  ]
+
   def all do
     Enum.map(
       @company ++
@@ -351,7 +381,9 @@ defmodule Backend.RBAC.Permissions do
         @procurement ++
         @goods_in ++
         @production ++
-        @warehouse,
+        @warehouse ++
+        @three_pl ++
+        @shipments,
       &elem(&1, 0)
     )
   end
@@ -383,7 +415,9 @@ defmodule Backend.RBAC.Permissions do
       procurement: @procurement,
       goods_in: @goods_in,
       production: @production,
-      warehouse: @warehouse
+      warehouse: @warehouse,
+      three_pl: @three_pl,
+      shipments: @shipments
     }
   end
 
@@ -945,6 +979,31 @@ defmodule Backend.RBAC.Permissions do
             read: nil,
             create: nil,
             update: "warehouse.return_pickup",
+            delete: nil
+          }
+        ]
+      },
+      %{
+        section: "Outbound",
+        resources: [
+          %{
+            key: "three_pl",
+            label: "3PL bailee custody",
+            description:
+              "Customer-owned finished goods held on our floor after Positive Release routes a lot to 3PL storage. View covers the /three-pl inventory + per-lot pages; dispatch_request queues a partial-lot pick from the desktop; dispatch_execute is the mobile scan flow that walks it to the shipping bay with photo evidence.",
+            read: "three_pl.view",
+            create: "three_pl.dispatch_request",
+            update: "three_pl.dispatch_execute",
+            delete: nil
+          },
+          %{
+            key: "shipments",
+            label: "Shipments (BRCGS § 5.4.6)",
+            description:
+              "Customer-facing outbound record — one row per truck. Edit covers the paperwork side (recipient, delivery address, notes, mark ready, cancel); pickup is the physical truck-arrival confirmation (placeholder button today; full mobile arrival form with signature + BOL photo lands here later).",
+            read: "shipments.view",
+            create: "shipments.edit",
+            update: "shipments.pickup",
             delete: nil
           }
         ]

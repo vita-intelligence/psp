@@ -286,7 +286,7 @@ defmodule BackendWeb.CommentsController do
   defp view_perm_for("routing"), do: "production.routing_view"
   defp view_perm_for("manufacturing_order"), do: "production.mo_view"
   defp view_perm_for("manufacturing_order_step"), do: "production.mo_view"
-  defp view_perm_for("shipment"), do: "production.final_release"
+  defp view_perm_for("shipment"), do: "shipments.view"
   defp view_perm_for(_), do: nil
 
   defp check_view_perm(actor, entity_type) do

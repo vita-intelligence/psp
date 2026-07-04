@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ShipmentsPage() {
   const user = await requireUser();
-  if (!hasPermission(user, "production.final_release")) {
+  if (!hasPermission(user, "shipments.view")) {
     redirect("/settings/profile");
   }
 

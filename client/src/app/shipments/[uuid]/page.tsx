@@ -19,7 +19,7 @@ interface Props {
 
 export default async function ShipmentDetailPage({ params }: Props) {
   const user = await requireUser();
-  if (!hasPermission(user, "production.final_release")) {
+  if (!hasPermission(user, "shipments.view")) {
     redirect("/settings/profile");
   }
 
@@ -68,8 +68,9 @@ export default async function ShipmentDetailPage({ params }: Props) {
             companyDefaults={defaults}
             initialComments={comments ?? []}
             currentUserId={user.id}
-            canComment={hasPermission(user, "production.final_release")}
-            canEdit={hasPermission(user, "production.final_release")}
+            canComment={hasPermission(user, "shipments.edit")}
+            canEdit={hasPermission(user, "shipments.edit")}
+            canPickup={hasPermission(user, "shipments.pickup")}
           />
         </div>
       </main>

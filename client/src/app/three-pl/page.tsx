@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ThreePLInventoryPage() {
   const user = await requireUser();
-  if (!hasPermission(user, "production.final_release")) {
+  if (!hasPermission(user, "three_pl.view")) {
     redirect("/settings/profile");
   }
 

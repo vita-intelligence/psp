@@ -18,7 +18,7 @@ interface Props {
 
 export default async function ThreePLLotDetailPage({ params }: Props) {
   const user = await requireUser();
-  if (!hasPermission(user, "production.final_release")) {
+  if (!hasPermission(user, "three_pl.view")) {
     redirect("/settings/profile");
   }
 

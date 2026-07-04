@@ -25,7 +25,7 @@ interface Props {
 
 export default async function NewShipmentPage({ searchParams }: Props) {
   const user = await requireUser();
-  if (!hasPermission(user, "production.final_release")) {
+  if (!hasPermission(user, "shipments.edit")) {
     redirect("/settings/profile");
   }
 

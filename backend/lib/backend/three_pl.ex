@@ -39,10 +39,14 @@ defmodule Backend.ThreePL do
   alias Backend.ThreePL.Dispatch
   alias Backend.Warehouses.StorageCell
 
-  # Same capability as Positive Release — routing the released lot is
-  # the immediate follow-up step in the same ceremony. Splitting them
-  # would just create a second role for no gain.
-  @perm "production.final_release"
+  # Routing itself rides `production.final_release` — it's part of
+  # the release ceremony (whoever signs picks the route). The dispatch
+  # half of this module (request + complete) uses distinct perms so
+  # the desktop shipping coordinator and the mobile warehouse operator
+  # can be different humans with different capabilities.
+  @perm_route "production.final_release"
+  @perm_dispatch_request "three_pl.dispatch_request"
+  @perm_dispatch_execute "three_pl.dispatch_execute"
 
   @routing_choices ~w(three_pl shipment)
   def routing_choices, do: @routing_choices
@@ -84,7 +88,7 @@ defmodule Backend.ThreePL do
     override = Keyword.get(opts, :override_customer_id)
 
     result =
-      with :ok <- ensure_permission(actor),
+      with :ok <- ensure_permission_route(actor),
            :ok <- ensure_available(lot),
            :ok <- ensure_not_already_routed(lot),
            {:ok, warehouse_id} <- resolve_warehouse(lot),
@@ -168,7 +172,7 @@ defmodule Backend.ThreePL do
   `%Ecto.Changeset{}`.
   """
   def request_dispatch(%User{} = actor, attrs) when is_map(attrs) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_permission_dispatch_request(actor),
          {:ok, lot_uuid} <- fetch_key(attrs, "lot_uuid"),
          {:ok, lot} <- fetch_bailee_lot(actor.company_id, lot_uuid),
          {:ok, qty} <- parse_qty(Map.get(attrs, "qty")),
@@ -213,7 +217,7 @@ defmodule Backend.ThreePL do
   """
   def complete_dispatch(%User{} = actor, dispatch_uuid, attrs)
       when is_binary(dispatch_uuid) and is_map(attrs) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_permission_dispatch_execute(actor),
          {:ok, dispatch, lot} <- fetch_pending_dispatch(actor.company_id, dispatch_uuid),
          {:ok, from_placement} <- find_bailee_placement(lot),
          :ok <- ensure_qty_available(from_placement, dispatch.qty),
@@ -319,7 +323,7 @@ defmodule Backend.ThreePL do
   already been completed.
   """
   def cancel_dispatch(%User{} = actor, dispatch_uuid) when is_binary(dispatch_uuid) do
-    with :ok <- ensure_permission(actor),
+    with :ok <- ensure_permission_dispatch_request(actor),
          {:ok, dispatch, _lot} <- fetch_pending_dispatch(actor.company_id, dispatch_uuid) do
       dispatch
       |> Dispatch.completion_changeset(%{
@@ -549,8 +553,25 @@ defmodule Backend.ThreePL do
   defp event_kind("three_pl"), do: "routed_to_3pl"
   defp event_kind("shipment"), do: "routed_to_shipment"
 
-  defp ensure_permission(actor) do
-    if RBAC.has_permission?(actor, @perm), do: :ok, else: {:error, :forbidden}
+  # Kept as three arity-1 helpers rather than one parametrised
+  # function so the individual call sites read like a story:
+  # `ensure_permission_route` at the top of route_released_lot, etc.
+  defp ensure_permission_route(actor) do
+    if RBAC.has_permission?(actor, @perm_route),
+      do: :ok,
+      else: {:error, :forbidden}
+  end
+
+  defp ensure_permission_dispatch_request(actor) do
+    if RBAC.has_permission?(actor, @perm_dispatch_request),
+      do: :ok,
+      else: {:error, :forbidden}
+  end
+
+  defp ensure_permission_dispatch_execute(actor) do
+    if RBAC.has_permission?(actor, @perm_dispatch_execute),
+      do: :ok,
+      else: {:error, :forbidden}
   end
 
   defp fetch_key(attrs, key) do

@@ -149,7 +149,7 @@ defmodule BackendWeb.CommentChannel do
     do: gate(user, "production.mo_view")
 
   defp check_view_perm(user, "shipment"),
-    do: gate(user, "production.final_release")
+    do: gate(user, "shipments.view")
 
   defp check_view_perm(_user, _other), do: {:error, :forbidden}
 
