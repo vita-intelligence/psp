@@ -15,8 +15,7 @@
 // buttons still need their own leadership check to actually block the
 // click.
 
-import { useRef, type ReactNode } from "react";
-import { PageCursors } from "@/components/realtime/page-cursors";
+import { type ReactNode } from "react";
 import { PageLockBanner } from "@/components/realtime/page-lock-banner";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { cn } from "@/lib/utils";
@@ -39,12 +38,13 @@ export function PageCursorAnchor({
   disabled = false,
   suppressBanner = false,
 }: Props) {
-  const anchorRef = useRef<HTMLDivElement>(null);
   const { isLeader, leader } = usePageLeadership(pageId, disabled);
   const showBanner = !disabled && !suppressBanner && !isLeader && !!leader;
+  // Cursors are now rendered by <GlobalPageCursors> inside <TopBarPresence>
+  // — one publisher per page, viewport-anchored, works on every route.
+  // This wrapper only owns the lock banner at the top of a detail page.
   return (
-    <div ref={anchorRef} className={cn("relative", className)}>
-      <PageCursors pageId={pageId} anchorRef={anchorRef} disabled={disabled} />
+    <div className={cn("relative", className)}>
       {showBanner && <PageLockBanner leader={leader} />}
       {children}
     </div>
