@@ -1659,19 +1659,25 @@ export interface Floor {
 // ---------- Stock ---------------------------------------------------
 
 export type StockLotStatus =
+  | "expected"
   | "requested"
   | "received"
   | "quarantine"
+  | "awaiting_release"
+  | "available"
+  | "on_hold"
   | "depleted"
   | "disposed"
-  | "rejected";
+  | "rejected"
+  | "canceled";
 
 export type StockSourceKind =
   | "purchase_order"
   | "manufacturing_order"
   | "opening_balance"
   | "return"
-  | "adjustment";
+  | "adjustment"
+  | "manual";
 
 export type StockMovementKind =
   | "receive"

@@ -140,16 +140,25 @@ function Stat({
 
 function StatusChip({ status }: { status: StockLot["status"] }) {
   const tone: Record<StockLot["status"], string> = {
+    expected:
+      "bg-indigo-500/10 text-indigo-700 ring-indigo-500/30 dark:text-indigo-400",
     requested:
-      "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400",
+      "bg-indigo-500/10 text-indigo-700 ring-indigo-500/30 dark:text-indigo-400",
     received:
-      "bg-emerald-500/10 text-emerald-700 ring-emerald-500/30 dark:text-emerald-400",
+      "bg-sky-500/10 text-sky-700 ring-sky-500/30 dark:text-sky-400",
     quarantine:
       "bg-orange-500/10 text-orange-700 ring-orange-500/30 dark:text-orange-400",
+    awaiting_release:
+      "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400",
+    available:
+      "bg-emerald-500/10 text-emerald-700 ring-emerald-500/30 dark:text-emerald-400",
+    on_hold:
+      "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400",
     depleted:
       "bg-zinc-500/10 text-zinc-600 ring-zinc-500/30 dark:text-zinc-400",
     disposed: "bg-red-500/10 text-red-700 ring-red-500/30 dark:text-red-400",
     rejected: "bg-red-500/10 text-red-700 ring-red-500/30 dark:text-red-400",
+    canceled: "bg-zinc-500/10 text-zinc-600 ring-zinc-500/30 dark:text-zinc-400",
   };
   return (
     <span

@@ -45,33 +45,48 @@ const DEFAULT_SORT: SortSpec = { field: "id", direction: "desc" };
 // `received`, amber for transitional states, muted for terminal.
 const STATUS_TONE: Record<
   StockLotStatus,
-  "emerald" | "amber" | "muted" | "destructive" | "indigo"
+  "emerald" | "amber" | "muted" | "destructive" | "indigo" | "sky"
 > = {
+  expected: "indigo",
   requested: "indigo",
-  received: "emerald",
+  received: "sky",
   quarantine: "amber",
+  awaiting_release: "amber",
+  available: "emerald",
+  on_hold: "amber",
   depleted: "muted",
   disposed: "muted",
   rejected: "destructive",
+  canceled: "muted",
 };
 
 const STATUS_LABEL: Record<StockLotStatus, string> = {
+  expected: "Expected",
   requested: "Requested",
   received: "Received",
   quarantine: "Quarantine",
+  awaiting_release: "Awaiting release",
+  available: "Available",
+  on_hold: "On hold",
   depleted: "Depleted",
   disposed: "Disposed",
   rejected: "Rejected",
+  canceled: "Canceled",
 };
 
 const STATUS_OPTIONS = (
   [
+    "expected",
     "requested",
     "received",
     "quarantine",
+    "awaiting_release",
+    "available",
+    "on_hold",
     "depleted",
     "disposed",
     "rejected",
+    "canceled",
   ] as StockLotStatus[]
 ).map((s) => ({ label: STATUS_LABEL[s], value: s }));
 

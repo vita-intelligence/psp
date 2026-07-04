@@ -315,64 +315,67 @@ function SelectInput({
       : null;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "flex h-7 w-full items-center justify-between gap-1 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground hover:bg-muted",
-            activeLabel && "text-foreground",
-          )}
-        >
-          <span className="truncate">
-            {activeLabel ?? `${placeholder.toLowerCase()}…`}
-          </span>
-          {activeLabel ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onChange(null);
-              }}
-              aria-label="Clear"
-              className="shrink-0 rounded p-0.5 hover:bg-muted-foreground/10"
-            >
-              <X className="size-3" />
-            </button>
-          ) : (
-            <ChevronDown className="size-3 shrink-0 opacity-50" />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-1">
-        <div className="max-h-56 space-y-0.5 overflow-y-auto">
-          {options.map((opt) => {
-            const isActive = active !== null && String(active) === String(opt.value);
-            return (
-              <button
-                key={String(opt.value)}
-                type="button"
-                onClick={() => {
-                  onChange(isActive ? null : { op: "eq", value: opt.value });
-                  setOpen(false);
-                }}
-                className={cn(
-                  "w-full rounded-sm px-2 py-1 text-left text-xs hover:bg-muted",
-                  isActive && "bg-muted font-medium",
-                )}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-          {options.length === 0 && (
-            <p className="px-2 py-1 text-[11px] text-muted-foreground">
-              No options
-            </p>
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
+    <div className="relative">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex h-7 w-full items-center justify-between gap-1 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground hover:bg-muted",
+              activeLabel && "pr-6 text-foreground",
+            )}
+          >
+            <span className="truncate">
+              {activeLabel ?? `${placeholder.toLowerCase()}…`}
+            </span>
+            {!activeLabel && (
+              <ChevronDown className="size-3 shrink-0 opacity-50" />
+            )}
+          </button>
+        </PopoverTrigger>
+        {activeLabel && (
+          // Sibling — sitting outside the trigger button so we don't
+          // nest <button> in <button>. Absolute-positioned over the
+          // right edge of the trigger.
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            aria-label="Clear"
+            className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
+          >
+            <X className="size-3" />
+          </button>
+        )}
+        <PopoverContent align="start" className="w-56 p-1">
+          <div className="max-h-56 space-y-0.5 overflow-y-auto">
+            {options.map((opt) => {
+              const isActive = active !== null && String(active) === String(opt.value);
+              return (
+                <button
+                  key={String(opt.value)}
+                  type="button"
+                  onClick={() => {
+                    onChange(isActive ? null : { op: "eq", value: opt.value });
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "w-full rounded-sm px-2 py-1 text-left text-xs hover:bg-muted",
+                    isActive && "bg-muted font-medium",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+            {options.length === 0 && (
+              <p className="px-2 py-1 text-[11px] text-muted-foreground">
+                No options
+              </p>
+            )}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 }
 
@@ -407,68 +410,68 @@ function MultiSelectInput({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "flex h-7 w-full items-center justify-between gap-1 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground hover:bg-muted",
-            activeCount > 0 && "text-foreground",
-          )}
-        >
-          <span className="truncate">
-            {activeCount === 0
-              ? `${placeholder.toLowerCase()}…`
-              : `${activeCount} selected`}
-          </span>
-          {activeCount > 0 ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onChange(null);
-              }}
-              aria-label="Clear"
-              className="shrink-0 rounded p-0.5 hover:bg-muted-foreground/10"
-            >
-              <X className="size-3" />
-            </button>
-          ) : (
-            <ChevronDown className="size-3 shrink-0 opacity-50" />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-1">
-        <div className="max-h-56 space-y-0.5 overflow-y-auto">
-          {options.map((opt) => {
-            const isActive = active.has(String(opt.value));
-            return (
-              <button
-                key={String(opt.value)}
-                type="button"
-                onClick={() => toggle(opt.value)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-muted",
-                  isActive && "bg-muted font-medium",
-                )}
-              >
-                <span
+    <div className="relative">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex h-7 w-full items-center justify-between gap-1 rounded-md border border-input bg-background px-2 text-xs text-muted-foreground hover:bg-muted",
+              activeCount > 0 && "pr-6 text-foreground",
+            )}
+          >
+            <span className="truncate">
+              {activeCount === 0
+                ? `${placeholder.toLowerCase()}…`
+                : `${activeCount} selected`}
+            </span>
+            {activeCount === 0 && (
+              <ChevronDown className="size-3 shrink-0 opacity-50" />
+            )}
+          </button>
+        </PopoverTrigger>
+        {activeCount > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            aria-label="Clear"
+            className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
+          >
+            <X className="size-3" />
+          </button>
+        )}
+        <PopoverContent align="start" className="w-56 p-1">
+          <div className="max-h-56 space-y-0.5 overflow-y-auto">
+            {options.map((opt) => {
+              const isActive = active.has(String(opt.value));
+              return (
+                <button
+                  key={String(opt.value)}
+                  type="button"
+                  onClick={() => toggle(opt.value)}
                   className={cn(
-                    "flex size-3.5 shrink-0 items-center justify-center rounded border border-border",
-                    isActive && "border-brand bg-brand text-brand-foreground",
+                    "flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-muted",
+                    isActive && "bg-muted font-medium",
                   )}
                 >
-                  {isActive && (
-                    <span className="text-[10px] leading-none">✓</span>
-                  )}
-                </span>
-                <span className="truncate">{opt.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
+                  <span
+                    className={cn(
+                      "flex size-3.5 shrink-0 items-center justify-center rounded border border-border",
+                      isActive && "border-brand bg-brand text-brand-foreground",
+                    )}
+                  >
+                    {isActive && (
+                      <span className="text-[10px] leading-none">✓</span>
+                    )}
+                  </span>
+                  <span className="truncate">{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 }
 
