@@ -222,9 +222,13 @@ export const RichComposer = forwardRef<RichComposerRef, Props>(function RichComp
         // otherwise the pseudo sits inline and the caret lands
         // AFTER the placeholder glyphs.
         "data-[empty]:before:content-[attr(data-placeholder)]",
+        // Take the pseudo out of flow so the caret starts at
+        // position 0 instead of after the placeholder glyphs. Offsets
+        // match the editor's px-3 py-1.5 so the placeholder text
+        // lines up EXACTLY where the first typed character will land.
         "data-[empty]:before:absolute",
-        "data-[empty]:before:left-0",
-        "data-[empty]:before:top-0",
+        "data-[empty]:before:left-3",
+        "data-[empty]:before:top-1.5",
         "data-[empty]:before:text-muted-foreground",
         "data-[empty]:before:pointer-events-none",
         className,
