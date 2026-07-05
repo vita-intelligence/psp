@@ -290,6 +290,37 @@ defmodule Backend.Accounts do
 
   def reset_password_by_token(_, _), do: {:error, :invalid_token}
 
+  ## Session revocation ------------------------------------------------
+
+  @doc """
+  Bump `token_version` on one user, invalidating every token
+  currently signed for them. Returns the updated user.
+
+  Use cases: admin "log this account off everything", user
+  self-service "log out other devices", incident-response panic
+  button. `keep_current_token_version` is the caller's escape hatch
+  for the self-service case — if you pass the user's current
+  token_version, we bump PAST it so a fresh token minted after the
+  revoke stays valid.
+  """
+  def revoke_sessions_for_user(%User{} = user) do
+    user
+    |> Ecto.Changeset.change(token_version: (user.token_version || 0) + 1)
+    |> Repo.update()
+  end
+
+  @doc """
+  Nuclear revoke — bump `token_version` on every user in the given
+  company. Returns `{count, nil}` from `Repo.update_all/3`. Every
+  session token issued before the call fails verification.
+
+  Guarded by the caller — this function does not check who's asking.
+  """
+  def revoke_all_sessions_for_company(company_id) when is_integer(company_id) do
+    from(u in User, where: u.company_id == ^company_id)
+    |> Repo.update_all(inc: [token_version: 1])
+  end
+
   ## Session tokens ---------------------------------------------------
 
   # Signed payload is `{user_id, token_version}` so we can invalidate

@@ -125,6 +125,17 @@ defmodule BackendWeb.Router do
     get "/users/:id", UserController, :show
     put "/users/:id/access", UserController, :update_access
 
+    # Admin-only incident-response panic buttons. Both bump
+    # `users.token_version`, killing existing session tokens on the
+    # next request. See `BackendWeb.AdminSecurityController`.
+    post "/admin/users/:uuid/revoke-sessions",
+         AdminSecurityController,
+         :revoke_user_sessions
+
+    post "/admin/security/revoke-all-sessions",
+         AdminSecurityController,
+         :revoke_all_sessions
+
     get "/roles", RoleController, :index
     get "/roles/:id", RoleController, :show
     post "/roles", RoleController, :create
