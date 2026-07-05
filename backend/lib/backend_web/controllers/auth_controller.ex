@@ -1,7 +1,7 @@
 defmodule BackendWeb.AuthController do
   use BackendWeb, :controller
 
-  alias Backend.{Accounts, SecurityLog}
+  alias Backend.{Accounts, MFA, SecurityLog}
   alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
@@ -127,14 +127,27 @@ defmodule BackendWeb.AuthController do
 
     case Accounts.authenticate(email, password) do
       {:ok, user} ->
-        SecurityLog.record(:login_success,
-          user_id: user.id,
-          email: user.email,
-          remote_ip: remote_ip
-        )
+        if MFA.mfa_required?(user) do
+          SecurityLog.record(:login_mfa_required,
+            user_id: user.id,
+            email: user.email,
+            remote_ip: remote_ip
+          )
 
-        token = Accounts.sign_token(user)
-        json(conn, %{token: token, user: user_payload(user)})
+          json(conn, %{
+            mfa_required: true,
+            mfa_token: Accounts.sign_mfa_challenge(user)
+          })
+        else
+          SecurityLog.record(:login_success,
+            user_id: user.id,
+            email: user.email,
+            remote_ip: remote_ip
+          )
+
+          token = Accounts.sign_token(user)
+          json(conn, %{token: token, user: user_payload(user)})
+        end
 
       {:error, :unconfirmed} ->
         SecurityLog.record(:login_unconfirmed,

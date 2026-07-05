@@ -346,6 +346,42 @@ defmodule Backend.Accounts do
     Phoenix.Token.sign(BackendWeb.Endpoint, @token_salt, {id, version || 0})
   end
 
+  ## MFA challenge tokens --------------------------------------------
+
+  # Short-lived token minted at login when the user needs MFA. Client
+  # exchanges it for a full session token at /auth/mfa/verify. Five
+  # minutes is enough for a distracted human to fetch their phone and
+  # enter a code, short enough that a stolen token expires quickly.
+  @mfa_token_salt "psp mfa challenge"
+  @mfa_token_max_age_seconds 5 * 60
+
+  def sign_mfa_challenge(%User{id: id, token_version: version}) do
+    Phoenix.Token.sign(
+      BackendWeb.Endpoint,
+      @mfa_token_salt,
+      {id, version || 0}
+    )
+  end
+
+  def verify_mfa_challenge(token) when is_binary(token) do
+    with {:ok, {user_id, token_version}}
+         when is_integer(user_id) and is_integer(token_version) <-
+           Phoenix.Token.verify(
+             BackendWeb.Endpoint,
+             @mfa_token_salt,
+             token,
+             max_age: @mfa_token_max_age_seconds
+           ),
+         %User{is_active: true} = user <- get_user(user_id),
+         true <- (user.token_version || 0) == token_version do
+      {:ok, user}
+    else
+      _ -> {:error, :invalid_mfa_challenge}
+    end
+  end
+
+  def verify_mfa_challenge(_), do: {:error, :missing}
+
   def verify_token(token) when is_binary(token) do
     result =
       with {:ok, {user_id, token_version}}

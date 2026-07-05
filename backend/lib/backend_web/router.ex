@@ -97,6 +97,11 @@ defmodule BackendWeb.Router do
     post "/auth/forgot-password", PasswordResetController, :request
     post "/auth/reset-password", PasswordResetController, :confirm
 
+    # Login-time MFA verify: exchanges a short-lived mfa_token +
+    # TOTP/recovery code for a full session token. Anonymous — the
+    # mfa_token IS the auth for this step.
+    post "/auth/mfa/verify", MfaController, :verify
+
     # Device pairing — public endpoints. `/devices/pairing-codes/:code`
     # is read-only "is this code still valid" the /pair page hits before
     # showing the claim form. `/devices/claim` swaps a one-time code for
@@ -116,6 +121,12 @@ defmodule BackendWeb.Router do
     # `token_version` (killing every other outstanding token) and
     # returns a fresh token so the current session stays alive.
     post "/auth/sessions/revoke-others", ProfileController, :revoke_other_sessions
+
+    # MFA enrollment + management (all require an active session).
+    get  "/auth/mfa/status", MfaController, :status
+    post "/auth/mfa/enroll", MfaController, :enroll
+    post "/auth/mfa/confirm", MfaController, :confirm
+    post "/auth/mfa/disable", MfaController, :disable
 
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
