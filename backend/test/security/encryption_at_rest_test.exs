@@ -67,4 +67,73 @@ defmodule Security.EncryptionAtRestTest do
 
     assert :ok = MFA.verify(reloaded, fresh_code)
   end
+
+  describe "PII column encryption sweep" do
+    test "companies.tax_number + payment_details store ciphertext" do
+      tax_number = "GB123456789"
+      payment_details = "Sort code 12-34-56, acct 12345678"
+
+      {:ok, company} =
+        %Backend.Companies.Company{}
+        |> Backend.Companies.Company.bootstrap_changeset(%{name: "PII test co"})
+        |> Backend.Repo.insert()
+
+      {:ok, updated} =
+        Backend.Companies.update_identity(company, %{
+          "tax_number" => tax_number,
+          "payment_details" => payment_details
+        })
+
+      # In-memory struct hands back plaintext.
+      assert updated.tax_number == tax_number
+      assert updated.payment_details == payment_details
+
+      # Raw column is ciphertext.
+      %{rows: [[raw_tax, raw_pay]]} =
+        Ecto.Adapters.SQL.query!(
+          Repo,
+          "SELECT tax_number, payment_details FROM companies WHERE id = $1",
+          [company.id]
+        )
+
+      assert is_binary(raw_tax) and raw_tax != tax_number
+      assert is_binary(raw_pay) and raw_pay != payment_details
+      assert raw_tax =~ "AA0"
+      assert raw_pay =~ "AA0"
+    end
+
+    test "vendors.tax_number stores ciphertext AND is dropped from search" do
+      company = insert_company!("Vendor encryption")
+      actor = insert_user!(company.id, "ve@vitamanufacture.co.uk", ["vendors.create"])
+      tax_number = "IE9876543Z"
+
+      {:ok, vendor} =
+        Backend.Vendors.create(actor, company.id, %{
+          name: "Encrypted Vendor",
+          currency_code: "EUR",
+          tax_number: tax_number
+        })
+
+      assert vendor.tax_number == tax_number
+
+      %{rows: [[raw]]} =
+        Ecto.Adapters.SQL.query!(
+          Repo,
+          "SELECT tax_number FROM vendors WHERE id = $1",
+          [vendor.id]
+        )
+
+      assert raw != tax_number
+      assert raw =~ "AA0"
+
+      # Searching for the plaintext tax number no longer matches —
+      # the search column list dropped this field. Fuzzy match still
+      # works on `name` / `legal_name` / `registration_number`.
+      {items, _} = Backend.Vendors.list_page(company.id, search: tax_number)
+      assert items == []
+
+      {items, _} = Backend.Vendors.list_page(company.id, search: "Encrypted Vendor")
+      assert Enum.any?(items, &(&1.id == vendor.id))
+    end
+  end
 end

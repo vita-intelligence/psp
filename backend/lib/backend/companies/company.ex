@@ -26,9 +26,13 @@ defmodule Backend.Companies.Company do
     field :website, :string
     field :phone, :string
     field :registration_number, :string
-    field :tax_number, :string
+    # Encrypted at rest via `Backend.Vault`. Regulator-grade PII —
+    # VAT / GST / TIN depending on jurisdiction.
+    field :tax_number, Backend.Encrypted.Binary, redact: true
     field :tax_rate, :decimal
-    field :payment_details, :string
+    # Encrypted at rest — bank account / IBAN / sort code that gets
+    # printed on remittance advice.
+    field :payment_details, Backend.Encrypted.Binary, redact: true
 
     field :timezone, :string, default: "Europe/London"
     field :date_format, :string, default: "dd/MM/yyyy"

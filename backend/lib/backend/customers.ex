@@ -60,7 +60,10 @@ defmodule Backend.Customers do
                         first_order_at last_order_at
                         last_review_at next_review_at
                         inserted_at updated_at)a
-  @customer_search ~w(name legal_name contact_name registration_number tax_number)a
+  # `tax_number` was here before we encrypted the column at rest — an
+  # ILIKE fuzzy search can't match ciphertext, so it's been dropped.
+  # Users still search by name / legal_name / contact / registration.
+  @customer_search ~w(name legal_name contact_name registration_number)a
   @customer_default_sort {:name, :asc}
 
   @identity_fields ~w(legal_name registration_number tax_number)

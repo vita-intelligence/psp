@@ -44,7 +44,10 @@ defmodule Backend.Customers.Customer do
     field :country_code, :string
 
     field :registration_number, :string
-    field :tax_number, :string
+    # Encrypted at rest via `Backend.Vault`. Regulator-grade PII;
+    # `Backend.Customers.@customer_search` no longer includes this
+    # column because ILIKE doesn't work against ciphertext.
+    field :tax_number, Backend.Encrypted.Binary, redact: true
 
     field :currency_code, :string, default: "GBP"
     field :tax_rate, :decimal
