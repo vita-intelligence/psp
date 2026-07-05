@@ -1,7 +1,7 @@
 defmodule BackendWeb.AuthController do
   use BackendWeb, :controller
 
-  alias Backend.Accounts
+  alias Backend.{Accounts, SecurityLog}
   alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
@@ -28,9 +28,16 @@ defmodule BackendWeb.AuthController do
 
   def register(conn, params) do
     builder = &confirm_url_for_token/1
+    email = params["email"]
 
     case Accounts.register_user(params, builder) do
       {:ok, user} ->
+        SecurityLog.record(:register_success,
+          user_id: user.id,
+          email: user.email,
+          remote_ip: SecurityLog.remote_ip(conn)
+        )
+
         conn
         |> put_status(:created)
         |> json(%{
@@ -39,6 +46,12 @@ defmodule BackendWeb.AuthController do
         })
 
       {:error, %Ecto.Changeset{} = changeset} ->
+        SecurityLog.record(:register_failure,
+          email: email,
+          remote_ip: SecurityLog.remote_ip(conn),
+          reason: :validation_failed
+        )
+
         fields = Errors.changeset_fields(changeset)
 
         conn
@@ -56,10 +69,21 @@ defmodule BackendWeb.AuthController do
   def confirm(conn, %{"token" => token}) do
     case Accounts.confirm_user_by_token(token) do
       {:ok, user} ->
+        SecurityLog.record(:confirmation_success,
+          user_id: user.id,
+          email: user.email,
+          remote_ip: SecurityLog.remote_ip(conn)
+        )
+
         session_token = Accounts.sign_token(user)
         json(conn, %{token: session_token, user: user_payload(user)})
 
       {:error, :invalid_token} ->
+        SecurityLog.record(:confirmation_failure,
+          remote_ip: SecurityLog.remote_ip(conn),
+          reason: :invalid_token
+        )
+
         conn
         |> put_status(:not_found)
         |> json(
@@ -70,6 +94,11 @@ defmodule BackendWeb.AuthController do
         )
 
       {:error, %Ecto.Changeset{} = cs} ->
+        SecurityLog.record(:confirmation_failure,
+          remote_ip: SecurityLog.remote_ip(conn),
+          reason: :validation_failed
+        )
+
         conn
         |> put_status(:unprocessable_entity)
         |> json(
@@ -94,12 +123,25 @@ defmodule BackendWeb.AuthController do
   end
 
   def login(conn, %{"email" => email, "password" => password}) do
+    remote_ip = SecurityLog.remote_ip(conn)
+
     case Accounts.authenticate(email, password) do
       {:ok, user} ->
+        SecurityLog.record(:login_success,
+          user_id: user.id,
+          email: user.email,
+          remote_ip: remote_ip
+        )
+
         token = Accounts.sign_token(user)
         json(conn, %{token: token, user: user_payload(user)})
 
       {:error, :unconfirmed} ->
+        SecurityLog.record(:login_unconfirmed,
+          email: normalise_email(email),
+          remote_ip: remote_ip
+        )
+
         conn
         |> put_status(:forbidden)
         |> json(
@@ -110,6 +152,12 @@ defmodule BackendWeb.AuthController do
         )
 
       {:error, :invalid_credentials} ->
+        SecurityLog.record(:login_failure,
+          email: normalise_email(email),
+          remote_ip: remote_ip,
+          reason: :invalid_credentials
+        )
+
         conn
         |> put_status(:unauthorized)
         |> json(
@@ -147,4 +195,12 @@ defmodule BackendWeb.AuthController do
   end
 
   defp user_payload(user), do: Payloads.user(user)
+
+  # Normalise the email the same way `Accounts.get_user_by_email/1`
+  # does so the log entry matches what would appear on the user
+  # record. Avoids case-drift when correlating events.
+  defp normalise_email(nil), do: nil
+
+  defp normalise_email(email) when is_binary(email),
+    do: email |> String.trim() |> String.downcase()
 end

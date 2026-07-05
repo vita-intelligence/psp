@@ -52,6 +52,13 @@ defmodule BackendWeb.Plugs.RateLimit do
         conn
 
       {:limited, retry_after} ->
+        Backend.SecurityLog.record(:rate_limited,
+          scope: scope,
+          identifier: identifier,
+          retry_after: retry_after,
+          path: conn.request_path
+        )
+
         conn
         |> put_resp_header("retry-after", Integer.to_string(retry_after))
         |> put_status(:too_many_requests)

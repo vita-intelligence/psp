@@ -15,7 +15,8 @@ for file <- [
       "test/security/upload_validation_test.exs",
       "test/security/csv_escape_test.exs",
       "test/security/stock_lot_sort_test.exs",
-      "test/security/http_rate_limit_test.exs"
+      "test/security/http_rate_limit_test.exs",
+      "test/security/security_log_test.exs"
     ] do
   Code.require_file(file)
 end

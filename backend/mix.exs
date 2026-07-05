@@ -59,7 +59,11 @@ defmodule Backend.MixProject do
       # /Applications/Google Chrome.app automatically) and is started
       # under our supervision tree with a small pool — see
       # `Backend.Application`.
-      {:chromic_pdf, "~> 1.17"}
+      {:chromic_pdf, "~> 1.17"},
+      # Elixir/Phoenix SAST. Run via `mix sobelow --config` — the
+      # rules and skip-list live in `.sobelow-conf`. CI-only dep so
+      # production releases don't bundle it.
+      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -86,6 +90,19 @@ defmodule Backend.MixProject do
       # `token_revocation_test.exs`, `auth_rate_limit_test.exs`) run
       # via the normal `mix test` once the sandbox DB is up.
       "test.security.pure": ["run --no-start test/security/support/run_pure.exs"],
+      # Sobelow SAST scan — reads `.sobelow-conf`. Wired into the CI
+      # workflow; run locally with `mix sobelow --config`.
+      sobelow: ["sobelow --config"],
+      # Combined security pass: Sobelow SAST, hex advisory audit,
+      # and the DB-free regression suite. Use before pushing
+      # security-adjacent changes. (The strict-warnings compile step
+      # is a separate concern — invoke it via `mix precommit` when
+      # you want the full pre-flight.)
+      "security.scan": [
+        "sobelow --config",
+        "hex.audit",
+        "test.security.pure"
+      ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end

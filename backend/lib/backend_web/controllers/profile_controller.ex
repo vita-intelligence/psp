@@ -1,7 +1,7 @@
 defmodule BackendWeb.ProfileController do
   use BackendWeb, :controller
 
-  alias Backend.Accounts
+  alias Backend.{Accounts, SecurityLog}
   alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
@@ -28,12 +28,39 @@ defmodule BackendWeb.ProfileController do
 
   def change_password(conn, params) do
     user = conn.assigns.current_user
+    remote_ip = SecurityLog.remote_ip(conn)
 
     case Accounts.change_password(user, params) do
       {:ok, _updated} ->
+        SecurityLog.record(:password_changed,
+          user_id: user.id,
+          email: user.email,
+          remote_ip: remote_ip
+        )
+
+        # `password_changeset` bumps `token_version` on success —
+        # every previously-issued session token for this user now
+        # fails verification. Recording it explicitly makes that
+        # side effect visible in the log.
+        SecurityLog.record(:sessions_revoked,
+          user_id: user.id,
+          reason: :password_change,
+          remote_ip: remote_ip
+        )
+
         json(conn, %{ok: true})
 
       {:error, %Ecto.Changeset{} = cs} ->
+        # Track failed change attempts — a wrong current password
+        # here is a compromised session probing, or a benign typo.
+        # Aggregating rate lets ops distinguish.
+        SecurityLog.record(:password_changed,
+          user_id: user.id,
+          email: user.email,
+          remote_ip: remote_ip,
+          reason: :validation_failed
+        )
+
         # Surface the field-level errors (e.g. current_password "is
         # incorrect") so the form can highlight the right input.
         conn

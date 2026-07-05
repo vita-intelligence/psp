@@ -301,29 +301,43 @@ defmodule Backend.Accounts do
   end
 
   def verify_token(token) when is_binary(token) do
-    with {:ok, {user_id, token_version}} when is_integer(user_id) and is_integer(token_version) <-
-           Phoenix.Token.verify(BackendWeb.Endpoint, @token_salt, token,
-             max_age: @token_max_age_seconds
-           ),
-         %User{is_active: true} = user <- get_user(user_id),
-         true <- (user.token_version || 0) == token_version do
-      {:ok, user}
-    else
-      # Old-format payload (bare int id) — reject so it's re-issued.
-      {:ok, id} when is_integer(id) ->
-        {:error, :legacy_token}
+    result =
+      with {:ok, {user_id, token_version}}
+           when is_integer(user_id) and is_integer(token_version) <-
+             Phoenix.Token.verify(BackendWeb.Endpoint, @token_salt, token,
+               max_age: @token_max_age_seconds
+             ),
+           %User{is_active: true} = user <- get_user(user_id),
+           true <- (user.token_version || 0) == token_version do
+        {:ok, user}
+      else
+        # Old-format payload (bare int id) — reject so it's re-issued.
+        {:ok, id} when is_integer(id) ->
+          {:error, :legacy_token}
 
-      %User{is_active: false} ->
-        {:error, :inactive}
+        %User{is_active: false} ->
+          {:error, :inactive}
 
-      nil ->
-        {:error, :invalid}
+        nil ->
+          {:error, :invalid}
 
-      false ->
-        {:error, :token_revoked}
+        false ->
+          {:error, :token_revoked}
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    case result do
+      {:error, reason} when reason in [:inactive, :token_revoked, :legacy_token, :expired] ->
+        # Log the non-transient failure classes only — every
+        # `:missing` verify from an anonymous request would flood
+        # the log otherwise.
+        Backend.SecurityLog.record(:token_verify_failure, reason: reason)
+        result
+
+      _ ->
+        result
     end
   end
 

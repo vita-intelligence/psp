@@ -1,0 +1,26 @@
+# Sobelow configuration for the PSP backend.
+#
+# Runs via `mix sobelow --config` (see the `sobelow` alias in
+# mix.exs).
+#
+# Full option reference:
+#   https://hexdocs.pm/sobelow/0.13.0/readme.html#configuration
+[
+  verbose: false,
+  # Print a compact summary — CI parses this to fail the build on
+  # findings.
+  format: "compact",
+  # Fail the run if ANY finding is reported. CI reads Sobelow's
+  # non-zero exit code.
+  exit: "low",
+  # Honour `.sobelow-skips` — the baselined findings we accepted
+  # after human review. Regenerate the file with:
+  #     mix sobelow --config --mark-skip-all
+  # after re-triaging (e.g. when clearing out a batch of them).
+  skip: true,
+  # Ignore specific finding types. Empty for now.
+  ignore: [],
+  # Fetch config from the repo root so the alias works from any cwd
+  # inside `backend/`.
+  root: "."
+]

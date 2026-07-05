@@ -1,0 +1,108 @@
+name: security
+
+on:
+  push:
+    branches: ["main", "security/**"]
+  pull_request:
+    branches: ["main"]
+
+# Cancel superseded runs on the same ref — a rebased PR shouldn't
+# waste minutes finishing the previous scan.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-sast:
+    name: backend / sobelow + hex.audit + pure security tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.19"
+
+      - name: Restore deps cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/deps
+            backend/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('backend/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      - name: Install deps
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Sobelow SAST
+        run: mix sobelow --config
+
+      - name: Hex dependency audit
+        # `hex.audit` is best-effort — Hex only knows about
+        # retirement notices. `mix.audit` (the mix_audit package)
+        # cross-refs the GitHub advisory DB and is stricter; left
+        # for a future addition.
+        run: mix hex.audit
+
+      - name: Pure security regression tests
+        run: mix test.security.pure
+
+  frontend-deps:
+    name: frontend / npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: npm audit (production deps)
+        # Only fail on high + critical for the production dep tree.
+        # Dev dependencies (test runners, lint plugins) don't ship
+        # to end users, and audit noise there tends to overwhelm
+        # the signal.
+        run: npm audit --omit=dev --audit-level=high
+
+  secret-scan:
+    name: secret scan / trufflehog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so trufflehog can walk every commit.
+          fetch-depth: 0
+
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          # `--only-verified` cuts false positives (verifies via API
+          # calls that the credential is actually live). The tradeoff
+          # is dead-but-committed secrets are still worth rotating,
+          # but usually caught by other means.
+          extra_args: --only-verified
