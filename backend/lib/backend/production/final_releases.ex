@@ -317,7 +317,8 @@ defmodule Backend.Production.FinalReleases do
       true ->
         with :ok <- validate_mime(upload.content_type),
              {:ok, bytes} <- read_upload(upload),
-             :ok <- validate_size(bytes) do
+             :ok <- validate_size(bytes),
+             :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
           filename = upload.filename || "upload"
           mime = upload.content_type || "application/octet-stream"
 

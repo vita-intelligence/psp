@@ -3,10 +3,12 @@ defmodule BackendWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug BackendWeb.Plugs.SecureHeaders
   end
 
   pipeline :api_authed do
     plug :accepts, ["json"]
+    plug BackendWeb.Plugs.SecureHeaders
     plug BackendWeb.Plugs.RequireAuth
   end
 

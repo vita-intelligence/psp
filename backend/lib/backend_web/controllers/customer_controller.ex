@@ -295,7 +295,8 @@ defmodule BackendWeb.CustomerController do
     with %{} = customer <- Customers.get_for_company(actor.company_id, uuid),
          :ok <- validate_evidence_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_evidence_size(bytes) do
+         :ok <- validate_evidence_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       key = build_storage_key(customer, kind, upload)
 
       case Storage.put(key, bytes, content_type: upload.content_type) do
@@ -349,7 +350,7 @@ defmodule BackendWeb.CustomerController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else

@@ -228,7 +228,8 @@ defmodule BackendWeb.CommentsController do
          kind = classify_kind(params["kind"], upload.content_type),
          :ok <- validate_attachment_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_attachment_size(bytes) do
+         :ok <- validate_attachment_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       file_uuid = Ecto.UUID.generate()
       key = build_storage_key(comment, kind, upload, file_uuid)
 
@@ -352,7 +353,7 @@ defmodule BackendWeb.CommentsController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else
@@ -379,7 +380,7 @@ defmodule BackendWeb.CommentsController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else

@@ -7,15 +7,18 @@ const nextConfig: NextConfig = {
   // straight from node_modules so its data-file lookups resolve.
   serverExternalPackages: ["pdfkit"],
 
-  // Dev-only: allow the laptop's LAN IP so phones / tablets on the
-  // same Wi-Fi can hit `http://<lan-ip>:3010` for QR pairing without
-  // tripping Next 15+'s cross-origin protections (HMR + server-action
-  // Origin check). Production goes through a proper hostname so this
-  // is not needed there. Port is 3010 (not 3000) so PSP coexists with
-  // other Next dev servers on the laptop without dual-bind clashes.
+  // Dev-only: allow the laptop's specific LAN IP + hostname so phones
+  // / tablets on the same Wi-Fi can hit `http://<lan-ip>:3010` for QR
+  // pairing without tripping Next 15+'s cross-origin protections
+  // (HMR + server-action Origin check). Production goes through a
+  // proper hostname so this is not needed there. Port is 3010 (not
+  // 3000) so PSP coexists with other Next dev servers on the laptop
+  // without dual-bind clashes.
+  //
+  // Do NOT list CIDR ranges here — every device on the subnet becomes
+  // an accepted origin for dev server actions.
   allowedDevOrigins: [
     "192.168.0.116",
-    "192.168.0.0/24",
     "maksyms-macbook-pro.local",
   ],
   experimental: {

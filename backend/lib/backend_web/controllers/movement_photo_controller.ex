@@ -29,7 +29,8 @@ defmodule BackendWeb.MovementPhotoController do
   def create(conn, %{"file" => %Plug.Upload{} = upload}) do
     with :ok <- validate_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_size(bytes) do
+         :ok <- validate_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       key =
         "movement_photos/" <>
           Ecto.UUID.generate() <>

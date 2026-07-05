@@ -78,7 +78,8 @@ defmodule Backend.Items.Images do
     with :ok <- check_count(item.id),
          :ok <- check_mime(upload.content_type),
          {:ok, binary, byte_size} <- read_file(upload),
-         :ok <- check_size(byte_size) do
+         :ok <- check_size(byte_size),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(binary, upload.content_type) do
       image_uuid = Ecto.UUID.generate()
       ext = mime_to_ext(upload.content_type)
       blob_key = "items/#{item.uuid}/#{image_uuid}#{ext}"

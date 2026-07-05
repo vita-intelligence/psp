@@ -4,11 +4,19 @@ defmodule BackendWeb.Endpoint do
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
+  #
+  # `secure` is forced true in prod (cookie MUST NOT flow over HTTP),
+  # left false in dev where localhost may serve plain HTTP.
+  # `http_only` is Plug's default true — kept explicit.
+  # `same_site: "Strict"` — API is JSON-only, no cross-site form
+  # submissions ever need to arrive with cookies.
   @session_options [
     store: :cookie,
     key: "_backend_key",
     signing_salt: "V2LiJ4lN",
-    same_site: "Lax"
+    http_only: true,
+    secure: Mix.env() == :prod,
+    same_site: "Strict"
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
@@ -16,10 +24,15 @@ defmodule BackendWeb.Endpoint do
     longpoll: [connect_info: [session: @session_options]]
 
   # Realtime presence socket — JS client connects with `?token=<bearer>`
-  # immediately after login. Origin check is wide open in dev; production
-  # config tightens it via :check_origin on the endpoint.
+  # immediately after login.
+  #
+  # `check_origin` is a compile-time knob; we override at runtime.exs
+  # for :prod so the deployed instance rejects WS upgrades from any
+  # host other than the configured PHX_HOST. Left `false` here for dev
+  # so localhost / LAN cross-origin upgrades still work while running
+  # `mix phx.server`.
   socket "/socket", BackendWeb.UserSocket,
-    websocket: [check_origin: false],
+    websocket: [check_origin: Mix.env() != :prod],
     longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.
@@ -48,18 +61,23 @@ defmodule BackendWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  # CORS — dev defaults baked in; production overrides happen by
-  # editing this list (or wrapping it behind a runtime plug) before
-  # deploying. Keep CORSPlug's `origin` value to types it can `escape`
-  # at plug-init time: lists, strings, regexes.
+  # CORS — allowed origins come from `Backend.Config.cors_origins/0`,
+  # which reads the `CORS_ORIGINS` env var at runtime. That means prod
+  # deploys can rotate origins by env-var change alone; no recompile.
+  # CORSPlug 3.0.3 accepts an MFA `{Mod, :fun}` and calls it per request.
   plug CORSPlug,
-    origin: ["http://localhost:3010", "https://localhost:3010"],
+    origin: {Backend.Config, :cors_origins},
     credentials: false,
     max_age: 86_400
 
+  # Global upload/body cap. Per-endpoint app-level limits still apply
+  # (e.g. 5-25 MB), but this bounds the raw multipart buffer so a client
+  # can't stream 10 GB before the app rejects it. 100 MB = generous
+  # headroom for BMR PDFs / receipt evidence bundles.
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
+    length: 100_000_000,
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

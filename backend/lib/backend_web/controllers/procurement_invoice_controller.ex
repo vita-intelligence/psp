@@ -190,6 +190,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
          :ok <- validate_mime(upload.content_type || "application/octet-stream"),
          {:ok, bytes} <- File.read(upload.path),
          :ok <- validate_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type),
          {:ok, updated} <-
            Procurement.attach_file(actor, invoice, %{
              filename: upload.filename,
@@ -201,6 +202,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
       nil -> {:error, :not_found}
       {:error, :too_large} -> file_too_large(conn)
       {:error, :bad_mime} -> bad_mime(conn)
+      {:error, {:invalid_mime, detail}} -> unprocessable(conn, "invalid_mime_type", detail)
       {:error, {:storage_failed, _}} -> storage_error(conn)
       {:error, %Ecto.Changeset{} = cs} -> changeset_error(conn, cs)
     end
@@ -231,7 +233,10 @@ defmodule BackendWeb.ProcurementInvoiceController do
       |> put_resp_content_type(invoice.file_mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{invoice.file_filename || "invoice.pdf"}"|
+        Backend.Http.ContentDisposition.header(
+          :inline,
+          invoice.file_filename || "invoice.pdf"
+        )
       )
       |> send_file(200, abs_path)
     else

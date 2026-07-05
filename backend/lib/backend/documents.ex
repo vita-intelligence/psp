@@ -1023,8 +1023,17 @@ defmodule Backend.Documents do
   # CSV cells that contain the separator, quotes, or newlines must be
   # quoted with double-quotes per RFC 4180; embedded quotes get
   # doubled.
+  #
+  # Cells that START with `=`, `+`, `-`, `@`, or a tab are treated as
+  # formulas by Excel / Google Sheets when the file is opened. A
+  # crafted product name like `=cmd|'/c calc'!A1` runs code on the
+  # importer's machine. Prefix such cells with a single quote (`'`)
+  # so the value renders as text and never enters the formula parser.
   defp csv_escape(value, sep) do
-    s = to_string(value)
+    s =
+      value
+      |> to_string()
+      |> neutralise_formula()
 
     if String.contains?(s, [sep, "\"", "\n", "\r"]) do
       "\"" <> String.replace(s, "\"", "\"\"") <> "\""
@@ -1032,4 +1041,13 @@ defmodule Backend.Documents do
       s
     end
   end
+
+  defp neutralise_formula(""), do: ""
+
+  defp neutralise_formula(<<c::utf8, _::binary>> = s)
+       when c in [?=, ?+, ?-, ?@, ?\t, ?\r] do
+    "'" <> s
+  end
+
+  defp neutralise_formula(s), do: s
 end

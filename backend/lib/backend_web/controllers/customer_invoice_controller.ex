@@ -345,7 +345,7 @@ defmodule BackendWeb.CustomerInvoiceController do
       |> put_resp_content_type("application/pdf")
       |> put_resp_header(
         "content-disposition",
-        ~s(inline; filename="#{filename}")
+        Backend.Http.ContentDisposition.header(:inline, filename)
       )
       |> send_resp(200, bytes)
     else

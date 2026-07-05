@@ -830,7 +830,8 @@ defmodule Backend.GoodsIn do
       true ->
         with :ok <- validate_mime(upload.content_type),
              {:ok, bytes} <- read_upload(upload),
-             :ok <- validate_size(bytes) do
+             :ok <- validate_size(bytes),
+             :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
           attrs = %{
             "company_id" => inspection.company_id,
             "goods_in_inspection_id" => inspection.id,

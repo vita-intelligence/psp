@@ -483,7 +483,8 @@ defmodule BackendWeb.PurchaseOrderController do
     with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid),
          :ok <- validate_evidence_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_evidence_size(bytes) do
+         :ok <- validate_evidence_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       attrs = %{
         "kind" => kind,
         "filename" => upload.filename || "upload",
@@ -548,7 +549,7 @@ defmodule BackendWeb.PurchaseOrderController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else
@@ -666,7 +667,10 @@ defmodule BackendWeb.PurchaseOrderController do
 
       conn
       |> put_resp_content_type("text/csv")
-      |> put_resp_header("content-disposition", ~s(attachment; filename="#{filename}"))
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:attachment, filename)
+      )
       |> send_resp(200, csv)
     end
   end
@@ -682,7 +686,10 @@ defmodule BackendWeb.PurchaseOrderController do
 
       conn
       |> put_resp_content_type("application/pdf")
-      |> put_resp_header("content-disposition", ~s(inline; filename="#{filename}"))
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:inline, filename)
+      )
       |> send_resp(200, bytes)
     end
   end

@@ -199,7 +199,7 @@ defmodule BackendWeb.ProductionFinalReleaseController do
       |> put_resp_header("content-type", file.mime)
       |> put_resp_header(
         "content-disposition",
-        "inline; filename=\"#{file.filename}\""
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else

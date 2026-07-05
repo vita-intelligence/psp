@@ -33,8 +33,39 @@ if config_env() == :prod do
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
+  # DB transport hardening. `PGSSL=false` opts out (rare — required if
+  # your managed-Postgres provider terminates TLS at the pooler in a
+  # way that doesn't present a cert). Default is on with peer
+  # verification; the OS CA bundle from :certifi is used unless
+  # `PG_CACERT_PATH` points at a custom bundle.
+  db_ssl_enabled = System.get_env("PGSSL", "true") in ~w(true 1)
+
+  db_ssl_opts =
+    if db_ssl_enabled do
+      cacert_path = System.get_env("PG_CACERT_PATH")
+
+      base = [
+        verify: :verify_peer,
+        server_name_indication: ~c"#{URI.parse(database_url).host || "localhost"}",
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ]
+      ]
+
+      if cacert_path do
+        [{:cacertfile, cacert_path} | base]
+      else
+        # `:public_key.cacerts_get/0` returns the OS trust store,
+        # available from OTP 25+. No extra dependency needed.
+        [{:cacerts, :public_key.cacerts_get()} | base]
+      end
+    else
+      false
+    end
+
   config :backend, Backend.Repo,
-    # ssl: true,
+    ssl: db_ssl_enabled,
+    ssl_opts: db_ssl_opts,
     url: database_url,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
     # For machines with several cores, consider starting multiple pools of `pool_size`
@@ -57,8 +88,21 @@ if config_env() == :prod do
 
   config :backend, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # WebSocket origin allowlist. `PHX_HOST` alone is the baseline; add
+  # more via `WS_EXTRA_ORIGINS=https://a.example.com,https://b.example.com`
+  # for staging / preview deploys sharing the same node. `check_origin`
+  # here overrides the compile-time value in `endpoint.ex` (which
+  # was set for dev).
+  ws_extra =
+    System.get_env("WS_EXTRA_ORIGINS", "")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+
+  ws_check_origin = ["https://#{host}", "//#{host}" | ws_extra]
+
   config :backend, BackendWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
+    check_origin: ws_check_origin,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

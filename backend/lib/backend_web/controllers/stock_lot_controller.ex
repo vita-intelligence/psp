@@ -962,13 +962,22 @@ defmodule BackendWeb.StockLotController do
 
   defp parse_sort(nil), do: nil
 
-  defp parse_sort(spec) when is_binary(spec) do
-    case String.split(spec, ":", parts: 2) do
-      [field, dir] when dir in ["asc", "desc"] ->
-        {String.to_atom(field), String.to_atom(dir)}
+  # Allowed sort columns. Anything outside this list is silently
+  # dropped — protects against atom-table DoS (`String.to_atom/1` on
+  # arbitrary client input would eventually exhaust the BEAM atom
+  # table).
+  @sortable_fields ~w(
+    code inserted_at expiry_at manufactured_at status
+    supplier_batch_no qty_on_hand unit_cost country_of_origin
+  )
 
-      _ ->
-        nil
+  defp parse_sort(spec) when is_binary(spec) do
+    with [field, dir] <- String.split(spec, ":", parts: 2),
+         true <- dir in ["asc", "desc"],
+         true <- field in @sortable_fields do
+      {String.to_existing_atom(field), String.to_existing_atom(dir)}
+    else
+      _ -> nil
     end
   end
 
