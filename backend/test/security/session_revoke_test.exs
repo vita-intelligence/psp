@@ -88,4 +88,19 @@ defmodule Security.SessionRevokeTest do
       assert verified.id == carol.id
     end
   end
+
+  describe "revoke_other_sessions/1" do
+    test "returns a fresh token the caller can use to stay signed in",
+         %{alice: alice} do
+      stale = Accounts.sign_token(alice)
+
+      {:ok, updated, fresh} = Accounts.revoke_other_sessions(alice)
+
+      # Old token dies; fresh token works.
+      assert {:error, :token_revoked} = Accounts.verify_token(stale)
+      assert {:ok, verified} = Accounts.verify_token(fresh)
+      assert verified.id == alice.id
+      assert updated.token_version == alice.token_version + 1
+    end
+  end
 end

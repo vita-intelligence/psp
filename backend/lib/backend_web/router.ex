@@ -112,6 +112,11 @@ defmodule BackendWeb.Router do
     put "/auth/me", ProfileController, :update
     put "/auth/password", ProfileController, :change_password
 
+    # Self-service "log out other devices". Bumps the caller's
+    # `token_version` (killing every other outstanding token) and
+    # returns a fresh token so the current session stays alive.
+    post "/auth/sessions/revoke-others", ProfileController, :revoke_other_sessions
+
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label

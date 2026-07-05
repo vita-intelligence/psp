@@ -47,16 +47,51 @@ export async function changePasswordAction(input: {
   if (!token) return unauthorizedResult("changePasswordAction");
 
   try {
-    await api<{ ok: true }>("/api/auth/password", {
-      method: "PUT",
-      token,
-      body: JSON.stringify(input),
-    });
+    // Backend bumps `users.token_version` on a successful change,
+    // invalidating every token including the one we just used. It
+    // hands back a fresh token minted against the new version so
+    // the current session stays alive — swap it into the cookie.
+    const res = await api<{ ok: true; token: string }>(
+      "/api/auth/password",
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify(input),
+      },
+    );
+    if (res.token) await setSessionCookie(res.token);
     return { ok: true };
   } catch (err) {
     return toErrorResult(err, {
       source: "changePasswordAction",
       fallbackDetail: "Couldn't change your password.",
+    });
+  }
+}
+
+export async function revokeOtherSessionsAction(): Promise<
+  { ok: true } | ErrorResult
+> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("revokeOtherSessionsAction");
+
+  try {
+    // Backend bumps this user's `token_version` and returns a fresh
+    // token so the current tab stays signed in while every other
+    // session dies on next request. Swap the cookie.
+    const res = await api<{ token: string; user: User }>(
+      "/api/auth/sessions/revoke-others",
+      {
+        method: "POST",
+        token,
+      },
+    );
+    if (res.token) await setSessionCookie(res.token);
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "revokeOtherSessionsAction",
+      fallbackDetail: "Couldn't sign out other devices.",
     });
   }
 }

@@ -163,8 +163,9 @@ export function PasswordForm() {
             </div>
             <AlertDialogTitle>Change your password?</AlertDialogTitle>
             <AlertDialogDescription>
-              We'll email you a confirmation. Other signed-in devices
-              stay signed in.
+              We'll email you a confirmation. Any other device signed
+              in as you will be logged out — you'll stay signed in on
+              this one.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

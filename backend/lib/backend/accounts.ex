@@ -321,6 +321,21 @@ defmodule Backend.Accounts do
     |> Repo.update_all(inc: [token_version: 1])
   end
 
+  @doc """
+  User self-service "log me out of other devices". Bumps the user's
+  `token_version`, then mints a fresh token so the caller stays
+  signed in on the current device while every other tab / phone
+  / tablet dies on next request.
+
+  Returns `{:ok, updated_user, fresh_token}`. The caller is expected
+  to swap the caller's local token for the fresh one.
+  """
+  def revoke_other_sessions(%User{} = user) do
+    with {:ok, updated} <- revoke_sessions_for_user(user) do
+      {:ok, updated, sign_token(updated)}
+    end
+  end
+
   ## Session tokens ---------------------------------------------------
 
   # Signed payload is `{user_id, token_version}` so we can invalidate

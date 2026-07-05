@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth/server";
 import { ProfileForm } from "./profile-form";
 import { PasswordForm } from "./password-form";
+import { SessionsCard } from "./sessions-card";
 
 export const metadata = { title: "Profile · Settings · PSP" };
 
@@ -15,6 +16,7 @@ export default async function ProfileSettingsPage() {
         email={user.email}
       />
       <PasswordForm />
+      <SessionsCard />
     </div>
   );
 }
