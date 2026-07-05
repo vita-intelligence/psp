@@ -466,7 +466,7 @@ function peersFromPresence(state: unknown): CollabPeer[] {
     out.push({
       id,
       name: meta.name ?? "",
-      email: meta.email ?? "",
+      email: meta.email ?? id,
       avatar: meta.avatar ?? null,
       // CollabPeer.focusField is `string | null` — we don't use it
       // for the plan hook so always null.
@@ -495,7 +495,7 @@ function applyPresenceDiff(
     map.set(id, {
       id,
       name: meta.name ?? "",
-      email: meta.email ?? "",
+      email: meta.email ?? id,
       avatar: meta.avatar ?? null,
       focusField: null,
       joinedAt: meta.joined_at ?? 0,

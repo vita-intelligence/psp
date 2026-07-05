@@ -115,7 +115,7 @@ export const usePagePresenceStore = create<StoreState>((set, get) => ({
           list.push({
             id,
             name: (meta.name as string) ?? "",
-            email: (meta.email as string) ?? "",
+            email: (meta.email as string) || id,
             avatar: (meta.avatar as string) ?? null,
             joinedAt,
             viewportW,

@@ -134,7 +134,9 @@ export function useEditorsForPrefix(
       out.push({
         userId,
         name: meta.name,
-        email: meta.email,
+        // Backend redacts email from presence (M2); fall back to
+        // userId so avatar tint stays stable per person.
+        email: meta.email || userId,
         avatar: meta.avatar ?? null,
         current_form: meta.current_form,
       });

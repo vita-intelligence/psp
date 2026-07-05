@@ -38,7 +38,7 @@ export function FieldEditingIndicator({
       <span className="relative inline-flex">
         <UserAvatar
           name={peer.name}
-          email={peer.email}
+          email={peer.email || peer.id}
           avatar={peer.avatar}
           sizeClassName="size-6"
           fallbackClassName="text-[10px]"

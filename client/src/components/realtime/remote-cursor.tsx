@@ -28,7 +28,10 @@ export function RemoteCursor({
   anchorWidth,
   anchorHeight,
 }: RemoteCursorProps) {
-  const color = peerColor(cursor.peer.email);
+  // Prefer the immutable peer id (numeric user id) as the color seed —
+  // email is no longer broadcast in presence, so falling back to it
+  // gives everyone the same slot.
+  const color = peerColor(cursor.peer.id || cursor.peer.email);
   const x = Math.max(0, Math.min(1, cursor.x)) * anchorWidth;
   const y = Math.max(0, Math.min(1, cursor.y)) * anchorHeight;
 

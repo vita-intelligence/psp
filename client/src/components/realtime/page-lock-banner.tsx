@@ -28,7 +28,7 @@ export function PageLockBanner({ leader, className }: Props) {
       <Lock className="size-3.5 shrink-0" aria-hidden />
       <UserAvatar
         name={leader.name}
-        email={leader.email}
+        email={leader.email || leader.id}
         avatar={leader.avatar}
         sizeClassName="size-5"
         fallbackClassName="text-[9px]"

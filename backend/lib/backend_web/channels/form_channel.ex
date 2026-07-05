@@ -32,7 +32,8 @@ defmodule BackendWeb.FormChannel do
 
   use Phoenix.Channel
 
-  alias Backend.{Accounts, RBAC}
+  alias Backend.{Accounts, RBAC, Tenancy}
+  alias Backend.Realtime.RateLimit
   alias BackendWeb.Presence
 
   # Soft cap on concurrent editors per form. Picked to keep the
@@ -56,11 +57,19 @@ defmodule BackendWeb.FormChannel do
     topic = "form:" <> rest
 
     case parse_topic(rest) do
-      {:ok, resource, _id} ->
+      {:ok, resource, id} ->
         limit = room_limit_for(resource)
 
         cond do
           not can_edit_resource?(user, resource) ->
+            {:error, %{reason: "forbidden"}}
+
+          # Tenant scope. Without this the RBAC scope check above lets
+          # an editor in company A subscribe to `form:vendor:<uuid>`
+          # for a vendor that lives in company B, and every keystroke
+          # rebroadcast on `field:change` becomes a data leak. Draft
+          # rooms (`id == "new"`) short-circuit inside `Tenancy`.
+          not Tenancy.resource_in_tenant?(user, resource, id) ->
             {:error, %{reason: "forbidden"}}
 
           room_full?(user, topic, limit) ->
@@ -89,8 +98,11 @@ defmodule BackendWeb.FormChannel do
     {:ok, _ref} =
       Presence.track(socket, "#{user.id}", %{
         name: user.name,
-        email: user.email,
+        # Email dropped from presence — form channels are already
+        # tenant-scoped (see `Tenancy.resource_in_tenant?/3`), and
+        # `name` + `avatar` are enough for the collaborator UI.
         avatar: user.avatar,
+        user_id: user.id,
         focus_field: nil,
         joined_at: System.system_time(:second)
       })
@@ -101,14 +113,20 @@ defmodule BackendWeb.FormChannel do
 
   @impl true
   def handle_in("field:change", %{"field" => field, "value" => value} = payload, socket) do
-    broadcast_from!(socket, "field:change", %{
-      field: field,
-      value: value,
-      ts: payload["ts"] || System.system_time(:millisecond),
-      by: socket.assigns.current_user.id
-    })
+    case RateLimit.check(socket, :field_change) do
+      {:ok, socket} ->
+        broadcast_from!(socket, "field:change", %{
+          field: field,
+          value: value,
+          ts: payload["ts"] || System.system_time(:millisecond),
+          by: socket.assigns.current_user.id
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:limited, socket} ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -154,13 +172,19 @@ defmodule BackendWeb.FormChannel do
   @impl true
   def handle_in("cursor:move", %{"x" => x, "y" => y}, socket)
       when is_number(x) and is_number(y) do
-    broadcast_from!(socket, "cursor:move", %{
-      by: socket.assigns.current_user.id,
-      x: x,
-      y: y
-    })
+    case RateLimit.check(socket, :cursor) do
+      {:ok, socket} ->
+        broadcast_from!(socket, "cursor:move", %{
+          by: socket.assigns.current_user.id,
+          x: x,
+          y: y
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:limited, socket} ->
+        {:noreply, socket}
+    end
   end
 
   @impl true

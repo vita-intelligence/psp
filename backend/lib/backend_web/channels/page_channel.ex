@@ -39,7 +39,8 @@ defmodule BackendWeb.PageChannel do
 
   use Phoenix.Channel
 
-  alias Backend.Accounts
+  alias Backend.{Accounts, Tenancy}
+  alias Backend.Realtime.RateLimit
   alias BackendWeb.Presence
 
   # Soft cap on peers per page. High because a schedule / kanban board
@@ -55,9 +56,20 @@ defmodule BackendWeb.PageChannel do
     cached = socket.assigns.current_user
     user = Accounts.get_user(cached.id) || cached
 
+    decoded = URI.decode(path)
+
     cond do
       path == "" ->
         {:error, %{reason: "bad_topic"}}
+
+      not path_visible_to?(user, decoded) ->
+        # Entity-detail pages: verify the referenced record lives in
+        # the actor's tenant. Without this, an authenticated user
+        # from tenant A could subscribe to `page:/procurement/vendors/<uuid>`
+        # for a vendor uuid that belongs to tenant B, and see the
+        # presence roster (names, emails, avatars, viewport dims) of
+        # the peers on that page.
+        {:error, %{reason: "forbidden"}}
 
       room_full?("page:" <> path) ->
         {:error, %{reason: "room_full", limit: @default_room_limit}}
@@ -75,6 +87,30 @@ defmodule BackendWeb.PageChannel do
     end
   end
 
+  # Detail routes with a uuid in the path resolve to a tenant-scoped
+  # record — check it belongs to the user's company. Global surfaces
+  # (list pages, dashboards, settings) are visible to anyone
+  # authenticated in the tenant, so they pass through.
+  defp path_visible_to?(user, path) do
+    case Tenancy.classify_path(path) do
+      {:entity, resource, uuid} ->
+        Tenancy.resource_in_tenant?(user, resource, uuid)
+
+      :global ->
+        true
+
+      :unknown ->
+        # Routes we haven't classified — list pages, admin dashboards,
+        # newly-added surfaces. Presence on these doesn't leak record
+        # data across tenants (list pages don't embed foreign UUIDs
+        # in their path), and the socket-connect auth has already
+        # gated for tenant membership, so we allow through. The
+        # specific cross-tenant attack (`/procurement/vendors/<uuid>`)
+        # goes through the `:entity` branch above.
+        true
+    end
+  end
+
   @impl true
   def handle_info(:after_join, socket) do
     user = socket.assigns.current_user
@@ -84,8 +120,8 @@ defmodule BackendWeb.PageChannel do
     {:ok, _ref} =
       Presence.track(socket, "#{user.id}", %{
         name: user.name,
-        email: user.email,
         avatar: user.avatar,
+        user_id: user.id,
         joined_at: now,
         viewport_w: viewport[:w],
         viewport_h: viewport[:h]
@@ -116,13 +152,19 @@ defmodule BackendWeb.PageChannel do
   # peer moved.
   @impl true
   def handle_in("cursor:move", %{"x" => x, "y" => y}, socket) do
-    broadcast_from!(socket, "cursor:move", %{
-      from: socket.assigns.current_user.id,
-      x: clamp_unit(x),
-      y: clamp_unit(y)
-    })
+    case RateLimit.check(socket, :cursor) do
+      {:ok, socket} ->
+        broadcast_from!(socket, "cursor:move", %{
+          from: socket.assigns.current_user.id,
+          x: clamp_unit(x),
+          y: clamp_unit(y)
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:limited, socket} ->
+        {:noreply, socket}
+    end
   end
 
   @impl true

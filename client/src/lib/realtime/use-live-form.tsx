@@ -506,7 +506,10 @@ function peersFromState(state: PresenceState): CollabPeer[] {
       {
         id,
         name: base.name,
-        email: base.email,
+        // Backend no longer broadcasts email in presence (M2).
+        // Fall back to the presence id so avatar tint / color seed
+        // stays stable per user.
+        email: base.email || id,
         avatar: base.avatar ?? null,
         focusField: focusedMeta.focus_field ?? null,
         joinedAt: base.joined_at ?? Number.MAX_SAFE_INTEGER,
