@@ -183,6 +183,7 @@ defmodule BackendWeb.ProductionFinalReleaseController do
     end
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"uuid" => uuid, "file_uuid" => file_uuid}) do
     actor = conn.assigns.current_user
 

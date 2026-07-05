@@ -160,7 +160,7 @@ defmodule Backend.GoodsIn.InspectionItem do
   end
 
   defp require_positive_int_when_present(pack, key) do
-    case Map.get(pack, key, Map.get(pack, String.to_atom(key))) do
+    case Map.get(pack, key, Map.get(pack, String.to_existing_atom(key))) do
       nil ->
         {:ok, nil}
 
@@ -207,7 +207,7 @@ defmodule Backend.GoodsIn.InspectionItem do
   end
 
   defp require_positive_decimal(pack, key) do
-    case decimal_from(pack[key] || pack[String.to_atom(key)]) do
+    case decimal_from(pack[key] || pack[String.to_existing_atom(key)]) do
       {:ok, dec} ->
         if Decimal.compare(dec, Decimal.new(0)) == :gt do
           {:ok, dec}
@@ -221,7 +221,7 @@ defmodule Backend.GoodsIn.InspectionItem do
   end
 
   defp require_non_negative_decimal(pack, key) do
-    case decimal_from(pack[key] || pack[String.to_atom(key)]) do
+    case decimal_from(pack[key] || pack[String.to_existing_atom(key)]) do
       {:ok, dec} ->
         if Decimal.compare(dec, Decimal.new(0)) != :lt do
           {:ok, dec}
@@ -235,7 +235,7 @@ defmodule Backend.GoodsIn.InspectionItem do
   end
 
   defp require_non_negative_int(pack, key) do
-    case pack[key] || pack[String.to_atom(key)] do
+    case pack[key] || pack[String.to_existing_atom(key)] do
       n when is_integer(n) and n >= 0 -> {:ok, n}
       n when is_float(n) and n >= 0 -> {:ok, trunc(n)}
       _ -> {:error, key, "is required and must be a non-negative whole number"}
@@ -243,7 +243,7 @@ defmodule Backend.GoodsIn.InspectionItem do
   end
 
   defp require_positive_int(pack, key) do
-    case pack[key] || pack[String.to_atom(key)] do
+    case pack[key] || pack[String.to_existing_atom(key)] do
       n when is_integer(n) and n > 0 -> {:ok, n}
       n when is_float(n) and n > 0 -> {:ok, trunc(n)}
       _ -> {:error, key, "is required and must be greater than 0"}

@@ -7222,7 +7222,7 @@ defmodule Backend.Production do
       "stack_factor"
     ]
     |> Enum.reduce(%{}, fn key, acc ->
-      raw = Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+      raw = Map.get(attrs, key) || Map.get(attrs, String.to_existing_atom(key))
 
       if raw in [nil, ""], do: acc, else: Map.put(acc, key, raw)
     end)
@@ -9179,7 +9179,7 @@ defmodule Backend.Production do
 
   defp parse_pack_fields(entry, keys, parser) do
     Enum.reduce_while(keys, {:ok, %{}}, fn key, {:ok, acc} ->
-      raw = Map.get(entry, key) || Map.get(entry, String.to_atom(key))
+      raw = Map.get(entry, key) || Map.get(entry, String.to_existing_atom(key))
 
       case parser.(raw) do
         {:ok, v} -> {:cont, {:ok, Map.put(acc, key, v)}}
@@ -9479,7 +9479,7 @@ defmodule Backend.Production do
   end
 
   defp entry_field(entry, key) when is_map(entry) do
-    Map.get(entry, key) || Map.get(entry, String.to_atom(key))
+    Map.get(entry, key) || Map.get(entry, String.to_existing_atom(key))
   end
 
   defp ensure_within(%DateTime{} = dt, lo, hi) do

@@ -215,6 +215,7 @@ defmodule Backend.Items.Images do
   defp check_size(bytes) when is_integer(bytes) and bytes <= @max_bytes, do: :ok
   defp check_size(bytes), do: {:error, {:too_large, bytes}}
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_file(%Plug.Upload{path: path}) when is_binary(path) do
     case File.read(path) do
       {:ok, binary} -> {:ok, binary, byte_size(binary)}

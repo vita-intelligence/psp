@@ -1,50 +1,41 @@
 
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_controller.ex:350,lib/backend_web/controllers/customer_controller.ex:350,7B1A4EC
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/purchase_order_controller.ex:554,lib/backend_web/controllers/purchase_order_controller.ex:554,30FBF18
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_return_controller.ex:383,lib/backend_web/controllers/customer_return_controller.ex:383,5B99117
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/goods_in_inspection_controller.ex:487,lib/backend_web/controllers/goods_in_inspection_controller.ex:487,40B77E4
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_order_controller.ex:599,lib/backend_web/controllers/customer_order_controller.ex:599,6C48FC3
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/procurement_invoice_controller.ex:233,lib/backend_web/controllers/procurement_invoice_controller.ex:233,3485667
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/item_image_controller.ex:124,lib/backend_web/controllers/item_image_controller.ex:124,17260DB
-Config.CSWH: Cross-Site Websocket Hijacking - lib/backend_web/endpoint.ex:34,lib/backend_web/endpoint.ex:34,72EB5F
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/item_file_controller.ex:90,lib/backend_web/controllers/item_file_controller.ex:90,2233833
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/production_final_release_controller.ex:204,lib/backend_web/controllers/production_final_release_controller.ex:204,5DCB335
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_controller.ex:355,lib/backend_web/controllers/customer_controller.ex:355,2B16449
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/movement_photo_controller.ex:78,lib/backend_web/controllers/movement_photo_controller.ex:78,31AEA5A
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_return_controller.ex:448,lib/backend_web/controllers/customer_return_controller.ex:448,1EFEB8
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_return_controller.ex:388,lib/backend_web/controllers/customer_return_controller.ex:388,438E928
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/production.ex:7225,lib/backend/production.ex:7225,25C49B7
-RCE.EEx: Code Execution in `EEx.eval_file` - lib/backend/documents.ex:874,lib/backend/documents.ex:874,17A6EF6
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/comments_controller.ex:353,lib/backend_web/controllers/comments_controller.ex:353,36631A4
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/vendor_controller.ex:273,lib/backend_web/controllers/vendor_controller.ex:273,114DF70
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/goods_in/inspection_item.ex:246,lib/backend/goods_in/inspection_item.ex:246,61016F0
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/goods_in/inspection_item.ex:163,lib/backend/goods_in/inspection_item.ex:163,37496D3
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/goods_in/inspection_item.ex:238,lib/backend/goods_in/inspection_item.ex:238,19BE3F1
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/production.ex:9182,lib/backend/production.ex:9182,11B4CB9
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/comments_controller.ex:385,lib/backend_web/controllers/comments_controller.ex:385,11FBE42
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/purchase_order_controller.ex:575,lib/backend_web/controllers/purchase_order_controller.ex:575,319888
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/vendor_controller.ex:294,lib/backend_web/controllers/vendor_controller.ex:294,50F9505
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_controller.ex:452,lib/backend_web/controllers/customer_controller.ex:452,3EC99A1
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/goods_in_inspection_controller.ex:482,lib/backend_web/controllers/goods_in_inspection_controller.ex:482,73B032A
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/procurement_invoice_controller.ex:191,lib/backend_web/controllers/procurement_invoice_controller.ex:191,4F301C0
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend_web/controllers/company_controller.ex:130,lib/backend_web/controllers/company_controller.ex:130,5E77C69
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_order_controller.ex:539,lib/backend_web/controllers/customer_order_controller.ex:539,2B6516B
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/procurement_invoice_controller.ex:241,lib/backend_web/controllers/procurement_invoice_controller.ex:241,BA295F
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/movement_photo_controller.ex:97,lib/backend_web/controllers/movement_photo_controller.ex:97,7018B0C
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/comments_controller.ex:380,lib/backend_web/controllers/comments_controller.ex:380,1B440D3
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/goods_in/inspection_item.ex:224,lib/backend/goods_in/inspection_item.ex:224,178A51C
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/item_file_controller.ex:95,lib/backend_web/controllers/item_file_controller.ex:95,7AAB2E5
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/production/final_releases.ex:533,lib/backend/production/final_releases.ex:533,644741
-Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/comments_controller.ex:358,lib/backend_web/controllers/comments_controller.ex:358,7FB53E8
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_order_controller.ex:534,lib/backend_web/controllers/customer_order_controller.ex:534,185A852
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/movement_photo_controller.ex:77,lib/backend_web/controllers/movement_photo_controller.ex:77,65E840
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/comments_controller.ex:777,lib/backend_web/controllers/comments_controller.ex:777,74F537A
-Traversal.FileModule: Directory Traversal in `File.write!` - lib/backend/storage/local.ex:20,lib/backend/storage/local.ex:20,64E16D6
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/goods_in/inspection_item.ex:210,lib/backend/goods_in/inspection_item.ex:210,404E13F
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/items/images.ex:219,lib/backend/items/images.ex:219,1C06EBE
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/purchase_order_controller.ex:549,lib/backend_web/controllers/purchase_order_controller.ex:549,7C1386B
-DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/production.ex:9482,lib/backend/production.ex:9482,7235154
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/goods_in.ex:953,lib/backend/goods_in.ex:953,6736045
-Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/item_file_controller.ex:116,lib/backend_web/controllers/item_file_controller.ex:116,25C92A9
-XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/vendor_controller.ex:268,lib/backend_web/controllers/vendor_controller.ex:268,5B3F3B
-Traversal.FileModule: Directory Traversal in `File.rm` - lib/backend/storage/local.ex:29,lib/backend/storage/local.ex:29,4D0F878
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_order_controller.ex:540,lib/backend_web/controllers/customer_order_controller.ex:540,449400D
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/goods_in.ex:954,lib/backend/goods_in.ex:954,7E59ABB
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_controller.ex:455,lib/backend_web/controllers/customer_controller.ex:455,14C755D
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/comments_controller.ex:359,lib/backend_web/controllers/comments_controller.ex:359,248C870
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/procurement_invoice_controller.ex:245,lib/backend_web/controllers/procurement_invoice_controller.ex:245,5A31FB6
+RCE.EEx: Code Execution in `EEx.eval_file` - lib/backend/documents.ex:878,lib/backend/documents.ex:878,70DD042
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_return_controller.ex:450,lib/backend_web/controllers/customer_return_controller.ex:450,1278F35
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/goods_in_inspection_controller.ex:488,lib/backend_web/controllers/goods_in_inspection_controller.ex:488,221AF82
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/items/images.ex:220,lib/backend/items/images.ex:220,5595E5B
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/comments_controller.ex:781,lib/backend_web/controllers/comments_controller.ex:781,16B236A
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/goods_in_inspection_controller.ex:483,lib/backend_web/controllers/goods_in_inspection_controller.ex:483,4AE7999
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_return_controller.ex:384,lib/backend_web/controllers/customer_return_controller.ex:384,1154B8D
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/movement_photo_controller.ex:81,lib/backend_web/controllers/movement_photo_controller.ex:81,75630EF
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/vendor_controller.ex:272,lib/backend_web/controllers/vendor_controller.ex:272,191A5A1
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/production_final_release_controller.ex:205,lib/backend_web/controllers/production_final_release_controller.ex:205,561FC62
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/movement_photo_controller.ex:82,lib/backend_web/controllers/movement_photo_controller.ex:82,475A0AB
+Traversal.FileModule: Directory Traversal in `File.write!` - lib/backend/storage/local.ex:23,lib/backend/storage/local.ex:23,1CDC29D
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/procurement_invoice_controller.ex:194,lib/backend_web/controllers/procurement_invoice_controller.ex:194,4C914ED
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/comments_controller.ex:354,lib/backend_web/controllers/comments_controller.ex:354,4F0F811
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/item_image_controller.ex:125,lib/backend_web/controllers/item_image_controller.ex:125,3DFCE97
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_controller.ex:357,lib/backend_web/controllers/customer_controller.ex:357,4652973
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/movement_photo_controller.ex:101,lib/backend_web/controllers/movement_photo_controller.ex:101,2324E0E
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/purchase_order_controller.ex:555,lib/backend_web/controllers/purchase_order_controller.ex:555,6A79348
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/purchase_order_controller.ex:550,lib/backend_web/controllers/purchase_order_controller.ex:550,136FEB
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/vendor_controller.ex:277,lib/backend_web/controllers/vendor_controller.ex:277,791863
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_controller.ex:352,lib/backend_web/controllers/customer_controller.ex:352,3FC54FB
+Config.CSWH: Cross-Site Websocket Hijacking - lib/backend_web/endpoint.ex:37,lib/backend_web/endpoint.ex:37,29B3E3F
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_order_controller.ex:535,lib/backend_web/controllers/customer_order_controller.ex:535,19D9D21
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/purchase_order_controller.ex:577,lib/backend_web/controllers/purchase_order_controller.ex:577,84CDEE
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/comments_controller.ex:387,lib/backend_web/controllers/comments_controller.ex:387,36BD9D2
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/comments_controller.ex:382,lib/backend_web/controllers/comments_controller.ex:382,2656E51
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/item_file_controller.ex:91,lib/backend_web/controllers/item_file_controller.ex:91,2B8BFC1
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/vendor_controller.ex:299,lib/backend_web/controllers/vendor_controller.ex:299,300BEA8
+Traversal.FileModule: Directory Traversal in `File.rm` - lib/backend/storage/local.ex:34,lib/backend/storage/local.ex:34,7872C12
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_order_controller.ex:601,lib/backend_web/controllers/customer_order_controller.ex:601,6B87E6C
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/item_file_controller.ex:118,lib/backend_web/controllers/item_file_controller.ex:118,144B24D
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_return_controller.ex:389,lib/backend_web/controllers/customer_return_controller.ex:389,357A2C7
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/procurement_invoice_controller.ex:237,lib/backend_web/controllers/procurement_invoice_controller.ex:237,1ED6276
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/item_file_controller.ex:96,lib/backend_web/controllers/item_file_controller.ex:96,58C317A
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/production/final_releases.ex:534,lib/backend/production/final_releases.ex:534,6FCDEB1

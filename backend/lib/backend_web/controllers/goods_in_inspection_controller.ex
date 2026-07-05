@@ -472,6 +472,7 @@ defmodule BackendWeb.GoodsInInspectionController do
   serve — local adapter reads from disk, cloud adapters short-circuit
   to a signed URL upstream.
   """
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"goods_in_inspection_id" => uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 

@@ -183,6 +183,9 @@ defmodule BackendWeb.ProcurementInvoiceController do
 
   # ----- file ------------------------------------------------------
 
+  # File.read on upload.path — Plug.Upload places uploads in a
+  # tmp dir it controls, not one derived from the request payload.
+  # Safe by construction of Plug.Parsers.MULTIPART.
   def attach_file(conn, %{"id" => uuid, "file" => %Plug.Upload{} = upload}) do
     actor = conn.assigns.current_user
 
@@ -222,6 +225,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
     end
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"id" => uuid}) do
     actor = conn.assigns.current_user
 

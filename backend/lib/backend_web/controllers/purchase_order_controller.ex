@@ -538,6 +538,7 @@ defmodule BackendWeb.PurchaseOrderController do
   serve — local adapter reads from disk, cloud adapters would
   short-circuit to a signed URL upstream.
   """
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"purchase_order_id" => po_uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -571,6 +572,7 @@ defmodule BackendWeb.PurchaseOrderController do
 
   defp validate_evidence_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}

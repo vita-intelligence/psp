@@ -339,6 +339,8 @@ defmodule BackendWeb.CustomerController do
     unprocessable(conn, "missing_file", "Send the file under `file` (multipart).")
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale — same
+  # pattern: DB-derived blob_path, root-checked, sniff-verified MIME.
   def serve_file(conn, %{"customer_id" => customer_uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -448,6 +450,7 @@ defmodule BackendWeb.CustomerController do
 
   defp validate_evidence_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}

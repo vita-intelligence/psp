@@ -867,6 +867,10 @@ defmodule Backend.Documents do
 
   # ---------------------------------------------------------------- private
 
+  # `template` is a module attribute atom-name resolved at compile
+  # time (see the caller in `purchase_order_pdf/1` etc.), and the
+  # actual `.eex` file lives under `@templates_dir` in `priv/`. No
+  # user input reaches the template compiler.
   defp render_pdf(template, assigns) do
     html =
       @templates_dir

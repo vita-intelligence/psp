@@ -341,6 +341,7 @@ defmodule BackendWeb.CommentsController do
   loads the parent comment, and re-checks the comment's entity view
   perm on the fly. Tenanted by company on the file itself.
   """
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file_bare(conn, %{"file_uuid" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -361,6 +362,7 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{
         "entity_uuid" => entity_uuid,
         "comment_uuid" => comment_uuid,
@@ -773,6 +775,8 @@ defmodule BackendWeb.CommentsController do
 
   defp validate_attachment_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload provides a tmp path it
+  # owns; the request payload can't influence which file is read.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}

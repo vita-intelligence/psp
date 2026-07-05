@@ -31,6 +31,9 @@ defmodule BackendWeb.Endpoint do
   # host other than the configured PHX_HOST. Left `false` here for dev
   # so localhost / LAN cross-origin upgrades still work while running
   # `mix phx.server`.
+  # Prod overrides `check_origin` at runtime via `config/runtime.exs`
+  # using PHX_HOST + WS_EXTRA_ORIGINS — dev is deliberately open so
+  # LAN devices (paired phones) can join without additional config.
   socket "/socket", BackendWeb.UserSocket,
     websocket: [check_origin: Mix.env() != :prod],
     longpoll: false

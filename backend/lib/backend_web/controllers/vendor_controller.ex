@@ -257,6 +257,10 @@ defmodule BackendWeb.VendorController do
   resolver — the cloud adapter would short-circuit to a signed URL
   upstream and this route would be hit only for local dev.
   """
+  # Path: file.blob_path is server-assigned at upload time; Backend.Storage.Local
+  # enforces a Path.expand root check. MIME: verified at upload by
+  # Backend.Http.MimeSniffer (see Phase 1 H10); Content-Disposition escaped
+  # by Backend.Http.ContentDisposition (see Phase 1 H4).
   def serve_file(conn, %{"vendor_id" => vendor_uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -290,6 +294,7 @@ defmodule BackendWeb.VendorController do
 
   defp validate_evidence_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}

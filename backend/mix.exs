@@ -63,7 +63,11 @@ defmodule Backend.MixProject do
       # Elixir/Phoenix SAST. Run via `mix sobelow --config` — the
       # rules and skip-list live in `.sobelow-conf`. CI-only dep so
       # production releases don't bundle it.
-      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
+      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false},
+      # Cross-refs Hex deps against the GitHub Advisory Database.
+      # Stricter than the built-in `mix hex.audit` (which only sees
+      # Hex retirement notices). CI-only.
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -100,7 +104,11 @@ defmodule Backend.MixProject do
       # you want the full pre-flight.)
       "security.scan": [
         "sobelow --config",
+        # `hex.audit` = Hex retirement notices only. `deps.audit` =
+        # GH Advisory Database (from mix_audit) — stricter, catches
+        # published CVEs.
         "hex.audit",
+        "deps.audit",
         "test.security.pure"
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
