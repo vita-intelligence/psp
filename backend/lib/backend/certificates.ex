@@ -126,6 +126,11 @@ defmodule Backend.Certificates do
   the FE to render the name + type alongside the validity window.
   """
   def list_attachments(item_id) when is_integer(item_id) do
+    # Previously: `preload: [certificate: c, uploaded_by: :id]` — the
+    # `:id` in the nested spot is malformed (not a valid preload key),
+    # so `uploaded_by` wasn't actually loaded. The tail `Enum.map` then
+    # fired a per-row `Repo.preload` to fix it up, fanning out to N+1.
+    # Correct spec preloads both associations in the single query.
     Repo.all(
       from(ic in ItemCertificate,
         where: ic.item_id == ^item_id,
@@ -134,7 +139,7 @@ defmodule Backend.Certificates do
         order_by: [asc: c.name]
       )
     )
-    |> Enum.map(fn att -> Repo.preload(att, [:certificate, :uploaded_by]) end)
+    |> Repo.preload(:uploaded_by)
   end
 
   def get_attachment_for_item(item_id, att_uuid) when is_binary(att_uuid) do

@@ -12,8 +12,14 @@ defmodule BackendWeb.Presence do
     otp_app: :backend,
     pubsub_server: Backend.PubSub
 
-  def list_online_user_ids do
-    list("lobby")
+  @doc """
+  Set of user ids currently online in the given tenant's lobby. The
+  lobby topic is sharded per company (`lobby:<company_id>`), so
+  callers must pass their `company_id` — a naked `list("lobby")` is
+  now empty because the topic has been split.
+  """
+  def list_online_user_ids(company_id) when is_integer(company_id) do
+    list("lobby:#{company_id}")
     |> Map.keys()
     |> Enum.map(fn id ->
       case Integer.parse(to_string(id)) do

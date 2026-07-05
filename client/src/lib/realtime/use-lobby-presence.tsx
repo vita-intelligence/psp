@@ -26,7 +26,7 @@ let pendingMeta: { current_form: string | null } | null = null;
  * (because those fields don't change on update, so the leave matches
  * both the old and new meta and the user disappears).
  */
-export function useLobbyPresence() {
+export function useLobbyPresence(companyId: number) {
   const reset = usePresence((s) => s.reset);
 
   useEffect(() => {
@@ -37,7 +37,11 @@ export function useLobbyPresence() {
       const socket = await getSocket();
       if (!socket || !alive) return;
 
-      const channel = socket.channel("lobby", {});
+      // Per-tenant topic — every subscriber to `lobby:<company_id>`
+      // is in the same company, so the Presence CRDT is naturally
+      // scoped and we don't pay the O(N·n) per-diff filter cost that
+      // the shared-topic version needed.
+      const channel = socket.channel(`lobby:${companyId}`, {});
       const presence = new Presence(channel);
 
       presence.onSync(() => {
@@ -68,7 +72,7 @@ export function useLobbyPresence() {
       alive = false;
       cleanup?.();
     };
-  }, [reset]);
+  }, [reset, companyId]);
 }
 
 /**

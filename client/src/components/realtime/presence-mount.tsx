@@ -1,15 +1,18 @@
-"use client";
-
-import { useLobbyPresence } from "@/lib/realtime/use-lobby-presence";
-import { useConnectionWatcher } from "@/lib/realtime/use-connection-watcher";
+import { getCurrentUser } from "@/lib/auth/server";
+import { PresenceMountClient } from "./presence-mount-client";
 
 /**
- * Empty render — its only job is to mount the realtime hooks once for
- * the authed layout (presence tracker + connection state watcher).
+ * Server wrapper — resolves the current user's company_id so the
+ * client-side hook can join the per-tenant lobby topic
+ * (`lobby:<company_id>`). Splitting server/client this way lets the
+ * ~70 layouts that already render `<PresenceMount />` keep working
+ * unchanged.
+ *
  * Renders nothing visible.
  */
-export function PresenceMount() {
-  useLobbyPresence();
-  useConnectionWatcher();
-  return null;
+export async function PresenceMount() {
+  const user = await getCurrentUser();
+  if (!user?.company_id) return null;
+
+  return <PresenceMountClient companyId={user.company_id} />;
 }

@@ -43,7 +43,7 @@ defmodule BackendWeb.UserController do
   """
   def team(conn, _params) do
     user = conn.assigns.current_user
-    online_ids = Presence.list_online_user_ids()
+    online_ids = Presence.list_online_user_ids(user.company_id)
 
     items =
       user.company_id
@@ -58,7 +58,7 @@ defmodule BackendWeb.UserController do
     opts = list_opts_from_params(params)
 
     {items, next_cursor} = Accounts.list_for_company(user.company_id, opts)
-    online_ids = Presence.list_online_user_ids()
+    online_ids = Presence.list_online_user_ids(user.company_id)
 
     json(conn, %{
       items: Enum.map(items, &user_row(&1, online_ids)),
@@ -77,7 +77,7 @@ defmodule BackendWeb.UserController do
         {:error, :not_found}
 
       user ->
-        online = user.id in Presence.list_online_user_ids()
+        online = user.id in Presence.list_online_user_ids(current.company_id)
 
         json(conn, %{user: Map.put(Payloads.user(user), :is_online, online)})
     end
@@ -126,7 +126,7 @@ defmodule BackendWeb.UserController do
       )
 
       updated = Repo.preload(updated, [:created_by, :updated_by])
-      online = updated.id in Presence.list_online_user_ids()
+      online = updated.id in Presence.list_online_user_ids(updated.company_id)
 
       json(conn, %{
         user: Map.put(Payloads.user(updated), :is_online, online)

@@ -1648,33 +1648,62 @@ defmodule Backend.Production do
   seen-set; depth-capped to match the cascade limit.
   """
   def mo_chain(%ManufacturingOrder{} = mo) do
-    root = walk_to_root(mo, MapSet.new())
+    root = walk_to_root(mo)
     collect_descendants([root], MapSet.new([root.id]))
   end
 
-  defp walk_to_root(%ManufacturingOrder{parent_mo_id: nil} = mo, _seen) do
+  # Walk up to the tree root. Previously each level fired its own
+  # `Repo.get` — a k-level chain = k round-trips. A Postgres
+  # recursive CTE finds the top ancestor in one query regardless of
+  # depth. Depth cap of 25 protects against a data-corruption cycle
+  # (A → B → A); if the actual chain is deeper we treat the deepest
+  # ancestor we reached as the root, matching the old cycle-break
+  # behaviour.
+  defp walk_to_root(%ManufacturingOrder{parent_mo_id: nil} = mo) do
     Repo.preload(mo, :item)
   end
 
-  defp walk_to_root(%ManufacturingOrder{parent_mo_id: pid} = mo, seen) do
-    cond do
-      MapSet.member?(seen, mo.id) ->
-        Repo.preload(mo, :item)
+  defp walk_to_root(%ManufacturingOrder{} = mo) do
+    root_id = find_root_ancestor_id(mo.id)
 
-      parent = Repo.get(ManufacturingOrder, pid) ->
-        walk_to_root(parent, MapSet.put(seen, mo.id))
-
-      true ->
-        Repo.preload(mo, :item)
+    case Repo.get(ManufacturingOrder, root_id) do
+      nil -> Repo.preload(mo, :item)
+      root -> Repo.preload(root, :item)
     end
   end
 
-  defp collect_descendants(frontier, seen) when frontier == [], do: []
+  defp find_root_ancestor_id(mo_id) do
+    {:ok, result} =
+      Repo.query(
+        """
+        WITH RECURSIVE ancestry AS (
+          SELECT id, parent_mo_id, 0 AS depth
+          FROM manufacturing_orders WHERE id = $1
+          UNION ALL
+          SELECT m.id, m.parent_mo_id, a.depth + 1
+          FROM manufacturing_orders m
+          JOIN ancestry a ON m.id = a.parent_mo_id
+          WHERE a.depth < 25
+        )
+        SELECT id FROM ancestry ORDER BY depth DESC LIMIT 1
+        """,
+        [mo_id]
+      )
+
+    case result.rows do
+      [[id]] -> id
+      _ -> mo_id
+    end
+  end
+
+  defp collect_descendants(frontier, _seen) when frontier == [], do: []
 
   defp collect_descendants(frontier, seen) do
-    loaded = Enum.map(frontier, &Repo.preload(&1, :item))
-
-    ids = Enum.map(loaded, & &1.id)
+    # `frontier` always arrives with `:item` preloaded — either from
+    # `walk_to_root/1` (single MO) or from the `children` query below
+    # (which uses `preload: :item`). No further per-row `Repo.preload`
+    # is needed.
+    ids = Enum.map(frontier, & &1.id)
 
     children =
       from(c in ManufacturingOrder,
@@ -1684,7 +1713,7 @@ defmodule Backend.Production do
       |> Repo.all()
 
     next_seen = Enum.reduce(children, seen, &MapSet.put(&2, &1.id))
-    loaded ++ collect_descendants(children, next_seen)
+    frontier ++ collect_descendants(children, next_seen)
   end
 
   defp primary_bom_for_item(company_id, item_id) do
@@ -2021,19 +2050,29 @@ defmodule Backend.Production do
   end
 
   defp parse_segment_list(list) do
-    Enum.reduce_while(list, {:ok, []}, fn seg, {:ok, acc} ->
-      start_raw = Map.get(seg, "start_at") || Map.get(seg, :start_at)
-      finish_raw = Map.get(seg, "finish_at") || Map.get(seg, :finish_at)
+    # `acc ++ [entry]` in a hot reduce is O(len(acc)) per iteration
+    # → O(n²) total. Prepend and reverse once at the end.
+    result =
+      Enum.reduce_while(list, {:ok, []}, fn seg, {:ok, acc} ->
+        start_raw = Map.get(seg, "start_at") || Map.get(seg, :start_at)
+        finish_raw = Map.get(seg, "finish_at") || Map.get(seg, :finish_at)
 
-      with start_raw when is_binary(start_raw) <- start_raw,
-           finish_raw when is_binary(finish_raw) <- finish_raw,
-           {:ok, s, _} <- DateTime.from_iso8601(start_raw),
-           {:ok, f, _} <- DateTime.from_iso8601(finish_raw) do
-        {:cont, {:ok, acc ++ [{DateTime.shift_zone!(s, "Etc/UTC"), DateTime.shift_zone!(f, "Etc/UTC")}]}}
-      else
-        _ -> {:halt, {:error, :invalid_segments}}
-      end
-    end)
+        with start_raw when is_binary(start_raw) <- start_raw,
+             finish_raw when is_binary(finish_raw) <- finish_raw,
+             {:ok, s, _} <- DateTime.from_iso8601(start_raw),
+             {:ok, f, _} <- DateTime.from_iso8601(finish_raw) do
+          {:cont,
+           {:ok,
+            [{DateTime.shift_zone!(s, "Etc/UTC"), DateTime.shift_zone!(f, "Etc/UTC")} | acc]}}
+        else
+          _ -> {:halt, {:error, :invalid_segments}}
+        end
+      end)
+
+    case result do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      other -> other
+    end
   end
 
   # Hard-reject typed segments that would push concurrent ops on the
@@ -2648,7 +2687,7 @@ defmodule Backend.Production do
   uses, so the timeline shows "edit X by user Y → auto-demoted".
   """
   def demote_root_if_signed(%User{} = actor, %ManufacturingOrder{} = mo) do
-    root = walk_to_root(mo, MapSet.new())
+    root = walk_to_root(mo)
 
     case root.status do
       "prepared" ->
@@ -4668,11 +4707,16 @@ defmodule Backend.Production do
 
       ordered = chain_in_topo_order_leaves_first(chain)
 
+      # Precompute the parent → children index once. Filtering the
+      # chain per-MO inside the reduce turned this loop into O(n²)
+      # on the MO chain size; grouping once collapses it to O(n).
+      children_by_parent = Enum.group_by(chain, & &1.parent_mo_id)
+
       {_finish_by_mo, total_outside} =
         Enum.reduce(ordered, {%{}, 0}, fn mo, {finishes, off_total} ->
           children_finishes =
-            chain
-            |> Enum.filter(fn c -> c.parent_mo_id == mo.id end)
+            children_by_parent
+            |> Map.get(mo.id, [])
             |> Enum.map(fn c -> Map.get(finishes, c.id) end)
             |> Enum.filter(&(&1 != nil))
 
@@ -4713,8 +4757,15 @@ defmodule Backend.Production do
   # Post-order traversal of the chain so every parent comes after
   # all of its descendants. Lets the forward scheduler chain finish
   # times up the tree (parent.earliest = max(children.finish)).
+  #
+  # Complexity: previously O(n²) — every recursive call rescanned
+  # `Map.values(by_id)` to find children, AND accumulated results
+  # via `acc ++ [mo]` which is O(len(acc)) per append. Now O(n):
+  # a single group_by materialises the child index; results are
+  # prepended and reversed once at the caller.
   defp chain_in_topo_order_leaves_first(mos) do
     by_id = Map.new(mos, &{&1.id, &1})
+    children_by_parent = Enum.group_by(mos, & &1.parent_mo_id)
 
     root =
       Enum.find(mos, fn m ->
@@ -4722,24 +4773,28 @@ defmodule Backend.Production do
       end)
 
     case root do
-      nil -> mos
-      r -> post_order_walk(r, by_id, MapSet.new(), []) |> elem(0)
+      nil ->
+        mos
+
+      r ->
+        {reversed, _seen} = post_order_walk(r, children_by_parent, MapSet.new(), [])
+        Enum.reverse(reversed)
     end
   end
 
-  defp post_order_walk(mo, by_id, seen, acc) do
+  defp post_order_walk(mo, children_by_parent, seen, acc) do
     if MapSet.member?(seen, mo.id) do
       {acc, seen}
     else
       seen = MapSet.put(seen, mo.id)
-      children = Enum.filter(Map.values(by_id), &(&1.parent_mo_id == mo.id))
+      children = Map.get(children_by_parent, mo.id, [])
 
       {acc, seen} =
         Enum.reduce(children, {acc, seen}, fn c, {a, s} ->
-          post_order_walk(c, by_id, s, a)
+          post_order_walk(c, children_by_parent, s, a)
         end)
 
-      {acc ++ [mo], seen}
+      {[mo | acc], seen}
     end
   end
 
@@ -9597,6 +9652,14 @@ defmodule Backend.Production do
       |> Enum.filter(&(&1.status not in ["completed", "cancelled"]))
       |> Enum.group_by(& &1.item_id)
 
+    # Precompute active bookings per item. Filtering `mo.bookings`
+    # per line inside the flat_map was O(lines × bookings); once
+    # this is grouped it's O(lines + bookings).
+    bookings_by_item =
+      mo.bookings
+      |> Enum.filter(&(&1.status == "requested"))
+      |> Enum.group_by(& &1.item_id)
+
     shortages =
       lines
       |> Enum.flat_map(fn line ->
@@ -9611,10 +9674,8 @@ defmodule Backend.Production do
               end
 
             booked =
-              mo.bookings
-              |> Enum.filter(fn b ->
-                b.item_id == part_id and b.status == "requested"
-              end)
+              bookings_by_item
+              |> Map.get(part_id, [])
               |> Enum.reduce(Decimal.new(0), fn b, acc ->
                 Decimal.add(acc, b.quantity || Decimal.new(0))
               end)

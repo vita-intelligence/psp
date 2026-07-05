@@ -390,13 +390,19 @@ defmodule Backend.CustomerOrders do
   def recompute_totals(%CustomerOrder{} = co) do
     co = Repo.get!(CustomerOrder, co.id)
 
-    lines =
-      Repo.all(from l in CustomerOrderLine, where: l.customer_order_id == ^co.id)
-
+    # Sum in the DB — previously we fetched every line row just to
+    # `Enum.reduce` line_subtotal. A CO with 200 lines returned
+    # ~200 rows over the wire per header save; now it's one number.
     subtotal =
-      Enum.reduce(lines, Decimal.new(0), fn line, acc ->
-        Decimal.add(acc, line.line_subtotal || Decimal.new(0))
-      end)
+      Repo.aggregate(
+        from(l in CustomerOrderLine, where: l.customer_order_id == ^co.id),
+        :sum,
+        :line_subtotal
+      )
+      |> case do
+        nil -> Decimal.new(0)
+        s -> s
+      end
       |> Decimal.round(2)
 
     discount_pct = co.discount_pct || Decimal.new(0)
