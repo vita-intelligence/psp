@@ -21,6 +21,7 @@
  */
 
 import {
+  memo,
   startTransition,
   useCallback,
   useEffect,
@@ -32,7 +33,6 @@ import {
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import QRCode from "qrcode";
 import {
   AlertCircle,
   AlertTriangle,
@@ -581,6 +581,27 @@ export function ProjectControlBoard({
     }
   }, []);
 
+  // Stable handler refs so the memoised `LineCard` sub-tree skips
+  // renders when only the parent re-runs (e.g. on a wizard-channel
+  // tick). Previously the parent passed inline arrow functions which
+  // are new references every render and defeat `React.memo`.
+  const handleSpawnMo = useCallback(
+    (line: OrderWizardLine) => {
+      if (line.available_boms.length > 1) {
+        setBomPickerLine(line);
+      } else {
+        void runCreateMo(co.uuid, line.uuid, undefined, refreshSnapshot);
+      }
+    },
+    [co.uuid, refreshSnapshot],
+  );
+
+  const handleMoAction = useCallback(
+    (moUuid: string, action: MOActionString) =>
+      runMoTransition(co.uuid, moUuid, action, refreshSnapshot),
+    [co.uuid, refreshSnapshot],
+  );
+
   if (!snapshot) {
     return <BoardSkeleton co={co} />;
   }
@@ -669,27 +690,9 @@ export function ProjectControlBoard({
                 prefs={prefs}
                 permissions={permissions}
                 onOpenMo={openMoModal}
-                onSpawnMo={(line) => {
-                  if (line.available_boms.length > 1) {
-                    setBomPickerLine(line);
-                  } else {
-                    void runCreateMo(
-                      co.uuid,
-                      line.uuid,
-                      undefined,
-                      refreshSnapshot,
-                    );
-                  }
-                }}
-                onMoAction={(moUuid, action) =>
-                  runMoTransition(
-                    co.uuid,
-                    moUuid,
-                    action,
-                    refreshSnapshot,
-                  )
-                }
-                onSendToDevice={(cta) => setQrModalCta(cta)}
+                onSpawnMo={handleSpawnMo}
+                onMoAction={handleMoAction}
+                onSendToDevice={setQrModalCta}
               />
             </section>
 
@@ -1487,7 +1490,19 @@ function LinesSection({
   );
 }
 
-function LineCard({
+// `LineCard` used to re-render on every parent re-render, and every
+// re-render re-ran `lineOverallRollup(line.mos)` — an O(mos) walk over
+// the MO tree — inline. On a project with 50 lines × 5 MOs, one
+// wizard-channel update fired ~15,000 rollups on a cursor tick.
+//
+// `React.memo` skips the render when the props are shallow-equal —
+// the parent passes stable refs for `line`, `prefs`, `permissions`,
+// and the `on*` handlers — so a peer moving their cursor no longer
+// re-renders every line.
+//
+// `useMemo` around the rollup keeps it O(1) inside a card whose
+// `line.mos` reference is stable across renders.
+const LineCard = memo(function LineCard({
   line,
   coStatus,
   prefs,
@@ -1517,7 +1532,7 @@ function LineCard({
   // Line-level roll-up. Overall phase = the slowest MO in the tree
   // (the whole line can't be Done while any sub-MO is still Setup),
   // aheadCount = MOs already past that phase and waiting.
-  const rollup = lineOverallRollup(line.mos);
+  const rollup = useMemo(() => lineOverallRollup(line.mos), [line.mos]);
   const overallPhase = MO_PHASES[rollup.minPhaseIdx];
   const isLineDone = rollup.totalCount > 0 && rollup.doneCount === rollup.totalCount;
   // Rail = slowest MO in the tree, not the done count. When the
@@ -1646,7 +1661,7 @@ function LineCard({
       )}
     </section>
   );
-}
+});
 
 function flattenMoTree(mos: OrderWizardMo[]): OrderWizardMo[] {
   return mos.flatMap((mo) => [mo, ...flattenMoTree(mo.children ?? [])]);
@@ -3304,11 +3319,24 @@ function SendToDeviceModal({
       setDataUrl(null);
       return;
     }
-    void QRCode.toDataURL(url, {
-      errorCorrectionLevel: "M",
-      margin: 1,
-      width: 256,
-    }).then(setDataUrl);
+    // Dynamic import — the qrcode package is ~47 KB and only used
+    // inside this modal. Eager import at the top of a 3,762 LOC
+    // component was in the initial bundle even for users who never
+    // opened the "send to device" modal.
+    let cancelled = false;
+    void import("qrcode").then(({ default: QRCode }) => {
+      if (cancelled) return;
+      void QRCode.toDataURL(url, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 256,
+      }).then((d) => {
+        if (!cancelled) setDataUrl(d);
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [open, url]);
 
   useEffect(() => {
