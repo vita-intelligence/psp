@@ -7,6 +7,10 @@ defmodule Backend.Application do
 
   @impl true
   def start(_type, _args) do
+    # ETS-backed rate limiter table. Boots before the endpoint so the
+    # first request already has a place to count against.
+    :ok = Backend.HttpRateLimit.init()
+
     children = [
       BackendWeb.Telemetry,
       Backend.Repo,

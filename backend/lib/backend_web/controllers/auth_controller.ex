@@ -6,6 +6,26 @@ defmodule BackendWeb.AuthController do
 
   action_fallback BackendWeb.FallbackController
 
+  # Brute-force / credential-stuffing throttles. Combining IP + email
+  # on login stops a single-source spray without punishing a shared
+  # office IP for one person's typo; IP-only on register/confirm
+  # stops the sign-up spam vector.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :login, limit: 10, window: 60, key: {:ip_and_param, "email"}]
+       when action == :login
+
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :login_ip, limit: 30, window: 60, key: :ip]
+       when action == :login
+
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :register, limit: 5, window: 3600, key: :ip]
+       when action == :register
+
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :confirm, limit: 20, window: 3600, key: :ip]
+       when action == :confirm
+
   def register(conn, params) do
     builder = &confirm_url_for_token/1
 

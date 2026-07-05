@@ -51,6 +51,13 @@ defmodule Backend.Accounts.User do
     field :permissions, {:array, :string}, default: []
     field :hourly_wage, :decimal
 
+    # Session-token cohort. Every signed token embeds this number;
+    # verification fails if the token's number != the user's current
+    # one. Password change / password reset bump it, so every prior
+    # session logs out on next request. Admin "revoke all" pumps it
+    # too.
+    field :token_version, :integer, default: 0
+
     belongs_to :company, Backend.Companies.Company
     # Self-referential audit links — `created_by` is the inviting admin
     # (nil for self-signups / the bootstrap user); `updated_by` is whoever
@@ -100,6 +107,7 @@ defmodule Backend.Accounts.User do
     |> validate_length(:password, min: 8, max: 72)
     |> validate_current_password()
     |> put_hashed_password()
+    |> bump_token_version()
   end
 
   ## Password reset (token-based, anonymous start) ----------------------
@@ -120,6 +128,7 @@ defmodule Backend.Accounts.User do
     |> put_hashed_password()
     |> put_change(:password_reset_token, nil)
     |> put_change(:password_reset_sent_at, nil)
+    |> bump_token_version()
   end
 
   def password_reset_expired?(%__MODULE__{password_reset_sent_at: nil}), do: true
@@ -209,6 +218,16 @@ defmodule Backend.Accounts.User do
   end
 
   defp put_hashed_password(cs), do: cs
+
+  # Every successful password rotation invalidates existing tokens by
+  # incrementing the version they were signed against. `verify_token`
+  # rejects tokens whose embedded version is behind the DB's.
+  defp bump_token_version(%Ecto.Changeset{valid?: true} = cs) do
+    current = get_field(cs, :token_version) || 0
+    put_change(cs, :token_version, current + 1)
+  end
+
+  defp bump_token_version(cs), do: cs
 
   defp put_confirmation_token(%Ecto.Changeset{valid?: true} = cs) do
     put_change(cs, :confirmation_token, generate_url_token())

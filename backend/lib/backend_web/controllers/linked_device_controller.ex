@@ -26,6 +26,18 @@ defmodule BackendWeb.LinkedDeviceController do
 
   action_fallback BackendWeb.FallbackController
 
+  # Public pairing-code endpoints are brute-forceable if left open —
+  # the code space is small (short-lived numeric / alphanumeric).
+  # Cap look-up and claim tightly per IP so an attacker can't sweep
+  # the space in a short window.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :pair_lookup, limit: 30, window: 60, key: :ip]
+       when action == :lookup_pairing_code
+
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :pair_claim, limit: 10, window: 60, key: :ip]
+       when action == :claim
+
   # ----- public --------------------------------------------------------
 
   def lookup_pairing_code(conn, %{"code" => code}) do

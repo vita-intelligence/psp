@@ -16,6 +16,24 @@ defmodule BackendWeb.PasswordResetController do
 
   action_fallback BackendWeb.FallbackController
 
+  # `request` triggers an email; without a throttle, an attacker
+  # spams the inbox of every enumerated user OR uses the endpoint
+  # to punish an SES / Postmark quota. Per-email cap on top of a
+  # per-IP cap.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :reset_request_email, limit: 3, window: 3600, key: {:param, "email"}]
+       when action == :request
+
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :reset_request_ip, limit: 20, window: 3600, key: :ip]
+       when action == :request
+
+  # `confirm` accepts a token — brute-forcing the token space would
+  # need many attempts. Modest cap to make that expensive.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :reset_confirm, limit: 10, window: 3600, key: :ip]
+       when action == :confirm
+
   def request(conn, %{"email" => email}) when is_binary(email) do
     url_builder = &reset_url_for_token/1
     :ok = Accounts.request_password_reset(email, url_builder)
