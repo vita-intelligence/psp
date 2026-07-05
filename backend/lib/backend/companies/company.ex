@@ -68,6 +68,11 @@ defmodule Backend.Companies.Company do
     # bill customers £0.00.
     field :three_pl_rate_per_m3_per_day, :decimal
 
+    # MFA enforcement toggle. When flipped `true`, every user without
+    # confirmed MFA gets `mfa_required_at` stamped so the 7-day grace
+    # window starts ticking. See `Backend.Companies.update_security/2`.
+    field :require_mfa, :boolean, default: false
+
     has_many :roles, Role
     has_many :users, User
 
@@ -112,6 +117,17 @@ defmodule Backend.Companies.Company do
       less_than_or_equal_to: 100
     )
     |> unique_constraint(:name)
+  end
+
+  @doc """
+  Security card update — currently the company-wide "require MFA
+  for every user" toggle. Kept on its own changeset so the settings
+  UI's save button has an isolated success/failure surface.
+  """
+  def security_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:require_mfa])
+    |> validate_required([:require_mfa])
   end
 
   @doc "Locale card update — separators, currency code, etc."

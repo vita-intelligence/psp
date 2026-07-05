@@ -66,6 +66,65 @@ defmodule Backend.Companies do
   end
 
   @doc """
+  Flip the company-wide MFA-required toggle.
+
+  When flipping FROM off TO on, every user in the company who hasn't
+  finished enrollment gets `mfa_required_at` stamped so their 7-day
+  grace window starts. Already-enrolled users are untouched.
+
+  When flipping FROM on TO off, we clear `mfa_required_at` on every
+  user so the settings screen doesn't keep showing stale grace
+  deadlines. Enrolled users keep their MFA active — disable is a
+  per-user action.
+
+  Runs in a transaction so a partial write can't leave the toggle
+  and the user rows out of sync.
+  """
+  def update_security(%Company{} = company, attrs) do
+    Repo.transaction(fn ->
+      case company
+           |> Company.security_changeset(attrs)
+           |> Repo.update() do
+        {:ok, updated} ->
+          _ = sync_user_mfa_required(company, updated)
+          updated
+
+        {:error, cs} ->
+          Repo.rollback(cs)
+      end
+    end)
+  end
+
+  # `previous` = the company row we read before the changeset ran.
+  # `updated`  = the row after. We only touch the users table when the
+  # `require_mfa` bit actually changed.
+  defp sync_user_mfa_required(previous, updated) do
+    cond do
+      previous.require_mfa == updated.require_mfa ->
+        {0, nil}
+
+      updated.require_mfa ->
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+        import Ecto.Query, only: [from: 2]
+
+        from(u in Backend.Accounts.User,
+          where:
+            u.company_id == ^updated.id and
+              is_nil(u.totp_confirmed_at) and
+              is_nil(u.mfa_required_at)
+        )
+        |> Repo.update_all(set: [mfa_required_at: now])
+
+      true ->
+        import Ecto.Query, only: [from: 2]
+
+        from(u in Backend.Accounts.User, where: u.company_id == ^updated.id)
+        |> Repo.update_all(set: [mfa_required_at: nil])
+    end
+  end
+
+  @doc """
   Warehouse-pickup defaults — currently just the default visibility
   window for released MOs. Per-MO override lives on the MO row.
   """

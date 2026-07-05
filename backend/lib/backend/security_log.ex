@@ -28,6 +28,7 @@ defmodule Backend.SecurityLog do
           :login_success
           | :login_failure
           | :login_unconfirmed
+          | :login_mfa_required
           | :register_success
           | :register_failure
           | :password_changed
@@ -39,6 +40,11 @@ defmodule Backend.SecurityLog do
           | :confirmation_failure
           | :rate_limited
           | :sessions_revoked
+          | :mfa_enrolled
+          | :mfa_disabled
+          | :mfa_verify_success
+          | :mfa_verify_failure
+          | :mfa_policy_changed
 
   @doc """
   Record a security event.

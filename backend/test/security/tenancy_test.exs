@@ -62,8 +62,31 @@ defmodule Security.TenancyTest do
       assert Tenancy.resource_in_tenant?(user, "company", to_string(user.company_id))
     end
 
+    test "own company id + sub-form suffix passes", %{user_a: user} do
+      # Frontend spawns `company:1:identity`, `company:1:locale`, etc.
+      # parse_topic gives id = "1:locale"; only the numeric prefix is
+      # authoritative.
+      for suffix <- ["identity", "locale", "security", "holidays", "three-pl-rate"] do
+        assert Tenancy.resource_in_tenant?(
+                 user,
+                 "company",
+                 "#{user.company_id}:#{suffix}"
+               ),
+               "expected #{suffix} sub-form to pass"
+      end
+    end
+
     test "someone else's company id fails", %{user_a: user, tenant_b: tenant_b} do
       refute Tenancy.resource_in_tenant?(user, "company", to_string(tenant_b.id))
+    end
+
+    test "someone else's company id with sub-form still fails",
+         %{user_a: user, tenant_b: tenant_b} do
+      refute Tenancy.resource_in_tenant?(
+               user,
+               "company",
+               "#{tenant_b.id}:identity"
+             )
     end
   end
 

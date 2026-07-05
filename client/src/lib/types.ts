@@ -122,6 +122,11 @@ export interface Company {
    *  £0.00 lines. String because the backend sends decimals as
    *  strings to avoid JS float rounding. */
   three_pl_rate_per_m3_per_day: string | null;
+  /** Admin toggle. When true, every user in the company must have MFA
+   *  enrolled; un-enrolled users get a 7-day grace period from the
+   *  moment the flag flipped. Login refuses without a TOTP code past
+   *  the grace deadline. */
+  require_mfa: boolean;
 }
 
 export interface UserListEntry extends User {
