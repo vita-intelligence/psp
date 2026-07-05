@@ -22,10 +22,14 @@ defmodule BackendWeb.Plugs.SecureHeaders do
       plain HTTP responses avoids infinite-cache traps during local
       dev.
 
-  Not a CSP — the API is JSON-only, so CSP would only apply to the
-  small handful of HTML pages served by Phoenix (dev dashboard,
-  mailbox preview) which live under `/dev` and are gated behind
-  authentication.
+  Also carries a Content-Security-Policy suitable for the JSON
+  responses this pipeline covers. The API never renders HTML, so
+  `default-src 'none'` is the safe choice — it blocks any hypothetical
+  content-type mistake (e.g. a proxy inserting a redirect body) from
+  loading scripts or executing inline handlers. The HTML surfaces the
+  app actually serves (`/dev/dashboard`, `/dev/mailbox`) run through a
+  separate `BackendWeb.Plugs.HtmlSecureHeaders` plug with a more
+  permissive CSP tuned to LiveDashboard's needs.
   """
 
   import Plug.Conn
@@ -37,7 +41,13 @@ defmodule BackendWeb.Plugs.SecureHeaders do
     {"x-frame-options", "DENY"},
     {"referrer-policy", "strict-origin-when-cross-origin"},
     {"permissions-policy",
-     "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"}
+     "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"},
+    # API responses never render — `default-src 'none'` is the
+    # strictest baseline. `frame-ancestors 'none'` mirrors the
+    # X-Frame-Options above for browsers that ignore XFO in favour
+    # of CSP.
+    {"content-security-policy",
+     "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"}
   ]
 
   @hsts_value "max-age=31536000; includeSubDomains"
