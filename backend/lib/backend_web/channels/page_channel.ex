@@ -120,7 +120,13 @@ defmodule BackendWeb.PageChannel do
     {:ok, _ref} =
       Presence.track(socket, "#{user.id}", %{
         name: user.name,
-        avatar: user.avatar,
+        # Avatar is intentionally NOT broadcast on PageChannel: peer
+        # cursors don't render avatars (just a colored arrow + name)
+        # and avatars are base64 data URLs up to 512 KB. At 25 peers
+        # × 500 KB × every join/leave, presence traffic dominates the
+        # channel. Consumers that show avatars (e.g. the top-bar
+        # PagePresenceAvatars stack) look them up from the lobby
+        # presence roster or the `/team` endpoint instead.
         user_id: user.id,
         joined_at: now,
         viewport_w: viewport[:w],
