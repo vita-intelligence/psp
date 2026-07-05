@@ -28,13 +28,22 @@ defmodule Backend.Vendors do
                           saq_received_at risk_assessment_completed_at audit_required
                           audit_completed_at audit_kind audit_outcome
                           coa_received_at qualified_at)a
-  @vendor_sortable ~w(id name legal_name email phone registration_number tax_number
+  # `tax_number` removed from the sortable list — SQL ORDER BY on
+  # ciphertext orders by encrypted bytes, which is meaningless. Every
+  # other identity column is still sortable.
+  @vendor_sortable ~w(id name legal_name email phone registration_number
                       currency_code default_lead_time_days payment_terms_days
                       supply_chain_type vendor_risk approval_status
                       questionnaire_status traceability_verification_status
                       review_frequency_months last_review_at next_review_at
                       is_active inserted_at updated_at)a
-  @vendor_search ~w(name legal_name email contact_name registration_number tax_number notes)a
+  # `tax_number` was here before we encrypted the column at rest — an
+  # ILIKE fuzzy search can't match ciphertext, so it's been dropped.
+  # Users still search by name / legal_name / email / contact /
+  # registration_number / notes; if you need to look up a vendor by
+  # exact tax number, the API accepts `column_filter[tax_number]=…`
+  # against the plaintext-in-memory struct.
+  @vendor_search ~w(name legal_name email contact_name registration_number notes)a
   @vendor_default_sort {:name, :asc}
 
   # ----- registry list / get ---------------------------------------

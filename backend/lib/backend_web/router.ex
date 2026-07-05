@@ -97,6 +97,11 @@ defmodule BackendWeb.Router do
     post "/auth/forgot-password", PasswordResetController, :request
     post "/auth/reset-password", PasswordResetController, :confirm
 
+    # Login-time MFA verify: exchanges a short-lived mfa_token +
+    # TOTP/recovery code for a full session token. Anonymous — the
+    # mfa_token IS the auth for this step.
+    post "/auth/mfa/verify", MfaController, :verify
+
     # Device pairing — public endpoints. `/devices/pairing-codes/:code`
     # is read-only "is this code still valid" the /pair page hits before
     # showing the claim form. `/devices/claim` swaps a one-time code for
@@ -112,6 +117,17 @@ defmodule BackendWeb.Router do
     put "/auth/me", ProfileController, :update
     put "/auth/password", ProfileController, :change_password
 
+    # Self-service "log out other devices". Bumps the caller's
+    # `token_version` (killing every other outstanding token) and
+    # returns a fresh token so the current session stays alive.
+    post "/auth/sessions/revoke-others", ProfileController, :revoke_other_sessions
+
+    # MFA enrollment + management (all require an active session).
+    get  "/auth/mfa/status", MfaController, :status
+    post "/auth/mfa/enroll", MfaController, :enroll
+    post "/auth/mfa/confirm", MfaController, :confirm
+    post "/auth/mfa/disable", MfaController, :disable
+
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label
@@ -125,6 +141,17 @@ defmodule BackendWeb.Router do
     get "/users/:id", UserController, :show
     put "/users/:id/access", UserController, :update_access
 
+    # Admin-only incident-response panic buttons. Both bump
+    # `users.token_version`, killing existing session tokens on the
+    # next request. See `BackendWeb.AdminSecurityController`.
+    post "/admin/users/:uuid/revoke-sessions",
+         AdminSecurityController,
+         :revoke_user_sessions
+
+    post "/admin/security/revoke-all-sessions",
+         AdminSecurityController,
+         :revoke_all_sessions
+
     get "/roles", RoleController, :index
     get "/roles/:id", RoleController, :show
     post "/roles", RoleController, :create
@@ -137,6 +164,7 @@ defmodule BackendWeb.Router do
     get "/company", CompanyController, :show
     put "/company", CompanyController, :update
     put "/company/locale", CompanyController, :update_locale
+    put "/company/security", CompanyController, :update_security
     put "/company/warehouse-pickup", CompanyController, :update_warehouse_pickup
     put "/company/three-pl-rate", CompanyController, :update_three_pl_rate
     put "/company/bag", CompanyController, :update_bag
@@ -1415,17 +1443,20 @@ defmodule BackendWeb.Router do
     delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
-  # Enable LiveDashboard and Swoosh mailbox preview in development
+  # Enable LiveDashboard and Swoosh mailbox preview in development.
+  # Runtime `BackendWeb.Plugs.DevDashboardAuth` adds BasicAuth (or
+  # loopback-only in local dev) on top of the compile-time gate so
+  # even a staging build that accidentally flagged `dev_routes: true`
+  # can't expose the dashboard to the public internet.
   if Application.compile_env(:backend, :dev_routes) do
-    # If you want to use the LiveDashboard in production, you should put
-    # it behind authentication and allow only admins to access it.
-    # If your application does not have an admins-only section yet,
-    # you can use Plug.BasicAuth to set up some basic authentication
-    # as long as you are also using SSL (which you should anyway).
     import Phoenix.LiveDashboard.Router
 
     scope "/dev" do
-      pipe_through [:fetch_session, :protect_from_forgery]
+      pipe_through [
+        :fetch_session,
+        :protect_from_forgery,
+        BackendWeb.Plugs.DevDashboardAuth
+      ]
 
       live_dashboard "/dashboard", metrics: BackendWeb.Telemetry
       forward "/mailbox", Plug.Swoosh.MailboxPreview

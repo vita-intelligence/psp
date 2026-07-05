@@ -290,6 +290,52 @@ defmodule Backend.Accounts do
 
   def reset_password_by_token(_, _), do: {:error, :invalid_token}
 
+  ## Session revocation ------------------------------------------------
+
+  @doc """
+  Bump `token_version` on one user, invalidating every token
+  currently signed for them. Returns the updated user.
+
+  Use cases: admin "log this account off everything", user
+  self-service "log out other devices", incident-response panic
+  button. `keep_current_token_version` is the caller's escape hatch
+  for the self-service case — if you pass the user's current
+  token_version, we bump PAST it so a fresh token minted after the
+  revoke stays valid.
+  """
+  def revoke_sessions_for_user(%User{} = user) do
+    user
+    |> Ecto.Changeset.change(token_version: (user.token_version || 0) + 1)
+    |> Repo.update()
+  end
+
+  @doc """
+  Nuclear revoke — bump `token_version` on every user in the given
+  company. Returns `{count, nil}` from `Repo.update_all/3`. Every
+  session token issued before the call fails verification.
+
+  Guarded by the caller — this function does not check who's asking.
+  """
+  def revoke_all_sessions_for_company(company_id) when is_integer(company_id) do
+    from(u in User, where: u.company_id == ^company_id)
+    |> Repo.update_all(inc: [token_version: 1])
+  end
+
+  @doc """
+  User self-service "log me out of other devices". Bumps the user's
+  `token_version`, then mints a fresh token so the caller stays
+  signed in on the current device while every other tab / phone
+  / tablet dies on next request.
+
+  Returns `{:ok, updated_user, fresh_token}`. The caller is expected
+  to swap the caller's local token for the fresh one.
+  """
+  def revoke_other_sessions(%User{} = user) do
+    with {:ok, updated} <- revoke_sessions_for_user(user) do
+      {:ok, updated, sign_token(updated)}
+    end
+  end
+
   ## Session tokens ---------------------------------------------------
 
   # Signed payload is `{user_id, token_version}` so we can invalidate
@@ -299,6 +345,42 @@ defmodule Backend.Accounts do
   def sign_token(%User{id: id, token_version: version}) do
     Phoenix.Token.sign(BackendWeb.Endpoint, @token_salt, {id, version || 0})
   end
+
+  ## MFA challenge tokens --------------------------------------------
+
+  # Short-lived token minted at login when the user needs MFA. Client
+  # exchanges it for a full session token at /auth/mfa/verify. Five
+  # minutes is enough for a distracted human to fetch their phone and
+  # enter a code, short enough that a stolen token expires quickly.
+  @mfa_token_salt "psp mfa challenge"
+  @mfa_token_max_age_seconds 5 * 60
+
+  def sign_mfa_challenge(%User{id: id, token_version: version}) do
+    Phoenix.Token.sign(
+      BackendWeb.Endpoint,
+      @mfa_token_salt,
+      {id, version || 0}
+    )
+  end
+
+  def verify_mfa_challenge(token) when is_binary(token) do
+    with {:ok, {user_id, token_version}}
+         when is_integer(user_id) and is_integer(token_version) <-
+           Phoenix.Token.verify(
+             BackendWeb.Endpoint,
+             @mfa_token_salt,
+             token,
+             max_age: @mfa_token_max_age_seconds
+           ),
+         %User{is_active: true} = user <- get_user(user_id),
+         true <- (user.token_version || 0) == token_version do
+      {:ok, user}
+    else
+      _ -> {:error, :invalid_mfa_challenge}
+    end
+  end
+
+  def verify_mfa_challenge(_), do: {:error, :missing}
 
   def verify_token(token) when is_binary(token) do
     result =

@@ -58,6 +58,21 @@ defmodule Backend.Accounts.User do
     # too.
     field :token_version, :integer, default: 0
 
+    # RFC 6238 TOTP shared secret (base32). `nil` = user hasn't started
+    # enrollment. Stored encrypted at rest via `Backend.Vault`;
+    # `Backend.Encrypted.Binary` handles read/write plumbing so the
+    # rest of the code sees a plain string.
+    field :totp_secret, Backend.Encrypted.Binary, redact: true
+    # Set the first time the user proves they can compute a valid
+    # TOTP. `is_nil` = MFA disabled; `!is_nil` = MFA required at login.
+    field :totp_confirmed_at, :utc_datetime
+    # Bcrypt-hashed one-time backup codes. 10 issued at enrollment
+    # confirmation; each consumed on use.
+    field :recovery_codes, {:array, :string}, default: [], redact: true
+    # Stamped when the company toggles `require_mfa: true`. Login
+    # enforces "either MFA enrolled or grace window not yet expired".
+    field :mfa_required_at, :utc_datetime
+
     belongs_to :company, Backend.Companies.Company
     # Self-referential audit links — `created_by` is the inviting admin
     # (nil for self-signups / the bootstrap user); `updated_by` is whoever

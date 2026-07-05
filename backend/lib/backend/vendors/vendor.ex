@@ -43,7 +43,10 @@ defmodule Backend.Vendors.Vendor do
     field :legal_address, :string
 
     field :registration_number, :string
-    field :tax_number, :string
+    # Encrypted at rest via `Backend.Vault`. Regulator-grade PII;
+    # `Backend.Vendors.@vendor_search` no longer includes this
+    # column because ILIKE doesn't work against ciphertext.
+    field :tax_number, Backend.Encrypted.Binary, redact: true
     field :tax_rate, :decimal
 
     field :currency_code, :string, default: "GBP"

@@ -83,6 +83,7 @@ defmodule BackendWeb.Payloads do
       default_pickup_window_hours: company.default_pickup_window_hours,
       three_pl_rate_per_m3_per_day:
         decimal_to_string(company.three_pl_rate_per_m3_per_day),
+      require_mfa: company.require_mfa,
       inserted_at: company.inserted_at,
       updated_at: company.updated_at
     }

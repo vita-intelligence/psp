@@ -67,7 +67,16 @@ defmodule Backend.MixProject do
       # Cross-refs Hex deps against the GitHub Advisory Database.
       # Stricter than the built-in `mix hex.audit` (which only sees
       # Hex retirement notices). CI-only.
-      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      # RFC 6238 TOTP verification for MFA. Small, zero-dependency;
+      # runtime because AuthController + Backend.MFA use it.
+      {:nimble_totp, "~> 1.0"},
+      # Encryption-at-rest for sensitive columns (TOTP secret, tax
+      # numbers, payment details). Vault lives in the supervision
+      # tree and dispatches to the current cipher; Ecto field types
+      # under `Backend.Encrypted.*` handle the read/write plumbing.
+      {:cloak, "~> 1.1"},
+      {:cloak_ecto, "~> 1.3"}
     ]
   end
 

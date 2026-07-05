@@ -11,6 +11,7 @@ import { AllowedIpsForm } from "./allowed-ips-form";
 import { NumberingFormatsForm } from "./numbering-formats-form";
 import { WarehousePickupForm } from "./warehouse-pickup-form";
 import { ThreePlRateForm } from "./three-pl-rate-form";
+import { SecurityForm } from "./security-form";
 import { AlertCircle } from "lucide-react";
 
 export const metadata = { title: "Company · Settings · PSP" };
@@ -53,6 +54,9 @@ export default async function CompanySettingsPage() {
       <CurrencyRatesForm company={company} canEdit={canEdit} />
       <AllowedIpsForm company={company} canEdit={canEdit} />
       <NumberingFormatsForm company={company} canEdit={canEdit} />
+      {user.is_admin && (
+        <SecurityForm company={company} canEdit={canEdit} />
+      )}
     </div>
   );
 }

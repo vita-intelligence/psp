@@ -64,12 +64,14 @@ defmodule BackendWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  # CORS — allowed origins come from `Backend.Config.cors_origins/0`,
+  # CORS — allowed origins come from `Backend.Config.cors_origins/1`,
   # which reads the `CORS_ORIGINS` env var at runtime. That means prod
   # deploys can rotate origins by env-var change alone; no recompile.
-  # CORSPlug 3.0.3 accepts an MFA `{Mod, :fun}` and calls it per request.
+  # CORSPlug 3.0.3 accepts a function reference (arity 1, taking conn)
+  # and calls it per request — the closure survives plug-init because
+  # `plug` doesn't `Macro.escape` its options.
   plug CORSPlug,
-    origin: {Backend.Config, :cors_origins},
+    origin: &Backend.Config.cors_origins/1,
     credentials: false,
     max_age: 86_400
 

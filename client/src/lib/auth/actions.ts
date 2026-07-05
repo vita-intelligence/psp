@@ -16,8 +16,14 @@ import {
 // runtime value. Keep types out of this file's exported surface —
 // consumers import `ErrorResult` directly from "@/lib/errors/server".
 export type FieldErrors = Record<string, string[]>;
-type ActionResult = { ok: true } | ErrorResult;
+type ActionResult =
+  | { ok: true }
+  | { ok: true; mfa: { mfa_token: string } }
+  | ErrorResult;
 type RegisterResult = { ok: true; pending: true } | ErrorResult;
+type MfaLoginResponse =
+  | AuthResponse
+  | { mfa_required: true; mfa_token: string };
 
 export async function loginAction(formData: FormData): Promise<ActionResult> {
   const email = (formData.get("email") || "").toString().trim();
@@ -37,14 +43,67 @@ export async function loginAction(formData: FormData): Promise<ActionResult> {
     });
   }
 
+  let redirectHere = false;
+  let mfaChallenge: string | null = null;
+
   try {
-    const res = await api<AuthResponse>("/api/auth/login", {
+    const res = await api<MfaLoginResponse>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
-    await setSessionCookie(res.token);
+
+    if ("mfa_required" in res && res.mfa_required) {
+      // Hand the mfa_token back to the caller — they'll POST it +
+      // the TOTP code to /auth/mfa/verify via `verifyMfaAction`.
+      mfaChallenge = res.mfa_token;
+    } else if ("token" in res) {
+      await setSessionCookie(res.token);
+      redirectHere = true;
+    }
   } catch (err) {
     return toErrorResult(err, { source: "loginAction" });
+  }
+
+  if (redirectHere) redirect("/");
+  if (mfaChallenge) return { ok: true, mfa: { mfa_token: mfaChallenge } };
+
+  return syntheticErrorResult({
+    source: "loginAction",
+    code: "unexpected_response",
+    detail: "Login returned an unexpected shape. Try again.",
+    exception: "server response missing both token and mfa_required",
+  });
+}
+
+/**
+ * Second step of MFA login. Exchanges the short-lived `mfa_token`
+ * (from `loginAction`) plus a TOTP or recovery code for a full
+ * session token, then redirects home.
+ */
+export async function verifyMfaAction(input: {
+  mfa_token: string;
+  code: string;
+}): Promise<{ ok: true } | ErrorResult> {
+  const code = input.code.trim();
+  if (!code) {
+    return syntheticErrorResult({
+      source: "verifyMfaAction",
+      code: "validation_failed",
+      detail:
+        "Enter the 6-digit code from your authenticator, or a recovery code.",
+      fields: { code: ["Code is required."] },
+      exception: "client-side guard: empty code",
+    });
+  }
+
+  try {
+    const res = await api<AuthResponse>("/api/auth/mfa/verify", {
+      method: "POST",
+      body: JSON.stringify({ mfa_token: input.mfa_token, code }),
+    });
+    await setSessionCookie(res.token);
+  } catch (err) {
+    return toErrorResult(err, { source: "verifyMfaAction" });
   }
 
   redirect("/");

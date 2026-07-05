@@ -82,10 +82,23 @@ defmodule Backend.Tenancy do
     do: exists?(StorageTags.get_for_company(user.company_id, uuid))
 
   # --- Company singleton ------------------------------------------
-  # Topic `form:company:<int_id>` addresses the actor's own tenant.
-  # Verify the id matches.
+  # Topic shapes we accept:
+  #   * `form:company:<int_id>`                — legacy single-id form
+  #   * `form:company:<int_id>:<sub_form>`     — every settings sub-form
+  #     the frontend spawns (`identity`, `locale`, `holidays`,
+  #     `working-hours`, `allowed-ips`, `warehouse-pickup`,
+  #     `three-pl-rate`, `numbering`, `security`, …).
+  #
+  # `parse_topic/1` on the channel splits with `parts: 2`, so we get
+  # `id = "<int_id>"` or `id = "<int_id>:<sub_form>"`. Only the leading
+  # numeric segment is authoritative for tenant scoping — the
+  # sub-form suffix is a client-side room-namespace and doesn't
+  # change tenant membership.
   def resource_in_tenant?(user, "company", id) when is_binary(id) do
-    to_string(user.company_id) == id
+    case String.split(id, ":", parts: 2) do
+      [prefix | _] -> to_string(user.company_id) == prefix
+      _ -> false
+    end
   end
 
   # --- Users / roles ----------------------------------------------

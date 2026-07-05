@@ -26,9 +26,13 @@ defmodule Backend.Companies.Company do
     field :website, :string
     field :phone, :string
     field :registration_number, :string
-    field :tax_number, :string
+    # Encrypted at rest via `Backend.Vault`. Regulator-grade PII —
+    # VAT / GST / TIN depending on jurisdiction.
+    field :tax_number, Backend.Encrypted.Binary, redact: true
     field :tax_rate, :decimal
-    field :payment_details, :string
+    # Encrypted at rest — bank account / IBAN / sort code that gets
+    # printed on remittance advice.
+    field :payment_details, Backend.Encrypted.Binary, redact: true
 
     field :timezone, :string, default: "Europe/London"
     field :date_format, :string, default: "dd/MM/yyyy"
@@ -67,6 +71,11 @@ defmodule Backend.Companies.Company do
     # organisations that haven't set a rate yet don't accidentally
     # bill customers £0.00.
     field :three_pl_rate_per_m3_per_day, :decimal
+
+    # MFA enforcement toggle. When flipped `true`, every user without
+    # confirmed MFA gets `mfa_required_at` stamped so the 7-day grace
+    # window starts ticking. See `Backend.Companies.update_security/2`.
+    field :require_mfa, :boolean, default: false
 
     has_many :roles, Role
     has_many :users, User
@@ -112,6 +121,17 @@ defmodule Backend.Companies.Company do
       less_than_or_equal_to: 100
     )
     |> unique_constraint(:name)
+  end
+
+  @doc """
+  Security card update — currently the company-wide "require MFA
+  for every user" toggle. Kept on its own changeset so the settings
+  UI's save button has an isolated success/failure surface.
+  """
+  def security_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:require_mfa])
+    |> validate_required([:require_mfa])
   end
 
   @doc "Locale card update — separators, currency code, etc."

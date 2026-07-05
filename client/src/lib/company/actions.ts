@@ -86,6 +86,28 @@ export async function updateCompanyWarehousePickupAction(
   }
 }
 
+export async function updateCompanySecurityAction(input: {
+  require_mfa: boolean;
+}): Promise<CompanyResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("updateCompanySecurityAction");
+
+  try {
+    const res = await api<{ company: Company }>("/api/company/security", {
+      method: "PUT",
+      token,
+      body: JSON.stringify(input),
+    });
+    revalidatePath("/settings/company");
+    return { ok: true, company: res.company };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "updateCompanySecurityAction",
+      fallbackDetail: "Couldn't save the security settings.",
+    });
+  }
+}
+
 export async function updateCompanyThreePlRateAction(
   input: { three_pl_rate_per_m3_per_day: string | null },
 ): Promise<CompanyResult> {

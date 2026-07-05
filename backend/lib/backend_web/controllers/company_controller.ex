@@ -89,6 +89,52 @@ defmodule BackendWeb.CompanyController do
     end
   end
 
+  @doc """
+  Admin-only: flip the company-wide MFA-required toggle. When
+  turning on, every un-enrolled user gets `mfa_required_at`
+  stamped so their 7-day grace window starts.
+  """
+  def update_security(conn, params) do
+    actor = conn.assigns.current_user
+    remote_ip = Backend.SecurityLog.remote_ip(conn)
+
+    if actor.is_admin do
+      previous = Companies.current()
+
+      case Companies.update_security(previous, params) do
+        {:ok, company} ->
+          if company.require_mfa != previous.require_mfa do
+            Backend.SecurityLog.record(:mfa_policy_changed,
+              company_id: company.id,
+              actor_id: actor.id,
+              actor_email: actor.email,
+              remote_ip: remote_ip,
+              require_mfa: company.require_mfa
+            )
+          end
+
+          json(conn, %{company: Payloads.company(company)})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(
+            Errors.payload(
+              "validation_failed",
+              "Please correct the highlighted fields.",
+              Errors.changeset_fields(cs)
+            )
+          )
+      end
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(
+        Errors.payload("forbidden", "This setting is admin-only.")
+      )
+    end
+  end
+
   def update_warehouse_pickup(conn, params) do
     case Companies.update_warehouse_pickup(Companies.current(), params) do
       {:ok, company} ->
