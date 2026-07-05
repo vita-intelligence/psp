@@ -14,6 +14,9 @@ defmodule Backend.Application do
     children = [
       BackendWeb.Telemetry,
       Backend.Repo,
+      # Encryption vault must boot before anything that reads/writes
+      # encrypted columns. See `Backend.Vault`.
+      Backend.Vault,
       {DNSCluster, query: Application.get_env(:backend, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Backend.PubSub},
       BackendWeb.Presence,

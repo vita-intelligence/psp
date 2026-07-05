@@ -59,8 +59,10 @@ defmodule Backend.Accounts.User do
     field :token_version, :integer, default: 0
 
     # RFC 6238 TOTP shared secret (base32). `nil` = user hasn't started
-    # enrollment.
-    field :totp_secret, :string, redact: true
+    # enrollment. Stored encrypted at rest via `Backend.Vault`;
+    # `Backend.Encrypted.Binary` handles read/write plumbing so the
+    # rest of the code sees a plain string.
+    field :totp_secret, Backend.Encrypted.Binary, redact: true
     # Set the first time the user proves they can compute a valid
     # TOTP. `is_nil` = MFA disabled; `!is_nil` = MFA required at login.
     field :totp_confirmed_at, :utc_datetime

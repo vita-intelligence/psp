@@ -31,6 +31,38 @@ if config_env() == :prod do
       For example: ecto://USER:PASS@HOST/DATABASE
       """
 
+  # Encryption-at-rest key. Must be a base64 encoding of a 32-byte
+  # random value. Generate with:
+  #
+  #     mix phx.gen.secret 32 | base64
+  #
+  # Losing this key means every encrypted column becomes unreadable.
+  # Rotate via `Backend.Vault` — see its moduledoc.
+  cloak_key =
+    System.get_env("CLOAK_KEY") ||
+      raise """
+      environment variable CLOAK_KEY is missing.
+      Generate one with `:crypto.strong_rand_bytes(32) |> Base.encode64()`
+      in `iex -S mix`, store securely, and export before boot.
+      """
+
+  cloak_key_bytes =
+    case Base.decode64(cloak_key) do
+      {:ok, bytes} when byte_size(bytes) == 32 ->
+        bytes
+
+      _ ->
+        raise """
+        CLOAK_KEY must be a base64-encoded 32-byte value.
+        Got #{byte_size(cloak_key)} chars.
+        """
+    end
+
+  config :backend, Backend.Vault,
+    ciphers: [
+      default: {Cloak.Ciphers.AES.GCM, tag: "AA0", key: cloak_key_bytes}
+    ]
+
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
   # DB transport hardening. `PGSSL=false` opts out (rare — required if
