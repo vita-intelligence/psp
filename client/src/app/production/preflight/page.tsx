@@ -3,6 +3,7 @@ import { ClipboardCheck } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getPreflightQueue } from "@/lib/production-preflight/server";
 import { getCompanyDefaults } from "@/lib/company/server";
@@ -40,18 +41,11 @@ export default async function ProductionPreflightPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <ClipboardCheck className="size-7 text-brand sm:size-8" />
-              Pre-production
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Sign off on raw materials + packaging after the warehouse
-              picker drops them at the production-feed cell. Each MO needs
-              every booked line verified (qty + quality) before production
-              can start.
-            </p>
-          </header>
+          <PageHeader
+            icon={ClipboardCheck}
+            title="Pre-production"
+            description="Sign off on raw materials + packaging after the warehouse picker drops them at the production-feed cell. Each MO needs every booked line verified (qty + quality) before production can start."
+          />
 
           <PreflightWorkspace
             initialQueue={queue?.items ?? []}

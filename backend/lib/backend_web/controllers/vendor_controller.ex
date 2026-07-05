@@ -208,7 +208,8 @@ defmodule BackendWeb.VendorController do
     with %{} = vendor <- Vendors.get_for_company(actor.company_id, uuid),
          :ok <- validate_evidence_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_evidence_size(bytes) do
+         :ok <- validate_evidence_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       key = build_storage_key(vendor, kind, upload)
 
       case Storage.put(key, bytes, content_type: upload.content_type) do
@@ -256,6 +257,10 @@ defmodule BackendWeb.VendorController do
   resolver — the cloud adapter would short-circuit to a signed URL
   upstream and this route would be hit only for local dev.
   """
+  # Path: file.blob_path is server-assigned at upload time; Backend.Storage.Local
+  # enforces a Path.expand root check. MIME: verified at upload by
+  # Backend.Http.MimeSniffer (see Phase 1 H10); Content-Disposition escaped
+  # by Backend.Http.ContentDisposition (see Phase 1 H4).
   def serve_file(conn, %{"vendor_id" => vendor_uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -267,7 +272,7 @@ defmodule BackendWeb.VendorController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else
@@ -289,6 +294,7 @@ defmodule BackendWeb.VendorController do
 
   defp validate_evidence_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}
@@ -416,6 +422,7 @@ defmodule BackendWeb.VendorController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       approval_status: params["approval_status"],
       vendor_risk: params["vendor_risk"],
       is_active: params["is_active"]

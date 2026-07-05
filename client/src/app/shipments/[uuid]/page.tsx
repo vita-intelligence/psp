@@ -1,10 +1,10 @@
 import { notFound, redirect } from "next/navigation";
-import Link from "next/link";
-import { ChevronLeft, Truck } from "lucide-react";
+import { Truck } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getShipment } from "@/lib/shipments/server";
 import { listCommentsForEntity } from "@/lib/comments/server";
@@ -39,29 +39,22 @@ export default async function ShipmentDetailPage({ params }: Props) {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-5xl space-y-6">
-          <div className="text-sm">
-            <Link
-              href="/shipments"
-              className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-            >
-              <ChevronLeft className="size-4" />
-              Shipments
-            </Link>
-          </div>
-
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-              <Truck className="size-6 text-brand sm:size-7" />
-              {shipment.stock_lot?.item?.name ?? "Shipment"}
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Lot{" "}
-              <span className="font-mono">
-                {shipment.stock_lot?.code ?? "—"}
-              </span>{" "}
-              — recipient {shipment.customer?.name ?? "—"}
-            </p>
-          </header>
+          <PageHeader
+            size="detail"
+            icon={Truck}
+            title={shipment.stock_lot?.item?.name ?? "Shipment"}
+            description={
+              <>
+                Lot{" "}
+                <span className="font-mono">
+                  {shipment.stock_lot?.code ?? "—"}
+                </span>{" "}
+                — recipient {shipment.customer?.name ?? "—"}
+              </>
+            }
+            backHref="/shipments"
+            backLabel="Shipments"
+          />
 
           <ShipmentDetail
             shipment={shipment}

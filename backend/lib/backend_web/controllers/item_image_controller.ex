@@ -104,6 +104,7 @@ defmodule BackendWeb.ItemImageController do
     end
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"item_id" => item_uuid, "id" => image_uuid}) do
     require Logger
     actor = conn.assigns.current_user

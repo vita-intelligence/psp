@@ -3,9 +3,11 @@ import { Layers } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { listStockLotsPage, listWarehousesForReceive } from "@/lib/stock/server";
+import { listStockLotsPage } from "@/lib/stock/server";
 import { listItemsForPicker } from "@/lib/items/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { StockSubnav } from "../stock-subnav";
 import { LotsTable } from "./lots-table";
 
@@ -30,11 +32,11 @@ export default async function StockLotsPage({ searchParams }: PageProps) {
   const itemFilterId =
     Number.isFinite(itemIdParam) && itemIdParam > 0 ? itemIdParam : null;
 
-  const [initialPage, warehouses, items] = await Promise.all([
+  const [initialPage, locationFilters, items] = await Promise.all([
     listStockLotsPage(
       itemFilterId !== null ? { item_id: itemFilterId } : {},
     ),
-    listWarehousesForReceive(),
+    buildLocationFilters({ warehouse: true, productionSite: false }),
     itemFilterId !== null ? listItemsForPicker() : Promise.resolve([]),
   ]);
   const seededPage = initialPage ?? { items: [], next_cursor: null };
@@ -51,21 +53,15 @@ export default async function StockLotsPage({ searchParams }: PageProps) {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <Layers className="size-7 text-brand sm:size-8" />
-              Stock lots
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Every receipt is its own immutable lot — supplier batch,
-              expiry, CoA, cost. Click a row to see placements and the
-              movement history.
-            </p>
-          </header>
+          <PageHeader
+            icon={Layers}
+            title="Stock lots"
+            description="Every receipt is its own immutable lot — supplier batch, expiry, CoA, cost. Click a row to see placements and the movement history."
+          />
 
           <LotsTable
             initialPage={seededPage}
-            warehouses={warehouses}
+            locationFilters={locationFilters}
             canReceive={hasPermission(user, "stock.receive")}
             itemFilter={
               itemFilterId !== null

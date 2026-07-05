@@ -18,7 +18,7 @@ defmodule Backend.Units do
 
   @audit_fields ~w(name symbol dimension factor_to_base is_base is_active)a
   # `code` sorts are remapped to `:id` (display code derives from id).
-  @sortable_fields ~w(id name symbol dimension factor_to_base is_active inserted_at)a
+  @sortable_fields ~w(id name symbol dimension factor_to_base is_base is_active inserted_at updated_at)a
   @search_fields ~w(name symbol)a
   @default_sort {:name, :asc}
 
@@ -31,6 +31,7 @@ defmodule Backend.Units do
       UnitOfMeasurement
       |> where([u], u.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 

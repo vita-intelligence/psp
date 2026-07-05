@@ -29,7 +29,13 @@ defmodule BackendWeb.WarehousePlanChannel do
   use Phoenix.Channel
 
   alias Backend.{Accounts, RBAC, Warehouses}
+  alias Backend.Realtime.RateLimit
   alias BackendWeb.Presence
+
+  # Hard cap on the JSON-encoded size of a `canvas:patch` payload.
+  # Legit patches are ~5-20 KB; a hostile client could otherwise
+  # broadcast megabytes-per-message and pin every peer's decoder.
+  @max_canvas_bytes 100_000
 
   @impl true
   def join("plan:warehouse:" <> warehouse_uuid, _params, socket) do
@@ -62,8 +68,8 @@ defmodule BackendWeb.WarehousePlanChannel do
     {:ok, _ref} =
       Presence.track(socket, "#{user.id}", %{
         name: user.name,
-        email: user.email,
         avatar: user.avatar,
+        user_id: user.id,
         active_floor_uuid: nil,
         joined_at: System.system_time(:second)
       })
@@ -130,14 +136,30 @@ defmodule BackendWeb.WarehousePlanChannel do
         socket
       )
       when is_binary(floor_uuid) and is_map(canvas) do
-    broadcast_from!(socket, "canvas:patch", %{
-      by: socket.assigns.current_user.id,
-      floor_uuid: floor_uuid,
-      canvas: canvas,
-      ts: System.system_time(:millisecond)
-    })
+    with {:ok, socket} <- RateLimit.check(socket, :canvas_patch),
+         :ok <- check_canvas_size(canvas) do
+      broadcast_from!(socket, "canvas:patch", %{
+        by: socket.assigns.current_user.id,
+        floor_uuid: floor_uuid,
+        canvas: canvas,
+        ts: System.system_time(:millisecond)
+      })
 
-    {:noreply, socket}
+      {:noreply, socket}
+    else
+      {:limited, socket} -> {:noreply, socket}
+      {:error, :too_large} -> {:noreply, socket}
+    end
+  end
+
+  defp check_canvas_size(canvas) do
+    encoded = Jason.encode!(canvas)
+
+    if byte_size(encoded) > @max_canvas_bytes do
+      {:error, :too_large}
+    else
+      :ok
+    end
   end
 
   # Late-joiner catch-up. The channel doesn't store state, so when a

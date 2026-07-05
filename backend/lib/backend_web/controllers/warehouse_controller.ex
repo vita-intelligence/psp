@@ -41,6 +41,7 @@ defmodule BackendWeb.WarehouseController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       filters: parse_filters(params["filter"]),
+      column_filter: params["column_filter"],
       search: params["search"]
     ]
   end

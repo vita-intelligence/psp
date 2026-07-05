@@ -11,14 +11,41 @@ defmodule BackendWeb.PasswordResetController do
 
   use BackendWeb, :controller
 
-  alias Backend.Accounts
+  alias Backend.{Accounts, SecurityLog}
   alias BackendWeb.{Errors, Payloads}
 
   action_fallback BackendWeb.FallbackController
 
+  # `request` triggers an email; without a throttle, an attacker
+  # spams the inbox of every enumerated user OR uses the endpoint
+  # to punish an SES / Postmark quota. Per-email cap on top of a
+  # per-IP cap.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :reset_request_email, limit: 3, window: 3600, key: {:param, "email"}]
+       when action == :request
+
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :reset_request_ip, limit: 20, window: 3600, key: :ip]
+       when action == :request
+
+  # `confirm` accepts a token — brute-forcing the token space would
+  # need many attempts. Modest cap to make that expensive.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :reset_confirm, limit: 10, window: 3600, key: :ip]
+       when action == :confirm
+
   def request(conn, %{"email" => email}) when is_binary(email) do
     url_builder = &reset_url_for_token/1
     :ok = Accounts.request_password_reset(email, url_builder)
+
+    # Log the request event AFTER we've done the constant-time work,
+    # so the log line's arrival timing doesn't leak whether the
+    # email matched. Nothing sensitive lands in the log — the email
+    # is normalised to lowercase, the token is never touched.
+    SecurityLog.record(:password_reset_requested,
+      email: email |> String.trim() |> String.downcase(),
+      remote_ip: SecurityLog.remote_ip(conn)
+    )
 
     conn
     |> put_status(:accepted)
@@ -36,12 +63,34 @@ defmodule BackendWeb.PasswordResetController do
   end
 
   def confirm(conn, %{"token" => token, "password" => password}) do
+    remote_ip = SecurityLog.remote_ip(conn)
+
     case Accounts.reset_password_by_token(token, %{"password" => password}) do
       {:ok, user} ->
+        SecurityLog.record(:password_reset_completed,
+          user_id: user.id,
+          email: user.email,
+          remote_ip: remote_ip
+        )
+
+        # `password_reset_changeset` bumps `token_version`, so this
+        # also logs the implicit revoke of every prior session for
+        # forensic clarity.
+        SecurityLog.record(:sessions_revoked,
+          user_id: user.id,
+          reason: :password_reset,
+          remote_ip: remote_ip
+        )
+
         session_token = Accounts.sign_token(user)
         json(conn, %{token: session_token, user: user_payload(user)})
 
       {:error, :invalid_token} ->
+        SecurityLog.record(:password_reset_token_invalid,
+          remote_ip: remote_ip,
+          reason: :invalid_token
+        )
+
         conn
         |> put_status(:not_found)
         |> json(
@@ -52,6 +101,11 @@ defmodule BackendWeb.PasswordResetController do
         )
 
       {:error, :expired_token} ->
+        SecurityLog.record(:password_reset_token_invalid,
+          remote_ip: remote_ip,
+          reason: :expired_token
+        )
+
         conn
         |> put_status(:gone)
         |> json(

@@ -169,6 +169,7 @@ defmodule BackendWeb.PricelistController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       is_active: params["is_active"]
     ]
   end

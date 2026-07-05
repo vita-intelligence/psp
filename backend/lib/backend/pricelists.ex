@@ -37,8 +37,8 @@ defmodule Backend.Pricelists do
 
   @pricelist_audit_fields ~w(name currency_code is_default is_active
                              valid_from valid_until notes)a
-  @pricelist_sortable ~w(id name currency_code is_default valid_from
-                         valid_until inserted_at)a
+  @pricelist_sortable ~w(id name currency_code is_default is_active valid_from
+                         valid_until inserted_at updated_at)a
   @pricelist_search ~w(name notes)a
   @pricelist_default_sort {:name, :asc}
 
@@ -52,6 +52,7 @@ defmodule Backend.Pricelists do
       |> where([p], p.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @pricelist_search)
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @pricelist_sortable)
       |> ListQueries.apply_sort(sort, @pricelist_sortable, @pricelist_default_sort)
       |> preload([:created_by, :updated_by])
 

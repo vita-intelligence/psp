@@ -13,6 +13,9 @@ defmodule Backend.Storage.Local do
 
   @behaviour Backend.Storage
 
+  # File.write! target derives from `absolute_path/1` which enforces
+  # a Path.expand root check — even a bug that pipes user input in
+  # here can't escape the storage root.
   @impl true
   def put(key, binary, _opts) when is_binary(key) and is_binary(binary) do
     path = absolute_path(key)
@@ -23,6 +26,8 @@ defmodule Backend.Storage.Local do
     e -> {:error, e}
   end
 
+  # File.rm target derives from `absolute_path/1` — see the note on
+  # `put/3` above.
   @impl true
   def delete(path) when is_binary(path) do
     absolute = absolute_path(path)
@@ -50,14 +55,46 @@ defmodule Backend.Storage.Local do
         uuid = filename |> Path.rootname()
         "/api/stock/movement-photos/#{uuid}/file"
 
+      ["comment_files", _comment_uuid, filename] ->
+        # `comment_files/<comment_uuid>/<kind>_<file_uuid>.<ext>`. The
+        # trailing UUID is what the bare serve endpoint looks up; kind
+        # + comment_uuid are storage-layout hints and don't need to
+        # appear in the URL since the controller re-derives entity
+        # scope from the file's parent comment at fetch time.
+        file_uuid =
+          filename
+          |> Path.rootname()
+          |> String.split("_", parts: 2)
+          |> List.last()
+
+        "/api/comment-files/#{file_uuid}/serve"
+
       _ ->
         nil
     end
   end
 
-  @doc "Absolute on-disk path for a given blob key. Public for ImageController to stream from."
+  @doc """
+  Absolute on-disk path for a given blob key. Public for the file-
+  serve controllers to stream from.
+
+  Every caller today feeds a DB-stored `blob_path` here — that's a
+  string the app itself picked at upload time, not user input. Even
+  so, we expand the joined path and verify it stays under `root()`.
+  A future callsite that plumbs user input this far (a mistake) will
+  raise instead of silently reading `/etc/passwd`.
+  """
   def absolute_path(key) when is_binary(key) do
-    Path.join(root(), key)
+    root = root() |> Path.expand()
+    expanded = Path.expand(Path.join(root, key))
+
+    if String.starts_with?(expanded, root <> "/") or expanded == root do
+      expanded
+    else
+      raise ArgumentError,
+        message:
+          "Backend.Storage.Local.absolute_path/1 refused to leave root: key=#{inspect(key)}"
+    end
   end
 
   defp root do

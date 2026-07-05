@@ -127,7 +127,12 @@ defmodule BackendWeb.CompanyController do
 
   def update_bag(conn, %{"field" => field, "value" => value})
       when field in @bag_fields do
-    case Companies.update_bag(Companies.current(), String.to_atom(field), value) do
+    # Whitelist guard above (`field in @bag_fields`) restricts `field`
+    # to a fixed compile-time list — those atoms are guaranteed to
+    # exist (declared as Ecto schema fields). Use `to_existing_atom`
+    # so any future guard bypass fails loudly instead of silently
+    # growing the atom table.
+    case Companies.update_bag(Companies.current(), String.to_existing_atom(field), value) do
       {:ok, company} ->
         json(conn, %{company: Payloads.company(company)})
 

@@ -1659,19 +1659,25 @@ export interface Floor {
 // ---------- Stock ---------------------------------------------------
 
 export type StockLotStatus =
+  | "expected"
   | "requested"
   | "received"
   | "quarantine"
+  | "awaiting_release"
+  | "available"
+  | "on_hold"
   | "depleted"
   | "disposed"
-  | "rejected";
+  | "rejected"
+  | "canceled";
 
 export type StockSourceKind =
   | "purchase_order"
   | "manufacturing_order"
   | "opening_balance"
   | "return"
-  | "adjustment";
+  | "adjustment"
+  | "manual";
 
 export type StockMovementKind =
   | "receive"
@@ -2931,9 +2937,21 @@ export interface OrderWizardSigners {
 export interface OrderWizardTimelineEntry {
   at: string;
   label: string;
-  scope: "co" | "mo";
-  mo_uuid?: string;
+  scope: "co" | "mo" | "po" | "shipment" | "invoice";
+  /** Who did it — nil for pre-audit rows or system-generated events. */
   actor?: string | null;
+  /** Which record this event belongs to. `record_ref` is the human
+   *  label ("Manufacturing order"), `record_code` is the rendered
+   *  numbering code so the reader can trace one thread through a busy
+   *  stream. */
+  record_ref?: string | null;
+  record_code?: string | null;
+  /** Deep link + label to the specific record the event describes. */
+  href?: string | null;
+  href_label?: string | null;
+  /** Legacy — kept so pre-refactor callers still resolve. Prefer
+   *  `href` for new code. */
+  mo_uuid?: string;
 }
 
 export interface OrderWizardInvoice {

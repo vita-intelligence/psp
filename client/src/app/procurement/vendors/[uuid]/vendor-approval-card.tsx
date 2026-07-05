@@ -32,6 +32,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
+import { PageLockBanner } from "@/components/realtime/page-lock-banner";
 import type { Vendor, VendorApprovalStatus } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { approveVendorAction } from "@/lib/vendors/actions";
@@ -39,6 +41,7 @@ import { approveVendorAction } from "@/lib/vendors/actions";
 interface Props {
   vendor: Vendor;
   canApprove: boolean;
+  pageId?: string;
 }
 
 const APPROVAL_LABEL: Record<VendorApprovalStatus, string> = {
@@ -74,8 +77,10 @@ const APPROVAL_ICON: Record<
  * to a new status. ESIGN columns get stamped backend-side on the
  * "approved" branch.
  */
-export function VendorApprovalCard({ vendor, canApprove }: Props) {
+export function VendorApprovalCard({ vendor, canApprove, pageId }: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<{
@@ -96,6 +101,7 @@ export function VendorApprovalCard({ vendor, canApprove }: Props) {
   }
 
   function submit() {
+    if (locked) return;
     if (status === vendor.approval_status && notes === (vendor.approval_notes ?? "")) {
       setOpen(false);
       return;
@@ -157,7 +163,10 @@ export function VendorApprovalCard({ vendor, canApprove }: Props) {
           <Button
             size="sm"
             variant="outline"
+            disabled={locked}
+            title={locked ? "Only the head of the room can act here." : undefined}
             onClick={() => {
+              if (locked) return;
               reset();
               setOpen(true);
             }}
@@ -167,6 +176,11 @@ export function VendorApprovalCard({ vendor, canApprove }: Props) {
           </Button>
         )}
       </div>
+      {canApprove && locked && (
+        <div className="mt-3">
+          <PageLockBanner leader={leader} />
+        </div>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
@@ -267,7 +281,7 @@ export function VendorApprovalCard({ vendor, canApprove }: Props) {
             <Button variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={submit} disabled={pending}>
+            <Button onClick={submit} disabled={pending || locked}>
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
               Save
             </Button>

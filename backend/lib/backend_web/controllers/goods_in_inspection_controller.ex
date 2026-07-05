@@ -80,6 +80,7 @@ defmodule BackendWeb.GoodsInInspectionController do
         limit: params["limit"],
         sort: parse_sort(params["sort"]),
         search: params["search"],
+        column_filter: params["column_filter"],
         status: params["status"],
         purchase_order_id: parse_int(params["purchase_order_id"]),
         warehouse_id: parse_int(params["warehouse_id"]),
@@ -471,6 +472,7 @@ defmodule BackendWeb.GoodsInInspectionController do
   serve — local adapter reads from disk, cloud adapters short-circuit
   to a signed URL upstream.
   """
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"goods_in_inspection_id" => uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -481,7 +483,7 @@ defmodule BackendWeb.GoodsInInspectionController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else

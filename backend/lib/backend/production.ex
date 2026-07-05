@@ -59,7 +59,7 @@ defmodule Backend.Production do
   @bommable_item_types ~w(finished_product semi_finished)
 
   @bom_search [:name, :notes]
-  @bom_sortable [:inserted_at, :updated_at, :name]
+  @bom_sortable [:inserted_at, :updated_at, :name, :is_primary, :is_active, :item_id]
   @bom_default_sort {:inserted_at, :desc}
 
   # ----- list / get -----------------------------------------------
@@ -82,6 +82,7 @@ defmodule Backend.Production do
       |> ListQueries.apply_search(opts[:search], @bom_search)
       |> maybe_item_filter(opts[:item_id])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @bom_sortable)
       |> ListQueries.apply_sort(sort, @bom_sortable, @bom_default_sort)
       |> preload([:item, :created_by, :updated_by])
 
@@ -515,7 +516,7 @@ defmodule Backend.Production do
   # Hourly rate, custom working hours / holidays, Colour, Notes).
 
   @wg_search [:name, :notes]
-  @wg_sortable [:inserted_at, :updated_at, :name]
+  @wg_sortable [:inserted_at, :updated_at, :name, :kind, :is_active]
   @wg_default_sort {:inserted_at, :desc}
 
   @doc """
@@ -536,6 +537,7 @@ defmodule Backend.Production do
       |> ListQueries.apply_search(opts[:search], @wg_search)
       |> maybe_wg_kind_filter(opts[:kind])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @wg_sortable)
       |> ListQueries.apply_sort(sort, @wg_sortable, @wg_default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -708,7 +710,7 @@ defmodule Backend.Production do
   # vita-performance keys on `external_id` (UUID).
 
   @ws_search [:name, :notes]
-  @ws_sortable [:inserted_at, :updated_at, :name]
+  @ws_sortable [:inserted_at, :updated_at, :name, :is_active, :workstation_group_id, :warehouse_id]
   @ws_default_sort {:inserted_at, :desc}
 
   def list_workstations_page(company_id, opts \\ []) when is_integer(company_id) do
@@ -721,6 +723,7 @@ defmodule Backend.Production do
       |> maybe_ws_group_filter(opts[:workstation_group_id])
       |> maybe_ws_warehouse_filter(opts[:warehouse_id])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @ws_sortable)
       |> ListQueries.apply_sort(sort, @ws_sortable, @ws_default_sort)
       |> preload([:workstation_group, :warehouse, :created_by, :updated_by])
 
@@ -1019,7 +1022,7 @@ defmodule Backend.Production do
   # event per save instead of one per step.
 
   @routing_search [:name, :notes]
-  @routing_sortable [:inserted_at, :updated_at, :name]
+  @routing_sortable [:inserted_at, :updated_at, :name, :is_active, :item_id, :bom_id]
   @routing_default_sort {:inserted_at, :desc}
 
   def list_routings_page(company_id, opts \\ []) when is_integer(company_id) do
@@ -1032,6 +1035,7 @@ defmodule Backend.Production do
       |> maybe_routing_item_filter(opts[:item_id])
       |> maybe_routing_bom_filter(opts[:bom_id])
       |> maybe_active_filter(opts[:is_active])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @routing_sortable)
       |> ListQueries.apply_sort(sort, @routing_sortable, @routing_default_sort)
       |> preload([:item, :bom, :created_by, :updated_by])
 
@@ -1318,7 +1322,30 @@ defmodule Backend.Production do
   #   cancelled   → (terminal)
 
   @mo_search [:revision, :notes]
-  @mo_sortable [:inserted_at, :updated_at, :due_date]
+  @mo_sortable [
+    :id,
+    :status,
+    :quantity,
+    :quantity_produced,
+    :due_date,
+    :expiry_date,
+    :revision,
+    :needs_replan,
+    :item_id,
+    :bom_id,
+    :warehouse_id,
+    :assigned_to_id,
+    :prepared_at,
+    :approved_at,
+    :purchasing_requested_at,
+    :released_to_warehouse_at,
+    :pickup_started_at,
+    :pickup_completed_at,
+    :actual_start,
+    :actual_finish,
+    :inserted_at,
+    :updated_at
+  ]
   @mo_default_sort {:inserted_at, :desc}
 
   # Status-change pairs that the generic transition endpoint accepts.
@@ -1349,6 +1376,7 @@ defmodule Backend.Production do
       |> maybe_mo_status_filter(opts[:status])
       |> maybe_mo_item_filter(opts[:item_id])
       |> maybe_mo_warehouse_filter(opts[:warehouse_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @mo_sortable)
       |> ListQueries.apply_sort(sort, @mo_sortable, @mo_default_sort)
       |> preload([
         :item,
@@ -7194,7 +7222,7 @@ defmodule Backend.Production do
       "stack_factor"
     ]
     |> Enum.reduce(%{}, fn key, acc ->
-      raw = Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+      raw = Map.get(attrs, key) || Map.get(attrs, String.to_existing_atom(key))
 
       if raw in [nil, ""], do: acc, else: Map.put(acc, key, raw)
     end)
@@ -9151,7 +9179,7 @@ defmodule Backend.Production do
 
   defp parse_pack_fields(entry, keys, parser) do
     Enum.reduce_while(keys, {:ok, %{}}, fn key, {:ok, acc} ->
-      raw = Map.get(entry, key) || Map.get(entry, String.to_atom(key))
+      raw = Map.get(entry, key) || Map.get(entry, String.to_existing_atom(key))
 
       case parser.(raw) do
         {:ok, v} -> {:cont, {:ok, Map.put(acc, key, v)}}
@@ -9451,7 +9479,7 @@ defmodule Backend.Production do
   end
 
   defp entry_field(entry, key) when is_map(entry) do
-    Map.get(entry, key) || Map.get(entry, String.to_atom(key))
+    Map.get(entry, key) || Map.get(entry, String.to_existing_atom(key))
   end
 
   defp ensure_within(%DateTime{} = dt, lo, hi) do

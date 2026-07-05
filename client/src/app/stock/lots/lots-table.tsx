@@ -7,15 +7,17 @@ import { Filter, FilePlus, Printer, X } from "lucide-react";
 import { PrintLabelDialog } from "./print-label-dialog";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { Button } from "@/components/ui/button";
 import { auditColumns } from "@/components/audit/audit-table-columns";
-import type { StockLot, StockLotStatus, Warehouse } from "@/lib/types";
+import type { StockLot, StockLotStatus } from "@/lib/types";
 import {
   formatCompanyDate,
   formatCompanyMoney,
@@ -25,7 +27,8 @@ import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 
 interface LotsTableProps {
   initialPage: PageResult<StockLot>;
-  warehouses: Warehouse[];
+  /** Location filters built server-side via `buildLocationFilters()`. */
+  locationFilters?: FilterDef[];
   canReceive: boolean;
   /** Server-resolved deep-link filter from `?item_id=<n>`. The lot
    *  list scopes to this item until the user clears the chip. */
@@ -42,39 +45,74 @@ const DEFAULT_SORT: SortSpec = { field: "id", direction: "desc" };
 // `received`, amber for transitional states, muted for terminal.
 const STATUS_TONE: Record<
   StockLotStatus,
-  "emerald" | "amber" | "muted" | "destructive" | "indigo"
+  "emerald" | "amber" | "muted" | "destructive" | "indigo" | "sky"
 > = {
+  expected: "indigo",
   requested: "indigo",
-  received: "emerald",
+  received: "sky",
   quarantine: "amber",
+  awaiting_release: "amber",
+  available: "emerald",
+  on_hold: "amber",
   depleted: "muted",
   disposed: "muted",
   rejected: "destructive",
+  canceled: "muted",
 };
 
 const STATUS_LABEL: Record<StockLotStatus, string> = {
+  expected: "Expected",
   requested: "Requested",
   received: "Received",
   quarantine: "Quarantine",
+  awaiting_release: "Awaiting release",
+  available: "Available",
+  on_hold: "On hold",
   depleted: "Depleted",
   disposed: "Disposed",
   rejected: "Rejected",
+  canceled: "Canceled",
 };
+
+const STATUS_OPTIONS = (
+  [
+    "expected",
+    "requested",
+    "received",
+    "quarantine",
+    "awaiting_release",
+    "available",
+    "on_hold",
+    "depleted",
+    "disposed",
+    "rejected",
+    "canceled",
+  ] as StockLotStatus[]
+).map((s) => ({ label: STATUS_LABEL[s], value: s }));
 
 const STATUS_FILTER: FilterDef = {
   field: "status",
   label: "Status",
-  options: (
-    [
-      "requested",
-      "received",
-      "quarantine",
-      "depleted",
-      "disposed",
-      "rejected",
-    ] as StockLotStatus[]
-  ).map((s) => ({ label: STATUS_LABEL[s], value: s })),
+  options: STATUS_OPTIONS,
 };
+
+const SOURCE_KIND_OPTIONS = [
+  { label: "Purchase order", value: "purchase_order" },
+  { label: "Manufacturing order", value: "manufacturing_order" },
+  { label: "Opening balance", value: "opening_balance" },
+  { label: "Return", value: "return" },
+  { label: "Adjustment", value: "adjustment" },
+  { label: "Manual", value: "manual" },
+];
+
+const COMPLIANCE_STATE_OPTIONS = [
+  { label: "Pending", value: "pending" },
+  { label: "Requested", value: "requested" },
+  { label: "Received", value: "received" },
+  { label: "Accepted", value: "accepted" },
+  { label: "Rejected", value: "rejected" },
+  { label: "N/A", value: "na" },
+];
 
 function makeFetchLotsPage(itemFilterId: number | null) {
   return async function fetchLotsPage(params: {
@@ -82,6 +120,7 @@ function makeFetchLotsPage(itemFilterId: number | null) {
     limit: number;
     sort: SortSpec | null;
     filters: Record<string, string | boolean | number>;
+    columnFilters: Record<string, ColumnFilterValue>;
     search: string;
   }): Promise<PageResult<StockLot>> {
     const qs = new URLSearchParams();
@@ -93,6 +132,7 @@ function makeFetchLotsPage(itemFilterId: number | null) {
     for (const [k, v] of Object.entries(params.filters)) {
       qs.set(k, String(v));
     }
+    serializeColumnFilters(qs, params.columnFilters);
     // Deep-link filter is server-pinned — it stays applied on every
     // paginated fetch until the user clears the chip in the banner.
     if (itemFilterId !== null) {
@@ -118,7 +158,7 @@ function makeFetchLotsPage(itemFilterId: number | null) {
 
 export function LotsTable({
   initialPage,
-  warehouses,
+  locationFilters,
   canReceive,
   itemFilter,
 }: LotsTableProps) {
@@ -134,23 +174,10 @@ export function LotsTable({
     [itemFilter?.id],
   );
 
-  // Warehouses are dynamic per-company so the FilterDef is built at
-  // render time rather than statically. Stable identity via useMemo so
-  // the DataTable doesn't see a fresh `filters` array every render.
-  const filters = useMemo<FilterDef[]>(() => {
-    const out: FilterDef[] = [STATUS_FILTER];
-    if (warehouses.length > 0) {
-      out.push({
-        field: "warehouse_id",
-        label: "Warehouse",
-        options: warehouses.map((w) => ({
-          label: w.name,
-          value: w.id,
-        })),
-      });
-    }
-    return out;
-  }, [warehouses]);
+  const filters = useMemo<FilterDef[]>(
+    () => [STATUS_FILTER, ...(locationFilters ?? [])],
+    [locationFilters],
+  );
 
   const formatQty = (qty: string | null | undefined, symbol?: string | null) => {
     const formatted = formatCompanyNumber(qty, prefs);
@@ -170,6 +197,11 @@ export function LotsTable({
         sortLabels: { asc: "Oldest first", desc: "Newest first" },
         widthClassName: "w-28",
         hideable: false,
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "SL00001…",
+        group: "Identity",
+        description: "Auto-numbered lot code (SL00001, …).",
         cell: (l) => (
           <span className="font-mono text-xs font-semibold">
             {l.code ?? `#${l.id}`}
@@ -180,6 +212,8 @@ export function LotsTable({
         id: "item",
         header: "Item",
         widthClassName: "min-w-[16rem]",
+        group: "Identity",
+        description: "Item this lot belongs to.",
         cell: (l) =>
           l.item ? (
             <div className="space-y-0.5">
@@ -198,6 +232,11 @@ export function LotsTable({
         sortField: "status",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-32",
+        filterField: "status",
+        filterKind: "select",
+        filterOptions: STATUS_OPTIONS,
+        group: "Status",
+        description: "Lot lifecycle — computed from events, never picked directly.",
         cell: (l) => (
           <Badge tone={STATUS_TONE[l.status]}>{STATUS_LABEL[l.status]}</Badge>
         ),
@@ -209,6 +248,10 @@ export function LotsTable({
         sortLabels: { asc: "Smallest first", desc: "Largest first" },
         widthClassName: "w-28",
         align: "right",
+        filterField: "qty_received",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Quantity when the lot was received (immutable).",
         cell: (l) => (
           <span className="font-mono text-xs">
             {formatQty(l.qty_received, l.unit_of_measurement?.symbol)}
@@ -220,6 +263,8 @@ export function LotsTable({
         header: "On hand",
         widthClassName: "w-28",
         align: "right",
+        group: "Amounts",
+        description: "Current on-hand quantity across all placements.",
         cell: (l) => (
           <span className="font-mono text-xs">
             {formatQty(l.qty_on_hand, l.unit_of_measurement?.symbol)}
@@ -233,6 +278,10 @@ export function LotsTable({
         sortLabels: { asc: "Cheapest first", desc: "Priciest first" },
         widthClassName: "w-28",
         align: "right",
+        filterField: "unit_cost",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Per-unit landed cost — carried through consumption events.",
         cell: (l) => (
           <span className="font-mono text-xs text-muted-foreground">
             {formatMoney(l.unit_cost, l.currency)}
@@ -245,6 +294,11 @@ export function LotsTable({
         sortField: "supplier_batch_no",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-36",
+        filterField: "supplier_batch_no",
+        filterKind: "text",
+        filterPlaceholder: "Batch no.…",
+        group: "Compliance",
+        description: "Vendor-assigned batch/lot number for traceability.",
         cell: (l) =>
           l.supplier_batch_no ? (
             <span className="font-mono text-[11px] text-muted-foreground">
@@ -260,6 +314,10 @@ export function LotsTable({
         sortField: "expiry_at",
         sortLabels: { asc: "Soonest first", desc: "Latest first" },
         widthClassName: "w-28",
+        filterField: "expiry_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Best-before / use-by date.",
         cell: (l) => (
           <span className="text-xs text-muted-foreground">
             {formatDate(l.expiry_at)}
@@ -273,11 +331,154 @@ export function LotsTable({
         sortLabels: { asc: "Oldest first", desc: "Newest first" },
         widthClassName: "w-28",
         defaultHidden: true,
+        filterField: "received_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When the physical goods landed.",
         cell: (l) => (
           <span className="text-xs text-muted-foreground">
             {formatDate(l.received_at)}
           </span>
         ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "currency",
+        header: "Currency",
+        widthClassName: "w-20",
+        defaultHidden: true,
+        filterField: "currency",
+        filterKind: "text",
+        filterPlaceholder: "GBP…",
+        group: "Amounts",
+        description: "Currency of the unit cost.",
+        cell: (l) =>
+          l.currency ? (
+            <span className="font-mono text-xs">{l.currency}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "manufactured_at",
+        header: "Manufactured",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        filterField: "manufactured_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When the batch was produced at the supplier.",
+        cell: (l) => (
+          <span className="text-xs text-muted-foreground">
+            {formatDate(l.manufactured_at)}
+          </span>
+        ),
+      },
+      {
+        id: "country_of_origin",
+        header: "Origin",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        filterField: "country_of_origin",
+        filterKind: "text",
+        filterPlaceholder: "Country of origin…",
+        group: "Compliance",
+        description: "Country of origin declared on the paperwork.",
+        cell: (l) =>
+          l.country_of_origin ? (
+            <span className="text-xs">{l.country_of_origin}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "source_kind",
+        header: "Source",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        filterField: "source_kind",
+        filterKind: "select",
+        filterOptions: SOURCE_KIND_OPTIONS,
+        group: "Compliance",
+        description: "Where this lot came from — derived from the flow that created it.",
+        cell: (l) =>
+          l.source_kind ? (
+            <span className="text-xs capitalize">
+              {l.source_kind.replace(/_/g, " ")}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "warehouse",
+        header: "Warehouse",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        group: "Location",
+        description: "Warehouse currently holding this lot's primary placement.",
+        cell: (l) => {
+          const wh = l.placements?.[0]?.storage_cell?.warehouse ?? null;
+          return wh ? (
+            <span className="truncate text-xs text-muted-foreground">
+              {wh.name}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          );
+        },
+      },
+      {
+        id: "cell",
+        header: "Cell",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Location",
+        description: "Storage cell code of the primary placement.",
+        cell: (l) => {
+          const cell = l.placements?.[0]?.storage_cell ?? null;
+          return cell?.code ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {cell.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          );
+        },
+      },
+      {
+        id: "allergen_status",
+        header: "Allergens",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        filterField: "allergen_status",
+        filterKind: "select",
+        filterOptions: COMPLIANCE_STATE_OPTIONS,
+        group: "Compliance",
+        description: "Allergen declaration state.",
+        cell: (l) =>
+          l.allergen_status ? (
+            <span className="text-xs capitalize">{l.allergen_status}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "coa_status",
+        header: "CoA",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        filterField: "coa_status",
+        filterKind: "select",
+        filterOptions: COMPLIANCE_STATE_OPTIONS,
+        group: "Compliance",
+        description: "Certificate of Analysis state.",
+        cell: (l) =>
+          l.coa_status ? (
+            <span className="text-xs capitalize">{l.coa_status}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
       },
       {
         id: "print",

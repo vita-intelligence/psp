@@ -52,8 +52,14 @@ defmodule Backend.Customers do
                             qualified_at review_frequency_months
                             last_review_at next_review_at)a
 
-  @customer_sortable ~w(id name approval_status last_contact_at next_contact_at
-                        first_order_at last_order_at inserted_at)a
+  @customer_sortable ~w(id name approval_status is_active
+                        currency_code country_code
+                        payment_terms_days trade_credit_limit
+                        total_orders_count contact_frequency_months
+                        last_contact_at next_contact_at
+                        first_order_at last_order_at
+                        last_review_at next_review_at
+                        inserted_at updated_at)a
   @customer_search ~w(name legal_name contact_name registration_number tax_number)a
   @customer_default_sort {:name, :asc}
 
@@ -71,6 +77,7 @@ defmodule Backend.Customers do
       |> maybe_status_filter(opts[:approval_status])
       |> maybe_active_filter(opts[:is_active])
       |> maybe_account_manager_filter(opts[:account_manager_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @customer_sortable)
       |> ListQueries.apply_sort(sort, @customer_sortable, @customer_default_sort)
       |> preload([:created_by, :updated_by, :approved_by, :account_manager])
 

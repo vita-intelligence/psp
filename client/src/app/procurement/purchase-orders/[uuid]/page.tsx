@@ -1,12 +1,12 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ChevronLeft, ShoppingCart } from "lucide-react";
+import { ShoppingCart } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
 import { TopBar } from "@/components/layout/top-bar";
+import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { CommentThread } from "@/components/comments/comment-thread";
@@ -97,37 +97,20 @@ export default async function PODetailPage({
       <ProcurementSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/procurement/purchase-orders">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to POs
-              </Link>
-            </Button>
-          </div>
-
-          <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <ShoppingCart className="size-4 text-muted-foreground" />
-                  <span className="font-mono text-xs font-semibold text-muted-foreground">
-                    {po.code ?? `#${po.id}`}
-                  </span>
-                  <Badge tone={STATUS_TONE[po.status]}>
-                    {STATUS_LABEL[po.status]}
-                  </Badge>
-                </div>
-                <h1 className="truncate text-2xl font-semibold tracking-tight">
-                  {po.vendor?.name ?? "—"}
-                </h1>
-              </div>
+        <PageCursorAnchor
+          pageId={`/procurement/purchase-orders/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
+          <RecordHero
+            icon={ShoppingCart}
+            code={po.code ?? `#${po.id}`}
+            chips={
+              <Badge tone={STATUS_TONE[po.status]}>
+                {STATUS_LABEL[po.status]}
+              </Badge>
+            }
+            title={po.vendor?.name ?? "—"}
+            actions={
               <div className="text-right">
                 <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
                   Total
@@ -138,8 +121,10 @@ export default async function PODetailPage({
                   })}
                 </p>
               </div>
-            </div>
-          </header>
+            }
+            backHref="/procurement/purchase-orders"
+            backLabel="Back to POs"
+          />
 
           <POPaperworkAlert po={po} invoices={invoices ?? []} />
 
@@ -149,6 +134,7 @@ export default async function PODetailPage({
             canApprove={canApprove}
             canDirectorApprove={canDirectorApprove}
             canCancel={canCreate}
+            pageId={`/procurement/purchase-orders/${uuid}`}
           />
 
           <PODocumentsToolbar po={po} />
@@ -196,7 +182,7 @@ export default async function PODetailPage({
             updated_by={po.updated_by ?? null}
           />
           <AuditHistoryCard entityType="purchase_order" entityId={po.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

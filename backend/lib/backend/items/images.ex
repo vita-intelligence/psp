@@ -78,7 +78,8 @@ defmodule Backend.Items.Images do
     with :ok <- check_count(item.id),
          :ok <- check_mime(upload.content_type),
          {:ok, binary, byte_size} <- read_file(upload),
-         :ok <- check_size(byte_size) do
+         :ok <- check_size(byte_size),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(binary, upload.content_type) do
       image_uuid = Ecto.UUID.generate()
       ext = mime_to_ext(upload.content_type)
       blob_key = "items/#{item.uuid}/#{image_uuid}#{ext}"
@@ -214,6 +215,7 @@ defmodule Backend.Items.Images do
   defp check_size(bytes) when is_integer(bytes) and bytes <= @max_bytes, do: :ok
   defp check_size(bytes), do: {:error, {:too_large, bytes}}
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_file(%Plug.Upload{path: path}) when is_binary(path) do
     case File.read(path) do
       {:ok, binary} -> {:ok, binary, byte_size(binary)}

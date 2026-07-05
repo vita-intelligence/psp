@@ -22,7 +22,9 @@ defmodule Backend.Items do
   alias Backend.Repo
 
   @audit_fields ~w(name description item_type external_sku barcode stock_uom_id product_family_id attributes storage_tags is_active)a
-  @sortable_fields ~w(id name item_type external_sku is_active inserted_at)a
+  @sortable_fields ~w(id name item_type external_sku barcode is_active
+                      compliance_status stock_uom_id product_family_id
+                      inserted_at updated_at)a
   @search_fields ~w(name external_sku barcode description)a
   @default_sort {:name, :asc}
 
@@ -37,6 +39,7 @@ defmodule Backend.Items do
       |> where([i], i.company_id == ^company_id)
       |> maybe_type_filter(type_filter)
       |> apply_item_search(company_id, opts[:search])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:stock_uom, :product_family, :created_by, :updated_by])
 

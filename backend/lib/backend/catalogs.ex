@@ -17,7 +17,7 @@ defmodule Backend.Catalogs do
   # ----- product families ------------------------------------------
 
   @family_audit_fields ~w(name description is_active)a
-  @family_sortable ~w(id name is_active inserted_at)a
+  @family_sortable ~w(id name description is_active inserted_at updated_at)a
   @family_search ~w(name description)a
   @family_default_sort {:name, :asc}
 
@@ -28,6 +28,7 @@ defmodule Backend.Catalogs do
       ProductFamily
       |> where([f], f.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @family_search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @family_sortable)
       |> ListQueries.apply_sort(sort, @family_sortable, @family_default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -131,7 +132,7 @@ defmodule Backend.Catalogs do
   # ----- attribute definitions -------------------------------------
 
   @attr_audit_fields ~w(scope key label attribute_type enum_choices required default_value unit_symbol help_text sort_order is_active)a
-  @attr_sortable ~w(id scope key label sort_order is_active inserted_at)a
+  @attr_sortable ~w(id scope key label attribute_type required sort_order is_active inserted_at updated_at)a
   @attr_search ~w(key label help_text)a
   @attr_default_sort {:sort_order, :asc}
 
@@ -144,6 +145,7 @@ defmodule Backend.Catalogs do
       |> where([a], a.company_id == ^company_id)
       |> maybe_scope_filter(scope_filter)
       |> ListQueries.apply_search(opts[:search], @attr_search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @attr_sortable)
       |> ListQueries.apply_sort(sort, @attr_sortable, @attr_default_sort)
       |> preload([:created_by, :updated_by])
 

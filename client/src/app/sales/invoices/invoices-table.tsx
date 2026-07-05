@@ -13,13 +13,20 @@ import {
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
-import type { CustomerInvoice, CustomerInvoiceStatus } from "@/lib/types";
+import { auditColumns } from "@/components/audit/audit-table-columns";
+import type {
+  CustomerInvoice,
+  CustomerInvoiceKind,
+  CustomerInvoiceStatus,
+} from "@/lib/types";
 import { formatCompanyDate, formatCompanyNumber } from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 
@@ -56,20 +63,33 @@ const STATUS_ICON: Record<CustomerInvoiceStatus, typeof CircleDashed> = {
   cancelled: ShieldX,
 };
 
+const STATUS_OPTIONS = (
+  Object.keys(STATUS_LABEL) as CustomerInvoiceStatus[]
+).map((s) => ({ label: STATUS_LABEL[s], value: s }));
+
 const STATUS_FILTER: FilterDef = {
   field: "status",
   label: "Status",
-  options: (Object.keys(STATUS_LABEL) as CustomerInvoiceStatus[]).map((s) => ({
-    label: STATUS_LABEL[s],
-    value: s,
-  })),
+  options: STATUS_OPTIONS,
 };
+
+const KIND_LABEL: Record<CustomerInvoiceKind, string> = {
+  invoice: "Invoice",
+  proforma: "Proforma",
+  credit_note: "Credit note",
+  quotation: "Quotation",
+};
+
+const KIND_OPTIONS = (
+  Object.keys(KIND_LABEL) as CustomerInvoiceKind[]
+).map((k) => ({ label: KIND_LABEL[k], value: k }));
 
 async function fetchPage(params: {
   cursor: string | null;
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<CustomerInvoice>> {
   const qs = new URLSearchParams();
@@ -78,6 +98,7 @@ async function fetchPage(params: {
   if (params.sort) qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
   for (const [k, v] of Object.entries(params.filters)) qs.set(k, String(v));
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/customer-invoices?${qs.toString()}`, {
     cache: "no-store",
@@ -107,6 +128,11 @@ export function InvoicesTable({ initialPage }: Props) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "INV00001…",
+        group: "Identity",
+        description: "Auto-numbered invoice code (kind-specific sequence).",
         cell: (inv) => (
           <span className="font-mono text-xs text-muted-foreground">
             {inv.code ?? `#${inv.id}`}
@@ -118,6 +144,11 @@ export function InvoicesTable({ initialPage }: Props) {
         header: "Status",
         sortField: "status",
         widthClassName: "w-36",
+        filterField: "status",
+        filterKind: "select",
+        filterOptions: STATUS_OPTIONS,
+        group: "Status",
+        description: "Invoice lifecycle — computed from send + payment events.",
         cell: (inv) => {
           const Icon = STATUS_ICON[inv.status];
           return (
@@ -133,6 +164,8 @@ export function InvoicesTable({ initialPage }: Props) {
         header: "Customer",
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        group: "Identity",
+        description: "Customer being billed.",
         cell: (inv) => (
           <div className="min-w-0">
             <Link
@@ -155,6 +188,10 @@ export function InvoicesTable({ initialPage }: Props) {
         sortField: "grand_total",
         widthClassName: "w-32",
         align: "right",
+        filterField: "grand_total",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Grand total (subtotal + tax − discount).",
         cell: (inv) => (
           <span className="font-mono text-sm">
             {formatCompanyNumber(inv.grand_total, prefs)} {inv.currency_code}
@@ -166,6 +203,8 @@ export function InvoicesTable({ initialPage }: Props) {
         header: "Outstanding",
         widthClassName: "w-32",
         align: "right",
+        group: "Amounts",
+        description: "Grand total minus paid amount.",
         cell: (inv) => {
           const o = Number(inv.outstanding);
           if (inv.status === "paid" || inv.status === "cancelled" || o <= 0) {
@@ -183,6 +222,10 @@ export function InvoicesTable({ initialPage }: Props) {
         header: "Issued",
         sortField: "invoice_date",
         widthClassName: "w-28",
+        filterField: "invoice_date",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Invoice issue date.",
         cell: (inv) => (
           <span className="text-sm">
             {formatCompanyDate(inv.invoice_date, prefs)}
@@ -194,6 +237,10 @@ export function InvoicesTable({ initialPage }: Props) {
         header: "Due",
         sortField: "due_date",
         widthClassName: "w-32",
+        filterField: "due_date",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Payment due date.",
         cell: (inv) => {
           if (!inv.due_date)
             return <span className="text-xs text-muted-foreground/50">—</span>;
@@ -219,6 +266,167 @@ export function InvoicesTable({ initialPage }: Props) {
           );
         },
       },
+      // ---- defaultHidden columns below ----
+      {
+        id: "kind",
+        header: "Kind",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "kind",
+        filterField: "kind",
+        filterKind: "select",
+        filterOptions: KIND_OPTIONS,
+        group: "Identity",
+        description: "Invoice / proforma / credit note / quotation.",
+        cell: (inv) => (
+          <Badge tone="muted">{KIND_LABEL[inv.kind]}</Badge>
+        ),
+      },
+      {
+        id: "currency_code",
+        header: "Currency",
+        widthClassName: "w-20",
+        defaultHidden: true,
+        sortField: "currency_code",
+        filterField: "currency_code",
+        filterKind: "text",
+        filterPlaceholder: "GBP…",
+        group: "Amounts",
+        description: "Currency this invoice is denominated in.",
+        cell: (inv) => (
+          <span className="font-mono text-xs">{inv.currency_code}</span>
+        ),
+      },
+      {
+        id: "subtotal",
+        header: "Subtotal",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        sortField: "subtotal",
+        filterField: "subtotal",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Sum of line subtotals before tax + discount.",
+        cell: (inv) => (
+          <span className="font-mono text-xs">
+            {formatCompanyNumber(inv.subtotal, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "tax_amount",
+        header: "Tax",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        sortField: "tax_amount",
+        filterField: "tax_amount",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Server-computed tax on the invoice.",
+        cell: (inv) => (
+          <span className="font-mono text-xs text-muted-foreground">
+            {formatCompanyNumber(inv.tax_amount, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "discount_amount",
+        header: "Discount",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "Total discount applied.",
+        cell: (inv) => (
+          <span className="font-mono text-xs text-muted-foreground">
+            {formatCompanyNumber(inv.discount_amount, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "paid_amount",
+        header: "Paid",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "Amount received against this invoice.",
+        cell: (inv) => (
+          <span className="font-mono text-xs">
+            {formatCompanyNumber(inv.paid_amount, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "customer_reference",
+        header: "Cust. ref.",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        filterField: "customer_reference",
+        filterKind: "text",
+        filterPlaceholder: "PO reference…",
+        group: "Identity",
+        description: "Customer's own PO reference for this invoice.",
+        cell: (inv) =>
+          inv.customer_reference ? (
+            <span className="truncate text-xs">{inv.customer_reference}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "sent_at",
+        header: "Sent at",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "sent_at",
+        filterField: "sent_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When this invoice was sent to the customer.",
+        cell: (inv) =>
+          inv.sent_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(inv.sent_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "cancelled_at",
+        header: "Cancelled at",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "cancelled_at",
+        filterField: "cancelled_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When this invoice was cancelled (if applicable).",
+        cell: (inv) =>
+          inv.cancelled_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(inv.cancelled_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "lines_count",
+        header: "Lines",
+        widthClassName: "w-16",
+        align: "right",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "Number of line items on this invoice.",
+        cell: (inv) => (
+          <span className="text-sm">{inv.lines.length}</span>
+        ),
+      },
+      ...auditColumns<CustomerInvoice>(),
     ],
     [prefs],
   );

@@ -34,6 +34,7 @@ defmodule BackendWeb.BOMController do
         limit: params["limit"],
         sort: parse_sort(params["sort"]),
         search: params["search"],
+        column_filter: params["column_filter"],
         item_id: params["item_id"],
         is_active: params["is_active"]
       ]

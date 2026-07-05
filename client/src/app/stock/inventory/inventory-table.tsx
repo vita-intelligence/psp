@@ -5,11 +5,13 @@ import { useMemo } from "react";
 import { AlertTriangle, Package2 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import type { InventoryRow, ItemType, Warehouse } from "@/lib/types";
 import {
@@ -22,6 +24,9 @@ import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 interface InventoryTableProps {
   initialPage: PageResult<InventoryRow>;
   warehouses: Warehouse[];
+  /** Location filters built server-side via `buildLocationFilters()`.
+   *  When present, takes precedence over the legacy `warehouses` prop. */
+  locationFilters?: FilterDef[];
 }
 
 const DEFAULT_SORT: SortSpec = { field: "name", direction: "asc" };
@@ -70,6 +75,7 @@ async function fetchInventoryPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<InventoryRow>> {
   const qs = new URLSearchParams();
@@ -81,6 +87,12 @@ async function fetchInventoryPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(k, String(v));
   }
+  // Note: the inventory endpoint uses a hand-rolled aggregate query
+  // (Backend.Stock.inventory_rollup) that doesn't route through
+  // Backend.ListQueries — per-column filters ship in the URL but the
+  // backend ignores them. Kept for consistency with the other v2
+  // tables so a future refactor lights them up in one place.
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/stock/inventory?${qs.toString()}`, {
     cache: "no-store",
@@ -101,6 +113,7 @@ async function fetchInventoryPage(params: {
 export function InventoryTable({
   initialPage,
   warehouses,
+  locationFilters,
 }: InventoryTableProps) {
   const router = useRouter();
   const prefs = useFormatPrefs();
@@ -109,6 +122,9 @@ export function InventoryTable({
   // the array identity stable for DataTable.
   const filters = useMemo<FilterDef[]>(() => {
     const out: FilterDef[] = [ITEM_TYPE_FILTER, IN_STOCK_FILTER];
+    if (locationFilters && locationFilters.length > 0) {
+      return [...out, ...locationFilters];
+    }
     if (warehouses.length > 0) {
       out.push({
         field: "warehouse_id",
@@ -117,7 +133,7 @@ export function InventoryTable({
       });
     }
     return out;
-  }, [warehouses]);
+  }, [warehouses, locationFilters]);
 
   // Days-to-expiry threshold for the soon-to-expire badge. 30 days is
   // a defensible default for supplements; finer-grained policy lives
@@ -133,6 +149,8 @@ export function InventoryTable({
         sortField: "code",
         sortLabels: { asc: "Code A→Z", desc: "Code Z→A" },
         widthClassName: "w-28",
+        group: "Identity",
+        description: "Auto-numbered item code.",
         cell: (r) => (
           <span className="font-mono text-xs text-muted-foreground">
             {r.item_code ?? `#${r.item_id}`}
@@ -146,6 +164,8 @@ export function InventoryTable({
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        group: "Identity",
+        description: "Item name + type + external SKU when set.",
         cell: (r) => (
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -169,6 +189,8 @@ export function InventoryTable({
         sortLabels: { asc: "Low → high", desc: "High → low" },
         align: "right",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Sum of placement qty across every non-zero cell.",
         cell: (r) => {
           const value = formatCompanyNumber(r.qty_on_hand, prefs);
           const isZero = Number(r.qty_on_hand) === 0;
@@ -190,6 +212,8 @@ export function InventoryTable({
         sortLabels: { asc: "Cheapest first", desc: "Most expensive first" },
         align: "right",
         widthClassName: "w-32",
+        group: "Amounts",
+        description: "Naive sum of placement.qty × lot.unit_cost.",
         cell: (r) => {
           const formatted = formatCompanyMoney(r.total_cost, prefs, {
             currency_code: prefs.currency_code ?? "GBP",
@@ -215,6 +239,8 @@ export function InventoryTable({
         sortLabels: { asc: "Few → many", desc: "Many → few" },
         align: "right",
         widthClassName: "w-20",
+        group: "Amounts",
+        description: "Number of distinct lots contributing to this item's on-hand qty.",
         cell: (r) =>
           r.lots_count > 0 ? (
             <span className="text-sm">{r.lots_count}</span>
@@ -228,6 +254,8 @@ export function InventoryTable({
         sortField: "earliest_expiry",
         sortLabels: { asc: "Soonest first", desc: "Latest first" },
         widthClassName: "w-40",
+        group: "Dates",
+        description: "Earliest lot expiry — soon-to-expire (<30 days) is coloured amber.",
         cell: (r) => {
           if (!r.earliest_expiry) {
             return <span className="text-xs text-muted-foreground/50">—</span>;
@@ -272,6 +300,8 @@ export function InventoryTable({
         sortLabels: { asc: "Oldest first", desc: "Newest first" },
         widthClassName: "w-40",
         defaultHidden: true,
+        group: "Dates",
+        description: "Most recent lot receive across every warehouse.",
         cell: (r) =>
           r.latest_received_at ? (
             <span className="text-xs text-muted-foreground">
@@ -280,6 +310,119 @@ export function InventoryTable({
           ) : (
             <span className="text-xs text-muted-foreground/50">—</span>
           ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "external_sku",
+        header: "External SKU",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Vendor / retail SKU printed on packaging.",
+        cell: (r) =>
+          r.item_external_sku ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {r.item_external_sku}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "item_type_label",
+        header: "Type",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Item classification — raw material, packaging, semi-finished, finished.",
+        cell: (r) => (
+          <Badge tone={ITEM_TYPE_TONE[r.item_type]}>
+            {ITEM_TYPE_LABEL[r.item_type]}
+          </Badge>
+        ),
+      },
+      {
+        id: "days_to_expiry",
+        header: "Days to expiry",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        group: "Dates",
+        description: "Days until the earliest lot expires — negative for already-expired.",
+        cell: (r) => {
+          if (!r.earliest_expiry) {
+            return <span className="text-xs text-muted-foreground/50">—</span>;
+          }
+          const expiryMs = new Date(r.earliest_expiry).getTime();
+          const days = Math.round(
+            (expiryMs - todayMs) / (24 * 60 * 60 * 1000),
+          );
+          return (
+            <span
+              className={
+                days < 0
+                  ? "font-mono text-xs text-destructive"
+                  : days <= 30
+                    ? "font-mono text-xs text-amber-700 dark:text-amber-400"
+                    : "font-mono text-xs text-muted-foreground"
+              }
+            >
+              {days}
+            </span>
+          );
+        },
+      },
+      {
+        id: "avg_cost_per_unit",
+        header: "Avg cost / unit",
+        align: "right",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "Naive average = total_cost / qty_on_hand.",
+        cell: (r) => {
+          const qty = Number(r.qty_on_hand);
+          if (qty <= 0) {
+            return <span className="text-xs text-muted-foreground/50">—</span>;
+          }
+          const avg = Number(r.total_cost) / qty;
+          return (
+            <span className="font-mono text-xs text-muted-foreground">
+              {formatCompanyMoney(String(avg), prefs, {
+                currency_code: prefs.currency_code ?? "GBP",
+              })}
+            </span>
+          );
+        },
+      },
+      {
+        id: "stock_status",
+        header: "Stock status",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        group: "Status",
+        description: "Convenience chip — Out / In stock based on qty_on_hand.",
+        cell: (r) => {
+          const isZero = Number(r.qty_on_hand) === 0;
+          return isZero ? (
+            <Badge tone="muted">Out</Badge>
+          ) : (
+            <Badge tone="emerald">In stock</Badge>
+          );
+        },
+      },
+      {
+        id: "item_uuid",
+        header: "Item UUID",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Meta",
+        description: "Item UUID — useful for debugging / API cross-refs.",
+        cell: (r) => (
+          <span className="font-mono text-[10px] text-muted-foreground">
+            {r.item_uuid.slice(0, 8)}
+          </span>
+        ),
       },
     ],
     [prefs, todayMs],

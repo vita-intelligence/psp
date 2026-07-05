@@ -14,11 +14,13 @@ import {
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import type { CustomerOrder, CustomerOrderStatus } from "@/lib/types";
 import { formatCompanyDate, formatCompanyNumber } from "@/lib/format/company";
@@ -60,13 +62,14 @@ const STATUS_ICON: Record<CustomerOrderStatus, typeof CircleDashed> = {
   cancelled: ShieldX,
 };
 
+const STATUS_OPTIONS = (
+  Object.keys(STATUS_LABEL) as CustomerOrderStatus[]
+).map((s) => ({ label: STATUS_LABEL[s], value: s }));
+
 const STATUS_FILTER: FilterDef = {
   field: "status",
   label: "Status",
-  options: (Object.keys(STATUS_LABEL) as CustomerOrderStatus[]).map((s) => ({
-    label: STATUS_LABEL[s],
-    value: s,
-  })),
+  options: STATUS_OPTIONS,
 };
 
 async function fetchPage(params: {
@@ -74,6 +77,7 @@ async function fetchPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<CustomerOrder>> {
   const qs = new URLSearchParams();
@@ -82,6 +86,7 @@ async function fetchPage(params: {
   if (params.sort) qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
   for (const [k, v] of Object.entries(params.filters)) qs.set(k, String(v));
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/customer-orders?${qs.toString()}`, {
     cache: "no-store",
@@ -111,6 +116,11 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "CO00001…",
+        group: "Identity",
+        description: "Auto-numbered CO code (CO00001, …).",
         cell: (co) => (
           <span className="font-mono text-xs text-muted-foreground">
             {co.code ?? `#${co.id}`}
@@ -122,6 +132,11 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         header: "Status",
         sortField: "status",
         widthClassName: "w-44",
+        filterField: "status",
+        filterKind: "select",
+        filterOptions: STATUS_OPTIONS,
+        group: "Status",
+        description: "CO lifecycle — draft → approved → confirmed.",
         cell: (co) => {
           const Icon = STATUS_ICON[co.status];
           return (
@@ -137,6 +152,8 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         header: "Customer",
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        group: "Identity",
+        description: "Customer this order is sold to.",
         cell: (co) => (
           <div className="min-w-0">
             <Link
@@ -159,6 +176,10 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         sortField: "grand_total",
         widthClassName: "w-32",
         align: "right",
+        filterField: "grand_total",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Grand total (subtotal + tax + shipping + fees).",
         cell: (co) => (
           <span className="font-mono text-sm">
             {formatCompanyNumber(co.grand_total, prefs)} {co.currency_code}
@@ -170,6 +191,10 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         header: "Ship by",
         sortField: "expected_ship_date",
         widthClassName: "w-32",
+        filterField: "expected_ship_date",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Customer-facing ship-by date.",
         cell: (co) => {
           if (!co.expected_ship_date)
             return <span className="text-xs text-muted-foreground/50">—</span>;
@@ -201,7 +226,174 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         widthClassName: "w-16",
         align: "right",
         defaultHidden: true,
+        group: "Amounts",
+        description: "Number of line items on this order.",
         cell: (co) => <span className="text-sm">{co.lines.length}</span>,
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "customer_code",
+        header: "Customer code",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Auto-numbered customer code.",
+        cell: (co) =>
+          co.customer?.code ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {co.customer.code}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "customer_reference",
+        header: "Cust. ref.",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        filterField: "customer_reference",
+        filterKind: "text",
+        filterPlaceholder: "Customer PO ref…",
+        group: "Identity",
+        description: "Customer's own PO reference for this order.",
+        cell: (co) =>
+          co.customer_reference ? (
+            <span className="truncate text-xs">{co.customer_reference}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "currency_code",
+        header: "Currency",
+        widthClassName: "w-20",
+        defaultHidden: true,
+        filterField: "currency_code",
+        filterKind: "text",
+        filterPlaceholder: "GBP…",
+        group: "Amounts",
+        description: "Currency this CO is denominated in.",
+        cell: (co) => (
+          <span className="font-mono text-xs">{co.currency_code}</span>
+        ),
+      },
+      {
+        id: "subtotal",
+        header: "Subtotal",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        filterField: "subtotal",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Sum of line subtotals before discount/tax/shipping.",
+        cell: (co) => (
+          <span className="font-mono text-xs">
+            {formatCompanyNumber(co.subtotal, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "tax_amount",
+        header: "Tax",
+        align: "right",
+        widthClassName: "w-28",
+        defaultHidden: true,
+        filterField: "tax_amount",
+        filterKind: "number-range",
+        group: "Amounts",
+        description: "Server-computed tax on the order.",
+        cell: (co) => (
+          <span className="font-mono text-xs text-muted-foreground">
+            {formatCompanyNumber(co.tax_amount, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "submitted_at",
+        header: "Submitted",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        filterField: "submitted_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When the CO was submitted for approval.",
+        cell: (co) =>
+          co.submitted_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(co.submitted_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "confirmed_at",
+        header: "Confirmed",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        filterField: "confirmed_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When the CO was confirmed for fulfilment.",
+        cell: (co) =>
+          co.confirmed_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(co.confirmed_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "cancelled_at",
+        header: "Cancelled",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        filterField: "cancelled_at",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "When the CO was cancelled (if applicable).",
+        cell: (co) =>
+          co.cancelled_at ? (
+            <span className="text-xs text-muted-foreground">
+              {formatCompanyDate(co.cancelled_at, prefs)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "inserted_at",
+        header: "Created",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "inserted_at",
+        filterField: "inserted_at",
+        filterKind: "date-range",
+        group: "Meta",
+        description: "When this order was created.",
+        cell: (co) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(co.inserted_at, prefs)}
+          </span>
+        ),
+      },
+      {
+        id: "updated_at",
+        header: "Updated",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        filterField: "updated_at",
+        filterKind: "date-range",
+        group: "Meta",
+        description: "When this order was last modified.",
+        cell: (co) => (
+          <span className="text-xs text-muted-foreground">
+            {formatCompanyDate(co.updated_at, prefs)}
+          </span>
+        ),
       },
     ],
     [prefs],

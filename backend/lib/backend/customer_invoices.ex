@@ -49,7 +49,10 @@ defmodule Backend.CustomerInvoices do
                            billing_address customer_reference free_text
                            sent_at cancelled_at cancellation_reason)a
 
-  @invoice_sortable ~w(id status invoice_date due_date grand_total inserted_at)a
+  @invoice_sortable ~w(id status kind customer_id currency_code
+                       subtotal tax_amount grand_total
+                       invoice_date due_date sent_at cancelled_at
+                       inserted_at updated_at)a
   @invoice_search ~w(customer_reference free_text billing_address)a
   @invoice_default_sort {:invoice_date, :desc}
 
@@ -64,6 +67,7 @@ defmodule Backend.CustomerInvoices do
       |> ListQueries.apply_search(opts[:search], @invoice_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
       |> ListQueries.apply_sort(sort, @invoice_sortable, @invoice_default_sort)
       |> preload([
         :customer,

@@ -867,6 +867,10 @@ defmodule Backend.Documents do
 
   # ---------------------------------------------------------------- private
 
+  # `template` is a module attribute atom-name resolved at compile
+  # time (see the caller in `purchase_order_pdf/1` etc.), and the
+  # actual `.eex` file lives under `@templates_dir` in `priv/`. No
+  # user input reaches the template compiler.
   defp render_pdf(template, assigns) do
     html =
       @templates_dir
@@ -1020,16 +1024,8 @@ defmodule Backend.Documents do
   defp vendor_contact_first_name(%{name: name}) when is_binary(name) and name != "", do: name
   defp vendor_contact_first_name(_), do: "supplier"
 
-  # CSV cells that contain the separator, quotes, or newlines must be
-  # quoted with double-quotes per RFC 4180; embedded quotes get
-  # doubled.
-  defp csv_escape(value, sep) do
-    s = to_string(value)
-
-    if String.contains?(s, [sep, "\"", "\n", "\r"]) do
-      "\"" <> String.replace(s, "\"", "\"\"") <> "\""
-    else
-      s
-    end
-  end
+  # Delegate to the shared escape helper. Kept private here so
+  # existing callers don't need to change; the module lives in
+  # `Backend.CSV.Escape` so it can be tested standalone.
+  defp csv_escape(value, sep), do: Backend.CSV.Escape.escape(value, sep)
 end

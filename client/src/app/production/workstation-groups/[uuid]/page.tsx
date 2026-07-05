@@ -1,12 +1,12 @@
 import { notFound, redirect } from "next/navigation";
-import Link from "next/link";
-import { ChevronLeft, Factory } from "lucide-react";
+import { Factory } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
+import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getWorkstationGroup } from "@/lib/production/server";
 import { listCommentsForEntity } from "@/lib/comments/server";
@@ -53,33 +53,28 @@ export default async function WorkstationGroupDetailPage({ params }: Props) {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/production/workstation-groups">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to workstation groups
-              </Link>
-            </Button>
-          </div>
-
-          <header className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                <Factory className="size-6 text-brand" />
-                {group.name}
-              </h1>
-              {!group.is_active && <Badge tone="muted">Archived</Badge>}
-            </div>
-            <p className="font-mono text-xs text-muted-foreground">
-              {group.code ?? `#${group.id}`}
-            </p>
-          </header>
+        <PageCursorAnchor
+          pageId={`/production/workstation-groups/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+          suppressBanner
+        >
+          <PageHeader
+            size="detail"
+            icon={Factory}
+            title={
+              <>
+                <span>{group.name}</span>
+                {!group.is_active && <Badge tone="muted">Archived</Badge>}
+              </>
+            }
+            description={
+              <span className="font-mono text-xs">
+                {group.code ?? `#${group.id}`}
+              </span>
+            }
+            backHref="/production/workstation-groups"
+            backLabel="Back to workstation groups"
+          />
 
           <EditModeToggle canEdit={canEdit}>
             <WorkstationGroupForm
@@ -116,7 +111,7 @@ export default async function WorkstationGroupDetailPage({ params }: Props) {
             entityId={group.id}
             canRestore={false}
           />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

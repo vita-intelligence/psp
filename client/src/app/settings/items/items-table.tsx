@@ -4,11 +4,13 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { Item, ItemType } from "@/lib/types";
@@ -36,16 +38,21 @@ const TYPE_TONE: Record<
   packaging: "indigo",
 };
 
+const TYPE_OPTIONS = (Object.keys(TYPE_LABEL) as ItemType[]).map((t) => ({
+  label: TYPE_LABEL[t],
+  value: t,
+}));
+
+const COMPLIANCE_OPTIONS = [
+  { label: "Draft", value: "draft" },
+  { label: "Ready for use", value: "ready_for_use" },
+];
+
 const FILTERS: FilterDef[] = [
   {
     field: "item_type",
     label: "Type",
-    options: [
-      { label: "Raw material", value: "raw_material" },
-      { label: "Semi-finished", value: "semi_finished" },
-      { label: "Finished product", value: "finished_product" },
-      { label: "Packaging", value: "packaging" },
-    ],
+    options: TYPE_OPTIONS,
   },
   {
     field: "is_active",
@@ -62,6 +69,7 @@ async function fetchItemsPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<Item>> {
   const qs = new URLSearchParams();
@@ -76,6 +84,7 @@ async function fetchItemsPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(k === "item_type" ? "item_type" : `filter[${k}]`, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/items?${qs.toString()}`, {
     cache: "no-store",
@@ -104,6 +113,11 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "MA00001…",
+        group: "Identity",
+        description: "Auto-numbered item code (per item_type numbering sequence).",
         cell: (i) =>
           i.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -120,6 +134,11 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[14rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Item name…",
+        group: "Identity",
+        description: "Display name of the item.",
         cell: (i) => (
           <div className="flex flex-col">
             <span className="truncate font-medium">{i.name}</span>
@@ -137,6 +156,11 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         sortField: "item_type",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-36",
+        filterField: "item_type",
+        filterKind: "select",
+        filterOptions: TYPE_OPTIONS,
+        group: "Identity",
+        description: "Discriminator — drives per-type compliance subtables.",
         cell: (i) => (
           <Badge tone={TYPE_TONE[i.item_type]}>{TYPE_LABEL[i.item_type]}</Badge>
         ),
@@ -147,6 +171,11 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         sortField: "external_sku",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-36",
+        filterField: "external_sku",
+        filterKind: "text",
+        filterPlaceholder: "External SKU…",
+        group: "Identity",
+        description: "External / third-party SKU for interchange.",
         cell: (i) =>
           i.external_sku ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -160,6 +189,8 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         id: "stock_uom",
         header: "Stock UoM",
         widthClassName: "w-24",
+        group: "Amounts",
+        description: "Unit of measurement stock is tracked in.",
         cell: (i) =>
           i.stock_uom ? (
             <span className="font-mono text-xs">{i.stock_uom.symbol}</span>
@@ -173,11 +204,195 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         sortField: "is_active",
         sortLabels: { asc: "Inactive first", desc: "Active first" },
         widthClassName: "w-28",
+        filterField: "is_active",
+        filterKind: "boolean",
+        group: "Status",
+        description: "Whether this item is currently active.",
         cell: (i) => (
           <Badge tone={i.is_active ? "emerald" : "muted"}>
             {i.is_active ? "Active" : "Inactive"}
           </Badge>
         ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "barcode",
+        header: "Barcode",
+        widthClassName: "w-36",
+        defaultHidden: true,
+        filterField: "barcode",
+        filterKind: "text",
+        filterPlaceholder: "GTIN / EAN…",
+        group: "Identity",
+        description: "Scannable barcode (GTIN-8 / 13 / 14).",
+        cell: (i) =>
+          i.barcode ? (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {i.barcode}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "description",
+        header: "Description",
+        widthClassName: "min-w-[16rem]",
+        defaultHidden: true,
+        filterField: "description",
+        filterKind: "text",
+        filterPlaceholder: "Description…",
+        group: "Meta",
+        description: "Free-text item description.",
+        cell: (i) =>
+          i.description ? (
+            <span className="line-clamp-1 text-xs text-muted-foreground">
+              {i.description}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "product_family",
+        header: "Product family",
+        widthClassName: "w-40",
+        defaultHidden: true,
+        group: "Identity",
+        description: "Marketing grouping this item belongs to (if any).",
+        cell: (i) =>
+          i.product_family ? (
+            <span className="truncate text-xs">
+              {i.product_family.name}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "compliance_status",
+        header: "Compliance",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        sortField: "compliance_status",
+        filterField: "compliance_status",
+        filterKind: "select",
+        filterOptions: COMPLIANCE_OPTIONS,
+        group: "Compliance",
+        description: "Draft items refuse to be assembled or PO'd — must promote first.",
+        cell: (i) => (
+          <Badge tone={i.compliance_status === "ready_for_use" ? "emerald" : "amber"}>
+            {i.compliance_status === "ready_for_use" ? "Ready" : "Draft"}
+          </Badge>
+        ),
+      },
+      {
+        id: "compliance_readied_at",
+        header: "Readied at",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "When the item was last promoted to ready-for-use.",
+        cell: (i) =>
+          i.compliance_readied_at ? (
+            <span className="text-xs text-muted-foreground">
+              {new Date(i.compliance_readied_at).toISOString().slice(0, 10)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "compliance_readied_by",
+        header: "Readied by",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Who last promoted this item to ready-for-use.",
+        cell: (i) =>
+          i.compliance_readied_by ? (
+            <span className="truncate text-xs">
+              {i.compliance_readied_by.name}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "storage_tags",
+        header: "Storage tags",
+        widthClassName: "min-w-[10rem]",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Storage-cell tag requirements enforced by the receive form.",
+        cell: (i) =>
+          i.storage_tags && i.storage_tags.length > 0 ? (
+            <span className="flex flex-wrap gap-1">
+              {i.storage_tags.map((t) => (
+                <Badge key={t} tone="muted">
+                  {t}
+                </Badge>
+              ))}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      {
+        id: "images_count",
+        header: "Images",
+        widthClassName: "w-20",
+        align: "right",
+        defaultHidden: true,
+        group: "Meta",
+        description: "How many images are attached to this item.",
+        cell: (i) => (
+          <span className="font-mono text-xs">{i.images?.length ?? 0}</span>
+        ),
+      },
+      {
+        id: "certificates_count",
+        header: "Certificates",
+        widthClassName: "w-24",
+        align: "right",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "How many certificates are attached to this item.",
+        cell: (i) => (
+          <span className="font-mono text-xs">
+            {i.certificate_attachments?.length ?? 0}
+          </span>
+        ),
+      },
+      {
+        id: "allergens_count",
+        header: "Allergens",
+        widthClassName: "w-24",
+        align: "right",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "How many declared allergens are attached to this item.",
+        cell: (i) => (
+          <span className="font-mono text-xs">
+            {i.allergens?.length ?? 0}
+          </span>
+        ),
+      },
+      {
+        id: "revert_reason",
+        header: "Revert reason",
+        widthClassName: "min-w-[14rem]",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Why the item was reverted from ready-for-use to draft (if applicable).",
+        cell: (i) =>
+          i.compliance_revert_reason ? (
+            <span className="line-clamp-1 text-xs text-muted-foreground">
+              {i.compliance_revert_reason}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
       },
       ...auditColumns<Item>(),
     ],

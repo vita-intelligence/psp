@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type { CompanyDefaults, LoyaltyProgram } from "@/lib/types";
 import {
   setProgramActiveAction,
@@ -56,15 +57,24 @@ interface Props {
   program: LoyaltyProgram;
   prefs: CompanyDefaults;
   canManage: boolean;
+  pageId?: string;
 }
 
-export function LoyaltyLifecycleCard({ program, prefs, canManage }: Props) {
+export function LoyaltyLifecycleCard({
+  program,
+  prefs,
+  canManage,
+  pageId,
+}: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [deactivating, setDeactivating] = useState(false);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<ErrorResult | null>(null);
 
   function onActivate() {
+    if (locked) return;
     setError(null);
     startTransition(async () => {
       const res = await setProgramActiveAction(program.uuid, true);
@@ -79,6 +89,7 @@ export function LoyaltyLifecycleCard({ program, prefs, canManage }: Props) {
   }
 
   function onSetDefault() {
+    if (locked) return;
     setError(null);
     startTransition(async () => {
       const res = await setProgramDefaultAction(program.uuid);
@@ -171,8 +182,11 @@ export function LoyaltyLifecycleCard({ program, prefs, canManage }: Props) {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setDeactivating(true)}
-                disabled={pending}
+                onClick={() => {
+                  if (locked) return;
+                  setDeactivating(true);
+                }}
+                disabled={pending || locked}
               >
                 <PowerOff className="mr-1.5 size-4" />
                 Deactivate
@@ -183,7 +197,7 @@ export function LoyaltyLifecycleCard({ program, prefs, canManage }: Props) {
                 variant="outline"
                 size="sm"
                 onClick={onActivate}
-                disabled={pending}
+                disabled={pending || locked}
               >
                 {pending ? (
                   <Loader2 className="mr-1.5 size-4 animate-spin" />
@@ -199,7 +213,7 @@ export function LoyaltyLifecycleCard({ program, prefs, canManage }: Props) {
                 type="button"
                 size="sm"
                 onClick={onSetDefault}
-                disabled={pending}
+                disabled={pending || locked}
               >
                 <Star className="mr-1.5 size-4" />
                 Set as default

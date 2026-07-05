@@ -18,6 +18,7 @@ import {
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ProductionSubnav } from "./production-subnav";
 
@@ -142,17 +143,11 @@ export default async function ProductionHomePage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-6xl space-y-8">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <Factory className="size-7 text-brand sm:size-8" />
-              Production
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Bills of Materials, manufacturing orders, the schedule,
-              and the workstations they run on. Slices ship one at a
-              time — BOM first.
-            </p>
-          </header>
+          <PageHeader
+            icon={Factory}
+            title="Production"
+            description="Bills of Materials, manufacturing orders, the schedule, and the workstations they run on. Slices ship one at a time — BOM first."
+          />
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {SECTIONS.map((s) => {

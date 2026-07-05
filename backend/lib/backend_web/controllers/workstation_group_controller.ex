@@ -29,6 +29,7 @@ defmodule BackendWeb.WorkstationGroupController do
         limit: params["limit"],
         sort: parse_sort(params["sort"]),
         search: params["search"],
+        column_filter: params["column_filter"],
         kind: params["kind"],
         is_active: params["is_active"]
       ]

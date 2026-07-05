@@ -3,6 +3,7 @@ import { Microscope } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getOutputQcQueue } from "@/lib/production-output-qc/server";
 import { getCompanyDefaults } from "@/lib/company/server";
@@ -38,28 +39,28 @@ export default async function OutputQcPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="space-y-1.5">
-            <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              <Microscope className="size-7 text-brand sm:size-8" />
-              Output QC
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-              Pass or fail manufactured output lots before they
-              transfer to the warehouse. The lot stays{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
-                received
-              </code>{" "}
-              until you sign off — passing flips it to{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
-                available
-              </code>
-              , failing flips it to{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
-                qc_failed
-              </code>{" "}
-              for investigation.
-            </p>
-          </header>
+          <PageHeader
+            icon={Microscope}
+            title="Output QC"
+            description={
+              <>
+                Pass or fail manufactured output lots before they
+                transfer to the warehouse. The lot stays{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
+                  received
+                </code>{" "}
+                until you sign off — passing flips it to{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
+                  available
+                </code>
+                , failing flips it to{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
+                  qc_failed
+                </code>{" "}
+                for investigation.
+              </>
+            }
+          />
 
           <OutputQcWorkspace
             initialQueue={queue?.items ?? []}

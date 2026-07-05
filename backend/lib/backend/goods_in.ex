@@ -42,7 +42,8 @@ defmodule Backend.GoodsIn do
   @allowed_file_mimes ~w(application/pdf image/jpeg image/png image/webp image/heic)
   @max_file_bytes 20 * 1024 * 1024
 
-  @inspection_sortable ~w(id delivery_date status inserted_at)a
+  @inspection_sortable ~w(id delivery_date status inserted_at updated_at quality_decision
+                          goods_in_operator_signed_at quality_approver_signed_at)a
   @inspection_search ~w(transport_company vehicle_registration seal_number)a
   @inspection_default_sort {:delivery_date, :desc}
 
@@ -111,6 +112,7 @@ defmodule Backend.GoodsIn do
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
       |> maybe_actor_filter(opts[:actor_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @inspection_sortable)
       |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
       |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
 
@@ -828,7 +830,8 @@ defmodule Backend.GoodsIn do
       true ->
         with :ok <- validate_mime(upload.content_type),
              {:ok, bytes} <- read_upload(upload),
-             :ok <- validate_size(bytes) do
+             :ok <- validate_size(bytes),
+             :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
           attrs = %{
             "company_id" => inspection.company_id,
             "goods_in_inspection_id" => inspection.id,
@@ -946,6 +949,7 @@ defmodule Backend.GoodsIn do
 
   defp validate_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}

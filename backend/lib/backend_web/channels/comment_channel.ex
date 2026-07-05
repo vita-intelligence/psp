@@ -66,8 +66,8 @@ defmodule BackendWeb.CommentChannel do
     {:ok, _ref} =
       Presence.track(socket, "#{user.id}", %{
         name: user.name,
-        email: user.email,
         avatar: user.avatar,
+        user_id: user.id,
         can_comment: socket.assigns.can_comment,
         joined_at: System.system_time(:second)
       })

@@ -4,11 +4,13 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { Badge } from "@/components/ui/badge-mini";
 import { auditColumns } from "@/components/audit/audit-table-columns";
@@ -36,6 +38,7 @@ async function fetchUsersPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<UserListEntry>> {
   const qs = new URLSearchParams();
@@ -47,6 +50,7 @@ async function fetchUsersPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(`filter[${k}]`, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/users?${qs.toString()}`, {
     cache: "no-store",
@@ -75,6 +79,11 @@ export function UsersTable({ initialPage }: UsersTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-24",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "U00001…",
+        group: "Identity",
+        description: "Auto-numbered user code (U00001, …).",
         cell: (u) =>
           u.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -91,6 +100,11 @@ export function UsersTable({ initialPage }: UsersTableProps) {
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Name…",
+        group: "Identity",
+        description: "Full name shown across the app.",
         cell: (u) => (
           <div className="flex items-center gap-2.5">
             <div className="relative shrink-0">
@@ -121,6 +135,8 @@ export function UsersTable({ initialPage }: UsersTableProps) {
         id: "admin",
         header: "Admin",
         widthClassName: "w-24",
+        group: "Compliance",
+        description: "Whether this user has the platform-admin short-circuit.",
         cell: (u) =>
           u.is_admin ? (
             <Badge tone="brand">Admin</Badge>
@@ -134,9 +150,85 @@ export function UsersTable({ initialPage }: UsersTableProps) {
         sortField: "is_active",
         sortLabels: { asc: "Inactive first", desc: "Active first" },
         widthClassName: "w-28",
+        filterField: "is_active",
+        filterKind: "boolean",
+        group: "Status",
+        description: "Whether the account is enabled.",
         cell: (u) => (
           <Badge tone={u.is_active ? "emerald" : "muted"}>
             {u.is_active ? "Active" : "Inactive"}
+          </Badge>
+        ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "email",
+        header: "Email",
+        widthClassName: "min-w-[14rem]",
+        defaultHidden: true,
+        sortField: "email",
+        sortLabels: { asc: "A → Z", desc: "Z → A" },
+        filterField: "email",
+        filterKind: "text",
+        filterPlaceholder: "email@vitamanufacture.co.uk",
+        group: "Identity",
+        description: "Login email.",
+        cell: (u) => (
+          <span className="truncate text-xs text-muted-foreground">
+            {u.email}
+          </span>
+        ),
+      },
+      {
+        id: "is_online",
+        header: "Online",
+        widthClassName: "w-20",
+        defaultHidden: true,
+        group: "Meta",
+        description: "Live presence flag (from the presence tracker).",
+        cell: (u) => (
+          <Badge tone={u.is_online ? "emerald" : "muted"}>
+            {u.is_online ? "Online" : "Offline"}
+          </Badge>
+        ),
+      },
+      {
+        id: "is_admin",
+        header: "Admin",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Platform-admin short-circuits every permission check.",
+        cell: (u) => (
+          <Badge tone={u.is_admin ? "brand" : "muted"}>
+            {u.is_admin ? "Admin" : "Standard"}
+          </Badge>
+        ),
+      },
+      {
+        id: "permissions_count",
+        header: "Permissions",
+        widthClassName: "w-28",
+        align: "right",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "How many direct-grant permission codes this user holds.",
+        cell: (u) => (
+          <span className="font-mono text-xs">
+            {u.permissions?.length ?? 0}
+          </span>
+        ),
+      },
+      {
+        id: "confirmed_at",
+        header: "Confirmed",
+        widthClassName: "w-32",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "Whether the account has confirmed its email.",
+        cell: (u) => (
+          <Badge tone={u.confirmed_at ? "emerald" : "amber"}>
+            {u.confirmed_at ? "Yes" : "Pending"}
           </Badge>
         ),
       },

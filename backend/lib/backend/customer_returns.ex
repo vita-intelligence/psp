@@ -34,7 +34,9 @@ defmodule Backend.CustomerReturns do
   @rma_audit_fields ~w(status customer_id customer_invoice_id return_date
                        reason_summary notes received_at resolved_at
                        cancelled_at cancellation_reason rejection_reason)a
-  @rma_sortable ~w(id status return_date inserted_at)a
+  @rma_sortable ~w(id status customer_id customer_invoice_id
+                   return_date received_at resolved_at cancelled_at
+                   inserted_at updated_at)a
   @rma_search ~w(reason_summary notes)a
   @rma_default_sort {:return_date, :desc}
 
@@ -49,6 +51,7 @@ defmodule Backend.CustomerReturns do
       |> ListQueries.apply_search(opts[:search], @rma_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @rma_sortable)
       |> ListQueries.apply_sort(sort, @rma_sortable, @rma_default_sort)
       |> preload([
         :customer,

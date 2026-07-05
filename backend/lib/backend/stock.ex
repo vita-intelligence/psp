@@ -19,7 +19,11 @@ defmodule Backend.Stock do
   # Sortable on the list endpoint. `code` maps to `id` since the
   # numbering format guarantees code-order == id-order for a given
   # prefix + padding (same trick as Items.list_page).
-  @sortable_fields ~w(id status qty_received unit_cost supplier_batch_no expiry_at received_at available_from inserted_at)a
+  @sortable_fields ~w(id status qty_received unit_cost currency source_kind
+                      supplier_batch_no country_of_origin
+                      manufactured_at expiry_at received_at available_from
+                      allergen_status coa_status quality_status overall_risk
+                      item_id inserted_at updated_at)a
   @search_fields ~w(supplier_batch_no source_ref notes country_of_origin revision)a
   @default_sort {:id, :desc}
 
@@ -50,6 +54,7 @@ defmodule Backend.Stock do
       |> maybe_cell_filter(opts[:cell_id])
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> apply_lot_search(company_id, opts[:search])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([
         :item,

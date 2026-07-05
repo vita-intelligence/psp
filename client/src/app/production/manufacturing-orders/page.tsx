@@ -5,8 +5,10 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listManufacturingOrdersPage } from "@/lib/production/server";
+import { buildLocationFilters } from "@/lib/data-table/location-filters";
 import { ProductionSubnav } from "../production-subnav";
 import { ManufacturingOrdersLedger } from "./mos-ledger";
 
@@ -18,7 +20,10 @@ export default async function ManufacturingOrdersPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = await listManufacturingOrdersPage();
+  const [initialPage, locationFilters] = await Promise.all([
+    listManufacturingOrdersPage(),
+    buildLocationFilters({ warehouse: true, productionSite: true }),
+  ]);
   const canCreate = hasPermission(user, "production.mo_create");
 
   return (
@@ -29,30 +34,25 @@ export default async function ManufacturingOrdersPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1.5">
-              <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-                <Factory className="size-7 text-brand sm:size-8" />
-                Manufacturing orders
-              </h1>
-              <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-                Planned production runs. Each MO ties a quantity of a
-                finished item to a BOM + production site, then moves
-                through draft → approved → in progress → completed.
-              </p>
-            </div>
-            {canCreate && (
-              <Button asChild size="sm">
-                <Link href="/production/manufacturing-orders/new">
-                  <Plus className="mr-1.5 size-4" />
-                  Create MO
-                </Link>
-              </Button>
-            )}
-          </header>
+          <PageHeader
+            icon={Factory}
+            title="Manufacturing orders"
+            description="Planned production runs. Each MO ties a quantity of a finished item to a BOM + production site, then moves through draft → approved → in progress → completed."
+            actions={
+              canCreate && (
+                <Button asChild size="sm">
+                  <Link href="/production/manufacturing-orders/new">
+                    <Plus className="mr-1.5 size-4" />
+                    Create MO
+                  </Link>
+                </Button>
+              )
+            }
+          />
 
           <ManufacturingOrdersLedger
             initialPage={initialPage ?? { items: [], next_cursor: null }}
+            locationFilters={locationFilters}
           />
         </div>
       </main>

@@ -29,8 +29,10 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, Loader2, RefreshCw } from "lucide-react";
 import { Toolbar } from "./toolbar";
 import { DraggableHeader } from "./draggable-header";
+import { FilterRow } from "./filter-row";
 import { useTableState } from "./use-table-state";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   DataTableProps,
   FilterValue,
@@ -82,8 +84,11 @@ export function DataTable<T>({
   const {
     columnOrder: persistedOrder,
     hiddenColumns,
+    columnFilters,
     setColumnOrder,
     toggleColumn,
+    setColumnFilter,
+    clearAllColumnFilters,
   } = useTableState(tableId, defaultHiddenIds);
 
   const [sort, setSort] = useState<SortSpec | null>(defaultSort ?? null);
@@ -121,6 +126,7 @@ export function DataTable<T>({
     sort?.field ?? "",
     sort?.direction ?? "",
     JSON.stringify(appliedFilters),
+    JSON.stringify(columnFilters),
     pageSize,
   ];
 
@@ -133,6 +139,7 @@ export function DataTable<T>({
   const isPristine =
     appliedSearch === "" &&
     Object.keys(appliedFilters).length === 0 &&
+    Object.keys(columnFilters).length === 0 &&
     (!sort ||
       (sort.field === (defaultSort?.field ?? null) &&
         sort.direction === (defaultSort?.direction ?? "asc")));
@@ -146,6 +153,7 @@ export function DataTable<T>({
         limit: pageSize,
         sort,
         filters: appliedFilters,
+        columnFilters,
         search: appliedSearch,
       }),
     getNextPageParam: (last) => last.next_cursor,
@@ -189,7 +197,9 @@ export function DataTable<T>({
   const hasNoData =
     !isInitialLoading && rows.length === 0 && !query.isError;
   const isFiltered =
-    appliedSearch.length > 0 || Object.keys(appliedFilters).length > 0;
+    appliedSearch.length > 0 ||
+    Object.keys(appliedFilters).length > 0 ||
+    Object.keys(columnFilters).length > 0;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -226,6 +236,18 @@ export function DataTable<T>({
     });
   }
 
+  function onHeaderSortPick(
+    field: string | undefined,
+    direction: "asc" | "desc" | null,
+  ) {
+    if (!field) return;
+    if (direction === null) {
+      setSort(null);
+      return;
+    }
+    setSort({ field, direction });
+  }
+
   return (
     <div className="space-y-3">
       <Toolbar
@@ -238,6 +260,9 @@ export function DataTable<T>({
         columns={columns}
         hiddenColumns={hiddenColumns}
         onToggleColumn={toggleColumn}
+        columnFilters={columnFilters}
+        onClearColumnFilter={(field) => setColumnFilter(field, null)}
+        onClearAllColumnFilters={clearAllColumnFilters}
         sort={sort}
         onSort={setSort}
         actions={toolbarActions}
@@ -305,11 +330,26 @@ export function DataTable<T>({
                       key={col.id}
                       column={col}
                       sort={sort}
-                      onSort={() => onSort(col.sortField)}
+                      onSort={(direction) =>
+                        onHeaderSortPick(col.sortField, direction)
+                      }
+                      onHide={() => toggleColumn(col.id, true)}
                     />
                   ))}
                 </SortableContext>
               </TableRow>
+              {/* Persistent filter row — one compact input per column,
+                  always visible so the operator sees every available
+                  filter without opening a dropdown. Matches the
+                  MRPEasy / Airtable convention. Only renders when at
+                  least one column has a filterKind declared. */}
+              {orderedColumns.some((c) => c.filterKind && c.filterField) && (
+                <FilterRow
+                  columns={orderedColumns}
+                  values={columnFilters}
+                  onChange={(field, value) => setColumnFilter(field, value)}
+                />
+              )}
             </TableHeader>
             <TableBody>
               {isInitialLoading ? (
@@ -332,6 +372,7 @@ export function DataTable<T>({
                 rows.map((row) => (
                   <TableRow
                     key={rowKey(row)}
+                    data-collab-id={`row:${tableId}:${rowKey(row)}`}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     className={cn(
                       onRowClick && "cursor-pointer",
@@ -375,6 +416,7 @@ export function DataTable<T>({
               <button
                 key={rowKey(row)}
                 type="button"
+                data-collab-id={`row:${tableId}:${rowKey(row)}`}
                 onClick={() => onRowClick?.(row)}
                 className={cn(
                   "block w-full rounded-md border border-border/60 bg-background p-3 text-left",

@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ActiveSessionsBanner } from "@/components/realtime/active-sessions";
 import { listCustomerOrdersPage } from "@/lib/customer-orders/server";
@@ -34,28 +35,21 @@ export default async function CustomerOrdersPage() {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-7xl space-y-6">
-          <header className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1.5">
-              <h1 className="flex items-center gap-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-                <ShoppingBag className="size-7 text-brand sm:size-8" />
-                Customer orders
-              </h1>
-              <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
-                Sell-side order book. Two-tier ESIGN approval. Gates at
-                submit time: customer must be effectively approved, items
-                must be sellable to that customer, trade-credit-limit
-                not breached.
-              </p>
-            </div>
-            {canCreate && (
-              <Button asChild size="sm" className="shrink-0">
-                <Link href="/sales/orders/new">
-                  <Plus className="mr-1.5 size-4" />
-                  New order
-                </Link>
-              </Button>
-            )}
-          </header>
+          <PageHeader
+            icon={ShoppingBag}
+            title="Customer orders"
+            description="Sell-side order book. Two-tier ESIGN approval. Gates at submit time: customer must be effectively approved, items must be sellable to that customer, trade-credit-limit not breached."
+            actions={
+              canCreate && (
+                <Button asChild size="sm" className="shrink-0">
+                  <Link href="/sales/orders/new">
+                    <Plus className="mr-1.5 size-4" />
+                    New order
+                  </Link>
+                </Button>
+              )
+            }
+          />
 
           <ActiveSessionsBanner
             currentUserId={user.id}

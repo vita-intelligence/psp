@@ -328,7 +328,8 @@ defmodule BackendWeb.CustomerReturnController do
     with %{} = rma <- CustomerReturns.get_for_company(actor.company_id, uuid),
          :ok <- validate_evidence_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_evidence_size(bytes) do
+         :ok <- validate_evidence_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       key = build_storage_key(rma, kind, upload)
 
       case Storage.put(key, bytes, content_type: upload.content_type) do
@@ -371,6 +372,7 @@ defmodule BackendWeb.CustomerReturnController do
     unprocessable(conn, "missing_file", "Send the file under `file` (multipart).")
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"customer_return_id" => r_uuid, "id" => f_uuid}) do
     actor = conn.assigns.current_user
 
@@ -382,7 +384,7 @@ defmodule BackendWeb.CustomerReturnController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s(inline; filename="#{file.filename}")
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else
@@ -410,6 +412,7 @@ defmodule BackendWeb.CustomerReturnController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       status: params["status"],
       customer_id: params["customer_id"]
     ]
@@ -442,6 +445,7 @@ defmodule BackendWeb.CustomerReturnController do
 
   defp validate_evidence_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}

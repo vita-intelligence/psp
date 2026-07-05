@@ -1,11 +1,10 @@
 import { notFound, redirect } from "next/navigation";
-import Link from "next/link";
-import { ChevronLeft, ListChecks } from "lucide-react";
+import { ListChecks } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge-mini";
 import { getBOM } from "@/lib/production/server";
 import { listCommentsForEntity } from "@/lib/comments/server";
@@ -51,44 +50,35 @@ export default async function BOMDetailPage({ params }: Props) {
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/production/boms">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to BOMs
-              </Link>
-            </Button>
-          </div>
-
-          <header className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                <ListChecks className="size-6 text-brand" />
-                {bom.name}
-              </h1>
-              {bom.is_primary && <Badge tone="emerald">Primary</Badge>}
-              {!bom.is_active && <Badge tone="muted">Archived</Badge>}
-            </div>
-            <p className="font-mono text-xs text-muted-foreground">
-              {bom.code ?? `#${bom.id}`}
-              {bom.item && (
-                <>
-                  {" "}· Output:{" "}
-                  <span className="font-medium text-foreground">
-                    {bom.item.name}
-                  </span>
-                  {bom.item.code && (
-                    <span className="ml-1.5">({bom.item.code})</span>
-                  )}
-                </>
-              )}
-            </p>
-          </header>
+          <PageHeader
+            size="detail"
+            icon={ListChecks}
+            title={
+              <>
+                <span>{bom.name}</span>
+                {bom.is_primary && <Badge tone="emerald">Primary</Badge>}
+                {!bom.is_active && <Badge tone="muted">Archived</Badge>}
+              </>
+            }
+            description={
+              <span className="font-mono text-xs">
+                {bom.code ?? `#${bom.id}`}
+                {bom.item && (
+                  <>
+                    {" "}· Output:{" "}
+                    <span className="font-medium text-foreground">
+                      {bom.item.name}
+                    </span>
+                    {bom.item.code && (
+                      <span className="ml-1.5">({bom.item.code})</span>
+                    )}
+                  </>
+                )}
+              </span>
+            }
+            backHref="/production/boms"
+            backLabel="Back to BOMs"
+          />
 
           <BOMDetailShell
             bom={bom}

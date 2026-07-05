@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type {
   Vendor,
   VendorAuditKind,
@@ -56,6 +57,7 @@ import {
 interface Props {
   vendor: Vendor;
   canEdit: boolean;
+  pageId?: string;
 }
 
 type ArtifactKey = "saq" | "risk" | "audit" | "coa";
@@ -75,8 +77,11 @@ type ArtifactKey = "saq" | "risk" | "audit" | "coa";
  * server-side so the approve transition can enforce segregation of
  * duties (different signer from whoever collected the evidence).
  */
-export function VendorQualificationCard({ vendor, canEdit }: Props) {
+export function VendorQualificationCard({ vendor, canEdit, pageId }: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
+  const effectiveCanEdit = canEdit && !locked;
   const [openArtifact, setOpenArtifact] = useState<ArtifactKey | null>(null);
 
   const q = vendor.qualification;
@@ -145,7 +150,7 @@ export function VendorQualificationCard({ vendor, canEdit }: Props) {
           subtitle="MA-SUP-001 or equivalent"
           collectedAt={vendor.saq_received_at}
           file={vendor.saq_file}
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
           onEdit={() => setOpenArtifact("saq")}
         />
         <ArtifactRow
@@ -158,7 +163,7 @@ export function VendorQualificationCard({ vendor, canEdit }: Props) {
           }
           collectedAt={vendor.risk_assessment_completed_at}
           file={null}
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
           onEdit={() => setOpenArtifact("risk")}
         />
         <ArtifactRow
@@ -175,7 +180,7 @@ export function VendorQualificationCard({ vendor, canEdit }: Props) {
           }
           collectedAt={vendor.audit_completed_at}
           file={vendor.audit_file}
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
           onEdit={() => setOpenArtifact("audit")}
         />
         <ArtifactRow
@@ -184,7 +189,7 @@ export function VendorQualificationCard({ vendor, canEdit }: Props) {
           subtitle="Required for raw materials"
           collectedAt={vendor.coa_received_at}
           file={vendor.coa_file}
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
           onEdit={() => setOpenArtifact("coa")}
         />
       </div>

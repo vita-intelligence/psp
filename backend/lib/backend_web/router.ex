@@ -3,10 +3,12 @@ defmodule BackendWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug BackendWeb.Plugs.SecureHeaders
   end
 
   pipeline :api_authed do
     plug :accepts, ["json"]
+    plug BackendWeb.Plugs.SecureHeaders
     plug BackendWeb.Plugs.RequireAuth
   end
 
@@ -113,6 +115,11 @@ defmodule BackendWeb.Router do
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label
+    # Entity-agnostic comment-file streamer. Public URLs stamped into
+    # CommentFile payloads point here; the controller re-derives the
+    # RBAC gate from the parent comment's entity_type at fetch time.
+    get "/comment-files/:file_uuid/serve", CommentsController, :serve_file_bare
+
     get "/team", UserController, :team
     get "/users", UserController, :index
     get "/users/:id", UserController, :show
@@ -1121,6 +1128,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/customers/:entity_uuid/comments", BackendWeb do
@@ -1130,6 +1145,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/pricelists/:entity_uuid/comments", BackendWeb do
@@ -1139,6 +1162,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/customer-orders/:entity_uuid/comments", BackendWeb do
@@ -1148,6 +1179,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/customer-invoices/:entity_uuid/comments", BackendWeb do
@@ -1157,6 +1196,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/customer-returns/:entity_uuid/comments", BackendWeb do
@@ -1166,6 +1213,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/loyalty/programs/:entity_uuid/comments", BackendWeb do
@@ -1175,6 +1230,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/purchase-orders/:entity_uuid/comments", BackendWeb do
@@ -1184,6 +1247,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/stock/lots/:entity_uuid/comments", BackendWeb do
@@ -1193,6 +1264,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/production/boms/:entity_uuid/comments", BackendWeb do
@@ -1202,6 +1281,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/production/workstation-groups/:entity_uuid/comments", BackendWeb do
@@ -1211,6 +1298,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/production/workstations/:entity_uuid/comments", BackendWeb do
@@ -1220,6 +1315,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/production/routings/:entity_uuid/comments", BackendWeb do
@@ -1229,6 +1332,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/production/manufacturing-orders/:entity_uuid/comments",
@@ -1239,6 +1350,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/production/manufacturing-order-steps/:entity_uuid/comments",
@@ -1249,6 +1368,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   scope "/api/shipments/:entity_uuid/comments", BackendWeb do
@@ -1258,6 +1385,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   # PO-line comments — line uuid is globally unique. The controller
@@ -1270,6 +1405,14 @@ defmodule BackendWeb.Router do
     post "/", CommentsController, :create
     patch "/:comment_uuid", CommentsController, :update
     delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

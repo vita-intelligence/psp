@@ -26,7 +26,7 @@ defmodule Backend.RBAC do
 
   # `code` sorts are remapped to `:id` in normalise_sort/1 — the
   # display code is computed on the fly so id order = code order.
-  @sortable_fields ~w(id name inserted_at)a
+  @sortable_fields ~w(id name description is_system inserted_at updated_at)a
   @search_fields ~w(name description)a
   @default_sort {:name, :asc}
 
@@ -96,6 +96,7 @@ defmodule Backend.RBAC do
       Role
       |> where([r], r.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 

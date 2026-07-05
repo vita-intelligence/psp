@@ -17,7 +17,7 @@ defmodule Backend.Certificates do
   alias Backend.Repo
 
   @cert_audit_fields ~w(name certificate_type issuing_body default_validity_months description is_active)a
-  @cert_sortable ~w(id name certificate_type is_active inserted_at)a
+  @cert_sortable ~w(id name certificate_type issuing_body default_validity_months is_active inserted_at updated_at)a
   @cert_search ~w(name issuing_body description)a
   @cert_default_sort {:name, :asc}
 
@@ -32,6 +32,7 @@ defmodule Backend.Certificates do
       Certificate
       |> where([c], c.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @cert_search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @cert_sortable)
       |> ListQueries.apply_sort(sort, @cert_sortable, @cert_default_sort)
       |> preload([:created_by, :updated_by])
 

@@ -1,11 +1,11 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ChevronLeft, Tags } from "lucide-react";
+import { Tags } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -47,48 +47,35 @@ export default async function PricelistDetailPage({
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/sales/pricelists">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to pricelists
-              </Link>
-            </Button>
-          </div>
-
-          <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <Tags className="size-4 text-muted-foreground" />
-                  <span className="font-mono text-xs font-semibold text-muted-foreground">
-                    {pricelist.code ?? `#${pricelist.id}`}
-                  </span>
-                  <Badge tone={pricelist.is_active ? "emerald" : "muted"}>
-                    {pricelist.is_active ? "Active" : "Inactive"}
-                  </Badge>
-                  {pricelist.is_default && <Badge tone="amber">Default</Badge>}
-                </div>
-                <h1 className="truncate text-2xl font-semibold tracking-tight">
-                  {pricelist.name}
-                </h1>
-                <p className="text-xs text-muted-foreground">
-                  Currency:{" "}
-                  <span className="font-medium text-foreground">
-                    {pricelist.currency_code}
-                  </span>{" "}
-                  · {pricelist.items.length} item
-                  {pricelist.items.length === 1 ? "" : "s"}
-                </p>
-              </div>
-            </div>
-          </header>
+        <PageCursorAnchor
+          pageId={`/sales/pricelists/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
+          <RecordHero
+            icon={Tags}
+            code={pricelist.code ?? `#${pricelist.id}`}
+            chips={
+              <>
+                <Badge tone={pricelist.is_active ? "emerald" : "muted"}>
+                  {pricelist.is_active ? "Active" : "Inactive"}
+                </Badge>
+                {pricelist.is_default && <Badge tone="amber">Default</Badge>}
+              </>
+            }
+            title={pricelist.name}
+            subtitle={
+              <p className="text-xs text-muted-foreground">
+                Currency:{" "}
+                <span className="font-medium text-foreground">
+                  {pricelist.currency_code}
+                </span>{" "}
+                · {pricelist.items.length} item
+                {pricelist.items.length === 1 ? "" : "s"}
+              </p>
+            }
+            backHref="/sales/pricelists"
+            backLabel="Back to pricelists"
+          />
 
           <EditModeToggle canEdit={canEdit}>
             <PricelistForm
@@ -102,6 +89,7 @@ export default async function PricelistDetailPage({
             pricelist={pricelist}
             canEdit={canEdit}
             prefs={company}
+            pageId={`/sales/pricelists/${uuid}`}
           />
 
           <CommentThread
@@ -119,7 +107,7 @@ export default async function PricelistDetailPage({
             updated_by={pricelist.updated_by ?? null}
           />
           <AuditHistoryCard entityType="pricelist" entityId={pricelist.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

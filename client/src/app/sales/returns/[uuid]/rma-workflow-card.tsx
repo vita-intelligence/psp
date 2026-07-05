@@ -41,6 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { Badge } from "@/components/ui/badge-mini";
 import type {
   CompanyDefaults,
@@ -95,6 +96,7 @@ interface Props {
   canReceive: boolean;
   canResolve: boolean;
   prefs: CompanyDefaults;
+  pageId?: string;
 }
 
 export function RMAWorkflowCard({
@@ -103,7 +105,10 @@ export function RMAWorkflowCard({
   canReceive,
   canResolve,
   prefs,
+  pageId,
 }: Props) {
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [openAction, setOpenAction] = useState<ActionKey | null>(null);
   const Icon = STATUS_ICON[rma.status];
 
@@ -222,13 +227,29 @@ export function RMAWorkflowCard({
               </p>
               <div className="flex flex-wrap gap-2">
                 {showReceive && (
-                  <Button size="sm" onClick={() => setOpenAction("receive")}>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      if (locked) return;
+                      setOpenAction("receive");
+                    }}
+                    disabled={locked}
+                    title={locked ? "Only the head of the room can act here." : undefined}
+                  >
                     <PackageOpen className="mr-1.5 size-3.5" />
                     Mark received
                   </Button>
                 )}
                 {showAccept && (
-                  <Button size="sm" onClick={() => setOpenAction("accept")}>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      if (locked) return;
+                      setOpenAction("accept");
+                    }}
+                    disabled={locked}
+                    title={locked ? "Only the head of the room can act here." : undefined}
+                  >
                     <CheckCircle2 className="mr-1.5 size-3.5" />
                     Accept & inspect
                   </Button>
@@ -238,7 +259,12 @@ export function RMAWorkflowCard({
                     size="sm"
                     variant="outline"
                     className="text-destructive hover:bg-destructive/10"
-                    onClick={() => setOpenAction("reject")}
+                    onClick={() => {
+                      if (locked) return;
+                      setOpenAction("reject");
+                    }}
+                    disabled={locked}
+                    title={locked ? "Only the head of the room can act here." : undefined}
                   >
                     <ShieldX className="mr-1.5 size-3.5" />
                     Reject
@@ -248,7 +274,12 @@ export function RMAWorkflowCard({
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => setOpenAction("cancel")}
+                    onClick={() => {
+                      if (locked) return;
+                      setOpenAction("cancel");
+                    }}
+                    disabled={locked}
+                    title={locked ? "Only the head of the room can act here." : undefined}
                   >
                     <Ban className="mr-1.5 size-3.5" />
                     Cancel RMA

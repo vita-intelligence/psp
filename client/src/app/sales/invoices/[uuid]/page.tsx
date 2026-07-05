@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ChevronLeft, FileDown, Receipt } from "lucide-react";
+import { FileDown, Receipt } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -72,63 +74,54 @@ export default async function InvoiceDetailPage({
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
-              <Link href="/sales/invoices">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to invoices
-              </Link>
-            </Button>
-          </div>
-
-          <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <Receipt className="size-4 text-muted-foreground" />
-                  <span className="font-mono text-xs font-semibold text-muted-foreground">
-                    {inv.code ?? `#${inv.id}`}
-                  </span>
-                  <Badge tone={STATUS_TONE[inv.status]}>
-                    {STATUS_LABEL[inv.status]}
-                  </Badge>
-                </div>
-                <h1 className="truncate text-2xl font-semibold tracking-tight">
-                  {inv.customer?.name ?? "—"}
-                </h1>
-                {inv.customer_order && (
-                  <p className="text-xs text-muted-foreground">
-                    From{" "}
-                    <Link
-                      href={`/sales/orders/${inv.customer_order.uuid}`}
-                      className="font-medium text-brand hover:underline"
-                    >
-                      {inv.customer_order.code ?? `CO #${inv.customer_order.id}`}
-                    </Link>
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button asChild size="sm" variant="outline">
-                  <a
-                    href={`/api/customer-invoices/${inv.uuid}/documents/pdf`}
-                    target="_blank"
-                    rel="noreferrer"
+        <PageCursorAnchor
+          pageId={`/sales/invoices/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
+          <RecordHero
+            icon={Receipt}
+            code={inv.code ?? `#${inv.id}`}
+            chips={
+              <Badge tone={STATUS_TONE[inv.status]}>
+                {STATUS_LABEL[inv.status]}
+              </Badge>
+            }
+            title={inv.customer?.name ?? "—"}
+            subtitle={
+              inv.customer_order ? (
+                <p className="text-xs text-muted-foreground">
+                  From{" "}
+                  <Link
+                    href={`/sales/orders/${inv.customer_order.uuid}`}
+                    className="font-medium text-brand hover:underline"
                   >
-                    <FileDown className="mr-1.5 size-3.5" />
-                    PDF
-                  </a>
-                </Button>
-              </div>
-            </div>
-          </header>
+                    {inv.customer_order.code ?? `CO #${inv.customer_order.id}`}
+                  </Link>
+                </p>
+              ) : undefined
+            }
+            actions={
+              <Button asChild size="sm" variant="outline">
+                <a
+                  href={`/api/customer-invoices/${inv.uuid}/documents/pdf`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <FileDown className="mr-1.5 size-3.5" />
+                  PDF
+                </a>
+              </Button>
+            }
+            backHref="/sales/invoices"
+            backLabel="Back to invoices"
+          />
 
           <InvoiceWorkflowCard
             invoice={inv}
             canEdit={canEdit}
             canSend={canSend}
             prefs={company}
+            pageId={`/sales/invoices/${uuid}`}
           />
 
           <EditModeToggle canEdit={canEdit && isDraft}>
@@ -148,6 +141,7 @@ export default async function InvoiceDetailPage({
             invoice={inv}
             canRecordPayment={canRecordPayment}
             prefs={company}
+            pageId={`/sales/invoices/${uuid}`}
           />
 
           <CommentThread
@@ -165,7 +159,7 @@ export default async function InvoiceDetailPage({
             updated_by={inv.updated_by ?? null}
           />
           <AuditHistoryCard entityType="customer_invoice" entityId={inv.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
@@ -39,6 +40,8 @@ import {
   Ban,
   Calendar,
   CheckCircle2,
+  ArrowDown,
+  ArrowUp,
   ChevronLeft,
   ClipboardList,
   Cog,
@@ -55,6 +58,7 @@ import {
   Receipt,
   ShieldCheck,
   ShoppingBag,
+  ShoppingCart,
   Smartphone,
   Split,
   Truck,
@@ -702,13 +706,22 @@ export function ProjectControlBoard({
           </div>
 
           {/* ===================== RIGHT — context lane ===================== */}
-          <div className="flex flex-col gap-6">
-            <CustomerCard
-              co={co}
-              prefs={prefs}
-              onClick={() => setCustomerModalOpen(true)}
-            />
-            <TimelineCard timeline={timeline} prefs={prefs} />
+          {/* The trick: the outer cell is `relative` and the actual content
+              floats inside as `absolute inset-0`. That way the Timeline can
+              use `flex-1 min-h-0` to fill remaining height WITHOUT its own
+              content pushing the grid row taller than the left lane's
+              natural height — the absolute layer doesn't feed back into
+              grid sizing. Net effect: the right lane matches the left
+              lane's height, no matter which one has more content. */}
+          <div className="relative min-h-[500px]">
+            <div className="absolute inset-0 flex flex-col gap-6">
+              <CustomerCard
+                co={co}
+                prefs={prefs}
+                onClick={() => setCustomerModalOpen(true)}
+              />
+              <TimelineCard timeline={timeline} prefs={prefs} />
+            </div>
           </div>
         </div>
 
@@ -2477,67 +2490,210 @@ function TimelineCard({
   timeline: OrderWizardTimelineEntry[];
   prefs: CompanyDefaults;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollHint, setScrollHint] = useState<"top" | "bottom" | null>(null);
+
+  // Auto-scroll to bottom on first render so the operator opens the
+  // card looking at the newest event. New events landing later on
+  // (via a wizard refresh) also snap the view to the latest, unless
+  // the user has scrolled up to browse older events.
+  const stuckToBottomRef = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stuckToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+    recomputeHint(el, setScrollHint);
+  }, [timeline.length]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    stuckToBottomRef.current = atBottom;
+    recomputeHint(el, setScrollHint);
+  };
+
+  const jumpTo = (where: "top" | "bottom") => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: where === "top" ? 0 : el.scrollHeight,
+      behavior: "smooth",
+    });
+  };
+
   return (
-    <Card className="flex grow flex-col border-border/60">
+    // Fills the right lane so the card's bottom lines up with the
+    // Lines & MO card on the left (right above the Discussion). The
+    // parent lane is an absolute-positioned overlay on a `relative`
+    // grid cell — flex-1 + min-h-0 means we take remaining height in
+    // that overlay and scroll internally.
+    <Card className="flex min-h-0 flex-1 flex-col border-border/60">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <ClipboardList className="size-4 text-muted-foreground" />
           Timeline
+          {timeline.length > 0 && (
+            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
+              {timeline.length}
+            </span>
+          )}
         </CardTitle>
       </CardHeader>
-      <CardContent className="grow overflow-y-auto">
-        {timeline.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No events yet.</p>
-        ) : (
-          <ol className="space-y-3">
-            {timeline.map((entry, idx) => {
-              const Icon = entry.scope === "mo" ? Factory : ShoppingBag;
-              return (
-                <li
-                  key={`${entry.at}-${idx}`}
-                  className="flex gap-3 text-sm"
-                >
-                  <div className="flex flex-col items-center">
-                    <span
-                      className={cn(
-                        "mt-1 flex size-5 items-center justify-center rounded-full",
-                        entry.scope === "mo"
-                          ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                          : "bg-brand/15 text-brand",
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="h-full overflow-y-auto px-6 pb-4"
+        >
+          {timeline.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No events yet.</p>
+          ) : (
+            <ol className="space-y-3">
+              {timeline.map((entry, idx) => {
+                const { icon: Icon, chip } = scopeChrome(entry.scope);
+                return (
+                  <li
+                    key={`${entry.at}-${idx}`}
+                    className="flex gap-3 text-sm"
+                  >
+                    <div className="flex flex-col items-center">
+                      <span
+                        className={cn(
+                          "mt-1 flex size-5 items-center justify-center rounded-full",
+                          chip,
+                        )}
+                      >
+                        <Icon className="size-2.5" />
+                      </span>
+                      {idx < timeline.length - 1 && (
+                        <span className="my-1 w-px flex-1 bg-border" />
                       )}
-                    >
-                      <Icon className="size-2.5" />
-                    </span>
-                    {idx < timeline.length - 1 && (
-                      <span className="my-1 w-px flex-1 bg-border" />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1 pb-1">
-                    <p className="leading-snug">{entry.label}</p>
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {formatCompanyDate(entry.at, prefs)}
-                      {entry.actor ? ` · ${entry.actor}` : ""}
-                      {entry.mo_uuid && (
-                        <>
-                          {" · "}
-                          <Link
-                            href={`/production/manufacturing-orders/${entry.mo_uuid}`}
-                            className="text-brand underline-offset-2 hover:underline"
-                          >
-                            open MO
-                          </Link>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+                    </div>
+                    <div className="min-w-0 flex-1 pb-1">
+                      <p className="leading-snug">{entry.label}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                        <time>{formatCompanyDate(entry.at, prefs)}</time>
+                        {entry.actor && (
+                          <>
+                            <span aria-hidden>·</span>
+                            <span className="inline-flex items-center gap-0.5">
+                              <UserIcon
+                                className="size-2.5"
+                                aria-hidden
+                              />
+                              <span className="font-medium text-foreground">
+                                {entry.actor}
+                              </span>
+                            </span>
+                          </>
+                        )}
+                        {entry.href && entry.href_label && (
+                          <>
+                            <span aria-hidden>·</span>
+                            <Link
+                              href={entry.href}
+                              className="inline-flex items-center gap-0.5 text-brand underline-offset-2 hover:underline"
+                            >
+                              <ExternalLink
+                                className="size-2.5"
+                                aria-hidden
+                              />
+                              {entry.href_label}
+                            </Link>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+
+        {/* Jump-to affordances — pinned bottom-right of the scroll
+            frame. Only render the direction that's actually useful
+            given the current scroll position. */}
+        {scrollHint === "top" && (
+          <button
+            type="button"
+            onClick={() => jumpTo("top")}
+            aria-label="Scroll to earliest event"
+            className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ArrowUp className="size-3" aria-hidden />
+            Earliest
+          </button>
         )}
-      </CardContent>
+        {scrollHint === "bottom" && (
+          <button
+            type="button"
+            onClick={() => jumpTo("bottom")}
+            aria-label="Scroll to latest event"
+            className="absolute right-3 bottom-3 inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ArrowDown className="size-3" aria-hidden />
+            Latest
+          </button>
+        )}
+      </div>
     </Card>
   );
+}
+
+function recomputeHint(
+  el: HTMLDivElement,
+  set: (h: "top" | "bottom" | null) => void,
+) {
+  const atTop = el.scrollTop <= 4;
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+  const scrollable = el.scrollHeight > el.clientHeight + 4;
+
+  if (!scrollable) return set(null);
+  if (atBottom) return set("top"); // at latest — offer earliest
+  if (atTop) return set("bottom"); // at earliest — offer latest
+  return set("bottom"); // mid-scroll — nudge back to latest
+}
+
+// Per-scope icon + tone chip for the timeline dot. Each workstream
+// (customer order, manufacturing order, purchase order, shipment,
+// invoice) reads at a glance from its own colour so the operator
+// can trace one thread through a busy timeline.
+function scopeChrome(scope: OrderWizardTimelineEntry["scope"]): {
+  icon: typeof Factory;
+  chip: string;
+} {
+  switch (scope) {
+    case "mo":
+      return {
+        icon: Factory,
+        chip: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+      };
+    case "po":
+      return {
+        icon: ShoppingCart,
+        chip: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+      };
+    case "shipment":
+      return {
+        icon: Truck,
+        chip: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+      };
+    case "invoice":
+      return {
+        icon: Receipt,
+        chip: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+      };
+    case "co":
+    default:
+      return {
+        icon: ShoppingBag,
+        chip: "bg-brand/15 text-brand",
+      };
+  }
 }
 
 // =============================================================================

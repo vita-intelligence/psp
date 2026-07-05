@@ -84,6 +84,7 @@ defmodule BackendWeb.PurchaseOrderController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       status: params["status"],
       vendor_id: params["vendor_id"]
     ]
@@ -482,7 +483,8 @@ defmodule BackendWeb.PurchaseOrderController do
     with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid),
          :ok <- validate_evidence_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_evidence_size(bytes) do
+         :ok <- validate_evidence_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       attrs = %{
         "kind" => kind,
         "filename" => upload.filename || "upload",
@@ -536,6 +538,7 @@ defmodule BackendWeb.PurchaseOrderController do
   serve — local adapter reads from disk, cloud adapters would
   short-circuit to a signed URL upstream.
   """
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"purchase_order_id" => po_uuid, "id" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -547,7 +550,7 @@ defmodule BackendWeb.PurchaseOrderController do
       |> put_resp_content_type(file.mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{file.filename}"|
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else
@@ -569,6 +572,7 @@ defmodule BackendWeb.PurchaseOrderController do
 
   defp validate_evidence_size(_), do: :ok
 
+  # File.read on upload.path — Plug.Upload's tmp path is server-owned.
   defp read_upload(%Plug.Upload{path: path}) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}
@@ -665,7 +669,10 @@ defmodule BackendWeb.PurchaseOrderController do
 
       conn
       |> put_resp_content_type("text/csv")
-      |> put_resp_header("content-disposition", ~s(attachment; filename="#{filename}"))
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:attachment, filename)
+      )
       |> send_resp(200, csv)
     end
   end
@@ -681,7 +688,10 @@ defmodule BackendWeb.PurchaseOrderController do
 
       conn
       |> put_resp_content_type("application/pdf")
-      |> put_resp_header("content-disposition", ~s(inline; filename="#{filename}"))
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:inline, filename)
+      )
       |> send_resp(200, bytes)
     end
   end

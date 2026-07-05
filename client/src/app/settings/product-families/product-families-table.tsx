@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { ProductFamily } from "@/lib/types";
@@ -23,6 +25,7 @@ async function fetchFamiliesPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<ProductFamily>> {
   const qs = new URLSearchParams();
@@ -31,6 +34,7 @@ async function fetchFamiliesPage(params: {
   if (params.sort)
     qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/product-families?${qs.toString()}`, {
     cache: "no-store",
@@ -61,6 +65,11 @@ export function ProductFamiliesTable({
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "PF00001…",
+        group: "Identity",
+        description: "Auto-numbered product-family code.",
         cell: (f) =>
           f.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -77,6 +86,11 @@ export function ProductFamiliesTable({
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Family name…",
+        group: "Identity",
+        description: "Display name of this product family.",
         cell: (f) => (
           <span className="truncate font-medium">{f.name}</span>
         ),
@@ -85,6 +99,11 @@ export function ProductFamiliesTable({
         id: "description",
         header: "Description",
         widthClassName: "min-w-[20rem]",
+        filterField: "description",
+        filterKind: "text",
+        filterPlaceholder: "Description…",
+        group: "Meta",
+        description: "Free-form description of this family.",
         cell: (f) =>
           f.description ? (
             <span className="line-clamp-1 text-xs text-muted-foreground">
@@ -100,6 +119,10 @@ export function ProductFamiliesTable({
         sortField: "is_active",
         sortLabels: { asc: "Inactive first", desc: "Active first" },
         widthClassName: "w-28",
+        filterField: "is_active",
+        filterKind: "boolean",
+        group: "Status",
+        description: "Whether this family is currently active.",
         cell: (f) => (
           <Badge tone={f.is_active ? "emerald" : "muted"}>
             {f.is_active ? "Active" : "Inactive"}

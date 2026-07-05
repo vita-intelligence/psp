@@ -6,6 +6,7 @@ import { hasPermission } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { getStockLot } from "@/lib/stock/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -56,7 +57,10 @@ export default async function StockLotDetailPage({
       <StockSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
+        <PageCursorAnchor
+          pageId={`/stock/lots/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
           <div>
             <Button
               asChild
@@ -75,6 +79,7 @@ export default async function StockLotDetailPage({
             lot={lot}
             canMove={hasPermission(user, "stock.move")}
             canAdjust={hasPermission(user, "stock.adjust")}
+            pageId={`/stock/lots/${uuid}`}
           />
 
           <LotQcActionCard
@@ -83,6 +88,7 @@ export default async function StockLotDetailPage({
             itemName={lot.item?.name ?? null}
             sourceKind={lot.source_kind ?? null}
             canRecordQc={hasPermission(user, "stock.qc")}
+            pageId={`/stock/lots/${uuid}`}
           />
 
           <LotEditForm
@@ -141,7 +147,7 @@ export default async function StockLotDetailPage({
             updated_by={lot.updated_by ?? null}
           />
           <AuditHistoryCard entityType="stock_lot" entityId={lot.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

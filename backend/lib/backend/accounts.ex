@@ -21,7 +21,7 @@ defmodule Backend.Accounts do
   # Whitelisted columns the Users table can sort by. `code` from the
   # FE is translated to `:id` in normalise_sort (display code is
   # `prefix + lpad(id)`, so id order = code order).
-  @sortable_fields ~w(id name email is_active inserted_at)a
+  @sortable_fields ~w(id name email is_active is_admin confirmed_at inserted_at updated_at)a
   # Equality filters available on the list endpoint.
   @filter_fields ~w(is_active)a
   # Free-text ILIKE search hits these columns.
@@ -29,8 +29,11 @@ defmodule Backend.Accounts do
   @default_sort {:name, :asc}
 
   @token_salt "psp user auth"
-  # 30 days; enough for daily-driver workers.
-  @token_max_age_seconds 60 * 60 * 24 * 30
+  # 7 days. Shorter than the previous 30-day window so a stolen token
+  # has a bounded useful life; daily-driver workers re-authenticate
+  # weekly, which is well below the OWASP guidance for browser
+  # sessions and beneath the point at which people forget passwords.
+  @token_max_age_seconds 60 * 60 * 24 * 7
 
   ## Lookups -----------------------------------------------------------
 
@@ -85,6 +88,7 @@ defmodule Backend.Accounts do
       |> where([u], u.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @search_fields)
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -239,6 +243,14 @@ defmodule Backend.Accounts do
   account-enumeration oracle.
   """
   def request_password_reset(email, url_builder) when is_function(url_builder, 1) do
+    # Response time must not leak account existence. `Bcrypt.no_user_verify/0`
+    # runs a real hash against a throwaway string so the "no match"
+    # branch matches the wall-clock cost of the reset-token write +
+    # email enqueue on the "match" branch closely enough to defeat
+    # timing enumeration. A short fixed sleep on top rounds out any
+    # variance.
+    _ = Bcrypt.no_user_verify()
+
     case get_user_by_email(email) do
       %User{} = user ->
         with {:ok, updated} <-
@@ -250,10 +262,6 @@ defmodule Backend.Accounts do
         end
 
       nil ->
-        # Dummy delay roughly matching a successful path keeps timing
-        # consistent — bcrypt isn't involved here but the email I/O
-        # would be, so simulate it.
-        Process.sleep(50)
         :ok
     end
   end
@@ -284,22 +292,52 @@ defmodule Backend.Accounts do
 
   ## Session tokens ---------------------------------------------------
 
-  def sign_token(%User{id: id}) do
-    Phoenix.Token.sign(BackendWeb.Endpoint, @token_salt, id)
+  # Signed payload is `{user_id, token_version}` so we can invalidate
+  # a cohort of tokens by bumping `users.token_version`. Legacy tokens
+  # (bare integer id) are rejected — a password reset or a redeploy
+  # will re-issue.
+  def sign_token(%User{id: id, token_version: version}) do
+    Phoenix.Token.sign(BackendWeb.Endpoint, @token_salt, {id, version || 0})
   end
 
   def verify_token(token) when is_binary(token) do
-    case Phoenix.Token.verify(BackendWeb.Endpoint, @token_salt, token,
-           max_age: @token_max_age_seconds
-         ) do
-      {:ok, user_id} ->
-        case get_user(user_id) do
-          nil -> {:error, :invalid}
-          user -> {:ok, user}
-        end
+    result =
+      with {:ok, {user_id, token_version}}
+           when is_integer(user_id) and is_integer(token_version) <-
+             Phoenix.Token.verify(BackendWeb.Endpoint, @token_salt, token,
+               max_age: @token_max_age_seconds
+             ),
+           %User{is_active: true} = user <- get_user(user_id),
+           true <- (user.token_version || 0) == token_version do
+        {:ok, user}
+      else
+        # Old-format payload (bare int id) — reject so it's re-issued.
+        {:ok, id} when is_integer(id) ->
+          {:error, :legacy_token}
 
-      {:error, reason} ->
-        {:error, reason}
+        %User{is_active: false} ->
+          {:error, :inactive}
+
+        nil ->
+          {:error, :invalid}
+
+        false ->
+          {:error, :token_revoked}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    case result do
+      {:error, reason} when reason in [:inactive, :token_revoked, :legacy_token, :expired] ->
+        # Log the non-transient failure classes only — every
+        # `:missing` verify from an anonymous request would flood
+        # the log otherwise.
+        Backend.SecurityLog.record(:token_verify_failure, reason: reason)
+        result
+
+      _ ->
+        result
     end
   end
 

@@ -52,7 +52,9 @@ defmodule Backend.Purchasing do
                       default_warehouse_id expected_delivery_date
                       delivery_address notes submitted_at ordered_at
                       received_at cancelled_at cancellation_reason)a
-  @po_sortable ~w(id status grand_total total_amount expected_delivery_date inserted_at submitted_at ordered_at)a
+  @po_sortable ~w(id status currency_code subtotal tax_amount grand_total total_amount
+                  vendor_id default_warehouse_id expected_delivery_date
+                  inserted_at submitted_at ordered_at received_at cancelled_at updated_at)a
   @po_search ~w(delivery_address notes cancellation_reason)a
   @po_default_sort {:id, :desc}
 
@@ -67,6 +69,7 @@ defmodule Backend.Purchasing do
       |> ListQueries.apply_search(opts[:search], @po_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_vendor_filter(opts[:vendor_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @po_sortable)
       |> ListQueries.apply_sort(sort, @po_sortable, @po_default_sort)
       |> preload([:vendor, :created_by, :submitted_by, :default_warehouse, :lines])
 

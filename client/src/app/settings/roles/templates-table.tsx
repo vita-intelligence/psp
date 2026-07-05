@@ -4,10 +4,12 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
 import { ShieldCheck } from "lucide-react";
 import { TemplateEditorsBadge } from "./active-sessions";
@@ -28,6 +30,7 @@ async function fetchTemplatesPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<PermissionTemplate>> {
   const qs = new URLSearchParams();
@@ -36,6 +39,7 @@ async function fetchTemplatesPage(params: {
   if (params.sort)
     qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
   if (params.search) qs.set("search", params.search);
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/roles?${qs.toString()}`, {
     cache: "no-store",
@@ -69,6 +73,11 @@ export function TemplatesTable({
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-24",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "PT00001…",
+        group: "Identity",
+        description: "Auto-numbered template code (PT00001, …).",
         cell: (t) =>
           t.code ? (
             <span className="font-mono text-xs text-muted-foreground">
@@ -85,6 +94,11 @@ export function TemplatesTable({
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[14rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Template name…",
+        group: "Identity",
+        description: "Display name of this permission template.",
         cell: (t) => (
           <div className="flex items-center gap-2">
             <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
@@ -102,6 +116,11 @@ export function TemplatesTable({
         id: "description",
         header: "Description",
         widthClassName: "min-w-[16rem]",
+        filterField: "description",
+        filterKind: "text",
+        filterPlaceholder: "Description…",
+        group: "Meta",
+        description: "What the template is for — free-text summary.",
         cell: (t) =>
           t.description ? (
             <span className="line-clamp-1 text-sm text-muted-foreground">
@@ -115,9 +134,38 @@ export function TemplatesTable({
         id: "permissions",
         header: "Permissions",
         widthClassName: "w-32",
+        group: "Compliance",
+        description: "How many permission codes this template grants.",
         cell: (t) => (
           <Badge tone="muted">
             {t.permissions.length} perm{t.permissions.length === 1 ? "" : "s"}
+          </Badge>
+        ),
+      },
+      // ---- defaultHidden columns below ----
+      {
+        id: "slug",
+        header: "Slug",
+        widthClassName: "w-40",
+        defaultHidden: true,
+        group: "Identity",
+        description: "URL/API-safe identifier for this template.",
+        cell: (t) => (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {t.slug}
+          </span>
+        ),
+      },
+      {
+        id: "is_system",
+        header: "System",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        group: "Compliance",
+        description: "System-seeded templates can't be edited or deleted.",
+        cell: (t) => (
+          <Badge tone={t.is_system ? "sky" : "muted"}>
+            {t.is_system ? "System" : "Custom"}
           </Badge>
         ),
       },

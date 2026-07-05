@@ -24,6 +24,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import {
+  PageLockGuard,
+  usePageLeadership,
+} from "@/components/realtime/page-lock-guard";
+import { PageLockBanner } from "@/components/realtime/page-lock-banner";
 import type { PurchaseOrder, PurchaseOrderStatus } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import {
@@ -40,6 +45,7 @@ interface Props {
   canApprove: boolean;
   canDirectorApprove: boolean;
   canCancel: boolean;
+  pageId?: string;
 }
 
 type DialogAction = "approver" | "director" | "cancel" | null;
@@ -50,8 +56,11 @@ export function POWorkflowCard({
   canApprove,
   canDirectorApprove,
   canCancel,
+  pageId,
 }: Props) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [pending, startTransition] = useTransition();
   const [openDialog, setOpenDialog] = useState<DialogAction>(null);
   const [notes, setNotes] = useState("");
@@ -97,10 +106,12 @@ export function POWorkflowCard({
   }
 
   function onSubmit() {
+    if (locked) return;
     runDirect(submitPOAction(po.uuid), "PO submitted");
   }
 
   function onSign(kind: "approver" | "director") {
+    if (locked) return;
     setError(null);
     startTransition(async () => {
       const res =
@@ -118,10 +129,12 @@ export function POWorkflowCard({
   }
 
   function onMarkOrdered() {
+    if (locked) return;
     runDirect(markOrderedAction(po.uuid), "Order placed");
   }
 
   function onCancel() {
+    if (locked) return;
     if (!reason.trim()) return;
     setError(null);
     startTransition(async () => {
@@ -215,58 +228,70 @@ export function POWorkflowCard({
         />
       )}
 
-      <div className="flex flex-wrap gap-2">
-        {po.status === "draft" && canSubmit && (
-          <Button size="sm" onClick={onSubmit} disabled={pending}>
-            {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-            <Send className="mr-1.5 size-4" />
-            Submit for approval
-          </Button>
-        )}
-        {po.status === "pending_approver" && canApprove && (
-          <Button
-            size="sm"
-            onClick={() => openSignDialog("approver")}
-            disabled={pending}
-          >
-            <ShieldCheck className="mr-1.5 size-4" />
-            Sign as approver
-          </Button>
-        )}
-        {po.status === "pending_director" && canDirectorApprove && (
-          <Button
-            size="sm"
-            onClick={() => openSignDialog("director")}
-            disabled={pending}
-          >
-            <ShieldCheck className="mr-1.5 size-4" />
-            Sign as director
-          </Button>
-        )}
-        {po.status === "approved" && canDirectorApprove && (
-          <Button
-            size="sm"
-            onClick={onMarkOrdered}
-            disabled={pending}
-          >
-            {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-            <Truck className="mr-1.5 size-4" />
-            Confirm order placed
-          </Button>
-        )}
-        {canCancel &&
-          !["received", "cancelled"].includes(po.status) && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={openCancelDialog}
-              disabled={pending}
-            >
-              <ShieldX className="mr-1.5 size-4" />
-              Cancel PO
+      {locked && <PageLockBanner leader={leader} />}
+      <PageLockGuard pageId={pageId ?? ""} disabled={!pageId}>
+        <div className="flex flex-wrap gap-2">
+          {po.status === "draft" && canSubmit && (
+            <Button size="sm" onClick={onSubmit} disabled={pending || locked}>
+              {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+              <Send className="mr-1.5 size-4" />
+              Submit for approval
             </Button>
           )}
-      </div>
+          {po.status === "pending_approver" && canApprove && (
+            <Button
+              size="sm"
+              onClick={() => {
+                if (locked) return;
+                openSignDialog("approver");
+              }}
+              disabled={pending || locked}
+            >
+              <ShieldCheck className="mr-1.5 size-4" />
+              Sign as approver
+            </Button>
+          )}
+          {po.status === "pending_director" && canDirectorApprove && (
+            <Button
+              size="sm"
+              onClick={() => {
+                if (locked) return;
+                openSignDialog("director");
+              }}
+              disabled={pending || locked}
+            >
+              <ShieldCheck className="mr-1.5 size-4" />
+              Sign as director
+            </Button>
+          )}
+          {po.status === "approved" && canDirectorApprove && (
+            <Button
+              size="sm"
+              onClick={onMarkOrdered}
+              disabled={pending || locked}
+            >
+              {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+              <Truck className="mr-1.5 size-4" />
+              Confirm order placed
+            </Button>
+          )}
+          {canCancel &&
+            !["received", "cancelled"].includes(po.status) && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (locked) return;
+                  openCancelDialog();
+                }}
+                disabled={pending || locked}
+              >
+                <ShieldX className="mr-1.5 size-4" />
+                Cancel PO
+              </Button>
+            )}
+        </div>
+      </PageLockGuard>
 
       <Dialog
         open={openDialog === "approver" || openDialog === "director"}

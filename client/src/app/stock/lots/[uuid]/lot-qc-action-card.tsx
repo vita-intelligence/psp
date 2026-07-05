@@ -7,6 +7,7 @@ import { Loader2, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { recordLotEventAction } from "@/lib/stock/actions";
 
 /**
@@ -26,14 +27,18 @@ export function LotQcActionCard({
   itemName,
   sourceKind,
   canRecordQc,
+  pageId,
 }: {
   lotUuid: string;
   lotStatus: string;
   itemName: string | null;
   sourceKind: string | null;
   canRecordQc: boolean;
+  pageId?: string;
 }) {
   const router = useRouter();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [reason, setReason] = useState("");
   const [pending, startTransition] = useTransition();
 
@@ -50,6 +55,7 @@ export function LotQcActionCard({
     : "Lots stay at status `received` until a QC verdict fires. Record a QC-pass here only when the goods bypass the Goods-In inspection workflow (e.g. a manual lot you've already inspected offline).";
 
   function onPassQc() {
+    if (locked) return;
     startTransition(async () => {
       const res = await recordLotEventAction(
         lotUuid,
@@ -105,7 +111,8 @@ export function LotQcActionCard({
           type="button"
           size="sm"
           onClick={onPassQc}
-          disabled={pending}
+          disabled={pending || locked}
+          title={locked ? "Only the head of the room can act here." : undefined}
           className="gap-1"
         >
           {pending ? (

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Move, Printer, Package, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type { StockLot } from "@/lib/types";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { formatCompanyNumber } from "@/lib/format/company";
@@ -19,12 +20,16 @@ export function LotHeader({
   lot,
   canMove,
   canAdjust,
+  pageId,
 }: {
   lot: StockLot;
   canMove: boolean;
   canAdjust: boolean;
+  pageId?: string;
 }) {
   const prefs = useFormatPrefs();
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [printOpen, setPrintOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
@@ -68,14 +73,27 @@ export function LotHeader({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => setAdjustOpen(true)}
+              onClick={() => {
+                if (locked) return;
+                setAdjustOpen(true);
+              }}
+              disabled={locked}
+              title={locked ? "Only the head of the room can act here." : undefined}
             >
               <Scale className="mr-1.5 size-4" />
               Adjust qty
             </Button>
           )}
           {canMove && (
-            <Button size="sm" onClick={() => setMoveOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (locked) return;
+                setMoveOpen(true);
+              }}
+              disabled={locked}
+              title={locked ? "Only the head of the room can act here." : undefined}
+            >
               <Move className="mr-1.5 size-4" />
               Move
             </Button>
@@ -140,16 +158,25 @@ function Stat({
 
 function StatusChip({ status }: { status: StockLot["status"] }) {
   const tone: Record<StockLot["status"], string> = {
+    expected:
+      "bg-indigo-500/10 text-indigo-700 ring-indigo-500/30 dark:text-indigo-400",
     requested:
-      "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400",
+      "bg-indigo-500/10 text-indigo-700 ring-indigo-500/30 dark:text-indigo-400",
     received:
-      "bg-emerald-500/10 text-emerald-700 ring-emerald-500/30 dark:text-emerald-400",
+      "bg-sky-500/10 text-sky-700 ring-sky-500/30 dark:text-sky-400",
     quarantine:
       "bg-orange-500/10 text-orange-700 ring-orange-500/30 dark:text-orange-400",
+    awaiting_release:
+      "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400",
+    available:
+      "bg-emerald-500/10 text-emerald-700 ring-emerald-500/30 dark:text-emerald-400",
+    on_hold:
+      "bg-amber-500/10 text-amber-700 ring-amber-500/30 dark:text-amber-400",
     depleted:
       "bg-zinc-500/10 text-zinc-600 ring-zinc-500/30 dark:text-zinc-400",
     disposed: "bg-red-500/10 text-red-700 ring-red-500/30 dark:text-red-400",
     rejected: "bg-red-500/10 text-red-700 ring-red-500/30 dark:text-red-400",
+    canceled: "bg-zinc-500/10 text-zinc-600 ring-zinc-500/30 dark:text-zinc-400",
   };
   return (
     <span

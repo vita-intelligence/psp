@@ -26,10 +26,13 @@ defmodule BackendWeb.MovementPhotoController do
   @allowed_mimes ~w(image/jpeg image/png image/webp)
   @max_bytes 8 * 1024 * 1024
 
+  # File.read on upload.path — Plug.Upload provides a tmp path it
+  # owns; the request payload can't influence which file is read.
   def create(conn, %{"file" => %Plug.Upload{} = upload}) do
     with :ok <- validate_mime(upload.content_type),
          {:ok, bytes} <- read_upload(upload),
-         :ok <- validate_size(bytes) do
+         :ok <- validate_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
       key =
         "movement_photos/" <>
           Ecto.UUID.generate() <>
@@ -64,6 +67,8 @@ defmodule BackendWeb.MovementPhotoController do
   on disk match `movement_photos/<uuid>.<ext>` so we try the three
   known extensions before giving up.
   """
+  # blob path is built from `movement_photos/<uuid>.<ext>` where uuid
+  # is validated as a UUID by the route and ext is a fixed set.
   def serve_file(conn, %{"uuid" => uuid}) do
     extensions = [".jpg", ".png", ".webp"]
 

@@ -1,11 +1,11 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ChevronLeft, Users } from "lucide-react";
+import { Users } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
-import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
+import { RecordHero } from "@/components/layout/record-hero";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { getVendor, listVendorPriceHistory } from "@/lib/vendors/server";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -71,48 +71,39 @@ export default async function VendorDetailPage({
       <ProcurementSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-5xl space-y-6">
-          <div>
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-            >
-              <Link href="/procurement/vendors">
-                <ChevronLeft className="mr-1 size-4" />
-                Back to vendors
-              </Link>
-            </Button>
-          </div>
+        <PageCursorAnchor
+          pageId={`/procurement/vendors/${uuid}`}
+          className="mx-auto max-w-5xl space-y-6"
+        >
+          <RecordHero
+            icon={Users}
+            code={vendor.code ?? `#${vendor.id}`}
+            chips={
+              <Badge tone={APPROVAL_TONE[vendor.approval_status]}>
+                {APPROVAL_LABEL[vendor.approval_status]}
+              </Badge>
+            }
+            title={vendor.name}
+            subtitle={
+              vendor.legal_name && vendor.legal_name !== vendor.name
+                ? vendor.legal_name
+                : undefined
+            }
+            backHref="/procurement/vendors"
+            backLabel="Back to vendors"
+          />
 
-          <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <Users className="size-4 text-muted-foreground" />
-                  <span className="font-mono text-xs font-semibold text-muted-foreground">
-                    {vendor.code ?? `#${vendor.id}`}
-                  </span>
-                  <Badge tone={APPROVAL_TONE[vendor.approval_status]}>
-                    {APPROVAL_LABEL[vendor.approval_status]}
-                  </Badge>
-                </div>
-                <h1 className="truncate text-2xl font-semibold tracking-tight">
-                  {vendor.name}
-                </h1>
-                {vendor.legal_name && vendor.legal_name !== vendor.name && (
-                  <p className="text-sm text-muted-foreground">
-                    {vendor.legal_name}
-                  </p>
-                )}
-              </div>
-            </div>
-          </header>
+          <VendorApprovalCard
+            vendor={vendor}
+            canApprove={canApprove}
+            pageId={`/procurement/vendors/${uuid}`}
+          />
 
-          <VendorApprovalCard vendor={vendor} canApprove={canApprove} />
-
-          <VendorQualificationCard vendor={vendor} canEdit={canEdit} />
+          <VendorQualificationCard
+            vendor={vendor}
+            canEdit={canEdit}
+            pageId={`/procurement/vendors/${uuid}`}
+          />
 
           <EditModeToggle canEdit={canEdit}>
             <VendorForm vendor={vendor} canEdit={canEdit} />
@@ -139,7 +130,7 @@ export default async function VendorDetailPage({
             updated_by={vendor.updated_by ?? null}
           />
           <AuditHistoryCard entityType="vendor" entityId={vendor.id} />
-        </div>
+        </PageCursorAnchor>
       </main>
     </div>
   );

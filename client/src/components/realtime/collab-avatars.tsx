@@ -49,7 +49,7 @@ export function CollabAvatars({
           >
             <UserAvatar
               name={p.name}
-              email={p.email}
+              email={p.email || p.id}
               avatar={p.avatar}
               sizeClassName="size-7"
               fallbackClassName="text-[10px]"

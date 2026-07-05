@@ -345,7 +345,7 @@ defmodule BackendWeb.CustomerInvoiceController do
       |> put_resp_content_type("application/pdf")
       |> put_resp_header(
         "content-disposition",
-        ~s(inline; filename="#{filename}")
+        Backend.Http.ContentDisposition.header(:inline, filename)
       )
       |> send_resp(200, bytes)
     else
@@ -361,6 +361,7 @@ defmodule BackendWeb.CustomerInvoiceController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
+      column_filter: params["column_filter"],
       status: params["status"],
       customer_id: params["customer_id"]
     ]

@@ -89,6 +89,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
         cursor: params["cursor"],
         limit: params["limit"],
         search: params["search"],
+        column_filter: params["column_filter"],
         status: params["status"],
         vendor_id: parse_int(params["vendor_id"]),
         purchase_order_id: parse_int(params["purchase_order_id"]),
@@ -182,6 +183,9 @@ defmodule BackendWeb.ProcurementInvoiceController do
 
   # ----- file ------------------------------------------------------
 
+  # File.read on upload.path — Plug.Upload places uploads in a
+  # tmp dir it controls, not one derived from the request payload.
+  # Safe by construction of Plug.Parsers.MULTIPART.
   def attach_file(conn, %{"id" => uuid, "file" => %Plug.Upload{} = upload}) do
     actor = conn.assigns.current_user
 
@@ -189,6 +193,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
          :ok <- validate_mime(upload.content_type || "application/octet-stream"),
          {:ok, bytes} <- File.read(upload.path),
          :ok <- validate_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type),
          {:ok, updated} <-
            Procurement.attach_file(actor, invoice, %{
              filename: upload.filename,
@@ -200,6 +205,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
       nil -> {:error, :not_found}
       {:error, :too_large} -> file_too_large(conn)
       {:error, :bad_mime} -> bad_mime(conn)
+      {:error, {:invalid_mime, detail}} -> unprocessable(conn, "invalid_mime_type", detail)
       {:error, {:storage_failed, _}} -> storage_error(conn)
       {:error, %Ecto.Changeset{} = cs} -> changeset_error(conn, cs)
     end
@@ -219,6 +225,7 @@ defmodule BackendWeb.ProcurementInvoiceController do
     end
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"id" => uuid}) do
     actor = conn.assigns.current_user
 
@@ -230,7 +237,10 @@ defmodule BackendWeb.ProcurementInvoiceController do
       |> put_resp_content_type(invoice.file_mime || "application/octet-stream")
       |> put_resp_header(
         "content-disposition",
-        ~s|inline; filename="#{invoice.file_filename || "invoice.pdf"}"|
+        Backend.Http.ContentDisposition.header(
+          :inline,
+          invoice.file_filename || "invoice.pdf"
+        )
       )
       |> send_file(200, abs_path)
     else

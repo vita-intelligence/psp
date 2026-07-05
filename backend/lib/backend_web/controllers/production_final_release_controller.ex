@@ -183,6 +183,7 @@ defmodule BackendWeb.ProductionFinalReleaseController do
     end
   end
 
+  # See vendor_controller.serve_file/2 for the safety rationale.
   def serve_file(conn, %{"uuid" => uuid, "file_uuid" => file_uuid}) do
     actor = conn.assigns.current_user
 
@@ -199,7 +200,7 @@ defmodule BackendWeb.ProductionFinalReleaseController do
       |> put_resp_header("content-type", file.mime)
       |> put_resp_header(
         "content-disposition",
-        "inline; filename=\"#{file.filename}\""
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
       )
       |> send_file(200, abs_path)
     else

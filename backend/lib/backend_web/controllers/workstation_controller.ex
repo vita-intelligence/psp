@@ -33,6 +33,7 @@ defmodule BackendWeb.WorkstationController do
         limit: params["limit"],
         sort: parse_sort(params["sort"]),
         search: params["search"],
+        column_filter: params["column_filter"],
         workstation_group_id: params["workstation_group_id"],
         warehouse_id: params["warehouse_id"],
         is_active: params["is_active"]

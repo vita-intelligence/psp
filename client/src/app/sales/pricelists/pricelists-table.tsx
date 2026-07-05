@@ -6,12 +6,15 @@ import { useMemo } from "react";
 import { CheckCircle2, Star } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
+  ColumnFilterValue,
   DataTableColumn,
   FilterDef,
   PageResult,
   SortSpec,
 } from "@/components/data-table";
+import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Badge } from "@/components/ui/badge-mini";
+import { auditColumns } from "@/components/audit/audit-table-columns";
 import type { Pricelist } from "@/lib/types";
 import { formatCompanyDate } from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
@@ -36,6 +39,7 @@ async function fetchPricelistsPage(params: {
   limit: number;
   sort: SortSpec | null;
   filters: Record<string, string | boolean | number>;
+  columnFilters: Record<string, ColumnFilterValue>;
   search: string;
 }): Promise<PageResult<Pricelist>> {
   const qs = new URLSearchParams();
@@ -46,6 +50,7 @@ async function fetchPricelistsPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(k, String(v));
   }
+  serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/pricelists?${qs.toString()}`, { cache: "no-store" });
   if (!res.ok) {
@@ -73,6 +78,11 @@ export function PricelistsTable({ initialPage }: Props) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
+        filterField: "id",
+        filterKind: "text",
+        filterPlaceholder: "PL00001…",
+        group: "Identity",
+        description: "Auto-numbered pricelist code.",
         cell: (p) => (
           <span className="font-mono text-xs text-muted-foreground">
             {p.code ?? `#${p.id}`}
@@ -86,6 +96,11 @@ export function PricelistsTable({ initialPage }: Props) {
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[20rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Pricelist name…",
+        group: "Identity",
+        description: "Display name of this pricelist.",
         cell: (p) => (
           <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-1.5">
@@ -113,6 +128,11 @@ export function PricelistsTable({ initialPage }: Props) {
         header: "Currency",
         sortField: "currency_code",
         widthClassName: "w-24",
+        filterField: "currency_code",
+        filterKind: "text",
+        filterPlaceholder: "GBP…",
+        group: "Amounts",
+        description: "Currency this pricelist quotes in.",
         cell: (p) => (
           <span className="font-mono text-xs">{p.currency_code}</span>
         ),
@@ -121,6 +141,10 @@ export function PricelistsTable({ initialPage }: Props) {
         id: "is_active",
         header: "Active",
         widthClassName: "w-24",
+        filterField: "is_active",
+        filterKind: "boolean",
+        group: "Status",
+        description: "Whether this pricelist is currently active.",
         cell: (p) =>
           p.is_active ? (
             <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
@@ -137,6 +161,10 @@ export function PricelistsTable({ initialPage }: Props) {
         sortField: "valid_from",
         widthClassName: "w-32",
         defaultHidden: true,
+        filterField: "valid_from",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "Start of the pricelist's validity window.",
         cell: (p) =>
           p.valid_from ? (
             <span className="text-sm">{formatCompanyDate(p.valid_from, prefs)}</span>
@@ -149,6 +177,10 @@ export function PricelistsTable({ initialPage }: Props) {
         header: "Valid until",
         sortField: "valid_until",
         widthClassName: "w-32",
+        filterField: "valid_until",
+        filterKind: "date-range",
+        group: "Dates",
+        description: "End of the pricelist's validity window.",
         cell: (p) => {
           if (!p.valid_until)
             return <span className="text-xs text-muted-foreground/50">—</span>;
@@ -171,6 +203,52 @@ export function PricelistsTable({ initialPage }: Props) {
           );
         },
       },
+      // ---- defaultHidden columns below ----
+      {
+        id: "is_default",
+        header: "Default",
+        widthClassName: "w-24",
+        defaultHidden: true,
+        sortField: "is_default",
+        filterField: "is_default",
+        filterKind: "boolean",
+        group: "Status",
+        description: "The company's fallback pricelist. Only one can be default.",
+        cell: (p) => (
+          <Badge tone={p.is_default ? "amber" : "muted"}>
+            {p.is_default ? "Default" : "—"}
+          </Badge>
+        ),
+      },
+      {
+        id: "items_count",
+        header: "Items",
+        widthClassName: "w-20",
+        align: "right",
+        defaultHidden: true,
+        group: "Amounts",
+        description: "How many items are priced on this pricelist.",
+        cell: (p) => (
+          <span className="font-mono text-xs">{p.items.length}</span>
+        ),
+      },
+      {
+        id: "notes",
+        header: "Notes",
+        widthClassName: "min-w-[14rem]",
+        defaultHidden: true,
+        group: "Meta",
+        description: "Operator notes about this pricelist.",
+        cell: (p) =>
+          p.notes ? (
+            <span className="line-clamp-1 text-xs text-muted-foreground">
+              {p.notes}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          ),
+      },
+      ...auditColumns<Pricelist>(),
     ],
     [prefs],
   );

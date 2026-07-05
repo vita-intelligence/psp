@@ -47,6 +47,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type {
   CompanyDefaults,
   CustomerInvoice,
@@ -76,13 +77,17 @@ interface Props {
   invoice: CustomerInvoice;
   canRecordPayment: boolean;
   prefs: CompanyDefaults;
+  pageId?: string;
 }
 
 export function InvoicePaymentsCard({
   invoice,
   canRecordPayment,
   prefs,
+  pageId,
 }: Props) {
+  const { isLeader, leader } = usePageLeadership(pageId ?? "", !pageId);
+  const locked = !!pageId && !isLeader && !!leader;
   const [open, setOpen] = useState(false);
 
   const canRecord =
@@ -107,7 +112,15 @@ export function InvoicePaymentsCard({
             </CardDescription>
           </div>
           {canRecord && (
-            <Button size="sm" onClick={() => setOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (locked) return;
+                setOpen(true);
+              }}
+              disabled={locked}
+              title={locked ? "Only the head of the room can act here." : undefined}
+            >
               <Coins className="mr-1.5 size-3.5" />
               Record payment
             </Button>

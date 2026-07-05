@@ -49,7 +49,10 @@ defmodule Backend.CustomerOrders do
                       default_warehouse_id submitted_at confirmed_at
                       cancelled_at cancellation_reason)a
 
-  @co_sortable ~w(id status expected_ship_date grand_total inserted_at)a
+  @co_sortable ~w(id status currency_code customer_id customer_reference
+                  subtotal tax_amount grand_total
+                  expected_ship_date submitted_at confirmed_at cancelled_at
+                  inserted_at updated_at)a
   @co_search ~w(customer_reference notes delivery_address)a
   @co_default_sort {:inserted_at, :desc}
 
@@ -64,6 +67,7 @@ defmodule Backend.CustomerOrders do
       |> ListQueries.apply_search(opts[:search], @co_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
+      |> ListQueries.apply_column_filters(opts[:column_filter], @co_sortable)
       |> ListQueries.apply_sort(sort, @co_sortable, @co_default_sort)
       |> preload([
         :customer,
