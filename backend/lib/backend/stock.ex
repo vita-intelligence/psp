@@ -1639,23 +1639,25 @@ defmodule Backend.Stock do
       # stranded at a production-feed cell in a pure-production site
       # shows zero suggestions and the operator can't return it
       # anywhere via the recommender.
-      query =
+      # Previously: `Repo.exists?(scoped)` + `Repo.all(scoped)` fired
+      # two queries when the scoped path had rows. Fetch scoped once
+      # and fall back to unscoped only if the result is empty — same
+      # number of queries in every real path, no `exists?` warm-up.
+      rows =
         case source_warehouse_ids do
           [] ->
-            base_query
+            Repo.all(base_query)
 
           ids ->
             scoped = from [c, l, f, w] in base_query, where: l.warehouse_id in ^ids
 
-            if Repo.exists?(scoped) do
-              scoped
-            else
-              base_query
+            case Repo.all(scoped) do
+              [] -> Repo.all(base_query)
+              found -> found
             end
         end
 
-      query
-      |> Repo.all()
+      rows
       |> Enum.map(fn row ->
         has_consolidation = MapSet.member?(consolidation_cell_ids, row.cell.id)
         committed = Map.get(committed_by_cell, row.cell.id, empty_footprint())

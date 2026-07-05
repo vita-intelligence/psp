@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -1157,7 +1158,7 @@ function currentLocalTime(): string {
   ].join(":");
 }
 
-function Field({
+const Field = memo(function Field({
   label,
   input,
   required,
@@ -1192,7 +1193,7 @@ function Field({
       )}
     </div>
   );
-}
+});
 
 function SectionPanel({
   title,
@@ -1570,7 +1571,7 @@ function lineMatchesItem(item: InspectionItem, line: PurchaseOrderLine): boolean
   return item.purchase_order_line_uuid === line.uuid;
 }
 
-function LineCard({
+const LineCard = memo(function LineCard({
   line,
   value,
   onChange,
@@ -1828,10 +1829,10 @@ function LineCard({
       )}
     </div>
   );
-}
+});
 
 
-function PackEditor({
+const PackEditor = memo(function PackEditor({
   index,
   pack,
   uomSymbol,
@@ -1999,9 +2000,9 @@ function PackEditor({
       </div>
     </div>
   );
-}
+});
 
-function PackInput({
+const PackInput = memo(function PackInput({
   label,
   value,
   onChange,
@@ -2058,7 +2059,7 @@ function PackInput({
       )}
     </label>
   );
-}
+});
 
 function itemNameFor(line: PurchaseOrderLine): string {
   return line.item?.name ?? line.vendor_part_no ?? `Line ${line.uuid.slice(0, 6)}`;

@@ -1932,6 +1932,15 @@ defmodule Backend.OrderWizard do
       |> Enum.reject(&(&1.status == "cancelled"))
       |> Enum.group_by(& &1.item_id)
 
+    # Precompute active bookings per item — was filtering `mo.bookings`
+    # inside the Enum.count callback per line, making the whole loop
+    # O(lines × bookings). One group_by upfront collapses it to
+    # O(lines + bookings).
+    bookings_by_item =
+      mo.bookings
+      |> Enum.filter(&(&1.status == "requested"))
+      |> Enum.group_by(& &1.item_id)
+
     Enum.count(lines, fn line ->
       case line.part do
         %{id: part_id, item_type: t} when t in ["raw_material", "packaging", "semi_finished"] ->
@@ -1943,8 +1952,8 @@ defmodule Backend.OrderWizard do
             end
 
           booked =
-            mo.bookings
-            |> Enum.filter(fn b -> b.item_id == part_id and b.status == "requested" end)
+            bookings_by_item
+            |> Map.get(part_id, [])
             |> Enum.reduce(Decimal.new(0), fn b, acc ->
               Decimal.add(acc, b.quantity || Decimal.new(0))
             end)

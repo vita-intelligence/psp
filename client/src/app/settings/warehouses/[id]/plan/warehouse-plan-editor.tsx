@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -1975,8 +1976,12 @@ interface MobileLayoutProps {
 /**
  * Mobile layout: canvas takes most of the viewport; toolbar pinned
  * below; properties slide up as a bottom sheet on selection.
+ *
+ * Memoized so a peer's cursor tick on the shared plan channel — which
+ * re-renders the outer editor — doesn't force a full mobile-layout
+ * reconciliation when the layout's own props haven't changed.
  */
-function MobileLayout({
+const MobileLayout = memo(function MobileLayout({
   activeFloor,
   canvasRef,
   tool,
@@ -2180,7 +2185,7 @@ function MobileLayout({
       )}
     </div>
   );
-}
+});
 
 /**
  * Display-mode picker for the location labels on the canvas. The
@@ -2190,18 +2195,21 @@ function MobileLayout({
  * walk-through). Persisted in localStorage by the parent so the
  * choice survives reloads.
  */
-function LabelModeSelect({
+// Hoisted so it's not a fresh array on every parent render — the
+// select can then compare stably and skip its own reconciliation.
+const LABEL_MODE_OPTIONS: Array<{ value: LocationLabelMode; label: string }> = [
+  { value: "code", label: "Code" },
+  { value: "name", label: "Name" },
+  { value: "tags", label: "Tags" },
+];
+
+const LabelModeSelect = memo(function LabelModeSelect({
   value,
   onChange,
 }: {
   value: LocationLabelMode;
   onChange: (next: LocationLabelMode) => void;
 }) {
-  const OPTIONS: Array<{ value: LocationLabelMode; label: string }> = [
-    { value: "code", label: "Code" },
-    { value: "name", label: "Name" },
-    { value: "tags", label: "Tags" },
-  ];
   return (
     <label
       className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-1.5 py-0.5 text-[11px]"
@@ -2213,7 +2221,7 @@ function LabelModeSelect({
         onChange={(e) => onChange(e.target.value as LocationLabelMode)}
         className="rounded-sm bg-background px-1 py-0.5 text-xs font-medium outline-none focus-visible:ring-1"
       >
-        {OPTIONS.map((o) => (
+        {LABEL_MODE_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
           </option>
@@ -2221,7 +2229,7 @@ function LabelModeSelect({
       </select>
     </label>
   );
-}
+});
 
 /**
  * Required-segregation-areas banner. The warehouse needs at least
@@ -2233,8 +2241,11 @@ function LabelModeSelect({
  * Layout: chip strip across the top showing every purpose with its
  * current cell count (green when present, red when missing), then a
  * compact reason list under any reds.
+ *
+ * Memoized so it only re-renders when the readiness snapshot or
+ * warehouseName actually change.
  */
-function ReadinessBanner({
+const ReadinessBanner = memo(function ReadinessBanner({
   readiness,
   warehouseName,
   canEdit,
@@ -2335,4 +2346,4 @@ function ReadinessBanner({
       )}
     </section>
   );
-}
+});

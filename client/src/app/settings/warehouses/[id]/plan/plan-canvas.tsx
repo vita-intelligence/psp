@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -1343,7 +1344,7 @@ type SelectHandler = (
   e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
 ) => void;
 
-function WallShape({
+const WallShape = memo(function WallShape({
   wall,
   selected,
   readOnly,
@@ -1498,7 +1499,7 @@ function WallShape({
       />
     </>
   );
-}
+});
 
 // --- Wall-curve geometry kept inline so the shape component stays
 //     self-contained. (Same math as plan-utils.wallControlPoint
@@ -1586,7 +1587,7 @@ function tracePolygonPath(
  *  the visible stroke for that edge as a Line or curved Shape,
  *  intercepts clicks to select the edge, and (when selected) draws
  *  the perpendicular bow handle the user grabs to bend the edge. */
-function PolygonEdgeShape({
+const PolygonEdgeShape = memo(function PolygonEdgeShape({
   p1,
   p2,
   bow,
@@ -1713,9 +1714,9 @@ function PolygonEdgeShape({
       />
     </>
   );
-}
+});
 
-function HoleOutline({
+const HoleOutline = memo(function HoleOutline({
   hole,
   selection,
   readOnly,
@@ -1807,9 +1808,9 @@ function HoleOutline({
       })}
     </>
   );
-}
+});
 
-function LocationShape({
+const LocationShape = memo(function LocationShape({
   location,
   labelMode,
   selected,
@@ -1879,7 +1880,7 @@ function LocationShape({
       />
     </Group>
   );
-}
+});
 
 // Picks the on-canvas label string for one location. Falls back through
 // code → name → "(unsaved)" / "—" if the chosen mode comes up empty so
@@ -1904,7 +1905,7 @@ function locationLabel(
   );
 }
 
-function ArrowShape({
+const ArrowShape = memo(function ArrowShape({
   arrow,
   selected,
   readOnly,
@@ -1964,9 +1965,9 @@ function ArrowShape({
       {...selectionShadow}
     />
   );
-}
+});
 
-function TextShape({
+const TextShape = memo(function TextShape({
   text,
   selected,
   readOnly,
@@ -2052,9 +2053,9 @@ function TextShape({
       />
     </Group>
   );
-}
+});
 
-function PathShape({
+const PathShape = memo(function PathShape({
   path,
   selected,
   readOnly,
@@ -2129,7 +2130,7 @@ function PathShape({
       />
     </>
   );
-}
+});
 
 function DraftPolyline({
   points,
@@ -2200,7 +2201,7 @@ function cursorColorFor(peerId: string): string {
   return CURSOR_PALETTE[h % CURSOR_PALETTE.length]!;
 }
 
-function RemoteCursorMarker({
+const RemoteCursorMarker = memo(function RemoteCursorMarker({
   cursor,
   viewportScale,
 }: {
@@ -2245,4 +2246,4 @@ function RemoteCursorMarker({
       />
     </Group>
   );
-}
+});

@@ -16,7 +16,7 @@ defmodule BackendWeb.UserSocket do
 
   alias Backend.{Accounts, Devices}
 
-  channel "lobby", BackendWeb.LobbyChannel
+  channel "lobby:*", BackendWeb.LobbyChannel
   channel "form:*", BackendWeb.FormChannel
   channel "page:*", BackendWeb.PageChannel
   channel "plan:warehouse:*", BackendWeb.WarehousePlanChannel

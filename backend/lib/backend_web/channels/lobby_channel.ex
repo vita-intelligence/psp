@@ -1,30 +1,42 @@
 defmodule BackendWeb.LobbyChannel do
   @moduledoc """
-  Single "lobby" channel everyone joins on login. Tracks who's online
-  (drives the avatar dot on the home screen and the connection pill in
-  the top bar) AND which form a user is currently focused on, so the
-  list views can show "Alice is editing London HQ" indicators without
-  every list needing its own presence subscription.
+  Per-tenant "who's online" channel. Every user in a company shares
+  one Presence CRDT via the sharded topic `lobby:<company_id>`;
+  cross-tenant broadcasts don't exist because the topic namespace is
+  disjoint.
+
+  Tracks who's online (drives the avatar dot on the home screen and
+  the connection pill in the top bar) AND which form a user is
+  currently focused on, so the list views can show "Alice is editing
+  London HQ" indicators without every list needing its own presence
+  subscription.
 
   The `current_form` field is `"<resource>:<id>"` or `nil`. Pushed via
   the `meta:update` event from the client when they navigate onto a
   form route or leave it.
+
+  Previously the topic was a single `"lobby"` string and a per-socket
+  `intercept + handle_out` filter dropped foreign-tenant peers before
+  push. That's O(N·n) per diff (every socket re-scanned the full
+  roster). Per-tenant topics collapse it to O(n) per diff, delivered
+  only to that tenant's subscribers.
   """
 
   use Phoenix.Channel
 
   alias BackendWeb.Presence
 
-  # Every user in the app joins one shared `"lobby"` topic. Presence
-  # deltas are intercepted so a joining socket only ever sees peers
-  # from the same company — otherwise the lobby is a cross-tenant
-  # roster of everyone signed in (name / avatar / email leak).
-  intercept(["presence_state", "presence_diff"])
-
   @impl true
-  def join("lobby", _params, socket) do
-    send(self(), :after_join)
-    {:ok, socket}
+  def join("lobby:" <> company_id_str, _params, socket) do
+    user = socket.assigns.current_user
+
+    with {cid, ""} <- Integer.parse(company_id_str),
+         true <- cid == user.company_id do
+      send(self(), :after_join)
+      {:ok, socket}
+    else
+      _ -> {:error, %{reason: "forbidden"}}
+    end
   end
 
   @impl true
@@ -39,36 +51,11 @@ defmodule BackendWeb.LobbyChannel do
         # display, role) is fetched on demand through `/team`.
         avatar: user.avatar,
         user_id: user.id,
-        company_id: user.company_id,
         current_form: nil,
         online_at: System.system_time(:second)
       })
 
-    push(socket, "presence_state", filter_for_tenant(Presence.list(socket), user.company_id))
-    {:noreply, socket}
-  end
-
-  # Presence CRDT lives on one `"lobby"` topic that spans every
-  # tenant. Intercepts here filter the state (and each subsequent
-  # diff) down to peers in the joining socket's company. That means
-  # each client's Phoenix.Presence view is scoped, without needing
-  # to reshape the topic namespace or update every consumer.
-  @impl true
-  def handle_out("presence_state", state, socket) do
-    cid = socket.assigns.current_user.company_id
-    push(socket, "presence_state", filter_for_tenant(state, cid))
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_out("presence_diff", %{joins: joins, leaves: leaves}, socket) do
-    cid = socket.assigns.current_user.company_id
-
-    push(socket, "presence_diff", %{
-      joins: filter_for_tenant(joins, cid),
-      leaves: filter_for_tenant(leaves, cid)
-    })
-
+    push(socket, "presence_state", Presence.list(socket))
     {:noreply, socket}
   end
 
@@ -111,17 +98,4 @@ defmodule BackendWeb.LobbyChannel do
   end
 
   defp sanitise_current_form(_), do: nil
-
-  # Keep only presence entries whose metas belong to `company_id`.
-  # An entry can have multiple metas (one per open tab / device) — a
-  # user is same-tenant if ANY of their metas match. In practice a
-  # single user's metas always share company_id, but we don't rely
-  # on that.
-  defp filter_for_tenant(presence_map, company_id) do
-    presence_map
-    |> Enum.filter(fn {_user_id, %{metas: metas}} ->
-      Enum.any?(metas, fn meta -> meta[:company_id] == company_id end)
-    end)
-    |> Map.new()
-  end
 end
