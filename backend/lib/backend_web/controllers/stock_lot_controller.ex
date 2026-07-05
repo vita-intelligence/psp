@@ -960,18 +960,22 @@ defmodule BackendWeb.StockLotController do
   defp parse_limit(v) when is_integer(v) and v > 0, do: min(v, 200)
   defp parse_limit(_), do: 25
 
-  defp parse_sort(nil), do: nil
-
   # Allowed sort columns. Anything outside this list is silently
   # dropped — protects against atom-table DoS (`String.to_atom/1` on
-  # arbitrary client input would eventually exhaust the BEAM atom
-  # table).
+  # arbitrary client input would exhaust the BEAM atom table).
   @sortable_fields ~w(
     code inserted_at expiry_at manufactured_at status
     supplier_batch_no qty_on_hand unit_cost country_of_origin
   )
 
-  defp parse_sort(spec) when is_binary(spec) do
+  # Public for the security test suite — no other caller. Kept as
+  # `def` rather than `defp` so the atom-injection regression can
+  # drive `parse_sort/1` with hostile inputs and assert nothing new
+  # ever hits the atom table.
+  @doc false
+  def parse_sort(nil), do: nil
+
+  def parse_sort(spec) when is_binary(spec) do
     with [field, dir] <- String.split(spec, ":", parts: 2),
          true <- dir in ["asc", "desc"],
          true <- field in @sortable_fields do
@@ -981,5 +985,5 @@ defmodule BackendWeb.StockLotController do
     end
   end
 
-  defp parse_sort(_), do: nil
+  def parse_sort(_), do: nil
 end

@@ -75,6 +75,17 @@ defmodule Backend.MixProject do
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      # Pure-module security regression suite — runs without Postgres
+      # (useful when Docker isn't up locally). Exercises the classes
+      # that don't need seeded data: filename escaping, MIME sniffing,
+      # CSV formula neutralisation, atom-injection sort, ETS rate
+      # limiter.
+      #
+      # The DB-backed security tests (`test/security/tenancy_test.exs`,
+      # `form_channel_security_test.exs`, `page_channel_security_test.exs`,
+      # `token_revocation_test.exs`, `auth_rate_limit_test.exs`) run
+      # via the normal `mix test` once the sandbox DB is up.
+      "test.security.pure": ["run --no-start test/security/support/run_pure.exs"],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end

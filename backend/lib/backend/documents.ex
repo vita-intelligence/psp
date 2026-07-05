@@ -1020,34 +1020,8 @@ defmodule Backend.Documents do
   defp vendor_contact_first_name(%{name: name}) when is_binary(name) and name != "", do: name
   defp vendor_contact_first_name(_), do: "supplier"
 
-  # CSV cells that contain the separator, quotes, or newlines must be
-  # quoted with double-quotes per RFC 4180; embedded quotes get
-  # doubled.
-  #
-  # Cells that START with `=`, `+`, `-`, `@`, or a tab are treated as
-  # formulas by Excel / Google Sheets when the file is opened. A
-  # crafted product name like `=cmd|'/c calc'!A1` runs code on the
-  # importer's machine. Prefix such cells with a single quote (`'`)
-  # so the value renders as text and never enters the formula parser.
-  defp csv_escape(value, sep) do
-    s =
-      value
-      |> to_string()
-      |> neutralise_formula()
-
-    if String.contains?(s, [sep, "\"", "\n", "\r"]) do
-      "\"" <> String.replace(s, "\"", "\"\"") <> "\""
-    else
-      s
-    end
-  end
-
-  defp neutralise_formula(""), do: ""
-
-  defp neutralise_formula(<<c::utf8, _::binary>> = s)
-       when c in [?=, ?+, ?-, ?@, ?\t, ?\r] do
-    "'" <> s
-  end
-
-  defp neutralise_formula(s), do: s
+  # Delegate to the shared escape helper. Kept private here so
+  # existing callers don't need to change; the module lives in
+  # `Backend.CSV.Escape` so it can be tested standalone.
+  defp csv_escape(value, sep), do: Backend.CSV.Escape.escape(value, sep)
 end
