@@ -198,6 +198,14 @@ defmodule Backend.GoodsIn do
     |> case do
       {:ok, inspection} ->
         Audit.record_created(actor, "goods_in_inspection", inspection, snapshot(inspection))
+
+        Backend.Broadcasts.entity_changed(
+          "goods-in-inspection",
+          inspection.uuid,
+          inspection.company_id,
+          "created"
+        )
+
         {:ok, reload(inspection)}
 
       other ->
@@ -230,6 +238,14 @@ defmodule Backend.GoodsIn do
     |> case do
       {:ok, updated} ->
         Audit.record_updated(actor, "goods_in_inspection", updated, before_snap, snapshot(updated))
+
+        Backend.Broadcasts.entity_changed(
+          "goods-in-inspection",
+          updated.uuid,
+          updated.company_id,
+          "updated"
+        )
+
         {:ok, reload(updated)}
 
       other ->
@@ -432,6 +448,18 @@ defmodule Backend.GoodsIn do
           {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
           {:error, reason} -> Repo.rollback(reason)
         end
+      end)
+      |> tap(fn
+        {:ok, %Inspection{} = insp} ->
+          Backend.Broadcasts.entity_changed(
+            "goods-in-inspection",
+            insp.uuid,
+            insp.company_id,
+            "operator_signed"
+          )
+
+        _ ->
+          :ok
       end)
     end
   end
@@ -644,6 +672,18 @@ defmodule Backend.GoodsIn do
         {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
         {:error, reason} -> Repo.rollback(reason)
       end
+    end)
+    |> tap(fn
+      {:ok, %Inspection{} = insp} ->
+        Backend.Broadcasts.entity_changed(
+          "goods-in-inspection",
+          insp.uuid,
+          insp.company_id,
+          "approver_signed"
+        )
+
+      _ ->
+        :ok
     end)
   end
 
@@ -859,6 +899,13 @@ defmodule Backend.GoodsIn do
                     filename: file.filename
                   })
 
+                  Backend.Broadcasts.entity_changed(
+                    "goods-in-inspection",
+                    inspection.uuid,
+                    inspection.company_id,
+                    "file_added"
+                  )
+
                   {:ok, Repo.preload(file, :uploaded_by)}
 
                 {:error, cs} ->
@@ -904,6 +951,18 @@ defmodule Backend.GoodsIn do
                 {:error, reason} ->
                   Repo.rollback(reason)
               end
+            end)
+            |> tap(fn
+              {:ok, _} ->
+                Backend.Broadcasts.entity_changed(
+                  "goods-in-inspection",
+                  inspection.uuid,
+                  inspection.company_id,
+                  "file_removed"
+                )
+
+              _ ->
+                :ok
             end)
         end
     end

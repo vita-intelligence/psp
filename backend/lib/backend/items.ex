@@ -318,10 +318,24 @@ defmodule Backend.Items do
       end)
 
     case result do
-      {:ok, reloaded} -> {:ok, reloaded}
-      {:error, %{section: _section, changeset: _cs} = err} -> {:error, err}
-      {:error, {:invalid_attributes, _} = err} -> {:error, err}
-      other -> other
+      {:ok, reloaded} ->
+        Backend.Broadcasts.entity_changed(
+          "item",
+          reloaded.uuid,
+          reloaded.company_id,
+          "updated"
+        )
+
+        {:ok, reloaded}
+
+      {:error, %{section: _section, changeset: _cs} = err} ->
+        {:error, err}
+
+      {:error, {:invalid_attributes, _} = err} ->
+        {:error, err}
+
+      other ->
+        other
     end
   end
 
@@ -381,6 +395,7 @@ defmodule Backend.Items do
     case Repo.delete(item) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "item", item, before_state)
+        Backend.Broadcasts.entity_changed("item", item.uuid, item.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -538,6 +553,7 @@ defmodule Backend.Items do
         |> case do
           {:ok, updated} ->
             Audit.record_updated(actor, "item", updated, before, snapshot(updated))
+            Backend.Broadcasts.entity_changed("item", updated.uuid, updated.company_id, "marked_ready")
             {:ok, get_for_company_full(updated.company_id, updated.uuid)}
 
           other ->
@@ -574,6 +590,7 @@ defmodule Backend.Items do
       |> case do
         {:ok, updated} ->
           Audit.record_updated(actor, "item", updated, before, snapshot(updated))
+          Backend.Broadcasts.entity_changed("item", updated.uuid, updated.company_id, "reverted_to_draft")
           {:ok, updated}
 
         other ->
@@ -607,8 +624,12 @@ defmodule Backend.Items do
     |> ItemFile.changeset(attrs)
     |> Repo.insert()
     |> case do
-      {:ok, file} -> {:ok, Repo.preload(file, :uploaded_by)}
-      other -> other
+      {:ok, file} ->
+        Backend.Broadcasts.entity_changed("item", item.uuid, item.company_id, "file_added")
+        {:ok, Repo.preload(file, :uploaded_by)}
+
+      other ->
+        other
     end
   end
 
@@ -634,6 +655,7 @@ defmodule Backend.Items do
 
   defp after_create({:ok, item}, actor) do
     Audit.record_created(actor, "item", item, snapshot(item))
+    Backend.Broadcasts.entity_changed("item", item.uuid, item.company_id, "created")
     {:ok, Repo.preload(item, [:stock_uom, :product_family, :created_by, :updated_by])}
   end
 
@@ -641,6 +663,7 @@ defmodule Backend.Items do
 
   defp after_update({:ok, item}, actor, before_state) do
     Audit.record_updated(actor, "item", item, before_state, snapshot(item))
+    Backend.Broadcasts.entity_changed("item", item.uuid, item.company_id, "updated")
     {:ok, Repo.preload(item, [:stock_uom, :product_family, :created_by, :updated_by])}
   end
 

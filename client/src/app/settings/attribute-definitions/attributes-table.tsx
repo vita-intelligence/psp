@@ -259,6 +259,7 @@ export function AttributesTable({
   return (
     <DataTable
       tableId="attribute-definitions"
+      realtimeEntity="attribute-definition"
       columns={columns}
       rowKey={(a) => String(a.id)}
       fetchPage={fetchPage}

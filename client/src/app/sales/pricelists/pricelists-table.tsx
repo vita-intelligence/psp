@@ -256,6 +256,7 @@ export function PricelistsTable({ initialPage }: Props) {
   return (
     <DataTable<Pricelist>
       tableId="pricelists"
+      realtimeEntity="pricelist"
       columns={columns}
       rowKey={(p) => String(p.id)}
       fetchPage={fetchPricelistsPage}

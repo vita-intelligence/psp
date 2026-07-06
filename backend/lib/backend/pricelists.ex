@@ -116,6 +116,7 @@ defmodule Backend.Pricelists do
     |> case do
       {:ok, pricelist} ->
         Audit.record_created(actor, "pricelist", pricelist, pricelist_snapshot(pricelist))
+        Backend.Broadcasts.entity_changed("pricelist", pricelist.uuid, pricelist.company_id, "created")
         {:ok, preload_pricelist(pricelist)}
 
       other ->
@@ -140,6 +141,7 @@ defmodule Backend.Pricelists do
           pricelist_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed("pricelist", updated.uuid, updated.company_id, "updated")
         {:ok, preload_pricelist(updated)}
 
       other ->
@@ -153,6 +155,7 @@ defmodule Backend.Pricelists do
     case Repo.delete(pricelist) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "pricelist", pricelist, before_state)
+        Backend.Broadcasts.entity_changed("pricelist", pricelist.uuid, pricelist.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -196,6 +199,13 @@ defmodule Backend.Pricelists do
           Repo.rollback(cs)
       end
     end)
+    |> tap(fn
+      {:ok, %Pricelist{} = pl} ->
+        Backend.Broadcasts.entity_changed("pricelist", pl.uuid, pl.company_id, "default_set")
+
+      _ ->
+        :ok
+    end)
   end
 
   # ----- line items -----------------------------------------------
@@ -220,6 +230,13 @@ defmodule Backend.Pricelists do
           min_quantity: row.min_quantity,
           selling_price: row.selling_price
         })
+
+        Backend.Broadcasts.entity_changed(
+          "pricelist",
+          pricelist.uuid,
+          pricelist.company_id,
+          "line_added"
+        )
 
         {:ok, Repo.preload(row, [item: :stock_uom])}
 
@@ -254,6 +271,7 @@ defmodule Backend.Pricelists do
           }
         )
 
+        broadcast_pricelist_by_id(updated.pricelist_id, updated.company_id, "line_updated")
         {:ok, Repo.preload(updated, [item: :stock_uom])}
 
       other ->
@@ -270,12 +288,26 @@ defmodule Backend.Pricelists do
           min_quantity: row.min_quantity
         })
 
+        broadcast_pricelist_by_id(row.pricelist_id, row.company_id, "line_deleted")
         {:ok, deleted}
 
       other ->
         other
     end
   end
+
+  defp broadcast_pricelist_by_id(pricelist_id, company_id, action)
+       when is_integer(pricelist_id) and is_integer(company_id) do
+    case Repo.get(Pricelist, pricelist_id) do
+      %Pricelist{uuid: uuid} ->
+        Backend.Broadcasts.entity_changed("pricelist", uuid, company_id, action)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_pricelist_by_id(_, _, _), do: :ok
 
   def get_line(pricelist_id, uuid) when is_integer(pricelist_id) and is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do

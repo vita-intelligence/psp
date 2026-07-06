@@ -406,6 +406,7 @@ export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
   return (
     <DataTable<PurchaseOrder>
       tableId="purchase-orders"
+      realtimeEntity="purchase-order"
       columns={columns}
       rowKey={(p) => String(p.id)}
       fetchPage={fetchPOPage}

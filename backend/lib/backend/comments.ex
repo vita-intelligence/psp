@@ -193,12 +193,55 @@ defmodule Backend.Comments do
                 ])
 
               Audit.record_created(actor, "comment", comment, comment_audit_snapshot(comment))
+              broadcast_parent_commented(actor.company_id, entity_type, entity_id, "commented")
               {:ok, comment}
 
             other ->
               other
           end
         end
+    end
+  end
+
+  # Comments are per-entity; broadcast on the *parent* entity's channel
+  # so detail-page listeners re-fetch their comment list without needing
+  # their own channel. `entity_type` is stored snake_case; the FE hook
+  # uses kebab-case, so translate before broadcasting. We look up the
+  # parent's uuid to fire the detail-scoped topic too — cheap because
+  # each broadcast is one PubSub send.
+  defp broadcast_parent_commented(company_id, entity_type, entity_id, action) do
+    fe_entity = String.replace(entity_type, "_", "-")
+    uuid = fetch_parent_uuid(entity_type, entity_id)
+    Backend.Broadcasts.entity_changed(fe_entity, uuid || entity_id, company_id, action)
+    :ok
+  end
+
+  defp fetch_parent_uuid(entity_type, entity_id) do
+    schema =
+      case entity_type do
+        "vendor" -> Backend.Vendors.Vendor
+        "customer" -> Backend.Customers.Customer
+        "pricelist" -> Backend.Pricelists.Pricelist
+        "customer_order" -> Backend.CustomerOrders.CustomerOrder
+        "customer_invoice" -> Backend.CustomerInvoices.CustomerInvoice
+        "customer_return" -> Backend.CustomerReturns.CustomerReturn
+        "loyalty_program" -> Backend.Loyalty.LoyaltyProgram
+        "purchase_order" -> Backend.Purchasing.PurchaseOrder
+        "stock_lot" -> Backend.Stock.Lot
+        "purchase_order_line" -> Backend.Purchasing.PurchaseOrderLine
+        "bom" -> Backend.Production.BOM
+        "workstation_group" -> Backend.Production.WorkstationGroup
+        "workstation" -> Backend.Production.Workstation
+        "routing" -> Backend.Production.Routing
+        "manufacturing_order" -> Backend.Production.ManufacturingOrder
+        "manufacturing_order_step" -> Backend.Production.ManufacturingOrderStep
+        "shipment" -> Backend.Shipments.Shipment
+        _ -> nil
+      end
+
+    case schema && Repo.get(schema, entity_id) do
+      %{uuid: uuid} -> uuid
+      _ -> nil
     end
   end
 
@@ -255,6 +298,14 @@ defmodule Backend.Comments do
       {:ok, updated} ->
         updated = Repo.preload(updated, :author)
         Audit.record_updated(actor, "comment", updated, before_state, comment_audit_snapshot(updated))
+
+        broadcast_parent_commented(
+          updated.company_id,
+          updated.entity_type,
+          updated.entity_id,
+          "comment_updated"
+        )
+
         {:ok, updated}
 
       other ->
@@ -278,6 +329,14 @@ defmodule Backend.Comments do
         {:ok, updated} ->
           updated = Repo.preload(updated, :author)
           Audit.record_updated(actor, "comment", updated, before_state, comment_audit_snapshot(updated))
+
+          broadcast_parent_commented(
+            updated.company_id,
+            updated.entity_type,
+            updated.entity_id,
+            "comment_deleted"
+          )
+
           {:ok, updated}
 
         other ->

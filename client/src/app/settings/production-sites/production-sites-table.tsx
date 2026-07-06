@@ -245,6 +245,7 @@ export function ProductionSitesTable({
   return (
     <DataTable<Warehouse>
       tableId="production-sites"
+      realtimeEntity="production-site"
       columns={columns}
       rowKey={(w) => String(w.id)}
       fetchPage={fetchSitesPage}

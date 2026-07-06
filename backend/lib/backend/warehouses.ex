@@ -171,6 +171,7 @@ defmodule Backend.Warehouses do
 
   defp after_create({:ok, warehouse}, actor) do
     Audit.record_created(actor, "warehouse", warehouse, audit_snapshot(warehouse))
+    Backend.Broadcasts.entity_changed("warehouse", warehouse.uuid, warehouse.company_id, "created")
     {:ok, Repo.preload(warehouse, [:created_by, :updated_by])}
   end
 
@@ -185,6 +186,7 @@ defmodule Backend.Warehouses do
       audit_snapshot(warehouse)
     )
 
+    Backend.Broadcasts.entity_changed("warehouse", warehouse.uuid, warehouse.company_id, "updated")
     {:ok, Repo.preload(warehouse, [:created_by, :updated_by])}
   end
 
@@ -199,6 +201,7 @@ defmodule Backend.Warehouses do
     case Repo.delete(warehouse) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "warehouse", warehouse, before_state)
+        Backend.Broadcasts.entity_changed("warehouse", warehouse.uuid, warehouse.company_id, "deleted")
         {:ok, deleted}
 
       other ->

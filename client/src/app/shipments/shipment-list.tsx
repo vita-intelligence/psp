@@ -448,6 +448,7 @@ export function ShipmentList({
   return (
     <DataTable<Shipment>
       tableId="shipments.list"
+      realtimeEntity="shipment"
       initialPage={initialPage}
       columns={columns}
       rowKey={(s) => s.uuid}

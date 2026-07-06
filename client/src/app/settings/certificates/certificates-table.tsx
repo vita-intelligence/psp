@@ -211,6 +211,7 @@ export function CertificatesTable({
   return (
     <DataTable
       tableId="certificates"
+      realtimeEntity="certificate"
       columns={columns}
       rowKey={(c) => String(c.id)}
       fetchPage={fetchPage}

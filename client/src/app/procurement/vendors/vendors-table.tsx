@@ -518,6 +518,7 @@ export function VendorsTable({ initialPage }: VendorsTableProps) {
   return (
     <DataTable<Vendor>
       tableId="vendors"
+      realtimeEntity="vendor"
       columns={columns}
       rowKey={(v) => String(v.id)}
       fetchPage={fetchVendorsPage}

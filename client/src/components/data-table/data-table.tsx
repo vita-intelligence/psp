@@ -31,6 +31,7 @@ import { Toolbar } from "./toolbar";
 import { DraggableHeader } from "./draggable-header";
 import { FilterRow } from "./filter-row";
 import { useTableState } from "./use-table-state";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type {
   ColumnFilterValue,
   DataTableColumn,
@@ -76,6 +77,7 @@ export function DataTable<T>({
   toolbarActions,
   beforeTable,
   renderMobileCard,
+  realtimeEntity,
 }: DataTableProps<T>) {
   const defaultHiddenIds = useMemo(
     () => columns.filter((c) => c.defaultHidden).map((c) => c.id),
@@ -129,6 +131,17 @@ export function DataTable<T>({
     JSON.stringify(columnFilters),
     pageSize,
   ];
+
+  // Tenant-scoped realtime — subscribe once per entity/tableId and
+  // let a peer's write flag our TanStack cache stale + refresh the
+  // SSR page. Invalidate keyed on the *prefix* `["data-table", tableId]`
+  // so every filter/sort permutation of this table refetches, not
+  // just the one the current user is looking at.
+  useEntityChannel({
+    entity: realtimeEntity ?? "",
+    invalidateQueryKey: ["data-table", tableId],
+    disabled: !realtimeEntity,
+  });
 
   // The server-pre-fetched first page is only valid for the very
   // first query (default sort, no search, no filters). If we hand it

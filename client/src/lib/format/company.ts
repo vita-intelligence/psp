@@ -18,6 +18,10 @@ import type { CompanyDefaults } from "../types";
 /** A loose shape so callers can pass either the full CompanyDefaults
  *  or a hand-built `{date_format: "..."}`. */
 export interface FormatPrefs {
+  /** Tenant id — exposed so client-side helpers that need to scope
+   *  a subscription per company (e.g. the entity-broadcast channel)
+   *  can grab it via the same context that already carries locale. */
+  id?: number | null;
   date_format?: string | null;
   decimal_separator?: string | null;
   thousands_separator?: string | null;

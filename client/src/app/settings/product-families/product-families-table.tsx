@@ -137,6 +137,7 @@ export function ProductFamiliesTable({
   return (
     <DataTable
       tableId="product-families"
+      realtimeEntity="product-family"
       columns={columns}
       rowKey={(f) => String(f.id)}
       fetchPage={fetchFamiliesPage}

@@ -125,6 +125,8 @@ defmodule BackendWeb.UserController do
         audit_snapshot(updated)
       )
 
+      Backend.Broadcasts.entity_changed("user", updated.uuid, updated.company_id, "access_updated")
+
       updated = Repo.preload(updated, [:created_by, :updated_by])
       online = updated.id in Presence.list_online_user_ids(updated.company_id)
 

@@ -149,6 +149,7 @@ defmodule Backend.Warehouses.StorageTags do
     case Repo.delete(tag) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "storage_tag", tag, before_state)
+        Backend.Broadcasts.entity_changed("storage-tag", tag.uuid, tag.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -198,6 +199,7 @@ defmodule Backend.Warehouses.StorageTags do
 
   defp after_create({:ok, tag}, actor) do
     Audit.record_created(actor, "storage_tag", tag, snapshot(tag))
+    Backend.Broadcasts.entity_changed("storage-tag", tag.uuid, tag.company_id, "created")
     {:ok, Repo.preload(tag, [:created_by, :updated_by])}
   end
 
@@ -205,6 +207,7 @@ defmodule Backend.Warehouses.StorageTags do
 
   defp after_update({:ok, tag}, actor, before_state) do
     Audit.record_updated(actor, "storage_tag", tag, before_state, snapshot(tag))
+    Backend.Broadcasts.entity_changed("storage-tag", tag.uuid, tag.company_id, "updated")
     {:ok, Repo.preload(tag, [:created_by, :updated_by])}
   end
 

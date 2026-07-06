@@ -317,6 +317,7 @@ export function RoutingsLedger({ initialPage }: Props) {
   return (
     <DataTable<RoutingSummary>
       tableId="production-routings"
+      realtimeEntity="routing"
       columns={columns}
       rowKey={(r) => String(r.id)}
       fetchPage={fetchPage}

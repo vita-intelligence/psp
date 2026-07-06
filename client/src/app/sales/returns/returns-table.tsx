@@ -357,6 +357,7 @@ export function ReturnsTable({ initialPage }: Props) {
   return (
     <DataTable<CustomerReturn>
       tableId="customer-returns"
+      realtimeEntity="customer-return"
       columns={columns}
       rowKey={(rma) => String(rma.id)}
       fetchPage={fetchPage}

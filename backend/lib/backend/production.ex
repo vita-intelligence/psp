@@ -204,8 +204,12 @@ defmodule Backend.Production do
         end
       end)
       |> case do
-        {:ok, {bom, _lines}} -> {:ok, reload(bom)}
-        other -> other
+        {:ok, {bom, _lines}} ->
+          Backend.Broadcasts.entity_changed("bom", bom.uuid, bom.company_id, "created")
+          {:ok, reload(bom)}
+
+        other ->
+          other
       end
     end
   end
@@ -241,8 +245,12 @@ defmodule Backend.Production do
       end
     end)
     |> case do
-      {:ok, {bom, _lines}} -> {:ok, reload(bom)}
-      other -> other
+      {:ok, {bom, _lines}} ->
+        Backend.Broadcasts.entity_changed("bom", bom.uuid, bom.company_id, "updated")
+        {:ok, reload(bom)}
+
+      other ->
+        other
     end
   end
 
@@ -394,6 +402,13 @@ defmodule Backend.Production do
         {:error, cs} -> Repo.rollback(cs)
       end
     end)
+    |> tap(fn
+      {:ok, %BOM{} = bom} ->
+        Backend.Broadcasts.entity_changed("bom", bom.uuid, bom.company_id, "primary_set")
+
+      _ ->
+        :ok
+    end)
   end
 
   @doc """
@@ -403,6 +418,7 @@ defmodule Backend.Production do
     case Repo.delete(bom) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "bom", deleted, snapshot(deleted))
+        Backend.Broadcasts.entity_changed("bom", bom.uuid, bom.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -601,6 +617,7 @@ defmodule Backend.Production do
     |> case do
       {:ok, group} ->
         Audit.record_created(actor, "workstation_group", group, wg_snapshot(group))
+        Backend.Broadcasts.entity_changed("workstation-group", group.uuid, group.company_id, "created")
         {:ok, reload_workstation_group(group)}
 
       {:error, _} = err ->
@@ -628,6 +645,7 @@ defmodule Backend.Production do
     |> case do
       {:ok, updated} ->
         Audit.record_updated(actor, "workstation_group", updated, before, wg_snapshot(updated))
+        Backend.Broadcasts.entity_changed("workstation-group", updated.uuid, updated.company_id, "updated")
         {:ok, reload_workstation_group(updated)}
 
       {:error, _} = err ->
@@ -647,6 +665,7 @@ defmodule Backend.Production do
     case Repo.delete(group) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "workstation_group", deleted, before)
+        Backend.Broadcasts.entity_changed("workstation-group", group.uuid, group.company_id, "deleted")
         {:ok, deleted}
 
       err ->
@@ -839,8 +858,12 @@ defmodule Backend.Production do
         end
       end)
       |> case do
-        {:ok, ws} -> {:ok, reload_workstation(ws)}
-        other -> other
+        {:ok, ws} ->
+          Backend.Broadcasts.entity_changed("workstation", ws.uuid, ws.company_id, "created")
+          {:ok, reload_workstation(ws)}
+
+        other ->
+          other
       end
     end
   end
@@ -889,8 +912,12 @@ defmodule Backend.Production do
         end
       end)
       |> case do
-        {:ok, ws} -> {:ok, reload_workstation(ws)}
-        other -> other
+        {:ok, ws} ->
+          Backend.Broadcasts.entity_changed("workstation", ws.uuid, ws.company_id, "updated")
+          {:ok, reload_workstation(ws)}
+
+        other ->
+          other
       end
     end
   end
@@ -901,6 +928,7 @@ defmodule Backend.Production do
     case Repo.delete(ws) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "workstation", deleted, before)
+        Backend.Broadcasts.entity_changed("workstation", ws.uuid, ws.company_id, "deleted")
         {:ok, deleted}
 
       err ->
@@ -1176,8 +1204,12 @@ defmodule Backend.Production do
         end
       end)
       |> case do
-        {:ok, routing} -> {:ok, reload_routing(routing)}
-        other -> other
+        {:ok, routing} ->
+          Backend.Broadcasts.entity_changed("routing", routing.uuid, routing.company_id, "created")
+          {:ok, reload_routing(routing)}
+
+        other ->
+          other
       end
     end
   end
@@ -1222,8 +1254,12 @@ defmodule Backend.Production do
         end
       end)
       |> case do
-        {:ok, routing} -> {:ok, reload_routing(routing)}
-        other -> other
+        {:ok, routing} ->
+          Backend.Broadcasts.entity_changed("routing", routing.uuid, routing.company_id, "updated")
+          {:ok, reload_routing(routing)}
+
+        other ->
+          other
       end
     end
   end
@@ -1234,6 +1270,7 @@ defmodule Backend.Production do
     case Repo.delete(routing) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "routing", deleted, before)
+        Backend.Broadcasts.entity_changed("routing", routing.uuid, routing.company_id, "deleted")
         {:ok, deleted}
 
       err ->
@@ -1631,6 +1668,14 @@ defmodule Backend.Production do
           # Hook the wizard's realtime channel — the Project Control
           # Board for the parent CO should refresh.
           Backend.OrderWizard.notify_via_mo(mo)
+
+          Backend.Broadcasts.entity_changed(
+            "manufacturing-order",
+            mo.uuid,
+            mo.company_id,
+            "created"
+          )
+
           {:ok, reload_manufacturing_order(mo)}
 
         err ->
@@ -2273,8 +2318,18 @@ defmodule Backend.Production do
       end
     end)
     |> case do
-      {:ok, step} -> {:ok, reload_mo_step(step)}
-      err -> err
+      {:ok, step} ->
+        Backend.Broadcasts.entity_changed(
+          "manufacturing-order-step",
+          step.uuid,
+          step.company_id,
+          "updated"
+        )
+
+        {:ok, reload_mo_step(step)}
+
+      err ->
+        err
     end
   end
 
@@ -2406,6 +2461,13 @@ defmodule Backend.Production do
           if structural_mo_change?(before, mo_snapshot(updated)) do
             _ = demote_root_if_signed(actor, updated)
           end
+
+          Backend.Broadcasts.entity_changed(
+            "manufacturing-order",
+            updated.uuid,
+            updated.company_id,
+            "updated"
+          )
 
           {:ok, reload_manufacturing_order(updated)}
 
@@ -2559,6 +2621,13 @@ defmodule Backend.Production do
           mo_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed(
+          "manufacturing-order",
+          updated.uuid,
+          updated.company_id,
+          to
+        )
+
         {:ok, reload_manufacturing_order(updated)}
 
       err ->
@@ -2678,6 +2747,18 @@ defmodule Backend.Production do
         "updated_by_id" => actor.id
       })
       |> Repo.update()
+      |> tap(fn
+        {:ok, updated} ->
+          Backend.Broadcasts.entity_changed(
+            "manufacturing-order",
+            updated.uuid,
+            updated.company_id,
+            "purchases_requested"
+          )
+
+        _ ->
+          :ok
+      end)
     end
   end
 
@@ -2694,6 +2775,18 @@ defmodule Backend.Production do
         "updated_by_id" => actor.id
       })
       |> Repo.update()
+      |> tap(fn
+        {:ok, updated} ->
+          Backend.Broadcasts.entity_changed(
+            "manufacturing-order",
+            updated.uuid,
+            updated.company_id,
+            "purchase_request_cancelled"
+          )
+
+        _ ->
+          :ok
+      end)
     end
   end
 
@@ -2889,6 +2982,14 @@ defmodule Backend.Production do
     case Repo.delete(mo) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "manufacturing_order", deleted, before)
+
+        Backend.Broadcasts.entity_changed(
+          "manufacturing-order",
+          mo.uuid,
+          mo.company_id,
+          "deleted"
+        )
+
         {:ok, deleted}
 
       err ->
@@ -6173,6 +6274,20 @@ defmodule Backend.Production do
     mo
     |> ManufacturingOrder.transition_changeset(attrs)
     |> Repo.update()
+    |> case do
+      {:ok, updated} = ok ->
+        Backend.Broadcasts.entity_changed(
+          "manufacturing-order",
+          updated.uuid,
+          updated.company_id,
+          "needs_replan"
+        )
+
+        ok
+
+      err ->
+        err
+    end
   end
 
   @doc """
@@ -6194,6 +6309,20 @@ defmodule Backend.Production do
       mo
       |> ManufacturingOrder.transition_changeset(attrs)
       |> Repo.update()
+      |> case do
+        {:ok, updated} = ok ->
+          Backend.Broadcasts.entity_changed(
+            "manufacturing-order",
+            updated.uuid,
+            updated.company_id,
+            "replan_cleared"
+          )
+
+          ok
+
+        err ->
+          err
+      end
     end
   end
 
@@ -9717,6 +9846,13 @@ defmodule Backend.Production do
         # per-MO card state. Without this the FE keeps rendering
         # the pre-change snapshot until the next full page load.
         Backend.OrderWizard.notify_via_mo(updated)
+
+        Backend.Broadcasts.entity_changed(
+          "manufacturing-order",
+          updated.uuid,
+          updated.company_id,
+          "pickup_changed"
+        )
 
         {:ok, reload_manufacturing_order(updated)}
 

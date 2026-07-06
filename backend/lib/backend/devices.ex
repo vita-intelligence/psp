@@ -175,8 +175,18 @@ defmodule Backend.Devices do
     }
 
     case %LinkedDevice{} |> LinkedDevice.claim_changeset(device_attrs) |> Repo.insert() do
-      {:ok, device} -> {:ok, %{device: device, token: raw_token}}
-      {:error, changeset} -> {:error, changeset}
+      {:ok, device} ->
+        Backend.Broadcasts.entity_changed(
+          "linked-device",
+          device.uuid,
+          device.company_id,
+          "registered"
+        )
+
+        {:ok, %{device: device, token: raw_token}}
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -264,6 +274,14 @@ defmodule Backend.Devices do
       with {:ok, revoked} <- result do
         # Boot any open sockets / disconnect the channel.
         Endpoint.broadcast("device:#{revoked.uuid}", "revoked", %{})
+
+        Backend.Broadcasts.entity_changed(
+          "linked-device",
+          revoked.uuid,
+          revoked.company_id,
+          "revoked"
+        )
+
         {:ok, revoked}
       end
     end

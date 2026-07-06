@@ -57,13 +57,25 @@ defmodule Backend.Companies do
     company
     |> Company.identity_changeset(attrs)
     |> Repo.update()
+    |> broadcast_company_change("identity_updated")
   end
 
   def update_locale(%Company{} = company, attrs) do
     company
     |> Company.locale_changeset(attrs)
     |> Repo.update()
+    |> broadcast_company_change("locale_updated")
   end
+
+  # Fire a single-tenant company channel refresh on every successful
+  # settings write. The topic is `entity:company:<company_id>` so any
+  # /settings page listener re-fetches.
+  defp broadcast_company_change({:ok, %Company{} = c} = res, action) do
+    Backend.Broadcasts.entity_changed("company", c.id, c.id, action)
+    res
+  end
+
+  defp broadcast_company_change(other, _action), do: other
 
   @doc """
   Flip the company-wide MFA-required toggle.
@@ -93,6 +105,7 @@ defmodule Backend.Companies do
           Repo.rollback(cs)
       end
     end)
+    |> broadcast_company_change("security_updated")
   end
 
   # `previous` = the company row we read before the changeset ran.
@@ -132,6 +145,7 @@ defmodule Backend.Companies do
     company
     |> Company.warehouse_pickup_changeset(attrs)
     |> Repo.update()
+    |> broadcast_company_change("warehouse_pickup_updated")
   end
 
   @doc """
@@ -145,6 +159,7 @@ defmodule Backend.Companies do
     company
     |> Company.three_pl_rate_changeset(attrs)
     |> Repo.update()
+    |> broadcast_company_change("three_pl_rate_updated")
   end
 
   @doc """
@@ -167,6 +182,7 @@ defmodule Backend.Companies do
     company
     |> Ecto.Changeset.change(%{field => value})
     |> Repo.update()
+    |> broadcast_company_change("bag_updated")
   end
 
   @doc """
@@ -195,6 +211,7 @@ defmodule Backend.Companies do
       err ->
         err
     end
+    |> broadcast_company_change("auto_pull_updated")
   end
 
   @doc """
@@ -262,6 +279,7 @@ defmodule Backend.Companies do
       err ->
         err
     end
+    |> broadcast_company_change("currency_rates_updated")
   end
 
   # The audit module derives `company_id` from `entity.company_id`,

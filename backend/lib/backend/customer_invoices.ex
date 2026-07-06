@@ -168,6 +168,7 @@ defmodule Backend.CustomerInvoices do
     |> case do
       {:ok, inv} ->
         Audit.record_created(actor, "customer_invoice", inv, invoice_snapshot(inv))
+        Backend.Broadcasts.entity_changed("customer-invoice", inv.uuid, inv.company_id, "created")
         {:ok, preload_invoice(inv)}
 
       other ->
@@ -291,27 +292,43 @@ defmodule Backend.CustomerInvoices do
       }
       |> default_invoice_dates()
 
-      Repo.transaction(fn ->
-        with {:ok, cn} <-
-               %CustomerInvoice{}
-               |> CustomerInvoice.changeset(attrs)
-               |> Repo.insert(),
-             {:ok, _lines} <- copy_credit_note_lines(actor, cn, accepted_lines),
-             {:ok, totalled} <- recompute_totals(cn),
-             {:ok, sent} <- flip_credit_note_to_sent(actor, totalled) do
-          Audit.record_created(actor, "customer_invoice", sent, %{
-            kind: sent.kind,
-            customer_id: sent.customer_id,
-            linked_rma_id: sent.linked_rma_id,
-            grand_total: sent.grand_total
-          })
+      result =
+        Repo.transaction(fn ->
+          with {:ok, cn} <-
+                 %CustomerInvoice{}
+                 |> CustomerInvoice.changeset(attrs)
+                 |> Repo.insert(),
+               {:ok, _lines} <- copy_credit_note_lines(actor, cn, accepted_lines),
+               {:ok, totalled} <- recompute_totals(cn),
+               {:ok, sent} <- flip_credit_note_to_sent(actor, totalled) do
+            Audit.record_created(actor, "customer_invoice", sent, %{
+              kind: sent.kind,
+              customer_id: sent.customer_id,
+              linked_rma_id: sent.linked_rma_id,
+              grand_total: sent.grand_total
+            })
 
-          preload_invoice(sent)
-        else
-          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+            preload_invoice(sent)
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      case result do
+        {:ok, %CustomerInvoice{} = cn} ->
+          Backend.Broadcasts.entity_changed(
+            "customer-invoice",
+            cn.uuid,
+            cn.company_id,
+            "credit_note_issued"
+          )
+
+        _ ->
+          :ok
+      end
+
+      result
     end
   end
 
@@ -498,6 +515,7 @@ defmodule Backend.CustomerInvoices do
         )
 
         {:ok, _} = recompute_totals(updated)
+        Backend.Broadcasts.entity_changed("customer-invoice", updated.uuid, updated.company_id, "updated")
         {:ok, preload_invoice(updated)}
 
       other ->
@@ -513,6 +531,7 @@ defmodule Backend.CustomerInvoices do
     case Repo.delete(inv) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "customer_invoice", inv, before_state)
+        Backend.Broadcasts.entity_changed("customer-invoice", inv.uuid, inv.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -546,6 +565,7 @@ defmodule Backend.CustomerInvoices do
         })
 
         {:ok, _} = recompute_totals(inv)
+        Backend.Broadcasts.entity_changed("customer-invoice", inv.uuid, inv.company_id, "line_added")
         {:ok, Repo.preload(line, [item: :stock_uom])}
 
       other ->
@@ -578,6 +598,7 @@ defmodule Backend.CustomerInvoices do
           )
 
           {:ok, _} = recompute_totals(inv)
+          Backend.Broadcasts.entity_changed("customer-invoice", inv.uuid, inv.company_id, "line_updated")
           {:ok, Repo.preload(updated, [item: :stock_uom])}
 
         other ->
@@ -600,6 +621,7 @@ defmodule Backend.CustomerInvoices do
           })
 
           {:ok, _} = recompute_totals(inv)
+          Backend.Broadcasts.entity_changed("customer-invoice", inv.uuid, inv.company_id, "line_deleted")
           {:ok, deleted}
 
         other ->
@@ -773,6 +795,13 @@ defmodule Backend.CustomerInvoices do
           invoice_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed(
+          "customer-invoice",
+          updated.uuid,
+          updated.company_id,
+          Map.get(attrs, "status") || Map.get(attrs, :status) || "updated"
+        )
+
         {:ok, preload_invoice(updated)}
 
       other ->
@@ -827,25 +856,41 @@ defmodule Backend.CustomerInvoices do
           "recorded_by_id" => actor.id
         })
 
-      Repo.transaction(fn ->
-        with {:ok, payment} <-
-               %CustomerInvoicePayment{}
-               |> CustomerInvoicePayment.changeset(attrs)
-               |> Repo.insert(),
-             {:ok, refreshed} <- maybe_flip_status_after_payment(actor, inv) do
-          Audit.record_created(actor, "customer_invoice_payment", payment, %{
-            customer_invoice_id: payment.customer_invoice_id,
-            amount: payment.amount,
-            method: payment.method,
-            paid_at: payment.paid_at
-          })
+      result =
+        Repo.transaction(fn ->
+          with {:ok, payment} <-
+                 %CustomerInvoicePayment{}
+                 |> CustomerInvoicePayment.changeset(attrs)
+                 |> Repo.insert(),
+               {:ok, refreshed} <- maybe_flip_status_after_payment(actor, inv) do
+            Audit.record_created(actor, "customer_invoice_payment", payment, %{
+              customer_invoice_id: payment.customer_invoice_id,
+              amount: payment.amount,
+              method: payment.method,
+              paid_at: payment.paid_at
+            })
 
-          %{payment: Repo.preload(payment, [:recorded_by]), invoice: refreshed}
-        else
-          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+            %{payment: Repo.preload(payment, [:recorded_by]), invoice: refreshed}
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      case result do
+        {:ok, _} ->
+          Backend.Broadcasts.entity_changed(
+            "customer-invoice",
+            inv.uuid,
+            inv.company_id,
+            "payment_recorded"
+          )
+
+        _ ->
+          :ok
+      end
+
+      result
     end
   end
 

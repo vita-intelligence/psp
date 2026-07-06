@@ -341,6 +341,7 @@ export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
   return (
     <DataTable<WorkstationSummary>
       tableId="production-workstations"
+      realtimeEntity="workstation"
       columns={columns}
       rowKey={(w) => String(w.id)}
       fetchPage={fetchPage}

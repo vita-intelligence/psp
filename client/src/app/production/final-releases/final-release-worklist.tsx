@@ -469,6 +469,7 @@ export function FinalReleaseWorklist({ initialPage }: Props) {
   return (
     <DataTable<FinalRelease>
       tableId="production.final-releases"
+      realtimeEntity="final-release"
       initialPage={{
         items: initialPage.items,
         next_cursor: initialPage.next_cursor,

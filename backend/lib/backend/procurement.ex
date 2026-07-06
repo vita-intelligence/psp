@@ -224,6 +224,7 @@ defmodule Backend.Procurement do
     |> case do
       {:ok, invoice} ->
         Audit.record_created(actor, "procurement_invoice", invoice, snapshot(invoice))
+        Backend.Broadcasts.entity_changed("purchase-invoice", invoice.uuid, invoice.company_id, "created")
         {:ok, preload(invoice)}
 
       {:error, cs} ->
@@ -249,6 +250,7 @@ defmodule Backend.Procurement do
     |> case do
       {:ok, updated} ->
         Audit.record_updated(actor, "procurement_invoice", updated, before, snapshot(updated))
+        Backend.Broadcasts.entity_changed("purchase-invoice", updated.uuid, updated.company_id, "updated")
         {:ok, preload(updated)}
 
       {:error, cs} ->
@@ -257,17 +259,28 @@ defmodule Backend.Procurement do
   end
 
   def delete(%User{} = actor, %Invoice{} = invoice) do
-    Repo.transaction(fn ->
-      case Repo.delete(invoice) do
-        {:ok, deleted} ->
-          if invoice.file_blob_path, do: Storage.delete(invoice.file_blob_path)
-          Audit.record_deleted(actor, "procurement_invoice", deleted, snapshot(deleted))
-          deleted
+    result =
+      Repo.transaction(fn ->
+        case Repo.delete(invoice) do
+          {:ok, deleted} ->
+            if invoice.file_blob_path, do: Storage.delete(invoice.file_blob_path)
+            Audit.record_deleted(actor, "procurement_invoice", deleted, snapshot(deleted))
+            deleted
 
-        {:error, reason} ->
-          Repo.rollback(reason)
-      end
-    end)
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
+
+    case result do
+      {:ok, _} ->
+        Backend.Broadcasts.entity_changed("purchase-invoice", invoice.uuid, invoice.company_id, "deleted")
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   # ----- pay / dispute / void --------------------------------------
@@ -339,6 +352,14 @@ defmodule Backend.Procurement do
         |> case do
           {:ok, updated} ->
             if old_blob && old_blob != blob_path, do: Storage.delete(old_blob)
+
+            Backend.Broadcasts.entity_changed(
+              "purchase-invoice",
+              updated.uuid,
+              updated.company_id,
+              "file_attached"
+            )
+
             {:ok, preload(updated)}
 
           {:error, cs} ->
@@ -366,6 +387,14 @@ defmodule Backend.Procurement do
     |> case do
       {:ok, updated} ->
         if invoice.file_blob_path, do: Storage.delete(invoice.file_blob_path)
+
+        Backend.Broadcasts.entity_changed(
+          "purchase-invoice",
+          updated.uuid,
+          updated.company_id,
+          "file_detached"
+        )
+
         {:ok, preload(updated)}
 
       {:error, cs} ->

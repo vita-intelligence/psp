@@ -439,6 +439,7 @@ export function InvoicesTable({ initialPage }: Props) {
   return (
     <DataTable<CustomerInvoice>
       tableId="customer-invoices"
+      realtimeEntity="customer-invoice"
       columns={columns}
       rowKey={(inv) => String(inv.id)}
       fetchPage={fetchPage}
