@@ -47,7 +47,7 @@ export function ModuleGrid({ user }: { user: User }) {
     },
     {
       key: "sales",
-      href: "/sales/customers",
+      href: "/sales",
       label: "Sales",
       Icon: HandCoins,
       caption: "Customers, orders, invoices",
