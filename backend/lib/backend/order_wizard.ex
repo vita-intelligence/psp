@@ -190,7 +190,8 @@ defmodule Backend.OrderWizard do
       customer_order: co,
       phase: phase_payload(phase),
       next_action:
-        next_action_for(phase, co, line_states, all_mos, approvals),
+        next_action_for(phase, co, line_states, all_mos, approvals)
+        |> maybe_swap_invoice_ctas(invoices),
       blockers: blockers,
       lines: line_states,
       mos: all_mos,
@@ -198,6 +199,59 @@ defmodule Backend.OrderWizard do
       invoices: invoices,
       timeline: timeline(co, all_mos, approvals),
       signers: approvals
+    }
+  end
+
+  # When the CO already carries an active invoice, the "Generate
+  # invoice" CTAs the wizard emits become stale — the operator has
+  # done it, but every wizard phase from `:ready_to_dispatch` onward
+  # still shouts about it. Rewrite those CTAs into a "View invoice"
+  # link so both the wizard card + /my-tasks stop nagging. Nothing
+  # changes when there's no invoice yet.
+  #
+  # Note: MyTasks maps `"generate invoice"` → `customer_invoices.create`
+  # via its link-permission table. The swapped CTA no longer matches
+  # that prefix, so it's automatically filtered out of the task list
+  # (which is correct — creating the invoice is done, viewing it
+  # isn't a task).
+  defp maybe_swap_invoice_ctas(%{primary_cta: primary, secondary_ctas: secondary} = action, invoices)
+       when is_list(invoices) and invoices != [] do
+    invoice = List.first(invoices)
+    view_cta = view_invoice_cta(invoice)
+
+    %{
+      action
+      | primary_cta:
+          if(invoice_cta?(primary), do: view_cta, else: primary),
+        secondary_ctas:
+          Enum.map(secondary, fn cta ->
+            if invoice_cta?(cta), do: view_cta, else: cta
+          end)
+    }
+  end
+
+  defp maybe_swap_invoice_ctas(action, _invoices), do: action
+
+  defp invoice_cta?(nil), do: false
+  defp invoice_cta?(%{label: label}) when is_binary(label),
+    do: String.downcase(label) |> String.starts_with?("generate invoice")
+  defp invoice_cta?(_), do: false
+
+  defp view_invoice_cta(%{uuid: uuid}) when is_binary(uuid) do
+    %{
+      label: "View invoice",
+      kind: "link",
+      href: "/sales/invoices/#{uuid}",
+      description: "Already raised — open the invoice record."
+    }
+  end
+
+  defp view_invoice_cta(_) do
+    %{
+      label: "View invoice",
+      kind: "link",
+      href: "/sales/invoices",
+      description: "Already raised — open the invoices ledger."
     }
   end
 
