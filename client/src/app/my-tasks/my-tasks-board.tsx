@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -8,9 +15,10 @@ import {
   ArrowRight,
   Building2,
   CalendarClock,
-  CheckCircle2,
   ClipboardList,
   ExternalLink,
+  Filter,
+  ListChecks,
   Loader2,
   Search,
   Sparkles,
@@ -18,8 +26,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge-mini";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate } from "@/lib/format/company";
@@ -27,6 +33,7 @@ import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type { CompanyDefaults, OrderWizardPhaseKey } from "@/lib/types";
 import type {
   MyTask,
+  MyTasksCount,
   MyTasksPage,
   UrgencyFilter,
 } from "@/lib/my-tasks/types";
@@ -36,15 +43,21 @@ interface Props {
   companyDefaults: CompanyDefaults | null;
 }
 
-// A short, opinionated set of phase buckets used for the filter chips.
-// The wizard emits 12 phase keys; grouping them keeps the chip row
-// scannable and matches how operators think about their day.
-type PhaseBucketKey = "approval" | "planning" | "production" | "dispatch" | "delivery";
+// =============================================================================
+// Filter model — priority buckets (by due-date) + phase buckets (by workflow
+// segment). Kept tight so the sidebar stays scannable.
+// =============================================================================
+
+type PhaseBucketKey =
+  | "approval"
+  | "planning"
+  | "production"
+  | "dispatch"
+  | "delivery";
 
 interface PhaseBucket {
   key: PhaseBucketKey;
   label: string;
-  /** Phase keys that fall into this bucket. */
   phases: OrderWizardPhaseKey[];
 }
 
@@ -77,12 +90,14 @@ const PHASE_BUCKETS: PhaseBucket[] = [
   },
 ];
 
-const URGENCY_CHIPS: {
-  key: UrgencyFilter | "all";
+interface PriorityDef {
+  key: UrgencyFilter | null; // null = "All"
   label: string;
-  tone: "muted" | "destructive" | "amber" | "emerald";
-}[] = [
-  { key: "all", label: "All", tone: "muted" },
+  tone: "destructive" | "amber" | "muted";
+}
+
+const PRIORITY_DEFS: PriorityDef[] = [
+  { key: null, label: "All", tone: "muted" },
   { key: "overdue", label: "Overdue", tone: "destructive" },
   { key: "this_week", label: "This week", tone: "amber" },
   { key: "later", label: "Later", tone: "muted" },
@@ -95,7 +110,15 @@ interface Filters {
   search: string;
 }
 
-const EMPTY_FILTERS: Filters = { phaseBucket: null, urgency: null, search: "" };
+const EMPTY_FILTERS: Filters = {
+  phaseBucket: null,
+  urgency: null,
+  search: "",
+};
+
+// =============================================================================
+// Component
+// =============================================================================
 
 export function MyTasksBoard({ initialPage, companyDefaults }: Props) {
   const router = useRouter();
@@ -105,27 +128,28 @@ export function MyTasksBoard({ initialPage, companyDefaults }: Props) {
   const [nextCursor, setNextCursor] = useState<string | null>(
     initialPage.next_cursor,
   );
+  const [counts, setCounts] = useState<MyTasksCount | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // The filter set drives every fetch. On any filter change we throw
-  // away the current tasks + cursor and re-fetch from scratch.
-  const activeQuery = useMemo(() => {
-    return {
+  const activeQuery = useMemo(
+    () => ({
       bucketKey: filters.phaseBucket,
       urgency: filters.urgency,
       search: debouncedSearch,
-    };
-  }, [filters.phaseBucket, filters.urgency, debouncedSearch]);
+    }),
+    [filters.phaseBucket, filters.urgency, debouncedSearch],
+  );
 
-  // Debounce search input so we don't fetch on every keystroke.
+  // Search debounce — 250 ms keeps the request rate sane.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(filters.search.trim()), 250);
     return () => clearTimeout(t);
   }, [filters.search]);
 
-  // Fetch on filter changes. The API returns a *filtered* page — no
-  // client-side filtering needed. This keeps the FE dumb.
+  // First fetch happens on the server (`initialPage`); after that the
+  // client owns the data. We fetch on every filter change and on every
+  // CO broadcast.
   const isInitial = useRef(true);
   useEffect(() => {
     if (isInitial.current) {
@@ -133,7 +157,7 @@ export function MyTasksBoard({ initialPage, companyDefaults }: Props) {
       return;
     }
     let cancelled = false;
-    async function run() {
+    (async () => {
       setLoading(true);
       try {
         const page = await fetchTasks({
@@ -148,24 +172,32 @@ export function MyTasksBoard({ initialPage, companyDefaults }: Props) {
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-    void run();
+    })();
     return () => {
       cancelled = true;
     };
   }, [activeQuery]);
 
-  // Realtime — refresh when any CO changes. Debounced in the hook.
+  // Counts drive the filter chip badges — refresh on mount + on CO
+  // broadcasts. Separate endpoint keeps it cheap.
+  useEffect(() => {
+    void refreshCounts().then(setCounts);
+  }, []);
+
   const refetchCurrent = useCallback(async () => {
     setLoading(true);
     try {
-      const page = await fetchTasks({
-        phase: activeQuery.bucketKey,
-        urgency: activeQuery.urgency,
-        search: activeQuery.search,
-      });
+      const [page, freshCounts] = await Promise.all([
+        fetchTasks({
+          phase: activeQuery.bucketKey,
+          urgency: activeQuery.urgency,
+          search: activeQuery.search,
+        }),
+        refreshCounts(),
+      ]);
       setTasks(page.tasks);
       setNextCursor(page.next_cursor);
+      setCounts(freshCounts);
     } finally {
       setLoading(false);
     }
@@ -198,102 +230,145 @@ export function MyTasksBoard({ initialPage, companyDefaults }: Props) {
     filters.urgency !== null ||
     filters.search.length > 0;
 
+  const total = counts?.total ?? tasks.length;
+  const overdueCount = counts?.overdue ?? 0;
+
+  // Group tasks by urgency for section headers — only when no urgency
+  // filter is active, otherwise the section header would be redundant.
+  const grouped = useMemo(() => groupByUrgency(tasks, !!filters.urgency), [
+    tasks,
+    filters.urgency,
+  ]);
+
   return (
-    <div className="space-y-4">
-      {/* Filter chips + search */}
-      <div className="flex flex-wrap items-center gap-2">
-        {URGENCY_CHIPS.map((chip) => {
-          const active =
-            (chip.key === "all" && filters.urgency === null) ||
-            chip.key === filters.urgency;
-          return (
-            <Chip
-              key={chip.key}
-              label={chip.label}
-              tone={chip.tone}
-              active={active}
-              onClick={() =>
-                setFilters((prev) => ({
-                  ...prev,
-                  urgency: chip.key === "all" ? null : chip.key,
-                }))
-              }
-            />
-          );
-        })}
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_1fr]">
+      {/* --------------------- Left column: filters --------------------- */}
+      <aside className="space-y-6 lg:sticky lg:top-20 lg:self-start">
+        {/* Search box */}
+        <div className="relative">
+          <Search
+            aria-hidden
+            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            type="search"
+            value={filters.search}
+            onChange={(e) =>
+              setFilters((prev) => ({ ...prev, search: e.target.value }))
+            }
+            placeholder="Search CO or customer…"
+            className="h-9 pl-8 text-xs"
+          />
+        </div>
 
-        <span className="mx-1 h-4 w-px bg-border" />
-
-        {PHASE_BUCKETS.map((bucket) => (
-          <Chip
-            key={bucket.key}
-            label={bucket.label}
-            tone="muted"
-            active={filters.phaseBucket === bucket.key}
-            onClick={() =>
+        {/* Priority */}
+        <FilterGroup
+          title="Priority"
+          icon={AlertTriangle}
+          items={PRIORITY_DEFS.map((p) => ({
+            key: p.key ?? "all",
+            label: p.label,
+            tone: p.tone,
+            count: priorityCount(counts, p.key),
+            active:
+              (p.key === null && filters.urgency === null) ||
+              p.key === filters.urgency,
+            onClick: () =>
               setFilters((prev) => ({
                 ...prev,
-                phaseBucket:
-                  prev.phaseBucket === bucket.key ? null : bucket.key,
-              }))
-            }
-          />
-        ))}
+                urgency: p.key === null ? null : p.key,
+              })),
+          }))}
+        />
 
-        <div className="ml-auto flex items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              type="search"
-              value={filters.search}
-              onChange={(e) =>
-                setFilters((prev) => ({ ...prev, search: e.target.value }))
-              }
-              placeholder="Search CO or customer…"
-              className="h-8 w-56 pl-7 text-xs"
-            />
-          </div>
-          {anyFilter && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setFilters(EMPTY_FILTERS)}
-              className="text-xs"
-            >
-              <X className="mr-1 size-3" />
-              Clear
-            </Button>
-          )}
-        </div>
-      </div>
+        {/* Phase */}
+        <FilterGroup
+          title="Phase"
+          icon={ListChecks}
+          items={[
+            {
+              key: "all-phase",
+              label: "All phases",
+              tone: "muted",
+              count: total,
+              active: filters.phaseBucket === null,
+              onClick: () =>
+                setFilters((prev) => ({ ...prev, phaseBucket: null })),
+            },
+            ...PHASE_BUCKETS.map((b) => ({
+              key: b.key,
+              label: b.label,
+              tone: "muted" as const,
+              count: bucketCount(counts, b),
+              active: filters.phaseBucket === b.key,
+              onClick: () =>
+                setFilters((prev) => ({
+                  ...prev,
+                  phaseBucket: prev.phaseBucket === b.key ? null : b.key,
+                })),
+            })),
+          ]}
+        />
 
-      {/* List */}
-      <div className="relative">
-        {loading && (
-          <div className="absolute inset-x-0 -top-1 z-10 h-0.5 overflow-hidden rounded-full">
-            <div className="h-full w-1/3 animate-[progress-slide_1s_ease-in-out_infinite] rounded-full bg-brand" />
-          </div>
+        {anyFilter && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setFilters(EMPTY_FILTERS)}
+            className="h-8 w-full justify-start px-2 text-xs text-muted-foreground"
+          >
+            <X className="mr-1.5 size-3" />
+            Clear all filters
+          </Button>
         )}
+      </aside>
+
+      {/* --------------------- Right column: list --------------------- */}
+      <section className="min-w-0 space-y-4">
+        <header className="flex flex-wrap items-baseline justify-between gap-3 border-b border-border/60 pb-3">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-xl font-semibold tracking-tight">My tasks</h1>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">{total}</span>{" "}
+              {total === 1 ? "task" : "tasks"}
+              {overdueCount > 0 && (
+                <>
+                  {" · "}
+                  <span className="font-medium text-destructive">
+                    {overdueCount} overdue
+                  </span>
+                </>
+              )}
+            </p>
+          </div>
+          {loading && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              Refreshing…
+            </span>
+          )}
+        </header>
 
         {tasks.length === 0 && !loading ? (
           <EmptyState anyFilter={anyFilter} />
         ) : (
-          <ul className="space-y-2">
-            {tasks.map((task) => (
-              <li key={task.id}>
-                <TaskRow
-                  task={task}
+          <div className="space-y-6">
+            {grouped.map((section) =>
+              section.tasks.length === 0 ? null : (
+                <SectionBlock
+                  key={section.key}
+                  section={section}
                   companyDefaults={companyDefaults}
                   onExecuted={() => router.refresh()}
                 />
-              </li>
-            ))}
-          </ul>
+              ),
+            )}
+          </div>
         )}
 
         {nextCursor && (
-          <div className="flex justify-center py-4">
+          <div className="flex justify-center pt-2">
             <Button
               type="button"
               variant="outline"
@@ -301,64 +376,141 @@ export function MyTasksBoard({ initialPage, companyDefaults }: Props) {
               onClick={loadMore}
               disabled={loadingMore}
             >
-              {loadingMore && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              {loadingMore && (
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              )}
               Load more
             </Button>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }
 
-function Chip({
-  label,
-  tone,
-  active,
-  onClick,
-}: {
+// =============================================================================
+// Subcomponents
+// =============================================================================
+
+interface FilterGroupItem {
+  key: string;
   label: string;
-  tone: "muted" | "destructive" | "amber" | "emerald";
+  tone: "destructive" | "amber" | "muted";
+  count: number;
   active: boolean;
   onClick: () => void;
+}
+
+function FilterGroup({
+  title,
+  icon: Icon,
+  items,
+}: {
+  title: string;
+  icon: typeof AlertTriangle;
+  items: FilterGroupItem[];
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-        active
-          ? tone === "destructive"
-            ? "border-destructive/50 bg-destructive/10 text-destructive"
-            : tone === "amber"
-              ? "border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-200"
-              : tone === "emerald"
-                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
-                : "border-foreground/40 bg-foreground/10 text-foreground"
-          : "border-border/60 bg-background text-muted-foreground hover:bg-muted/40",
-      )}
-    >
-      {label}
-    </button>
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1.5 px-1">
+        <Icon className="size-3 text-muted-foreground" />
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </h2>
+      </div>
+      <ul className="space-y-0.5">
+        {items.map((it) => (
+          <li key={it.key}>
+            <button
+              type="button"
+              onClick={it.onClick}
+              className={cn(
+                "group flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
+                it.active
+                  ? "bg-accent font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+              )}
+            >
+              <span className="flex items-center gap-2 truncate">
+                <span
+                  aria-hidden
+                  className={cn(
+                    "inline-block size-1.5 rounded-full",
+                    it.tone === "destructive" && "bg-destructive",
+                    it.tone === "amber" && "bg-amber-500",
+                    it.tone === "muted" &&
+                      (it.active ? "bg-foreground/60" : "bg-muted-foreground/50"),
+                  )}
+                />
+                <span className="truncate">{it.label}</span>
+              </span>
+              <span
+                className={cn(
+                  "min-w-[1.5rem] rounded px-1 text-center font-mono text-[10px]",
+                  it.active
+                    ? "bg-background text-foreground"
+                    : "text-muted-foreground/70",
+                )}
+              >
+                {it.count}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
-function EmptyState({ anyFilter }: { anyFilter: boolean }) {
+interface Section {
+  key: "overdue" | "this_week" | "later" | "no_date" | "flat";
+  label: string | null;
+  tone: "destructive" | "amber" | "muted";
+  tasks: MyTask[];
+}
+
+function SectionBlock({
+  section,
+  companyDefaults,
+  onExecuted,
+}: {
+  section: Section;
+  companyDefaults: CompanyDefaults | null;
+  onExecuted: () => void;
+}) {
   return (
-    <Card className="border-dashed">
-      <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-        <Sparkles className="size-6 text-emerald-500" />
-        <p className="text-sm font-semibold">
-          {anyFilter ? "No tasks match those filters." : "Nothing waiting on you."}
-        </p>
-        <p className="max-w-md text-xs text-muted-foreground">
-          {anyFilter
-            ? "Clear the filters to see everything you're personally on the hook for."
-            : "When a project needs a sign-off, an MO created, a PO raised, a release approved, shipment paperwork filled, or a POD logged — and you personally have the permission and no segregation-of-duties block — it will show up here."}
-        </p>
-      </CardContent>
-    </Card>
+    <section className="space-y-2">
+      {section.label && (
+        <div className="flex items-center gap-2">
+          <span
+            aria-hidden
+            className={cn(
+              "inline-block size-1.5 rounded-full",
+              section.tone === "destructive" && "bg-destructive",
+              section.tone === "amber" && "bg-amber-500",
+              section.tone === "muted" && "bg-muted-foreground/50",
+            )}
+          />
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {section.label}
+          </h3>
+          <span className="text-[11px] font-mono text-muted-foreground/70">
+            {section.tasks.length}
+          </span>
+        </div>
+      )}
+      <ul className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60 bg-background">
+        {section.tasks.map((task) => (
+          <li key={task.id}>
+            <TaskRow
+              task={task}
+              companyDefaults={companyDefaults}
+              onExecuted={onExecuted}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -378,7 +530,6 @@ function TaskRow({
 
   function onPrimary() {
     if (!cta) return;
-
     switch (cta.kind) {
       case "link":
         if (cta.href) router.push(cta.href);
@@ -405,7 +556,6 @@ function TaskRow({
       case "action":
       default:
         router.push(`/projects/${encodeURIComponent(task.co_uuid)}`);
-        return;
     }
   }
 
@@ -415,75 +565,120 @@ function TaskRow({
     : "No due date";
 
   return (
-    <Card
-      className={cn(
-        "border-border/60 transition-colors",
-        urgencyTone === "destructive" && "border-destructive/40 bg-destructive/[0.02]",
-        urgencyTone === "amber" && "border-amber-500/40 bg-amber-500/[0.02]",
-      )}
-    >
-      <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <Link
-              href={`/projects/${encodeURIComponent(task.co_uuid)}`}
-              className="inline-flex items-center gap-1 font-mono font-medium text-foreground hover:underline"
-            >
-              <ClipboardList className="size-3" />
-              {task.co_code ?? "CO"}
-            </Link>
-            {task.customer_name && (
-              <span className="inline-flex items-center gap-1">
-                <Building2 className="size-3" />
-                <span className="truncate">{task.customer_name}</span>
+    <div className="group flex items-stretch gap-3 hover:bg-muted/30">
+      {/* Left urgency stripe — solid destructive/amber accent lets you
+          scan overdue tasks from across the room without the whole
+          card getting shouty. */}
+      <span
+        aria-hidden
+        className={cn(
+          "w-0.5 shrink-0 self-stretch",
+          urgencyTone === "destructive" && "bg-destructive",
+          urgencyTone === "amber" && "bg-amber-500",
+          urgencyTone === "muted" && "bg-transparent",
+        )}
+      />
+
+      <div className="flex-1 py-3 pr-3 min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1">
+            {/* Meta row */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+              <Link
+                href={`/projects/${encodeURIComponent(task.co_uuid)}`}
+                className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-foreground hover:underline"
+              >
+                <ClipboardList className="size-3" />
+                {task.co_code ?? "CO"}
+              </Link>
+              {task.customer_name && (
+                <>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span className="inline-flex items-center gap-1 truncate">
+                    <Building2 className="size-3" />
+                    <span className="truncate">{task.customer_name}</span>
+                  </span>
+                </>
+              )}
+              <span className="text-muted-foreground/40">·</span>
+              <span className="rounded-full bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground">
+                {task.phase_label}
               </span>
-            )}
-            <Badge tone="muted">{task.phase_label}</Badge>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1",
-                urgencyTone === "destructive" && "text-destructive",
-                urgencyTone === "amber" &&
-                  "text-amber-700 dark:text-amber-300",
-              )}
-            >
-              {urgencyTone === "destructive" ? (
-                <AlertTriangle className="size-3" />
-              ) : urgencyTone === "amber" ? (
+              <span className="text-muted-foreground/40">·</span>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 font-medium",
+                  urgencyTone === "destructive" && "text-destructive",
+                  urgencyTone === "amber" &&
+                    "text-amber-700 dark:text-amber-300",
+                )}
+              >
                 <CalendarClock className="size-3" />
-              ) : (
-                <CheckCircle2 className="size-3" />
-              )}
-              {dueLabel}
-            </span>
+                {dueLabel}
+              </span>
+            </div>
+
+            {/* Title + detail */}
+            <p className="text-sm font-medium leading-snug text-foreground">
+              {task.title}
+            </p>
+            {task.detail && (
+              <p className="text-xs leading-normal text-muted-foreground line-clamp-2">
+                {task.detail}
+              </p>
+            )}
           </div>
 
-          <p className="text-sm font-medium">{task.title}</p>
-          {task.detail && (
-            <p className="text-xs text-muted-foreground">{task.detail}</p>
-          )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
+          {/* CTA button — arrow-linkish, not the visual centrepiece */}
           <Button
             type="button"
             size="sm"
+            variant="outline"
             onClick={onPrimary}
             disabled={pending}
+            className="shrink-0 group-hover:bg-background"
           >
-            {pending && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-            {primaryLabel}
+            {pending && <Loader2 className="mr-1.5 size-3 animate-spin" />}
+            <span className="truncate">{primaryLabel}</span>
             {cta?.kind === "link" ? (
-              <ExternalLink className="ml-1 size-3.5" />
+              <ExternalLink className="ml-1 size-3" />
             ) : (
-              <ArrowRight className="ml-1 size-3.5" />
+              <ArrowRight className="ml-1 size-3" />
             )}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
+
+function EmptyState({ anyFilter }: { anyFilter: boolean }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border/60 py-12 text-center">
+      <div className="flex size-10 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+        {anyFilter ? (
+          <Filter className="size-4" />
+        ) : (
+          <Sparkles className="size-4" />
+        )}
+      </div>
+      <p className="text-sm font-medium">
+        {anyFilter
+          ? "No tasks match those filters."
+          : "You're all caught up."}
+      </p>
+      <p className="max-w-sm text-xs text-muted-foreground">
+        {anyFilter
+          ? "Try clearing the filters or widening your search."
+          : "New tasks show up here as soon as a project needs a sign-off, MO, PO, release, shipment, or POD you're personally responsible for."}
+      </p>
+    </div>
+  );
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
 
 function urgencyToneFor(
   dueIso: string | null,
@@ -496,6 +691,70 @@ function urgencyToneFor(
   if (at < todayStart) return "destructive";
   if (at < weekEnd) return "amber";
   return "muted";
+}
+
+function groupByUrgency(tasks: MyTask[], flat: boolean): Section[] {
+  if (flat) {
+    return [{ key: "flat", label: null, tone: "muted", tasks }];
+  }
+
+  const overdue: MyTask[] = [];
+  const thisWeek: MyTask[] = [];
+  const later: MyTask[] = [];
+  const noDate: MyTask[] = [];
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  const weekEnd = todayStart + 7 * 86_400_000;
+
+  for (const t of tasks) {
+    if (!t.due_date) {
+      noDate.push(t);
+      continue;
+    }
+    const at = Date.parse(t.due_date);
+    if (Number.isNaN(at)) {
+      noDate.push(t);
+      continue;
+    }
+    if (at < todayStart) overdue.push(t);
+    else if (at < weekEnd) thisWeek.push(t);
+    else later.push(t);
+  }
+
+  return [
+    { key: "overdue", label: "Overdue", tone: "destructive", tasks: overdue },
+    { key: "this_week", label: "This week", tone: "amber", tasks: thisWeek },
+    { key: "later", label: "Later", tone: "muted", tasks: later },
+    { key: "no_date", label: "No due date", tone: "muted", tasks: noDate },
+  ];
+}
+
+function priorityCount(
+  counts: MyTasksCount | null,
+  key: UrgencyFilter | null,
+): number {
+  if (!counts) return 0;
+  switch (key) {
+    case null:
+      return counts.total;
+    case "overdue":
+      return counts.overdue;
+    case "this_week":
+      return counts.this_week;
+    case "later":
+      return counts.later;
+    case "no_date":
+      return counts.no_date;
+    default:
+      return 0;
+  }
+}
+
+function bucketCount(counts: MyTasksCount | null, bucket: PhaseBucket): number {
+  if (!counts) return 0;
+  return bucket.phases.reduce(
+    (sum, phase) => sum + (counts.by_phase[phase] ?? 0),
+    0,
+  );
 }
 
 async function fetchTasks(opts: {
@@ -513,4 +772,14 @@ async function fetchTasks(opts: {
   const res = await fetch(`/api/my-tasks?${qs}`, { cache: "no-store" });
   if (!res.ok) return { tasks: [], next_cursor: null };
   return (await res.json()) as MyTasksPage;
+}
+
+async function refreshCounts(): Promise<MyTasksCount | null> {
+  try {
+    const res = await fetch("/api/my-tasks/count", { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as MyTasksCount;
+  } catch {
+    return null;
+  }
 }
