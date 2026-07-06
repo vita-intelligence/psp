@@ -121,8 +121,11 @@ export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
         id: "group",
         header: "Group",
         widthClassName: "min-w-[12rem]",
+        filterField: "group",
+        filterKind: "text",
+        filterPlaceholder: "Group name…",
         group: "Identity",
-        description: "Parent workstation group this station belongs to.",
+        description: "Parent workstation group this station belongs to. Filter by group name.",
         cell: (w) =>
           w.workstation_group ? (
             <div className="flex items-center gap-2 min-w-0">

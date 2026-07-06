@@ -484,6 +484,26 @@ defmodule Backend.ThreePL do
     Decimal.mult(packages, single_package_m3)
   end
 
+  @doc """
+  Cubic-metre volume for `qty` units of `lot`, using the lot's package
+  dimensions. Public wrapper around the same math `lot_stored_volume_m3`
+  and `lot_held_volume_m3` use, so callers outside this module (e.g.
+  the shipment dispatch-dwell banner) can compute cell-scoped volumes
+  without duplicating the formula. Returns `Decimal.new(0)` when any of
+  L / W / H are missing.
+  """
+  def volume_m3_for_qty(%Lot{} = lot, qty) do
+    l = lot.package_length_mm
+    w = lot.package_width_mm
+    h = lot.package_height_mm
+
+    if is_integer(l) and is_integer(w) and is_integer(h) and not is_nil(qty) do
+      packages_volume(l, w, h, qty, lot.units_per_package)
+    else
+      Decimal.new(0)
+    end
+  end
+
   # =====================================================================
   # Inventory query
   # =====================================================================

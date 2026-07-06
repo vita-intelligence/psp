@@ -212,8 +212,11 @@ export function LotsTable({
         id: "item",
         header: "Item",
         widthClassName: "min-w-[16rem]",
+        filterField: "item_name",
+        filterKind: "text",
+        filterPlaceholder: "Item name or SKU…",
         group: "Identity",
-        description: "Item this lot belongs to.",
+        description: "Item this lot belongs to. Filter by item name or SKU.",
         cell: (l) =>
           l.item ? (
             <div className="space-y-0.5">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnFilterValue, PersistedTableState } from "./types";
 
 const STORAGE_PREFIX = "dataTable";
@@ -110,10 +110,24 @@ export function useTableState(tableId: string, defaultHiddenIds: string[] = []) 
     });
   }
 
+  // Memoise the derived Set + columnFilters object so consumers'
+  // useMemo chains keyed on these don't invalidate every render.
+  // Without this, `orderedColumns` recomputes on every render (its
+  // dep is the Set) and downstream memos churn — including the
+  // Pagination sentinel's observer effect.
+  const hiddenColumns = useMemo(
+    () => new Set(state.hiddenColumns ?? []),
+    [state.hiddenColumns],
+  );
+  const columnFilters = useMemo(
+    () => state.columnFilters ?? {},
+    [state.columnFilters],
+  );
+
   return {
     columnOrder: state.columnOrder ?? null,
-    hiddenColumns: new Set(state.hiddenColumns ?? []),
-    columnFilters: state.columnFilters ?? {},
+    hiddenColumns,
+    columnFilters,
     setColumnOrder,
     setHiddenColumns,
     toggleColumn,

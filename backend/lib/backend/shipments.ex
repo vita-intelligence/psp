@@ -32,9 +32,8 @@ defmodule Backend.Shipments do
   alias Backend.RBAC
   alias Backend.Repo
   alias Backend.Shipments.Shipment
-  alias Backend.Stock.Lot
+  alias Backend.Stock.{Lot, Movement, Placement}
   alias Backend.Warehouses.StorageCell
-  alias Backend.Stock.Placement
 
   # Three perms for three personas: view (broad audience — sales,
   # finance, customer service, warehouse manager), edit (shipping
@@ -139,17 +138,70 @@ defmodule Backend.Shipments do
   # Updates
   # ==================================================================
 
-  @doc "Edit fields on a draft or ready shipment."
+  @doc """
+  Edit fields on a draft or ready shipment.
+
+  When the shipment's lot is own-stock (not 3PL / bailee), we coerce
+  `qty` back to the lot's full dispatch-placement quantity — own-stock
+  ships whole. Splitting your own inventory across multiple shipments
+  breaks traceability and doubles handling; the 3PL flow is the only
+  place partial dispatches are legal because the lot is customer-
+  owned and the customer explicitly requests the split.
+  """
   def update(%User{} = actor, %Shipment{} = shipment, attrs) do
     with :ok <- ensure_edit(actor),
          :ok <- ensure_editable(shipment) do
       before_state = shipment_snapshot(shipment)
+      normalised = normalise_qty_for_ownership(shipment, attrs)
 
       shipment
-      |> Shipment.update_changeset(attrs)
+      |> Shipment.update_changeset(normalised)
       |> Repo.update()
       |> tap_audit_updated(actor, before_state)
     end
+  end
+
+  # For own-stock lots, replace whatever qty the caller sent with the
+  # full quantity currently sitting in the dispatch cell. Bailee (3PL)
+  # lots pass through untouched — partial dispatches are the whole
+  # point of that flow.
+  defp normalise_qty_for_ownership(%Shipment{stock_lot_id: nil}, attrs), do: attrs
+
+  defp normalise_qty_for_ownership(%Shipment{stock_lot_id: lot_id}, attrs) do
+    case Repo.get(Lot, lot_id) do
+      %Lot{ownership_kind: "bailee"} ->
+        attrs
+
+      %Lot{} = lot ->
+        lot = Repo.preload(lot, placements: [storage_cell: []])
+
+        case find_dispatch_placement_qty(lot) do
+          {:ok, full_qty} ->
+            attrs
+            |> stringify_key("qty")
+            |> Map.put("qty", full_qty)
+
+          _ ->
+            attrs
+        end
+
+      nil ->
+        attrs
+    end
+  end
+
+  # Ecto casts accept both atom and string keys. `Map.put("qty", ...)`
+  # would silently coexist with an incoming `:qty` atom key; normalise
+  # first so the coerced value wins on cast.
+  defp stringify_key(attrs, key) when is_map(attrs) do
+    atom_key = String.to_existing_atom(key)
+
+    case Map.pop(attrs, atom_key) do
+      {nil, rest} -> rest
+      {_val, rest} -> rest
+    end
+  rescue
+    ArgumentError -> attrs
   end
 
   @doc "Draft → ready. Required paperwork fields must be filled."
@@ -230,6 +282,9 @@ defmodule Backend.Shipments do
     cursor = Keyword.get(opts, :cursor)
     search = Keyword.get(opts, :search)
 
+    {customer_needle, _column_filter} =
+      Backend.ListQueries.pop_joined_text_filter(opts[:column_filter], "customer")
+
     q =
       from(s in Shipment,
         where: s.company_id == ^company_id,
@@ -238,7 +293,18 @@ defmodule Backend.Shipments do
           :created_by,
           :ready_by,
           :picked_up_by,
-          stock_lot: [:item, :unit_of_measurement, :bailee_customer]
+          stock_lot: [
+            :item,
+            :unit_of_measurement,
+            :bailee_customer,
+            # `shipment_lot_summary` in Payloads walks
+            # placements → storage_cell → storage_location → floor →
+            # warehouse to render the row's warehouse chip; and
+            # `dispatch_dwell_summary` walks placements → storage_cell
+            # for the dispatch-purpose match. Preload the whole chain
+            # so neither path hits Ecto.Association.NotLoaded.
+            placements: [storage_cell: [storage_location: [floor: :warehouse]]]
+          ]
         ],
         order_by: [desc: s.inserted_at, desc: s.id]
       )
@@ -264,7 +330,7 @@ defmodule Backend.Shipments do
     q =
       case search do
         s when is_binary(s) and s != "" ->
-          like = "%" <> s <> "%"
+          like = "%" <> Backend.ListQueries.escape_like(s) <> "%"
 
           from s in q,
             left_join: l in assoc(s, :stock_lot),
@@ -278,6 +344,20 @@ defmodule Backend.Shipments do
 
         _ ->
           q
+      end
+
+    q =
+      case customer_needle do
+        nil ->
+          q
+
+        needle ->
+          like = "%" <> Backend.ListQueries.escape_like(needle) <> "%"
+
+          from s in q,
+            join: c in Backend.Customers.Customer,
+            on: c.id == s.customer_id,
+            where: ilike(c.name, ^like) or ilike(c.legal_name, ^like)
       end
 
     rows = Repo.all(from x in q, limit: ^(limit + 1))
@@ -313,6 +393,87 @@ defmodule Backend.Shipments do
             placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
           ]
         ])
+    end
+  end
+
+  # ==================================================================
+  # Dispatch-cell dwell + carrying-cost estimate
+  # ==================================================================
+
+  @doc """
+  When did `lot`'s stock physically land in a dispatch cell? Uses the
+  most recent stock movement whose `to_cell` has purpose "dispatch".
+  Returns `nil` for lots that have never touched a dispatch cell.
+
+  This is what starts the "how long has this been sitting waiting for
+  the truck" clock — matches how a warehouse manager would think
+  about it, independent of when the paperwork (shipment record) was
+  first opened.
+  """
+  def dispatch_arrived_at(lot_id) when is_integer(lot_id) do
+    from(m in Movement,
+      join: c in StorageCell,
+      on: c.id == m.to_cell_id,
+      where: m.stock_lot_id == ^lot_id and c.purpose == "dispatch",
+      order_by: [desc: m.occurred_at],
+      limit: 1,
+      select: m.occurred_at
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Bundle of "how long has this lot been staged" + estimated carrying
+  cost so far. Returns `nil` when the lot has never been in dispatch;
+  callers hide the banner in that case.
+
+  `rate` is `company.three_pl_rate_per_m3_per_day` — reused as the
+  proxy for own-stock carrying cost. If the company hasn't set the
+  3PL rate we still return the dwell (so the operator sees the wait)
+  but `estimated_storage_cost` is nil.
+
+  Math mirrors `Backend.ThreePL.accrued_charge/2`: full days ×
+  volume-in-cell × rate. Fractional days round down so the banner
+  doesn't imply we've charged for a partial day.
+  """
+  def dispatch_dwell_summary(%Lot{} = lot, rate) do
+    case dispatch_arrived_at(lot.id) do
+      nil ->
+        nil
+
+      %DateTime{} = arrived ->
+        dwell_seconds = max(DateTime.diff(DateTime.utc_now(), arrived, :second), 0)
+        volume = dispatch_placement_volume_m3(lot)
+
+        estimated =
+          cond do
+            is_nil(rate) ->
+              nil
+
+            Decimal.compare(volume, Decimal.new(0)) == :eq ->
+              Decimal.new(0)
+
+            true ->
+              days = div(dwell_seconds, 86_400)
+
+              Decimal.new(days)
+              |> Decimal.mult(volume)
+              |> Decimal.mult(rate)
+          end
+
+        %{
+          arrived_at: arrived,
+          dwell_seconds: dwell_seconds,
+          volume_m3: volume,
+          estimated_storage_cost: estimated
+        }
+    end
+  end
+
+  defp dispatch_placement_volume_m3(%Lot{} = lot) do
+    case find_dispatch_placement_qty(lot) do
+      {:ok, qty} -> Backend.ThreePL.volume_m3_for_qty(lot, qty)
+      _ -> Decimal.new(0)
     end
   end
 
@@ -359,7 +520,7 @@ defmodule Backend.Shipments do
   # The lot must have an active placement in a dispatch cell. Returns
   # the qty currently sitting there — becomes the default shipment
   # qty (operator can override on the form).
-  defp find_dispatch_placement_qty(%Lot{placements: placements}) do
+  defp find_dispatch_placement_qty(%Lot{placements: placements}) when is_list(placements) do
     match =
       Enum.find(placements, fn p ->
         p.storage_cell && p.storage_cell.purpose == "dispatch" &&
@@ -371,6 +532,11 @@ defmodule Backend.Shipments do
       _ -> {:error, :lot_not_in_dispatch}
     end
   end
+
+  # Callers that hit this without placements preloaded (e.g. the list
+  # endpoint's payload builder) get :not_loaded so they can render a
+  # nil dwell block rather than blow up.
+  defp find_dispatch_placement_qty(%Lot{}), do: {:error, :placements_not_loaded}
 
   defp ensure_no_open_shipment(%Lot{id: lot_id}) do
     exists =

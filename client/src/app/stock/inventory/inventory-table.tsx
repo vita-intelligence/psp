@@ -87,11 +87,6 @@ async function fetchInventoryPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(k, String(v));
   }
-  // Note: the inventory endpoint uses a hand-rolled aggregate query
-  // (Backend.Stock.inventory_rollup) that doesn't route through
-  // Backend.ListQueries — per-column filters ship in the URL but the
-  // backend ignores them. Kept for consistency with the other v2
-  // tables so a future refactor lights them up in one place.
   serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(`/api/stock/inventory?${qs.toString()}`, {
@@ -164,8 +159,11 @@ export function InventoryTable({
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "name",
+        filterKind: "text",
+        filterPlaceholder: "Item name…",
         group: "Identity",
-        description: "Item name + type + external SKU when set.",
+        description: "Item name + type + external SKU when set. Filter by name.",
         cell: (r) => (
           <div className="min-w-0">
             <div className="flex items-center gap-2">

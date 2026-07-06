@@ -148,8 +148,11 @@ export function ReturnsTable({ initialPage }: Props) {
         header: "Customer",
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "customer",
+        filterKind: "text",
+        filterPlaceholder: "Customer name…",
         group: "Identity",
-        description: "Customer this RMA is against.",
+        description: "Customer this RMA is against. Filter by customer name.",
         cell: (rma) => (
           <div className="min-w-0">
             <Link
@@ -273,8 +276,11 @@ export function ReturnsTable({ initialPage }: Props) {
         header: "Received by",
         widthClassName: "min-w-[10rem]",
         defaultHidden: true,
+        filterField: "received_by",
+        filterKind: "text",
+        filterPlaceholder: "User name…",
         group: "Meta",
-        description: "Who marked the goods received.",
+        description: "Who marked the goods received. Filter by name.",
         cell: (rma) =>
           rma.received_by ? (
             <span className="truncate text-xs">{rma.received_by.name}</span>
@@ -287,8 +293,11 @@ export function ReturnsTable({ initialPage }: Props) {
         header: "Resolved by",
         widthClassName: "min-w-[10rem]",
         defaultHidden: true,
+        filterField: "resolved_by",
+        filterKind: "text",
+        filterPlaceholder: "User name…",
         group: "Meta",
-        description: "Who accepted or rejected the RMA.",
+        description: "Who accepted or rejected the RMA. Filter by name.",
         cell: (rma) =>
           rma.resolved_by ? (
             <span className="truncate text-xs">{rma.resolved_by.name}</span>

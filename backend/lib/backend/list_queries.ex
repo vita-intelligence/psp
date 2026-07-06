@@ -107,6 +107,46 @@ defmodule Backend.ListQueries do
     end)
   end
 
+  @doc """
+  Extract a "contains" text needle from a `column_filter` map for a
+  field the generic helper can't route (typically a joined column).
+
+  Returns `{needle_or_nil, remaining_filters}` — `remaining_filters` is
+  the same map with the peeled key removed so the generic
+  `apply_column_filters/3` can still handle the rest.
+
+  Callers apply the needle with an explicit join in the caller's
+  binding. Trimmed empty strings become `nil` (no filter).
+  """
+  def pop_joined_text_filter(nil, _key), do: {nil, nil}
+
+  def pop_joined_text_filter(%{} = filters, key) when is_binary(key) do
+    case Map.pop(filters, key) do
+      {nil, rest} ->
+        {nil, rest}
+
+      {%{"op" => "contains", "value" => value}, rest} when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: {nil, rest}, else: {trimmed, rest}
+
+      {_, rest} ->
+        {nil, rest}
+    end
+  end
+
+  def pop_joined_text_filter(other, _key), do: {nil, other}
+
+  @doc """
+  Escape a value for use inside an ILIKE pattern. Exposed for callers
+  that build joined-column ILIKE clauses in their own bindings.
+  """
+  def escape_like(s) do
+    s
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
+
   defp apply_column_filter_op(query, field, %{"op" => "contains", "value" => value})
        when is_binary(value) and value != "" do
     needle = "%" <> escape_like(String.trim(value)) <> "%"
@@ -397,13 +437,6 @@ defmodule Backend.ListQueries do
   end
 
   defp clamp_limit(_), do: @default_limit
-
-  defp escape_like(s) do
-    s
-    |> String.replace("\\", "\\\\")
-    |> String.replace("%", "\\%")
-    |> String.replace("_", "\\_")
-  end
 
   @doc "Default page size — exposed so controllers can reuse the constant."
   def default_limit, do: @default_limit

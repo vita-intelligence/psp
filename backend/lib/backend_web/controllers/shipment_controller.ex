@@ -74,7 +74,8 @@ defmodule BackendWeb.ShipmentController do
       status: Map.get(params, "status", "all"),
       limit: parse_int(Map.get(params, "limit"), 25),
       cursor: Map.get(params, "cursor"),
-      search: Map.get(params, "search")
+      search: Map.get(params, "search"),
+      column_filter: Map.get(params, "column_filter")
     ]
 
     {items, next_cursor} = Shipments.list_shipments(actor.company_id, opts)

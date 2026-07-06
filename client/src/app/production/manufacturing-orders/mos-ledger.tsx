@@ -144,8 +144,11 @@ export function ManufacturingOrdersLedger({
         id: "product",
         header: "Product",
         widthClassName: "min-w-[16rem]",
+        filterField: "product",
+        filterKind: "text",
+        filterPlaceholder: "Item name or SKU…",
         group: "Identity",
-        description: "Item being manufactured.",
+        description: "Item being manufactured. Filter by name or SKU.",
         cell: (m) =>
           m.item ? (
             <div className="min-w-0 space-y-0.5">
@@ -180,8 +183,11 @@ export function ManufacturingOrdersLedger({
         id: "site",
         header: "Site",
         widthClassName: "min-w-[12rem]",
+        filterField: "site",
+        filterKind: "text",
+        filterPlaceholder: "Site name…",
         group: "Location",
-        description: "Production site (warehouse) this MO runs at.",
+        description: "Production site (warehouse) this MO runs at. Filter by name.",
         cell: (m) =>
           m.warehouse ? (
             <span className="truncate text-xs text-muted-foreground">
@@ -247,8 +253,11 @@ export function ManufacturingOrdersLedger({
         header: "BOM",
         widthClassName: "min-w-[12rem]",
         defaultHidden: true,
+        filterField: "bom",
+        filterKind: "text",
+        filterPlaceholder: "BOM name…",
         group: "Identity",
-        description: "Bill of materials driving component consumption.",
+        description: "Bill of materials driving component consumption. Filter by BOM name.",
         cell: (m) =>
           m.bom ? (
             <span className="truncate text-xs text-muted-foreground">

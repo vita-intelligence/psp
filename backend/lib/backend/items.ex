@@ -17,6 +17,7 @@ defmodule Backend.Items do
   alias Backend.Audit
   alias Backend.Catalogs
   alias Backend.Catalogs.AttributeDefinition
+  alias Backend.Catalogs.ProductFamily
   alias Backend.Items.{Item, ItemFile}
   alias Backend.ListQueries
   alias Backend.Repo
@@ -34,16 +35,33 @@ defmodule Backend.Items do
     sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
     type_filter = opts[:item_type]
 
+    # `product_family` is a joined column — peel it off before the
+    # generic column-filter helper.
+    {family_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "product_family")
+
     base =
       Item
       |> where([i], i.company_id == ^company_id)
       |> maybe_type_filter(type_filter)
       |> apply_item_search(company_id, opts[:search])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
+      |> maybe_product_family_filter(family_needle)
+      |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:stock_uom, :product_family, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_product_family_filter(query, nil), do: query
+
+  defp maybe_product_family_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from i in query,
+      join: pf in ProductFamily,
+      on: pf.id == i.product_family_id,
+      where: ilike(pf.name, ^like)
   end
 
   # The DataTable search bar is a single field. Operators type whatever

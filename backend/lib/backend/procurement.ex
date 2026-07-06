@@ -59,6 +59,10 @@ defmodule Backend.Procurement do
     sort = Keyword.get(opts, :sort, @invoice_default_sort)
     today = Date.utc_today()
 
+    column_filter = opts[:column_filter]
+    {vendor_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "vendor")
+    {paid_by_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "paid_by")
+
     base =
       Invoice
       |> where([i], i.company_id == ^company_id)
@@ -67,7 +71,9 @@ defmodule Backend.Procurement do
       |> maybe_vendor_filter(opts[:vendor_id])
       |> maybe_po_filter(opts[:purchase_order_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
+      |> maybe_vendor_name_filter(vendor_needle)
+      |> maybe_paid_by_name_filter(paid_by_needle)
+      |> ListQueries.apply_column_filters(column_filter, @invoice_sortable)
       |> ListQueries.apply_sort(sort, @invoice_sortable, @invoice_default_sort)
       |> preload([:created_by, :updated_by, :paid_by, purchase_order: :vendor])
 
@@ -83,6 +89,10 @@ defmodule Backend.Procurement do
   def totals_by_currency(company_id, opts \\ []) when is_integer(company_id) do
     today = Date.utc_today()
 
+    column_filter = opts[:column_filter]
+    {vendor_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "vendor")
+    {paid_by_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "paid_by")
+
     Invoice
     |> where([i], i.company_id == ^company_id)
     |> ListQueries.apply_search(opts[:search], @invoice_search)
@@ -90,7 +100,9 @@ defmodule Backend.Procurement do
     |> maybe_vendor_filter(opts[:vendor_id])
     |> maybe_po_filter(opts[:purchase_order_id])
     |> maybe_date_range(opts[:from_date], opts[:to_date])
-    |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
+    |> maybe_vendor_name_filter(vendor_needle)
+    |> maybe_paid_by_name_filter(paid_by_needle)
+    |> ListQueries.apply_column_filters(column_filter, @invoice_sortable)
     |> group_by([i], i.currency_code)
     |> select([i], %{
       currency_code: i.currency_code,
@@ -130,6 +142,30 @@ defmodule Backend.Procurement do
 
   defp maybe_po_filter(query, po_id) when is_integer(po_id),
     do: where(query, [i], i.purchase_order_id == ^po_id)
+
+  defp maybe_vendor_name_filter(query, nil), do: query
+
+  defp maybe_vendor_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from i in query,
+      join: po in PurchaseOrder,
+      on: po.id == i.purchase_order_id,
+      join: v in Backend.Vendors.Vendor,
+      on: v.id == po.vendor_id,
+      where: ilike(v.name, ^like) or ilike(v.legal_name, ^like)
+  end
+
+  defp maybe_paid_by_name_filter(query, nil), do: query
+
+  defp maybe_paid_by_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from i in query,
+      join: u in User,
+      on: u.id == i.paid_by_id,
+      where: ilike(u.name, ^like) or ilike(u.email, ^like)
+  end
 
   defp maybe_date_range(query, nil, nil), do: query
 
