@@ -131,29 +131,54 @@ defmodule Backend.MyTasks do
   cursor. Cheap enough to call from the top-bar badge on every
   entity broadcast.
   """
-  @spec count(User.t()) :: %{total: non_neg_integer(), overdue: non_neg_integer(), by_phase: map()}
+  @spec count(User.t()) :: %{
+          total: non_neg_integer(),
+          overdue: non_neg_integer(),
+          this_week: non_neg_integer(),
+          later: non_neg_integer(),
+          no_date: non_neg_integer(),
+          by_phase: map()
+        }
   def count(%User{} = actor) do
     now = Date.utc_today()
+    week_end = Date.add(now, 7)
     tasks = collect_all_tasks(actor)
 
     total = length(tasks)
 
-    overdue =
-      Enum.count(tasks, fn t ->
-        case t.due_date do
-          %Date{} = d -> Date.compare(d, now) == :lt
-          _ -> false
-        end
-      end)
-
-    by_phase =
-      Enum.reduce(tasks, %{}, fn t, acc ->
-        key = Atom.to_string(t.phase_key)
-        Map.update(acc, key, 1, &(&1 + 1))
-      end)
-
-    %{total: total, overdue: overdue, by_phase: by_phase}
+    Enum.reduce(
+      tasks,
+      %{
+        total: total,
+        overdue: 0,
+        this_week: 0,
+        later: 0,
+        no_date: 0,
+        by_phase: %{}
+      },
+      fn t, acc ->
+        acc
+        |> Map.update!(:by_phase, fn m ->
+          Map.update(m, Atom.to_string(t.phase_key), 1, &(&1 + 1))
+        end)
+        |> bump_urgency_bucket(t, now, week_end)
+      end
+    )
   end
+
+  defp bump_urgency_bucket(acc, %{due_date: nil}, _now, _week_end) do
+    Map.update!(acc, :no_date, &(&1 + 1))
+  end
+
+  defp bump_urgency_bucket(acc, %{due_date: %Date{} = d}, now, week_end) do
+    cond do
+      Date.compare(d, now) == :lt -> Map.update!(acc, :overdue, &(&1 + 1))
+      Date.compare(d, week_end) == :lt -> Map.update!(acc, :this_week, &(&1 + 1))
+      true -> Map.update!(acc, :later, &(&1 + 1))
+    end
+  end
+
+  defp bump_urgency_bucket(acc, _t, _now, _week_end), do: acc
 
   # Legacy alias so the earlier `list_for_user/1` callsite keeps
   # working while the FE catches up.

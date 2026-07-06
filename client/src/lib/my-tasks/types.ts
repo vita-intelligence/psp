@@ -30,6 +30,9 @@ export interface MyTasksPage {
 export interface MyTasksCount {
   total: number;
   overdue: number;
+  this_week: number;
+  later: number;
+  no_date: number;
   by_phase: Partial<Record<OrderWizardPhaseKey, number>>;
 }
 
