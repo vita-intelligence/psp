@@ -156,6 +156,7 @@ defmodule Backend.CustomerOrders do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
+      |> apply_company_tax_rate_default(company_id)
 
     # Customer-approval gate at the create boundary, not just at
     # submit. The FE picker already hides unapproved customers, but
@@ -175,6 +176,21 @@ defmodule Backend.CustomerOrders do
 
         other ->
           other
+      end
+    end
+  end
+
+  # If the caller didn't set a tax_rate at all, fall back to the
+  # company-wide default from /settings/company. Explicit `nil` /
+  # `0` from the caller is preserved — zero-rated supplies are a
+  # legitimate HMRC bucket and mustn't be overwritten.
+  defp apply_company_tax_rate_default(attrs, company_id) do
+    if Map.has_key?(attrs, "tax_rate") do
+      attrs
+    else
+      case Backend.Companies.get!(company_id) do
+        %{tax_rate: %Decimal{} = rate} -> Map.put(attrs, "tax_rate", rate)
+        _ -> attrs
       end
     end
   end
