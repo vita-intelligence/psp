@@ -50,7 +50,7 @@ defmodule Backend.CustomerInvoices do
                            sent_at cancelled_at cancellation_reason)a
 
   @invoice_sortable ~w(id status kind customer_id currency_code
-                       subtotal tax_amount grand_total
+                       subtotal tax_amount discount_amount grand_total
                        invoice_date due_date sent_at cancelled_at
                        inserted_at updated_at)a
   @invoice_search ~w(customer_reference free_text billing_address)a
@@ -61,13 +61,19 @@ defmodule Backend.CustomerInvoices do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @invoice_default_sort))
 
+    # `customer` is a joined column — peel it off before the generic
+    # column-filter helper (which only sees the invoice binding).
+    {customer_needle, column_filter} =
+      pop_joined_text_filter(opts[:column_filter], "customer")
+
     base =
       CustomerInvoice
       |> where([i], i.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @invoice_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @invoice_sortable)
+      |> maybe_customer_name_filter(customer_needle)
+      |> ListQueries.apply_column_filters(column_filter, @invoice_sortable)
       |> ListQueries.apply_sort(sort, @invoice_sortable, @invoice_default_sort)
       |> preload([
         :customer,
@@ -102,6 +108,20 @@ defmodule Backend.CustomerInvoices do
       _ -> query
     end
   end
+
+  defp maybe_customer_name_filter(query, nil), do: query
+
+  defp maybe_customer_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from i in query,
+      join: c in Customer,
+      on: c.id == i.customer_id,
+      where: ilike(c.name, ^like) or ilike(c.legal_name, ^like)
+  end
+
+  defp pop_joined_text_filter(filters, key),
+    do: ListQueries.pop_joined_text_filter(filters, key)
 
   def get_for_company(company_id, uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do

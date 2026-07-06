@@ -258,8 +258,11 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         header: "Product family",
         widthClassName: "w-40",
         defaultHidden: true,
+        filterField: "product_family",
+        filterKind: "text",
+        filterPlaceholder: "Family name…",
         group: "Identity",
-        description: "Marketing grouping this item belongs to (if any).",
+        description: "Marketing grouping this item belongs to (if any). Filter by family name.",
         cell: (i) =>
           i.product_family ? (
             <span className="truncate text-xs">

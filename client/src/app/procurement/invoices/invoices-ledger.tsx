@@ -215,8 +215,11 @@ export function InvoicesLedger({
         id: "vendor",
         header: "Vendor",
         widthClassName: "min-w-[12rem]",
+        filterField: "vendor",
+        filterKind: "text",
+        filterPlaceholder: "Vendor name…",
         group: "Identity",
-        description: "Supplier issuing the invoice.",
+        description: "Supplier issuing the invoice. Filter by vendor name.",
         cell: (i) =>
           i.purchase_order?.vendor ? (
             <span className="truncate text-sm">
@@ -407,8 +410,11 @@ export function InvoicesLedger({
         header: "Paid by",
         widthClassName: "min-w-[10rem]",
         defaultHidden: true,
+        filterField: "paid_by",
+        filterKind: "text",
+        filterPlaceholder: "User name…",
         group: "Meta",
-        description: "User who marked the invoice paid.",
+        description: "User who marked the invoice paid. Filter by name.",
         cell: (i) =>
           i.paid_by ? (
             <span className="truncate text-xs">{i.paid_by.name}</span>

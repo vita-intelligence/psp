@@ -128,8 +128,11 @@ export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
         header: "Vendor",
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "vendor",
+        filterKind: "text",
+        filterPlaceholder: "Vendor name…",
         group: "Identity",
-        description: "Supplier this PO is raised against.",
+        description: "Supplier this PO is raised against. Filter by vendor name.",
         cell: (p) => (
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">

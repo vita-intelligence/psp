@@ -483,7 +483,23 @@ function Pagination({
   useEffect(() => {
     if (!hasMore || isFetchingMore) return;
     const el = sentinelRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
+    if (!el) return;
+
+    // After a page resolves the sentinel can still be inside the
+    // viewport (dense rows, tall screens, or a short page). An
+    // IntersectionObserver only fires on ratio transitions, so a
+    // "stayed visible" sentinel never re-triggers → the scroll
+    // silently stalls. Check the rect first and fire immediately
+    // if we're still in range.
+    const viewportH =
+      window.innerHeight || document.documentElement.clientHeight || 0;
+    const rect = el.getBoundingClientRect();
+    if (rect.top < viewportH + 200) {
+      loadRef.current();
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") return;
 
     const observer = new IntersectionObserver(
       (entries) => {

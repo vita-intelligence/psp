@@ -61,13 +61,17 @@ defmodule Backend.CustomerOrders do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @co_default_sort))
 
+    {customer_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "customer")
+
     base =
       CustomerOrder
       |> where([co], co.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @co_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @co_sortable)
+      |> maybe_customer_name_filter(customer_needle)
+      |> ListQueries.apply_column_filters(column_filter, @co_sortable)
       |> ListQueries.apply_sort(sort, @co_sortable, @co_default_sort)
       |> preload([
         :customer,
@@ -104,6 +108,17 @@ defmodule Backend.CustomerOrders do
       {n, ""} -> where(query, [co], co.customer_id == ^n)
       _ -> query
     end
+  end
+
+  defp maybe_customer_name_filter(query, nil), do: query
+
+  defp maybe_customer_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from co in query,
+      join: c in Backend.Customers.Customer,
+      on: c.id == co.customer_id,
+      where: ilike(c.name, ^like) or ilike(c.legal_name, ^like)
   end
 
   def get_for_company(company_id, uuid) when is_binary(uuid) do

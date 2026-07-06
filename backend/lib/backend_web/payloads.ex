@@ -4972,6 +4972,9 @@ defmodule BackendWeb.Payloads do
   # =========================================================================
 
   def shipment(%Backend.Shipments.Shipment{} = s) do
+    company = Backend.Companies.current()
+    dwell = shipment_dispatch_dwell(s, company)
+
     %{
       id: s.id,
       uuid: s.uuid,
@@ -4992,6 +4995,12 @@ defmodule BackendWeb.Payloads do
       customer: shipment_customer(s.customer),
       customer_order: shipment_customer_order(s.customer_order),
       stock_lot: shipment_lot_summary(s.stock_lot),
+      # Dispatch-cell dwell + estimated carrying cost. `nil` when the
+      # lot has never landed in a dispatch cell. Consumed by the
+      # "Sitting in dispatch since…" banner on the shipment detail
+      # page. Rate is the company's 3PL storage rate reused as a
+      # proxy for own-stock carrying cost (see Backend.Shipments).
+      dispatch_dwell: dwell,
       created_at: s.inserted_at,
       created_by: actor(s, :created_by),
       ready_at: s.ready_at,
@@ -5006,6 +5015,34 @@ defmodule BackendWeb.Payloads do
   end
 
   def shipment(_), do: nil
+
+  defp shipment_dispatch_dwell(
+         %Backend.Shipments.Shipment{stock_lot: %Backend.Stock.Lot{} = lot},
+         company
+       ) do
+    rate = company && company.three_pl_rate_per_m3_per_day
+
+    case Backend.Shipments.dispatch_dwell_summary(lot, rate) do
+      nil ->
+        nil
+
+      %{
+        arrived_at: at,
+        dwell_seconds: secs,
+        volume_m3: vol,
+        estimated_storage_cost: cost
+      } ->
+        %{
+          arrived_at: at,
+          dwell_seconds: secs,
+          volume_m3: decimal_to_string(vol),
+          estimated_storage_cost: decimal_to_string(cost),
+          rate_per_m3_per_day: decimal_to_string(rate)
+        }
+    end
+  end
+
+  defp shipment_dispatch_dwell(_, _), do: nil
 
   defp shipment_customer(%Backend.Customers.Customer{} = c) do
     %{

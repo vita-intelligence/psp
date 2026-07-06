@@ -63,17 +63,34 @@ defmodule Backend.Purchasing do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @po_default_sort))
 
+    # `vendor` is a joined column — peel it off before the generic
+    # column-filter helper.
+    {vendor_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "vendor")
+
     base =
       PurchaseOrder
       |> where([p], p.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @po_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_vendor_filter(opts[:vendor_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @po_sortable)
+      |> maybe_vendor_name_filter(vendor_needle)
+      |> ListQueries.apply_column_filters(column_filter, @po_sortable)
       |> ListQueries.apply_sort(sort, @po_sortable, @po_default_sort)
       |> preload([:vendor, :created_by, :submitted_by, :default_warehouse, :lines])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_vendor_name_filter(query, nil), do: query
+
+  defp maybe_vendor_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from p in query,
+      join: v in Backend.Vendors.Vendor,
+      on: v.id == p.vendor_id,
+      where: ilike(v.name, ^like) or ilike(v.legal_name, ^like)
   end
 
   defp normalise_sort({:code, dir}), do: {:id, dir}

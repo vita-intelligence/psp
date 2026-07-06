@@ -58,6 +58,17 @@ export interface Shipment {
   } | null;
   customer_order: { id: number; uuid: string; status: string } | null;
   stock_lot: ShipmentLotSummary | null;
+  /** Dispatch-cell dwell + estimated storage cost. `null` when the
+   *  lot has never landed in a dispatch cell. Rate is the company's
+   *  3PL storage rate reused as a proxy for own-stock carrying cost. */
+  dispatch_dwell: {
+    arrived_at: string;
+    dwell_seconds: number;
+    volume_m3: string | null;
+    /** `null` when the company hasn't set a 3PL rate. */
+    estimated_storage_cost: string | null;
+    rate_per_m3_per_day: string | null;
+  } | null;
   created_at: string;
   created_by: AuditActor | null;
   ready_at: string | null;

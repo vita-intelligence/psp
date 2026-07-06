@@ -164,8 +164,11 @@ export function InvoicesTable({ initialPage }: Props) {
         header: "Customer",
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "customer",
+        filterKind: "text",
+        filterPlaceholder: "Customer name…",
         group: "Identity",
-        description: "Customer being billed.",
+        description: "Customer being billed. Filter by customer name.",
         cell: (inv) => (
           <div className="min-w-0">
             <Link
@@ -337,6 +340,8 @@ export function InvoicesTable({ initialPage }: Props) {
         align: "right",
         widthClassName: "w-28",
         defaultHidden: true,
+        filterField: "discount_amount",
+        filterKind: "number-range",
         group: "Amounts",
         description: "Total discount applied.",
         cell: (inv) => (

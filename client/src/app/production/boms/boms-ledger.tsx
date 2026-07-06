@@ -118,8 +118,11 @@ export function BOMsLedger({ initialPage }: Props) {
         id: "item",
         header: "Item",
         widthClassName: "min-w-[14rem]",
+        filterField: "item",
+        filterKind: "text",
+        filterPlaceholder: "Item name or SKU…",
         group: "Identity",
-        description: "Output item this recipe produces.",
+        description: "Output item this recipe produces. Filter by name or SKU.",
         cell: (b) =>
           b.item ? (
             <div className="min-w-0 space-y-0.5">

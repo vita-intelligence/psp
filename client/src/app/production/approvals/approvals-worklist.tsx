@@ -74,8 +74,11 @@ export function ApprovalsWorklist({ initialPage }: Props) {
       {
         id: "item",
         header: "Product",
+        filterField: "product",
+        filterKind: "text",
+        filterPlaceholder: "Item name or SKU…",
         group: "Identity",
-        description: "Item being manufactured (+ BOM below).",
+        description: "Item being manufactured (+ BOM below). Filter by name or SKU.",
         cell: (mo) => (
           <div className="min-w-0">
             <p className="truncate text-sm">{mo.item?.name ?? "—"}</p>
@@ -108,8 +111,11 @@ export function ApprovalsWorklist({ initialPage }: Props) {
       {
         id: "warehouse",
         header: "Site",
+        filterField: "site",
+        filterKind: "text",
+        filterPlaceholder: "Site name…",
         group: "Location",
-        description: "Production site (warehouse) this MO runs at.",
+        description: "Production site (warehouse) this MO runs at. Filter by name.",
         cell: (mo) => (
           <span className="text-xs">{mo.warehouse?.name ?? "—"}</span>
         ),

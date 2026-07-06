@@ -133,8 +133,11 @@ export function ShipmentList({
         id: "customer",
         header: "Customer",
         widthClassName: "min-w-[12rem]",
+        filterField: "customer",
+        filterKind: "text",
+        filterPlaceholder: "Customer name…",
         group: "Identity",
-        description: "Customer receiving this shipment.",
+        description: "Customer receiving this shipment. Filter by customer name.",
         cell: (s) => (
           <p className="truncate text-sm">{s.customer?.name ?? "—"}</p>
         ),

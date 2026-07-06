@@ -45,13 +45,21 @@ defmodule Backend.CustomerReturns do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @rma_default_sort))
 
+    column_filter = opts[:column_filter]
+    {customer_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "customer")
+    {received_by_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "received_by")
+    {resolved_by_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "resolved_by")
+
     base =
       CustomerReturn
       |> where([r], r.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @rma_search)
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @rma_sortable)
+      |> maybe_customer_name_filter(customer_needle)
+      |> maybe_user_name_filter(:received_by_id, received_by_needle)
+      |> maybe_user_name_filter(:resolved_by_id, resolved_by_needle)
+      |> ListQueries.apply_column_filters(column_filter, @rma_sortable)
       |> ListQueries.apply_sort(sort, @rma_sortable, @rma_default_sort)
       |> preload([
         :customer,
@@ -85,6 +93,40 @@ defmodule Backend.CustomerReturns do
       {n, ""} -> where(query, [r], r.customer_id == ^n)
       _ -> query
     end
+  end
+
+  defp maybe_customer_name_filter(query, nil), do: query
+
+  defp maybe_customer_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from r in query,
+      join: c in Backend.Customers.Customer,
+      on: c.id == r.customer_id,
+      where: ilike(c.name, ^like) or ilike(c.legal_name, ^like)
+  end
+
+  # Generic "user text filter" for `received_by_id` / `resolved_by_id`.
+  # Split into two joins so the FE can filter each column independently
+  # without one being masked by the other.
+  defp maybe_user_name_filter(query, _field, nil), do: query
+
+  defp maybe_user_name_filter(query, :received_by_id, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from r in query,
+      join: u in User,
+      on: u.id == r.received_by_id,
+      where: ilike(u.name, ^like) or ilike(u.email, ^like)
+  end
+
+  defp maybe_user_name_filter(query, :resolved_by_id, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from r in query,
+      join: u in User,
+      on: u.id == r.resolved_by_id,
+      where: ilike(u.name, ^like) or ilike(u.email, ^like)
   end
 
   def get_for_company(company_id, uuid) when is_binary(uuid) do

@@ -46,6 +46,13 @@ defmodule Backend.Stock do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
+    # `item_name` is a per-column filter but lives on the joined items
+    # table, so it can't be routed through the generic
+    # `ListQueries.apply_column_filters` (which only sees the lot
+    # binding). Peel it off, apply it with an explicit join, and let
+    # the rest fall through unchanged.
+    {item_name_needle, column_filter} = pop_item_name_filter(opts[:column_filter])
+
     base =
       Lot
       |> where([l], l.company_id == ^company_id)
@@ -54,7 +61,8 @@ defmodule Backend.Stock do
       |> maybe_cell_filter(opts[:cell_id])
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> apply_lot_search(company_id, opts[:search])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
+      |> maybe_item_name_column_filter(item_name_needle)
+      |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([
         :item,
@@ -354,6 +362,36 @@ defmodule Backend.Stock do
     where(query, [l], l.id in subquery(cell_lot_ids))
   end
 
+  # `column_filter["item_name"]` is a `%{"op" => "contains", "value" => "..."}`
+  # spec emitted by the DataTable v2 header filter row. Extract the
+  # needle if present so we can apply it via an item join; the rest
+  # of the column_filter map is returned unchanged for downstream
+  # generic handling.
+  defp pop_item_name_filter(nil), do: {nil, nil}
+
+  defp pop_item_name_filter(%{} = filters) do
+    case Map.pop(filters, "item_name") do
+      {nil, rest} -> {nil, rest}
+      {%{"op" => "contains", "value" => value}, rest} when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: {nil, rest}, else: {trimmed, rest}
+      {_, rest} -> {nil, rest}
+    end
+  end
+
+  defp pop_item_name_filter(other), do: {nil, other}
+
+  defp maybe_item_name_column_filter(query, nil), do: query
+
+  defp maybe_item_name_column_filter(query, needle) when is_binary(needle) do
+    like = "%" <> escape_like(needle) <> "%"
+
+    from l in query,
+      join: i in Item,
+      on: i.id == l.item_id,
+      where: ilike(i.name, ^like) or ilike(i.external_sku, ^like)
+  end
+
   # ----- inventory rollup -----------------------------------------
 
   @inventory_sortable ~w(code name qty_on_hand total_cost lots_count earliest_expiry latest_received_at)a
@@ -428,6 +466,12 @@ defmodule Backend.Stock do
         base
       end
 
+    # Per-column ILIKE filters from the DataTable v2 header row. Only
+    # `name` and `external_sku` are recognised — everything else is
+    # silently dropped so a UI bug can't 500 the endpoint.
+    base = apply_inventory_column_filter(base, :name, opts[:column_filter])
+    base = apply_inventory_column_filter(base, :external_sku, opts[:column_filter])
+
     base =
       if warehouse_id do
         wh_item_ids =
@@ -499,6 +543,30 @@ defmodule Backend.Stock do
   end
 
   defp inventory_needle(_), do: nil
+
+  defp apply_inventory_column_filter(query, _field, nil), do: query
+  defp apply_inventory_column_filter(query, _field, filters) when filters == %{}, do: query
+
+  defp apply_inventory_column_filter(query, field, filters) when is_map(filters) do
+    key = Atom.to_string(field)
+
+    case Map.get(filters, key) do
+      %{"op" => "contains", "value" => value} when is_binary(value) and value != "" ->
+        needle = "%" <> escape_like(String.trim(value)) <> "%"
+        apply_inventory_ilike(query, field, needle)
+
+      _ ->
+        query
+    end
+  end
+
+  defp apply_inventory_column_filter(query, _field, _filters), do: query
+
+  defp apply_inventory_ilike(query, :name, needle),
+    do: from([item: i] in query, where: ilike(i.name, ^needle))
+
+  defp apply_inventory_ilike(query, :external_sku, needle),
+    do: from([item: i] in query, where: ilike(i.external_sku, ^needle))
 
   defp inventory_decode_cursor(nil), do: nil
   defp inventory_decode_cursor(""), do: nil

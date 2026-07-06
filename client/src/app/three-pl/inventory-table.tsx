@@ -49,6 +49,9 @@ export function ThreePLInventoryTable({
       {
         id: "lot",
         header: "Lot",
+        filterField: "lot",
+        filterKind: "text",
+        filterPlaceholder: "Lot code or batch…",
         cell: (r) => (
           <div className="min-w-0">
             <p className="truncate font-mono text-[11px]">
@@ -65,6 +68,9 @@ export function ThreePLInventoryTable({
       {
         id: "item",
         header: "Item",
+        filterField: "item",
+        filterKind: "text",
+        filterPlaceholder: "Item name…",
         cell: (r) => (
           <p className="truncate text-sm">{r.lot.item?.name ?? "—"}</p>
         ),
@@ -72,6 +78,9 @@ export function ThreePLInventoryTable({
       {
         id: "customer",
         header: "Customer",
+        filterField: "customer",
+        filterKind: "text",
+        filterPlaceholder: "Customer name…",
         cell: (r) => (
           <p className="truncate text-sm">
             {r.lot.bailee_customer?.name ?? "—"}
@@ -82,6 +91,8 @@ export function ThreePLInventoryTable({
         id: "volume",
         header: "Volume (m³)",
         align: "right",
+        filterField: "volume",
+        filterKind: "number-range",
         cell: (r) => (
           <span className="font-mono text-xs">{r.stored_volume_m3}</span>
         ),
@@ -90,6 +101,8 @@ export function ThreePLInventoryTable({
         id: "days_held",
         header: "Days held",
         align: "right",
+        filterField: "days_held",
+        filterKind: "number-range",
         cell: (r) => (
           <span className="inline-flex items-center gap-1 text-xs">
             <Timer className="size-3 text-muted-foreground" />
@@ -101,6 +114,8 @@ export function ThreePLInventoryTable({
         id: "accrued",
         header: "Accrued",
         align: "right",
+        filterField: "accrued",
+        filterKind: "number-range",
         cell: (r) =>
           r.accrued_amount === null || !currency ? (
             <span className="text-xs text-muted-foreground/60">—</span>
@@ -115,6 +130,8 @@ export function ThreePLInventoryTable({
         header: "Since",
         sortField: "bailee_routed_at",
         sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        filterField: "since",
+        filterKind: "date-range",
         cell: (r) => (
           <span className="text-xs text-muted-foreground">
             {formatCompanyDate(r.lot.bailee_routed_at, companyDefaults)}
@@ -124,6 +141,9 @@ export function ThreePLInventoryTable({
       {
         id: "cell",
         header: "Cell",
+        filterField: "cell",
+        filterKind: "text",
+        filterPlaceholder: "Location or cell…",
         cell: (r) => {
           const placement = r.lot.placements?.[0];
           const cell = placement?.storage_cell;
@@ -179,6 +199,14 @@ export function ThreePLInventoryTable({
           return hay.includes(q);
         });
       }
+
+      // Client-side column filters. The endpoint returns every bailee
+      // lot in one shot, so filtering here is O(n) over a small list
+      // and stays snappy without a round-trip.
+      for (const [field, fv] of Object.entries(params.columnFilters)) {
+        if (!fv) continue;
+        filtered = filtered.filter((r) => matchThreePLFilter(r, field, fv));
+      }
       const sorted = [...filtered].sort((a, b) => {
         const field = params.sort?.field ?? "bailee_routed_at";
         const dir = params.sort?.direction === "asc" ? 1 : -1;
@@ -221,6 +249,83 @@ export function ThreePLInventoryTable({
       }
     />
   );
+}
+
+function matchThreePLFilter(
+  r: ThreePLInventoryRow,
+  field: string,
+  fv: ColumnFilterValue,
+): boolean {
+  if (fv.op === "contains") {
+    const needle = String(fv.value).toLowerCase();
+    if (!needle) return true;
+    switch (field) {
+      case "lot":
+        return (
+          (r.lot.code ?? "").toLowerCase().includes(needle) ||
+          (r.lot.supplier_batch_no ?? "").toLowerCase().includes(needle)
+        );
+      case "item":
+        return (r.lot.item?.name ?? "").toLowerCase().includes(needle);
+      case "customer":
+        return (r.lot.bailee_customer?.name ?? "").toLowerCase().includes(needle);
+      case "cell": {
+        const cell = r.lot.placements?.[0]?.storage_cell;
+        const loc = cell?.storage_location;
+        const hay = [
+          loc?.name,
+          loc?.code,
+          cell?.name,
+          cell?.code,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(needle);
+      }
+      default:
+        return true;
+    }
+  }
+
+  if (fv.op === "range") {
+    const value = threePLNumericValue(r, field);
+    if (value === null) return false;
+    if ("min" in fv && fv.min !== undefined && value < Number(fv.min)) return false;
+    if ("max" in fv && fv.max !== undefined && value > Number(fv.max)) return false;
+    if ("from" in fv && fv.from) {
+      const rowDate = threePLDateValue(r, field);
+      if (!rowDate || rowDate < fv.from) return false;
+    }
+    if ("to" in fv && fv.to) {
+      const rowDate = threePLDateValue(r, field);
+      if (!rowDate || rowDate > fv.to) return false;
+    }
+    return true;
+  }
+
+  return true;
+}
+
+function threePLNumericValue(r: ThreePLInventoryRow, field: string): number | null {
+  switch (field) {
+    case "volume":
+      return r.stored_volume_m3 === null ? null : Number(r.stored_volume_m3);
+    case "days_held":
+      return r.days_held === null ? null : Number(r.days_held);
+    case "accrued":
+      return r.accrued_amount === null ? null : Number(r.accrued_amount);
+    default:
+      return null;
+  }
+}
+
+function threePLDateValue(r: ThreePLInventoryRow, field: string): string | null {
+  if (field === "since") {
+    const iso = r.lot.bailee_routed_at;
+    return iso ? iso.slice(0, 10) : null;
+  }
+  return null;
 }
 
 // ---------------- Small helpers ----------------

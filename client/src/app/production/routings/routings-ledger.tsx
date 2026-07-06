@@ -115,8 +115,11 @@ export function RoutingsLedger({ initialPage }: Props) {
         id: "item",
         header: "Output item",
         widthClassName: "min-w-[14rem]",
+        filterField: "item",
+        filterKind: "text",
+        filterPlaceholder: "Item name or SKU…",
         group: "Identity",
-        description: "Item this routing produces.",
+        description: "Item this routing produces. Filter by name or SKU.",
         cell: (r) =>
           r.item ? (
             <div className="min-w-0 space-y-0.5">
@@ -135,8 +138,11 @@ export function RoutingsLedger({ initialPage }: Props) {
         id: "bom",
         header: "Connected BOM",
         widthClassName: "min-w-[12rem]",
+        filterField: "bom",
+        filterKind: "text",
+        filterPlaceholder: "BOM name…",
         group: "Identity",
-        description: "BOM this routing pins to. Empty = works with any BOM.",
+        description: "BOM this routing pins to. Empty = works with any BOM. Filter by BOM name.",
         cell: (r) =>
           r.bom ? (
             <span className="truncate text-xs text-muted-foreground">

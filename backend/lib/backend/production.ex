@@ -76,17 +76,32 @@ defmodule Backend.Production do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = Keyword.get(opts, :sort, @bom_default_sort)
 
+    {item_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "item")
+
     base =
       BOM
       |> where([b], b.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @bom_search)
       |> maybe_item_filter(opts[:item_id])
       |> maybe_active_filter(opts[:is_active])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @bom_sortable)
+      |> maybe_bom_item_name_filter(item_needle)
+      |> ListQueries.apply_column_filters(column_filter, @bom_sortable)
       |> ListQueries.apply_sort(sort, @bom_sortable, @bom_default_sort)
       |> preload([:item, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_bom_item_name_filter(query, nil), do: query
+
+  defp maybe_bom_item_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from b in query,
+      join: i in Item,
+      on: i.id == b.item_id,
+      where: ilike(i.name, ^like) or ilike(i.external_sku, ^like)
   end
 
   defp maybe_item_filter(query, nil), do: query
@@ -716,6 +731,9 @@ defmodule Backend.Production do
   def list_workstations_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = Keyword.get(opts, :sort, @ws_default_sort)
 
+    {group_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "group")
+
     base =
       Workstation
       |> where([w], w.company_id == ^company_id)
@@ -723,11 +741,23 @@ defmodule Backend.Production do
       |> maybe_ws_group_filter(opts[:workstation_group_id])
       |> maybe_ws_warehouse_filter(opts[:warehouse_id])
       |> maybe_active_filter(opts[:is_active])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @ws_sortable)
+      |> maybe_ws_group_name_filter(group_needle)
+      |> ListQueries.apply_column_filters(column_filter, @ws_sortable)
       |> ListQueries.apply_sort(sort, @ws_sortable, @ws_default_sort)
       |> preload([:workstation_group, :warehouse, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_ws_group_name_filter(query, nil), do: query
+
+  defp maybe_ws_group_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from w in query,
+      join: g in WorkstationGroup,
+      on: g.id == w.workstation_group_id,
+      where: ilike(g.name, ^like)
   end
 
   defp maybe_ws_group_filter(query, nil), do: query
@@ -1028,6 +1058,10 @@ defmodule Backend.Production do
   def list_routings_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = Keyword.get(opts, :sort, @routing_default_sort)
 
+    column_filter = opts[:column_filter]
+    {item_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "item")
+    {bom_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "bom")
+
     base =
       Routing
       |> where([r], r.company_id == ^company_id)
@@ -1035,11 +1069,35 @@ defmodule Backend.Production do
       |> maybe_routing_item_filter(opts[:item_id])
       |> maybe_routing_bom_filter(opts[:bom_id])
       |> maybe_active_filter(opts[:is_active])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @routing_sortable)
+      |> maybe_routing_item_name_filter(item_needle)
+      |> maybe_routing_bom_name_filter(bom_needle)
+      |> ListQueries.apply_column_filters(column_filter, @routing_sortable)
       |> ListQueries.apply_sort(sort, @routing_sortable, @routing_default_sort)
       |> preload([:item, :bom, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_routing_item_name_filter(query, nil), do: query
+
+  defp maybe_routing_item_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from r in query,
+      join: i in Item,
+      on: i.id == r.item_id,
+      where: ilike(i.name, ^like) or ilike(i.external_sku, ^like)
+  end
+
+  defp maybe_routing_bom_name_filter(query, nil), do: query
+
+  defp maybe_routing_bom_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from r in query,
+      join: b in BOM,
+      on: b.id == r.bom_id,
+      where: ilike(b.name, ^like)
   end
 
   defp maybe_routing_item_filter(query, nil), do: query
@@ -1369,6 +1427,11 @@ defmodule Backend.Production do
       when is_integer(company_id) do
     sort = Keyword.get(opts, :sort, @mo_default_sort)
 
+    column_filter = opts[:column_filter]
+    {product_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "product")
+    {site_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "site")
+    {bom_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "bom")
+
     base =
       ManufacturingOrder
       |> where([m], m.company_id == ^company_id)
@@ -1376,7 +1439,10 @@ defmodule Backend.Production do
       |> maybe_mo_status_filter(opts[:status])
       |> maybe_mo_item_filter(opts[:item_id])
       |> maybe_mo_warehouse_filter(opts[:warehouse_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @mo_sortable)
+      |> maybe_mo_product_name_filter(product_needle)
+      |> maybe_mo_site_name_filter(site_needle)
+      |> maybe_mo_bom_name_filter(bom_needle)
+      |> ListQueries.apply_column_filters(column_filter, @mo_sortable)
       |> ListQueries.apply_sort(sort, @mo_sortable, @mo_default_sort)
       |> preload([
         :item,
@@ -1417,6 +1483,39 @@ defmodule Backend.Production do
 
   defp maybe_mo_warehouse_filter(query, id) when is_integer(id),
     do: where(query, [m], m.warehouse_id == ^id)
+
+  defp maybe_mo_product_name_filter(query, nil), do: query
+
+  defp maybe_mo_product_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from m in query,
+      join: i in Item,
+      on: i.id == m.item_id,
+      where: ilike(i.name, ^like) or ilike(i.external_sku, ^like)
+  end
+
+  defp maybe_mo_site_name_filter(query, nil), do: query
+
+  defp maybe_mo_site_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from m in query,
+      join: w in Warehouse,
+      on: w.id == m.warehouse_id,
+      where: ilike(w.name, ^like)
+  end
+
+  defp maybe_mo_bom_name_filter(query, nil), do: query
+
+  defp maybe_mo_bom_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from m in query,
+      join: b in BOM,
+      on: b.id == m.bom_id,
+      where: ilike(b.name, ^like)
+  end
 
   defp maybe_mo_warehouse_filter(query, raw) when is_binary(raw) do
     case Integer.parse(raw) do

@@ -152,8 +152,11 @@ export function CustomerOrdersTable({ initialPage }: Props) {
         header: "Customer",
         hideable: false,
         widthClassName: "min-w-[16rem]",
+        filterField: "customer",
+        filterKind: "text",
+        filterPlaceholder: "Customer name…",
         group: "Identity",
-        description: "Customer this order is sold to.",
+        description: "Customer this order is sold to. Filter by customer name.",
         cell: (co) => (
           <div className="min-w-0">
             <Link

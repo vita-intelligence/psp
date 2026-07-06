@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   ClipboardList,
   ExternalLink,
+  Hourglass,
   Loader2,
   Lock,
   LockKeyhole,
@@ -48,7 +49,7 @@ import { FieldEditingIndicator } from "@/components/realtime/field-editing-indic
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import type { JoinError } from "@/lib/realtime/use-live-form";
-import { formatCompanyDate } from "@/lib/format/company";
+import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
 import { findCountry } from "@/lib/iso/countries";
 import { cn } from "@/lib/utils";
 import {
@@ -432,6 +433,14 @@ export function ShipmentDetail({
         </CardContent>
       </Card>
 
+      {/* -------- Dispatch dwell + carrying cost -------- */}
+      {shipment.dispatch_dwell && (
+        <DispatchDwellCard
+          dwell={shipment.dispatch_dwell}
+          companyDefaults={companyDefaults}
+        />
+      )}
+
       {/* -------- Delivery card (view / edit toggle) -------- */}
       <Card>
         <CardHeader className="pb-2">
@@ -587,9 +596,37 @@ export function ShipmentDetail({
                     onChange={(e) => setField("qty", e.target.value)}
                     onFocus={() => focusField("qty")}
                     onBlur={() => blurField("qty")}
+                    // Own-stock lots ship whole — the backend coerces
+                    // qty back to the full dispatch-placement qty on
+                    // save. Lock the input so the operator sees the
+                    // constraint before they hit save (mirrors the
+                    // server rule so there's no surprise). Bailee /
+                    // 3PL lots stay editable — partial dispatches
+                    // are legal there.
+                    readOnly={shipment.stock_lot?.ownership_kind === "own"}
+                    disabled={shipment.stock_lot?.ownership_kind === "own"}
+                    aria-describedby={
+                      shipment.stock_lot?.ownership_kind === "own"
+                        ? "qty-locked-hint"
+                        : undefined
+                    }
+                    className={cn(
+                      shipment.stock_lot?.ownership_kind === "own" &&
+                        "cursor-not-allowed bg-muted/50",
+                    )}
                   />
                   <FieldEditingIndicator peer={fieldEditors.qty} />
                 </div>
+                {shipment.stock_lot?.ownership_kind === "own" && (
+                  <p
+                    id="qty-locked-hint"
+                    className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"
+                  >
+                    <Lock className="size-3" />
+                    Ships in full — this lot isn&apos;t 3PL, so it can&apos;t be
+                    split across multiple shipments.
+                  </p>
+                )}
               </Field>
               <Field
                 label="Notes"
@@ -1112,4 +1149,91 @@ function lotDetailHref(shipment: Shipment): string | null {
     return `/three-pl/${encodeURIComponent(lot.uuid)}`;
   }
   return `/stock/lots/${encodeURIComponent(lot.uuid)}`;
+}
+
+// Compact dwell string ("2d 6h", "3h 12m", "45m", "just now") — mirrors
+// how the rest of the app shows short elapsed periods.
+function formatDwell(seconds: number): string {
+  if (seconds < 60) return "just now";
+  const totalMinutes = Math.floor(seconds / 60);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+// Dispatch-dwell + carrying-cost card. Fed by the backend's
+// `dispatch_dwell_summary` — appears only when the lot has actually
+// landed in a dispatch cell. Amber tint after 3 days so a stalled
+// pickup is visible at a glance.
+function DispatchDwellCard({
+  dwell,
+  companyDefaults,
+}: {
+  dwell: NonNullable<Shipment["dispatch_dwell"]>;
+  companyDefaults: CompanyDefaults | null;
+}) {
+  const stale = dwell.dwell_seconds > 3 * 24 * 60 * 60;
+  const cost = dwell.estimated_storage_cost;
+  const rate = dwell.rate_per_m3_per_day;
+
+  return (
+    <section
+      className={cn(
+        "flex flex-wrap items-start justify-between gap-3 rounded-md border px-4 py-3",
+        stale
+          ? "border-amber-500/40 bg-amber-500/[0.06]"
+          : "border-border/60 bg-muted/20",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "mt-0.5 grid size-8 place-items-center rounded-md",
+            stale
+              ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+              : "bg-background text-muted-foreground",
+          )}
+        >
+          <Hourglass className="size-4" />
+        </div>
+        <div className="min-w-0 space-y-0.5">
+          <p className="text-sm font-medium">
+            Sitting in dispatch since{" "}
+            {formatCompanyDate(dwell.arrived_at, companyDefaults)} ·{" "}
+            {formatDwell(dwell.dwell_seconds)}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {cost && Number(cost) > 0 ? (
+              <>
+                Estimated storage cost so far:{" "}
+                <span className="font-medium text-foreground">
+                  {formatCompanyMoney(cost, companyDefaults)}
+                </span>{" "}
+                {rate && (
+                  <>
+                    at your 3PL rate ({formatCompanyMoney(rate, companyDefaults)}{" "}
+                    / m³ / day × {dwell.volume_m3 ?? "0"} m³)
+                  </>
+                )}
+              </>
+            ) : rate ? (
+              <>
+                Storage cost accrues once a full day passes at your 3PL rate (
+                {formatCompanyMoney(rate, companyDefaults)} / m³ / day). Volume
+                on the floor: {dwell.volume_m3 ?? "0"} m³.
+              </>
+            ) : (
+              <>
+                Set a 3PL rate on the company settings page to see the estimated
+                carrying cost while this shipment waits for pickup.
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
 }

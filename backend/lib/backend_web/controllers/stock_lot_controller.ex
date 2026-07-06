@@ -76,7 +76,8 @@ defmodule BackendWeb.StockLotController do
       search: params["search"],
       warehouse_id: parse_int(params["warehouse_id"]),
       item_type: params["item_type"],
-      in_stock_only: params["in_stock_only"] in [true, "true", "1"]
+      in_stock_only: params["in_stock_only"] in [true, "true", "1"],
+      column_filter: params["column_filter"]
     ]
 
     {rows, cursor} = Stock.inventory_rollup(actor.company_id, opts)
