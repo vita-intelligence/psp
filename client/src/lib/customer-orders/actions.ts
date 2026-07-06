@@ -27,6 +27,7 @@ export interface CustomerOrderInput {
   currency_code?: string;
   default_warehouse_id?: number | null;
   expected_ship_date?: string | null;
+  due_date?: string | null;
   delivery_address?: string | null;
   customer_reference?: string | null;
   notes?: string | null;

@@ -54,6 +54,10 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :grand_total, :decimal, default: Decimal.new(0)
 
     field :expected_ship_date, :date
+    # Customer-facing deadline. Distinct from `expected_ship_date`
+    # (internal shipping ETA). Drives the /my-tasks urgency bucketing
+    # + the wizard's "due in N days" pill.
+    field :due_date, :date
     field :delivery_address, :string
     field :customer_reference, :string
     field :notes, :string
@@ -98,6 +102,7 @@ defmodule Backend.CustomerOrders.CustomerOrder do
       :additional_fees,
       :default_warehouse_id,
       :expected_ship_date,
+      :due_date,
       :delivery_address,
       :customer_reference,
       :notes,

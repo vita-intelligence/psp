@@ -552,6 +552,13 @@ defmodule BackendWeb.Router do
            :create_mo_for_line
     end
 
+    # My tasks — per-user actionable CTA feed across every CO in the
+    # pipeline. No path params; actor is the current session user.
+    get "/my-tasks", MyTasksController, :index
+    # Lean count summary — fires on every entity broadcast from the
+    # top-bar badge; skips the full task shape to keep the pipe cool.
+    get "/my-tasks/count", MyTasksController, :count
+
     # Pricelists — sell-side selling-price quotes. Header + tiered
     # line items (multiple rows per item × min-qty so 1-99 / 100-999
     # / 1000+ pricing falls out without extra schema). Read by the
