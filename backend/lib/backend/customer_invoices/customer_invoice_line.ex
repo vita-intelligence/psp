@@ -32,6 +32,11 @@ defmodule Backend.CustomerInvoices.CustomerInvoiceLine do
 
     field :delivery_date, :date
     field :notes, :string
+    # Per-line VAT rate override. Nullable — when null the line
+    # inherits the parent invoice's aggregate `tax_rate`. Populated
+    # only on mixed-supply invoices (zero-rated / reduced-rate items
+    # sharing a document with the standard rate).
+    field :tax_rate, :decimal
 
     belongs_to :customer_invoice, CustomerInvoice
     belongs_to :item, Item
@@ -54,7 +59,8 @@ defmodule Backend.CustomerInvoices.CustomerInvoiceLine do
       :discount_pct,
       :line_subtotal,
       :delivery_date,
-      :notes
+      :notes,
+      :tax_rate
     ])
     |> validate_required([:customer_invoice_id, :company_id, :qty, :unit_price])
     # Credit-note lines carry negative qty so the parent invoice's
@@ -64,6 +70,10 @@ defmodule Backend.CustomerInvoices.CustomerInvoiceLine do
     |> validate_number(:qty, not_equal_to: 0)
     |> validate_number(:unit_price, greater_than_or_equal_to: 0)
     |> validate_number(:discount_pct,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 100
+    )
+    |> validate_number(:tax_rate,
       greater_than_or_equal_to: 0,
       less_than_or_equal_to: 100
     )

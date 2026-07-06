@@ -939,6 +939,14 @@ defmodule Backend.Documents do
           _ ->
             nil
         end,
+      # HMRC-friendly plain-English payment terms label — derived from
+      # the customer's stored payment_terms_days + basis so it stays
+      # in sync with what the CO was quoted on.
+      payment_terms_label: payment_terms_label(inv.customer),
+      # Effective per-line VAT rate — line-level `tax_rate` when set
+      # (mixed-supply invoices), otherwise the invoice's aggregate
+      # rate. Pre-computed as a closure so the template stays declarative.
+      line_tax_rate: fn line -> line_tax_rate(line, inv) end,
       now: Date.utc_today() |> Date.to_string(),
       format_money: fn d -> format_money(d, currency, company) end,
       format_qty: fn d -> decimal_to_string(d) end,
@@ -953,6 +961,29 @@ defmodule Backend.Documents do
   defp invoice_doc_title("proforma"), do: "Proforma Invoice"
   defp invoice_doc_title("quotation"), do: "Quotation"
   defp invoice_doc_title(_), do: "Invoice"
+
+  # "Net 30 (from invoice date)" — reads from customer.payment_terms_days
+  # + basis so accounts see the same terms that the CO was quoted on.
+  # Falls back to "—" when the customer is missing or terms aren't set.
+  defp payment_terms_label(%{payment_terms_days: days, payment_terms_basis: basis})
+       when is_integer(days) and days > 0 do
+    "Net #{days} (#{payment_terms_basis_label(basis)})"
+  end
+
+  defp payment_terms_label(%{payment_terms_days: 0}), do: "Due on receipt"
+  defp payment_terms_label(_), do: nil
+
+  defp payment_terms_basis_label("invoice_date"), do: "from invoice date"
+  defp payment_terms_basis_label("dispatch_date"), do: "from dispatch date"
+  defp payment_terms_basis_label("month_end"), do: "from end of month"
+  defp payment_terms_basis_label(_), do: "from invoice date"
+
+  # Line-level VAT rate override wins; falls back to the invoice's
+  # aggregate rate. Returns a `%Decimal{}` so the template's format
+  # helper can render it uniformly.
+  defp line_tax_rate(%{tax_rate: %Decimal{} = rate}, _inv), do: rate
+  defp line_tax_rate(_line, %{tax_rate: %Decimal{} = rate}), do: rate
+  defp line_tax_rate(_line, _inv), do: Decimal.new(0)
 
   defp invoice_status_label("credit_note", "draft"), do: "Credit note (draft)"
   defp invoice_status_label("credit_note", _), do: "Credit Note — Issued"
