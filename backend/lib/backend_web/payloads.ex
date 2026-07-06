@@ -708,6 +708,7 @@ defmodule BackendWeb.Payloads do
       additional_fees: co.additional_fees,
       grand_total: co.grand_total,
       expected_ship_date: co.expected_ship_date,
+      due_date: co.due_date,
       delivery_address: co.delivery_address,
       customer_reference: co.customer_reference,
       notes: co.notes,
@@ -5288,4 +5289,49 @@ defmodule BackendWeb.Payloads do
   end
 
   defp production_final_release_lot_placement(_), do: nil
+
+  # =========================================================================
+  # My tasks — per-user actionable CTAs across every CO in the pipeline.
+  # =========================================================================
+
+  def my_task(%{} = task) do
+    %{
+      id: task.id,
+      co_uuid: task.co_uuid,
+      co_code: task.co_code,
+      customer_name: task.customer_name,
+      phase_key: task.phase_key,
+      phase_label: task.phase_label,
+      action_code: task.action_code,
+      title: task.title,
+      detail: task.detail,
+      cta: normalise_cta(task.cta),
+      due_date: task.due_date,
+      updated_at: task.updated_at
+    }
+  end
+
+  # The OrderWizard emits CTAs with atom keys; some paths hand them
+  # back with string keys because they came through a Task or a
+  # broadcast. Normalise to atom keys so the FE sees a consistent
+  # shape.
+  defp normalise_cta(nil), do: nil
+
+  defp normalise_cta(cta) when is_map(cta) do
+    %{
+      label: get(cta, :label),
+      kind: get(cta, :kind),
+      action: get(cta, :action),
+      line_uuid: get(cta, :line_uuid),
+      bom_id: get(cta, :bom_id),
+      mo_uuid: get(cta, :mo_uuid),
+      href: get(cta, :href),
+      target: get(cta, :target),
+      description: get(cta, :description)
+    }
+  end
+
+  defp get(map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
 end

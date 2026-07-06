@@ -62,6 +62,7 @@ export function COHeaderCard({
     co.default_warehouse_id,
   );
   const [shipDate, setShipDate] = useState(co.expected_ship_date ?? "");
+  const [dueDate, setDueDate] = useState(co.due_date ?? "");
   const [customerRef, setCustomerRef] = useState(co.customer_reference ?? "");
   const [deliveryAddress, setDeliveryAddress] = useState(
     co.delivery_address ?? "",
@@ -82,6 +83,7 @@ export function COHeaderCard({
     const payload: CustomerOrderInput = {
       default_warehouse_id: warehouseId,
       expected_ship_date: shipDate || null,
+      due_date: dueDate || null,
       customer_reference: customerRef.trim() || null,
       delivery_address: deliveryAddress.trim() || null,
       notes: notes.trim() || null,
@@ -154,6 +156,19 @@ export function COHeaderCard({
                 onChange={(e) => setShipDate(e.target.value)}
                 className="h-11"
               />
+            </Field>
+
+            <Field label="Customer due date">
+              <Input
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                className="h-11"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                The customer-facing deadline. Drives the wizard&apos;s
+                urgency bucket + the /my-tasks page.
+              </p>
             </Field>
 
             <Field label="Customer reference">

@@ -2135,6 +2135,10 @@ export interface CustomerOrder {
   additional_fees: string;
   grand_total: string;
   expected_ship_date: string | null;
+  /** Customer-facing deadline. Distinct from `expected_ship_date`
+   *  (internal shipping ETA). Drives the wizard urgency pill + the
+   *  /my-tasks Overdue / This week / Later bucketing. */
+  due_date: string | null;
   delivery_address: string | null;
   customer_reference: string | null;
   notes: string | null;

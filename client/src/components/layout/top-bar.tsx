@@ -4,6 +4,7 @@ import { logoutAction } from "@/lib/auth/actions";
 import { Wordmark } from "@/components/brand/wordmark";
 import { ConnectionPill } from "@/components/realtime/connection-pill";
 import { TopBarPresence } from "@/components/realtime/top-bar-presence";
+import { MyTasksNavLink } from "@/components/layout/my-tasks-nav-link";
 import { UserAvatar } from "@/components/users/user-avatar";
 import { LogOut } from "lucide-react";
 import type { User } from "@/lib/types";
@@ -17,6 +18,7 @@ export function TopBar({ user }: { user: User }) {
         <div className="flex items-center gap-2 sm:gap-3">
           <TopBarPresence />
           <ConnectionPill />
+          <MyTasksNavLink />
 
           <Link
             href="/settings"
