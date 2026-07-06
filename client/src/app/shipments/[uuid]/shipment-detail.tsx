@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import {
   AlertTriangle,
   CheckCircle2,
+  Circle,
   ClipboardList,
   ExternalLink,
   Hourglass,
@@ -54,7 +55,6 @@ import { findCountry } from "@/lib/iso/countries";
 import { cn } from "@/lib/utils";
 import {
   cancelShipmentAction,
-  confirmShipmentPickupAction,
   markShipmentDraftAction,
   markShipmentReadyAction,
   updateShipmentAction,
@@ -192,6 +192,21 @@ export function ShipmentDetail({
   // hits the button.
   const canDrive = canEdit && isCreator;
 
+  // Paperwork checklist mirrored by the backend's `validate_ready_prereqs`.
+  // Kept in step with `Backend.Shipments.Shipment.ready_changeset/2` so a
+  // Mark-ready click that would 422 is impossible in the UI — the button
+  // stays disabled and the tooltip lists what's missing.
+  const missingReadyFields = (() => {
+    const missing: string[] = [];
+    if (!shipment.recipient_name?.trim()) missing.push("Recipient");
+    if (!shipment.ship_to_country?.trim()) missing.push("Country");
+    if (!shipment.ship_to_address?.trim()) missing.push("Delivery address");
+    if (!shipment.planned_ship_at) missing.push("Planned ship time");
+    if (!shipment.qty || Number(shipment.qty) <= 0) missing.push("Qty");
+    return missing;
+  })();
+  const readyReady = missingReadyFields.length === 0;
+
   const autofillFromCustomer = () => {
     const c = shipment.customer;
     if (!c) return;
@@ -253,22 +268,31 @@ export function ShipmentDetail({
       router.refresh();
     });
 
-  const confirmPickup = () => {
-    if (
-      !confirm(
-        "Truck has arrived and taken the shipment? The full truck-arrival form isn't built yet — this just marks the goods as picked up for now.",
-      )
-    )
-      return;
+  // Dispatch is a phone-only flow (camera, on-the-dock ergonomics).
+  // The desktop button pings the operator's paired mobile via a
+  // `user:<uuid>` channel broadcast; the mobile shell shows a slide-up
+  // "Open dispatch form" banner. Desktop just gets a toast so the
+  // operator knows the ping landed.
+  const [pushingDispatch, setPushingDispatch] = useState(false);
+  const pushDispatchToPhone = () => {
+    setPushingDispatch(true);
     startTransition(async () => {
-      const res = await confirmShipmentPickupAction(shipment.uuid);
-      if (!res.ok) {
-        setError(res);
-        return;
+      try {
+        const res = await fetch(
+          `/api/shipments/${encodeURIComponent(shipment.uuid)}/dispatch-push`,
+          { method: "POST" },
+        );
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { detail?: string };
+          toast.error(body.detail ?? "Couldn't reach your phone.");
+          return;
+        }
+        toast.success(
+          "Sent to your phone. Complete the checklist on the phone to confirm dispatch.",
+        );
+      } finally {
+        setPushingDispatch(false);
       }
-      toast.success("Pickup confirmed.");
-      broadcastCommit({ kind: "shipment-updated" });
-      router.refresh();
     });
   };
 
@@ -705,64 +729,12 @@ export function ShipmentDetail({
         </CardContent>
       </Card>
 
-      {/* -------- Truck arrival (always read-only) -------- */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <Truck className="size-4" />
-            Truck arrival
-          </CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Vehicle registration, driver, waybill, seal, temperature, and
-            loading photo land here when the mobile truck-arrival form runs
-            (spec pending). Rows show &ldquo;—&rdquo; until then.
-          </p>
-        </CardHeader>
-        <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
-          <DetailRow label="Carrier" value={shipment.carrier ?? "—"} />
-          <DetailRow
-            label="Vehicle registration"
-            value={shipment.vehicle_registration ?? "—"}
-            mono
-          />
-          <DetailRow label="Driver" value={shipment.driver_name ?? "—"} />
-          <DetailRow
-            label="Waybill / consignment"
-            value={shipment.consignment_note_ref ?? "—"}
-            mono
-          />
-          <DetailRow
-            label="Seal number"
-            value={shipment.seal_number ?? "—"}
-            mono
-          />
-          <DetailRow
-            label="Trailer temperature"
-            value={
-              shipment.temperature_c ? `${shipment.temperature_c} °C` : "—"
-            }
-          />
-          {shipment.loading_photo_url ? (
-            <div className="sm:col-span-2">
-              <p className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-                Loading photo
-              </p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <a
-                href={shipment.loading_photo_url}
-                target="_blank"
-                rel="noopener"
-              >
-                <img
-                  src={shipment.loading_photo_url}
-                  alt="Loading evidence"
-                  className="max-h-56 rounded-md border border-border/60"
-                />
-              </a>
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+      {/* -------- Truck arrival — reflects the mobile dispatch form -------- */}
+      <TruckArrivalCard
+        shipment={shipment}
+        companyDefaults={companyDefaults}
+      />
+
 
       {/* -------- Timeline -------- */}
       <Card>
@@ -829,13 +801,17 @@ export function ShipmentDetail({
               <Button
                 variant="outline"
                 onClick={markReady}
-                disabled={busy || editing || dirty || !canDrive}
+                disabled={
+                  busy || editing || dirty || !canDrive || !readyReady
+                }
                 title={
                   !canDrive
                     ? `Only ${creator?.name ?? "the head of the room"} can drive paperwork state.`
                     : editing || dirty
                       ? "Save your edits first."
-                      : "Flip to Ready once recipient + delivery address + country are filled."
+                      : !readyReady
+                        ? `Fill in ${missingReadyFields.join(", ")} before marking Ready.`
+                        : "Flip to Ready — recipient + address + country + planned ship time + qty all captured."
                 }
               >
                 <CheckCircle2 className="mr-1 size-4" />
@@ -857,9 +833,17 @@ export function ShipmentDetail({
               </Button>
             )}
             {shipment.status === "ready" && canPickup && (
-              <Button onClick={confirmPickup} disabled={busy}>
-                <Truck className="mr-1 size-4" />
-                Truck arrived — confirm pickup
+              <Button
+                onClick={pushDispatchToPhone}
+                disabled={busy || pushingDispatch}
+                title="The dispatch checklist opens on your paired phone — camera + on-the-dock workflow."
+              >
+                {pushingDispatch ? (
+                  <Loader2 className="mr-1 size-4 animate-spin" />
+                ) : (
+                  <Truck className="mr-1 size-4" />
+                )}
+                Send dispatch form to my phone
               </Button>
             )}
             {canEdit && (
@@ -881,6 +865,7 @@ export function ShipmentDetail({
           </div>
         </div>
       )}
+
     </div>
   );
 }
@@ -1090,6 +1075,163 @@ function DetailRow({
   );
 }
 
+interface ChecklistDisplayItem {
+  key:
+    | "packaging_intact"
+    | "labels_verified"
+    | "vehicle_clean_suitable"
+    | "transport_condition_acceptable"
+    | "dispatch_approved";
+  label: string;
+}
+
+const TRUCK_ARRIVAL_CHECKLIST: ChecklistDisplayItem[] = [
+  { key: "packaging_intact", label: "Packaging intact" },
+  { key: "labels_verified", label: "Correct labels verified" },
+  { key: "vehicle_clean_suitable", label: "Vehicle clean & suitable" },
+  {
+    key: "transport_condition_acceptable",
+    label: "Transport condition acceptable",
+  },
+  { key: "dispatch_approved", label: "Dispatch approved" },
+];
+
+function TruckArrivalCard({
+  shipment,
+  companyDefaults,
+}: {
+  shipment: Shipment;
+  companyDefaults: CompanyDefaults | null;
+}) {
+  const submitted = shipment.status === "picked_up" && !!shipment.picked_up_at;
+  const files = shipment.pickup_files ?? [];
+  const anyChecklistCaptured = TRUCK_ARRIVAL_CHECKLIST.some(
+    (item) => shipment[item.key] !== null,
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Truck className="size-4" />
+          Truck arrival
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          {submitted
+            ? "Signed off from the mobile dispatch form when the truck arrived."
+            : "Nothing captured yet — the dispatch checklist runs on the operator's phone when the truck arrives."}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {submitted && shipment.picked_up_by && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/[0.05] px-3 py-2 text-emerald-800 dark:text-emerald-200">
+            <CheckCircle2 className="size-4" />
+            <p className="text-xs">
+              Signed off by{" "}
+              <span className="font-medium">
+                {shipment.picked_up_by.name}
+              </span>
+              {" · "}
+              {formatCompanyDate(shipment.picked_up_at, companyDefaults)}
+            </p>
+          </div>
+        )}
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <DetailRow label="Delivery company" value={shipment.carrier ?? "—"} />
+          <DetailRow
+            label="Vehicle registration"
+            value={shipment.vehicle_registration ?? "—"}
+            mono
+          />
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Checklist
+          </p>
+          {anyChecklistCaptured ? (
+            <ul className="grid gap-1.5 sm:grid-cols-2">
+              {TRUCK_ARRIVAL_CHECKLIST.map((item) => (
+                <ChecklistLine
+                  key={item.key}
+                  label={item.label}
+                  state={shipment[item.key]}
+                />
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No sign-offs recorded yet.
+            </p>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Photos of the load
+            </p>
+            <span className="text-[11px] text-muted-foreground">
+              {files.length} attached
+            </span>
+          </div>
+          {files.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No photos captured yet.
+            </p>
+          ) : (
+            <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {files.map((f) => (
+                <li
+                  key={f.uuid}
+                  className="group relative overflow-hidden rounded-md border border-border/60 bg-muted/20"
+                >
+                  <a href={f.url} target="_blank" rel="noopener" title={f.filename}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={f.url}
+                      alt={f.filename}
+                      className="aspect-square w-full object-cover transition-opacity group-hover:opacity-90"
+                    />
+                  </a>
+                  {f.uploaded_by && (
+                    <p className="truncate bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {f.uploaded_by.name}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ChecklistLine({
+  label,
+  state,
+}: {
+  label: string;
+  state: boolean | null;
+}) {
+  const tone =
+    state === true
+      ? "text-emerald-700 dark:text-emerald-300"
+      : state === false
+        ? "text-destructive"
+        : "text-muted-foreground/70";
+  const Icon = state === true ? CheckCircle2 : state === false ? XCircle : Circle;
+  return (
+    <li className={cn("flex items-center gap-2 text-xs", tone)}>
+      <Icon className="size-3.5 shrink-0" />
+      <span className={state === true ? "font-medium" : undefined}>{label}</span>
+    </li>
+  );
+}
+
 function TimelineRow({
   label,
   when,
@@ -1215,7 +1357,12 @@ function DispatchDwellCard({
                 {rate && (
                   <>
                     at your 3PL rate ({formatCompanyMoney(rate, companyDefaults)}{" "}
-                    / m³ / day × {dwell.volume_m3 ?? "0"} m³)
+                    / m³ / day × {dwell.volume_m3 ?? "0"} m³ ×{" "}
+                    {Math.floor(dwell.dwell_seconds / 86400)}{" "}
+                    {Math.floor(dwell.dwell_seconds / 86400) === 1
+                      ? "day"
+                      : "days"}
+                    )
                   </>
                 )}
               </>

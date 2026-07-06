@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
     const display: DeviceDisplay = {
       user_name: res.user.name || res.user.email,
       user_email: res.user.email,
+      user_uuid: res.user.uuid,
       device_uuid: res.device.uuid,
       device_label: res.device.label,
     };

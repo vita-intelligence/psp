@@ -104,14 +104,22 @@ export function usePagePresence({ pageId, disabled = false }: Options): Result {
 
   const room = usePagePresenceStore((s) => (pageId ? s.rooms[pageId] : undefined));
 
-  const peers = room?.peers ?? [];
+  const allPeers = room?.peers ?? [];
   const cursorsByPeer = room?.cursorsByPeer ?? {};
   const pointBursts = room?.pointBursts ?? [];
   const myUserId = room?.myUserId ?? null;
 
-  const leader = selectLeader(peers);
+  // Leader is picked across EVERYONE in the room (including self) so a
+  // solo occupant is correctly recognised as the leader; the caller
+  // uses `isLeader` to know their own role. The `peers` array we hand
+  // out to UI consumers strips self, so the top-bar avatar stack
+  // doesn't render your own face as if you were another user.
+  const leader = selectLeader(allPeers);
   const isLeader = leader !== null && leader.id === myUserId;
-  const cursors = selectCursors(peers, cursorsByPeer, myUserId);
+  const peers = myUserId
+    ? allPeers.filter((p) => p.id !== myUserId)
+    : allPeers;
+  const cursors = selectCursors(allPeers, cursorsByPeer, myUserId);
 
   const setCursor = useCallback(
     (x: number, y: number) => {
