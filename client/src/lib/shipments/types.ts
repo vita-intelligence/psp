@@ -69,6 +69,14 @@ export interface Shipment {
     estimated_storage_cost: string | null;
     rate_per_m3_per_day: string | null;
   } | null;
+  // Truck-arrival checklist (BRCGS Issue 9 § 5.4.6). Nullable until
+  // the operator fills the mobile dispatch form.
+  packaging_intact: boolean | null;
+  labels_verified: boolean | null;
+  vehicle_clean_suitable: boolean | null;
+  transport_condition_acceptable: boolean | null;
+  dispatch_approved: boolean | null;
+  pickup_files: ShipmentPickupFile[];
   created_at: string;
   created_by: AuditActor | null;
   ready_at: string | null;
@@ -79,6 +87,26 @@ export interface Shipment {
   cancelled_by: AuditActor | null;
   cancel_reason: string | null;
   updated_at: string;
+}
+
+export interface ShipmentPickupFile {
+  uuid: string;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  uploaded_at: string;
+  uploaded_by: { uuid: string; name: string } | null;
+  url: string;
+}
+
+export interface ShipmentPickupChecklist {
+  carrier: string;
+  vehicle_registration: string;
+  packaging_intact: boolean;
+  labels_verified: boolean;
+  vehicle_clean_suitable: boolean;
+  transport_condition_acceptable: boolean;
+  dispatch_approved: boolean;
 }
 
 export interface ShipmentListResponse {

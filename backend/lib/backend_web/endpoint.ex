@@ -35,7 +35,13 @@ defmodule BackendWeb.Endpoint do
   # using PHX_HOST + WS_EXTRA_ORIGINS — dev is deliberately open so
   # LAN devices (paired phones) can join without additional config.
   socket "/socket", BackendWeb.UserSocket,
-    websocket: [check_origin: Mix.env() != :prod],
+    # Dev: `check_origin: false` so cross-origin WS upgrades from LAN
+    # devices (phones on Wi-Fi, the `.local` hostname the FE serves
+    # from) succeed without hard-coding every host. Prod overrides
+    # this at runtime in `config/runtime.exs` using PHX_HOST +
+    # WS_EXTRA_ORIGINS, so the deployed instance still rejects
+    # upgrades from unrelated hosts.
+    websocket: [check_origin: false],
     longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.

@@ -125,11 +125,14 @@ export async function markShipmentDraftAction(uuid: string) {
   );
 }
 
-export async function confirmShipmentPickupAction(uuid: string) {
+export async function confirmShipmentPickupAction(
+  uuid: string,
+  payload: import("./types").ShipmentPickupChecklist,
+) {
   return lifecycleAction(
     uuid,
     "pickup",
-    {},
+    payload as unknown as Record<string, unknown>,
     "confirmShipmentPickupAction",
     "Couldn't record the pickup.",
   );

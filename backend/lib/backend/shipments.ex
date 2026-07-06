@@ -31,7 +31,7 @@ defmodule Backend.Shipments do
   alias Backend.Production.ManufacturingOrder
   alias Backend.RBAC
   alias Backend.Repo
-  alias Backend.Shipments.Shipment
+  alias Backend.Shipments.{Shipment, ShipmentPickupFile}
   alias Backend.Stock.{Lot, Movement, Placement}
   alias Backend.Warehouses.StorageCell
 
@@ -239,20 +239,63 @@ defmodule Backend.Shipments do
   home for driver signature + BOL photos; this stub just flags that
   the goods left so the wizard can advance.
   """
-  def confirm_pickup(%User{} = actor, %Shipment{} = shipment) do
+  def confirm_pickup(%User{} = actor, %Shipment{} = shipment, attrs \\ %{}) do
     with :ok <- ensure_pickup(actor),
-         :ok <- ensure_status(shipment, "ready") do
+         :ok <- ensure_status(shipment, "ready"),
+         :ok <- ensure_pickup_photo(shipment) do
       before_state = shipment_snapshot(shipment)
 
+      pickup_attrs =
+        attrs
+        |> normalise_pickup_attrs()
+        |> Map.put("picked_up_at", DateTime.utc_now() |> DateTime.truncate(:second))
+        |> Map.put("picked_up_by_id", actor.id)
+
       shipment
-      |> Shipment.pickup_changeset(%{
-        picked_up_at: DateTime.utc_now() |> DateTime.truncate(:second),
-        picked_up_by_id: actor.id
-      })
+      |> Shipment.pickup_changeset(pickup_attrs)
       |> Repo.update()
       |> tap_audit_updated(actor, before_state)
     end
   end
+
+  # Photos are captured before the operator taps Confirm. Enforce at
+  # least one so the BRCGS visual-record requirement is met. Query the
+  # count directly to sidestep whatever preload state the caller
+  # happened to hand us.
+  defp ensure_pickup_photo(%Shipment{id: shipment_id}) do
+    count =
+      Repo.aggregate(
+        from(f in ShipmentPickupFile, where: f.shipment_id == ^shipment_id),
+        :count
+      )
+
+    if count > 0, do: :ok, else: {:error, :pickup_photo_required}
+  end
+
+  # Accept string- or atom-keyed maps and normalise checklist values to
+  # strict booleans so the changeset's `true`-check bites correctly
+  # (`"true"` from a form or `1` from JS would sneak past a coarse
+  # `truthy?` guard).
+  defp normalise_pickup_attrs(attrs) when is_map(attrs) do
+    stringified =
+      Enum.reduce(attrs, %{}, fn
+        {k, v}, acc when is_atom(k) -> Map.put(acc, Atom.to_string(k), v)
+        {k, v}, acc -> Map.put(acc, k, v)
+      end)
+
+    Enum.reduce(Shipment.pickup_checklist_fields(), stringified, fn field, acc ->
+      key = Atom.to_string(field)
+
+      case Map.get(acc, key) do
+        v when is_boolean(v) -> acc
+        v when v in ["true", 1, "1"] -> Map.put(acc, key, true)
+        v when v in ["false", 0, "0", nil] -> Map.put(acc, key, false)
+        _ -> acc
+      end
+    end)
+  end
+
+  defp normalise_pickup_attrs(_), do: %{}
 
   @doc "Draft | Ready → cancelled with a reason."
   def cancel(%User{} = actor, %Shipment{} = shipment, reason) do
@@ -293,6 +336,7 @@ defmodule Backend.Shipments do
           :created_by,
           :ready_by,
           :picked_up_by,
+          pickup_files: [:uploaded_by],
           stock_lot: [
             :item,
             :unit_of_measurement,
@@ -386,6 +430,7 @@ defmodule Backend.Shipments do
           :ready_by,
           :picked_up_by,
           :cancelled_by,
+          pickup_files: [:uploaded_by],
           stock_lot: [
             :item,
             :unit_of_measurement,
@@ -475,6 +520,58 @@ defmodule Backend.Shipments do
       {:ok, qty} -> Backend.ThreePL.volume_m3_for_qty(lot, qty)
       _ -> Decimal.new(0)
     end
+  end
+
+  # ==================================================================
+  # Pickup files
+  # ==================================================================
+
+  @doc "Persist a pickup-file metadata row after the bytes have been " <>
+         "stored via `Backend.Storage.put/3`."
+  def record_pickup_file(%User{} = actor, %Shipment{} = shipment, attrs) do
+    attrs =
+      attrs
+      |> Map.put("company_id", shipment.company_id)
+      |> Map.put("shipment_id", shipment.id)
+      |> Map.put("uploaded_by_id", actor.id)
+
+    %ShipmentPickupFile{}
+    |> ShipmentPickupFile.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc "List every photo captured on this shipment's dispatch form."
+  def list_pickup_files(%Shipment{id: shipment_id}) do
+    Repo.all(
+      from(f in ShipmentPickupFile,
+        where: f.shipment_id == ^shipment_id,
+        order_by: [asc: f.inserted_at, asc: f.id],
+        preload: [:uploaded_by]
+      )
+    )
+  end
+
+  @doc "Fetch one pickup file by uuid, scoped to the shipment."
+  def get_pickup_file(shipment_id, file_uuid) when is_integer(shipment_id) and is_binary(file_uuid) do
+    case Ecto.UUID.cast(file_uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(f in ShipmentPickupFile,
+            where: f.shipment_id == ^shipment_id and f.uuid == ^cast
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  def get_pickup_file(_, _), do: nil
+
+  @doc "Delete a pickup file (metadata + blob)."
+  def delete_pickup_file(%User{} = _actor, %ShipmentPickupFile{} = file) do
+    _ = Backend.Storage.delete(file.blob_path)
+    Repo.delete(file)
   end
 
   # ==================================================================

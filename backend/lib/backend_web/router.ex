@@ -887,6 +887,17 @@ defmodule BackendWeb.Router do
       post "/:uuid/mark-draft", ShipmentController, :mark_draft
       post "/:uuid/pickup", ShipmentController, :pickup
       post "/:uuid/cancel", ShipmentController, :cancel
+
+      # Desktop nudges the operator's paired phone to open the
+      # dispatch form. Broadcast lands on user:<uuid>; mobile shell
+      # listener shows a slide-up banner.
+      post "/:uuid/dispatch-push", ShipmentController, :dispatch_push
+
+      # Truck-arrival dispatch photos.
+      get "/:uuid/pickup-files", ShipmentController, :list_pickup_files
+      post "/:uuid/pickup-files", ShipmentController, :upload_pickup_file
+      get "/:uuid/pickup-files/:file_uuid/blob", ShipmentController, :serve_pickup_file
+      delete "/:uuid/pickup-files/:file_uuid", ShipmentController, :delete_pickup_file
     end
 
     scope "/three-pl" do

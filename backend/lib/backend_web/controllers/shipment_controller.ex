@@ -28,7 +28,7 @@ defmodule BackendWeb.ShipmentController do
   # - pickup: shipments.pickup — physical truck-arrival event
   #   (placeholder button today; mobile arrival form lands here later).
   plug RequirePermission,
-       "shipments.view" when action in [:index, :show]
+       "shipments.view" when action in [:index, :show, :list_pickup_files, :serve_pickup_file]
 
   plug RequirePermission,
        "shipments.edit"
@@ -41,7 +41,7 @@ defmodule BackendWeb.ShipmentController do
             ]
 
   plug RequirePermission,
-       "shipments.pickup" when action in [:pickup]
+       "shipments.pickup" when action in [:pickup, :upload_pickup_file, :delete_pickup_file, :dispatch_push]
 
   action_fallback BackendWeb.FallbackController
 
@@ -126,8 +126,179 @@ defmodule BackendWeb.ShipmentController do
     lifecycle(conn, uuid, &Shipments.mark_draft/2)
   end
 
-  def pickup(conn, %{"uuid" => uuid}) do
-    lifecycle(conn, uuid, &Shipments.confirm_pickup/2)
+  def pickup(conn, %{"uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.drop(params, ["uuid"])
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         {:ok, updated} <- Shipments.confirm_pickup(actor, shipment, attrs) do
+      preloaded = Shipments.get_shipment(actor.company_id, updated.uuid)
+      json(conn, %{shipment: Payloads.shipment(preloaded)})
+    else
+      nil -> not_found(conn, "Shipment not found.")
+      {:error, reason} -> shipment_error(conn, reason)
+    end
+  end
+
+  # -----------------------------------------------------------------
+  # Pickup file uploads (mobile dispatch form)
+  # -----------------------------------------------------------------
+  @pickup_allowed_mimes ~w(image/jpeg image/png image/webp image/heic image/heif)
+  @pickup_max_bytes 15 * 1024 * 1024
+
+  def upload_pickup_file(conn, %{"uuid" => uuid, "file" => %Plug.Upload{} = upload}) do
+    actor = conn.assigns.current_user
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         :ok <- validate_pickup_mime(upload.content_type),
+         {:ok, bytes} <- read_upload(upload),
+         :ok <- validate_pickup_size(bytes),
+         :ok <- Backend.Http.UploadValidation.verify_bytes(bytes, upload.content_type) do
+      key = build_pickup_storage_key(shipment, upload)
+
+      case Backend.Storage.put(key, bytes, content_type: upload.content_type) do
+        {:ok, blob_path} ->
+          attrs = %{
+            "kind" => "photo",
+            "filename" => upload.filename || "photo.jpg",
+            "mime" => upload.content_type || "application/octet-stream",
+            "byte_size" => byte_size(bytes),
+            "blob_path" => blob_path
+          }
+
+          case Shipments.record_pickup_file(actor, shipment, attrs) do
+            {:ok, file} ->
+              conn
+              |> put_status(:created)
+              |> json(%{file: Payloads.shipment_pickup_file(file, shipment)})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+
+        {:error, reason} ->
+          unprocessable(conn, "storage_failed", "Couldn't store the photo (#{inspect(reason)}).")
+      end
+    else
+      nil -> not_found(conn, "Shipment not found.")
+      {:error, {:invalid_mime, detail}} -> unprocessable(conn, "invalid_mime_type", detail)
+      {:error, {:too_large, bytes}} -> file_too_large(conn, bytes)
+      {:error, {:read_failed, reason}} ->
+        unprocessable(conn, "read_failed", "Couldn't read the upload: #{inspect(reason)}.")
+    end
+  end
+
+  def upload_pickup_file(conn, _params) do
+    unprocessable(conn, "missing_file", "Send the file under `file` (multipart).")
+  end
+
+  def list_pickup_files(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid) do
+      files = Shipments.list_pickup_files(shipment)
+      json(conn, %{files: Enum.map(files, &Payloads.shipment_pickup_file(&1, shipment))})
+    else
+      _ -> not_found(conn, "Shipment not found.")
+    end
+  end
+
+  def serve_pickup_file(conn, %{"uuid" => shipment_uuid, "file_uuid" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, shipment_uuid),
+         %Backend.Shipments.ShipmentPickupFile{} = file <-
+           Shipments.get_pickup_file(shipment.id, file_uuid),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_content_type(file.mime || "application/octet-stream")
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
+      )
+      |> send_file(200, abs_path)
+    else
+      _ -> not_found(conn, "Photo not found.")
+    end
+  end
+
+  # Desktop → phone push. The dispatch form only makes sense on a
+  # phone (camera, on-the-dock ergonomics), so the desktop button
+  # fans a `navigate` event out to every paired device the actor
+  # owns. `MobileDeviceChannelProvider` in the `/m` layout is already
+  # subscribed and calls `router.replace(payload.path)` — same wiring
+  # the "Send to device" flow uses for POs / lots.
+  def dispatch_push(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         path = "/m/shipments/#{shipment.uuid}/dispatch",
+         {:ok, devices} <- Backend.Devices.push_navigate_to_user(actor, path) do
+      json(conn, %{ok: true, device_count: length(devices)})
+    else
+      nil -> not_found(conn, "Shipment not found.")
+      {:error, :unsafe_path} ->
+        unprocessable(conn, "invalid_path", "Refused to send an off-app path to the device.")
+
+      {:error, other} ->
+        unprocessable(conn, "dispatch_push_failed", inspect(other))
+    end
+  end
+
+  def delete_pickup_file(conn, %{"uuid" => shipment_uuid, "file_uuid" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, shipment_uuid),
+         %Backend.Shipments.ShipmentPickupFile{} = file <-
+           Shipments.get_pickup_file(shipment.id, file_uuid),
+         {:ok, _} <- Shipments.delete_pickup_file(actor, file) do
+      json(conn, %{ok: true})
+    else
+      _ -> not_found(conn, "Photo not found.")
+    end
+  end
+
+  defp validate_pickup_mime(mime) when mime in @pickup_allowed_mimes, do: :ok
+
+  defp validate_pickup_mime(mime) do
+    {:error,
+     {:invalid_mime,
+      "Only images are allowed (got #{mime || "unknown"}). Take a photo with your camera."}}
+  end
+
+  defp validate_pickup_size(bytes) when byte_size(bytes) > @pickup_max_bytes do
+    {:error, {:too_large, byte_size(bytes)}}
+  end
+
+  defp validate_pickup_size(_), do: :ok
+
+  defp read_upload(%Plug.Upload{path: path}) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, reason} -> {:error, {:read_failed, reason}}
+    end
+  end
+
+  defp build_pickup_storage_key(%Shipment{} = shipment, %Plug.Upload{filename: filename}) do
+    "shipment_pickup_files/" <> shipment.uuid <> "/photo_" <>
+      Ecto.UUID.generate() <> extension_for(filename)
+  end
+
+  defp extension_for(nil), do: ""
+
+  defp extension_for(filename) when is_binary(filename) do
+    case Path.extname(filename) do
+      "" -> ""
+      ext -> String.downcase(ext)
+    end
+  end
+
+  defp file_too_large(conn, bytes) do
+    mb = Float.round(bytes / 1024 / 1024, 1)
+    max_mb = Float.round(@pickup_max_bytes / 1024 / 1024, 1)
+
+    unprocessable(conn, "file_too_large", "Photo is #{mb} MB; max allowed is #{max_mb} MB.")
   end
 
   def cancel(conn, %{"uuid" => uuid} = params) do
@@ -168,6 +339,10 @@ defmodule BackendWeb.ShipmentController do
 
       :lot_not_found ->
         not_found(conn, "Lot not found.")
+
+      :pickup_photo_required ->
+        unprocessable(conn, "pickup_photo_required",
+          "At least one photo of the goods on the truck is required before confirming pickup.")
 
       :lot_not_in_dispatch ->
         unprocessable(conn, "lot_not_in_dispatch",

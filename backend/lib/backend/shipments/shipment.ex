@@ -70,10 +70,22 @@ defmodule Backend.Shipments.Shipment do
     field :notes, :string
     field :loading_photo_url, :string
 
+    # Truck-arrival checklist (BRCGS Issue 9 § 5.4.6). Filled on the
+    # mobile dispatch form when the operator meets the truck; every
+    # value must be `true` before `pickup_changeset` accepts the flip.
+    # Nullable in the DB so historic drafts back-fill cleanly.
+    field :packaging_intact, :boolean
+    field :labels_verified, :boolean
+    field :vehicle_clean_suitable, :boolean
+    field :transport_condition_acceptable, :boolean
+    field :dispatch_approved, :boolean
+
     field :ready_at, :utc_datetime
     field :picked_up_at, :utc_datetime
     field :cancelled_at, :utc_datetime
     field :cancel_reason, :string
+
+    has_many :pickup_files, Backend.Shipments.ShipmentPickupFile
 
     belongs_to :company, Company
     belongs_to :stock_lot, Lot
@@ -146,13 +158,50 @@ defmodule Backend.Shipments.Shipment do
     |> change(%{status: "draft", ready_at: nil, ready_by_id: nil})
   end
 
-  @doc "Ready → picked_up. Placeholder shape — the full truck-arrival " <>
-         "form on mobile lives in a follow-up slice."
+  @doc """
+  Ready → picked_up. Locks in the truck-arrival record: carrier +
+  vehicle registration (whatever actually shows up, even if the
+  desktop pre-filled them), all five checklist attestations set to
+  `true`, plus the auto-stamped time + actor. File uploads are
+  validated separately in `Backend.Shipments.confirm_pickup/3` — a
+  changeset can't reach into the association preload without
+  duplicating the query.
+  """
+  @pickup_checklist ~w(
+    packaging_intact labels_verified vehicle_clean_suitable
+    transport_condition_acceptable dispatch_approved
+  )a
+  @pickup_fields [
+    :picked_up_at,
+    :picked_up_by_id,
+    :carrier,
+    :vehicle_registration
+    | @pickup_checklist
+  ]
   def pickup_changeset(shipment, attrs) do
     shipment
-    |> cast(attrs, [:picked_up_at, :picked_up_by_id])
+    |> cast(attrs, @pickup_fields)
     |> put_change(:status, "picked_up")
-    |> validate_required([:picked_up_at, :picked_up_by_id])
+    |> validate_required([
+      :picked_up_at,
+      :picked_up_by_id,
+      :carrier,
+      :vehicle_registration
+    ])
+    |> validate_length(:carrier, min: 1, max: 200)
+    |> validate_length(:vehicle_registration, min: 1, max: 40)
+    |> validate_pickup_checklist()
+  end
+
+  def pickup_checklist_fields, do: @pickup_checklist
+
+  defp validate_pickup_checklist(changeset) do
+    Enum.reduce(@pickup_checklist, changeset, fn field, cs ->
+      case get_field(cs, field) do
+        true -> cs
+        _ -> add_error(cs, field, "must be confirmed before pickup")
+      end
+    end)
   end
 
   @doc "Draft | Ready → cancelled."
@@ -164,19 +213,52 @@ defmodule Backend.Shipments.Shipment do
     |> validate_length(:cancel_reason, max: 500)
   end
 
-  # Pre-truck paperwork: only recipient + delivery address + country.
+  # Pre-truck paperwork the desktop team must complete before marking
+  # the shipment Ready. Split by type so the error messages point at
+  # the right thing:
+  #
+  #   * text — recipient / address / country
+  #   * datetime — planned ship time
+  #   * decimal — qty (> 0; own-stock lots have this coerced to the
+  #     full dispatch qty on update, but a shipment with a nil qty is
+  #     still nonsense to mark ready)
+  #
   # Everything the operator learns AT PICKUP (vehicle registration,
   # driver, waybill, seal, temperature, loading photo) belongs to the
   # truck-arrival flow the user will spec later.
   defp validate_ready_prereqs(changeset) do
-    required = [:recipient_name, :ship_to_address, :ship_to_country]
+    text_required = [:recipient_name, :ship_to_address, :ship_to_country]
 
-    Enum.reduce(required, changeset, fn field, cs ->
-      case get_field(cs, field) do
-        v when is_binary(v) and byte_size(v) > 0 -> cs
-        _ -> add_error(cs, field, "is required before marking Ready")
+    changeset =
+      Enum.reduce(text_required, changeset, fn field, cs ->
+        case get_field(cs, field) do
+          v when is_binary(v) and byte_size(v) > 0 -> cs
+          _ -> add_error(cs, field, "is required before marking Ready")
+        end
+      end)
+
+    changeset =
+      case get_field(changeset, :planned_ship_at) do
+        %DateTime{} -> changeset
+        _ ->
+          add_error(
+            changeset,
+            :planned_ship_at,
+            "is required before marking Ready"
+          )
       end
-    end)
+
+    case get_field(changeset, :qty) do
+      %Decimal{} = q ->
+        if Decimal.compare(q, Decimal.new(0)) == :gt do
+          changeset
+        else
+          add_error(changeset, :qty, "must be greater than zero before marking Ready")
+        end
+
+      _ ->
+        add_error(changeset, :qty, "is required before marking Ready")
+    end
   end
 
   defp maybe_validate_upcase(changeset, field) do

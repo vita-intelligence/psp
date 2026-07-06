@@ -4995,6 +4995,14 @@ defmodule BackendWeb.Payloads do
       customer: shipment_customer(s.customer),
       customer_order: shipment_customer_order(s.customer_order),
       stock_lot: shipment_lot_summary(s.stock_lot),
+      # Truck-arrival checklist (BRCGS Issue 9 § 5.4.6). All five must
+      # be `true` before `confirm_pickup` accepts the flip.
+      packaging_intact: s.packaging_intact,
+      labels_verified: s.labels_verified,
+      vehicle_clean_suitable: s.vehicle_clean_suitable,
+      transport_condition_acceptable: s.transport_condition_acceptable,
+      dispatch_approved: s.dispatch_approved,
+      pickup_files: shipment_pickup_files(s),
       # Dispatch-cell dwell + estimated carrying cost. `nil` when the
       # lot has never landed in a dispatch cell. Consumed by the
       # "Sitting in dispatch since…" banner on the shipment detail
@@ -5015,6 +5023,30 @@ defmodule BackendWeb.Payloads do
   end
 
   def shipment(_), do: nil
+
+  @doc "Row shape for a truck-arrival photo."
+  def shipment_pickup_file(%Backend.Shipments.ShipmentPickupFile{} = f, %Backend.Shipments.Shipment{} = shipment) do
+    %{
+      uuid: f.uuid,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      uploaded_at: f.inserted_at,
+      uploaded_by: file_actor(f.uploaded_by),
+      url: "/api/shipments/#{shipment.uuid}/pickup-files/#{f.uuid}/blob"
+    }
+  end
+
+  def shipment_pickup_file(_, _), do: nil
+
+  defp shipment_pickup_files(%Backend.Shipments.Shipment{pickup_files: files} = s) when is_list(files) do
+    Enum.map(files, &shipment_pickup_file(&1, s))
+  end
+
+  defp shipment_pickup_files(_), do: []
+
+  defp file_actor(%Backend.Accounts.User{} = u), do: %{uuid: u.uuid, name: u.name}
+  defp file_actor(_), do: nil
 
   defp shipment_dispatch_dwell(
          %Backend.Shipments.Shipment{stock_lot: %Backend.Stock.Lot{} = lot},
