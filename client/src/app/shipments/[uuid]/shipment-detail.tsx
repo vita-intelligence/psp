@@ -16,12 +16,15 @@ import {
   Circle,
   ClipboardList,
   ExternalLink,
+  FileText,
   Hourglass,
   Loader2,
   Lock,
   LockKeyhole,
   MapPin,
   Package,
+  PackageCheck,
+  Paperclip,
   Pencil,
   ShieldAlert,
   Sparkles,
@@ -55,6 +58,7 @@ import { findCountry } from "@/lib/iso/countries";
 import { cn } from "@/lib/utils";
 import {
   cancelShipmentAction,
+  confirmShipmentDeliveryAction,
   markShipmentDraftAction,
   markShipmentReadyAction,
   updateShipmentAction,
@@ -62,6 +66,7 @@ import {
 import type { ErrorResult } from "@/lib/errors/server";
 import type {
   Shipment,
+  ShipmentDeliveryFile,
   ShipmentEditableFields,
   ShipmentStatus,
 } from "@/lib/shipments/types";
@@ -76,6 +81,7 @@ interface Props {
   canComment: boolean;
   canEdit: boolean;
   canPickup: boolean;
+  canConfirmDelivery: boolean;
 }
 
 interface FormState {
@@ -119,6 +125,7 @@ export function ShipmentDetail({
   canComment,
   canEdit,
   canPickup,
+  canConfirmDelivery,
 }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -180,8 +187,13 @@ export function ShipmentDetail({
   }, []);
 
   const editable = shipment.status === "draft" || shipment.status === "ready";
+  // Terminal states — action bar hides everything except the trailing
+  // Cancel button. `picked_up` used to be terminal here, but now that
+  // delivery is a real event the desktop team logs, we keep the bar
+  // open through `picked_up` (Confirm delivery lives inside a dedicated
+  // card, not the sticky bar) and only close it on delivered/cancelled.
   const finalized =
-    shipment.status === "picked_up" || shipment.status === "cancelled";
+    shipment.status === "delivered" || shipment.status === "cancelled";
 
   const original = useMemo(() => initialFrom(shipment), [shipment]);
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
@@ -457,8 +469,14 @@ export function ShipmentDetail({
         </CardContent>
       </Card>
 
-      {/* -------- Dispatch dwell + carrying cost -------- */}
-      {shipment.dispatch_dwell && (
+      {/* -------- Dispatch dwell + carrying cost --------
+           Only meaningful while the goods are still sitting in a
+           dispatch cell. Once the truck has picked up (or the
+           shipment was cancelled) the lot has left the cell and
+           the running cost stops accruing — hide the banner so the
+           operator doesn't misread it as an ongoing charge. */}
+      {shipment.dispatch_dwell &&
+        (shipment.status === "draft" || shipment.status === "ready") && (
         <DispatchDwellCard
           dwell={shipment.dispatch_dwell}
           companyDefaults={companyDefaults}
@@ -735,6 +753,13 @@ export function ShipmentDetail({
         companyDefaults={companyDefaults}
       />
 
+      {/* -------- Delivery confirmation -------- */}
+      <DeliveryConfirmationCard
+        shipment={shipment}
+        companyDefaults={companyDefaults}
+        canConfirmDelivery={canConfirmDelivery}
+        onConfirmed={() => router.refresh()}
+      />
 
       {/* -------- Timeline -------- */}
       <Card>
@@ -953,7 +978,7 @@ const STATUS_META: Record<
     body: (s: Shipment, cd: CompanyDefaults | null) => string;
     Icon: typeof CheckCircle2;
     cls: string;
-    badge: "muted" | "sky" | "emerald" | "destructive";
+    badge: "muted" | "sky" | "emerald" | "amber" | "destructive";
   }
 > = {
   draft: {
@@ -975,12 +1000,22 @@ const STATUS_META: Record<
     badge: "sky",
   },
   picked_up: {
-    title: "Picked up",
+    title: "In transit",
     body: (s, cd) =>
       `Left the warehouse ${
         s.picked_up_at ? formatCompanyDate(s.picked_up_at, cd) : ""
-      } via ${s.picked_up_by?.name ?? "—"}. Record is immutable.`,
+      } via ${s.picked_up_by?.name ?? "—"}. Waiting for the POD to confirm delivery.`,
     Icon: Truck,
+    cls: "border-amber-500/40 bg-amber-500/5",
+    badge: "amber",
+  },
+  delivered: {
+    title: "Delivered",
+    body: (s, cd) =>
+      `Received by ${s.recipient_signatory ?? "—"} on ${
+        s.delivered_at ? formatCompanyDate(s.delivered_at, cd) : ""
+      }. Confirmed by ${s.delivered_by?.name ?? "—"}. Record is immutable.`,
+    Icon: PackageCheck,
     cls: "border-emerald-500/40 bg-emerald-500/5",
     badge: "emerald",
   },
@@ -1229,6 +1264,375 @@ function ChecklistLine({
       <Icon className="size-3.5 shrink-0" />
       <span className={state === true ? "font-medium" : undefined}>{label}</span>
     </li>
+  );
+}
+
+function DeliveryConfirmationCard({
+  shipment,
+  companyDefaults,
+  canConfirmDelivery,
+  onConfirmed,
+}: {
+  shipment: Shipment;
+  companyDefaults: CompanyDefaults | null;
+  canConfirmDelivery: boolean;
+  onConfirmed: () => void;
+}) {
+  const delivered = shipment.status === "delivered";
+  const eligible = shipment.status === "picked_up";
+  const files = shipment.delivery_files ?? [];
+
+  // Hide the card entirely when it's not yet time to fill it — the
+  // audit trail lives on the Timeline card. Show it once the truck
+  // has left (so the customer-facing team can log the POD) OR once
+  // it's been delivered (so anyone with view perm sees the sign-off).
+  if (!eligible && !delivered) return null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <PackageCheck className="size-4" />
+          Delivery confirmation
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          {delivered
+            ? "The consignment was received at destination. Recorded once when the POD came back."
+            : "Log the POD once the receiver signs. Optional photos of the signed docket or damage sit next to the record."}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {delivered ? (
+          <DeliveryConfirmedView
+            shipment={shipment}
+            companyDefaults={companyDefaults}
+            files={files}
+          />
+        ) : canConfirmDelivery ? (
+          <DeliveryConfirmationForm
+            shipment={shipment}
+            onConfirmed={onConfirmed}
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            You don&apos;t have the `shipments.confirm_delivery` permission —
+            ask a coordinator with that role to log the POD.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DeliveryConfirmedView({
+  shipment,
+  companyDefaults,
+  files,
+}: {
+  shipment: Shipment;
+  companyDefaults: CompanyDefaults | null;
+  files: ShipmentDeliveryFile[];
+}) {
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/[0.05] px-3 py-2 text-emerald-800 dark:text-emerald-200">
+        <CheckCircle2 className="size-4" />
+        <p className="text-xs">
+          Confirmed by{" "}
+          <span className="font-medium">
+            {shipment.delivered_by?.name ?? "—"}
+          </span>
+          {" · "}
+          {formatCompanyDate(shipment.delivered_at, companyDefaults)}
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <DetailRow
+          label="Received by (signatory)"
+          value={shipment.recipient_signatory ?? "—"}
+        />
+        <DetailRow
+          label="Received at"
+          value={
+            shipment.delivered_at
+              ? formatCompanyDate(shipment.delivered_at, companyDefaults)
+              : "—"
+          }
+        />
+        {shipment.delivery_notes && (
+          <div className="sm:col-span-2 space-y-1">
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Notes
+            </p>
+            <p className="whitespace-pre-wrap text-sm">{shipment.delivery_notes}</p>
+          </div>
+        )}
+      </div>
+      {files.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Attachments
+          </p>
+          <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {files.map((f) => (
+              <li
+                key={f.uuid}
+                className="group relative overflow-hidden rounded-md border border-border/60 bg-muted/20"
+              >
+                <a
+                  href={f.url}
+                  target="_blank"
+                  rel="noopener"
+                  title={f.filename}
+                >
+                  {f.mime.startsWith("image/") ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={f.url}
+                      alt={f.filename}
+                      className="aspect-square w-full object-cover transition-opacity group-hover:opacity-90"
+                    />
+                  ) : (
+                    <div className="flex aspect-square w-full flex-col items-center justify-center gap-1 bg-muted p-2 text-center">
+                      <FileText className="size-6 text-muted-foreground" />
+                      <p className="line-clamp-2 text-[10px] text-muted-foreground">
+                        {f.filename}
+                      </p>
+                    </div>
+                  )}
+                </a>
+                {f.uploaded_by && (
+                  <p className="truncate bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {f.uploaded_by.name}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
+
+function DeliveryConfirmationForm({
+  shipment,
+  onConfirmed,
+}: {
+  shipment: Shipment;
+  onConfirmed: () => void;
+}) {
+  const [signatory, setSignatory] = useState("");
+  const [notes, setNotes] = useState("");
+  const [receivedAt, setReceivedAt] = useState(() => {
+    const d = new Date();
+    // datetime-local wants "YYYY-MM-DDTHH:mm" in local time
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
+  const [files, setFiles] = useState<ShipmentDeliveryFile[]>(
+    shipment.delivery_files ?? [],
+  );
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function uploadOne(file: File): Promise<ShipmentDeliveryFile> {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(
+      `/api/shipments/${encodeURIComponent(shipment.uuid)}/delivery-files`,
+      { method: "POST", body: fd },
+    );
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        error?: string;
+      };
+      throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+    }
+    const body = (await res.json()) as { file: ShipmentDeliveryFile };
+    return body.file;
+  }
+
+  async function onFilesPicked(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    setUploadError(null);
+    setUploading(true);
+    try {
+      for (const file of Array.from(fileList)) {
+        const uploaded = await uploadOne(file);
+        setFiles((prev) => [...prev, uploaded]);
+      }
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function deleteFile(fileUuid: string) {
+    const snapshot = files;
+    setFiles((prev) => prev.filter((f) => f.uuid !== fileUuid));
+    const res = await fetch(
+      `/api/shipments/${encodeURIComponent(shipment.uuid)}/delivery-files/${encodeURIComponent(fileUuid)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      setFiles(snapshot);
+      toast.error("Couldn't remove the attachment.");
+    }
+  }
+
+  const canSubmit = signatory.trim().length > 0 && !pending && !uploading;
+
+  function onSubmit() {
+    setSubmitError(null);
+    startTransition(async () => {
+      // datetime-local → ISO string. Treat the input as local time,
+      // which is what the operator sees on their clock.
+      const isoAt = new Date(receivedAt).toISOString();
+      const res = await confirmShipmentDeliveryAction(shipment.uuid, {
+        recipient_signatory: signatory.trim(),
+        delivery_notes: notes.trim() || null,
+        delivered_at: isoAt,
+      });
+      if (!res.ok) {
+        setSubmitError(res.detail);
+        return;
+      }
+      toast.success("Delivery confirmed.");
+      onConfirmed();
+    });
+  }
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="delivery-signatory">Received by (signatory)</Label>
+          <Input
+            id="delivery-signatory"
+            value={signatory}
+            onChange={(e) => setSignatory(e.target.value)}
+            placeholder="Name from the delivery docket"
+            className="h-10"
+            autoComplete="off"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="delivery-at">Received at</Label>
+          <Input
+            id="delivery-at"
+            type="datetime-local"
+            value={receivedAt}
+            onChange={(e) => setReceivedAt(e.target.value)}
+            className="h-10"
+          />
+        </div>
+        <div className="space-y-1.5 sm:col-span-2">
+          <Label htmlFor="delivery-notes">Notes (optional)</Label>
+          <Textarea
+            id="delivery-notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g. left with security, one pallet short, damaged corner…"
+            className="min-h-[80px]"
+          />
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <Label>Attachments (optional)</Label>
+          <span className="text-xs text-muted-foreground">
+            {files.length} attached
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          POD scans, signed dockets, damage / condition photos. Images or PDF.
+        </p>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,application/pdf"
+          multiple
+          className="sr-only"
+          onChange={(e) => onFilesPicked(e.target.files)}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full sm:w-auto"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+        >
+          {uploading ? (
+            <>
+              <Loader2 className="mr-1.5 size-4 animate-spin" />
+              Uploading…
+            </>
+          ) : (
+            <>
+              <Paperclip className="mr-1.5 size-4" />
+              Attach files
+            </>
+          )}
+        </Button>
+        {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+        {files.length > 0 && (
+          <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {files.map((f) => (
+              <li
+                key={f.uuid}
+                className="group relative overflow-hidden rounded-md border border-border/60 bg-muted/20"
+              >
+                {f.mime.startsWith("image/") ? (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={f.url}
+                    alt={f.filename}
+                    className="aspect-square w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex aspect-square w-full flex-col items-center justify-center gap-1 bg-muted p-2 text-center">
+                    <FileText className="size-6 text-muted-foreground" />
+                    <p className="line-clamp-2 text-[10px] text-muted-foreground">
+                      {f.filename}
+                    </p>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => deleteFile(f.uuid)}
+                  className="absolute right-1 top-1 rounded-full bg-background/90 p-1 text-destructive opacity-0 shadow ring-1 ring-border transition-opacity group-hover:opacity-100 focus:opacity-100"
+                  aria-label="Remove"
+                >
+                  <X className="size-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {submitError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/[0.03] p-3 text-sm text-destructive">
+          {submitError}
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <Button type="button" onClick={onSubmit} disabled={!canSubmit}>
+          {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+          <PackageCheck className="mr-1 size-4" />
+          Confirm delivery
+        </Button>
+      </div>
+    </>
   );
 }
 

@@ -5003,6 +5003,14 @@ defmodule BackendWeb.Payloads do
       transport_condition_acceptable: s.transport_condition_acceptable,
       dispatch_approved: s.dispatch_approved,
       pickup_files: shipment_pickup_files(s),
+      # Delivery confirmation — filled by the customer-facing team
+      # once the POD comes back. `delivered_by` is a distinct actor
+      # from `picked_up_by` because different people sign these events.
+      delivered_at: s.delivered_at,
+      delivered_by: actor(s, :delivered_by),
+      recipient_signatory: s.recipient_signatory,
+      delivery_notes: s.delivery_notes,
+      delivery_files: shipment_delivery_files(s),
       # Dispatch-cell dwell + estimated carrying cost. `nil` when the
       # lot has never landed in a dispatch cell. Consumed by the
       # "Sitting in dispatch since…" banner on the shipment detail
@@ -5044,6 +5052,27 @@ defmodule BackendWeb.Payloads do
   end
 
   defp shipment_pickup_files(_), do: []
+
+  @doc "Row shape for a delivery-confirmation attachment (POD / photo)."
+  def shipment_delivery_file(%Backend.Shipments.ShipmentDeliveryFile{} = f, %Backend.Shipments.Shipment{} = shipment) do
+    %{
+      uuid: f.uuid,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      uploaded_at: f.inserted_at,
+      uploaded_by: file_actor(f.uploaded_by),
+      url: "/api/shipments/#{shipment.uuid}/delivery-files/#{f.uuid}/blob"
+    }
+  end
+
+  def shipment_delivery_file(_, _), do: nil
+
+  defp shipment_delivery_files(%Backend.Shipments.Shipment{delivery_files: files} = s) when is_list(files) do
+    Enum.map(files, &shipment_delivery_file(&1, s))
+  end
+
+  defp shipment_delivery_files(_), do: []
 
   defp file_actor(%Backend.Accounts.User{} = u), do: %{uuid: u.uuid, name: u.name}
   defp file_actor(_), do: nil

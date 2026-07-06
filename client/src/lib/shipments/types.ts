@@ -1,6 +1,11 @@
 import type { AuditActor } from "../types";
 
-export type ShipmentStatus = "draft" | "ready" | "picked_up" | "cancelled";
+export type ShipmentStatus =
+  | "draft"
+  | "ready"
+  | "picked_up"
+  | "delivered"
+  | "cancelled";
 
 export interface ShipmentLotSummary {
   id: number;
@@ -77,6 +82,14 @@ export interface Shipment {
   transport_condition_acceptable: boolean | null;
   dispatch_approved: boolean | null;
   pickup_files: ShipmentPickupFile[];
+  // Delivery confirmation — filled by the customer-facing team once
+  // the POD comes back. Nullable until then; `delivered_at` set on
+  // the transition to `picked_up → delivered`.
+  delivered_at: string | null;
+  delivered_by: AuditActor | null;
+  recipient_signatory: string | null;
+  delivery_notes: string | null;
+  delivery_files: ShipmentDeliveryFile[];
   created_at: string;
   created_by: AuditActor | null;
   ready_at: string | null;
@@ -87,6 +100,22 @@ export interface Shipment {
   cancelled_by: AuditActor | null;
   cancel_reason: string | null;
   updated_at: string;
+}
+
+export interface ShipmentDeliveryFile {
+  uuid: string;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  uploaded_at: string;
+  uploaded_by: { uuid: string; name: string } | null;
+  url: string;
+}
+
+export interface ShipmentDeliveryPayload {
+  recipient_signatory: string;
+  delivery_notes?: string | null;
+  delivered_at?: string | null;
 }
 
 export interface ShipmentPickupFile {

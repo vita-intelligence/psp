@@ -898,6 +898,13 @@ defmodule BackendWeb.Router do
       post "/:uuid/pickup-files", ShipmentController, :upload_pickup_file
       get "/:uuid/pickup-files/:file_uuid/blob", ShipmentController, :serve_pickup_file
       delete "/:uuid/pickup-files/:file_uuid", ShipmentController, :delete_pickup_file
+
+      # Delivery confirmation + POD photos.
+      post "/:uuid/confirm-delivery", ShipmentController, :confirm_delivery
+      get "/:uuid/delivery-files", ShipmentController, :list_delivery_files
+      post "/:uuid/delivery-files", ShipmentController, :upload_delivery_file
+      get "/:uuid/delivery-files/:file_uuid/blob", ShipmentController, :serve_delivery_file
+      delete "/:uuid/delivery-files/:file_uuid", ShipmentController, :delete_delivery_file
     end
 
     scope "/three-pl" do

@@ -352,7 +352,9 @@ defmodule Backend.RBAC.Permissions do
     {"shipments.edit",
      "Create + edit shipment paperwork (recipient, delivery address, country, carrier, notes, etc.), mark ready for pickup, reopen for edits, cancel with a reason."},
     {"shipments.pickup",
-     "Confirm truck arrived and picked up the shipment. Flips status to picked_up (immutable). Currently a placeholder button; the mobile truck-arrival form with signature + BOL photo lands here later."}
+     "Confirm truck arrived and picked up the shipment. Fills the mobile dispatch checklist + photos and flips status to picked_up (immutable)."},
+    {"shipments.confirm_delivery",
+     "Confirm the consignment was received at destination. Records recipient signatory + optional notes / photos and flips status to delivered (terminal). Separate from pickup because the actor persona differs — customer service / warehouse admin logs the POD, not the loader who stamped pickup."}
   ]
 
   def all do

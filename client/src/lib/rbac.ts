@@ -129,7 +129,8 @@ export type PermissionCode =
   | "three_pl.dispatch_execute"
   | "shipments.view"
   | "shipments.edit"
-  | "shipments.pickup";
+  | "shipments.pickup"
+  | "shipments.confirm_delivery";
 
 /**
  * Server-side / RSC-safe permission check. Server components and
