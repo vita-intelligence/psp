@@ -161,6 +161,7 @@ defmodule Backend.CustomerInvoices do
         "updated_by_id" => actor.id
       })
       |> default_invoice_dates()
+      |> apply_company_tax_rate_default(company_id)
 
     %CustomerInvoice{}
     |> CustomerInvoice.changeset(attrs)
@@ -209,7 +210,7 @@ defmodule Backend.CustomerInvoices do
           "tax_rate" =>
             Map.get(attrs, "tax_rate") ||
               Map.get(attrs, :tax_rate) ||
-              co.tax_rate,
+              co_tax_rate_or_company_default(co),
           "billing_address" =>
             Map.get(attrs, "billing_address") ||
               Map.get(attrs, :billing_address) ||
@@ -451,6 +452,37 @@ defmodule Backend.CustomerInvoices do
           {:halt, {:error, cs}}
       end
     end)
+  end
+
+  # Same posture as CustomerOrders.apply_company_tax_rate_default/2 —
+  # only inject the /settings/company default when the caller didn't
+  # mention `tax_rate` at all. Explicit 0 (zero-rated supplies) is
+  # preserved.
+  defp apply_company_tax_rate_default(attrs, company_id) do
+    if Map.has_key?(attrs, "tax_rate") do
+      attrs
+    else
+      case Backend.Companies.get!(company_id) do
+        %{tax_rate: %Decimal{} = rate} -> Map.put(attrs, "tax_rate", rate)
+        _ -> attrs
+      end
+    end
+  end
+
+  # Used by create_from_co/3 — when the source CO's tax_rate is
+  # missing or a legacy zero (the schema default before the create
+  # boundary started injecting the company rate), fall back to the
+  # company setting so operators don't ship 0% VAT invoices by
+  # accident.
+  defp co_tax_rate_or_company_default(%CustomerOrder{tax_rate: rate, company_id: company_id}) do
+    if is_nil(rate) or Decimal.compare(rate, 0) == :eq do
+      case Backend.Companies.get!(company_id) do
+        %{tax_rate: %Decimal{} = company_rate} -> company_rate
+        _ -> rate || Decimal.new(0)
+      end
+    else
+      rate
+    end
   end
 
   defp default_invoice_dates(attrs) do
