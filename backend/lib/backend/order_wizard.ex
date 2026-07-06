@@ -47,7 +47,7 @@ defmodule Backend.OrderWizard do
 
   @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
            :in_production, :closeout, :final_release, :awaiting_routing,
-           :ready_to_dispatch, :awaiting_pickup, :dispatched]
+           :ready_to_dispatch, :awaiting_pickup, :dispatched, :delivered]
   @total_phases length(@phases)
 
   @doc """
@@ -323,6 +323,7 @@ defmodule Backend.OrderWizard do
         {:not_ready, _} -> :ready_to_dispatch
         {:awaiting_pickup, _} -> :awaiting_pickup
         {:dispatched, _} -> :dispatched
+        {:delivered, _} -> :delivered
       end
     end
   end
@@ -359,11 +360,15 @@ defmodule Backend.OrderWizard do
   # exclusive of a shipment covering the goods) for the given lot ids
   # and decide which of the three dispatch phases applies.
   defp shipment_coverage(lot_ids) when is_list(lot_ids) do
+    # Include `delivered` in the coverage set — once the POD is logged
+    # the shipment is still the live audit row for that lot; leaving
+    # it out would flip the wizard back to `:ready_to_dispatch` and
+    # ask the operator to create a fresh shipment.
     shipments =
       from(s in Backend.Shipments.Shipment,
         where:
           s.stock_lot_id in ^lot_ids and
-            s.status in ["draft", "ready", "picked_up"],
+            s.status in ["draft", "ready", "picked_up", "delivered"],
         select: %{stock_lot_id: s.stock_lot_id, status: s.status}
       )
       |> Repo.all()
@@ -379,8 +384,18 @@ defmodule Backend.OrderWizard do
       Enum.any?(shipments, &(&1.status == "draft")) ->
         {:not_ready, shipments}
 
-      # Every shipment picked_up → order is out the door.
-      Enum.all?(shipments, &(&1.status == "picked_up")) ->
+      # Every shipment marked delivered → the customer has confirmed
+      # receipt on every row. This is the true terminal state for
+      # physical fulfilment; the wizard timeline stops here.
+      Enum.all?(shipments, &(&1.status == "delivered")) ->
+        {:delivered, shipments}
+
+      # Every shipment picked_up (or a mix of picked_up + delivered)
+      # → goods have physically left. Wizard's next-action for this
+      # phase surfaces "Register the delivery" while any row is still
+      # in transit; drops to invoicing advice once everything is
+      # delivered (see :delivered above).
+      Enum.all?(shipments, &(&1.status in ["picked_up", "delivered"])) ->
         {:dispatched, shipments}
 
       # Otherwise at least one is still Ready → waiting for the truck.
@@ -412,6 +427,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:ready_to_dispatch), do: "Shipment paperwork"
   defp phase_label(:awaiting_pickup), do: "Awaiting pickup"
   defp phase_label(:dispatched), do: "Dispatched"
+  defp phase_label(:delivered), do: "Delivered"
   defp phase_label(:cancelled), do: "Cancelled"
 
   # ----- next_action derivation ----------------------------------
@@ -1474,12 +1490,60 @@ defmodule Backend.OrderWizard do
     }
   end
 
-  defp next_action_for(:dispatched, co, _line_states, _mos, _signers) do
+  defp next_action_for(:dispatched, co, _line_states, mos, _signers) do
+    # If at least one shipment is still `picked_up` (in transit, POD
+    # not yet logged), the next physical event is the delivery
+    # confirmation — surface that as the primary CTA. Once every
+    # shipment has been marked `delivered`, drop back to the invoice
+    # nudge that was the terminal advice before.
+    in_transit = in_transit_shipments_for_order(mos)
+
+    # `shipments_by_status/2` returns plain maps with `:uuid` /
+    # `:status` / `:stock_lot_id` — not full `%Shipment{}` structs —
+    # so match on the `:uuid` key directly.
+    case List.first(in_transit) do
+      %{uuid: shipment_uuid} ->
+        %{
+          code: "awaiting_delivery",
+          title: "In transit — register the delivery when the POD comes back.",
+          detail:
+            "The truck has left with #{length(in_transit)} shipment#{if length(in_transit) == 1, do: "", else: "s"} on this order. Log the recipient signatory (and optionally the signed docket) once you hear back from the receiver.",
+          primary_cta: %{
+            label: "Register the delivery",
+            kind: "link",
+            href: "/shipments/#{shipment_uuid}"
+          },
+          secondary_ctas: [
+            %{
+              label: "Generate invoice",
+              kind: "link",
+              href: "/sales/orders/#{co.uuid}",
+              description:
+                "You can invoice in parallel — the finance record and the POD are decoupled."
+            }
+          ]
+        }
+
+      nil ->
+        # Defensive fallback — the phase-detection code above only
+        # ever routes to `:dispatched` when at least one shipment is
+        # still `picked_up`, so this branch should not fire in
+        # practice. Kept in case a caller invokes next_action_for
+        # directly with stale state.
+        delivered_next_action(co)
+    end
+  end
+
+  defp next_action_for(:delivered, co, _line_states, _mos, _signers) do
+    delivered_next_action(co)
+  end
+
+  defp delivered_next_action(co) do
     %{
-      code: "dispatched",
-      title: "Every shipment picked up — the goods have left the warehouse.",
+      code: "delivered",
+      title: "Order delivered — receipt confirmed by the customer.",
       detail:
-        "This order is physically dispatched. Generate the invoice if you haven't already; the shipment records stay live for BRCGS audit + customer queries.",
+        "Every shipment on this order is signed off at destination. Generate the invoice if you haven't already; the shipment + POD records stay live for BRCGS audit and customer queries.",
       primary_cta: %{
         label: "Generate invoice",
         kind: "link",
@@ -1491,7 +1555,7 @@ defmodule Backend.OrderWizard do
           kind: "link",
           href: "/shipments",
           description:
-            "See the audit trail — every truck that took part of this order."
+            "See the audit trail — every truck + POD attached to this order."
         }
       ]
     }
@@ -1513,7 +1577,7 @@ defmodule Backend.OrderWizard do
         from(s in Backend.Shipments.Shipment,
           where:
             s.stock_lot_id in ^ids_in_dispatch and
-              s.status in ["draft", "ready", "picked_up"],
+              s.status in ["draft", "ready", "picked_up", "delivered"],
           select: s.stock_lot_id,
           distinct: true
         )
@@ -1553,6 +1617,14 @@ defmodule Backend.OrderWizard do
   # opens the shipment where "Truck arrived — confirm pickup" lives.
   defp ready_shipments_for_order(mos) do
     shipments_by_status(mos, ["ready"])
+  end
+
+  # Shipments in `picked_up` — the truck has left but the POD hasn't
+  # come back. Feeds the `dispatched` CTA: when at least one row is in
+  # transit, the wizard's next-action becomes "Register the delivery"
+  # instead of "Generate the invoice".
+  defp in_transit_shipments_for_order(mos) do
+    shipments_by_status(mos, ["picked_up"])
   end
 
   defp shipments_by_status(mos, statuses) do

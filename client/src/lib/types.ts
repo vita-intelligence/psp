@@ -2703,6 +2703,7 @@ export type OrderWizardPhaseKey =
   | "ready_to_dispatch"
   | "awaiting_pickup"
   | "dispatched"
+  | "delivered"
   | "cancelled";
 
 export interface OrderWizardPhase {

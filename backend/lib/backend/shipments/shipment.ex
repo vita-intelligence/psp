@@ -25,7 +25,7 @@ defmodule Backend.Shipments.Shipment do
   alias Backend.Customers.Customer
   alias Backend.Stock.Lot
 
-  @statuses ~w(draft ready picked_up cancelled)
+  @statuses ~w(draft ready picked_up delivered cancelled)
   def statuses, do: @statuses
 
   # Fields the desktop form + mobile scan flow can touch. Status is
@@ -80,12 +80,20 @@ defmodule Backend.Shipments.Shipment do
     field :transport_condition_acceptable, :boolean
     field :dispatch_approved, :boolean
 
+    # Delivery confirmation — filled by the customer-facing team
+    # (customer service / warehouse admin) when the POD comes back.
+    # Terminal after this; the only remaining action is `cancel`.
+    field :delivered_at, :utc_datetime
+    field :recipient_signatory, :string
+    field :delivery_notes, :string
+
     field :ready_at, :utc_datetime
     field :picked_up_at, :utc_datetime
     field :cancelled_at, :utc_datetime
     field :cancel_reason, :string
 
     has_many :pickup_files, Backend.Shipments.ShipmentPickupFile
+    has_many :delivery_files, Backend.Shipments.ShipmentDeliveryFile
 
     belongs_to :company, Company
     belongs_to :stock_lot, Lot
@@ -94,6 +102,7 @@ defmodule Backend.Shipments.Shipment do
     belongs_to :created_by, User
     belongs_to :ready_by, User
     belongs_to :picked_up_by, User
+    belongs_to :delivered_by, User
     belongs_to :cancelled_by, User
 
     timestamps(type: :utc_datetime)
@@ -202,6 +211,26 @@ defmodule Backend.Shipments.Shipment do
         _ -> add_error(cs, field, "must be confirmed before pickup")
       end
     end)
+  end
+
+  @doc """
+  Picked_up → delivered. Terminal after this. The recipient signatory
+  is required (POD's whole point is a named receiver); notes and
+  photos are optional. `Backend.Shipments.confirm_delivery/3` fills
+  the timestamp + actor server-side.
+  """
+  def delivery_changeset(shipment, attrs) do
+    shipment
+    |> cast(attrs, [
+      :delivered_at,
+      :delivered_by_id,
+      :recipient_signatory,
+      :delivery_notes
+    ])
+    |> put_change(:status, "delivered")
+    |> validate_required([:delivered_at, :delivered_by_id, :recipient_signatory])
+    |> validate_length(:recipient_signatory, min: 1, max: 200)
+    |> validate_length(:delivery_notes, max: 2000)
   end
 
   @doc "Draft | Ready → cancelled."

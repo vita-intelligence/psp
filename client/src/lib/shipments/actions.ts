@@ -138,6 +138,19 @@ export async function confirmShipmentPickupAction(
   );
 }
 
+export async function confirmShipmentDeliveryAction(
+  uuid: string,
+  payload: import("./types").ShipmentDeliveryPayload,
+) {
+  return lifecycleAction(
+    uuid,
+    "confirm-delivery",
+    payload as unknown as Record<string, unknown>,
+    "confirmShipmentDeliveryAction",
+    "Couldn't confirm the delivery.",
+  );
+}
+
 export async function cancelShipmentAction(uuid: string, reason: string) {
   return lifecycleAction(
     uuid,

@@ -64,6 +64,7 @@ export default async function ShipmentDetailPage({ params }: Props) {
             canComment={hasPermission(user, "shipments.edit")}
             canEdit={hasPermission(user, "shipments.edit")}
             canPickup={hasPermission(user, "shipments.pickup")}
+            canConfirmDelivery={hasPermission(user, "shipments.confirm_delivery")}
           />
         </div>
       </main>

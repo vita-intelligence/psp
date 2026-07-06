@@ -31,7 +31,7 @@ defmodule Backend.Shipments do
   alias Backend.Production.ManufacturingOrder
   alias Backend.RBAC
   alias Backend.Repo
-  alias Backend.Shipments.{Shipment, ShipmentPickupFile}
+  alias Backend.Shipments.{Shipment, ShipmentPickupFile, ShipmentDeliveryFile}
   alias Backend.Stock.{Lot, Movement, Placement}
   alias Backend.Warehouses.StorageCell
 
@@ -41,6 +41,7 @@ defmodule Backend.Shipments do
   # and pickup (physical truck-arrival confirmation).
   @perm_edit "shipments.edit"
   @perm_pickup "shipments.pickup"
+  @perm_confirm_delivery "shipments.confirm_delivery"
 
   # ==================================================================
   # Creation
@@ -314,6 +315,43 @@ defmodule Backend.Shipments do
     end
   end
 
+  @doc """
+  Picked_up → delivered. Records who confirmed the POD, when, the
+  named recipient signatory, and any notes. Photos are optional and
+  attached separately via the delivery-file endpoints before the
+  operator submits the confirmation.
+  """
+  def confirm_delivery(%User{} = actor, %Shipment{} = shipment, attrs \\ %{}) do
+    with :ok <- ensure_confirm_delivery(actor),
+         :ok <- ensure_status(shipment, "picked_up") do
+      before_state = shipment_snapshot(shipment)
+
+      delivery_attrs =
+        attrs
+        |> stringify_top_keys()
+        |> Map.put("delivered_by_id", actor.id)
+        |> Map.put_new_lazy("delivered_at", fn ->
+          DateTime.utc_now() |> DateTime.truncate(:second)
+        end)
+
+      shipment
+      |> Shipment.delivery_changeset(delivery_attrs)
+      |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
+    end
+  end
+
+  # Map may arrive with atom or string keys (server-side controller vs
+  # test); normalise so the changeset cast sees a consistent shape.
+  defp stringify_top_keys(attrs) when is_map(attrs) do
+    Enum.reduce(attrs, %{}, fn
+      {k, v}, acc when is_atom(k) -> Map.put(acc, Atom.to_string(k), v)
+      {k, v}, acc -> Map.put(acc, k, v)
+    end)
+  end
+
+  defp stringify_top_keys(_), do: %{}
+
   # ==================================================================
   # Queries
   # ==================================================================
@@ -336,7 +374,9 @@ defmodule Backend.Shipments do
           :created_by,
           :ready_by,
           :picked_up_by,
+          :delivered_by,
           pickup_files: [:uploaded_by],
+          delivery_files: [:uploaded_by],
           stock_lot: [
             :item,
             :unit_of_measurement,
@@ -429,8 +469,10 @@ defmodule Backend.Shipments do
           :created_by,
           :ready_by,
           :picked_up_by,
+          :delivered_by,
           :cancelled_by,
           pickup_files: [:uploaded_by],
+          delivery_files: [:uploaded_by],
           stock_lot: [
             :item,
             :unit_of_measurement,
@@ -575,6 +617,58 @@ defmodule Backend.Shipments do
   end
 
   # ==================================================================
+  # Delivery files
+  # ==================================================================
+
+  @doc "Persist a delivery-file metadata row after the bytes have been " <>
+         "stored via `Backend.Storage.put/3`."
+  def record_delivery_file(%User{} = actor, %Shipment{} = shipment, attrs) do
+    attrs =
+      attrs
+      |> Map.put("company_id", shipment.company_id)
+      |> Map.put("shipment_id", shipment.id)
+      |> Map.put("uploaded_by_id", actor.id)
+
+    %ShipmentDeliveryFile{}
+    |> ShipmentDeliveryFile.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc "List every photo attached to this shipment's delivery confirmation."
+  def list_delivery_files(%Shipment{id: shipment_id}) do
+    Repo.all(
+      from(f in ShipmentDeliveryFile,
+        where: f.shipment_id == ^shipment_id,
+        order_by: [asc: f.inserted_at, asc: f.id],
+        preload: [:uploaded_by]
+      )
+    )
+  end
+
+  @doc "Fetch one delivery file by uuid, scoped to the shipment."
+  def get_delivery_file(shipment_id, file_uuid) when is_integer(shipment_id) and is_binary(file_uuid) do
+    case Ecto.UUID.cast(file_uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(f in ShipmentDeliveryFile,
+            where: f.shipment_id == ^shipment_id and f.uuid == ^cast
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  def get_delivery_file(_, _), do: nil
+
+  @doc "Delete a delivery file (metadata + blob)."
+  def delete_delivery_file(%User{} = _actor, %ShipmentDeliveryFile{} = file) do
+    _ = Backend.Storage.delete(file.blob_path)
+    Repo.delete(file)
+  end
+
+  # ==================================================================
   # Private helpers
   # ==================================================================
 
@@ -586,6 +680,12 @@ defmodule Backend.Shipments do
 
   defp ensure_pickup(actor) do
     if RBAC.has_permission?(actor, @perm_pickup),
+      do: :ok,
+      else: {:error, :forbidden}
+  end
+
+  defp ensure_confirm_delivery(actor) do
+    if RBAC.has_permission?(actor, @perm_confirm_delivery),
       do: :ok,
       else: {:error, :forbidden}
   end

@@ -46,7 +46,12 @@ const STATUS_TONE: Record<
       "border-sky-500/40 bg-sky-500/10 text-sky-800 dark:text-sky-200",
   },
   picked_up: {
-    label: "Picked up",
+    label: "In transit",
+    className:
+      "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200",
+  },
+  delivered: {
+    label: "Delivered",
     className:
       "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200",
   },

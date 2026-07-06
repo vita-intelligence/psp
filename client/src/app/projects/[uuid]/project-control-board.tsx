@@ -142,6 +142,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "ready_to_dispatch",
   "awaiting_pickup",
   "dispatched",
+  "delivered",
 ];
 
 const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
@@ -155,7 +156,8 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   awaiting_routing: "Routing",
   ready_to_dispatch: "Paperwork",
   awaiting_pickup: "Awaiting pickup",
-  dispatched: "Dispatched",
+  dispatched: "In transit",
+  delivered: "Delivered",
   cancelled: "Cancelled",
 };
 
@@ -173,7 +175,10 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   ready_to_dispatch:
     "Create the shipment record for each staged lot (BRCGS § 5.4.6).",
   awaiting_pickup: "Shipment paperwork is signed off — waiting for the truck.",
-  dispatched: "Every shipment picked up. Goods have left the warehouse.",
+  dispatched:
+    "Truck has left. Waiting for the POD to confirm receipt at destination.",
+  delivered:
+    "Every shipment signed off at destination — order is fully complete.",
   cancelled: "Terminal — nothing else moves.",
 };
 
@@ -191,7 +196,8 @@ const PHASE_ICON: Record<
   awaiting_routing: Split,
   ready_to_dispatch: FileText,
   awaiting_pickup: Truck,
-  dispatched: CheckCircle2,
+  dispatched: Truck,
+  delivered: CheckCircle2,
   cancelled: Ban,
 };
 
@@ -1310,8 +1316,12 @@ const PHASE_EXPLAINER: Record<
     body: "Paperwork is signed off — the physical goods are staged in a dispatch cell and the shipment record is Ready. When the driver pulls in, open the shipment and tap “Truck arrived — confirm pickup”.",
   },
   dispatched: {
-    title: "Goods have left the warehouse.",
-    body: "Every shipment on this order is picked up. Generate the invoice if you haven't already; the shipment records stay live for the BRCGS audit trail + customer queries.",
+    title: "In transit — waiting for the POD.",
+    body: "Every shipment on this order is picked up. Log the receipt on the shipment record once the recipient confirms — that's what closes the loop to Delivered.",
+  },
+  delivered: {
+    title: "Delivered — order fully complete.",
+    body: "Every shipment on this order is signed off at destination. Generate the invoice if you haven't already; the shipment + POD records stay live for the BRCGS audit trail and customer queries.",
   },
   cancelled: null,
 };
@@ -3628,6 +3638,8 @@ function phaseBadgeTone(
     case "awaiting_pickup":
       return "amber";
     case "dispatched":
+      return "amber";
+    case "delivered":
       return "emerald";
     case "cancelled":
       return "destructive";
