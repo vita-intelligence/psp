@@ -927,6 +927,18 @@ defmodule Backend.Documents do
       currency: currency,
       invoice_code:
         Numbering.render(inv.id, company, "customer_invoice") || "INV##{inv.id}",
+      # Pre-render the linked CO's numbering-format code so the
+      # template doesn't fall back to a raw uuid prefix like
+      # "CO 7067dbb5" — that's not the audit-friendly reference
+      # accounts + auditors expect.
+      customer_order_code:
+        case inv.customer_order do
+          %{id: id} when is_integer(id) ->
+            Numbering.render(id, company, "customer_order") || "CO##{id}"
+
+          _ ->
+            nil
+        end,
       now: Date.utc_today() |> Date.to_string(),
       format_money: fn d -> format_money(d, currency, company) end,
       format_qty: fn d -> decimal_to_string(d) end,

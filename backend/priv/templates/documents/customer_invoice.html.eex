@@ -84,7 +84,7 @@
   <div class="cell"><div class="label">Invoice date</div><div class="value"><%= @format_date.(@invoice.invoice_date) %></div></div>
   <div class="cell"><div class="label">Due date</div><div class="value"><%= @format_date.(@invoice.due_date) %></div></div>
   <div class="cell"><div class="label">Currency</div><div class="value"><%= @currency %></div></div>
-  <div class="cell"><div class="label">Customer ref</div><div class="value"><%= @invoice.customer_reference || (@customer_order && @customer_order.uuid && "CO " <> (@customer_order.uuid |> String.slice(0..7))) || "—" %></div></div>
+  <div class="cell"><div class="label">Customer ref</div><div class="value"><%= @invoice.customer_reference || @customer_order_code || "—" %></div></div>
 </section>
 
 <table class="lines">
@@ -124,7 +124,12 @@
       <tr><td colspan="6" style="text-align: right;">Discount</td><td class="num">−<%= @format_money.(@invoice.discount_amount) %></td></tr>
     <% end %>
     <%= if @invoice.tax_amount && Decimal.compare(@invoice.tax_amount, 0) == :gt do %>
-      <tr><td colspan="6" style="text-align: right;">Tax</td><td class="num"><%= @format_money.(@invoice.tax_amount) %></td></tr>
+      <tr>
+        <td colspan="6" style="text-align: right;">
+          VAT<%= if @invoice.tax_rate && Decimal.compare(@invoice.tax_rate, 0) == :gt, do: " (" <> Decimal.to_string(@invoice.tax_rate) <> "%)", else: "" %>
+        </td>
+        <td class="num"><%= @format_money.(@invoice.tax_amount) %></td>
+      </tr>
     <% end %>
     <tr class="grand"><td colspan="6" style="text-align: right;">Grand total</td><td class="num"><%= @format_money.(@invoice.grand_total) %></td></tr>
     <%= if Decimal.compare(@paid, 0) == :gt do %>
