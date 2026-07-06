@@ -130,6 +130,7 @@ defmodule Backend.Warehouses.Plans do
     case Repo.delete(floor) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "floor", floor, before_state)
+        broadcast_warehouse(floor.warehouse_id, floor.company_id, "floor_deleted")
         {:ok, deleted}
 
       other ->
@@ -139,6 +140,7 @@ defmodule Backend.Warehouses.Plans do
 
   defp after_floor_create({:ok, floor}, actor) do
     Audit.record_created(actor, "floor", floor, floor_audit_snapshot(floor))
+    broadcast_warehouse(floor.warehouse_id, floor.company_id, "floor_created")
     {:ok, Repo.preload(floor, [:created_by, :updated_by, :storage_locations])}
   end
 
@@ -152,6 +154,8 @@ defmodule Backend.Warehouses.Plans do
       before_state,
       floor_audit_snapshot(floor)
     )
+
+    broadcast_warehouse(floor.warehouse_id, floor.company_id, "floor_updated")
 
     {:ok,
      Repo.preload(floor, [:created_by, :updated_by, storage_locations: location_query()])}
@@ -229,6 +233,7 @@ defmodule Backend.Warehouses.Plans do
     case Repo.delete(location) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "storage_location", location, before_state)
+        broadcast_warehouse(location.warehouse_id, location.company_id, "location_deleted")
         {:ok, deleted}
 
       other ->
@@ -244,6 +249,7 @@ defmodule Backend.Warehouses.Plans do
       location_audit_snapshot(location)
     )
 
+    broadcast_warehouse(location.warehouse_id, location.company_id, "location_created")
     {:ok, Repo.preload(location, [:created_by, :updated_by])}
   end
 
@@ -258,6 +264,7 @@ defmodule Backend.Warehouses.Plans do
       location_audit_snapshot(location)
     )
 
+    broadcast_warehouse(location.warehouse_id, location.company_id, "location_updated")
     {:ok, Repo.preload(location, [:created_by, :updated_by])}
   end
 
@@ -406,6 +413,7 @@ defmodule Backend.Warehouses.Plans do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "storage_cell", cell, before_state)
         touch_floor_for_cell(cell)
+        broadcast_warehouse_for_cell(cell, "cell_deleted")
         {:ok, deleted}
 
       other ->
@@ -487,6 +495,7 @@ defmodule Backend.Warehouses.Plans do
   defp after_cell_create({:ok, cell}, actor) do
     Audit.record_created(actor, "storage_cell", cell, cell_audit_snapshot(cell))
     touch_floor_for_cell(cell)
+    broadcast_warehouse_for_cell(cell, "cell_created")
     {:ok, Repo.preload(cell, [:created_by, :updated_by])}
   end
 
@@ -502,6 +511,7 @@ defmodule Backend.Warehouses.Plans do
     )
 
     touch_floor_for_cell(cell)
+    broadcast_warehouse_for_cell(cell, "cell_updated")
     {:ok, Repo.preload(cell, [:created_by, :updated_by])}
   end
 
@@ -564,6 +574,36 @@ defmodule Backend.Warehouses.Plans do
       {k, v} when is_atom(k) -> {Atom.to_string(k), v}
       pair -> pair
     end)
+  end
+
+  # Fire an entity-changed hint on the warehouse topic so open
+  # list-page/detail views re-fetch after a plan mutation. Cells /
+  # locations / floors all bubble up as "warehouse" changes — the
+  # frontend cares that the plan of the containing warehouse moved,
+  # not the exact sub-shape of the change.
+  defp broadcast_warehouse(warehouse_id, company_id, action)
+       when is_integer(warehouse_id) and is_integer(company_id) do
+    case Repo.get(Warehouse, warehouse_id) do
+      %Warehouse{uuid: uuid} ->
+        Backend.Broadcasts.entity_changed("warehouse", uuid, company_id, action)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_warehouse(_, _, _), do: :ok
+
+  defp broadcast_warehouse_for_cell(%StorageCell{storage_location_id: loc_id, company_id: company_id}, action) do
+    case Repo.one(
+           from(l in StorageLocation,
+             where: l.id == ^loc_id,
+             select: l.warehouse_id
+           )
+         ) do
+      nil -> :ok
+      warehouse_id -> broadcast_warehouse(warehouse_id, company_id, action)
+    end
   end
 
   # Stamp a generated code on insert when the caller didn't supply

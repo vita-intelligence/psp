@@ -191,6 +191,14 @@ export interface DataTableProps<T> {
    *  away from the desktop table. By default columns render as
    *  `LABEL — value` rows; supply this for a hand-crafted card. */
   renderMobileCard?: (row: T) => ReactNode;
+  /** Kebab-case entity name matching `Backend.Broadcasts.entity_changed/4`.
+   *  When set, the table subscribes to `entity:<name>:<company_id>`
+   *  and re-fetches whenever a peer creates / updates / deletes /
+   *  transitions a row on this entity within the tenant. Debounced
+   *  server-side by nothing and client-side by ~250 ms so a burst
+   *  of writes collapses to a single refresh. Leave undefined to
+   *  keep the old snapshot-on-load behaviour. */
+  realtimeEntity?: string;
 }
 
 export interface PersistedTableState {

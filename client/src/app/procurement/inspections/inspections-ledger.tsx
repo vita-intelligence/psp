@@ -408,6 +408,7 @@ export function InspectionsLedger({
   return (
     <DataTable<InspectionSummary>
       tableId="procurement-inspections"
+      realtimeEntity="goods-in-inspection"
       columns={columns}
       rowKey={(i) => String(i.id)}
       fetchPage={fetchInspectionsPage}

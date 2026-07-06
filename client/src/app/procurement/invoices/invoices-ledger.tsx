@@ -491,6 +491,7 @@ export function InvoicesLedger({
 
       <DataTable<ProcurementInvoice>
         tableId="procurement-invoices"
+        realtimeEntity="purchase-invoice"
         columns={columns}
         rowKey={(i) => String(i.id)}
         fetchPage={fetchInvoicesPage}

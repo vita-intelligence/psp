@@ -158,6 +158,8 @@ defmodule Backend.Accounts do
         |> Repo.update()
 
       _ = Notifier.deliver_confirmation(user, confirm_url_builder.(user.confirmation_token))
+
+      Backend.Broadcasts.entity_changed("user", user.uuid, user.company_id, "created")
       {:ok, user}
     end
   end
@@ -220,6 +222,13 @@ defmodule Backend.Accounts do
     user
     |> User.profile_changeset(attrs)
     |> Repo.update()
+    |> tap(fn
+      {:ok, updated} ->
+        Backend.Broadcasts.entity_changed("user", updated.uuid, updated.company_id, "updated")
+
+      _ ->
+        :ok
+    end)
   end
 
   @doc """

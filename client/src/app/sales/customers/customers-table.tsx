@@ -529,6 +529,7 @@ export function CustomersTable({ initialPage }: CustomersTableProps) {
   return (
     <DataTable<Customer>
       tableId="customers"
+      realtimeEntity="customer"
       columns={columns}
       rowKey={(c) => String(c.id)}
       fetchPage={fetchCustomersPage}

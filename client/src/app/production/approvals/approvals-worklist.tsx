@@ -326,6 +326,7 @@ export function ApprovalsWorklist({ initialPage }: Props) {
   return (
     <DataTable<ManufacturingOrderSummary>
       tableId="production.approvals"
+      realtimeEntity="manufacturing-order"
       initialPage={{
         items: initialPage.items,
         next_cursor: initialPage.next_cursor,

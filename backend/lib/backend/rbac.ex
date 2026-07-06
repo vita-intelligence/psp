@@ -171,6 +171,7 @@ defmodule Backend.RBAC do
     case Repo.delete(template) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "template", template, before_state)
+        Backend.Broadcasts.entity_changed("role", template.uuid, template.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -180,6 +181,7 @@ defmodule Backend.RBAC do
 
   defp after_template_create({:ok, template}, actor) do
     Audit.record_created(actor, "template", template, template_audit_snapshot(template))
+    Backend.Broadcasts.entity_changed("role", template.uuid, template.company_id, "created")
     {:ok, Repo.preload(template, [:created_by, :updated_by])}
   end
 
@@ -194,6 +196,7 @@ defmodule Backend.RBAC do
       template_audit_snapshot(template)
     )
 
+    Backend.Broadcasts.entity_changed("role", template.uuid, template.company_id, "updated")
     {:ok, Repo.preload(template, [:created_by, :updated_by])}
   end
 

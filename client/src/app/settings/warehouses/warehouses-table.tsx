@@ -282,6 +282,7 @@ export function WarehousesTable({
   return (
     <DataTable<Warehouse>
       tableId="warehouses"
+      realtimeEntity="warehouse"
       columns={columns}
       rowKey={(w) => String(w.id)}
       fetchPage={fetchWarehousesPage}

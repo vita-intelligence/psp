@@ -405,6 +405,7 @@ export function CustomerOrdersTable({ initialPage }: Props) {
   return (
     <DataTable<CustomerOrder>
       tableId="customer-orders"
+      realtimeEntity="customer-order"
       columns={columns}
       rowKey={(co) => String(co.id)}
       fetchPage={fetchPage}

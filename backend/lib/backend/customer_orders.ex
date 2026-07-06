@@ -170,6 +170,7 @@ defmodule Backend.CustomerOrders do
       |> case do
         {:ok, co} ->
           Audit.record_created(actor, "customer_order", co, co_snapshot(co))
+          Backend.Broadcasts.entity_changed("customer-order", co.uuid, co.company_id, "created")
           {:ok, preload_co(co)}
 
         other ->
@@ -214,6 +215,7 @@ defmodule Backend.CustomerOrders do
         )
 
         {:ok, _} = recompute_totals(updated)
+        Backend.Broadcasts.entity_changed("customer-order", updated.uuid, updated.company_id, "updated")
         {:ok, preload_co(updated)}
 
       other ->
@@ -229,6 +231,7 @@ defmodule Backend.CustomerOrders do
     case Repo.delete(co) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "customer_order", co, before_state)
+        Backend.Broadcasts.entity_changed("customer-order", co.uuid, co.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -267,6 +270,7 @@ defmodule Backend.CustomerOrders do
         })
 
         {:ok, _} = recompute_totals(co)
+        Backend.Broadcasts.entity_changed("customer-order", co.uuid, co.company_id, "line_added")
         {:ok, Repo.preload(line, [item: :stock_uom])}
 
       other ->
@@ -314,6 +318,7 @@ defmodule Backend.CustomerOrders do
           )
 
           {:ok, _} = recompute_totals(co)
+          Backend.Broadcasts.entity_changed("customer-order", co.uuid, co.company_id, "line_updated")
           {:ok, Repo.preload(updated, [item: :stock_uom])}
 
         other ->
@@ -337,6 +342,7 @@ defmodule Backend.CustomerOrders do
           })
 
           {:ok, _} = recompute_totals(co)
+          Backend.Broadcasts.entity_changed("customer-order", co.uuid, co.company_id, "line_deleted")
           {:ok, deleted}
 
         other ->
@@ -555,8 +561,18 @@ defmodule Backend.CustomerOrders do
       end
     end)
     |> tap(fn
-      {:ok, updated} -> Backend.OrderWizard.notify_co_changed(updated)
-      _ -> :ok
+      {:ok, updated} ->
+        Backend.OrderWizard.notify_co_changed(updated)
+
+        Backend.Broadcasts.entity_changed(
+          "customer-order",
+          updated.uuid,
+          updated.company_id,
+          updated.status
+        )
+
+      _ ->
+        :ok
     end)
   end
 
@@ -623,6 +639,13 @@ defmodule Backend.CustomerOrders do
     # committed state, not a phantom mid-transaction view.
     with {:ok, updated} <- result do
       Backend.OrderWizard.notify_co_changed(updated)
+
+      Backend.Broadcasts.entity_changed(
+        "customer-order",
+        updated.uuid,
+        updated.company_id,
+        Map.get(attrs, "status") || Map.get(attrs, :status) || "updated"
+      )
     end
 
     result
@@ -743,6 +766,7 @@ defmodule Backend.CustomerOrders do
           filename: file.filename
         })
 
+        Backend.Broadcasts.entity_changed("customer-order", co.uuid, co.company_id, "file_added")
         {:ok, Repo.preload(file, :uploaded_by)}
 
       other ->
@@ -775,6 +799,19 @@ defmodule Backend.CustomerOrders do
           kind: file.kind,
           filename: file.filename
         })
+
+        co_uuid =
+          case Repo.get(CustomerOrder, file.customer_order_id) do
+            %CustomerOrder{uuid: uuid} -> uuid
+            _ -> nil
+          end
+
+        Backend.Broadcasts.entity_changed(
+          "customer-order",
+          co_uuid,
+          file.company_id,
+          "file_deleted"
+        )
 
         {:ok, deleted}
 

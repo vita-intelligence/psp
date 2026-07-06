@@ -146,6 +146,7 @@ defmodule Backend.Vendors do
     |> case do
       {:ok, vendor} ->
         Audit.record_created(actor, "vendor", vendor, vendor_snapshot(vendor))
+        Backend.Broadcasts.entity_changed("vendor", vendor.uuid, vendor.company_id, "created")
         {:ok, preload_vendor(vendor)}
 
       other ->
@@ -171,6 +172,7 @@ defmodule Backend.Vendors do
           vendor_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed("vendor", updated.uuid, updated.company_id, "updated")
         {:ok, preload_vendor(updated)}
 
       other ->
@@ -184,6 +186,7 @@ defmodule Backend.Vendors do
     case Repo.delete(vendor) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "vendor", vendor, before_state)
+        Backend.Broadcasts.entity_changed("vendor", vendor.uuid, vendor.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -219,6 +222,7 @@ defmodule Backend.Vendors do
     |> case do
       {:ok, updated} ->
         Audit.record_updated(actor, "vendor", updated, before_state, vendor_snapshot(updated))
+        Backend.Broadcasts.entity_changed("vendor", updated.uuid, updated.company_id, "qualified")
         {:ok, preload_vendor(updated)}
 
       other ->
@@ -415,6 +419,13 @@ defmodule Backend.Vendors do
           vendor_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed(
+          "vendor",
+          updated.uuid,
+          updated.company_id,
+          "approval_#{target}"
+        )
+
         {:ok, preload_vendor(updated)}
 
       other ->
@@ -486,6 +497,13 @@ defmodule Backend.Vendors do
           item_id: row.item_id
         })
 
+        Backend.Broadcasts.entity_changed(
+          "vendor",
+          vendor.uuid,
+          vendor.company_id,
+          "approved_item_added"
+        )
+
         {:ok, Repo.preload(row, [:item, :approved_by])}
 
       other ->
@@ -501,12 +519,26 @@ defmodule Backend.Vendors do
           item_id: row.item_id
         })
 
+        broadcast_vendor_by_id(row.vendor_id, row.company_id, "approved_item_removed")
         {:ok, deleted}
 
       other ->
         other
     end
   end
+
+  defp broadcast_vendor_by_id(vendor_id, company_id, action)
+       when is_integer(vendor_id) and is_integer(company_id) do
+    case Repo.get(Vendor, vendor_id) do
+      %Vendor{uuid: uuid} ->
+        Backend.Broadcasts.entity_changed("vendor", uuid, company_id, action)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_vendor_by_id(_, _, _), do: :ok
 
   def get_approved_item(vendor_id, uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
@@ -557,6 +589,13 @@ defmodule Backend.Vendors do
           valid_until: row.valid_until
         })
 
+        Backend.Broadcasts.entity_changed(
+          "vendor",
+          vendor.uuid,
+          vendor.company_id,
+          "certificate_added"
+        )
+
         {:ok, Repo.preload(row, [:certificate, :uploaded_by])}
 
       other ->
@@ -590,6 +629,7 @@ defmodule Backend.Vendors do
           }
         )
 
+        broadcast_vendor_by_id(updated.vendor_id, updated.company_id, "certificate_updated")
         {:ok, Repo.preload(updated, [:certificate, :uploaded_by])}
 
       other ->
@@ -605,6 +645,7 @@ defmodule Backend.Vendors do
           certificate_id: row.certificate_id
         })
 
+        broadcast_vendor_by_id(row.vendor_id, row.company_id, "certificate_deleted")
         {:ok, deleted}
 
       other ->
@@ -648,8 +689,18 @@ defmodule Backend.Vendors do
     |> VendorFile.changeset(attrs)
     |> Repo.insert()
     |> case do
-      {:ok, file} -> {:ok, Repo.preload(file, :uploaded_by)}
-      other -> other
+      {:ok, file} ->
+        Backend.Broadcasts.entity_changed(
+          "vendor",
+          vendor.uuid,
+          vendor.company_id,
+          "file_added"
+        )
+
+        {:ok, Repo.preload(file, :uploaded_by)}
+
+      other ->
+        other
     end
   end
 

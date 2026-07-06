@@ -417,6 +417,7 @@ export function ManufacturingOrdersLedger({
   return (
     <DataTable<ManufacturingOrderSummary>
       tableId="production-manufacturing-orders"
+      realtimeEntity="manufacturing-order"
       columns={columns}
       rowKey={(m) => String(m.id)}
       fetchPage={fetchPage}

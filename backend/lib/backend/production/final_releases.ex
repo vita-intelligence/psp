@@ -78,8 +78,18 @@ defmodule Backend.Production.FinalReleases do
           })
           |> Repo.insert()
           |> case do
-            {:ok, row} -> {:ok, preload(row)}
-            {:error, cs} -> {:error, cs}
+            {:ok, row} ->
+              Backend.Broadcasts.entity_changed(
+                "final-release",
+                row.uuid,
+                row.company_id,
+                "opened"
+              )
+
+              {:ok, preload(row)}
+
+            {:error, cs} ->
+              {:error, cs}
           end
       end
     else
@@ -347,6 +357,13 @@ defmodule Backend.Production.FinalReleases do
               |> Repo.insert()
               |> case do
                 {:ok, file} ->
+                  Backend.Broadcasts.entity_changed(
+                    "final-release",
+                    release.uuid,
+                    release.company_id,
+                    "file_added"
+                  )
+
                   {:ok, Repo.preload(file, :uploaded_by)}
 
                 {:error, cs} ->
@@ -469,6 +486,13 @@ defmodule Backend.Production.FinalReleases do
         |> Repo.insert()
         |> case do
           {:ok, file} ->
+            Backend.Broadcasts.entity_changed(
+              "final-release",
+              release.uuid,
+              release.company_id,
+              "file_generated"
+            )
+
             {:ok, Repo.preload(file, :uploaded_by)}
 
           {:error, cs} ->
@@ -510,6 +534,18 @@ defmodule Backend.Production.FinalReleases do
                 {:error, reason} ->
                   Repo.rollback(reason)
               end
+            end)
+            |> tap(fn
+              {:ok, _} ->
+                Backend.Broadcasts.entity_changed(
+                  "final-release",
+                  release.uuid,
+                  release.company_id,
+                  "file_deleted"
+                )
+
+              _ ->
+                :ok
             end)
         end
     end
@@ -574,8 +610,18 @@ defmodule Backend.Production.FinalReleases do
         })
         |> Repo.update()
         |> case do
-          {:ok, row} -> {:ok, preload(row)}
-          err -> err
+          {:ok, row} ->
+            Backend.Broadcasts.entity_changed(
+              "final-release",
+              row.uuid,
+              row.company_id,
+              "releaser_signed"
+            )
+
+            {:ok, preload(row)}
+
+          err ->
+            err
         end
     end
   end
@@ -605,8 +651,18 @@ defmodule Backend.Production.FinalReleases do
         })
         |> Repo.update()
         |> case do
-          {:ok, row} -> {:ok, preload(row)}
-          err -> err
+          {:ok, row} ->
+            Backend.Broadcasts.entity_changed(
+              "final-release",
+              row.uuid,
+              row.company_id,
+              "approver_signed"
+            )
+
+            {:ok, preload(row)}
+
+          err ->
+            err
         end
     end
   end
@@ -638,8 +694,18 @@ defmodule Backend.Production.FinalReleases do
         |> FinalRelease.changeset(Map.put(attrs, :updated_by_id, actor.id))
         |> Repo.update()
         |> case do
-          {:ok, row} -> {:ok, preload(row)}
-          err -> err
+          {:ok, row} ->
+            Backend.Broadcasts.entity_changed(
+              "final-release",
+              row.uuid,
+              row.company_id,
+              "signature_cleared"
+            )
+
+            {:ok, preload(row)}
+
+          err ->
+            err
         end
     end
   end
@@ -764,8 +830,18 @@ defmodule Backend.Production.FinalReleases do
       |> FinalRelease.changeset(%{notes: notes, updated_by_id: actor.id})
       |> Repo.update()
       |> case do
-        {:ok, row} -> {:ok, preload(row)}
-        err -> err
+        {:ok, row} ->
+          Backend.Broadcasts.entity_changed(
+            "final-release",
+            row.uuid,
+            row.company_id,
+            "notes_updated"
+          )
+
+          {:ok, preload(row)}
+
+        err ->
+          err
       end
     end
   end
@@ -785,6 +861,18 @@ defmodule Backend.Production.FinalReleases do
     release
     |> FinalRelease.changeset(attrs)
     |> Repo.update()
+    |> tap(fn
+      {:ok, row} ->
+        Backend.Broadcasts.entity_changed(
+          "final-release",
+          row.uuid,
+          row.company_id,
+          next_status
+        )
+
+      _ ->
+        :ok
+    end)
   end
 
   defp preload(%FinalRelease{} = row) do

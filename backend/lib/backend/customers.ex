@@ -167,6 +167,7 @@ defmodule Backend.Customers do
     |> case do
       {:ok, customer} ->
         Audit.record_created(actor, "customer", customer, customer_snapshot(customer))
+        Backend.Broadcasts.entity_changed("customer", customer.uuid, customer.company_id, "created")
         {:ok, preload_customer(customer)}
 
       other ->
@@ -227,6 +228,7 @@ defmodule Backend.Customers do
           customer_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed("customer", updated.uuid, updated.company_id, "updated")
         {:ok, preload_customer(updated)}
 
       other ->
@@ -262,6 +264,7 @@ defmodule Backend.Customers do
     case Repo.delete(customer) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "customer", customer, before_state)
+        Backend.Broadcasts.entity_changed("customer", customer.uuid, customer.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -300,6 +303,7 @@ defmodule Backend.Customers do
     |> case do
       {:ok, updated} ->
         Audit.record_updated(actor, "customer", updated, before_state, customer_snapshot(updated))
+        Backend.Broadcasts.entity_changed("customer", updated.uuid, updated.company_id, "qualified")
         {:ok, preload_customer(updated)}
 
       other ->
@@ -470,6 +474,13 @@ defmodule Backend.Customers do
           item_id: row.item_id
         })
 
+        Backend.Broadcasts.entity_changed(
+          "customer",
+          customer.uuid,
+          customer.company_id,
+          "approved_item_added"
+        )
+
         {:ok, Repo.preload(row, [:item, :approved_by])}
 
       other ->
@@ -485,6 +496,7 @@ defmodule Backend.Customers do
           item_id: row.item_id
         })
 
+        broadcast_customer_by_id(row.customer_id, row.company_id, "approved_item_removed")
         {:ok, deleted}
 
       other ->
@@ -646,6 +658,13 @@ defmodule Backend.Customers do
           customer_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed(
+          "customer",
+          updated.uuid,
+          updated.company_id,
+          "approval_#{target}"
+        )
+
         {:ok, preload_customer(updated)}
 
       other ->
@@ -723,24 +742,40 @@ defmodule Backend.Customers do
         "updated_by_id" => actor.id
       })
 
-    Repo.transaction(fn ->
-      with :ok <- maybe_clear_other_primaries(customer.id, attrs),
-           {:ok, contact} <-
-             %CustomerContact{}
-             |> CustomerContact.changeset(attrs)
-             |> Repo.insert() do
-        Audit.record_created(actor, "customer_contact", contact, %{
-          customer_id: contact.customer_id,
-          kind: contact.kind,
-          value: contact.value,
-          is_primary: contact.is_primary
-        })
+    result =
+      Repo.transaction(fn ->
+        with :ok <- maybe_clear_other_primaries(customer.id, attrs),
+             {:ok, contact} <-
+               %CustomerContact{}
+               |> CustomerContact.changeset(attrs)
+               |> Repo.insert() do
+          Audit.record_created(actor, "customer_contact", contact, %{
+            customer_id: contact.customer_id,
+            kind: contact.kind,
+            value: contact.value,
+            is_primary: contact.is_primary
+          })
 
-        contact
-      else
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
+          contact
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, _} ->
+        Backend.Broadcasts.entity_changed(
+          "customer",
+          customer.uuid,
+          customer.company_id,
+          "contact_added"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   def update_contact(%User{} = actor, %CustomerContact{} = contact, attrs) do
@@ -750,25 +785,33 @@ defmodule Backend.Customers do
       |> normalise_phone()
       |> Map.put("updated_by_id", actor.id)
 
-    Repo.transaction(fn ->
-      with :ok <- maybe_clear_other_primaries(contact.customer_id, attrs),
-           {:ok, updated} <-
-             contact
-             |> CustomerContact.changeset(attrs)
-             |> Repo.update() do
-        Audit.record_updated(
-          actor,
-          "customer_contact",
-          updated,
-          %{kind: contact.kind, value: contact.value, is_primary: contact.is_primary},
-          %{kind: updated.kind, value: updated.value, is_primary: updated.is_primary}
-        )
+    result =
+      Repo.transaction(fn ->
+        with :ok <- maybe_clear_other_primaries(contact.customer_id, attrs),
+             {:ok, updated} <-
+               contact
+               |> CustomerContact.changeset(attrs)
+               |> Repo.update() do
+          Audit.record_updated(
+            actor,
+            "customer_contact",
+            updated,
+            %{kind: contact.kind, value: contact.value, is_primary: contact.is_primary},
+            %{kind: updated.kind, value: updated.value, is_primary: updated.is_primary}
+          )
 
-        updated
-      else
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
+          updated
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, _} -> broadcast_customer_by_id(contact.customer_id, contact.company_id, "contact_updated")
+      _ -> :ok
+    end
+
+    result
   end
 
   def remove_contact(%User{} = actor, %CustomerContact{} = contact) do
@@ -780,12 +823,29 @@ defmodule Backend.Customers do
           value: contact.value
         })
 
+        broadcast_customer_by_id(contact.customer_id, contact.company_id, "contact_deleted")
         {:ok, deleted}
 
       other ->
         other
     end
   end
+
+  # Helper: broadcast a customer-scoped change without needing the
+  # caller to hold the preloaded parent struct. Cheap Repo.get and
+  # only fires if the customer resolves.
+  defp broadcast_customer_by_id(customer_id, company_id, action)
+       when is_integer(customer_id) and is_integer(company_id) do
+    case Repo.get(Customer, customer_id) do
+      %Customer{uuid: uuid} ->
+        Backend.Broadcasts.entity_changed("customer", uuid, company_id, action)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_customer_by_id(_, _, _), do: :ok
 
   def get_contact(customer_id, uuid) when is_integer(customer_id) and is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
@@ -856,23 +916,39 @@ defmodule Backend.Customers do
         "logged_by_id" => actor.id
       })
 
-    Repo.transaction(fn ->
-      with {:ok, event} <-
-             %CustomerContactEvent{}
-             |> CustomerContactEvent.changeset(attrs)
-             |> Repo.insert(),
-           {:ok, updated_customer} <- refresh_cadence(actor, customer, event) do
-        Audit.record_created(actor, "customer_contact_event", event, %{
-          customer_id: event.customer_id,
-          kind: event.kind,
-          occurred_at: event.occurred_at
-        })
+    result =
+      Repo.transaction(fn ->
+        with {:ok, event} <-
+               %CustomerContactEvent{}
+               |> CustomerContactEvent.changeset(attrs)
+               |> Repo.insert(),
+             {:ok, updated_customer} <- refresh_cadence(actor, customer, event) do
+          Audit.record_created(actor, "customer_contact_event", event, %{
+            customer_id: event.customer_id,
+            kind: event.kind,
+            occurred_at: event.occurred_at
+          })
 
-        %{event: Repo.preload(event, :logged_by), customer: updated_customer}
-      else
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
+          %{event: Repo.preload(event, :logged_by), customer: updated_customer}
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+
+    case result do
+      {:ok, _} ->
+        Backend.Broadcasts.entity_changed(
+          "customer",
+          customer.uuid,
+          customer.company_id,
+          "contact_logged"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   defp refresh_cadence(_actor, %Customer{} = customer, %CustomerContactEvent{occurred_at: when_}) do
@@ -965,6 +1041,13 @@ defmodule Backend.Customers do
               snooze_days: n
             })
 
+            Backend.Broadcasts.entity_changed(
+              "customer",
+              updated.uuid,
+              updated.company_id,
+              "snoozed"
+            )
+
             {:ok, updated}
 
           other ->
@@ -1008,6 +1091,13 @@ defmodule Backend.Customers do
           filename: file.filename
         })
 
+        Backend.Broadcasts.entity_changed(
+          "customer",
+          customer.uuid,
+          customer.company_id,
+          "file_added"
+        )
+
         {:ok, Repo.preload(file, :uploaded_by)}
 
       other ->
@@ -1041,6 +1131,7 @@ defmodule Backend.Customers do
           filename: file.filename
         })
 
+        broadcast_customer_by_id(file.customer_id, file.company_id, "file_deleted")
         {:ok, deleted}
 
       other ->

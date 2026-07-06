@@ -148,6 +148,7 @@ defmodule Backend.Units do
     case Repo.delete(unit) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "unit_of_measurement", unit, before_state)
+        Backend.Broadcasts.entity_changed("unit-of-measurement", unit.uuid, unit.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -220,6 +221,7 @@ defmodule Backend.Units do
 
   defp after_create({:ok, unit}, actor) do
     Audit.record_created(actor, "unit_of_measurement", unit, snapshot(unit))
+    Backend.Broadcasts.entity_changed("unit-of-measurement", unit.uuid, unit.company_id, "created")
     {:ok, Repo.preload(unit, [:created_by, :updated_by])}
   end
 
@@ -227,6 +229,7 @@ defmodule Backend.Units do
 
   defp after_update({:ok, unit}, actor, before_state) do
     Audit.record_updated(actor, "unit_of_measurement", unit, before_state, snapshot(unit))
+    Backend.Broadcasts.entity_changed("unit-of-measurement", unit.uuid, unit.company_id, "updated")
     {:ok, Repo.preload(unit, [:created_by, :updated_by])}
   end
 

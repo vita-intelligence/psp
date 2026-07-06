@@ -112,6 +112,7 @@ defmodule Backend.Certificates do
     case Repo.delete(cert) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "certificate", cert, before_state)
+        Backend.Broadcasts.entity_changed("certificate", cert.uuid, cert.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -191,6 +192,7 @@ defmodule Backend.Certificates do
     case Repo.delete(att) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "item_certificate", att, before_state)
+        broadcast_item_from_attachment(att, "certificate_detached")
         {:ok, deleted}
 
       other ->
@@ -202,6 +204,7 @@ defmodule Backend.Certificates do
 
   defp after_create({:ok, cert}, actor) do
     Audit.record_created(actor, "certificate", cert, cert_snapshot(cert))
+    Backend.Broadcasts.entity_changed("certificate", cert.uuid, cert.company_id, "created")
     {:ok, Repo.preload(cert, [:created_by, :updated_by])}
   end
 
@@ -209,6 +212,7 @@ defmodule Backend.Certificates do
 
   defp after_update({:ok, cert}, actor, before_state) do
     Audit.record_updated(actor, "certificate", cert, before_state, cert_snapshot(cert))
+    Backend.Broadcasts.entity_changed("certificate", cert.uuid, cert.company_id, "updated")
     {:ok, Repo.preload(cert, [:created_by, :updated_by])}
   end
 
@@ -217,6 +221,7 @@ defmodule Backend.Certificates do
   defp after_attach_create({:ok, att}, actor) do
     loaded = Repo.preload(att, [:certificate, :uploaded_by])
     Audit.record_created(actor, "item_certificate", loaded, attach_snapshot(loaded))
+    broadcast_item_from_attachment(loaded, "certificate_attached")
     {:ok, loaded}
   end
 
@@ -233,6 +238,7 @@ defmodule Backend.Certificates do
       attach_snapshot(loaded)
     )
 
+    broadcast_item_from_attachment(loaded, "certificate_updated")
     {:ok, loaded}
   end
 
@@ -243,6 +249,23 @@ defmodule Backend.Certificates do
 
   defp attach_snapshot(%ItemCertificate{} = a),
     do: Map.new(@attach_audit_fields, fn k -> {k, Map.get(a, k)} end)
+
+  # Item-certificate attach/detach mutates the item's certificates
+  # tab. Broadcast on the parent "item" topic so the detail page
+  # re-fetches. We look up the item lazily — the ItemCertificate row
+  # carries item_id but not the uuid we broadcast on.
+  defp broadcast_item_from_attachment(%ItemCertificate{item_id: item_id}, action)
+       when is_integer(item_id) do
+    case Repo.get(Item, item_id) do
+      %Item{uuid: uuid, company_id: company_id} ->
+        Backend.Broadcasts.entity_changed("item", uuid, company_id, action)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_item_from_attachment(_, _), do: :ok
 
   defp stringify_keys(attrs) do
     Enum.into(attrs, %{}, fn

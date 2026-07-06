@@ -533,6 +533,7 @@ export function LotsTable({
     <>
       <DataTable
         tableId="stock-lots"
+        realtimeEntity="stock-lot"
         columns={columns}
         rowKey={(l) => String(l.id)}
         fetchPage={fetchLotsPage}

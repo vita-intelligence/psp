@@ -94,6 +94,13 @@ defmodule Backend.Loyalty do
         {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
       end
     end)
+    |> tap(fn
+      {:ok, %LoyaltyProgram{} = p} ->
+        Backend.Broadcasts.entity_changed("loyalty-program", p.uuid, p.company_id, "created")
+
+      _ ->
+        :ok
+    end)
   end
 
   def update_program(%User{} = actor, %LoyaltyProgram{} = program, attrs) do
@@ -110,6 +117,7 @@ defmodule Backend.Loyalty do
     |> case do
       {:ok, updated} ->
         Audit.record_updated(actor, "loyalty_program", updated, before_state, program_snapshot(updated))
+        Backend.Broadcasts.entity_changed("loyalty-program", updated.uuid, updated.company_id, "updated")
         {:ok, preload_program(updated)}
 
       other ->
@@ -137,6 +145,7 @@ defmodule Backend.Loyalty do
         case Repo.delete(program) do
           {:ok, deleted} ->
             Audit.record_deleted(actor, "loyalty_program", deleted, before)
+            Backend.Broadcasts.entity_changed("loyalty-program", program.uuid, program.company_id, "deleted")
             {:ok, deleted}
 
           other ->
@@ -186,6 +195,8 @@ defmodule Backend.Loyalty do
           program_snapshot(updated)
         )
 
+        action = if is_active, do: "activated", else: "deactivated"
+        Backend.Broadcasts.entity_changed("loyalty-program", updated.uuid, updated.company_id, action)
         {:ok, preload_program(updated)}
 
       other ->
@@ -229,6 +240,13 @@ defmodule Backend.Loyalty do
           Repo.rollback(cs)
       end
     end)
+    |> tap(fn
+      {:ok, %LoyaltyProgram{} = p} ->
+        Backend.Broadcasts.entity_changed("loyalty-program", p.uuid, p.company_id, "default_set")
+
+      _ ->
+        :ok
+    end)
   end
 
   defp maybe_clear_other_defaults(%LoyaltyProgram{is_default: true} = program, _attrs) do
@@ -258,6 +276,7 @@ defmodule Backend.Loyalty do
     |> case do
       {:ok, tier} ->
         Audit.record_created(actor, "loyalty_program_tier", tier, tier_snapshot(tier))
+        Backend.Broadcasts.entity_changed("loyalty-program", program.uuid, program.company_id, "tier_added")
         {:ok, tier}
 
       other ->
@@ -281,6 +300,7 @@ defmodule Backend.Loyalty do
           tier_snapshot(updated)
         )
 
+        broadcast_program_by_id(updated.loyalty_program_id, "tier_updated")
         {:ok, updated}
 
       other ->
@@ -294,12 +314,25 @@ defmodule Backend.Loyalty do
     case Repo.delete(tier) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "loyalty_program_tier", deleted, before_state)
+        broadcast_program_by_id(tier.loyalty_program_id, "tier_deleted")
         {:ok, deleted}
 
       other ->
         other
     end
   end
+
+  defp broadcast_program_by_id(program_id, action) when is_integer(program_id) do
+    case Repo.get(LoyaltyProgram, program_id) do
+      %LoyaltyProgram{uuid: uuid, company_id: cid} ->
+        Backend.Broadcasts.entity_changed("loyalty-program", uuid, cid, action)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_program_by_id(_, _), do: :ok
 
   def get_tier(program_id, uuid) when is_integer(program_id) and is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do

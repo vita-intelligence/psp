@@ -23,6 +23,7 @@ export function CompanyPrefsProvider({
 }) {
   // Stable identity so consumers don't re-render on every layout pass.
   const value = useMemo(() => prefs, [
+    prefs.id,
     prefs.date_format,
     prefs.decimal_separator,
     prefs.thousands_separator,

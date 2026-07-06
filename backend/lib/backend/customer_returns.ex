@@ -179,6 +179,7 @@ defmodule Backend.CustomerReturns do
     |> case do
       {:ok, ret} ->
         Audit.record_created(actor, "customer_return", ret, rma_snapshot(ret))
+        Backend.Broadcasts.entity_changed("customer-return", ret.uuid, ret.company_id, "created")
         {:ok, preload_rma(ret)}
 
       other ->
@@ -210,6 +211,7 @@ defmodule Backend.CustomerReturns do
           rma_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed("customer-return", updated.uuid, updated.company_id, "updated")
         {:ok, preload_rma(updated)}
 
       other ->
@@ -225,6 +227,7 @@ defmodule Backend.CustomerReturns do
     case Repo.delete(ret) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "customer_return", ret, before_state)
+        Backend.Broadcasts.entity_changed("customer-return", ret.uuid, ret.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -265,6 +268,7 @@ defmodule Backend.CustomerReturns do
           reason_code: line.reason_code
         })
 
+        Backend.Broadcasts.entity_changed("customer-return", ret.uuid, ret.company_id, "line_added")
         {:ok, Repo.preload(line, [item: :stock_uom, customer_invoice_line: []])}
 
       other ->
@@ -312,6 +316,7 @@ defmodule Backend.CustomerReturns do
             }
           )
 
+          Backend.Broadcasts.entity_changed("customer-return", ret.uuid, ret.company_id, "line_updated")
           {:ok, Repo.preload(updated, [item: :stock_uom, customer_invoice_line: []])}
 
         other ->
@@ -333,6 +338,7 @@ defmodule Backend.CustomerReturns do
             item_id: line.item_id
           })
 
+          Backend.Broadcasts.entity_changed("customer-return", ret.uuid, ret.company_id, "line_deleted")
           {:ok, deleted}
 
         other ->
@@ -546,6 +552,13 @@ defmodule Backend.CustomerReturns do
           rma_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed(
+          "customer-return",
+          updated.uuid,
+          updated.company_id,
+          "accepted"
+        )
+
         {:ok, preload_rma(updated)}
 
       other ->
@@ -620,6 +633,13 @@ defmodule Backend.CustomerReturns do
           rma_snapshot(updated)
         )
 
+        Backend.Broadcasts.entity_changed(
+          "customer-return",
+          updated.uuid,
+          updated.company_id,
+          Map.get(attrs, "status") || Map.get(attrs, :status) || "updated"
+        )
+
         {:ok, preload_rma(updated)}
 
       other ->
@@ -654,6 +674,7 @@ defmodule Backend.CustomerReturns do
           filename: file.filename
         })
 
+        Backend.Broadcasts.entity_changed("customer-return", ret.uuid, ret.company_id, "file_added")
         {:ok, Repo.preload(file, :uploaded_by)}
 
       other ->
@@ -686,6 +707,19 @@ defmodule Backend.CustomerReturns do
           kind: file.kind,
           filename: file.filename
         })
+
+        ret_uuid =
+          case Repo.get(CustomerReturn, file.customer_return_id) do
+            %CustomerReturn{uuid: uuid} -> uuid
+            _ -> nil
+          end
+
+        Backend.Broadcasts.entity_changed(
+          "customer-return",
+          ret_uuid,
+          file.company_id,
+          "file_deleted"
+        )
 
         {:ok, deleted}
 

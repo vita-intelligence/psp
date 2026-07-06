@@ -360,6 +360,7 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
   return (
     <DataTable<ShortageRow>
       tableId="procurement-shortages"
+      realtimeEntity="shortage"
       columns={columns}
       rowKey={(r) => String(r.item?.id ?? r.item?.uuid ?? r.shortage_qty)}
       fetchPage={fetchShortagesPage}

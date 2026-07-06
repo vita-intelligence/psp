@@ -105,6 +105,7 @@ defmodule Backend.Catalogs do
     case Repo.delete(family) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "product_family", family, before_state)
+        Backend.Broadcasts.entity_changed("product-family", family.uuid, family.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -114,6 +115,7 @@ defmodule Backend.Catalogs do
 
   defp after_family_create({:ok, family}, actor) do
     Audit.record_created(actor, "product_family", family, family_snapshot(family))
+    Backend.Broadcasts.entity_changed("product-family", family.uuid, family.company_id, "created")
     {:ok, Repo.preload(family, [:created_by, :updated_by])}
   end
 
@@ -121,6 +123,7 @@ defmodule Backend.Catalogs do
 
   defp after_family_update({:ok, family}, actor, before_state) do
     Audit.record_updated(actor, "product_family", family, before_state, family_snapshot(family))
+    Backend.Broadcasts.entity_changed("product-family", family.uuid, family.company_id, "updated")
     {:ok, Repo.preload(family, [:created_by, :updated_by])}
   end
 
@@ -239,6 +242,7 @@ defmodule Backend.Catalogs do
     case Repo.delete(def_) do
       {:ok, deleted} ->
         Audit.record_deleted(actor, "attribute_definition", def_, before_state)
+        Backend.Broadcasts.entity_changed("attribute-definition", def_.uuid, def_.company_id, "deleted")
         {:ok, deleted}
 
       other ->
@@ -248,6 +252,7 @@ defmodule Backend.Catalogs do
 
   defp after_attr_create({:ok, def_}, actor) do
     Audit.record_created(actor, "attribute_definition", def_, attr_snapshot(def_))
+    Backend.Broadcasts.entity_changed("attribute-definition", def_.uuid, def_.company_id, "created")
     {:ok, Repo.preload(def_, [:created_by, :updated_by])}
   end
 
@@ -255,6 +260,7 @@ defmodule Backend.Catalogs do
 
   defp after_attr_update({:ok, def_}, actor, before_state) do
     Audit.record_updated(actor, "attribute_definition", def_, before_state, attr_snapshot(def_))
+    Backend.Broadcasts.entity_changed("attribute-definition", def_.uuid, def_.company_id, "updated")
     {:ok, Repo.preload(def_, [:created_by, :updated_by])}
   end
 

@@ -240,6 +240,7 @@ export function UsersTable({ initialPage }: UsersTableProps) {
   return (
     <DataTable<UserListEntry>
       tableId="users"
+      realtimeEntity="user"
       columns={columns}
       rowKey={(u) => String(u.id)}
       fetchPage={fetchUsersPage}

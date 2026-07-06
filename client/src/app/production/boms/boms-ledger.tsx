@@ -288,6 +288,7 @@ export function BOMsLedger({ initialPage }: Props) {
   return (
     <DataTable<BOMSummary>
       tableId="production-boms"
+      realtimeEntity="bom"
       columns={columns}
       rowKey={(b) => String(b.id)}
       fetchPage={fetchBOMsPage}

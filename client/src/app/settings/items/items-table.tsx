@@ -405,6 +405,7 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
   return (
     <DataTable
       tableId="items"
+      realtimeEntity="item"
       columns={columns}
       rowKey={(i) => String(i.id)}
       fetchPage={fetchItemsPage}

@@ -336,6 +336,7 @@ export function WorkstationGroupsLedger({ initialPage }: Props) {
   return (
     <DataTable<WorkstationGroupSummary>
       tableId="production-workstation-groups"
+      realtimeEntity="workstation-group"
       columns={columns}
       rowKey={(g) => String(g.id)}
       fetchPage={fetchPage}

@@ -210,6 +210,7 @@ export function UnitsTable({ initialPage }: UnitsTableProps) {
   return (
     <DataTable
       tableId="units-of-measurement"
+      realtimeEntity="unit-of-measurement"
       columns={columns}
       rowKey={(u) => String(u.id)}
       fetchPage={fetchUnitsPage}

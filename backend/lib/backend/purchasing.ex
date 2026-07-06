@@ -172,6 +172,7 @@ defmodule Backend.Purchasing do
     |> case do
       {:ok, po} ->
         Audit.record_created(actor, "purchase_order", po, snapshot(po))
+        Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "created")
         {:ok, preload(po)}
 
       other ->
@@ -350,21 +351,32 @@ defmodule Backend.Purchasing do
       before_state = snapshot(po)
       cast_attrs = attrs |> stringify_keys() |> Map.put("updated_by_id", actor.id)
 
-      Repo.transaction(fn ->
-        with {:ok, updated} <-
-               po |> PurchaseOrder.changeset(cast_attrs) |> Repo.update(),
-             # Any change to discount_pct / tax_rate / shipping_fees /
-             # additional_fees needs to flow back into the denormalised
-             # totals — easier to just recompute every header update than
-             # to diff which money column moved.
-             {:ok, recomputed} <- recompute_totals(updated) do
-          Audit.record_updated(actor, "purchase_order", recomputed, before_state, snapshot(recomputed))
-          preload(recomputed)
-        else
-          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      result =
+        Repo.transaction(fn ->
+          with {:ok, updated} <-
+                 po |> PurchaseOrder.changeset(cast_attrs) |> Repo.update(),
+               # Any change to discount_pct / tax_rate / shipping_fees /
+               # additional_fees needs to flow back into the denormalised
+               # totals — easier to just recompute every header update than
+               # to diff which money column moved.
+               {:ok, recomputed} <- recompute_totals(updated) do
+            Audit.record_updated(actor, "purchase_order", recomputed, before_state, snapshot(recomputed))
+            preload(recomputed)
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      case result do
+        {:ok, %PurchaseOrder{} = updated} ->
+          Backend.Broadcasts.entity_changed("purchase-order", updated.uuid, updated.company_id, "updated")
+
+        _ ->
+          :ok
+      end
+
+      result
     end
   end
 
@@ -377,6 +389,7 @@ defmodule Backend.Purchasing do
       case Repo.delete(po) do
         {:ok, deleted} ->
           Audit.record_deleted(actor, "purchase_order", po, before_state)
+          Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "deleted")
           {:ok, deleted}
 
         other ->
@@ -400,24 +413,35 @@ defmodule Backend.Purchasing do
         })
         |> compute_line_subtotal()
 
-      Repo.transaction(fn ->
-        with {:ok, line} <-
-               %PurchaseOrderLine{}
-               |> PurchaseOrderLine.changeset(attrs)
-               |> Repo.insert(),
-             {:ok, _po} <- recompute_totals(po) do
-          Audit.record_created(actor, "purchase_order_line", line, %{
-            item_id: line.item_id,
-            qty_ordered: line.qty_ordered,
-            unit_price: line.unit_price
-          })
+      result =
+        Repo.transaction(fn ->
+          with {:ok, line} <-
+                 %PurchaseOrderLine{}
+                 |> PurchaseOrderLine.changeset(attrs)
+                 |> Repo.insert(),
+               {:ok, _po} <- recompute_totals(po) do
+            Audit.record_created(actor, "purchase_order_line", line, %{
+              item_id: line.item_id,
+              qty_ordered: line.qty_ordered,
+              unit_price: line.unit_price
+            })
 
-          Repo.preload(line, [:item, :warehouse])
-        else
-          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+            Repo.preload(line, [:item, :warehouse])
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      case result do
+        {:ok, %PurchaseOrderLine{}} ->
+          Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "line_added")
+
+        _ ->
+          :ok
+      end
+
+      result
     end
   end
 
@@ -435,22 +459,33 @@ defmodule Backend.Purchasing do
 
       attrs = attrs |> stringify_keys() |> compute_line_subtotal()
 
-      Repo.transaction(fn ->
-        with {:ok, updated} <-
-               line |> PurchaseOrderLine.changeset(attrs) |> Repo.update(),
-             {:ok, _po} <- recompute_totals(po) do
-          Audit.record_updated(actor, "purchase_order_line", updated, before_state, %{
-            qty_ordered: updated.qty_ordered,
-            unit_price: updated.unit_price,
-            item_id: updated.item_id
-          })
+      result =
+        Repo.transaction(fn ->
+          with {:ok, updated} <-
+                 line |> PurchaseOrderLine.changeset(attrs) |> Repo.update(),
+               {:ok, _po} <- recompute_totals(po) do
+            Audit.record_updated(actor, "purchase_order_line", updated, before_state, %{
+              qty_ordered: updated.qty_ordered,
+              unit_price: updated.unit_price,
+              item_id: updated.item_id
+            })
 
-          Repo.preload(updated, [:item, :warehouse])
-        else
-          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+            Repo.preload(updated, [:item, :warehouse])
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      case result do
+        {:ok, %PurchaseOrderLine{}} ->
+          Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "line_updated")
+
+        _ ->
+          :ok
+      end
+
+      result
     end
   end
 
@@ -460,22 +495,33 @@ defmodule Backend.Purchasing do
     if po.status not in ["draft"] do
       {:error, :not_editable}
     else
-      Repo.transaction(fn ->
-        case Repo.delete(line) do
-          {:ok, deleted} ->
-            {:ok, _} = recompute_totals(po)
+      result =
+        Repo.transaction(fn ->
+          case Repo.delete(line) do
+            {:ok, deleted} ->
+              {:ok, _} = recompute_totals(po)
 
-            Audit.record_deleted(actor, "purchase_order_line", line, %{
-              item_id: line.item_id,
-              qty_ordered: line.qty_ordered
-            })
+              Audit.record_deleted(actor, "purchase_order_line", line, %{
+                item_id: line.item_id,
+                qty_ordered: line.qty_ordered
+              })
 
-            deleted
+              deleted
 
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
-      end)
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
+
+      case result do
+        {:ok, _} ->
+          Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "line_deleted")
+
+        _ ->
+          :ok
+      end
+
+      result
     end
   end
 
@@ -617,10 +663,26 @@ defmodule Backend.Purchasing do
             "updated_by_id" => actor.id
           }
 
-          transition(actor, po, attrs)
+          po
+          |> transition(actor, attrs)
+          |> tap_broadcast_po("submitted")
         end
     end
   end
+
+  # Fire a list-scoped broadcast on the PO channel for any successful
+  # state transition or line write. `result` is whatever the surrounding
+  # `Repo.transaction/1` returned — we only broadcast on the {:ok, po}
+  # branch.
+  defp tap_broadcast_po({:ok, %PurchaseOrder{} = po} = res, action) do
+    Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, action)
+    res
+  end
+
+  defp tap_broadcast_po(other, _action), do: other
+
+  # Convenience so we can pipe: `po |> transition(actor, attrs)`.
+  defp transition(%PurchaseOrder{} = po, actor, attrs), do: transition(actor, po, attrs)
 
   @doc """
   Approver-tier signature. Records a `purchase_order_approvals` row +
@@ -630,7 +692,9 @@ defmodule Backend.Purchasing do
     if po.status != "pending_approver" do
       {:error, :bad_status}
     else
-      record_approval_and_advance(actor, po, "approver", "pending_director", opts)
+      actor
+      |> record_approval_and_advance(po, "approver", "pending_director", opts)
+      |> tap_broadcast_po("approver_signed")
     end
   end
 
@@ -643,7 +707,9 @@ defmodule Backend.Purchasing do
       {:error, :bad_status}
     else
       with :ok <- ensure_different_signer(po, actor) do
-        record_approval_and_advance(actor, po, "director", "approved", opts)
+        actor
+        |> record_approval_and_advance(po, "director", "approved", opts)
+        |> tap_broadcast_po("approved")
       end
     end
   end
@@ -723,6 +789,7 @@ defmodule Backend.Purchasing do
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+      |> tap_broadcast_po("ordered")
     end
   end
 
@@ -854,6 +921,7 @@ defmodule Backend.Purchasing do
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+      |> tap_broadcast_po("cancelled")
     end
   end
 
@@ -1106,6 +1174,7 @@ defmodule Backend.Purchasing do
 
             preload(settled)
           end)
+          |> tap_broadcast_po("received")
         end
     end
   end
@@ -1544,6 +1613,13 @@ defmodule Backend.Purchasing do
               filename: file.filename
             })
 
+            Backend.Broadcasts.entity_changed(
+              "purchase-order",
+              po.uuid,
+              po.company_id,
+              "file_added"
+            )
+
             {:ok, Repo.preload(file, :uploaded_by)}
 
           {:error, cs} ->
@@ -1564,24 +1640,40 @@ defmodule Backend.Purchasing do
   effort on the storage side: a stuck blob is harmless once the FK
   is gone, but a row pointing at missing bytes would 404 every fetch.
   """
-  def delete_file(%User{} = actor, %PurchaseOrder{} = _po, %PurchaseOrderFile{} = file) do
-    Repo.transaction(fn ->
-      case Repo.delete(file) do
-        {:ok, deleted} ->
-          _ = Storage.delete(file.blob_path)
+  def delete_file(%User{} = actor, %PurchaseOrder{} = po, %PurchaseOrderFile{} = file) do
+    result =
+      Repo.transaction(fn ->
+        case Repo.delete(file) do
+          {:ok, deleted} ->
+            _ = Storage.delete(file.blob_path)
 
-          Audit.record_deleted(actor, "purchase_order_file", file, %{
-            purchase_order_id: file.purchase_order_id,
-            kind: file.kind,
-            filename: file.filename
-          })
+            Audit.record_deleted(actor, "purchase_order_file", file, %{
+              purchase_order_id: file.purchase_order_id,
+              kind: file.kind,
+              filename: file.filename
+            })
 
-          deleted
+            deleted
 
-        {:error, reason} ->
-          Repo.rollback(reason)
-      end
-    end)
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
+
+    case result do
+      {:ok, _} ->
+        Backend.Broadcasts.entity_changed(
+          "purchase-order",
+          po.uuid,
+          po.company_id,
+          "file_deleted"
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   @doc "Look up a file row scoped to the given PO."

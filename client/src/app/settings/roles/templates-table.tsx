@@ -177,6 +177,7 @@ export function TemplatesTable({
   return (
     <DataTable<PermissionTemplate>
       tableId="templates"
+      realtimeEntity="role"
       columns={columns}
       rowKey={(t) => String(t.id)}
       fetchPage={fetchTemplatesPage}

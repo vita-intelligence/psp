@@ -85,12 +85,16 @@ defmodule Backend.Shipments do
 
   defp tap_audit_created({:ok, %Shipment{} = row}, actor) do
     Audit.record_created(actor, "shipment", row, shipment_snapshot(row))
+    Backend.Broadcasts.entity_changed("shipment", row.uuid, row.company_id, "created")
     {:ok, row}
   end
 
   defp tap_audit_created(other, _actor), do: other
 
-  defp tap_audit_updated({:ok, %Shipment{} = row}, actor, before_state) do
+  defp tap_audit_updated(res, actor, before_state),
+    do: tap_audit_updated(res, actor, before_state, "updated")
+
+  defp tap_audit_updated({:ok, %Shipment{} = row}, actor, before_state, action) do
     Audit.record_updated(
       actor,
       "shipment",
@@ -99,10 +103,11 @@ defmodule Backend.Shipments do
       shipment_snapshot(row)
     )
 
+    Backend.Broadcasts.entity_changed("shipment", row.uuid, row.company_id, action)
     {:ok, row}
   end
 
-  defp tap_audit_updated(other, _actor, _before), do: other
+  defp tap_audit_updated(other, _actor, _before, _action), do: other
 
   # Snapshot used by the audit log's before / after diff. Keep in
   # sync with @editable_fields + the lifecycle columns so field-level
@@ -217,7 +222,7 @@ defmodule Backend.Shipments do
         ready_by_id: actor.id
       })
       |> Repo.update()
-      |> tap_audit_updated(actor, before_state)
+      |> tap_audit_updated(actor, before_state, "marked_ready")
     end
   end
 
@@ -231,7 +236,7 @@ defmodule Backend.Shipments do
       shipment
       |> Shipment.unready_changeset()
       |> Repo.update()
-      |> tap_audit_updated(actor, before_state)
+      |> tap_audit_updated(actor, before_state, "marked_draft")
     end
   end
 
@@ -255,7 +260,7 @@ defmodule Backend.Shipments do
       shipment
       |> Shipment.pickup_changeset(pickup_attrs)
       |> Repo.update()
-      |> tap_audit_updated(actor, before_state)
+      |> tap_audit_updated(actor, before_state, "picked_up")
     end
   end
 
@@ -311,7 +316,7 @@ defmodule Backend.Shipments do
         cancel_reason: reason
       })
       |> Repo.update()
-      |> tap_audit_updated(actor, before_state)
+      |> tap_audit_updated(actor, before_state, "cancelled")
     end
   end
 
@@ -337,7 +342,7 @@ defmodule Backend.Shipments do
       shipment
       |> Shipment.delivery_changeset(delivery_attrs)
       |> Repo.update()
-      |> tap_audit_updated(actor, before_state)
+      |> tap_audit_updated(actor, before_state, "delivered")
     end
   end
 
@@ -577,9 +582,23 @@ defmodule Backend.Shipments do
       |> Map.put("shipment_id", shipment.id)
       |> Map.put("uploaded_by_id", actor.id)
 
-    %ShipmentPickupFile{}
-    |> ShipmentPickupFile.changeset(attrs)
-    |> Repo.insert()
+    case %ShipmentPickupFile{}
+         |> ShipmentPickupFile.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, file} = ok ->
+        Backend.Broadcasts.entity_changed(
+          "shipment",
+          shipment.uuid,
+          shipment.company_id,
+          "pickup_file_added"
+        )
+
+        _ = file
+        ok
+
+      other ->
+        other
+    end
   end
 
   @doc "List every photo captured on this shipment's dispatch form."
@@ -613,7 +632,28 @@ defmodule Backend.Shipments do
   @doc "Delete a pickup file (metadata + blob)."
   def delete_pickup_file(%User{} = _actor, %ShipmentPickupFile{} = file) do
     _ = Backend.Storage.delete(file.blob_path)
-    Repo.delete(file)
+
+    case Repo.delete(file) do
+      {:ok, deleted} = ok ->
+        shipment_uuid =
+          case Repo.get(Shipment, file.shipment_id) do
+            %Shipment{uuid: uuid} -> uuid
+            _ -> nil
+          end
+
+        Backend.Broadcasts.entity_changed(
+          "shipment",
+          shipment_uuid,
+          file.company_id,
+          "pickup_file_deleted"
+        )
+
+        _ = deleted
+        ok
+
+      other ->
+        other
+    end
   end
 
   # ==================================================================
@@ -629,9 +669,23 @@ defmodule Backend.Shipments do
       |> Map.put("shipment_id", shipment.id)
       |> Map.put("uploaded_by_id", actor.id)
 
-    %ShipmentDeliveryFile{}
-    |> ShipmentDeliveryFile.changeset(attrs)
-    |> Repo.insert()
+    case %ShipmentDeliveryFile{}
+         |> ShipmentDeliveryFile.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, file} = ok ->
+        Backend.Broadcasts.entity_changed(
+          "shipment",
+          shipment.uuid,
+          shipment.company_id,
+          "delivery_file_added"
+        )
+
+        _ = file
+        ok
+
+      other ->
+        other
+    end
   end
 
   @doc "List every photo attached to this shipment's delivery confirmation."
@@ -665,7 +719,28 @@ defmodule Backend.Shipments do
   @doc "Delete a delivery file (metadata + blob)."
   def delete_delivery_file(%User{} = _actor, %ShipmentDeliveryFile{} = file) do
     _ = Backend.Storage.delete(file.blob_path)
-    Repo.delete(file)
+
+    case Repo.delete(file) do
+      {:ok, deleted} = ok ->
+        shipment_uuid =
+          case Repo.get(Shipment, file.shipment_id) do
+            %Shipment{uuid: uuid} -> uuid
+            _ -> nil
+          end
+
+        Backend.Broadcasts.entity_changed(
+          "shipment",
+          shipment_uuid,
+          file.company_id,
+          "delivery_file_deleted"
+        )
+
+        _ = deleted
+        ok
+
+      other ->
+        other
+    end
   end
 
   # ==================================================================

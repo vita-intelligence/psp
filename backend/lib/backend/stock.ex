@@ -224,6 +224,18 @@ defmodule Backend.Stock do
           evidence_file_id: attrs["evidence_file_id"] || attrs[:evidence_file_id]
         }
       )
+      |> tap(fn
+        {:ok, _} ->
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            lot.uuid,
+            lot.company_id,
+            "event_recorded"
+          )
+
+        _ ->
+          :ok
+      end)
     else
       nil -> {:error, :not_found}
     end
@@ -301,6 +313,18 @@ defmodule Backend.Stock do
           {:error, %Ecto.Changeset{} = cs} ->
             Repo.rollback(cs)
         end
+      end)
+      |> tap(fn
+        {:ok, %Lot{} = updated} ->
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            updated.uuid,
+            updated.company_id,
+            "updated"
+          )
+
+        _ ->
+          :ok
       end)
     else
       nil -> {:error, :not_found}
@@ -835,6 +859,18 @@ defmodule Backend.Stock do
           other -> Repo.rollback(other)
         end
       end)
+      |> tap(fn
+        {:ok, %Lot{} = lot} ->
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            lot.uuid,
+            lot.company_id,
+            "received"
+          )
+
+        _ ->
+          :ok
+      end)
     end
   end
 
@@ -1169,6 +1205,18 @@ defmodule Backend.Stock do
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+      |> tap(fn
+        {:ok, %Lot{} = lot} ->
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            lot.uuid,
+            lot.company_id,
+            "moved"
+          )
+
+        _ ->
+          :ok
+      end)
     end
   end
 
@@ -1274,6 +1322,18 @@ defmodule Backend.Stock do
           {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
           {:error, reason} -> Repo.rollback(reason)
         end
+      end)
+      |> tap(fn
+        {:ok, %Lot{} = lot} ->
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            lot.uuid,
+            lot.company_id,
+            "adjusted"
+          )
+
+        _ ->
+          :ok
       end)
     end
   end

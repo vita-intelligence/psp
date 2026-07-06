@@ -165,6 +165,7 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
   return (
     <DataTable
       tableId="storage-tags"
+      realtimeEntity="storage-tag"
       columns={columns}
       rowKey={(t) => String(t.id)}
       fetchPage={fetchTagsPage}
