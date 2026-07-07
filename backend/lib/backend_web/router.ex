@@ -704,6 +704,11 @@ defmodule BackendWeb.Router do
 
       get "/manufacturing-orders", ManufacturingOrderController, :index
       get "/manufacturing-orders/:id", ManufacturingOrderController, :show
+      # Phase 7 — actual labour + machine cost per step / per MO,
+      # sourced from WorkstationSession + point-in-time EmployeeWage.
+      get "/manufacturing-orders/:id/cost-breakdown",
+          MOCostBreakdownController,
+          :show
       post "/manufacturing-orders", ManufacturingOrderController, :create
       patch "/manufacturing-orders/:id", ManufacturingOrderController, :update
       post "/manufacturing-orders/:id/transition",
@@ -1557,6 +1562,22 @@ defmodule BackendWeb.Router do
     pipe_through :api_integration
 
     get "/health", IntegrationHealthController, :show
+
+    # Read-side (per-action scope check happens inside the controller).
+    get "/manufacturing-orders", IntegrationReadController, :list_manufacturing_orders
+    get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
+    get "/workstations", IntegrationReadController, :list_workstations
+    get "/items", IntegrationReadController, :list_items
+    get "/hr/employees", IntegrationReadController, :list_employees
+
+    # Write-side
+    post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
+         IntegrationSessionController,
+         :create_mo_session
+
+    post "/workstations/:uuid/sessions",
+         IntegrationSessionController,
+         :create_workstation_session
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development.
