@@ -40,6 +40,15 @@ defmodule Backend.Purchasing.PurchaseOrderLine do
     belongs_to :company, Company
     belongs_to :warehouse, Warehouse
 
+    # The day-one child stock_lot spawned when this line was
+    # persisted. Status starts at `requested`, moves to `expected`
+    # on `Purchasing.mark_ordered/2`, ends at physical per-pack
+    # lots (see the goods-in receive flow which sets
+    # `stock_lots.purchase_order_line_id` on each spawned lot).
+    # Nil for legacy PO lines created before the child-lot pipeline
+    # was wired.
+    has_one :child_lot, Backend.Stock.Lot, foreign_key: :purchase_order_line_id
+
     timestamps(type: :utc_datetime)
   end
 

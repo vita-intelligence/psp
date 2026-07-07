@@ -3904,9 +3904,27 @@ defmodule BackendWeb.Payloads do
       expected_delivery_date: l.expected_delivery_date,
       notes: l.notes,
       inserted_at: l.inserted_at,
-      updated_at: l.updated_at
+      updated_at: l.updated_at,
+      # The day-one child stock_lot. Present from PO create time so the
+      # FE can render the LOT chip on each line and MO planners can
+      # deep-link into the lot detail before physical receipt.
+      child_lot: preloaded_or_nil(l, :child_lot, &po_line_child_lot/1)
     }
   end
+
+  # Compact stock_lot summary embedded on a PO line row — just enough
+  # for the FE to render the LOT code + status pill without pulling
+  # the whole lot payload.
+  defp po_line_child_lot(%Backend.Stock.Lot{} = lot) do
+    %{
+      id: lot.id,
+      uuid: lot.uuid,
+      code: render_code(lot, "stock_lot"),
+      status: lot.status
+    }
+  end
+
+  defp po_line_child_lot(_), do: nil
 
   @doc """
   Compact warehouse representation embedded in PO header (default
