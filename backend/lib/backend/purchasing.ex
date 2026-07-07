@@ -243,21 +243,37 @@ defmodule Backend.Purchasing do
             unit_price: line.unit_price
           })
 
-          # Reserve the new line's qty against MOs that have raised
-          # "Request purchases" for this item. Two paths:
-          #
-          #   1. Explicit reservations from the caller — used when
-          #      procurement picks MOs manually on the PO form or
-          #      when the wizard / shortages page deep-links with a
-          #      specific MO in mind.
-          #   2. Fall back to FIFO auto-reservation by planned_start
-          #      when nothing explicit was passed.
-          #
-          # Best-effort — placeholder creation failures don't roll
-          # back the line; the planner can manually book later.
-          _ = reserve_for_mos(actor, line, reservations)
+          # Mint the child stock_lot at status `requested` so the LOT
+          # number exists day-one — MO planners can raise placeholder
+          # bookings against a concrete lot instead of only a PO line
+          # abstraction. Idempotent via child_lot_for_line/1.
+          case mint_child_lot_for_line(actor, po, line) do
+            {:ok, _lot} ->
+              # Reserve the new line's qty against MOs that have raised
+              # "Request purchases" for this item. Two paths:
+              #
+              #   1. Explicit reservations from the caller — used when
+              #      procurement picks MOs manually on the PO form or
+              #      when the wizard / shortages page deep-links with a
+              #      specific MO in mind.
+              #   2. Fall back to FIFO auto-reservation by planned_start
+              #      when nothing explicit was passed.
+              #
+              # Best-effort — placeholder creation failures don't roll
+              # back the line; the planner can manually book later.
+              _ = reserve_for_mos(actor, line, reservations)
+              {:cont, {:ok, [line | acc]}}
 
-          {:cont, {:ok, [line | acc]}}
+            :skip ->
+              _ = reserve_for_mos(actor, line, reservations)
+              {:cont, {:ok, [line | acc]}}
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              {:halt, {:error, cs}}
+
+            {:error, reason} ->
+              {:halt, {:error, {:mint_lot_failed, reason}}}
+          end
 
         {:error, cs} ->
           {:halt, {:error, cs}}
@@ -385,16 +401,23 @@ defmodule Backend.Purchasing do
       {:error, :not_deletable}
     else
       before_state = snapshot(po)
+      po = preload(po)
 
-      case Repo.delete(po) do
-        {:ok, deleted} ->
+      Repo.transaction(fn ->
+        # Cancel all child stock_lots first — same reason as
+        # delete_line: the FK nilify would strand them without an
+        # audit-cited origin. Do it inside the transaction so a
+        # failure rolls the PO delete back too.
+        with :ok <- normalise_cascade(cancel_child_lots_for_po(actor, po, "PO deleted")),
+             {:ok, deleted} <- Repo.delete(po) do
           Audit.record_deleted(actor, "purchase_order", po, before_state)
           Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "deleted")
-          {:ok, deleted}
-
-        other ->
-          other
-      end
+          deleted
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     end
   end
 
@@ -419,7 +442,11 @@ defmodule Backend.Purchasing do
                  %PurchaseOrderLine{}
                  |> PurchaseOrderLine.changeset(attrs)
                  |> Repo.insert(),
-               {:ok, _po} <- recompute_totals(po) do
+               {:ok, _po} <- recompute_totals(po),
+               # Same day-one child-lot mint as insert_lines_for/3 so
+               # a line added to an existing draft PO behaves like a
+               # line included at create time.
+               {:ok, _lot_or_skipped} <- mint_child_lot_result(mint_child_lot_for_line(actor, po, line)) do
             Audit.record_created(actor, "purchase_order_line", line, %{
               item_id: line.item_id,
               qty_ordered: line.qty_ordered,
@@ -444,6 +471,20 @@ defmodule Backend.Purchasing do
       result
     end
   end
+
+  # `mint_child_lot_for_line` returns {:ok, lot} on create, `:skip`
+  # for idempotency (the lot already exists), or {:error, reason}.
+  # Callers using `with` want the two happy paths to look the same.
+  defp mint_child_lot_result({:ok, lot}), do: {:ok, lot}
+  defp mint_child_lot_result(:skip), do: {:ok, :already_exists}
+  defp mint_child_lot_result({:error, _} = err), do: err
+
+  # `cancel_child_lot(s)_for_*` helpers can return :ok (nothing to
+  # cancel), {:ok, lot} (cancelled), or {:error, reason}. Callers
+  # using `with` fold the two success shapes into a single :ok.
+  defp normalise_cascade(:ok), do: :ok
+  defp normalise_cascade({:ok, _}), do: :ok
+  defp normalise_cascade({:error, _} = err), do: err
 
   def update_line(%User{} = actor, %PurchaseOrderLine{} = line, attrs) do
     po = Repo.get!(PurchaseOrder, line.purchase_order_id)
@@ -497,19 +538,22 @@ defmodule Backend.Purchasing do
     else
       result =
         Repo.transaction(fn ->
-          case Repo.delete(line) do
-            {:ok, deleted} ->
-              {:ok, _} = recompute_totals(po)
+          # Cancel the child stock_lot BEFORE deleting the line —
+          # otherwise the FK nilify on delete would strand the lot
+          # without its origin and the cancel event couldn't cite
+          # the line id.
+          with :ok <- normalise_cascade(cancel_child_lot_for_line(actor, line, "PO line deleted")),
+               {:ok, deleted} <- Repo.delete(line),
+               {:ok, _po} <- recompute_totals(po) do
+            Audit.record_deleted(actor, "purchase_order_line", line, %{
+              item_id: line.item_id,
+              qty_ordered: line.qty_ordered
+            })
 
-              Audit.record_deleted(actor, "purchase_order_line", line, %{
-                item_id: line.item_id,
-                qty_ordered: line.qty_ordered
-              })
-
-              deleted
-
-            {:error, reason} ->
-              Repo.rollback(reason)
+            deleted
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
           end
         end)
 
@@ -782,7 +826,12 @@ defmodule Backend.Purchasing do
                  "ordered_by_id" => actor.id,
                  "updated_by_id" => actor.id
                }),
-             :ok <- create_expected_lots_for_po(actor, po) do
+             # Promote every child stock_lot from `requested` (created
+             # at PO line insert) to `expected`. Legacy POs where the
+             # child lot never got minted (mark_ordered ran under the
+             # pre-move-upstream code path) mint fresh at `expected`
+             # inside the helper — day-forward and legacy converge.
+             :ok <- promote_child_lots_for_po(actor, po) do
           preload(updated)
         else
           {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
@@ -793,47 +842,227 @@ defmodule Backend.Purchasing do
     end
   end
 
-  # Walk every PO line and emit one `expected` lot + its lifecycle
-  # event. Best-effort with respect to compliance: if a line already
-  # has its expected lot (idempotency for re-runs after partial
-  # failure) we skip it.
-  defp create_expected_lots_for_po(actor, %PurchaseOrder{} = po) do
+  # ----- child-lot cascade -----------------------------------------
+  # Every PO line carries a matching `stock_lot` from the moment it's
+  # persisted so MO planners can raise placeholder bookings against a
+  # real LOT number rather than an abstract PO row (the "MRPEasy
+  # posture" — lot exists at PO create, not at receipt).
+  #
+  # Two pre-arrival statuses:
+  #
+  #   * `requested` — PO on the paperwork side (draft/pending/approved)
+  #   * `expected`  — PO has been mark_ordered (sent + paid)
+  #
+  # Cascade rules:
+  #
+  #   * PO line insert → mint `requested` child lot
+  #   * PO mark_ordered → promote each child `requested` → `expected`
+  #   * PO line delete → cancel the child lot
+  #   * PO cancel / draft-delete → cancel all child lots
+  #
+  # Goods-in unchanged — per-pack physical lots spawn independently
+  # via the existing receive flow. The parent stays in place as an
+  # audit anchor until follow-up cleanup work retires zero-qty
+  # planning lots.
+
+  # Mint a `requested` child lot for a single PO line. Idempotent —
+  # if a lot already exists for this line (FK match), we skip. Must
+  # be called inside an open Repo.transaction (the callers all wrap).
+  defp mint_child_lot_for_line(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line) do
+    source_ref = render_po_code(po)
+
+    cond do
+      child_lot_for_line(line.id) != nil ->
+        :skip
+
+      true ->
+        item =
+          case line.item do
+            %Backend.Items.Item{} = i -> i
+            _ -> Repo.get(Backend.Items.Item, line.item_id)
+          end
+
+        case item do
+          nil ->
+            {:error, {:item_not_found, line.item_id}}
+
+          %Backend.Items.Item{} ->
+            attrs = %{
+              "company_id" => po.company_id,
+              "item_id" => line.item_id,
+              "unit_of_measurement_id" => item.stock_uom_id,
+              "qty_received" => Decimal.new(0),
+              "status" => "requested",
+              "source_kind" => "purchase_order",
+              "source_ref" => source_ref,
+              "unit_cost" => line.unit_price,
+              "currency" => po.currency_code,
+              "purchase_order_line_id" => line.id,
+              "created_by_id" => actor.id,
+              "updated_by_id" => actor.id
+            }
+
+            with {:ok, lot} <-
+                   %Backend.Stock.Lot{}
+                   |> Backend.Stock.Lot.expected_changeset(attrs)
+                   |> Repo.insert(),
+                 {:ok, _result} <-
+                   Backend.Stock.Lifecycle.record_event_in_transaction(
+                     lot,
+                     "requested",
+                     %{
+                       actor: actor,
+                       actor_kind: "user",
+                       reason: "PO line created",
+                       metadata: %{
+                         "po_line_id" => line.id,
+                         "po_id" => po.id,
+                         "source_ref" => source_ref
+                       }
+                     }
+                   ) do
+              Backend.Audit.record_created(actor, "stock_lot", lot, %{
+                status: lot.status,
+                source_kind: lot.source_kind,
+                source_ref: lot.source_ref,
+                qty_received: lot.qty_received
+              })
+
+              {:ok, lot}
+            end
+        end
+    end
+  end
+
+  # Walk every child lot on a PO and promote status `requested` →
+  # `expected` via a lifecycle event. Called from `mark_ordered`.
+  # Missing lots (legacy POs mark_ordered under the pre-migration
+  # code path where lots were created here rather than at PO create)
+  # are minted directly at `expected`.
+  defp promote_child_lots_for_po(actor, %PurchaseOrder{} = po) do
     source_ref = render_po_code(po)
 
     Enum.reduce_while(po.lines, :ok, fn line, :ok ->
-      case create_expected_lot_for_line(actor, po, line, source_ref) do
-        {:ok, _lot} -> {:cont, :ok}
-        :skip -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
+      case child_lot_for_line(line.id) do
+        %Backend.Stock.Lot{status: "requested"} = lot ->
+          case Backend.Stock.Lifecycle.record_event_in_transaction(
+                 lot,
+                 "expected",
+                 %{
+                   actor: actor,
+                   actor_kind: "user",
+                   reason: "PO ordered",
+                   metadata: %{
+                     "po_line_id" => line.id,
+                     "po_id" => po.id,
+                     "source_ref" => source_ref
+                   }
+                 }
+               ) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+
+        %Backend.Stock.Lot{} ->
+          # Already promoted (idempotency) or terminal — skip.
+          {:cont, :ok}
+
+        nil ->
+          # Legacy PO with no child lot from the paperwork phase.
+          # Mint one now, directly at `expected` (skip the `requested`
+          # step because the PO already left the paperwork side).
+          case mint_child_lot_for_line_at_status(actor, po, line, "expected", "PO ordered") do
+            {:ok, _} -> {:cont, :ok}
+            :skip -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
       end
     end)
   end
 
-  defp create_expected_lot_for_line(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line, source_ref) do
+  # Cancel every child lot on a PO — used when the PO itself is
+  # cancelled or when a draft PO is deleted outright. Terminal lots
+  # (already `canceled`, `received`, etc.) are left alone.
+  defp cancel_child_lots_for_po(actor, %PurchaseOrder{} = po, reason) do
+    line_ids = Enum.map(po.lines, & &1.id)
+
+    from(l in Backend.Stock.Lot,
+      where: l.purchase_order_line_id in ^line_ids and l.status in ["requested", "expected"]
+    )
+    |> Repo.all()
+    |> Enum.reduce_while(:ok, fn lot, :ok ->
+      case cancel_child_lot(actor, lot, reason) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, err} -> {:halt, {:error, err}}
+      end
+    end)
+  end
+
+  # Cancel the child lot bound to a single PO line — used when a
+  # draft PO line is deleted.
+  defp cancel_child_lot_for_line(actor, %PurchaseOrderLine{} = line, reason) do
+    case child_lot_for_line(line.id) do
+      %Backend.Stock.Lot{status: status} = lot when status in ["requested", "expected"] ->
+        cancel_child_lot(actor, lot, reason)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp cancel_child_lot(actor, %Backend.Stock.Lot{} = lot, reason) do
+    case Backend.Stock.Lifecycle.record_event_in_transaction(
+           lot,
+           "canceled",
+           %{
+             actor: actor,
+             actor_kind: "user",
+             reason: reason,
+             metadata: %{"cause" => "po_cascade"}
+           }
+         ) do
+      {:ok, _} -> {:ok, lot}
+      other -> other
+    end
+  end
+
+  # Direct FK lookup — post-migration this is the only path. The
+  # backfill in migration 20260707100000 populates the FK for
+  # every existing PO-sourced lot.
+  defp child_lot_for_line(line_id) when is_integer(line_id) do
+    Repo.get_by(Backend.Stock.Lot, purchase_order_line_id: line_id)
+  end
+
+  # Escape hatch used by promote_child_lots_for_po/2 for legacy POs
+  # where mark_ordered ran under the old code path. Same insert +
+  # event flow as mint_child_lot_for_line/3 but starts at the given
+  # status so the paperwork phase isn't retro-fired.
+  defp mint_child_lot_for_line_at_status(actor, %PurchaseOrder{} = po, %PurchaseOrderLine{} = line, status, reason)
+       when status in ["requested", "expected"] do
+    source_ref = render_po_code(po)
+
     item =
       case line.item do
         %Backend.Items.Item{} = i -> i
         _ -> Repo.get(Backend.Items.Item, line.item_id)
       end
 
-    cond do
-      is_nil(item) ->
+    case item do
+      nil ->
         {:error, {:item_not_found, line.item_id}}
 
-      expected_lot_exists?(po, line) ->
-        :skip
-
-      true ->
+      %Backend.Items.Item{} ->
         attrs = %{
           "company_id" => po.company_id,
           "item_id" => line.item_id,
           "unit_of_measurement_id" => item.stock_uom_id,
           "qty_received" => Decimal.new(0),
-          "status" => "expected",
+          "status" => status,
           "source_kind" => "purchase_order",
           "source_ref" => source_ref,
           "unit_cost" => line.unit_price,
           "currency" => po.currency_code,
+          "purchase_order_line_id" => line.id,
           "created_by_id" => actor.id,
           "updated_by_id" => actor.id
         }
@@ -845,11 +1074,11 @@ defmodule Backend.Purchasing do
              {:ok, _result} <-
                Backend.Stock.Lifecycle.record_event_in_transaction(
                  lot,
-                 "expected",
+                 status,
                  %{
                    actor: actor,
                    actor_kind: "user",
-                   reason: "PO ordered",
+                   reason: reason,
                    metadata: %{
                      "po_line_id" => line.id,
                      "po_id" => po.id,
@@ -867,22 +1096,6 @@ defmodule Backend.Purchasing do
           {:ok, lot}
         end
     end
-  end
-
-  # An "expected" lot for this line is identified by source_kind =
-  # "purchase_order" + source_ref = PO.code + qty_received = 0 + the
-  # event log carrying our po_line_id. Cheap presence check via the
-  # event log avoids a duplicate when mark_ordered retries.
-  defp expected_lot_exists?(%PurchaseOrder{} = po, %PurchaseOrderLine{id: line_id}) do
-    Repo.exists?(
-      from e in Backend.Stock.LotEvent,
-        join: l in Backend.Stock.Lot,
-        on: l.id == e.stock_lot_id,
-        where:
-          e.kind == "expected" and
-            e.company_id == ^po.company_id and
-            fragment("?->>'po_line_id' = ?", e.metadata, ^Integer.to_string(line_id))
-    )
   end
 
   defp render_po_code(%PurchaseOrder{} = po) do
@@ -904,6 +1117,7 @@ defmodule Backend.Purchasing do
       {:error, :bad_status}
     else
       now = DateTime.utc_now() |> DateTime.truncate(:second)
+      po = preload(po)
 
       Repo.transaction(fn ->
         with {:ok, updated} <-
@@ -914,7 +1128,12 @@ defmodule Backend.Purchasing do
                  "cancellation_reason" => reason,
                  "updated_by_id" => actor.id
                }),
-             :ok <- drop_placeholder_bookings_for_po(actor, po) do
+             :ok <- drop_placeholder_bookings_for_po(actor, po),
+             # Cancel all requested/expected child lots so the lot
+             # list stops surfacing supply that will never arrive.
+             # Terminal lots (received / already canceled) are left
+             # alone by the helper.
+             :ok <- normalise_cascade(cancel_child_lots_for_po(actor, po, "PO cancelled: #{reason}")) do
           preload(updated)
         else
           {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)

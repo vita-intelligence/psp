@@ -186,14 +186,47 @@ defmodule Backend.Stock.LifecycleIntegrationTest do
 
     test "service-layer source_kind hand-off is honoured for PO receive", ctx do
       # The procurement boundary uses the `__service_source_kind__`
-      # key to declare "this receive is against a PO".
+      # key to declare "this receive is against a PO". Since the
+      # PO-line FK on stock_lots is enforced (migration
+      # 20260707100000), we need a real vendor + PO + line so the
+      # receive doesn't trip the constraint.
+      vendor =
+        Repo.insert!(%Backend.Vendors.Vendor{
+          company_id: ctx.company.id,
+          name: "Test Vendor",
+          currency_code: "GBP",
+          approval_status: "approved",
+          is_active: true
+        })
+
+      po =
+        Repo.insert!(%Backend.Purchasing.PurchaseOrder{
+          company_id: ctx.company.id,
+          vendor_id: vendor.id,
+          currency_code: "GBP",
+          status: "ordered",
+          default_warehouse_id: ctx.warehouse.id
+        })
+
+      po_line =
+        Repo.insert!(%Backend.Purchasing.PurchaseOrderLine{
+          company_id: ctx.company.id,
+          purchase_order_id: po.id,
+          item_id: ctx.item.id,
+          warehouse_id: ctx.warehouse.id,
+          qty_ordered: Decimal.new("10"),
+          qty_received: Decimal.new("0"),
+          unit_price: Decimal.new("1.00"),
+          line_subtotal: Decimal.new("10.00")
+        })
+
       attrs = %{
         "item_id" => ctx.item.id,
         "qty_received" => "10",
         "unit_of_measurement_id" => ctx.uom.id,
         "destination_cell_id" => ctx.cell.id,
         "__service_source_kind__" => "purchase_order",
-        "__po_line_id__" => 42,
+        "__po_line_id__" => po_line.id,
         "source_ref" => "PO00007",
         "package_length_mm" => 100,
         "package_width_mm" => 100,
@@ -205,9 +238,13 @@ defmodule Backend.Stock.LifecycleIntegrationTest do
 
       assert {:ok, lot} = Stock.receive_lot(ctx.user, ctx.company.id, attrs)
       assert lot.source_kind == "purchase_order"
+      # PR 1: physical per-pack lots now carry the FK back to the PO
+      # line so the cascade helpers can find them via a single-column
+      # scan instead of joining through lot_events JSON.
+      assert lot.purchase_order_line_id == po_line.id
 
       [event] = Repo.all(from(e in LotEvent, where: e.stock_lot_id == ^lot.id))
-      assert event.metadata["po_line_id"] == 42
+      assert event.metadata["po_line_id"] == po_line.id
       assert event.metadata["source_ref"] == "PO00007"
     end
   end
