@@ -12,6 +12,17 @@ defmodule BackendWeb.Router do
     plug BackendWeb.Plugs.RequireAuth
   end
 
+  # Machine-to-machine integrations (vita-performance today, more
+  # later) authenticate via an opaque bearer token in
+  # `X-Integration-Token` rather than a user session. The pipeline
+  # verifies token validity + activity; individual routes layer their
+  # own scope check via a per-route plug.
+  pipeline :api_integration do
+    plug :accepts, ["json"]
+    plug BackendWeb.Plugs.SecureHeaders
+    plug BackendWeb.Plugs.RequireIntegrationAuth, scope: :any
+  end
+
   # One pipeline per polymorphic-comments mount. Stamps
   # `conn.assigns.entity_type` so `CommentsController` knows which
   # kind of row the URL uuid refers to without inventing a new path
@@ -1525,6 +1536,19 @@ defmodule BackendWeb.Router do
     post "/:comment_uuid/reactions", CommentsController, :add_reaction
     delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
     delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
+  end
+
+  # -------------------------------------------------------------------
+  # Integration API — machine-to-machine callers (vita-performance
+  # today). The pipeline verifies the bearer token; each route layers
+  # its own required scope via a per-route plug (see e.g. `mo:read`
+  # on the manufacturing-orders index). `/health` is the smallest
+  # possible surface — token identity + granted scopes echoed back.
+  # -------------------------------------------------------------------
+  scope "/api/integration", BackendWeb do
+    pipe_through :api_integration
+
+    get "/health", IntegrationHealthController, :show
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development.
