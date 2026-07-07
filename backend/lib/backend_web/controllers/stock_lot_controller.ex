@@ -27,6 +27,11 @@ defmodule BackendWeb.StockLotController do
   plug RequirePermission, "stock.move" when action in [:move]
   plug RequirePermission, "stock.edit" when action in [:update]
   plug RequirePermission, "stock.adjust" when action in [:adjust]
+  # Issuing consumables draws down stock — same posture as an adjust
+  # from a permissions standpoint. Reuses `stock.adjust` for now; a
+  # dedicated `stock.issue` scope can be added if we split the flow
+  # from stock-take corrections later.
+  plug RequirePermission, "stock.adjust" when action in [:issue]
   # `events_create` carries multi-kind dispatch — the action plug only
   # asserts "you can view this lot"; the event-kind → permission map
   # in `events_create/2` enforces the per-action gate (qc, hold,
@@ -738,6 +743,75 @@ defmodule BackendWeb.StockLotController do
   (stock-take, damage, shrinkage). Records an `adjust_up` or
   `adjust_down` movement; the placement's qty moves accordingly.
   """
+  @doc """
+  Issue a qty of a consumable lot to a recipient. Draws down the
+  source placement, records an `issue` movement carrying the
+  recipient + purpose + optional MO link. Fires the same
+  `consumed_to_zero` lifecycle event as MO consumption when the
+  placement (and lot) hits zero.
+  """
+  def issue(conn, %{"stock_lot_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Stock.issue_from_placement(actor, uuid, params) do
+      {:ok, lot} ->
+        json(conn, %{
+          lot: Payloads.stock_lot(lot),
+          movements: Enum.map(lot.movements, &Payloads.stock_movement/1)
+        })
+
+      {:error, :lot_not_found} ->
+        not_found_error(conn, "lot_not_found", "Lot not found.")
+
+      {:error, :placement_not_found} ->
+        unprocessable(conn, "placement_not_found", "Lot has no stock to issue.")
+
+      {:error, :ambiguous_placement} ->
+        unprocessable(
+          conn,
+          "ambiguous_placement",
+          "Lot is split across cells — pick which placement to issue from."
+        )
+
+      {:error, :insufficient_qty} ->
+        unprocessable(
+          conn,
+          "insufficient_qty",
+          "Not enough stock at that cell to cover the issue."
+        )
+
+      {:error, :bad_qty} ->
+        unprocessable(conn, "bad_qty", "Quantity must be a positive number.")
+
+      {:error, :purpose_required} ->
+        unprocessable(
+          conn,
+          "purpose_required",
+          "Every issue needs a purpose — 'shift PPE issue', 'line 3 cleaning', 'MO closeout', etc."
+        )
+
+      {:error, :recipient_not_found} ->
+        unprocessable(conn, "recipient_not_found", "Recipient user not found.")
+
+      {:error, :manufacturing_order_not_found} ->
+        unprocessable(
+          conn,
+          "manufacturing_order_not_found",
+          "MO not found — check the picker or leave it blank for a shift-level issue."
+        )
+
+      {:error, :locked_by_pickup_in_progress} ->
+        unprocessable(
+          conn,
+          "locked_by_pickup_in_progress",
+          "Lot is on a picker's trolley right now — wait for that pickup to finish or abort before issuing."
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
   def adjust(conn, %{"stock_lot_id" => uuid} = params) do
     actor = conn.assigns.current_user
 

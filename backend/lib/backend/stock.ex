@@ -1348,6 +1348,272 @@ defmodule Backend.Stock do
 
   def adjust_placement(_actor, _uuid, _attrs), do: {:error, :bad_args}
 
+  @doc """
+  Issue a qty of a consumable lot to a recipient. Distinct from
+  `adjust_placement/3` (a stock correction) and MO consumption (which
+  runs through the pick → confirm → consume ceremony). Used for PPE
+  handout, sanitiser draw-down, spare-parts issuance, and similar
+  consumable flows where the operator is handing goods to a person /
+  shift / department.
+
+  `attrs` (all binary-keyed):
+
+      %{
+        "from_cell_uuid" => "..." | nil,   # source cell — nil = infer
+        "qty" => "1.5",                    # positive qty to draw down
+        "purpose" => "Shift PPE issue",    # free-text reason (required)
+        "issued_to_user_uuid" => nil | "...",         # who received
+        "manufacturing_order_uuid" => nil | "..."     # optional MO link
+      }
+
+  Emits a `stock_movements` row with `kind = "issue"`, decrements the
+  source placement, and (when the placement hits zero) triggers the
+  same `consumed_to_zero` lifecycle event that MO consumption fires
+  so the projected status flips to `depleted`.
+
+  Error tuples mirror `adjust_placement/3`:
+  `:lot_not_found | :placement_not_found | :ambiguous_placement |
+   :bad_qty | :insufficient_qty | :purpose_required`.
+  """
+  def issue_from_placement(%Backend.Accounts.User{} = actor, lot_uuid, attrs)
+      when is_binary(lot_uuid) and is_map(attrs) do
+    purpose = attrs["purpose"] || attrs[:purpose]
+
+    with :ok <- ensure_non_empty(purpose, :purpose_required),
+         {:ok, lot} <- fetch_lot_by_uuid(actor.company_id, lot_uuid),
+         :ok <- ensure_not_locked_by_pickup(lot),
+         {:ok, placement} <-
+           resolve_from_placement(lot, attrs["from_cell_uuid"]),
+         {:ok, qty} <- parse_positive_decimal(attrs["qty"]),
+         :ok <- ensure_placement_has_qty(placement, qty),
+         {:ok, mo_ref} <- resolve_mo_reference(actor.company_id, attrs["manufacturing_order_uuid"]),
+         {:ok, recipient_id} <-
+           resolve_user_id(actor.company_id, attrs["issued_to_user_uuid"]) do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      delta = Decimal.negate(qty)
+
+      Repo.transaction(fn ->
+        new_qty = Decimal.add(placement.qty, delta)
+        before_qty = placement.qty
+
+        with {:ok, updated_placement} <- write_adjusted_placement(placement, new_qty),
+             {:ok, movement} <-
+               %Movement{}
+               |> Movement.changeset(%{
+                 "company_id" => lot.company_id,
+                 "stock_lot_id" => lot.id,
+                 "from_cell_id" => placement.storage_cell_id,
+                 "to_cell_id" => nil,
+                 "delta_qty" => delta,
+                 "kind" => "issue",
+                 "reason" => String.trim(purpose),
+                 "reference_kind" => mo_ref && "manufacturing_order",
+                 "reference_ref" => mo_ref && mo_ref.code,
+                 "actor_id" => actor.id,
+                 "issued_to_user_id" => recipient_id,
+                 "occurred_at" => now
+               })
+               |> Repo.insert(),
+             {:ok, lot_after_events} <-
+               maybe_emit_depletion_event(actor, lot, now) do
+          Backend.Audit.record_updated(
+            actor,
+            "stock_lot_placement",
+            updated_placement,
+            %{qty: before_qty, storage_cell_id: placement.storage_cell_id},
+            %{qty: updated_placement.qty, storage_cell_id: updated_placement.storage_cell_id}
+          )
+
+          Backend.Audit.record_created(actor, "stock_movement", movement, %{
+            kind: movement.kind,
+            delta_qty: movement.delta_qty,
+            from_cell_id: movement.from_cell_id,
+            issued_to_user_id: movement.issued_to_user_id,
+            reference_ref: movement.reference_ref,
+            reason: movement.reason
+          })
+
+          # If the placement hit zero + no other placement has qty,
+          # the lifecycle event above flipped status to `depleted`
+          # and open bookings are stale. Same reconciliation as
+          # `adjust_placement/3`.
+          Backend.Production.refresh_open_bookings_for_lot(lot.id)
+
+          Backend.Production.revalidate_bookings_for_lot(
+            actor,
+            lot.id,
+            "Consumable issue on lot " <>
+              (lot.uuid || "") <> " — " <> String.trim(purpose)
+          )
+
+          cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
+
+          Repo.preload(lot_after_events, [
+            :item,
+            :unit_of_measurement,
+            placements: [storage_cell: cell_with_breadcrumb],
+            movements:
+              from(m in Movement,
+                order_by: [desc: m.occurred_at, desc: m.id],
+                preload: [
+                  :actor,
+                  :issued_to_user,
+                  from_cell: ^cell_with_breadcrumb,
+                  to_cell: ^cell_with_breadcrumb
+                ]
+              )
+          ])
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> tap(fn
+        {:ok, %Lot{} = lot} ->
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            lot.uuid,
+            lot.company_id,
+            "issued"
+          )
+
+        _ ->
+          :ok
+      end)
+    end
+  end
+
+  def issue_from_placement(_actor, _uuid, _attrs), do: {:error, :bad_args}
+
+  # After decrementing, if the lot has zero qty across ALL placements
+  # emit the `consumed_to_zero` lifecycle event so the projected status
+  # flips to `depleted`. Idempotent — if the lot is already depleted
+  # or terminal, the lifecycle module rejects the transition and we
+  # just return the lot unchanged.
+  defp maybe_emit_depletion_event(actor, %Lot{id: lot_id} = lot, now) do
+    total_on_hand =
+      from(p in Backend.Stock.Placement,
+        where: p.stock_lot_id == ^lot_id,
+        select: sum(p.qty)
+      )
+      |> Repo.one()
+      |> case do
+        nil -> Decimal.new(0)
+        %Decimal{} = d -> d
+      end
+
+    if Decimal.compare(total_on_hand, Decimal.new(0)) == :gt do
+      {:ok, lot}
+    else
+      case Backend.Stock.Lifecycle.record_event_in_transaction(
+             lot,
+             "consumed_to_zero",
+             %{
+               actor: actor,
+               actor_kind: "user",
+               reason: "All placements at zero after issue",
+               metadata: %{"trigger" => "consumable_issue"},
+               occurred_at: now
+             }
+           ) do
+        {:ok, %{lot: updated_lot}} -> {:ok, updated_lot}
+        # Terminal / illegal transitions are silently tolerated —
+        # we've already updated the placement.
+        _ -> {:ok, lot}
+      end
+    end
+  end
+
+  defp resolve_mo_reference(_company_id, nil), do: {:ok, nil}
+  defp resolve_mo_reference(_company_id, ""), do: {:ok, nil}
+
+  defp resolve_mo_reference(company_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        mo =
+          from(mo in Backend.Production.ManufacturingOrder,
+            where: mo.company_id == ^company_id and mo.uuid == ^cast,
+            select: %{id: mo.id, uuid: mo.uuid}
+          )
+          |> Repo.one()
+
+        case mo do
+          nil ->
+            {:error, :manufacturing_order_not_found}
+
+          %{id: id} ->
+            code =
+              Backend.Numbering.render(id, Backend.Companies.current(), "manufacturing_order") ||
+                "MO##{id}"
+
+            {:ok, %{id: id, code: code}}
+        end
+
+      :error ->
+        {:error, :manufacturing_order_not_found}
+    end
+  end
+
+  defp resolve_user_id(_company_id, nil), do: {:ok, nil}
+  defp resolve_user_id(_company_id, ""), do: {:ok, nil}
+
+  defp resolve_user_id(company_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        row =
+          from(u in Backend.Accounts.User,
+            where: u.company_id == ^company_id and u.uuid == ^cast,
+            select: u.id
+          )
+          |> Repo.one()
+
+        case row do
+          nil -> {:error, :recipient_not_found}
+          id -> {:ok, id}
+        end
+
+      :error ->
+        {:error, :recipient_not_found}
+    end
+  end
+
+  defp ensure_non_empty(nil, err), do: {:error, err}
+  defp ensure_non_empty("", err), do: {:error, err}
+
+  defp ensure_non_empty(str, err) when is_binary(str) do
+    if String.trim(str) == "", do: {:error, err}, else: :ok
+  end
+
+  defp ensure_placement_has_qty(%{qty: available}, needed) do
+    if Decimal.compare(available, needed) == :lt do
+      {:error, :insufficient_qty}
+    else
+      :ok
+    end
+  end
+
+  defp parse_positive_decimal(nil), do: {:error, :bad_qty}
+  defp parse_positive_decimal(""), do: {:error, :bad_qty}
+
+  defp parse_positive_decimal(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new(0)) == :gt, do: {:ok, d}, else: {:error, :bad_qty}
+  end
+
+  defp parse_positive_decimal(raw) when is_binary(raw) do
+    case Decimal.parse(String.trim(raw)) do
+      {d, ""} ->
+        if Decimal.compare(d, Decimal.new(0)) == :gt, do: {:ok, d}, else: {:error, :bad_qty}
+
+      _ ->
+        {:error, :bad_qty}
+    end
+  end
+
+  defp parse_positive_decimal(n) when is_integer(n) or is_float(n),
+    do: parse_positive_decimal(to_string(n))
+
+  defp parse_positive_decimal(_), do: {:error, :bad_qty}
+
   defp parse_signed_decimal(nil), do: {:error, :bad_qty}
 
   defp parse_signed_decimal(raw) when is_binary(raw) do

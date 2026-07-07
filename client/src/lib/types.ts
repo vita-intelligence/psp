@@ -1704,7 +1704,9 @@ export type StockMovementKind =
   | "adjust_up"
   | "adjust_down"
   | "dispose"
-  | "return";
+  | "return"
+  | "auto_route"
+  | "issue";
 
 export type ComplianceState =
   | "pending"
@@ -1799,6 +1801,9 @@ export interface StockMovement {
   reference_ref: string | null;
   occurred_at: string;
   actor: AuditActor | null;
+  /** For `issue` movements: who received the stock. Nullable — bulk
+   *  shift issues don't always track an individual recipient. */
+  issued_to_user: AuditActor | null;
   photo_url: string | null;
   skip_photo_reason: string | null;
   inserted_at: string;

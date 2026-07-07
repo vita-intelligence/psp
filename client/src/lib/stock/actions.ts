@@ -239,6 +239,58 @@ export async function adjustLotAction(
   }
 }
 
+export interface IssueLotInput {
+  /** Optional: which placement to draw from. Defaults backend-side to
+   *  the single non-zero placement when only one exists. */
+  from_cell_uuid?: string;
+  /** Positive decimal string. */
+  qty: string;
+  /** Free text — required. 'Shift PPE issue', 'line 3 cleaning',
+   *  'MO00042 closeout PPE', etc. */
+  purpose: string;
+  /** Optional user UUID — who received the stock (distinct from
+   *  the actor who logged the movement). Null for shift-level
+   *  bulk issues that don't track individual recipients. */
+  issued_to_user_uuid?: string | null;
+  /** Optional MO UUID — links the issue back to a specific
+   *  production run for cost allocation + recall traceability. */
+  manufacturing_order_uuid?: string | null;
+}
+
+export type IssueLotResult =
+  | { ok: true; lot: StockLot; movements: StockMovement[] }
+  | ErrorResult;
+
+/**
+ * POST /api/stock/lots/:uuid/issue — draw down a consumable lot to a
+ * recipient. Distinct from adjust (a stock correction) and MO
+ * consumption (which runs through pick → confirm → consume). Used
+ * for PPE handouts, sanitiser pours, spare parts, and similar
+ * consumable flows.
+ */
+export async function issueLotAction(
+  uuid: string,
+  input: IssueLotInput,
+): Promise<IssueLotResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("issueLotAction");
+
+  try {
+    const res = await api<{ lot: StockLot; movements: StockMovement[] }>(
+      `/api/stock/lots/${encodeURIComponent(uuid)}/issue`,
+      { method: "POST", token, body: JSON.stringify(input) },
+    );
+    revalidatePath("/stock/lots");
+    revalidatePath(`/stock/lots/${uuid}`);
+    return { ok: true, lot: res.lot, movements: res.movements };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "issueLotAction",
+      fallbackDetail: "Couldn't issue from the lot.",
+    });
+  }
+}
+
 export interface MoveLotInput {
   to_cell_uuid: string;
   /** Optional: when the lot is split across multiple cells the
