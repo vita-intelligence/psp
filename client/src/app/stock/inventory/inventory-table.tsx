@@ -37,17 +37,19 @@ const ITEM_TYPE_LABEL: Record<ItemType, string> = {
   finished_product: "Finished",
   packaging: "Packaging",
   consumable: "Consumable",
+  equipment: "Equipment",
 };
 
 const ITEM_TYPE_TONE: Record<
   ItemType,
-  "indigo" | "emerald" | "amber" | "muted" | "sky"
+  "indigo" | "emerald" | "amber" | "muted" | "sky" | "brand"
 > = {
   raw_material: "indigo",
   semi_finished: "amber",
   finished_product: "emerald",
   packaging: "muted",
   consumable: "sky",
+  equipment: "brand",
 };
 
 const ITEM_TYPE_FILTER: FilterDef = {
@@ -60,6 +62,7 @@ const ITEM_TYPE_FILTER: FilterDef = {
       "finished_product",
       "packaging",
       "consumable",
+      "equipment",
     ] as ItemType[]
   ).map((t) => ({ label: ITEM_TYPE_LABEL[t], value: t })),
 };

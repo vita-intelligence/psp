@@ -109,6 +109,7 @@ const ITEM_TYPE_OPTIONS: Array<{ value: ItemType; label: string; desc: string }>
   { value: "finished_product", label: "Finished product", desc: "The SKU shipped to the customer" },
   { value: "packaging", label: "Packaging", desc: "Bottles, caps, labels, cartons" },
   { value: "consumable", label: "Consumable", desc: "PPE, sanitiser, food-grade lube, lab reagents, spare parts" },
+  { value: "equipment", label: "Equipment", desc: "Serial-tracked units — mixers, scales, forklifts, laptops, pH meters" },
 ];
 
 const USE_AS_OPTIONS: Array<{ value: RawMaterialUseAs; label: string }> = [

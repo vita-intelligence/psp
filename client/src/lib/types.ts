@@ -351,7 +351,8 @@ export type ItemType =
   | "semi_finished"
   | "finished_product"
   | "packaging"
-  | "consumable";
+  | "consumable"
+  | "equipment";
 
 export type VendorApprovalStatus =
   | "pending"
@@ -1480,6 +1481,7 @@ export type AttributeScope =
   | "finished_product"
   | "packaging"
   | "consumable"
+  | "equipment"
   | "item_any";
 
 export type AttributeType =
