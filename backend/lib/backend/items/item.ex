@@ -30,7 +30,14 @@ defmodule Backend.Items.Item do
   }
   alias Backend.Units.UnitOfMeasurement
 
-  @valid_item_types ~w(raw_material semi_finished finished_product packaging)
+  # `consumable` covers everything that's bought, stored, and issued
+  # out but isn't a bill-of-materials ingredient of a finished product.
+  # PPE (hairnets, gloves, coats), sanitiser, food-grade lube, lab
+  # reagents (Petrifilms, ATP swabs), and spare parts all sit here.
+  # Same PO → child lot → goods-in → quarantine → available pipeline
+  # as raw materials; consumption is via `Backend.Stock.issue_from_lot/5`
+  # rather than an MO booking.
+  @valid_item_types ~w(raw_material semi_finished finished_product packaging consumable)
   @compliance_statuses ~w(draft ready_for_use)
 
   schema "items" do

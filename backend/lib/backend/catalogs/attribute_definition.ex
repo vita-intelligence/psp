@@ -15,7 +15,7 @@ defmodule Backend.Catalogs.AttributeDefinition do
   alias Backend.Accounts.User
   alias Backend.Companies.Company
 
-  @valid_scopes ~w(raw_material semi_finished finished_product packaging item_any)
+  @valid_scopes ~w(raw_material semi_finished finished_product packaging consumable item_any)
   @valid_types ~w(text number boolean date enum url)
 
   schema "attribute_definitions" do

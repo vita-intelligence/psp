@@ -2069,7 +2069,7 @@ defmodule Backend.OrderWizard do
 
     Enum.count(lines, fn line ->
       case line.part do
-        %{id: part_id, item_type: t} when t in ["raw_material", "packaging", "semi_finished"] ->
+        %{id: part_id, item_type: t} when t in ["raw_material", "packaging", "semi_finished", "consumable"] ->
           required =
             if line.is_fixed do
               line.qty || Decimal.new(0)

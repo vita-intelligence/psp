@@ -5507,7 +5507,7 @@ defmodule Backend.Production do
       where:
         b.manufacturing_order_id in ^mo_ids and
           b.status == "requested" and
-          it.item_type in ["raw_material", "packaging", "semi_finished"] and
+          it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"] and
           l.status != "available",
       group_by: b.manufacturing_order_id,
       select: {b.manufacturing_order_id, count(b.id)}
@@ -5573,7 +5573,7 @@ defmodule Backend.Production do
       where:
         b.manufacturing_order_id in ^mo_ids and
           b.status == "requested" and
-          it.item_type in ["raw_material", "packaging", "semi_finished"],
+          it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"],
       group_by: [
         b.id,
         b.uuid,
@@ -7187,7 +7187,7 @@ defmodule Backend.Production do
       where:
         b.manufacturing_order_id == ^mo.id and
           b.status == "requested" and
-          it.item_type in ["raw_material", "packaging", "semi_finished"],
+          it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"],
       order_by: [asc: it.name, asc: b.id],
       preload: [
         :picked_by,
@@ -8265,7 +8265,7 @@ defmodule Backend.Production do
         on: it.id == b.item_id,
         where:
           b.status == "requested" and
-            it.item_type in ["raw_material", "packaging", "semi_finished"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"] and
             is_nil(b.consumed_at),
         select: b.manufacturing_order_id,
         distinct: true
@@ -9015,7 +9015,7 @@ defmodule Backend.Production do
         on: it.id == b.item_id,
         where:
           b.status == "requested" and
-            it.item_type in ["raw_material", "packaging", "semi_finished"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"] and
             is_nil(b.received_at),
         select: b.manufacturing_order_id,
         distinct: true
@@ -9357,7 +9357,7 @@ defmodule Backend.Production do
         where:
           b.manufacturing_order_id == ^id and
             b.status == "requested" and
-            it.item_type in ["raw_material", "packaging", "semi_finished"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"] and
             is_nil(b.received_at),
         select: count(b.id)
       )
@@ -9994,7 +9994,7 @@ defmodule Backend.Production do
       |> Enum.flat_map(fn line ->
         case line.part do
           %Item{id: part_id, name: name, item_type: t}
-          when t in ["raw_material", "packaging", "semi_finished"] ->
+          when t in ["raw_material", "packaging", "semi_finished", "consumable"] ->
             required =
               if line.is_fixed do
                 line.qty || Decimal.new(0)
@@ -10074,7 +10074,7 @@ defmodule Backend.Production do
       |> Enum.flat_map(fn line ->
         case line.part do
           %Item{id: part_id, name: name, item_type: t}
-          when t in ["raw_material", "packaging", "semi_finished"] ->
+          when t in ["raw_material", "packaging", "semi_finished", "consumable"] ->
             required =
               if line.is_fixed do
                 line.qty || Decimal.new(0)
@@ -10139,7 +10139,7 @@ defmodule Backend.Production do
         where:
           b.manufacturing_order_id == ^mo.id and
             b.status == "requested" and
-            it.item_type in ["raw_material", "packaging", "semi_finished"] and
+            it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"] and
             l.status != "available",
         select: %{booking_uuid: b.uuid, lot_uuid: l.uuid, lot_status: l.status}
       )
@@ -10177,7 +10177,7 @@ defmodule Backend.Production do
         where:
           b.manufacturing_order_id == ^mo.id and
             b.status == "requested" and
-            it.item_type in ["raw_material", "packaging", "semi_finished"],
+            it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"],
         group_by: [b.id, b.uuid, b.quantity, it.name, l.uuid],
         select: %{
           booking_uuid: b.uuid,

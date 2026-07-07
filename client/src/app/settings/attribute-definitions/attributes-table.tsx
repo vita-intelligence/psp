@@ -25,6 +25,7 @@ const SCOPE_LABEL: Record<AttributeScope, string> = {
   semi_finished: "Semi-finished",
   finished_product: "Finished product",
   packaging: "Packaging",
+  consumable: "Consumable",
   item_any: "Any item",
 };
 

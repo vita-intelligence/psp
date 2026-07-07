@@ -108,6 +108,7 @@ const ITEM_TYPE_OPTIONS: Array<{ value: ItemType; label: string; desc: string }>
   { value: "semi_finished", label: "Semi-finished", desc: "Blends, granulates, intermediates" },
   { value: "finished_product", label: "Finished product", desc: "The SKU shipped to the customer" },
   { value: "packaging", label: "Packaging", desc: "Bottles, caps, labels, cartons" },
+  { value: "consumable", label: "Consumable", desc: "PPE, sanitiser, food-grade lube, lab reagents, spare parts" },
 ];
 
 const USE_AS_OPTIONS: Array<{ value: RawMaterialUseAs; label: string }> = [
