@@ -2809,16 +2809,18 @@ defmodule Backend.Production do
   def approve_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
     with :ok <- ensure_status_in(mo, ["prepared"]),
          :ok <- ensure_different_signer(mo, actor),
-         # Approval gate on booking coverage. Prepare tolerates a
-         # `purchasing_requested_at` escape hatch (planner engaged
-         # procurement but no bookings yet); approval doesn't. Every
-         # ingredient must have actual bookings (placeholder or real,
-         # or pending child-MO output) covering its required qty. If
-         # a PO cancellation orphans a placeholder later, PR 4's
-         # demote_to_re_approval bounces this MO back to prepared
-         # and the planner has to run approve_mo again — at which
-         # point this gate re-fires against the new coverage.
-         :ok <- ensure_all_lines_fully_booked(mo) do
+         # Approval gate uses the SAME coverage rule as prepare —
+         # `ensure_planning_complete`. An ingredient counts as
+         # covered when it has real bookings (placeholder or real
+         # lot-backed) OR when the planner has already handed the
+         # shortfall to procurement (`purchasing_requested_at` set).
+         # In a shop where the planner and the purchases team are
+         # different people, blocking approve at this stage would
+         # trap the planner on an MO whose next real move is on
+         # someone else's queue. The RELEASE gate is the load-bearing
+         # physical gate — no MO reaches the warehouse without real
+         # `available` lots.
+         :ok <- ensure_planning_complete(mo) do
       # Per-MO approval (no cascade). Each MO in the tree is signed
       # individually — leaves first so children are ready by the time
       # the planner approves their parents. The user picks the order;

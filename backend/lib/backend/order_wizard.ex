@@ -2898,10 +2898,13 @@ defmodule Backend.OrderWizard do
   defp customer_effectively_approved?(%CustomerOrder{customer: nil}), do: false
 
   defp customer_effectively_approved?(%CustomerOrder{customer: customer}) do
-    case Backend.Customers.effective_approval_status(customer) do
-      {:approved, _} -> true
-      _ -> false
-    end
+    # `effective_approval_status/1` returns the status as a STRING
+    # (mirrors the DB column) — not an atom. The previous
+    # `{:approved, _}` pattern silently failed for every draft CO,
+    # so the wizard always claimed "customer is not approved".
+    # Delegate to `approval_active?/1` which is the single source of
+    # truth for the "can this customer place an order" gate.
+    Backend.Customers.approval_active?(customer)
   end
 
   defp open_pos_for(mos) do
