@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ListChecks } from "lucide-react";
 import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type { MyTasksCount } from "@/lib/my-tasks/types";
@@ -18,135 +19,149 @@ interface Props {
   className?: string;
 }
 
-// Minimum interval between count refreshes — collapses bursts of
-// entity broadcasts into a single fetch, so a bulk import doesn't
-// fire N count queries in a heartbeat.
-const REFRESH_MIN_MS = 5000;
+// TanStack Query key — the same key is invalidated by useEntityChannel
+// on peer writes, so a fresh count lands automatically. Kept mutable
+// (no `as const`) because useEntityChannel's `invalidateQueryKey`
+// parameter is typed as `unknown[]`.
+const COUNT_QUERY_KEY: unknown[] = ["my-tasks-count"];
+
+// Module-scoped delta trackers. The nav link REMOUNTS on every
+// navigation (TopBar is imported per-page, not in the shared root
+// layout), so a component-local ref would reset the "we've already
+// primed the notifier" flag and re-fire a chime for every existing
+// task on every page load. Keeping these at module scope means the
+// notifier fires only on true count *increases* across the tab's
+// lifetime.
+let lastKnownTotal: number | null = null;
+let notifierPrimed = false;
 
 /** Top-bar "My tasks" pill with a live count of overdue tasks + a
  *  real-time chime + browser notification the moment a peer's action
  *  creates a new task for the current user.
  *
+ *  Backed by a TanStack Query cache under `["my-tasks-count"]` so
+ *  navigation between pages is instant — the badge reads from cache
+ *  instead of re-fetching. Peer writes still refresh the cache via
+ *  `useEntityChannel({ invalidateQueryKey })` so the count stays
+ *  fresh in real time.
+ *
  *  Always mounted (never hides on `count === 0`) so operators always
  *  have a way to reach the queue and so they know the notifier is
  *  live. Zero-task state is the base "My tasks" label with no badge.
  *
- *  Detection heuristic: `total` increased since the last fetch. Missed
- *  cases (a task closed AND a new one opened between two fetches, net
- *  zero) surface next time the user opens `/my-tasks`; correctness of
- *  the badge itself is guaranteed by the server-side count. */
+ *  Detection heuristic: `total` increased since the last observed
+ *  value. Missed cases (a task closed AND a new one opened between
+ *  two fetches, net zero) surface next time the user opens
+ *  `/my-tasks`; correctness of the badge itself is guaranteed by
+ *  the server-side count. */
 export function MyTasksNavLink({ className }: Props) {
   const router = useRouter();
   const pathname = usePathname();
 
-  const [count, setCount] = useState<number | null>(null);
-  const [overdue, setOverdue] = useState(0);
+  const { data } = useQuery<MyTasksCount>({
+    queryKey: COUNT_QUERY_KEY,
+    queryFn: async () => {
+      const res = await fetch("/api/my-tasks/count", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return (await res.json()) as MyTasksCount;
+    },
+    // 30s stale window matches the QueryProvider default; explicit
+    // here so a future change to the global default doesn't quietly
+    // flip the badge's behaviour.
+    staleTime: 30_000,
+    // The important one for THIS component — don't refetch just
+    // because the component remounted. Navigation between pages
+    // remounts TopBar, but the cached count is authoritative until
+    // it goes stale or a peer write invalidates it.
+    refetchOnMount: false,
+  });
 
-  // Throttle state — refuse to fire more than once per REFRESH_MIN_MS.
-  const lastFetchRef = useRef(0);
-  const pendingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const count = data?.total ?? null;
+  const overdue = data?.overdue ?? 0;
 
-  // Delta detection state.
-  const previousTotalRef = useRef<number | null>(null);
-  // We skip the notification on the *first* successful fetch — otherwise
-  // "you opened a tab and had 3 pending tasks" fires a chime, which is
-  // noise, not signal. Only true increases post-mount trigger.
-  const primedRef = useRef(false);
-
-  // Keep pathname in a ref so the fetch callback can read it without
-  // re-creating on every route change.
   const pathnameRef = useRef(pathname);
   useEffect(() => {
     pathnameRef.current = pathname;
   }, [pathname]);
 
-  const doFetch = useCallback(async () => {
-    lastFetchRef.current = Date.now();
-    try {
-      const res = await fetch("/api/my-tasks/count", { cache: "no-store" });
-      if (!res.ok) return;
-      const body = (await res.json()) as MyTasksCount;
-      const prev = previousTotalRef.current;
-      const nextTotal = body.total;
-
-      setCount(nextTotal);
-      setOverdue(body.overdue);
-      previousTotalRef.current = nextTotal;
-
-      if (!primedRef.current) {
-        primedRef.current = true;
-        return;
-      }
-
-      // Suppress the in-tab toast + chime while the user is already
-      // staring at the queue — the row itself will surface via the
-      // live channel. Browser notification still fires so a peer
-      // reviewing the list in one tab still gets pinged if they've
-      // switched tabs.
-      const onTasksPage = pathnameRef.current === "/my-tasks";
-
-      if (prev !== null && nextTotal > prev) {
-        const delta = nextTotal - prev;
-        if (!onTasksPage) {
-          void playTaskChime();
-          toast(
-            delta === 1 ? "New task for you" : `${delta} new tasks for you`,
-            {
-              description:
-                body.overdue > 0
-                  ? `${body.overdue} overdue in total`
-                  : "Open the queue to review",
-              action: {
-                label: "Open",
-                onClick: () => router.push("/my-tasks"),
-              },
-            },
-          );
-        }
-        fireBrowserTaskNotification(delta, body.overdue);
-      }
-    } catch {
-      // Silent — the badge is best-effort. The dedicated page will
-      // surface the real state.
-    }
-  }, [router]);
-
-  const scheduleRefresh = useCallback(() => {
-    const elapsed = Date.now() - lastFetchRef.current;
-    if (elapsed >= REFRESH_MIN_MS) {
-      void doFetch();
-      return;
-    }
-    // Another refresh is already queued — let it fire.
-    if (pendingRef.current) return;
-    pendingRef.current = setTimeout(() => {
-      pendingRef.current = null;
-      void doFetch();
-    }, REFRESH_MIN_MS - elapsed);
-  }, [doFetch]);
-
+  // Request browser Notification permission on the first user gesture.
+  // The helper attaches a one-shot listener; safe to call on every
+  // mount since it no-ops when permission is already granted / denied.
   useEffect(() => {
     ensureNotificationPermission();
-    // Fetch-on-mount is the whole point of this effect — the setState
-    // it triggers is exactly how the badge becomes populated. The
-    // lint rule assumes we're syncing external → React inline, which
-    // isn't this case.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void doFetch();
-    return () => {
-      if (pendingRef.current) clearTimeout(pendingRef.current);
-    };
-  }, [doFetch]);
+  }, []);
 
-  // One subscription per task-relevant entity — any change on one
-  // could add a task to the current user's queue. Unrolled explicitly
-  // so rules-of-hooks stays happy.
-  useEntityChannel({ entity: "customer-order", onEvent: scheduleRefresh });
-  useEntityChannel({ entity: "customer-invoice", onEvent: scheduleRefresh });
-  useEntityChannel({ entity: "manufacturing-order", onEvent: scheduleRefresh });
-  useEntityChannel({ entity: "purchase-order", onEvent: scheduleRefresh });
-  useEntityChannel({ entity: "shipment", onEvent: scheduleRefresh });
-  useEntityChannel({ entity: "stock-lot", onEvent: scheduleRefresh });
+  // Delta detection — fire the chime / toast / browser notification
+  // only when total *increases* vs the previously observed value.
+  // Skips the first fetch after a fresh tab load so pending tasks
+  // that were already in the queue don't spam a chime on arrival.
+  useEffect(() => {
+    if (!data) return;
+    const nextTotal = data.total;
+    const prev = lastKnownTotal;
+    lastKnownTotal = nextTotal;
+
+    if (!notifierPrimed) {
+      notifierPrimed = true;
+      return;
+    }
+
+    if (prev === null || nextTotal <= prev) return;
+
+    const delta = nextTotal - prev;
+    const onTasksPage = pathnameRef.current === "/my-tasks";
+
+    if (!onTasksPage) {
+      void playTaskChime();
+      toast(
+        delta === 1 ? "New task for you" : `${delta} new tasks for you`,
+        {
+          description:
+            data.overdue > 0
+              ? `${data.overdue} overdue in total`
+              : "Open the queue to review",
+          action: {
+            label: "Open",
+            onClick: () => router.push("/my-tasks"),
+          },
+        },
+      );
+    }
+
+    // Browser notification fires regardless of pathname so a peer
+    // reviewing the queue in one tab still gets pinged if they've
+    // switched to another tab entirely.
+    fireBrowserTaskNotification(delta, data.overdue);
+  }, [data, router]);
+
+  // Peer writes → invalidate the count cache → useQuery refetches.
+  // TanStack Query dedupes concurrent invalidations, so a burst of
+  // broadcasts across six entities collapses to (at most) one fetch.
+  // No custom throttling needed.
+  useEntityChannel({
+    entity: "customer-order",
+    invalidateQueryKey: COUNT_QUERY_KEY,
+  });
+  useEntityChannel({
+    entity: "customer-invoice",
+    invalidateQueryKey: COUNT_QUERY_KEY,
+  });
+  useEntityChannel({
+    entity: "manufacturing-order",
+    invalidateQueryKey: COUNT_QUERY_KEY,
+  });
+  useEntityChannel({
+    entity: "purchase-order",
+    invalidateQueryKey: COUNT_QUERY_KEY,
+  });
+  useEntityChannel({
+    entity: "shipment",
+    invalidateQueryKey: COUNT_QUERY_KEY,
+  });
+  useEntityChannel({
+    entity: "stock-lot",
+    invalidateQueryKey: COUNT_QUERY_KEY,
+  });
 
   return (
     <Link
