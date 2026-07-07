@@ -26,16 +26,18 @@ const TYPE_LABEL: Record<ItemType, string> = {
   semi_finished: "Semi-finished",
   finished_product: "Finished product",
   packaging: "Packaging",
+  consumable: "Consumable",
 };
 
 const TYPE_TONE: Record<
   ItemType,
-  "indigo" | "amber" | "emerald" | "brand"
+  "indigo" | "amber" | "emerald" | "brand" | "sky"
 > = {
   raw_material: "amber",
   semi_finished: "brand",
   finished_product: "emerald",
   packaging: "indigo",
+  consumable: "sky",
 };
 
 const TYPE_OPTIONS = (Object.keys(TYPE_LABEL) as ItemType[]).map((t) => ({
