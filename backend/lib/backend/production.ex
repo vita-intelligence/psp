@@ -6320,6 +6320,69 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Cascade helper called from Backend.Purchasing when a PO change
+  orphans placeholder bookings (PO cancel, PO draft-delete, PO line
+  delete, PO line qty shrink).
+
+  For each MO id in the list:
+
+    * `prepared` / `approved` — cascade back to `draft` (both
+      signatures cleared) via `cascade_approval_transition`, then set
+      `needs_replan` with the reason. Approval is now the load-bearing
+      gate: PR 2's `ensure_all_lines_fully_booked` will refuse re-
+      approval until the planner rebuilds coverage from another PO or
+      real stock.
+    * `draft` — nothing to un-sign, just mark `needs_replan` so the
+      planner sees the flag on the detail page + the row surfaces
+      in `/my-tasks`.
+    * `scheduled` — placeholders shouldn't reach this stage (the
+      release gate blocks them). If we're here an invariant broke —
+      flag `needs_replan` with a marker in the reason so it's obvious
+      on inspection.
+    * `in_progress` / `completed` / `cancelled` — no action, physical
+      work is immutable.
+
+  Broadcasts fire per demoted MO via `cascade_approval_transition` +
+  `mark_needs_replan`; planner sees the change land in real time.
+  """
+  def demote_mos_for_broken_bookings(%User{} = actor, mo_ids, reason)
+      when is_list(mo_ids) and is_binary(reason) do
+    Enum.each(mo_ids, fn id ->
+      case Repo.get(ManufacturingOrder, id) do
+        %ManufacturingOrder{} = mo -> demote_mo_for_broken_bookings(actor, mo, reason)
+        _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  defp demote_mo_for_broken_bookings(%User{} = actor, %ManufacturingOrder{} = mo, reason) do
+    case mo.status do
+      s when s in ["prepared", "approved"] ->
+        case cascade_approval_transition(actor, mo, "draft", %{
+               "approved_by_id" => nil,
+               "approved_at" => nil,
+               "prepared_by_id" => nil,
+               "prepared_at" => nil
+             }) do
+          {:ok, demoted} -> mark_needs_replan(actor, demoted, reason)
+          other -> other
+        end
+
+      "draft" ->
+        mark_needs_replan(actor, mo, reason)
+
+      "scheduled" ->
+        mark_needs_replan(actor, mo, "#{reason} (unexpected: MO already scheduled)")
+
+      _ ->
+        # in_progress / completed / cancelled — no action.
+        :ok
+    end
+  end
+
+  @doc """
   Planner action — clear the `needs_replan` flag once they've
   re-confirmed the bookings cover what's required. Refuses if the
   MO is still under-booked (the existing
