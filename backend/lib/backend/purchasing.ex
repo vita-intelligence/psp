@@ -402,6 +402,7 @@ defmodule Backend.Purchasing do
     else
       before_state = snapshot(po)
       po = preload(po)
+      line_ids = Enum.map(po.lines, & &1.id)
 
       Repo.transaction(fn ->
         # Cancel all child stock_lots first — same reason as
@@ -409,6 +410,17 @@ defmodule Backend.Purchasing do
         # audit-cited origin. Do it inside the transaction so a
         # failure rolls the PO delete back too.
         with :ok <- normalise_cascade(cancel_child_lots_for_po(actor, po, "PO deleted")),
+             # Snapshot the affected MOs + drop their placeholders
+             # before Repo.delete cascades. Once the PO is gone, the
+             # FK on manufacturing_order_bookings would auto-delete
+             # the placeholders (on_delete: :delete_all) but we'd
+             # lose the MO ids for the demote cascade.
+             :ok <-
+               drop_placeholders_and_demote(
+                 actor,
+                 line_ids,
+                 "PO #{render_po_code(po)} deleted — placeholder bookings evaporated"
+               ),
              {:ok, deleted} <- Repo.delete(po) do
           Audit.record_deleted(actor, "purchase_order", po, before_state)
           Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, "deleted")
@@ -504,7 +516,19 @@ defmodule Backend.Purchasing do
         Repo.transaction(fn ->
           with {:ok, updated} <-
                  line |> PurchaseOrderLine.changeset(attrs) |> Repo.update(),
-               {:ok, _po} <- recompute_totals(po) do
+               {:ok, _po} <- recompute_totals(po),
+               # If qty_ordered shrunk below active placeholder-booking
+               # total on this line, evict the excess (newest-first)
+               # and demote every MO whose booking got clipped. Skipped
+               # when qty grew, stayed flat, or one of the two values
+               # is nil (the changeset caught the required-field case).
+               :ok <-
+                 maybe_shrink_placeholders(
+                   actor,
+                   line,
+                   updated,
+                   render_po_code(po)
+                 ) do
             Audit.record_updated(actor, "purchase_order_line", updated, before_state, %{
               qty_ordered: updated.qty_ordered,
               unit_price: updated.unit_price,
@@ -530,6 +554,31 @@ defmodule Backend.Purchasing do
     end
   end
 
+  # Called from update_line/3 — only fires the shrink cascade when
+  # qty_ordered actually went down. Everything else (qty grew,
+  # unchanged, only unit_price changed, item_id changed but qty flat)
+  # is a no-op.
+  defp maybe_shrink_placeholders(actor, %PurchaseOrderLine{} = before_line, %PurchaseOrderLine{} = updated_line, po_code) do
+    before_qty = before_line.qty_ordered
+    after_qty = updated_line.qty_ordered
+
+    cond do
+      is_nil(before_qty) or is_nil(after_qty) ->
+        :ok
+
+      Decimal.compare(after_qty, before_qty) != :lt ->
+        :ok
+
+      true ->
+        shrink_placeholders_for_line(
+          actor,
+          updated_line,
+          after_qty,
+          "PO #{po_code} line qty reduced from #{Decimal.to_string(before_qty)} to #{Decimal.to_string(after_qty)} — placeholder booking clipped"
+        )
+    end
+  end
+
   def delete_line(%User{} = actor, %PurchaseOrderLine{} = line) do
     po = Repo.get!(PurchaseOrder, line.purchase_order_id)
 
@@ -543,6 +592,15 @@ defmodule Backend.Purchasing do
           # without its origin and the cancel event couldn't cite
           # the line id.
           with :ok <- normalise_cascade(cancel_child_lot_for_line(actor, line, "PO line deleted")),
+               # Same reason as the PO delete cascade: snapshot the
+               # affected MOs + drop placeholders BEFORE the row goes
+               # away (FK cascade would swallow the MO ids otherwise).
+               :ok <-
+                 drop_placeholders_and_demote(
+                   actor,
+                   [line.id],
+                   "PO #{render_po_code(po)} line for item #{line.item_id} deleted — placeholder booking evaporated"
+                 ),
                {:ok, deleted} <- Repo.delete(line),
                {:ok, _po} <- recompute_totals(po) do
             Audit.record_deleted(actor, "purchase_order_line", line, %{
@@ -1146,24 +1204,108 @@ defmodule Backend.Purchasing do
 
   # When a PO is cancelled, every open placeholder booking that
   # reserved against one of its lines becomes invalid — the goods
-  # are never arriving. Wipe them so the affected MOs re-surface
-  # their shortage and the planner can re-route via another PO.
-  # Real (lot-backed) bookings are unaffected.
-  defp drop_placeholder_bookings_for_po(%User{} = _actor, %PurchaseOrder{id: po_id}) do
+  # are never arriving. Snapshot the affected MO ids, wipe the
+  # placeholders, then hand off to Production so each MO gets
+  # demoted (if signed) + flagged needs_replan. Real (lot-backed)
+  # bookings are unaffected.
+  defp drop_placeholder_bookings_for_po(%User{} = actor, %PurchaseOrder{} = po) do
     line_ids =
-      from(l in PurchaseOrderLine, where: l.purchase_order_id == ^po_id, select: l.id)
+      from(l in PurchaseOrderLine, where: l.purchase_order_id == ^po.id, select: l.id)
       |> Repo.all()
 
     if line_ids == [] do
       :ok
     else
+      drop_placeholders_and_demote(
+        actor,
+        line_ids,
+        "PO #{render_po_code(po)} cancelled — placeholder bookings evaporated"
+      )
+    end
+  end
+
+  # Shared cascade: given a list of PO line ids whose placeholder
+  # bookings should be revoked, snapshot the owning MO ids first
+  # (so the demote helper can find them), then delete the placeholders
+  # and hand the MO ids to Production.demote_mos_for_broken_bookings.
+  # Called from three flows: PO cancel, PO delete, and single-line
+  # delete. The single-line-shrink path uses shrink_placeholders_for_line/3
+  # instead so partial evictions are supported.
+  defp drop_placeholders_and_demote(actor, line_ids, reason) do
+    affected_mo_ids =
       from(b in Backend.Production.ManufacturingOrderBooking,
         where:
           b.purchase_order_line_id in ^line_ids and
-            is_nil(b.stock_lot_id)
+            is_nil(b.stock_lot_id),
+        distinct: true,
+        select: b.manufacturing_order_id
       )
-      |> Repo.delete_all()
+      |> Repo.all()
 
+    from(b in Backend.Production.ManufacturingOrderBooking,
+      where:
+        b.purchase_order_line_id in ^line_ids and
+          is_nil(b.stock_lot_id)
+    )
+    |> Repo.delete_all()
+
+    Backend.Production.demote_mos_for_broken_bookings(actor, affected_mo_ids, reason)
+  end
+
+  # Partial-eviction cascade — used by update_line when qty_ordered
+  # shrinks below the sum of active placeholder bookings on the line.
+  # Evicts newest-first (LIFO) until total placeholder qty ≤ new qty.
+  # Every MO that lost qty gets demoted / flagged. Partial shrink is
+  # explicit (change the booking's quantity via changeset) rather than
+  # delete+recreate so the audit trail keeps a single row per MO.
+  defp shrink_placeholders_for_line(actor, %PurchaseOrderLine{} = line, new_qty, reason) do
+    placeholders =
+      from(b in Backend.Production.ManufacturingOrderBooking,
+        where:
+          b.purchase_order_line_id == ^line.id and
+            is_nil(b.stock_lot_id),
+        order_by: [desc: b.inserted_at, desc: b.id]
+      )
+      |> Repo.all()
+
+    total =
+      Enum.reduce(placeholders, Decimal.new(0), fn b, acc ->
+        Decimal.add(acc, b.quantity || Decimal.new(0))
+      end)
+
+    excess = Decimal.sub(total, new_qty)
+
+    if Decimal.compare(excess, Decimal.new(0)) == :gt do
+      affected =
+        Enum.reduce_while(placeholders, {excess, MapSet.new()}, fn b, {remaining, mo_set} ->
+          cond do
+            Decimal.compare(remaining, Decimal.new(0)) != :gt ->
+              {:halt, {remaining, mo_set}}
+
+            Decimal.compare(b.quantity || Decimal.new(0), remaining) != :gt ->
+              Repo.delete!(b)
+
+              {:cont,
+               {Decimal.sub(remaining, b.quantity || Decimal.new(0)),
+                MapSet.put(mo_set, b.manufacturing_order_id)}}
+
+            true ->
+              new_qty_for_b = Decimal.sub(b.quantity, remaining)
+
+              b
+              |> Backend.Production.ManufacturingOrderBooking.changeset(%{
+                "quantity" => new_qty_for_b
+              })
+              |> Repo.update!()
+
+              {:halt, {Decimal.new(0), MapSet.put(mo_set, b.manufacturing_order_id)}}
+          end
+        end)
+        |> elem(1)
+        |> MapSet.to_list()
+
+      Backend.Production.demote_mos_for_broken_bookings(actor, affected, reason)
+    else
       :ok
     end
   end
