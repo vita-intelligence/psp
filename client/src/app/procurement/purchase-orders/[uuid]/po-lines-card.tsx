@@ -19,6 +19,7 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type {
   Item,
@@ -73,6 +74,18 @@ export function POLinesCard({ po, items, canEdit }: Props) {
 
   const resource = `purchase-order:${po.uuid}`;
   useFormPresenceBeacon(resource);
+
+  // PO detail refresh on peer edits (line add / remove / mark_ordered).
+  // useEntityChannel calls router.refresh() internally on every event,
+  // so the SSR-fed child_lot chips + line rows re-render with fresh
+  // data without the operator hitting reload.
+  useEntityChannel({ entity: "purchase-order", uuid: po.uuid });
+  // Child-lot lifecycle events (mint / promote / cancel) fire on the
+  // stock-lot channel. Tenant-scoped subscription refreshes the page
+  // whenever any lot changes; the debounce inside the hook collapses
+  // bursts. Slight over-fire for lots not on this PO is a trivial cost
+  // compared to filtering by FK per event.
+  useEntityChannel({ entity: "stock-lot" });
 
   const {
     state,

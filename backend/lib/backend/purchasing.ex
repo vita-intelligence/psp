@@ -986,6 +986,16 @@ defmodule Backend.Purchasing do
                 qty_received: lot.qty_received
               })
 
+              # Realtime hook — PO detail's ChildLotChip listens on
+              # this channel so the LOT chip lands the moment the row
+              # is minted rather than waiting on a full page refresh.
+              Backend.Broadcasts.entity_changed(
+                "stock-lot",
+                lot.uuid,
+                lot.company_id,
+                "minted"
+              )
+
               {:ok, lot}
             end
         end
@@ -1017,8 +1027,18 @@ defmodule Backend.Purchasing do
                    }
                  }
                ) do
-            {:ok, _} -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
+            {:ok, _} ->
+              Backend.Broadcasts.entity_changed(
+                "stock-lot",
+                lot.uuid,
+                lot.company_id,
+                "promoted_to_expected"
+              )
+
+              {:cont, :ok}
+
+            {:error, reason} ->
+              {:halt, {:error, reason}}
           end
 
         %Backend.Stock.Lot{} ->
@@ -1079,8 +1099,18 @@ defmodule Backend.Purchasing do
              metadata: %{"cause" => "po_cascade"}
            }
          ) do
-      {:ok, _} -> {:ok, lot}
-      other -> other
+      {:ok, _} ->
+        Backend.Broadcasts.entity_changed(
+          "stock-lot",
+          lot.uuid,
+          lot.company_id,
+          "canceled"
+        )
+
+        {:ok, lot}
+
+      other ->
+        other
     end
   end
 
@@ -1150,6 +1180,13 @@ defmodule Backend.Purchasing do
             source_ref: lot.source_ref,
             qty_received: lot.qty_received
           })
+
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            lot.uuid,
+            lot.company_id,
+            "minted_at_#{status}"
+          )
 
           {:ok, lot}
         end
