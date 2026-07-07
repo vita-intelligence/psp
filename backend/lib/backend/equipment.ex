@@ -8,6 +8,14 @@ defmodule Backend.Equipment do
   entry point + file attachments. Lifecycle transitions run through
   `Backend.Equipment.Lifecycle` (state machine + projection).
 
+  ## Sort + filter
+
+  Ledger + list surfaces run through `Backend.ListQueries` — same
+  cursor + sort + column-filter pipeline as customer_orders /
+  stock_lots / vendors. `@sortable` names the columns eligible for
+  ORDER BY / column-filter; `@search` names the ILIKE columns hit by
+  the top-level search bar.
+
   ## Compliance posture
 
     * BRCGS Issue 9 § 4.13 — equipment used for verifying product
@@ -26,7 +34,15 @@ defmodule Backend.Equipment do
   import Ecto.Query, warn: false
 
   alias Backend.Equipment.Equipment
+  alias Backend.ListQueries
   alias Backend.Repo
+
+  @sortable ~w(id status serial_number acquired_at warranty_end_at
+               next_calibration_at next_maintenance_at
+               last_calibrated_at last_maintenance_at
+               retired_at disposed_at inserted_at updated_at)a
+  @search ~w(serial_number manufacturer_serial manufacturer model notes)a
+  @default_sort {:inserted_at, :desc}
 
   @doc """
   Fetch a unit by uuid, scoped to the current company. Returns
@@ -56,8 +72,34 @@ defmodule Backend.Equipment do
   def get_for_company(_company_id, _), do: nil
 
   @doc """
-  All units for the tenant. No paging yet — the ledger + list
-  endpoints in a follow-up PR add cursor pagination.
+  Paginated list for the ledger — matches the sort / filter / cursor
+  contract every other list_page/2 in the app uses.
+
+      Backend.Equipment.list_page(company_id,
+        sort: {:next_calibration_at, :asc},
+        column_filter: %{"status" => "in_service"},
+        search: "kenwood",
+        limit: 25,
+        cursor: nil
+      )
+  """
+  def list_page(company_id, opts \\ []) when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @default_sort)
+
+    base =
+      Equipment
+      |> where([e], e.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @search)
+      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable)
+      |> ListQueries.apply_sort(sort, @sortable, @default_sort)
+      |> preload([:item, :current_cell, :assigned_to])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Simple unpaginated read used by the due-soon dashboard and some
+  legacy call sites. Prefer `list_page/2` for anything user-facing.
   """
   def list_for_company(company_id) when is_integer(company_id) do
     Equipment

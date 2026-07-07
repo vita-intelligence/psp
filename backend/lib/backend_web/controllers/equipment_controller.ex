@@ -38,14 +38,38 @@ defmodule BackendWeb.EquipmentController do
 
   action_fallback FallbackController
 
-  def index(conn, _params) do
+  def index(conn, params) do
     actor = conn.assigns.current_user
-    units = Equipment.list_for_company(actor.company_id)
+    opts = list_opts_from_params(params)
+    {items, next_cursor} = Equipment.list_page(actor.company_id, opts)
 
     json(conn, %{
-      equipment: Enum.map(units, &Payloads.equipment/1),
-      total: length(units)
+      items: Enum.map(items, &Payloads.equipment/1),
+      next_cursor: next_cursor
     })
+  end
+
+  defp list_opts_from_params(params) do
+    [
+      cursor: params["cursor"],
+      limit: params["limit"],
+      sort: parse_sort(params["sort"]),
+      search: params["search"],
+      column_filter: params["column_filter"]
+    ]
+  end
+
+  defp parse_sort(nil), do: nil
+  defp parse_sort(""), do: nil
+
+  defp parse_sort(s) when is_binary(s) do
+    case String.split(s, ":", parts: 2) do
+      [field, "asc"] -> {String.to_existing_atom(field), :asc}
+      [field, "desc"] -> {String.to_existing_atom(field), :desc}
+      _ -> nil
+    end
+  rescue
+    ArgumentError -> nil
   end
 
   def show(conn, %{"id" => uuid}) do
