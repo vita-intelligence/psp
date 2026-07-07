@@ -91,7 +91,8 @@ defmodule Backend.MyTasks do
     "planning" => ~w(production_planning awaiting_ingredients)a,
     "production" => ~w(in_production closeout final_release awaiting_routing)a,
     "dispatch" => ~w(ready_to_dispatch awaiting_pickup)a,
-    "delivery" => ~w(dispatched delivered)a
+    "delivery" => ~w(dispatched delivered)a,
+    "reorder" => ~w(reorder)a
   }
 
   # --- Public API ---------------------------------------------------
@@ -198,15 +199,91 @@ defmodule Backend.MyTasks do
 
     summaries = OrderWizard.list_active(actor.company_id)
 
-    for summary <- summaries,
-        allowed_phases == :all or MapSet.member?(allowed_phases, summary.phase.key),
-        snapshot = expand(summary),
-        cta_row <- cta_rows(snapshot),
-        task = maybe_build_task(actor, snapshot, cta_row),
-        task != nil do
-      task
-    end
+    co_tasks =
+      for summary <- summaries,
+          allowed_phases == :all or MapSet.member?(allowed_phases, summary.phase.key),
+          snapshot = expand(summary),
+          cta_row <- cta_rows(snapshot),
+          task = maybe_build_task(actor, snapshot, cta_row),
+          task != nil do
+        task
+      end
+
+    reorder_tasks = collect_reorder_tasks(actor)
+
+    (co_tasks ++ reorder_tasks)
     |> Enum.sort_by(&sort_key/1)
+  end
+
+  # Reorder tasks — one row per item currently under its
+  # min_stock_qty threshold. Only surfaced to users with
+  # `procurement.po_create` (admins bypass the gate). Empty list for
+  # anyone without that permission so the badge doesn't tick for
+  # non-buyer roles.
+  defp collect_reorder_tasks(%User{} = actor) do
+    if RBAC.has_permission?(actor, "procurement.po_create") do
+      actor.company_id
+      |> Backend.Procurement.reorder_status()
+      |> Enum.filter(& &1.below_threshold)
+      |> Enum.map(fn row ->
+        vendor = Backend.Procurement.last_vendor_for_item(actor.company_id, row.item.id)
+        build_reorder_task(actor.company_id, row, vendor)
+      end)
+    else
+      []
+    end
+  end
+
+  defp build_reorder_task(company_id, row, vendor) do
+    item = row.item
+    uom = item.stock_uom && item.stock_uom.symbol
+    uom_suffix = if uom, do: " " <> uom, else: ""
+
+    href = reorder_href(item, row, vendor)
+
+    coverage_str = Decimal.to_string(row.coverage)
+    min_str = Decimal.to_string(row.min_stock_qty)
+    shortfall_str = Decimal.to_string(row.shortfall)
+
+    detail =
+      "Coverage #{coverage_str}#{uom_suffix} has fallen below the min " <>
+        "of #{min_str}#{uom_suffix}. Suggested order qty ≈ " <>
+        "#{shortfall_str}#{uom_suffix}" <>
+        if(vendor, do: " from #{vendor.name}.", else: ".")
+
+    %{
+      id: "reorder-#{item.uuid}",
+      entity_type: "reorder",
+      co_uuid: nil,
+      co_code: nil,
+      customer_name: nil,
+      item_uuid: item.uuid,
+      item_code:
+        BackendWeb.Payloads.render_entity_code(item, "item") ||
+          "##{item.id}",
+      item_name: item.name,
+      phase_key: :reorder,
+      phase_label: "Reorder",
+      action_code: "raise_po",
+      title: "Reorder #{item.name}",
+      detail: detail,
+      cta: %{
+        label: "Raise PO",
+        kind: "link",
+        href: href
+      },
+      due_date: nil,
+      updated_at:
+        DateTime.utc_now()
+        |> DateTime.truncate(:second),
+      _company_id: company_id
+    }
+  end
+
+  defp reorder_href(item, row, vendor) do
+    qty = Decimal.to_string(row.shortfall)
+    vendor_part = if vendor, do: "&vendor_id=#{vendor.id}", else: ""
+    "/procurement/purchase-orders/new?item_id=#{item.id}&qty=#{qty}" <> vendor_part
   end
 
   # Union of phases across every permission the actor holds. `:all`
@@ -361,9 +438,16 @@ defmodule Backend.MyTasks do
 
     %{
       id: "co-#{co.uuid}-#{action_code}",
+      entity_type: "customer_order",
       co_uuid: co.uuid,
       co_code: BackendWeb.Payloads.render_entity_code(co, "customer_order"),
       customer_name: customer_name,
+      # Reorder-task keys — nil for CO tasks so the FE's shared
+      # renderer can switch on entity_type without null-guarding
+      # every access.
+      item_uuid: nil,
+      item_code: nil,
+      item_name: nil,
       phase_key: phase.key,
       phase_label: phase.label,
       action_code: action_code,
@@ -511,6 +595,9 @@ defmodule Backend.MyTasks do
 
   defp trim_or_nil(_), do: nil
 
-  defp sort_key(%{due_date: nil} = t), do: {1, ~D[9999-12-31], t.co_uuid}
-  defp sort_key(%{due_date: d} = t), do: {0, d, t.co_uuid}
+  # Sort no-date rows last, then by due_date asc. Tiebreak by entity
+  # id (co_uuid for CO tasks, item_uuid for reorder tasks) so the
+  # ordering is stable across refetches.
+  defp sort_key(%{due_date: nil} = t), do: {1, ~D[9999-12-31], t.co_uuid || t.item_uuid || ""}
+  defp sort_key(%{due_date: d} = t), do: {0, d, t.co_uuid || t.item_uuid || ""}
 end

@@ -53,12 +53,13 @@ type PhaseBucketKey =
   | "planning"
   | "production"
   | "dispatch"
-  | "delivery";
+  | "delivery"
+  | "reorder";
 
 interface PhaseBucket {
   key: PhaseBucketKey;
   label: string;
-  phases: OrderWizardPhaseKey[];
+  phases: (OrderWizardPhaseKey | "reorder")[];
 }
 
 const PHASE_BUCKETS: PhaseBucket[] = [
@@ -88,6 +89,7 @@ const PHASE_BUCKETS: PhaseBucket[] = [
     label: "Delivery & invoicing",
     phases: ["dispatched", "delivered"],
   },
+  { key: "reorder", label: "Reorder", phases: ["reorder"] },
 ];
 
 interface PriorityDef {
@@ -535,7 +537,8 @@ function TaskRow({
         if (cta.href) router.push(cta.href);
         return;
       case "scroll_to":
-        router.push(`/projects/${encodeURIComponent(task.co_uuid)}`);
+        if (task.co_uuid)
+          router.push(`/projects/${encodeURIComponent(task.co_uuid)}`);
         return;
       case "send_to_device":
         if (cta.href) {
@@ -555,7 +558,8 @@ function TaskRow({
         return;
       case "action":
       default:
-        router.push(`/projects/${encodeURIComponent(task.co_uuid)}`);
+        if (task.co_uuid)
+          router.push(`/projects/${encodeURIComponent(task.co_uuid)}`);
     }
   }
 
@@ -584,19 +588,39 @@ function TaskRow({
           <div className="min-w-0 flex-1 space-y-1">
             {/* Meta row */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-              <Link
-                href={`/projects/${encodeURIComponent(task.co_uuid)}`}
-                className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-foreground hover:underline"
-              >
-                <ClipboardList className="size-3" />
-                {task.co_code ?? "CO"}
-              </Link>
+              {task.entity_type === "reorder" ? (
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-foreground">
+                  <ClipboardList className="size-3" />
+                  {task.item_code ?? "ITEM"}
+                </span>
+              ) : (
+                <Link
+                  href={
+                    task.co_uuid
+                      ? `/projects/${encodeURIComponent(task.co_uuid)}`
+                      : "#"
+                  }
+                  className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-foreground hover:underline"
+                >
+                  <ClipboardList className="size-3" />
+                  {task.co_code ?? "CO"}
+                </Link>
+              )}
               {task.customer_name && (
                 <>
                   <span className="text-muted-foreground/40">·</span>
                   <span className="inline-flex items-center gap-1 truncate">
                     <Building2 className="size-3" />
                     <span className="truncate">{task.customer_name}</span>
+                  </span>
+                </>
+              )}
+              {task.entity_type === "reorder" && task.item_name && (
+                <>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span className="inline-flex items-center gap-1 truncate">
+                    <Building2 className="size-3" />
+                    <span className="truncate">{task.item_name}</span>
                   </span>
                 </>
               )}
