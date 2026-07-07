@@ -22,11 +22,19 @@ defmodule BackendWeb.EquipmentController do
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "equipment.view" when action in [:index, :show, :due_soon]
+  plug RequirePermission,
+       "equipment.view"
+       when action in [:index, :show, :due_soon, :events_index, :files_index, :file_blob]
+
   plug RequirePermission, "equipment.create" when action in [:create]
+
   # Lifecycle event dispatch is multi-kind; the controller enforces
   # per-kind permission after we parse the kind out of the body.
   plug RequirePermission, "equipment.view" when action in [:events_create]
+
+  plug RequirePermission,
+       "equipment.act"
+       when action in [:file_create, :file_delete]
 
   action_fallback FallbackController
 
@@ -221,5 +229,121 @@ defmodule BackendWeb.EquipmentController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{errors: BackendWeb.ChangesetJSON.error(%{changeset: cs})})
+  end
+
+  # ----- events + files ------------------------------------------
+
+  def events_index(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Equipment.get_for_company(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      unit ->
+        events = Equipment.list_events(unit)
+        json(conn, %{events: Enum.map(events, &Payloads.equipment_event/1)})
+    end
+  end
+
+  def files_index(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case Equipment.get_for_company(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      unit ->
+        files = Equipment.list_files(unit)
+        json(conn, %{files: Enum.map(files, &Payloads.equipment_file/1)})
+    end
+  end
+
+  def file_create(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    with %Backend.Equipment.Equipment{} = unit <-
+           Equipment.get_for_company(actor.company_id, uuid) do
+      with %Plug.Upload{path: tmp_path, filename: filename, content_type: mime} <-
+             params["file"],
+           {:ok, bytes} <- Elixir.File.read(tmp_path),
+           kind <- params["kind"] || "other",
+           {:ok, file} <-
+             Equipment.upload_file(
+               actor,
+               unit,
+               %{
+                 "kind" => kind,
+                 "filename" => filename,
+                 "mime" => mime || "application/octet-stream",
+                 "byte_size" => byte_size(bytes)
+               },
+               bytes
+             ) do
+        conn
+        |> put_status(:created)
+        |> json(%{file: Payloads.equipment_file(file)})
+      else
+        nil ->
+          unprocessable(
+            conn,
+            "no_file",
+            "Send the file under `file` (multipart)."
+          )
+
+        {:error, :enoent} ->
+          unprocessable(conn, "no_bytes", "Uploaded file couldn't be read.")
+
+        {:error, {:storage_failed, reason}} ->
+          conn
+          |> put_status(:internal_server_error)
+          |> json(
+            Errors.payload(
+              "storage_failed",
+              "Storage adapter refused the upload: #{inspect(reason)}."
+            )
+          )
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      nil -> not_found(conn)
+    end
+  end
+
+  def file_delete(conn, %{"id" => uuid, "file_id" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Backend.Equipment.Equipment{} = unit <-
+           Equipment.get_for_company(actor.company_id, uuid),
+         %Backend.Equipment.File{} = file <-
+           Equipment.get_file(unit, file_uuid),
+         {:ok, _} <- Equipment.delete_file(actor, unit, file) do
+      send_resp(conn, :no_content, "")
+    else
+      nil -> not_found(conn)
+      {:error, reason} -> unprocessable(conn, "delete_failed", inspect(reason))
+    end
+  end
+
+  def file_blob(conn, %{"id" => uuid, "file_id" => file_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Backend.Equipment.Equipment{} = unit <-
+           Equipment.get_for_company(actor.company_id, uuid),
+         %Backend.Equipment.File{} = file <- Equipment.get_file(unit, file_uuid),
+         {:ok, bytes} <- Backend.Storage.get(file.blob_path) do
+      conn
+      |> put_resp_content_type(file.mime)
+      |> put_resp_header(
+        "content-disposition",
+        "attachment; filename=\"#{file.filename}\""
+      )
+      |> send_resp(200, bytes)
+    else
+      nil -> not_found(conn)
+      {:error, _} -> not_found(conn)
+    end
   end
 end

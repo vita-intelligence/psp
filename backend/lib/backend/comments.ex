@@ -67,7 +67,8 @@ defmodule Backend.Comments do
       "production.mo_edit",
       "production.mo_execute"
     ],
-    "shipment" => ["shipments.edit"]
+    "shipment" => ["shipments.edit"],
+    "equipment" => ["equipment.act", "equipment.create"]
   }
 
   @entity_types Map.keys(@write_perms)

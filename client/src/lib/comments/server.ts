@@ -24,6 +24,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   manufacturing_order: "production/manufacturing-orders",
   manufacturing_order_step: "production/manufacturing-order-steps",
   shipment: "shipments",
+  equipment: "equipment",
 };
 
 /** Server-component-friendly initial timeline fetch. Returns null on

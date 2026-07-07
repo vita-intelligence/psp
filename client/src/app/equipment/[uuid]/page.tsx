@@ -5,9 +5,17 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { getEquipment } from "@/lib/equipment/server";
+import { CommentThread } from "@/components/comments/comment-thread";
+import { listCommentsForEntity } from "@/lib/comments/server";
+import {
+  getEquipment,
+  listEquipmentEvents,
+  listEquipmentFiles,
+} from "@/lib/equipment/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { EquipmentDetail } from "./equipment-detail";
+import { EquipmentEventTimeline } from "./equipment-event-timeline";
+import { EquipmentFilesCard } from "./equipment-files-card";
 
 export const metadata = { title: "Equipment · PSP" };
 export const dynamic = "force-dynamic";
@@ -23,9 +31,12 @@ export default async function EquipmentDetailPage({
   }
 
   const { uuid } = await params;
-  const [unit, prefs] = await Promise.all([
+  const [unit, prefs, events, files, comments] = await Promise.all([
     getEquipment(uuid),
     getCompanyDefaults(),
+    listEquipmentEvents(uuid),
+    listEquipmentFiles(uuid),
+    listCommentsForEntity("equipment", uuid),
   ]);
 
   if (!unit) notFound();
@@ -47,6 +58,23 @@ export default async function EquipmentDetailPage({
           />
 
           <EquipmentDetail equipment={unit} canAct={canAct} prefs={prefs} />
+
+          <EquipmentEventTimeline events={events} prefs={prefs} />
+
+          <EquipmentFilesCard
+            equipmentUuid={unit.uuid}
+            files={files}
+            canEdit={canAct}
+            prefs={prefs}
+          />
+
+          <CommentThread
+            entityType="equipment"
+            entityUuid={unit.uuid}
+            initial={comments ?? []}
+            canComment={canAct}
+            currentUserId={user.id}
+          />
         </div>
       </main>
     </div>

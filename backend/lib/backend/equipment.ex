@@ -4,10 +4,9 @@ defmodule Backend.Equipment do
   with serial numbers, cadence-driven maintenance + calibration
   schedules, and a lifecycle event log.
 
-  This module is the read + registry surface. Lifecycle transitions
-  (put_in_service, moved, maintenance_started, calibrated, retired,
-  disposed, etc.) run through `Backend.Equipment.Lifecycle` — added
-  in a follow-up PR.
+  This module is the read + registry surface + the lifecycle event
+  entry point + file attachments. Lifecycle transitions run through
+  `Backend.Equipment.Lifecycle` (state machine + projection).
 
   ## Compliance posture
 
@@ -292,4 +291,163 @@ defmodule Backend.Equipment do
   end
 
   defp stringify_keys(attrs), do: attrs
+
+  # ----- events (read) --------------------------------------------
+
+  @doc """
+  Ordered lifecycle timeline for a unit — oldest → newest so the FE
+  can render top-down like an audit log. Preloads actor + from/to
+  cells + assigned-to user for one-shot rendering.
+  """
+  def list_events(%Backend.Equipment.Equipment{id: equipment_id}) do
+    from(e in Backend.Equipment.Event,
+      where: e.equipment_id == ^equipment_id,
+      order_by: [asc: e.occurred_at, asc: e.id],
+      preload: [:actor, :from_cell, :to_cell, :assigned_to_user]
+    )
+    |> Repo.all()
+  end
+
+  # ----- files (metadata + storage) -------------------------------
+
+  @doc """
+  Record an uploaded file against an equipment unit. Bytes have
+  already landed on `Backend.Storage`; this writes the metadata row
+  + the audit trail + broadcasts an entity change so open detail
+  pages refresh.
+
+  Mirrors `Backend.Purchasing.upload_file/4` in shape.
+  """
+  def upload_file(
+        %Backend.Accounts.User{} = actor,
+        %Backend.Equipment.Equipment{} = equipment,
+        attrs,
+        bytes
+      )
+      when is_binary(bytes) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.put("company_id", equipment.company_id)
+      |> Map.put("equipment_id", equipment.id)
+      |> Map.put("uploaded_by_id", actor.id)
+
+    key = build_equipment_file_storage_key(equipment, attrs)
+
+    case Backend.Storage.put(key, bytes, content_type: attrs["mime"]) do
+      {:ok, blob_path} ->
+        attrs = Map.put(attrs, "blob_path", blob_path)
+
+        %Backend.Equipment.File{}
+        |> Backend.Equipment.File.changeset(attrs)
+        |> Repo.insert()
+        |> case do
+          {:ok, file} ->
+            Backend.Audit.record_created(actor, "equipment_file", file, %{
+              equipment_id: file.equipment_id,
+              kind: file.kind,
+              filename: file.filename
+            })
+
+            Backend.Broadcasts.entity_changed(
+              "equipment",
+              equipment.uuid,
+              equipment.company_id,
+              "file_added"
+            )
+
+            {:ok, Repo.preload(file, :uploaded_by)}
+
+          {:error, cs} ->
+            _ = Backend.Storage.delete(blob_path)
+            {:error, cs}
+        end
+
+      {:error, reason} ->
+        {:error, {:storage_failed, reason}}
+    end
+  end
+
+  @doc """
+  Delete a file: wipe blob + metadata. Storage delete is best-effort
+  — a stuck blob is harmless once the row is gone, but a row
+  pointing at missing bytes would 404 every fetch.
+  """
+  def delete_file(
+        %Backend.Accounts.User{} = actor,
+        %Backend.Equipment.Equipment{} = equipment,
+        %Backend.Equipment.File{} = file
+      ) do
+    Repo.transaction(fn ->
+      case Repo.delete(file) do
+        {:ok, deleted} ->
+          _ = Backend.Storage.delete(file.blob_path)
+
+          Backend.Audit.record_deleted(actor, "equipment_file", file, %{
+            equipment_id: file.equipment_id,
+            kind: file.kind,
+            filename: file.filename
+          })
+
+          Backend.Broadcasts.entity_changed(
+            "equipment",
+            equipment.uuid,
+            equipment.company_id,
+            "file_removed"
+          )
+
+          deleted
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  def list_files(%Backend.Equipment.Equipment{id: equipment_id}) do
+    from(f in Backend.Equipment.File,
+      where: f.equipment_id == ^equipment_id,
+      order_by: [desc: f.inserted_at, desc: f.id],
+      preload: [:uploaded_by]
+    )
+    |> Repo.all()
+  end
+
+  def get_file(%Backend.Equipment.Equipment{id: equipment_id, company_id: company_id}, file_uuid)
+      when is_binary(file_uuid) do
+    case Ecto.UUID.cast(file_uuid) do
+      {:ok, cast} ->
+        from(f in Backend.Equipment.File,
+          where:
+            f.equipment_id == ^equipment_id and
+              f.company_id == ^company_id and
+              f.uuid == ^cast,
+          preload: [:uploaded_by]
+        )
+        |> Repo.one()
+
+      :error ->
+        nil
+    end
+  end
+
+  defp build_equipment_file_storage_key(%Backend.Equipment.Equipment{} = equipment, attrs) do
+    kind = attrs["kind"] || "other"
+    filename = attrs["filename"] || "upload"
+
+    "equipment_files/" <>
+      equipment.uuid <>
+      "/" <>
+      kind <>
+      "_" <>
+      Ecto.UUID.generate() <>
+      file_extension(filename)
+  end
+
+  defp file_extension(filename) when is_binary(filename) do
+    case Path.extname(filename) do
+      "" -> ""
+      ext -> String.downcase(ext)
+    end
+  end
 end

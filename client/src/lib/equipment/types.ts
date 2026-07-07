@@ -63,3 +63,43 @@ export interface EquipmentDueRow {
   days_until: number;
   equipment: Equipment;
 }
+
+/** Lifecycle event row — history of the unit's status changes,
+ *  maintenance actions, calibrations, moves, assignments. */
+export interface EquipmentEvent {
+  id: number;
+  uuid: string;
+  kind: string;
+  actor: AuditActor | null;
+  actor_kind: "user" | "system";
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  from_cell: StockLotCellSummary | null;
+  to_cell: StockLotCellSummary | null;
+  assigned_to_user: AuditActor | null;
+  occurred_at: string;
+  inserted_at: string;
+}
+
+/** File attached to an equipment unit — calibration certs, service
+ *  reports, warranty PDFs, nameplate photos. */
+export type EquipmentFileKind =
+  | "calibration_certificate"
+  | "service_report"
+  | "manual"
+  | "warranty"
+  | "photo"
+  | "other";
+
+export interface EquipmentFile {
+  id: number;
+  uuid: string;
+  equipment_id: number;
+  kind: EquipmentFileKind;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  uploaded_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
