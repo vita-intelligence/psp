@@ -1438,6 +1438,12 @@ export interface Item {
    *  reasons the FE can route to specific form fields. `null` ⇒ list
    *  endpoint, blockers not computed. */
   compliance_blockers: ItemComplianceBlocker[] | null;
+  /** Reorder trigger. When set, this item participates in the
+   *  reorder game — the procurement suggestion sweep watches for
+   *  coverage < min_stock_qty. `null` on either field means the
+   *  item isn't tracked. */
+  min_stock_qty: string | null;
+  target_stock_qty: string | null;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

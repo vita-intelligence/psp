@@ -274,6 +274,10 @@ defmodule BackendWeb.Payloads do
       compliance_readied_by: actor(i, :compliance_readied_by),
       compliance_revert_reason: i.compliance_revert_reason,
       compliance_blockers: compliance_blockers(i),
+      # Reorder-point pair. Both nil means the item isn't participating
+      # in the reorder game; the FE renders no ROP UI in that case.
+      min_stock_qty: i.min_stock_qty,
+      target_stock_qty: i.target_stock_qty,
       inserted_at: i.inserted_at,
       updated_at: i.updated_at,
       created_by: actor(i, :created_by),

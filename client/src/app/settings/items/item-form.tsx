@@ -244,6 +244,12 @@ interface FormState {
   storage_tags: string[];
   is_active: boolean;
 
+  // Reorder points (consumable / raw_material / packaging only). Empty
+  // string means "not tracked"; a numeric string enables the reorder
+  // sweep on this item. target must be >= min when both are set.
+  min_stock_qty: string;
+  target_stock_qty: string;
+
   // Raw material compliance
   rm_use_as: string;
   rm_allergen_status: string;
@@ -345,6 +351,8 @@ function initialFrom(item: Item | null): FormState {
     attributes: item?.attributes ?? {},
     storage_tags: item?.storage_tags ?? [],
     is_active: item?.is_active ?? true,
+    min_stock_qty: item?.min_stock_qty ?? "",
+    target_stock_qty: item?.target_stock_qty ?? "",
 
     rm_use_as: compliance?.use_as ?? "",
     rm_allergen_status: compliance?.allergen_status ?? "",
@@ -607,6 +615,11 @@ export function ItemForm({
     };
 
     startTransition(async () => {
+      const reordersOk =
+        state.item_type === "consumable" ||
+        state.item_type === "raw_material" ||
+        state.item_type === "packaging";
+
       const itemPayload = {
         name: s("name").trim(),
         description: s("description").trim() || null,
@@ -618,6 +631,12 @@ export function ItemForm({
         attributes: state.attributes,
         storage_tags: state.storage_tags,
         is_active: state.is_active,
+        // Reorder points only meaningful for bought-in item types.
+        // Send `null` on the others so a stale value from an item
+        // type switch doesn't linger past the change.
+        min_stock_qty: reordersOk ? s("min_stock_qty").trim() || null : null,
+        target_stock_qty:
+          reordersOk ? s("target_stock_qty").trim() || null : null,
       };
 
       const rawMaterialCompliance =
@@ -1101,6 +1120,60 @@ export function ItemForm({
             </span>
             <FieldEditingIndicator peer={fieldEditors.is_active} />
           </label>
+
+          {/* Reorder points — bought-in item types only. Setting both
+              enables the coverage sweep in procurement's suggestion
+              endpoint; leave blank to opt this item out. */}
+          {(state.item_type === "consumable" ||
+            state.item_type === "raw_material" ||
+            state.item_type === "packaging") && (
+            <>
+              <SectionHeader
+                title="Reorder points"
+                hint="When on-hand + in-flight PO qty drops below min, procurement gets a task to raise a PO. Target is the order-up-to level."
+              />
+              <Grid>
+                <FieldRow label="Min stock qty">
+                  <Input
+                    type="number"
+                    min={0}
+                    step="any"
+                    inputMode="decimal"
+                    value={state.min_stock_qty}
+                    onChange={(e) => setField("min_stock_qty", e.target.value)}
+                    onFocus={() => focusField("min_stock_qty")}
+                    onBlur={() => blurField("min_stock_qty")}
+                    placeholder="e.g. 50"
+                    disabled={!canEdit}
+                    className="font-mono"
+                  />
+                  <FieldError messages={fieldErrors["item.min_stock_qty"]} />
+                  <FieldEditingIndicator peer={fieldEditors.min_stock_qty} />
+                </FieldRow>
+                <FieldRow label="Target stock qty">
+                  <Input
+                    type="number"
+                    min={0}
+                    step="any"
+                    inputMode="decimal"
+                    value={state.target_stock_qty}
+                    onChange={(e) =>
+                      setField("target_stock_qty", e.target.value)
+                    }
+                    onFocus={() => focusField("target_stock_qty")}
+                    onBlur={() => blurField("target_stock_qty")}
+                    placeholder="e.g. 200"
+                    disabled={!canEdit}
+                    className="font-mono"
+                  />
+                  <FieldError
+                    messages={fieldErrors["item.target_stock_qty"]}
+                  />
+                  <FieldEditingIndicator peer={fieldEditors.target_stock_qty} />
+                </FieldRow>
+              </Grid>
+            </>
+          )}
 
           {visibleAttributeDefinitions.length > 0 && (
             <>
