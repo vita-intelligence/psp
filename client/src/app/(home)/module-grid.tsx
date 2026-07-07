@@ -1,6 +1,7 @@
 import {
   Boxes,
   ClipboardList,
+  Cog,
   Factory,
   HandCoins,
   Package,
@@ -36,6 +37,14 @@ export function ModuleGrid({ user }: { user: User }) {
       Icon: Boxes,
       caption: "Lots & movements",
       gate: hasPermission(user, "stock.view"),
+    },
+    {
+      key: "equipment",
+      href: "/equipment",
+      label: "Equipment",
+      Icon: Cog,
+      caption: "Units, calibration, maintenance",
+      gate: hasPermission(user, "equipment.view"),
     },
     {
       key: "procurement",
