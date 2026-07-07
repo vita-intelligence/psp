@@ -283,7 +283,9 @@ defmodule Backend.MyTasks do
   defp reorder_href(item, row, vendor) do
     qty = Decimal.to_string(row.shortfall)
     vendor_part = if vendor, do: "&vendor_id=#{vendor.id}", else: ""
-    "/procurement/purchase-orders/new?item_id=#{item.id}&qty=#{qty}" <> vendor_part
+    # Form takes `item_uuid` (path-fetches `/api/items/:uuid` for the
+    # picker label) + numeric `vendor_id`. Keep them aligned.
+    "/procurement/purchase-orders/new?item_uuid=#{item.uuid}&qty=#{qty}" <> vendor_part
   end
 
   # Union of phases across every permission the actor holds. `:all`

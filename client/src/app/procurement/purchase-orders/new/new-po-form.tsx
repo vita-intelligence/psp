@@ -167,17 +167,23 @@ interface PendingFile {
  *     starts read-only.
  */
 interface NewPOFormProps {
-  /** Deep-link prefill from the shortages page. The page reads the
-   *  search params server-side and passes them through so the form
-   *  can hydrate the prefill on first render without a Suspense
-   *  dance around `useSearchParams`. */
+  /** Deep-link prefill from the shortages page + reorder-task links.
+   *  The page reads the search params server-side and passes them
+   *  through so the form can hydrate the prefill on first render
+   *  without a Suspense dance around `useSearchParams`. */
   prefillItemUuid?: string | null;
   prefillQty?: string | null;
+  /** Numeric vendor id — sets `state.vendorId` on mount. The collab-
+   *  resync effect then fetches the vendor row + populates the
+   *  currency / tax_rate defaults. Null skips the prefill and the
+   *  buyer picks a vendor themselves. */
+  prefillVendorId?: string | null;
 }
 
 export function NewPOForm({
   prefillItemUuid = null,
   prefillQty = null,
+  prefillVendorId = null,
 }: NewPOFormProps = {}) {
   const router = useRouter();
   const prefillAppliedRef = useRef(false);
@@ -451,7 +457,23 @@ export function NewPOForm({
     setPickedItems((prev) => ({ ...prev, [tempId]: item }));
   }
 
-  // ── Deep-link prefill (from the shortages page) ─────────────────
+  // ── Vendor prefill (from reorder-task links) ────────────────────
+  // Numeric vendor id lands in `state.vendorId` on mount; the collab-
+  // resync effect above then fetches the vendor row and populates
+  // currency / tax_rate / lead-time defaults. Idempotent — a peer's
+  // vendor pick after mount won't get overwritten because we only
+  // set once and gate on `state.vendorId` being empty.
+  const vendorPrefillRef = useRef(false);
+  useEffect(() => {
+    if (vendorPrefillRef.current) return;
+    if (!prefillVendorId) return;
+    if (state.vendorId) return;
+    vendorPrefillRef.current = true;
+    setField("vendorId", prefillVendorId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillVendorId]);
+
+  // ── Deep-link prefill (from the shortages page + reorder tasks) ─
   // Reads `?item_uuid=…&qty=…` once on mount. Fetches the item by
   // uuid to populate the picker label, then drops a pre-filled line
   // into state.

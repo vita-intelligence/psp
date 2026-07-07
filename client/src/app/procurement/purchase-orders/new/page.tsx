@@ -14,6 +14,11 @@ export const metadata = { title: "New PO · Procurement · PSP" };
 interface SearchParams {
   item_uuid?: string;
   qty?: string;
+  /** Numeric vendor id — the my-tasks reorder task and the shortages
+   *  page can both pre-select the last-known supplier so the buyer
+   *  doesn't retype it. Nullable — form falls back to the vendor
+   *  picker when absent. */
+  vendor_id?: string;
 }
 
 export default async function NewPOPage({
@@ -26,10 +31,10 @@ export default async function NewPOPage({
     redirect("/procurement/purchase-orders");
   }
 
-  // Deep-link prefill from the shortages page — read on the server
-  // so the form mounts with the prefill in its initial state, no
-  // post-mount fetch + insert dance required.
-  const { item_uuid, qty } = await searchParams;
+  // Deep-link prefill from the shortages page + my-tasks reorder
+  // tasks — read on the server so the form mounts with the prefill
+  // in its initial state, no post-mount fetch + insert dance required.
+  const { item_uuid, qty, vendor_id } = await searchParams;
 
   // Eager vendor + item + warehouse fetches dropped — the form's
   // pickers hit /api/vendors?search&limit=50 etc. on demand, so the
@@ -74,6 +79,7 @@ export default async function NewPOPage({
           <NewPOForm
             prefillItemUuid={item_uuid ?? null}
             prefillQty={qty ?? null}
+            prefillVendorId={vendor_id ?? null}
           />
         </div>
       </main>
