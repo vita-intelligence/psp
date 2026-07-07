@@ -51,10 +51,13 @@ defmodule Backend.Stock.Lifecycle do
   #
   # `expected` ⇒ expected|requested|received|canceled — planned lot
   #               can self-declare on first insert, slide to requested
-  #               (paperwork-only), promote to received on receipt, or
-  #               be voided.
-  # `requested` ⇒ received|canceled — paperwork landed, waiting for
-  #               physical receipt or cancellation.
+  #               (edge-case demotion), promote to received on
+  #               receipt, or be voided.
+  # `requested` ⇒ requested|expected|received|canceled — paperwork
+  #               lot; can self-declare on first insert (birth event),
+  #               promote to `expected` on `mark_ordered`, promote to
+  #               `received` on direct receipt, or be voided when the
+  #               PO is cancelled / the line is removed.
   # `received` ⇒ routed_to_quarantine|qc_passed|qc_failed|held|disposed|
   #              consumed_to_zero|canceled — full open palette once
   #              goods physically land.
@@ -79,7 +82,7 @@ defmodule Backend.Stock.Lifecycle do
   # `on_hold`; `qc_failed` drops it to `rejected`.
   @allowed_transitions %{
     "expected" => ~w(expected requested received canceled),
-    "requested" => ~w(received canceled),
+    "requested" => ~w(requested expected received canceled),
     "received" => ~w(routed_to_quarantine qc_passed output_qc_passed qc_failed held disposed consumed_to_zero canceled),
     "quarantine" => ~w(qc_passed output_qc_passed qc_failed held disposed canceled),
     "awaiting_release" => ~w(released qc_failed held disposed canceled),
@@ -231,6 +234,7 @@ defmodule Backend.Stock.Lifecycle do
   def project_status(events) when is_list(events) do
     kinds = MapSet.new(events, & &1.kind)
     last_qc_or_hold = last_qc_or_hold_event(events)
+    last_planning = last_planning_event(events)
 
     cond do
       MapSet.member?(kinds, "canceled") -> "canceled"
@@ -245,8 +249,14 @@ defmodule Backend.Stock.Lifecycle do
       last_qc_or_hold == "output_qc_passed" -> "awaiting_release"
       MapSet.member?(kinds, "routed_to_quarantine") -> "quarantine"
       MapSet.member?(kinds, "received") -> "received"
-      MapSet.member?(kinds, "requested") -> "requested"
+      # requested ↔ expected uses last-wins semantics because both are
+      # legal on the same lot (PO create → PO mark_ordered flow, or
+      # the edge-case demotion). MapSet.member? would sticky-lock to
+      # whichever kind was listed first in the cond.
+      last_planning == "expected" -> "expected"
+      last_planning == "requested" -> "requested"
       MapSet.member?(kinds, "expected") -> "expected"
+      MapSet.member?(kinds, "requested") -> "requested"
       true -> "expected"
     end
   end
@@ -290,6 +300,20 @@ defmodule Backend.Stock.Lifecycle do
     |> Enum.filter(fn e ->
       e.kind in ["qc_passed", "output_qc_passed", "held", "released"]
     end)
+    |> Enum.sort_by(fn e -> {ts(e.occurred_at), ts(e.inserted_at), e.id} end, :desc)
+    |> case do
+      [] -> nil
+      [latest | _] -> latest.kind
+    end
+  end
+
+  # Same "most recent wins" rule for the two pre-arrival lifecycle
+  # kinds. A lot minted at PO create fires a `requested` event; PO
+  # `mark_ordered` fires an `expected` event on top. Both are in the
+  # log; the newer one determines the projected status.
+  defp last_planning_event(events) do
+    events
+    |> Enum.filter(fn e -> e.kind in ["requested", "expected"] end)
     |> Enum.sort_by(fn e -> {ts(e.occurred_at), ts(e.inserted_at), e.id} end, :desc)
     |> case do
       [] -> nil

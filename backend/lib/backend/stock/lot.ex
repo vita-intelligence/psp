@@ -107,6 +107,12 @@ defmodule Backend.Stock.Lot do
     # QC verdict. Nullable: manual receives and legacy lots stay null
     # and route through the existing quarantine-by-default flow.
     belongs_to :goods_in_inspection, GoodsInInspection
+    # Back-pointer to the PO line this lot was minted from. Set at
+    # PO line insert (child lot at status `requested`), preserved
+    # through `mark_ordered` (promoted to `expected`) and through
+    # goods-in per-pack lot creation. Nullable for lots born from
+    # manual receive / opening balance / MO output.
+    belongs_to :purchase_order_line, Backend.Purchasing.PurchaseOrderLine
 
     has_many :placements, Placement, foreign_key: :stock_lot_id
     has_many :movements, Movement, foreign_key: :stock_lot_id
@@ -167,7 +173,8 @@ defmodule Backend.Stock.Lot do
       :bailee_routed_at,
       :created_by_id,
       :updated_by_id,
-      :goods_in_inspection_id
+      :goods_in_inspection_id,
+      :purchase_order_line_id
     ])
     |> validate_required([
       :company_id,
@@ -297,13 +304,24 @@ defmodule Backend.Stock.Lot do
   end
 
   @doc """
-  Planned (`expected`) lot — created when a PO line lands in `ordered`
-  status so the UI can show "X arriving" before physical receipt.
-  qty_received is 0 (no goods yet), packaging dims are nullable (the
-  receiver fills them at receive time), and source_kind is locked to
-  `purchase_order`. The lifecycle event log carries the trail; this
-  changeset is only ever called by `Backend.Purchasing` so it never
-  reads operator-supplied attrs.
+  Pre-arrival (paperwork-only) lot — created when a PO line is
+  persisted so the UI can show "X arriving" before physical receipt,
+  and so MO planners can raise placeholder bookings against real
+  LOT numbers rather than an abstract PO row.
+
+  Two pre-arrival statuses:
+
+    * `requested` — the PO is on the paperwork side of the workflow
+      (draft / pending / approved). We've committed to a lot number
+      but not yet placed the order with the vendor.
+    * `expected` — the PO has been `mark_ordered` (sent + paid). The
+      lot is expected to arrive; goods-in split-per-pack will spawn
+      one physical lot per box from this parent.
+
+  `qty_received` is 0 in both statuses (no goods yet). Packaging
+  dims are nullable (the receiver fills them at goods-in). source_kind
+  is locked to `purchase_order`. `purchase_order_line_id` links back
+  to the PO line for the cascade helpers in Backend.Purchasing.
   """
   def expected_changeset(lot, attrs) do
     lot
@@ -324,7 +342,8 @@ defmodule Backend.Stock.Lot do
       :updated_by_id,
       :units_per_package,
       :stack_factor,
-      :goods_in_inspection_id
+      :goods_in_inspection_id,
+      :purchase_order_line_id
     ])
     |> validate_required([
       :company_id,
@@ -334,7 +353,7 @@ defmodule Backend.Stock.Lot do
       :status,
       :source_kind
     ])
-    |> validate_inclusion(:status, ["expected"])
+    |> validate_inclusion(:status, ["requested", "expected"])
     |> validate_number(:qty_received, greater_than_or_equal_to: 0)
     |> validate_number(:unit_cost, greater_than_or_equal_to: 0)
     |> validate_length(:source_ref, max: 80)

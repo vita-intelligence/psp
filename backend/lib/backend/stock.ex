@@ -802,6 +802,13 @@ defmodule Backend.Stock do
       # inspection" without walking the event log.
       goods_in_inspection_id = attrs["__goods_in_inspection_id__"]
 
+      # Preserve the PO line linkage on the physical per-pack lot so
+      # the "all lots born from this line" query stays a single-column
+      # scan even after receipt (used by the PO cascade + the MO
+      # release gate). See migration 20260707100000. Legacy manual
+      # receives + opening balances leave this NULL.
+      po_line_id = attrs["__po_line_id__"]
+
       lot_attrs =
         attrs
         |> Map.drop([
@@ -818,6 +825,7 @@ defmodule Backend.Stock do
         |> Map.put("item_id", item.id)
         |> Map.put("qty_received", total_qty)
         |> maybe_put("goods_in_inspection_id", goods_in_inspection_id)
+        |> maybe_put("purchase_order_line_id", po_line_id)
         # Land at `expected` so the lifecycle event we emit below
         # (`received`) does the real status flip via the projection.
         # The lot row is never in `expected` for more than a few
