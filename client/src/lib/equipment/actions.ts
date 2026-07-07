@@ -8,7 +8,7 @@ import {
   unauthorizedResult,
   type ErrorResult,
 } from "../errors/server";
-import type { Equipment } from "./types";
+import type { Equipment, EquipmentFile, EquipmentFileKind } from "./types";
 
 export interface CreateEquipmentInput {
   item_id: number;
@@ -86,6 +86,58 @@ export async function recordEquipmentEventAction(
     return toErrorResult(err, {
       source: "recordEquipmentEventAction",
       fallbackDetail: "Couldn't record the event.",
+    });
+  }
+}
+
+/** Multipart upload of a file against an equipment unit — cal cert,
+ *  service report, warranty PDF, photo. Bytes stream via
+ *  Backend.Storage; the returned uuid is how the BE references it. */
+export async function uploadEquipmentFileAction(
+  equipmentUuid: string,
+  kind: EquipmentFileKind,
+  file: File,
+): Promise<{ ok: true; file: EquipmentFile } | ErrorResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("uploadEquipmentFileAction");
+
+  const form = new FormData();
+  form.append("file", file);
+  form.append("kind", kind);
+
+  try {
+    const res = await api<{ file: EquipmentFile }>(
+      `/api/equipment/${encodeURIComponent(equipmentUuid)}/files`,
+      { method: "POST", token, body: form },
+    );
+    revalidatePath(`/equipment/${equipmentUuid}`);
+    return { ok: true, file: res.file };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "uploadEquipmentFileAction",
+      fallbackDetail: "Couldn't upload the file.",
+    });
+  }
+}
+
+export async function deleteEquipmentFileAction(
+  equipmentUuid: string,
+  fileUuid: string,
+): Promise<{ ok: true } | ErrorResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("deleteEquipmentFileAction");
+
+  try {
+    await api<null>(
+      `/api/equipment/${encodeURIComponent(equipmentUuid)}/files/${encodeURIComponent(fileUuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath(`/equipment/${equipmentUuid}`);
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "deleteEquipmentFileAction",
+      fallbackDetail: "Couldn't delete the file.",
     });
   }
 }

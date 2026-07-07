@@ -5421,4 +5421,46 @@ defmodule BackendWeb.Payloads do
   end
 
   defp equipment_po_line_summary(_), do: nil
+
+  @doc """
+  Lifecycle event for the equipment detail timeline. Same fields as
+  the lot event surface: kind + actor + reason + metadata +
+  optional cell breadcrumb + optional assignment snapshot.
+  """
+  def equipment_event(%Backend.Equipment.Event{} = event) do
+    %{
+      id: event.id,
+      uuid: event.uuid,
+      kind: event.kind,
+      actor: preloaded_or_nil(event, :actor, &audit_actor/1),
+      actor_kind: event.actor_kind,
+      reason: event.reason,
+      metadata: event.metadata,
+      from_cell: preloaded_or_nil(event, :from_cell, &equipment_cell_summary/1),
+      to_cell: preloaded_or_nil(event, :to_cell, &equipment_cell_summary/1),
+      assigned_to_user: preloaded_or_nil(event, :assigned_to_user, &audit_actor/1),
+      occurred_at: event.occurred_at,
+      inserted_at: event.inserted_at
+    }
+  end
+
+  @doc """
+  Equipment file — mirrors `po_file` shape. Includes a serve URL
+  scoped under the equipment uuid so links only resolve under their
+  owning record.
+  """
+  def equipment_file(%Backend.Equipment.File{} = f) do
+    %{
+      id: f.id,
+      uuid: f.uuid,
+      equipment_id: f.equipment_id,
+      kind: f.kind,
+      filename: f.filename,
+      mime: f.mime,
+      byte_size: f.byte_size,
+      uploaded_by: preloaded_or_nil(f, :uploaded_by, &audit_actor/1),
+      inserted_at: f.inserted_at,
+      updated_at: f.updated_at
+    }
+  end
 end

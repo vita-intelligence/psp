@@ -84,6 +84,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "purchase_order_line"
   end
 
+  pipeline :comments_equipment do
+    plug :put_entity_type, "equipment"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -1118,6 +1122,13 @@ defmodule BackendWeb.Router do
       # transition (in_service / moved / retired / disposed / …).
       # Per-kind permission gate lives inside the controller.
       post "/:id/events", EquipmentController, :events_create
+      get "/:id/events", EquipmentController, :events_index
+      # File attachments — cal certs, service reports, warranty PDFs,
+      # nameplate photos. Same shape as /po/:id/files.
+      get "/:id/files", EquipmentController, :files_index
+      post "/:id/files", EquipmentController, :file_create
+      delete "/:id/files/:file_id", EquipmentController, :file_delete
+      get "/:id/files/:file_id/blob", EquipmentController, :file_blob
     end
 
     scope "/stock" do
@@ -1456,6 +1467,23 @@ defmodule BackendWeb.Router do
 
   scope "/api/shipments/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_shipment]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+
+    # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
+  end
+
+  scope "/api/equipment/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_equipment]
 
     get "/", CommentsController, :index
     post "/", CommentsController, :create

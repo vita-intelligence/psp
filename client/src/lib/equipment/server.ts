@@ -1,7 +1,12 @@
 import "server-only";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { Equipment, EquipmentDueRow } from "./types";
+import type {
+  Equipment,
+  EquipmentDueRow,
+  EquipmentEvent,
+  EquipmentFile,
+} from "./types";
 
 export async function listEquipment(): Promise<{
   equipment: Equipment[];
@@ -54,5 +59,39 @@ export async function listEquipmentDueSoon(horizonDays = 14): Promise<{
     });
   } catch {
     return null;
+  }
+}
+
+export async function listEquipmentEvents(
+  uuid: string,
+): Promise<EquipmentEvent[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+
+  try {
+    const { events } = await api<{ events: EquipmentEvent[] }>(
+      `/api/equipment/${encodeURIComponent(uuid)}/events`,
+      { token, cache: "no-store" },
+    );
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+export async function listEquipmentFiles(
+  uuid: string,
+): Promise<EquipmentFile[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+
+  try {
+    const { files } = await api<{ files: EquipmentFile[] }>(
+      `/api/equipment/${encodeURIComponent(uuid)}/files`,
+      { token, cache: "no-store" },
+    );
+    return files;
+  } catch {
+    return [];
   }
 }

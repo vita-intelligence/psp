@@ -168,6 +168,10 @@ defmodule Backend.Tenancy do
   def resource_in_tenant?(user, "stock-lot", uuid),
     do: exists?(Stock.get_for_company(user.company_id, uuid))
 
+  # --- Equipment --------------------------------------------------
+  def resource_in_tenant?(user, "equipment", uuid),
+    do: exists?(Backend.Equipment.get_for_company(user.company_id, uuid))
+
   # --- Production -------------------------------------------------
   def resource_in_tenant?(user, "workstation-group", uuid),
     do: exists?(Production.get_workstation_group(user.company_id, uuid))
