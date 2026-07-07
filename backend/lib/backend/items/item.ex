@@ -37,7 +37,12 @@ defmodule Backend.Items.Item do
   # Same PO → child lot → goods-in → quarantine → available pipeline
   # as raw materials; consumption is via `Backend.Stock.issue_from_lot/5`
   # rather than an MO booking.
-  @valid_item_types ~w(raw_material semi_finished finished_product packaging consumable)
+  #
+  # `equipment` covers serial-tracked physical units (mixers, scales,
+  # forklifts, pH meters, laptops). These don't flow through the
+  # stock-lot pipeline — receipt spawns one `equipment` row per unit
+  # via `Backend.Equipment` instead. Not eligible as a BOM part.
+  @valid_item_types ~w(raw_material semi_finished finished_product packaging consumable equipment)
   @compliance_statuses ~w(draft ready_for_use)
 
   schema "items" do
