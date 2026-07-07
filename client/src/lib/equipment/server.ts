@@ -8,16 +8,19 @@ import type {
   EquipmentFile,
 } from "./types";
 
-export async function listEquipment(): Promise<{
-  equipment: Equipment[];
-  total: number;
+/** First-page fetch for the ledger. Cursor + sort + filter continue
+ *  via the client-side DataTable. Returns null on any failure so
+ *  the RSC can fall through to a graceful empty state. */
+export async function listEquipmentPage(): Promise<{
+  items: Equipment[];
+  next_cursor: string | null;
 } | null> {
   const token = await getSessionToken();
   if (!token) return null;
 
   try {
-    return await api<{ equipment: Equipment[]; total: number }>(
-      "/api/equipment",
+    return await api<{ items: Equipment[]; next_cursor: string | null }>(
+      "/api/equipment?limit=25",
       { token, cache: "no-store" },
     );
   } catch {
