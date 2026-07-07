@@ -1281,7 +1281,7 @@ const PHASE_EXPLAINER: Record<
   },
   approval: {
     title: "Two signatures needed.",
-    body: "Approver signs first (commercial check), then director signs second (segregation of duties — must be a different person). Once both signatures are in, hit Mark confirmed to release the order into production.",
+    body: "Approver signs first (commercial check), then director signs second (segregation of duties — must be a different person). Once both signatures are in, hit Release to production to move the order out of Approval and into the production planning pipeline.",
   },
   production_planning: {
     title: "Plan every MO, then we move on.",
@@ -3709,7 +3709,7 @@ async function runAction(cta: OrderWizardCta, ctx: CtaDispatchContext) {
     }
     case "confirm": {
       const res = await markConfirmedCOAction(ctx.coUuid);
-      surfaceResult(res, "Order confirmed", ctx.refresh);
+      surfaceResult(res, "Released to production", ctx.refresh);
       return;
     }
     case "create_mo_for_line": {

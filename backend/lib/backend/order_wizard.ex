@@ -590,11 +590,11 @@ defmodule Backend.OrderWizard do
       "approved" ->
         %{
           code: "mark_confirmed",
-          title: "Click Confirm to release for production.",
+          title: "Release the order to production.",
           detail:
-            "Both signatures done. Confirming the order unlocks MO creation and locks the lines.",
+            "Both signatures done. Releasing unlocks MO creation and locks the lines — the order isn't finished, it's moving on to production planning.",
           primary_cta: %{
-            label: "Mark confirmed",
+            label: "Release to production",
             kind: "action",
             action: "confirm"
           },

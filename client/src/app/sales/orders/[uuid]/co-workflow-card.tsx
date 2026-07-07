@@ -7,7 +7,7 @@
  *   draft        → Submit (with gates), Cancel (with reason)
  *   pending_approver  → Sign as approver, Cancel
  *   pending_director  → Sign as director (segregation), Cancel
- *   approved     → Mark as confirmed, Cancel
+ *   approved     → Release to production, Cancel
  *   confirmed    → terminal (no actions in V1)
  *   cancelled    → terminal
  *
@@ -323,7 +323,7 @@ export function COWorkflowCard({
                   disabled={locked}
                 >
                   <Truck className="mr-1.5 size-3.5" />
-                  Mark confirmed
+                  Release to production
                 </Button>
               )}
               {showGenerateInvoice && <GenerateInvoiceButton co={co} locked={locked} />}
@@ -628,11 +628,13 @@ function MarkConfirmedDialog({ open, onClose, co }: DialogProps) {
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Mark as confirmed</DialogTitle>
+          <DialogTitle>Release to production</DialogTitle>
           <DialogDescription>
-            Commits the order to the customer. From V1 this is terminal
-            until the warehouse pick + invoice modules ship — once
-            confirmed, the CO can&rsquo;t be cancelled.
+            Commits the order to the customer and unlocks the downstream
+            pipeline — invoices can be raised from this point, and the
+            projects board starts routing the CO through production
+            planning. Not the same as marking the order fulfilled;
+            physical work still happens after this.
           </DialogDescription>
         </DialogHeader>
 
@@ -654,13 +656,13 @@ function MarkConfirmedDialog({ open, onClose, co }: DialogProps) {
           <Button
             type="button"
             onClick={() =>
-              run(() => markConfirmedCOAction(co.uuid), "CO confirmed")
+              run(() => markConfirmedCOAction(co.uuid), "Released to production")
             }
             disabled={pending}
           >
             {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
             <Truck className="mr-1.5 size-4" />
-            Mark confirmed
+            Release to production
           </Button>
         </DialogFooter>
       </DialogContent>
