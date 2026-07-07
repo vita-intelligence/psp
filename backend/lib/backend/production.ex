@@ -6122,9 +6122,28 @@ defmodule Backend.Production do
   def mo_pickup_in_progress?(_), do: false
 
   @doc """
-  Planner action — release a scheduled MO to the warehouse. Refuses
-  if any of the MO's bookings point at a lot whose status isn't
-  `available` (stale-booking guard: QC must happen before release).
+  Planner action — release a scheduled MO to the warehouse.
+
+  Release is the load-bearing physical gate: after this fires, the
+  picker starts walking the floor with a list of real lots. To keep
+  that safe, every one of the following must hold:
+
+    * MO is `approved` (or already `scheduled` for idempotent re-release).
+    * MO doesn't have a pending replan request.
+    * At least one step carries a planned_start.
+    * `ensure_all_lines_fully_booked` — every BOM line has bookings
+      covering required qty (placeholders count).
+    * `ensure_all_lines_have_real_bookings` — every BOM line has REAL
+      bookings covering required qty (placeholders don't count here).
+    * `ensure_all_booked_lots_available` — every booked lot has
+      `status = "available"`. `quarantine`, `on_hold`, `awaiting_release`,
+      `received`, `expected`, `requested` — every non-`available`
+      status blocks. QC + Final Product Release run BEFORE this gate.
+    * `ensure_all_booked_lots_in_warehouse` — every booked lot has a
+      placement in a warehouse cell (not on the trolley from a prior
+      pickup, not solely tracked at a bailee 3PL address).
+    * `ensure_no_booked_lots_on_trolley` — no lot is mid-pickup for
+      another MO.
 
   Optional `:pickup_window_hours` override; nil leaves the per-MO
   field NULL and the picker falls back to the company default.

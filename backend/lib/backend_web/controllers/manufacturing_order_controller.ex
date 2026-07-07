@@ -718,12 +718,19 @@ defmodule BackendWeb.ManufacturingOrderController do
             )
 
           {:error, :stale_bookings, list} ->
+            not_available =
+              list
+              |> Enum.map(fn s -> s.lot_status end)
+              |> Enum.uniq()
+              |> Enum.sort()
+              |> Enum.join(", ")
+
             conn
             |> put_status(:unprocessable_entity)
             |> json(
               Errors.payload(
                 "stale_bookings",
-                "One or more booked lots aren't available — resolve QC before release.",
+                "One or more booked lots aren't `available` yet (currently: #{not_available}). Quarantine and on-hold both block release — resolve QC first, then retry.",
                 %{bookings: list}
               )
             )
