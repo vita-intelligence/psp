@@ -138,9 +138,27 @@ function Row({
 
           {movement.reason && (
             <p className="text-[11px] text-muted-foreground">
-              <span className="font-medium">Reason:</span> {movement.reason}
+              <span className="font-medium">
+                {movement.kind === "issue" ? "Purpose:" : "Reason:"}
+              </span>{" "}
+              {movement.reason}
             </p>
           )}
+
+          {movement.kind === "issue" && movement.issued_to_user && (
+            <p className="text-[11px] text-muted-foreground">
+              <span className="font-medium">Issued to:</span>{" "}
+              {movement.issued_to_user.name ?? movement.issued_to_user.email}
+            </p>
+          )}
+
+          {movement.reference_kind === "manufacturing_order" &&
+            movement.reference_ref && (
+              <p className="text-[11px] text-muted-foreground">
+                <span className="font-medium">MO:</span>{" "}
+                <span className="font-mono">{movement.reference_ref}</span>
+              </p>
+            )}
 
           {movement.skip_photo_reason && !movement.photo_url && (
             <p className="text-[11px] text-muted-foreground">
