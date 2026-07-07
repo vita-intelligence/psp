@@ -69,6 +69,82 @@ defmodule Backend.Equipment do
   end
 
   @doc """
+  Units with a calibration OR maintenance due date crossing the
+  `horizon_days` window from today. Returned newest-due first so the
+  banner / my-tasks card can lead with the most urgent unit.
+
+  Terminal statuses (retired, disposed, canceled) are excluded — they
+  don't need service anymore. Also skips units whose cadence isn't
+  configured (next_*_at IS NULL) — nothing to schedule.
+
+  ## Structure of each row
+
+  Each map carries:
+
+      %{
+        equipment: %Backend.Equipment.Equipment{},
+        due_kind: "calibration" | "maintenance",
+        due_at: DateTime.t(),
+        days_until: integer  # negative when overdue
+      }
+  """
+  def due_soon(company_id, horizon_days \\ 14) when is_integer(company_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    cutoff = DateTime.add(now, horizon_days * 24 * 60 * 60, :second)
+
+    units =
+      Equipment
+      |> where([e], e.company_id == ^company_id)
+      |> where([e], e.status not in ^["retired", "disposed", "canceled"])
+      |> where(
+        [e],
+        (not is_nil(e.next_calibration_at) and e.next_calibration_at <= ^cutoff) or
+          (not is_nil(e.next_maintenance_at) and e.next_maintenance_at <= ^cutoff)
+      )
+      |> preload([:item, :current_cell, :assigned_to])
+      |> Repo.all()
+
+    units
+    |> Enum.flat_map(fn e ->
+      cal =
+        if e.next_calibration_at && DateTime.compare(e.next_calibration_at, cutoff) != :gt do
+          [
+            %{
+              equipment: e,
+              due_kind: "calibration",
+              due_at: e.next_calibration_at,
+              days_until: days_until(e.next_calibration_at, now)
+            }
+          ]
+        else
+          []
+        end
+
+      maint =
+        if e.next_maintenance_at && DateTime.compare(e.next_maintenance_at, cutoff) != :gt do
+          [
+            %{
+              equipment: e,
+              due_kind: "maintenance",
+              due_at: e.next_maintenance_at,
+              days_until: days_until(e.next_maintenance_at, now)
+            }
+          ]
+        else
+          []
+        end
+
+      cal ++ maint
+    end)
+    |> Enum.sort_by(& &1.due_at, DateTime)
+  end
+
+  defp days_until(due_at, now) do
+    diff = DateTime.diff(due_at, now, :second)
+    div(diff, 24 * 60 * 60)
+  end
+
+  @doc """
   Create a new equipment unit from a manual entry OR the goods-in
   receive branch (PR E2 wires that path). Starts at status
   `received` with an initial `received` lifecycle event so the
