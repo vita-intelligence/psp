@@ -67,4 +67,140 @@ defmodule Backend.Equipment do
     |> preload([:item, :current_cell, :assigned_to])
     |> Repo.all()
   end
+
+  @doc """
+  Create a new equipment unit from a manual entry OR the goods-in
+  receive branch (PR E2 wires that path). Starts at status
+  `received` with an initial `received` lifecycle event so the
+  audit trail is populated from row one.
+
+  `attrs` must include: `item_id`, `serial_number`. Everything
+  else is optional (unit_cost, currency, acquired_at, cell,
+  cadences, etc). The initial event captures the actor + optional
+  reason.
+  """
+  def create(%Backend.Accounts.User{} = actor, company_id, attrs)
+      when is_integer(company_id) and is_map(attrs) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.merge(%{
+        "company_id" => company_id,
+        "status" => "received",
+        "acquired_at" =>
+          Map.get(attrs, "acquired_at") ||
+            Map.get(attrs, :acquired_at) ||
+            (DateTime.utc_now() |> DateTime.truncate(:second)),
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      })
+
+    with :ok <- ensure_item_is_equipment(company_id, attrs["item_id"]) do
+      Repo.transaction(fn ->
+        with {:ok, equipment} <-
+               %Equipment{}
+               |> Equipment.changeset(attrs)
+               |> Repo.insert(),
+             {:ok, _result} <-
+               Backend.Equipment.Lifecycle.record_event_in_transaction(
+                 equipment,
+                 "received",
+                 %{
+                   actor: actor,
+                   actor_kind: "user",
+                   reason: attrs["reason"] || "Equipment received",
+                   metadata: %{
+                     "source" => attrs["source"] || "manual",
+                     "purchase_order_line_id" => attrs["purchase_order_line_id"]
+                   }
+                 }
+               ) do
+          Backend.Broadcasts.entity_changed(
+            "equipment",
+            equipment.uuid,
+            equipment.company_id,
+            "created"
+          )
+
+          Repo.preload(equipment, [
+            :item,
+            :current_cell,
+            :assigned_to,
+            :purchase_order_line,
+            :created_by
+          ])
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Public lifecycle-event entry point. Thin wrapper around
+  `Backend.Equipment.Lifecycle.record_event/3` that fires a
+  realtime broadcast on success so open detail pages refresh.
+  """
+  def record_event(%Backend.Accounts.User{} = actor, %Equipment{} = equipment, kind, opts)
+      when is_binary(kind) and is_map(opts) do
+    attrs = Map.put(opts, :actor, actor)
+
+    case Backend.Equipment.Lifecycle.record_event(equipment, kind, attrs) do
+      {:ok, %{equipment: updated}} ->
+        Backend.Broadcasts.entity_changed(
+          "equipment",
+          updated.uuid,
+          updated.company_id,
+          kind
+        )
+
+        {:ok,
+         Repo.preload(updated, [
+           :item,
+           :current_cell,
+           :assigned_to,
+           :purchase_order_line
+         ])}
+
+      {:error, :illegal_transition, info} ->
+        {:error, :illegal_transition, info}
+
+      {:error, other} ->
+        {:error, other}
+    end
+  end
+
+  # Enforce that the linked item is actually flagged as equipment.
+  # Prevents the create endpoint from silently spawning an
+  # equipment row for a raw_material item.
+  defp ensure_item_is_equipment(company_id, item_id)
+       when is_integer(item_id) or is_binary(item_id) do
+    id =
+      case item_id do
+        n when is_integer(n) -> n
+        b when is_binary(b) ->
+          case Integer.parse(b) do
+            {n, ""} -> n
+            _ -> nil
+          end
+      end
+
+    case id && Repo.get(Backend.Items.Item, id) do
+      %{company_id: ^company_id, item_type: "equipment"} -> :ok
+      %{item_type: t} -> {:error, {:item_wrong_type, t}}
+      _ -> {:error, :item_not_found}
+    end
+  end
+
+  defp ensure_item_is_equipment(_, _), do: {:error, :item_not_found}
+
+  defp stringify_keys(attrs) when is_map(attrs) do
+    Map.new(attrs, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
+
+  defp stringify_keys(attrs), do: attrs
 end

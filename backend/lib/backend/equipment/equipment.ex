@@ -19,6 +19,7 @@ defmodule Backend.Equipment.Equipment do
     * `awaiting_calibration` — service done, waiting for cal to clear
     * `retired`              — end of life, not yet disposed
     * `disposed`             — physically scrapped / sold
+    * `canceled`             — expected unit voided pre-receipt (PO cancel)
   """
 
   use Ecto.Schema
@@ -31,7 +32,7 @@ defmodule Backend.Equipment.Equipment do
   alias Backend.Warehouses.StorageCell
 
   @statuses ~w(expected received in_service under_maintenance out_for_repair
-               awaiting_calibration retired disposed)
+               awaiting_calibration retired disposed canceled)
 
   def statuses, do: @statuses
 
