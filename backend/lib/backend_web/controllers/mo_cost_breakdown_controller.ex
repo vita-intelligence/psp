@@ -26,7 +26,8 @@ defmodule BackendWeb.MOCostBreakdownController do
 
   alias Backend.HR
   alias Backend.HR.Employee
-  alias Backend.Production.{ManufacturingOrder, ManufacturingOrderStep, Workstation, WorkstationSession}
+  alias Backend.Production.{ManufacturingOrder, ManufacturingOrderBooking, ManufacturingOrderStep, Workstation, WorkstationSession}
+  alias Backend.Stock.Lot
   alias Backend.Repo
   alias BackendWeb.Plugs.RequirePermission
 
@@ -51,17 +52,23 @@ defmodule BackendWeb.MOCostBreakdownController do
           compute_step_costs(step, company_id)
         end
 
-      totals = sum_totals(steps_with_costs)
+      materials = compute_materials(mo.id)
+
+      totals = sum_totals(steps_with_costs, materials)
 
       json(conn, %{
         manufacturing_order: %{
           uuid: mo.uuid,
           status: mo.status,
           quantity: to_string(mo.quantity),
+          quantity_produced: mo.quantity_produced && to_string(mo.quantity_produced),
           item_name: mo.item && mo.item.name
         },
         steps: steps_with_costs,
+        materials: materials,
         totals: totals,
+        per_unit:
+          per_unit_totals(totals, mo.quantity_produced || mo.quantity),
         _meta: %{
           non_mo_overhead_policy: "standalone_only",
           currency_code: (mo.item && Map.get(mo, :currency_code)) || "GBP",
@@ -71,6 +78,45 @@ defmodule BackendWeb.MOCostBreakdownController do
     else
       nil -> {:error, :not_found}
     end
+  end
+
+  # ---- Materials ----
+
+  defp compute_materials(mo_id) do
+    bookings =
+      Repo.all(
+        from b in ManufacturingOrderBooking,
+          where: b.manufacturing_order_id == ^mo_id,
+          left_join: l in Lot, on: b.lot_id == l.id,
+          left_join: i in assoc(l, :item),
+          preload: [lot: {l, item: i}]
+      )
+
+    rows =
+      for b <- bookings do
+        lot = b.lot
+        unit_cost = lot && lot.unit_cost
+        qty = b.consumed_quantity || Decimal.new(0)
+
+        line_cost =
+          case {unit_cost, qty} do
+            {%Decimal{} = uc, %Decimal{} = q} -> Decimal.mult(uc, q)
+            _ -> Decimal.new(0)
+          end
+
+        %{
+          booking_uuid: b.uuid,
+          lot_uuid: lot && lot.uuid,
+          item_name: lot && lot.item && lot.item.name,
+          consumed_quantity: to_string(qty),
+          unit_cost: unit_cost && to_string(unit_cost),
+          line_cost: line_cost
+        }
+      end
+
+    total = sum_decimals(Enum.map(rows, & &1.line_cost))
+
+    %{lines: rows, total_cost: total}
   end
 
   # -----------------------------------------------------------------
@@ -176,16 +222,43 @@ defmodule BackendWeb.MOCostBreakdownController do
     end)
   end
 
-  defp sum_totals(step_rows) do
+  defp sum_totals(step_rows, materials) do
     labour = sum_decimals(Enum.map(step_rows, & &1.totals.labour_cost))
     machine = sum_decimals(Enum.map(step_rows, & &1.totals.machine_cost))
+    material = materials.total_cost
 
     %{
       labour_cost: labour,
       machine_cost: machine,
-      material_cost: nil,
+      material_cost: material,
       rejected_material_cost: nil,
-      total_cost: sum_decimals([labour, machine])
+      total_cost: sum_decimals([labour, machine, material])
     }
+  end
+
+  defp per_unit_totals(totals, %Decimal{} = qty) do
+    if Decimal.compare(qty, Decimal.new(0)) == :gt do
+      %{
+        labour_cost: safe_div(totals.labour_cost, qty),
+        machine_cost: safe_div(totals.machine_cost, qty),
+        material_cost: safe_div(totals.material_cost, qty),
+        total_cost: safe_div(totals.total_cost, qty),
+        quantity: to_string(qty)
+      }
+    else
+      nil
+    end
+  end
+
+  defp per_unit_totals(_totals, _), do: nil
+
+  defp safe_div(nil, _), do: nil
+
+  defp safe_div(%Decimal{} = a, %Decimal{} = b) do
+    if Decimal.compare(b, Decimal.new(0)) == :gt do
+      Decimal.div(a, b) |> Decimal.round(4)
+    else
+      nil
+    end
   end
 end
