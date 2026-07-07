@@ -114,6 +114,19 @@ defmodule Backend.RBAC.Permissions do
     {"stock.dispose", "Dispose of stock"}
   ]
 
+  # Equipment registry — serial-tracked units. Separate scope from
+  # stock because the lifecycle model differs (units, not qty).
+  # `equipment.act` covers all lifecycle transitions in Slice 1
+  # (put_in_service, moved, maintenance, calibrate, retire, dispose).
+  # A follow-up PR may split calibration and maintenance if a shop
+  # wants segregation between the two roles.
+  @equipment [
+    {"equipment.view", "View equipment registry + per-unit detail"},
+    {"equipment.create", "Add new equipment units (manual entry / opening balance)"},
+    {"equipment.act",
+     "Record lifecycle events on equipment (put in service, maintenance, calibrate, move, retire, dispose)"}
+  ]
+
   # Vendors (suppliers) — the registry POs draw from. View is the read
   # baseline. Edit lets the buyer maintain identity + commercial terms.
   # Approve is the GFSI/HARPC gate — only the vendor-qualification
@@ -370,6 +383,7 @@ defmodule Backend.RBAC.Permissions do
         @risk_assessments ++
         @certificates ++
         @stock ++
+        @equipment ++
         @vendors ++
         @customers ++
         @pricelists ++
@@ -404,6 +418,7 @@ defmodule Backend.RBAC.Permissions do
       risk_assessments: @risk_assessments,
       certificates: @certificates,
       stock: @stock,
+      equipment: @equipment,
       vendors: @vendors,
       customers: @customers,
       pricelists: @pricelists,

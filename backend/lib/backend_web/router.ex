@@ -1102,6 +1102,20 @@ defmodule BackendWeb.Router do
     # receive/move/consume/dispose endpoints land in subsequent
     # slices through dedicated POST routes (no generic CRUD because
     # qty changes are always recorded movements).
+    # Equipment registry — serial-tracked units with cadence-driven
+    # maintenance + calibration lifecycle. Companion to /stock but
+    # distinct model (units, not lots). Sits at the api root so the
+    # module can grow its own detail + events + files sub-routes.
+    scope "/equipment" do
+      get "/", EquipmentController, :index
+      post "/", EquipmentController, :create
+      get "/:id", EquipmentController, :show
+      # Lifecycle event dispatch — kind in the body selects the
+      # transition (in_service / moved / retired / disposed / …).
+      # Per-kind permission gate lives inside the controller.
+      post "/:id/events", EquipmentController, :events_create
+    end
+
     scope "/stock" do
       # Manual lot creation — operator-authored entries (opening
       # balances, ad-hoc adjustments). Sits above `resources` so the

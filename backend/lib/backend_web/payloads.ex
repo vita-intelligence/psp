@@ -5356,4 +5356,69 @@ defmodule BackendWeb.Payloads do
   defp get(map, key) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
+
+  # ----- equipment ------------------------------------------------
+
+  @doc """
+  Equipment unit payload — identity + status + location + assignment
+  + cadence fields. Preloads (item, current_cell, assigned_to,
+  purchase_order_line) are optional; missing associations render as
+  nil rather than crashing.
+  """
+  def equipment(%Backend.Equipment.Equipment{} = e) do
+    %{
+      id: e.id,
+      uuid: e.uuid,
+      code: render_code(e, "equipment"),
+      serial_number: e.serial_number,
+      manufacturer_serial: e.manufacturer_serial,
+      manufacturer: e.manufacturer,
+      model: e.model,
+      status: e.status,
+      unit_cost: e.unit_cost,
+      currency: e.currency,
+      acquired_at: e.acquired_at,
+      warranty_end_at: e.warranty_end_at,
+      useful_life_years: e.useful_life_years,
+      calibration_frequency_months: e.calibration_frequency_months,
+      last_calibrated_at: e.last_calibrated_at,
+      next_calibration_at: e.next_calibration_at,
+      maintenance_frequency_months: e.maintenance_frequency_months,
+      last_maintenance_at: e.last_maintenance_at,
+      next_maintenance_at: e.next_maintenance_at,
+      retired_at: e.retired_at,
+      disposed_at: e.disposed_at,
+      notes: e.notes,
+      item: preloaded_or_nil(e, :item, &item/1),
+      current_cell:
+        preloaded_or_nil(e, :current_cell, &equipment_cell_summary/1),
+      assigned_to: preloaded_or_nil(e, :assigned_to, &audit_actor/1),
+      purchase_order_line:
+        preloaded_or_nil(e, :purchase_order_line, &equipment_po_line_summary/1),
+      created_by: preloaded_or_nil(e, :created_by, &audit_actor/1),
+      inserted_at: e.inserted_at,
+      updated_at: e.updated_at
+    }
+  end
+
+  defp equipment_cell_summary(%Backend.Warehouses.StorageCell{} = cell) do
+    %{
+      id: cell.id,
+      uuid: cell.uuid,
+      code: render_code(cell, "storage_cell"),
+      name: cell.name
+    }
+  end
+
+  defp equipment_cell_summary(_), do: nil
+
+  defp equipment_po_line_summary(%Backend.Purchasing.PurchaseOrderLine{} = line) do
+    %{
+      id: line.id,
+      uuid: line.uuid,
+      purchase_order_id: line.purchase_order_id
+    }
+  end
+
+  defp equipment_po_line_summary(_), do: nil
 end
