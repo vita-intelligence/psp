@@ -162,7 +162,12 @@ defmodule Backend.Equipment do
       |> stringify_keys()
       |> Map.merge(%{
         "company_id" => company_id,
-        "status" => "received",
+        # Insert at the pre-arrival status so the birth event's
+        # transition (`expected → received`) matches the lifecycle
+        # matrix. The event write + status projection run in the
+        # same transaction as the row insert, so callers observe
+        # the final `received` status atomically.
+        "status" => "expected",
         "acquired_at" =>
           Map.get(attrs, "acquired_at") ||
             Map.get(attrs, :acquired_at) ||
@@ -177,7 +182,7 @@ defmodule Backend.Equipment do
                %Equipment{}
                |> Equipment.changeset(attrs)
                |> Repo.insert(),
-             {:ok, _result} <-
+             {:ok, %{equipment: promoted}} <-
                Backend.Equipment.Lifecycle.record_event_in_transaction(
                  equipment,
                  "received",
@@ -193,12 +198,12 @@ defmodule Backend.Equipment do
                ) do
           Backend.Broadcasts.entity_changed(
             "equipment",
-            equipment.uuid,
-            equipment.company_id,
+            promoted.uuid,
+            promoted.company_id,
             "created"
           )
 
-          Repo.preload(equipment, [
+          Repo.preload(promoted, [
             :item,
             :current_cell,
             :assigned_to,
@@ -206,8 +211,16 @@ defmodule Backend.Equipment do
             :created_by
           ])
         else
-          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-          {:error, reason} -> Repo.rollback(reason)
+          {:error, %Ecto.Changeset{} = cs} ->
+            Repo.rollback(cs)
+
+          # Lifecycle rejections are 3-tuples — normalise so the
+          # controller can pattern-match on the leading `:error`.
+          {:error, :illegal_transition, info} ->
+            Repo.rollback({:illegal_transition, info})
+
+          {:error, reason} ->
+            Repo.rollback(reason)
         end
       end)
     end
