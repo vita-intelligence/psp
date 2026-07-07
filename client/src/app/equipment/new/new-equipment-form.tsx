@@ -42,6 +42,11 @@ export function NewEquipmentForm() {
   const [manufacturer, setManufacturer] = useState<string>("");
   const [model, setModel] = useState<string>("");
   const [manufacturerSerial, setManufacturerSerial] = useState<string>("");
+  const [acquiredAt, setAcquiredAt] = useState<string>(
+    // Default to today so a common case is one click.
+    new Date().toISOString().slice(0, 10),
+  );
+  const [warrantyEndAt, setWarrantyEndAt] = useState<string>("");
   const [unitCost, setUnitCost] = useState<string>("");
   const [currency, setCurrency] = useState<string>("GBP");
   const [calibrationMonths, setCalibrationMonths] = useState<string>("");
@@ -96,6 +101,14 @@ export function NewEquipmentForm() {
         manufacturer: manufacturer.trim() || null,
         model: model.trim() || null,
         manufacturer_serial: manufacturerSerial.trim() || null,
+        // Send acquired_at as an ISO timestamp — the backend accepts
+        // the yyyy-mm-dd string via Ecto's utc_datetime cast (rounds
+        // to midnight UTC). Empty string → null so the backend seeds
+        // from `now()`.
+        acquired_at: acquiredAt
+          ? new Date(`${acquiredAt}T00:00:00Z`).toISOString()
+          : null,
+        warranty_end_at: warrantyEndAt || null,
         unit_cost: unitCost.trim() || null,
         currency: currency.trim() || null,
         calibration_frequency_months: calibrationMonths
@@ -181,6 +194,25 @@ export function NewEquipmentForm() {
           className="font-mono"
         />
       </FieldRow>
+
+      <div className="grid grid-cols-2 gap-4">
+        <FieldRow label="Received / acquired on" required>
+          <Input
+            type="date"
+            value={acquiredAt}
+            onChange={(e) => setAcquiredAt(e.target.value)}
+            className="font-mono"
+          />
+        </FieldRow>
+        <FieldRow label="Warranty ends">
+          <Input
+            type="date"
+            value={warrantyEndAt}
+            onChange={(e) => setWarrantyEndAt(e.target.value)}
+            className="font-mono"
+          />
+        </FieldRow>
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         <FieldRow label="Unit cost">
