@@ -3894,6 +3894,7 @@ defmodule BackendWeb.Payloads do
 
   def purchase_order_line(l) do
     %{
+      id: l.id,
       uuid: l.uuid,
       purchase_order_id: l.purchase_order_id,
       item_id: l.item_id,
@@ -5323,9 +5324,13 @@ defmodule BackendWeb.Payloads do
   def my_task(%{} = task) do
     %{
       id: task.id,
+      entity_type: Map.get(task, :entity_type, "customer_order"),
       co_uuid: task.co_uuid,
       co_code: task.co_code,
       customer_name: task.customer_name,
+      item_uuid: Map.get(task, :item_uuid),
+      item_code: Map.get(task, :item_code),
+      item_name: Map.get(task, :item_name),
       phase_key: task.phase_key,
       phase_label: task.phase_label,
       action_code: task.action_code,
