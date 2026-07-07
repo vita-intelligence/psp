@@ -108,8 +108,29 @@ defmodule BackendWeb.EquipmentController do
           "That item is a #{t}, not equipment. Change the item's type on Settings → Items or pick an equipment item."
         )
 
+      {:error, {:illegal_transition, info}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "illegal_transition",
+            "Equipment couldn't be recorded — internal state machine rejected the birth event (from `#{info.from}` via `#{info.kind}`). Report this to engineering.",
+            info
+          )
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "create_failed",
+            "Couldn't create equipment: #{inspect(reason)}."
+          )
+        )
     end
   end
 
