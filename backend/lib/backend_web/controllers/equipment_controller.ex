@@ -22,7 +22,7 @@ defmodule BackendWeb.EquipmentController do
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "equipment.view" when action in [:index, :show]
+  plug RequirePermission, "equipment.view" when action in [:index, :show, :due_soon]
   plug RequirePermission, "equipment.create" when action in [:create]
   # Lifecycle event dispatch is multi-kind; the controller enforces
   # per-kind permission after we parse the kind out of the body.
@@ -50,6 +50,43 @@ defmodule BackendWeb.EquipmentController do
       unit ->
         json(conn, %{equipment: Payloads.equipment(unit)})
     end
+  end
+
+  @doc """
+  Units due for calibration or maintenance within `?horizon_days=N`
+  (default 14). Response rows carry the calibration or maintenance
+  side alongside the equipment payload so the FE can render "due
+  in 3 days" / "3 days overdue" chips without a second fetch.
+  """
+  def due_soon(conn, params) do
+    actor = conn.assigns.current_user
+
+    horizon =
+      case params["horizon_days"] do
+        n when is_integer(n) and n >= 0 -> n
+        b when is_binary(b) ->
+          case Integer.parse(b) do
+            {n, ""} when n >= 0 -> n
+            _ -> 14
+          end
+        _ -> 14
+      end
+
+    rows = Equipment.due_soon(actor.company_id, horizon)
+
+    json(conn, %{
+      horizon_days: horizon,
+      total: length(rows),
+      rows:
+        Enum.map(rows, fn row ->
+          %{
+            due_kind: row.due_kind,
+            due_at: row.due_at,
+            days_until: row.days_until,
+            equipment: Payloads.equipment(row.equipment)
+          }
+        end)
+    })
   end
 
   def create(conn, params) do

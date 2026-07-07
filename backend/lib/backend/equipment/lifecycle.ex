@@ -99,7 +99,9 @@ defmodule Backend.Equipment.Lifecycle do
              next_status = project_status(events),
              {:ok, updated_equipment} <- update_equipment_status(equipment, next_status),
              {:ok, updated_equipment} <-
-               apply_terminal_timestamps(updated_equipment, kind, event.occurred_at) do
+               apply_terminal_timestamps(updated_equipment, kind, event.occurred_at),
+             {:ok, updated_equipment} <-
+               apply_cadence_updates(updated_equipment, kind, event.occurred_at) do
           {:ok, %{equipment: updated_equipment, event: event, status: next_status}}
         end
 
@@ -232,6 +234,45 @@ defmodule Backend.Equipment.Lifecycle do
   end
 
   defp apply_terminal_timestamps(equipment, _kind, _occurred_at), do: {:ok, equipment}
+
+  # Cadence auto-compute — when the operator records a
+  # `calibrated` or `maintenance_completed` event, roll the
+  # `last_*_at` timestamp to the event's occurred_at and derive
+  # `next_*_at` from the configured cadence. If the unit has no
+  # cadence configured, `last_*_at` still updates but `next_*_at`
+  # stays nil (nothing to schedule).
+  defp apply_cadence_updates(%Equipment{} = equipment, "calibrated", occurred_at) do
+    at = to_utc(occurred_at)
+    next = add_months(at, equipment.calibration_frequency_months)
+
+    equipment
+    |> Ecto.Changeset.change(last_calibrated_at: at, next_calibration_at: next)
+    |> Repo.update()
+  end
+
+  defp apply_cadence_updates(%Equipment{} = equipment, "maintenance_completed", occurred_at) do
+    at = to_utc(occurred_at)
+    next = add_months(at, equipment.maintenance_frequency_months)
+
+    equipment
+    |> Ecto.Changeset.change(last_maintenance_at: at, next_maintenance_at: next)
+    |> Repo.update()
+  end
+
+  defp apply_cadence_updates(equipment, _kind, _occurred_at), do: {:ok, equipment}
+
+  # Simple "months from timestamp" calculator — good enough for the
+  # scheduling posture BRCGS wants. Not calendar-perfect (a 31 May
+  # + 1 month lands on 30 Jun / 1 Jul depending on the OS), but
+  # rounding within a day at the schedule-in-months scale is
+  # meaningless. Nil months → nil result (no cadence configured).
+  defp add_months(_at, nil), do: nil
+  defp add_months(_at, months) when months <= 0, do: nil
+
+  defp add_months(%DateTime{} = at, months) when is_integer(months) do
+    seconds_in_month = 30 * 24 * 60 * 60
+    DateTime.add(at, months * seconds_in_month, :second)
+  end
 
   defp list_events_raw(equipment_id) do
     from(e in Event,

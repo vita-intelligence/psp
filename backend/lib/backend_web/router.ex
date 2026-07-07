@@ -1109,6 +1109,10 @@ defmodule BackendWeb.Router do
     scope "/equipment" do
       get "/", EquipmentController, :index
       post "/", EquipmentController, :create
+      # `due-soon` sits above `/:id` so it doesn't collide with a
+      # UUID lookup. Query param `?horizon_days=N` narrows / widens
+      # the window (default 14).
+      get "/due-soon", EquipmentController, :due_soon
       get "/:id", EquipmentController, :show
       # Lifecycle event dispatch — kind in the body selects the
       # transition (in_service / moved / retired / disposed / …).
