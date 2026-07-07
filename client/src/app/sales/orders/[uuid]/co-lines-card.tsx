@@ -106,7 +106,7 @@ export function COLinesCard({ co, canEdit, prefs }: Props) {
           </p>
         ) : (
           <ul className="divide-y divide-border/60 overflow-hidden rounded-md border border-border/60">
-            <li className="grid grid-cols-[minmax(0,1fr)_100px_140px_120px_auto] items-center gap-3 bg-muted/30 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <li className="grid grid-cols-[minmax(0,1fr)_120px_160px_140px_110px] items-center gap-3 bg-muted/30 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               <span>Item</span>
               <span className="text-right">Qty</span>
               <span className="text-right">Price / unit</span>
@@ -270,22 +270,28 @@ function AddLineForm({
       <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         Add a line
       </p>
-      <div className="grid grid-cols-[minmax(0,1fr)_100px_140px_auto] items-center gap-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_120px_160px_auto] items-center gap-3">
         <SearchPicker<ItemPickerOption>
           fetcher={fetchItemOptions}
           value={picked}
           onChange={onItemPicked}
           placeholder="Pick an item…"
         />
-        <Input
-          type="number"
-          min={0}
-          step="any"
-          value={qty}
-          onChange={(e) => onQtyChange(e.target.value)}
-          placeholder="Qty"
-          className="h-10 text-right font-mono"
-        />
+        <div className="relative">
+          <Input
+            type="number"
+            min={0}
+            step="any"
+            value={qty}
+            onChange={(e) => onQtyChange(e.target.value)}
+            placeholder="Qty"
+            aria-label="Quantity"
+            className="h-10 pr-12 text-right font-mono"
+          />
+          <span className="pointer-events-none absolute inset-y-0 right-2.5 inline-flex items-center text-[11px] font-medium text-muted-foreground">
+            {picked?.uomSymbol ?? "ea"}
+          </span>
+        </div>
         <div className="relative">
           <Input
             type="number"
@@ -293,11 +299,15 @@ function AddLineForm({
             step="any"
             value={price}
             onChange={(e) => setPrice(e.target.value)}
-            placeholder="Price"
-            className="h-10 pr-12 text-right font-mono"
+            placeholder="Unit price"
+            aria-label={`Unit price in ${currencyCode}`}
+            className="h-10 pr-16 text-right font-mono"
           />
-          <span className="pointer-events-none absolute inset-y-0 right-3 inline-flex items-center text-xs text-muted-foreground">
-            {currencyCode}
+          <span className="pointer-events-none absolute inset-y-0 right-2.5 inline-flex items-center gap-0.5 text-[11px] font-medium text-muted-foreground">
+            <span>{currencyCode}</span>
+            <span className="text-muted-foreground/60">
+              /{picked?.uomSymbol ?? "ea"}
+            </span>
           </span>
         </div>
         <Button
@@ -344,6 +354,12 @@ function LineRow({
   const [price, setPrice] = useState(line.unit_price);
   const [pending, startTransition] = useTransition();
 
+  // Suffix labels inside the inputs — these are what disambiguate
+  // "which box is qty vs unit price" once the operator's focus has
+  // moved past the column headers. Fallback "ea" (each) for items
+  // without a stock UoM configured yet.
+  const uomSymbol = line.item?.stock_uom?.symbol ?? "ea";
+
   function save() {
     startTransition(async () => {
       const res = await updateCOLineAction(coUuid, line.uuid, {
@@ -374,7 +390,7 @@ function LineRow({
   }
 
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_100px_140px_120px_auto] items-center gap-3 px-4 py-2">
+    <li className="grid grid-cols-[minmax(0,1fr)_120px_160px_140px_110px] items-center gap-3 px-4 py-2">
       <div className="min-w-0">
         <p className="truncate text-sm font-medium">{line.item?.name ?? "—"}</p>
         <p className="truncate font-mono text-[10px] text-muted-foreground">
@@ -383,35 +399,60 @@ function LineRow({
         </p>
       </div>
       {editing ? (
-        <Input
-          type="number"
-          min={0}
-          step="any"
-          value={String(qty)}
-          onChange={(e) => setQty(e.target.value)}
-          className="h-9 text-right font-mono"
-        />
+        <div className="relative">
+          <Input
+            type="number"
+            min={0}
+            step="any"
+            value={String(qty)}
+            onChange={(e) => setQty(e.target.value)}
+            aria-label="Quantity"
+            className="h-9 pr-10 text-right font-mono"
+          />
+          <span className="pointer-events-none absolute inset-y-0 right-2.5 inline-flex items-center text-[11px] font-medium text-muted-foreground">
+            {uomSymbol}
+          </span>
+        </div>
       ) : (
         <span className="text-right font-mono text-sm">
-          {formatCompanyNumber(line.qty_ordered, prefs)}
+          {formatCompanyNumber(line.qty_ordered, prefs)}{" "}
+          <span className="text-[11px] font-normal text-muted-foreground">
+            {uomSymbol}
+          </span>
         </span>
       )}
       {editing ? (
-        <Input
-          type="number"
-          min={0}
-          step="any"
-          value={String(price)}
-          onChange={(e) => setPrice(e.target.value)}
-          className="h-9 text-right font-mono"
-        />
+        <div className="relative">
+          <Input
+            type="number"
+            min={0}
+            step="any"
+            value={String(price)}
+            onChange={(e) => setPrice(e.target.value)}
+            aria-label={`Unit price in ${currencyCode}`}
+            className="h-9 pr-14 text-right font-mono"
+          />
+          <span className="pointer-events-none absolute inset-y-0 right-2.5 inline-flex items-center gap-0.5 text-[11px] font-medium text-muted-foreground">
+            <span>{currencyCode}</span>
+            <span className="text-muted-foreground/60">/{uomSymbol}</span>
+          </span>
+        </div>
       ) : (
         <span className="text-right font-mono text-sm">
-          {formatCompanyNumber(line.unit_price, prefs)} {currencyCode}
+          {formatCompanyNumber(line.unit_price, prefs)}{" "}
+          <span className="text-[11px] font-normal text-muted-foreground">
+            {currencyCode} /{uomSymbol}
+          </span>
         </span>
       )}
       <span className="text-right font-mono text-sm font-medium">
-        {formatCompanyNumber(line.line_subtotal, prefs)} {currencyCode}
+        {formatCompanyNumber(
+          editing ? computeLineTotal(qty, price) : line.line_subtotal,
+          prefs,
+        )}{" "}
+        <span className="text-[11px] font-normal text-muted-foreground">
+          {currencyCode}
+        </span>
       </span>
       <div className="flex items-center gap-1">
         {canEdit && !editing && (
@@ -468,4 +509,16 @@ function LineRow({
       </div>
     </li>
   );
+}
+
+// Live line-total preview while the operator is editing qty / price.
+// Returns a string in the same shape line.line_subtotal comes back as
+// (decimal-ish) so formatCompanyNumber renders it consistently. A
+// non-numeric input (blank field mid-typing) folds to "0" so the
+// preview shows something rather than "NaN".
+function computeLineTotal(qty: string, price: string): string {
+  const q = Number(qty);
+  const p = Number(price);
+  if (!Number.isFinite(q) || !Number.isFinite(p)) return "0";
+  return String(q * p);
 }
