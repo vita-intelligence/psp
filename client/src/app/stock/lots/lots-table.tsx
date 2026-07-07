@@ -42,13 +42,17 @@ interface LotsTableProps {
 const DEFAULT_SORT: SortSpec = { field: "id", direction: "desc" };
 
 // Status → badge tone. We bias toward emerald (the happy path) for
-// `received`, amber for transitional states, muted for terminal.
+// `available`, amber for transitional states, muted for terminal.
+// The two pre-arrival statuses are visually distinct: `requested`
+// (paperwork-only, no vendor commitment yet) reads as a muted gray;
+// `expected` (PO ordered + paid, actual commitment) reads as indigo
+// so planners can see the difference at a glance in the lot list.
 const STATUS_TONE: Record<
   StockLotStatus,
   "emerald" | "amber" | "muted" | "destructive" | "indigo" | "sky"
 > = {
   expected: "indigo",
-  requested: "indigo",
+  requested: "muted",
   received: "sky",
   quarantine: "amber",
   awaiting_release: "amber",

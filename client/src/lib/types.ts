@@ -875,6 +875,17 @@ export interface PurchaseOrderLine {
    *  `vendor_approved_items.vendor_part_no` when that registry has an
    *  entry, otherwise free text. */
   vendor_part_no: string | null;
+  /** The day-one child stock_lot spawned when this line was persisted.
+   *  Status starts at `requested`, moves to `expected` on
+   *  `mark_ordered`, ends at physical per-pack lots after goods-in.
+   *  Null for legacy lines created before the child-lot pipeline was
+   *  wired. */
+  child_lot: {
+    id: number;
+    uuid: string;
+    code: string;
+    status: StockLotStatus;
+  } | null;
   inserted_at: string;
   updated_at: string;
 }

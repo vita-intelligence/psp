@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { AlertTriangle, Layers, Loader2, Plus, X } from "lucide-react";
+import { AlertTriangle, Layers, Loader2, Package, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,6 +23,7 @@ import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type {
   Item,
   PurchaseOrder,
+  PurchaseOrderLine,
   PurchaseOrderSuggestPrice,
 } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
@@ -218,6 +220,7 @@ export function POLinesCard({ po, items, canEdit }: Props) {
                     <p className="truncate font-mono text-[10px] text-muted-foreground">
                       {l.item?.code ?? `#${l.item_id}`}
                     </p>
+                    <ChildLotChip line={l} />
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm">
                     {fmtQty(l.qty_ordered)}
@@ -485,3 +488,51 @@ function fmtQty(value: string | null | undefined): string {
   // significant decimals (10.0000 → "10", 10.5000 → "10.5").
   return parseFloat(n.toFixed(4)).toString();
 }
+
+/** Small chip under the item name showing the day-one LOT number
+ *  minted from this PO line + its current status. Clickable — deep
+ *  links into the stock lot detail page so a planner can jump from
+ *  PO detail into the lot's booking / event history in one click.
+ *  Rendered only when the backend has a child_lot for this line
+ *  (nil for legacy pre-PR-1 lines). */
+function ChildLotChip({ line }: { line: PurchaseOrderLine }) {
+  const lot = line.child_lot;
+  if (!lot) return null;
+
+  return (
+    <Link
+      href={`/stock/lots/${lot.uuid}`}
+      className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+      title={`Open lot ${lot.code}`}
+    >
+      <Package className="size-3" />
+      <span>{lot.code}</span>
+      <span
+        className={
+          "rounded px-1 text-[9px] uppercase tracking-wider " +
+          LOT_STATUS_CHIP[lot.status]
+        }
+      >
+        {lot.status.replace("_", " ")}
+      </span>
+    </Link>
+  );
+}
+
+// Tailwind class map keyed by lot status — each chip picks up its own
+// tone so a glance across the lines table tells the planner which
+// lots are still paperwork (`requested`) vs financially committed
+// (`expected`) vs physically here (`available`).
+const LOT_STATUS_CHIP: Record<string, string> = {
+  requested: "bg-slate-100 text-slate-700",
+  expected: "bg-indigo-100 text-indigo-800",
+  received: "bg-sky-100 text-sky-800",
+  quarantine: "bg-amber-100 text-amber-800",
+  awaiting_release: "bg-amber-100 text-amber-800",
+  available: "bg-emerald-100 text-emerald-800",
+  on_hold: "bg-amber-100 text-amber-800",
+  depleted: "bg-muted text-muted-foreground",
+  disposed: "bg-muted text-muted-foreground",
+  rejected: "bg-red-100 text-red-800",
+  canceled: "bg-muted text-muted-foreground line-through",
+};

@@ -1920,7 +1920,7 @@ defmodule Backend.Purchasing do
         :received_by,
         :cancelled_by,
         :default_warehouse,
-        lines: [:item, :warehouse],
+        lines: [:item, :warehouse, :child_lot],
         approvals: [:signed_by],
         files: [:uploaded_by]
       ],
