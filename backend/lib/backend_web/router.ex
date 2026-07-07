@@ -953,6 +953,14 @@ defmodule BackendWeb.Router do
     # has a single list of "what to order next".
     get "/procurement/shortages", ProcurementShortagesController, :index
 
+    # Reorder suggestions — items whose coverage (on-hand + in-flight
+    # PO qty) has fallen below their configured min_stock_qty. Feeds
+    # the my-tasks queue for users with procurement.po_create and the
+    # /procurement overview banner.
+    get "/procurement/reorder-suggestions",
+        ReorderSuggestionsController,
+        :index
+
     # AP ledger — vendor invoices. Index is the global "Incoming
     # invoices" feed (MRPEasy parity); :show / :update / :delete and
     # the lifecycle transitions sit under the same scope. File serve

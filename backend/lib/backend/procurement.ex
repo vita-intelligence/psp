@@ -427,4 +427,153 @@ defmodule Backend.Procurement do
   end
 
   defp sanitised_filename(_), do: "invoice.pdf"
+
+  # ================================================================
+  # Reorder / low-stock suggestions
+  # ================================================================
+  #
+  # When an item has `min_stock_qty` set, procurement watches its
+  # coverage (on-hand + in-flight PO qty) and surfaces a suggestion
+  # whenever `coverage < min_stock_qty`. The instant trigger + task
+  # emission live in `Backend.Reorder` (PR 3). This module owns the
+  # read side: the point-in-time snapshot the FE polls + the last-
+  # vendor lookup the PO pre-fill uses.
+
+  # PO states where the qty is genuinely "coming" — draft is on the
+  # buyer's desk (still counts as engaged), pending / approved /
+  # ordered / partially_received all imply real supply is inbound.
+  # cancelled + received (fully) don't add to future coverage.
+  @coming_po_statuses ~w(draft pending_approver pending_director approved
+                         ordered partially_received)
+
+  @doc """
+  Point-in-time reorder snapshot for the tenant. Returns one row per
+  item with `min_stock_qty` set:
+
+      %{
+        item: %Backend.Items.Item{},
+        on_hand: %Decimal{},          # sum of available lot placements
+        in_flight: %Decimal{},        # PO line qty_ordered - qty_received
+        coverage: %Decimal{},         # on_hand + in_flight
+        min_stock_qty: %Decimal{},
+        target_stock_qty: %Decimal{}, # falls back to min when unset
+        shortfall: %Decimal{},        # target - coverage (0 when covered)
+        below_threshold: boolean
+      }
+
+  Sorted so the biggest shortfall lands first.
+  """
+  def reorder_status(company_id) when is_integer(company_id) do
+    items = list_items_with_reorder_points(company_id)
+
+    if items == [] do
+      []
+    else
+      item_ids = Enum.map(items, & &1.id)
+      on_hand_map = on_hand_by_item(company_id, item_ids)
+      in_flight_map = in_flight_by_item(company_id, item_ids)
+
+      items
+      |> Enum.map(&build_reorder_row(&1, on_hand_map, in_flight_map))
+      |> Enum.sort_by(& &1.shortfall, &compare_decimal_desc/2)
+    end
+  end
+
+  @doc """
+  Suggest a vendor for a reorder of the given item. Returns the
+  vendor from the MOST RECENT PO line for that item — captures "who
+  did we buy this from last time". Falls back to nil when the item
+  has never been ordered.
+  """
+  def last_vendor_for_item(company_id, item_id)
+      when is_integer(company_id) and is_integer(item_id) do
+    from(pol in Backend.Purchasing.PurchaseOrderLine,
+      join: po in Backend.Purchasing.PurchaseOrder,
+      on: po.id == pol.purchase_order_id,
+      join: v in Backend.Vendors.Vendor,
+      on: v.id == po.vendor_id,
+      where: po.company_id == ^company_id and pol.item_id == ^item_id,
+      order_by: [
+        desc: fragment("COALESCE(?, ?)", po.ordered_at, po.inserted_at)
+      ],
+      limit: 1,
+      select: v
+    )
+    |> Repo.one()
+  end
+
+  defp list_items_with_reorder_points(company_id) do
+    from(i in Backend.Items.Item,
+      where:
+        i.company_id == ^company_id and
+          not is_nil(i.min_stock_qty) and
+          i.is_active == true,
+      preload: [:stock_uom]
+    )
+    |> Repo.all()
+  end
+
+  defp on_hand_by_item(company_id, item_ids) do
+    from(p in Backend.Stock.Placement,
+      join: l in Backend.Stock.Lot,
+      on: l.id == p.stock_lot_id,
+      where:
+        l.company_id == ^company_id and
+          l.status == "available" and
+          l.item_id in ^item_ids,
+      group_by: l.item_id,
+      select: {l.item_id, sum(p.qty)}
+    )
+    |> Repo.all()
+    |> Map.new(fn {id, sum} -> {id, sum || Decimal.new(0)} end)
+  end
+
+  defp in_flight_by_item(company_id, item_ids) do
+    from(pol in Backend.Purchasing.PurchaseOrderLine,
+      join: po in Backend.Purchasing.PurchaseOrder,
+      on: po.id == pol.purchase_order_id,
+      where:
+        po.company_id == ^company_id and
+          po.status in ^@coming_po_statuses and
+          pol.item_id in ^item_ids,
+      group_by: pol.item_id,
+      select: {pol.item_id, sum(pol.qty_ordered - pol.qty_received)}
+    )
+    |> Repo.all()
+    |> Map.new(fn {id, sum} -> {id, sum || Decimal.new(0)} end)
+  end
+
+  defp build_reorder_row(item, on_hand_map, in_flight_map) do
+    on_hand = Map.get(on_hand_map, item.id, Decimal.new(0))
+    in_flight = Map.get(in_flight_map, item.id, Decimal.new(0))
+    coverage = Decimal.add(on_hand, in_flight)
+    target = item.target_stock_qty || item.min_stock_qty
+    below? = Decimal.compare(coverage, item.min_stock_qty) == :lt
+
+    shortfall =
+      if below? do
+        gap = Decimal.sub(target, coverage)
+        if Decimal.compare(gap, Decimal.new(0)) == :gt, do: gap, else: Decimal.new(0)
+      else
+        Decimal.new(0)
+      end
+
+    %{
+      item: item,
+      on_hand: on_hand,
+      in_flight: in_flight,
+      coverage: coverage,
+      min_stock_qty: item.min_stock_qty,
+      target_stock_qty: target,
+      shortfall: shortfall,
+      below_threshold: below?
+    }
+  end
+
+  # Decimal doesn't ship a comparator suitable for Enum.sort_by/2 out
+  # of the box; wrap `compare/2` so ties keep insertion order and
+  # descending puts the biggest shortfall first.
+  defp compare_decimal_desc(a, b) do
+    Decimal.compare(a, b) != :lt
+  end
 end
