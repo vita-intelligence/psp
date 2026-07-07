@@ -80,6 +80,17 @@ defmodule Backend.Items.Item do
     #   }
     field :default_packaging, :map
 
+    # Reorder-point pair. When `min_stock_qty` is set, this item
+    # participates in the reorder game — the coverage sweep in
+    # `Backend.Procurement.reorder_status/1` scans it after every
+    # negative stock movement. `target_stock_qty` is the order-up-to
+    # level; suggested reorder qty is `target - coverage`. Both are
+    # meaningless for finished_product / semi_finished / equipment
+    # (make-to-order / unit-tracked); the changeset refuses them on
+    # those types.
+    field :min_stock_qty, :decimal
+    field :target_stock_qty, :decimal
+
     belongs_to :company, Company
     belongs_to :stock_uom, UnitOfMeasurement
     belongs_to :product_family, ProductFamily
@@ -140,6 +151,13 @@ defmodule Backend.Items.Item do
   def valid_item_types, do: @valid_item_types
   def compliance_statuses, do: @compliance_statuses
 
+  # Item types that are BOUGHT via PO — the only types where reorder
+  # points make sense. Finished / semi-finished are made via MO;
+  # equipment is unit-tracked with its own module.
+  @reorderable_item_types ~w(consumable raw_material packaging)
+
+  def reorderable_item_types, do: @reorderable_item_types
+
   def changeset(item, attrs) do
     item
     |> cast(attrs, [
@@ -159,6 +177,8 @@ defmodule Backend.Items.Item do
       :compliance_readied_at,
       :compliance_readied_by_id,
       :compliance_revert_reason,
+      :min_stock_qty,
+      :target_stock_qty,
       :created_by_id,
       :updated_by_id
     ])
@@ -173,6 +193,10 @@ defmodule Backend.Items.Item do
     |> validate_inclusion(:compliance_status, @compliance_statuses,
       message: "must be one of: #{Enum.join(@compliance_statuses, ", ")}"
     )
+    |> validate_number(:min_stock_qty, greater_than_or_equal_to: 0)
+    |> validate_number(:target_stock_qty, greater_than_or_equal_to: 0)
+    |> validate_reorder_qtys_shape()
+    |> validate_reorder_only_on_reorderable_type()
     |> normalise_storage_tags()
     |> validate_storage_tag_membership()
     |> unique_constraint([:company_id, :name],
@@ -183,6 +207,49 @@ defmodule Backend.Items.Item do
       name: :items_company_id_external_sku_index,
       message: "this external SKU is already in use"
     )
+  end
+
+  # target_stock_qty >= min_stock_qty when both are set. Prevents the
+  # nonsense "reorder up to less than the trigger" configuration.
+  defp validate_reorder_qtys_shape(changeset) do
+    min = get_field(changeset, :min_stock_qty)
+    target = get_field(changeset, :target_stock_qty)
+
+    cond do
+      is_nil(min) or is_nil(target) ->
+        changeset
+
+      Decimal.compare(target, min) == :lt ->
+        add_error(
+          changeset,
+          :target_stock_qty,
+          "must be greater than or equal to min_stock_qty"
+        )
+
+      true ->
+        changeset
+    end
+  end
+
+  # Refuse min/target on item types that don't make sense as reorder
+  # candidates. Softer than a DB constraint so an operator flipping
+  # an item's type doesn't hit a raw error before they can clear the
+  # legacy qtys.
+  defp validate_reorder_only_on_reorderable_type(changeset) do
+    type = get_field(changeset, :item_type)
+    min = get_field(changeset, :min_stock_qty)
+    target = get_field(changeset, :target_stock_qty)
+
+    if (not is_nil(min) or not is_nil(target)) and
+         type not in @reorderable_item_types do
+      add_error(
+        changeset,
+        :min_stock_qty,
+        "reorder points only apply to consumable / raw_material / packaging items"
+      )
+    else
+      changeset
+    end
   end
 
   # Same normalisation as StorageLocation: lowercase trim, drop
