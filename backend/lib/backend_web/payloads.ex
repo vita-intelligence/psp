@@ -4756,6 +4756,10 @@ defmodule BackendWeb.Payloads do
       reference_ref: m.reference_ref,
       occurred_at: m.occurred_at,
       actor: actor(m, :actor),
+      # For `issue` movements: who received the stock. Distinct from
+      # `actor` (who did the issuing). Nullable — bulk shift issues
+      # don't always track an individual recipient.
+      issued_to_user: actor(m, :issued_to_user),
       photo_url: m.photo_url,
       skip_photo_reason: m.skip_photo_reason,
       inserted_at: m.inserted_at

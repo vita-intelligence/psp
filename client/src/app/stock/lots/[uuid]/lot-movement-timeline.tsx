@@ -288,6 +288,7 @@ const KIND_ICON: Record<string, typeof Move> = {
   consume: PackageMinus,
   adjust: ArrowUp,
   dispose: Trash2,
+  issue: PackageMinus,
 };
 const KIND_TONE: Record<
   string,
@@ -317,6 +318,11 @@ const KIND_TONE: Record<
     bg: "bg-red-500/15",
     icon: "text-red-700 dark:text-red-400",
     chip: "bg-red-500/10 text-red-700 dark:text-red-400",
+  },
+  issue: {
+    bg: "bg-purple-500/15",
+    icon: "text-purple-700 dark:text-purple-400",
+    chip: "bg-purple-500/10 text-purple-700 dark:text-purple-400",
   },
 };
 

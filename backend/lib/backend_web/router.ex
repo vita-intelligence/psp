@@ -1144,6 +1144,11 @@ defmodule BackendWeb.Router do
         # the divergence shows up on the lot's history.
         post "/adjust", StockLotController, :adjust
 
+        # Consumable draw-down — PPE handout, sanitiser pour, spare
+        # parts issue. Records an `issue` movement carrying the
+        # recipient + purpose + optional MO link.
+        post "/issue", StockLotController, :issue
+
         # Ranked suggestions for the put-away destination: same-item
         # consolidation + matching storage tags. Mobile shows these as
         # one-tap cards so the camera viewfinder is the fallback,

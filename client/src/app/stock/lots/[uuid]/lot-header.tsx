@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Move, Printer, Package, Scale } from "lucide-react";
+import { HandCoins, Move, Printer, Package, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type { StockLot } from "@/lib/types";
@@ -10,6 +10,7 @@ import { formatCompanyNumber } from "@/lib/format/company";
 import { PrintLabelDialog } from "../print-label-dialog";
 import { MoveLotDialog } from "./move-lot-dialog";
 import { AdjustQtyDialog } from "./adjust-qty-dialog";
+import { IssueDialog } from "./issue-dialog";
 
 /**
  * Hero card: lot code, item, status chip, qty on hand, top-line
@@ -33,6 +34,15 @@ export function LotHeader({
   const [printOpen, setPrintOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [issueOpen, setIssueOpen] = useState(false);
+
+  // Issue is the consumables draw-down flow — PPE, sanitiser, spare
+  // parts, food-grade lube. Only surface the CTA when this lot is a
+  // consumable AND currently available; other statuses aren't
+  // meaningful to "issue" (quarantine still needs QC, rejected
+  // shouldn't leave, etc).
+  const isIssuableConsumable =
+    lot.item?.item_type === "consumable" && lot.status === "available";
 
   const qtyOnHand = formatCompanyNumber(lot.qty_on_hand, prefs);
   const qtyReceived = formatCompanyNumber(lot.qty_received, prefs);
@@ -84,6 +94,21 @@ export function LotHeader({
               Adjust qty
             </Button>
           )}
+          {canAdjust && isIssuableConsumable && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (locked) return;
+                setIssueOpen(true);
+              }}
+              disabled={locked}
+              title={locked ? "Only the head of the room can act here." : undefined}
+            >
+              <HandCoins className="mr-1.5 size-4" />
+              Issue
+            </Button>
+          )}
           {canMove && (
             <Button
               size="sm"
@@ -124,6 +149,9 @@ export function LotHeader({
           open={adjustOpen}
           onOpenChange={setAdjustOpen}
         />
+      )}
+      {canAdjust && isIssuableConsumable && (
+        <IssueDialog lot={lot} open={issueOpen} onOpenChange={setIssueOpen} />
       )}
     </header>
   );

@@ -13,7 +13,13 @@ defmodule Backend.Stock.Movement do
   alias Backend.Stock.Lot
   alias Backend.Warehouses.StorageCell
 
-  @kinds ~w(receive move consume adjust_up adjust_down dispose return auto_route)
+  # `issue` covers consumable draw-downs (PPE, sanitiser, food-grade
+  # lube, lab reagents, spare parts) — an operator hands stock to a
+  # user / department / shift. Different from `consume`, which is the
+  # MO-internal pick → confirm → consume ceremony bound to a specific
+  # production step. Both decrement placement qty and require a
+  # source cell.
+  @kinds ~w(receive move consume adjust_up adjust_down dispose return auto_route issue)
   @reference_kinds ~w(purchase_order manufacturing_order sales_order transfer_order stock_take adjustment lifecycle_event)
 
   def kinds, do: @kinds
@@ -43,6 +49,10 @@ defmodule Backend.Stock.Movement do
     belongs_to :from_cell, StorageCell, foreign_key: :from_cell_id
     belongs_to :to_cell, StorageCell, foreign_key: :to_cell_id
     belongs_to :actor, User, foreign_key: :actor_id
+    # For `issue` movements: who received the stock (distinct from
+    # `actor` who did the issuing). Nullable — a bulk shift issuance
+    # may not track an individual recipient.
+    belongs_to :issued_to_user, User, foreign_key: :issued_to_user_id
 
     timestamps(type: :utc_datetime)
   end
@@ -63,7 +73,8 @@ defmodule Backend.Stock.Movement do
       :actor_id,
       :occurred_at,
       :photo_url,
-      :skip_photo_reason
+      :skip_photo_reason,
+      :issued_to_user_id
     ])
     |> validate_required([
       :company_id,
@@ -101,6 +112,9 @@ defmodule Backend.Stock.Movement do
 
       "dispose" when is_nil(from_id) ->
         add_error(changeset, :from_cell_id, "dispose movements require a source cell")
+
+      "issue" when is_nil(from_id) ->
+        add_error(changeset, :from_cell_id, "issue movements require a source cell")
 
       "move" when is_nil(from_id) or is_nil(to_id) ->
         add_error(changeset, :kind, "move movements need both from + to cells")
