@@ -623,7 +623,7 @@ defmodule BackendWeb.ManufacturingOrderController do
         unprocessable(
           conn,
           "lines_under_booked",
-          "MO can't be prepared — these BOM lines aren't fully booked: #{short}. Book the missing qty (or wait for the procurement request to land + book then) before preparing.",
+          "MO can't advance — these BOM lines aren't fully booked: #{short}. Book the missing qty (or raise a PO so the placeholder booking lands) before signing.",
           %{lines: list}
         )
 
