@@ -95,6 +95,15 @@ defmodule Backend.RBAC.Permissions do
     {"certificates.manage", "Create, edit, and delete certificates"}
   ]
 
+  # Machine-to-machine bearer tokens for external systems (currently
+  # vita-performance). One permission for read + write because
+  # rotating a token is the only lifecycle event and belongs to the
+  # same operator who mints them.
+  @integrations [
+    {"integrations.manage",
+     "Mint, list, and revoke integration tokens for external systems"}
+  ]
+
   # Stock operations — lots, placements, movements. View is the read
   # baseline (lot list + detail + movement history). Receive lets the
   # operator create manual lots; Move and Adjust each carry their own
@@ -382,6 +391,7 @@ defmodule Backend.RBAC.Permissions do
         @catalogues ++
         @risk_assessments ++
         @certificates ++
+        @integrations ++
         @stock ++
         @equipment ++
         @vendors ++
@@ -417,6 +427,7 @@ defmodule Backend.RBAC.Permissions do
       catalogues: @catalogues,
       risk_assessments: @risk_assessments,
       certificates: @certificates,
+      integrations: @integrations,
       stock: @stock,
       equipment: @equipment,
       vendors: @vendors,

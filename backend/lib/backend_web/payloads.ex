@@ -5472,4 +5472,27 @@ defmodule BackendWeb.Payloads do
       updated_at: f.updated_at
     }
   end
+
+  @doc """
+  Integration token — machine-to-machine bearer credential. Never
+  echoes the raw token (that only surfaces once on mint via the
+  controller's create response); the `prefix` is safe to display.
+  """
+  def integration_token(%Backend.Accounts.IntegrationToken{} = t) do
+    %{
+      id: t.id,
+      uuid: t.uuid,
+      name: t.name,
+      prefix: t.token_prefix,
+      scopes: t.scopes,
+      is_active: t.is_active,
+      last_used_at: t.last_used_at,
+      revoked_at: t.revoked_at,
+      revoke_reason: t.revoke_reason,
+      revoked_by: actor(t, :revoked_by),
+      created_by: actor(t, :created_by),
+      inserted_at: t.inserted_at,
+      updated_at: t.updated_at
+    }
+  end
 end

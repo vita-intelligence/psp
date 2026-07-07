@@ -143,6 +143,14 @@ defmodule BackendWeb.Router do
     post "/auth/mfa/confirm", MfaController, :confirm
     post "/auth/mfa/disable", MfaController, :disable
 
+    # Integration tokens — human-user CRUD for the
+    # `/settings/integrations` page. Distinct from `/api/integration`
+    # (machine-facing, X-Integration-Token) — this is the workbench
+    # where the operator mints/revokes tokens the machine callers use.
+    get "/integration-tokens", IntegrationTokenController, :index
+    post "/integration-tokens", IntegrationTokenController, :create
+    post "/integration-tokens/:id/revoke", IntegrationTokenController, :revoke
+
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label
