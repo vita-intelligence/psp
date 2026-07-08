@@ -78,6 +78,10 @@ interface VendorOption extends SearchPickerOption {
   defaultLeadTimeDays: number;
   isApproved: boolean;
   isActive: boolean;
+  /** Vendor's default tax rate as a decimal string (e.g. "20.00").
+   *  Nullable — vendor rows without a rate set leave the PO's tax
+   *  input empty until the buyer types one. */
+  taxRate: string | null;
 }
 
 /** Item option — carries item.code so the line row can render the
@@ -268,6 +272,7 @@ export function NewPOForm({
           default_lead_time_days?: number;
           approval_status?: string;
           is_active?: boolean;
+          tax_rate?: string | number | null;
         }>;
       };
       return (body.items ?? []).map(vendorRowToOption);
@@ -341,7 +346,17 @@ export function NewPOForm({
     })
       .then((r) => (r.ok ? r.json() : null))
       .then((body: { vendor?: Parameters<typeof vendorRowToOption>[0] } | null) => {
-        if (body?.vendor) setSelectedVendor(vendorRowToOption(body.vendor));
+        if (body?.vendor) {
+          const opt = vendorRowToOption(body.vendor);
+          setSelectedVendor(opt);
+          // Same rationale as onPickVendor — hydrate the tax rate so
+          // the deep-link prefill (reorder task, shortage row) shows
+          // the correct Totals preview before the buyer touches
+          // anything.
+          if (opt.taxRate && !state.tax_rate) {
+            setField("tax_rate", opt.taxRate);
+          }
+        }
       })
       .catch(() => {
         /* aborted or transient */
@@ -386,9 +401,17 @@ export function NewPOForm({
   function onPickVendor(opt: VendorOption | null) {
     setSelectedVendor(opt);
     setField("vendorId", opt ? String(opt.id) : "");
-    if (opt) setField("currency", opt.currencyCode);
-    // tax_rate default is filled server-side from vendor.tax_rate on
-    // create. Buyer can override here.
+    if (opt) {
+      setField("currency", opt.currencyCode);
+      // Hydrate the tax rate so the Totals preview reflects the
+      // vendor's default immediately — the previous behaviour relied
+      // on the server filling it on create, which meant a 0% preview
+      // + a "wait, my grand total is wrong" moment for the buyer.
+      // Buyer can still override in the input.
+      if (opt.taxRate && !state.tax_rate) {
+        setField("tax_rate", opt.taxRate);
+      }
+    }
   }
 
   // ── Computed totals (server is authoritative; we mirror for preview) ─
@@ -1661,6 +1684,7 @@ function vendorRowToOption(v: {
   default_lead_time_days?: number;
   approval_status?: string;
   is_active?: boolean;
+  tax_rate?: string | number | null;
 }): VendorOption {
   return {
     id: v.id,
@@ -1671,6 +1695,10 @@ function vendorRowToOption(v: {
     defaultLeadTimeDays: v.default_lead_time_days ?? 0,
     isApproved: v.approval_status === "approved",
     isActive: v.is_active !== false,
+    taxRate:
+      v.tax_rate === null || v.tax_rate === undefined
+        ? null
+        : String(v.tax_rate),
   };
 }
 

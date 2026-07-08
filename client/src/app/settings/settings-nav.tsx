@@ -16,6 +16,7 @@ import {
   Building2,
   Tags,
   Users,
+  Users2,
   Warehouse,
   Factory,
   ShieldCheck,
@@ -27,6 +28,7 @@ import {
   Settings2,
   Smartphone,
   ListChecks,
+  Plug,
 } from "lucide-react";
 
 interface NavItem {
@@ -105,6 +107,12 @@ const ITEMS: NavItem[] = [
     label: "Templates",
     icon: ShieldCheck,
     permission: "roles.view",
+  },
+  {
+    href: "/settings/integrations",
+    label: "Integrations",
+    icon: Plug,
+    permission: "integrations.manage",
   },
   {
     href: "/queues",

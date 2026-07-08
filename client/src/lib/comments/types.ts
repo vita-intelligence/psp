@@ -20,7 +20,8 @@ export type CommentEntityType =
   | "manufacturing_order"
   | "manufacturing_order_step"
   | "shipment"
-  | "equipment";
+  | "equipment"
+  | "hr_employee";
 
 export type CommentVisibility = "internal" | "shared";
 

@@ -425,6 +425,14 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "shipment"),
     do: RBAC.has_permission?(user, "shipments.edit")
 
+  # HR employee master-data form — realtime collab per CLAUDE.md.
+  # Both create + edit collapse to `hr.edit` OR `hr.create` because
+  # the same form component drives both surfaces; the HTTP layer
+  # enforces the right gate per action.
+  defp can_edit_resource?(user, "hr-employee"),
+    do: RBAC.has_permission?(user, "hr.edit") or
+        RBAC.has_permission?(user, "hr.create")
+
   defp can_edit_resource?(_user, _resource), do: false
 
   # Per-resource override for the room cap. Default to

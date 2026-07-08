@@ -8,6 +8,7 @@ import {
   Settings as SettingsIcon,
   ShoppingCart,
   Truck,
+  Users2,
 } from "lucide-react";
 import type { User } from "@/lib/types";
 import { hasPermission } from "@/lib/rbac";
@@ -85,6 +86,14 @@ export function ModuleGrid({ user }: { user: User }) {
       Icon: Truck,
       caption: "Outbound dispatch records",
       gate: hasPermission(user, "shipments.view"),
+    },
+    {
+      key: "hr",
+      href: "/hr",
+      label: "HR",
+      Icon: Users2,
+      caption: "Employees, wages, reputation",
+      gate: hasPermission(user, "hr.view"),
     },
     {
       key: "settings",

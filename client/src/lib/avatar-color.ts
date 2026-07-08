@@ -12,10 +12,14 @@ const PALETTE = [
   { bg: "bg-orange-100", text: "text-orange-700" },
 ];
 
-export function avatarColour(seed: string) {
+export function avatarColour(seed: string | null | undefined) {
+  // Null-safe — an audit event actor with no email + no name would
+  // otherwise crash here. Empty seed hashes to the first palette
+  // slot, which is fine as a stable "unknown user" fallback.
+  const safe = seed ?? "";
   let h = 0;
-  for (let i = 0; i < seed.length; i++) {
-    h = (h * 31 + seed.charCodeAt(i)) | 0;
+  for (let i = 0; i < safe.length; i++) {
+    h = (h * 31 + safe.charCodeAt(i)) | 0;
   }
   const idx = Math.abs(h) % PALETTE.length;
   return PALETTE[idx]!;

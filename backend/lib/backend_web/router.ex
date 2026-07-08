@@ -12,6 +12,17 @@ defmodule BackendWeb.Router do
     plug BackendWeb.Plugs.RequireAuth
   end
 
+  # Machine-to-machine integrations (vita-performance today, more
+  # later) authenticate via an opaque bearer token in
+  # `X-Integration-Token` rather than a user session. The pipeline
+  # verifies token validity + activity; individual routes layer their
+  # own scope check via a per-route plug.
+  pipeline :api_integration do
+    plug :accepts, ["json"]
+    plug BackendWeb.Plugs.SecureHeaders
+    plug BackendWeb.Plugs.RequireIntegrationAuth, scope: :any
+  end
+
   # One pipeline per polymorphic-comments mount. Stamps
   # `conn.assigns.entity_type` so `CommentsController` knows which
   # kind of row the URL uuid refers to without inventing a new path
@@ -88,6 +99,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "equipment"
   end
 
+  pipeline :comments_hr_employee do
+    plug :put_entity_type, "hr_employee"
+  end
+
   defp put_entity_type(conn, type) do
     Plug.Conn.assign(conn, :entity_type, type)
   end
@@ -131,6 +146,14 @@ defmodule BackendWeb.Router do
     post "/auth/mfa/enroll", MfaController, :enroll
     post "/auth/mfa/confirm", MfaController, :confirm
     post "/auth/mfa/disable", MfaController, :disable
+
+    # Integration tokens — human-user CRUD for the
+    # `/settings/integrations` page. Distinct from `/api/integration`
+    # (machine-facing, X-Integration-Token) — this is the workbench
+    # where the operator mints/revokes tokens the machine callers use.
+    get "/integration-tokens", IntegrationTokenController, :index
+    post "/integration-tokens", IntegrationTokenController, :create
+    post "/integration-tokens/:id/revoke", IntegrationTokenController, :revoke
 
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
@@ -326,6 +349,27 @@ defmodule BackendWeb.Router do
     # Company-scoped certificate registry (definitions). Per-item
     # attachments are nested under items above.
     resources "/certificates", CertificateController, except: [:new, :edit]
+
+    # HR — employees master data + wage history + reputation event
+    # stream. Sessions FK the row so `:delete` is disabled in favour
+    # of `:archive` (soft delete). Wages + reputation events land
+    # under the employee resource so the RBAC gate + tenant scope
+    # ride along the parent lookup.
+    resources "/hr/employees", HREmployeeController,
+      except: [:new, :edit, :delete] do
+      post "/archive", HREmployeeController, :archive
+      get "/wages", HREmployeeController, :list_wages
+      post "/wages", HREmployeeController, :create_wage
+      get "/reputation-events", HREmployeeController, :list_reputation_events
+
+      post "/reputation-events",
+           HREmployeeController,
+           :create_reputation_event
+
+      # Every WorkstationSession this employee has run — feeds the
+      # profile page's timeline + active-run card.
+      get "/sessions", HREmployeeController, :list_sessions
+    end
 
     # Vendor registry. Holds the approved-supplier list + per-vendor
     # certificate evidence the PO line validator + GFSI audits read.
@@ -550,6 +594,10 @@ defmodule BackendWeb.Router do
       # detail page that tells operators exactly what to do next.
       get "/wizard", CustomerOrderController, :wizard
 
+      # Chronological session timeline across every MO in the CO's
+      # tree. Powers the "Production sessions" card on the wizard.
+      get "/sessions", MOSessionsController, :for_customer_order
+
       # Wizard CTA: create an MO pre-linked to the chosen CO line.
       post "/lines/:line_uuid/create-mo",
            CustomerOrderController,
@@ -685,6 +733,16 @@ defmodule BackendWeb.Router do
 
       get "/manufacturing-orders", ManufacturingOrderController, :index
       get "/manufacturing-orders/:id", ManufacturingOrderController, :show
+      # Phase 7 — actual labour + machine cost per step / per MO,
+      # sourced from WorkstationSession + point-in-time EmployeeWage.
+      get "/manufacturing-orders/:id/cost-breakdown",
+          MOCostBreakdownController,
+          :show
+      # Chronological session timeline for the MO detail page —
+      # every WorkstationSession attributed to any step of this MO.
+      get "/manufacturing-orders/:id/sessions",
+          MOSessionsController,
+          :index
       post "/manufacturing-orders", ManufacturingOrderController, :create
       patch "/manufacturing-orders/:id", ManufacturingOrderController, :update
       post "/manufacturing-orders/:id/transition",
@@ -1507,6 +1565,22 @@ defmodule BackendWeb.Router do
     delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
+  scope "/api/hr/employees/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_hr_employee]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
+  end
+
   # PO-line comments — line uuid is globally unique. The controller
   # + channel resolve to the PurchaseOrderLine row and check the
   # parent PO belongs to the actor's company.
@@ -1525,6 +1599,56 @@ defmodule BackendWeb.Router do
     post "/:comment_uuid/reactions", CommentsController, :add_reaction
     delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
     delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
+  end
+
+  # -------------------------------------------------------------------
+  # Integration API — machine-to-machine callers (vita-performance
+  # today). The pipeline verifies the bearer token; each route layers
+  # its own required scope via a per-route plug (see e.g. `mo:read`
+  # on the manufacturing-orders index). `/health` is the smallest
+  # possible surface — token identity + granted scopes echoed back.
+  # -------------------------------------------------------------------
+  scope "/api/integration", BackendWeb do
+    pipe_through :api_integration
+
+    get "/health", IntegrationHealthController, :show
+
+    # Read-side (per-action scope check happens inside the controller).
+    get "/manufacturing-orders", IntegrationReadController, :list_manufacturing_orders
+    get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
+    get "/workstations", IntegrationReadController, :list_workstations
+    get "/items", IntegrationReadController, :list_items
+    get "/hr/employees", IntegrationReadController, :list_employees
+
+    # Write-side
+    post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
+         IntegrationSessionController,
+         :create_mo_session
+
+    post "/workstations/:uuid/sessions",
+         IntegrationSessionController,
+         :create_workstation_session
+
+    # Seed an HR Employee from the vita-performance side. Idempotent
+    # via external_id — repeated pushes for the same vp Worker
+    # return the existing Employee. Requires `hr:write` scope.
+    post "/hr/employees", IntegrationHRController, :create_employee
+
+    # Push an initial (or historical) wage row for an Employee.
+    # Idempotent via `external_id` — the vp seed uses this to carry
+    # each Worker's current `hourly_rate` across without recreating
+    # the row on re-seed. Requires `hr:write` scope.
+    post "/hr/employees/:employee_uuid/wages",
+         IntegrationHRController,
+         :create_wage
+
+    # Push a reputation event for an Employee, preserving the original
+    # `occurred_at` timestamp so the decay projection matches vp's
+    # cached score. Idempotent via `external_id` (stored in the schema
+    # slot `session_external_id`). Requires `hr:write:reputation`.
+    post "/hr/employees/:employee_uuid/reputation-events",
+         IntegrationHRController,
+         :create_reputation_event
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development.

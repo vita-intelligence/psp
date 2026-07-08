@@ -101,7 +101,13 @@ defmodule BackendWeb.AuditController do
     "routing" => "production.routing_view",
     "manufacturing_order" => "production.mo_view",
     "manufacturing_order_step" => "production.mo_view",
-    "manufacturing_order_booking" => "production.mo_view"
+    "manufacturing_order_booking" => "production.mo_view",
+    # HR — employees + their wage history + reputation-event stream.
+    # All three ride the same view perm (if you can see the employee,
+    # you can see how their rate + reputation got to today).
+    "hr_employee" => "hr.view",
+    "employee_wage" => "hr.view",
+    "employee_reputation_event" => "hr.view"
   }
 
   def index(conn, %{"entity_type" => entity_type, "entity_id" => entity_id_str} = params) do
@@ -646,6 +652,27 @@ defmodule BackendWeb.AuditController do
 
   defp check_parent_purchase_order(actor, poid) do
     case Backend.Repo.get(Backend.Purchasing.PurchaseOrder, poid) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "hr_employee", entity_id) do
+    case Backend.Repo.get(Backend.HR.Employee, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "employee_wage", entity_id) do
+    case Backend.Repo.get(Backend.HR.EmployeeWage, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "employee_reputation_event", entity_id) do
+    case Backend.Repo.get(Backend.HR.EmployeeReputationEvent, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

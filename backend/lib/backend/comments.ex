@@ -68,7 +68,8 @@ defmodule Backend.Comments do
       "production.mo_execute"
     ],
     "shipment" => ["shipments.edit"],
-    "equipment" => ["equipment.act", "equipment.create"]
+    "equipment" => ["equipment.act", "equipment.create"],
+    "hr_employee" => ["hr.edit", "hr.create"]
   }
 
   @entity_types Map.keys(@write_perms)
@@ -237,6 +238,7 @@ defmodule Backend.Comments do
         "manufacturing_order" -> Backend.Production.ManufacturingOrder
         "manufacturing_order_step" -> Backend.Production.ManufacturingOrderStep
         "shipment" -> Backend.Shipments.Shipment
+        "hr_employee" -> Backend.HR.Employee
         _ -> nil
       end
 

@@ -235,6 +235,42 @@ export async function getManufacturingOrder(
   }
 }
 
+export async function listMOSessions(
+  moId: number,
+): Promise<import("./sessions").WorkstationSessionRow[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+  try {
+    const { sessions } = await api<{
+      sessions: import("./sessions").WorkstationSessionRow[];
+    }>(
+      `/api/production/manufacturing-orders/${moId}/sessions`,
+      { token, cache: "no-store" },
+    );
+    return sessions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function listCOSessions(
+  coUuid: string,
+): Promise<import("./sessions").WorkstationSessionRow[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+  try {
+    const { sessions } = await api<{
+      sessions: import("./sessions").WorkstationSessionRow[];
+    }>(
+      `/api/customer-orders/${encodeURIComponent(coUuid)}/sessions`,
+      { token, cache: "no-store" },
+    );
+    return sessions ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getManufacturingOrderStep(
   moUuid: string,
   stepUuid: string,

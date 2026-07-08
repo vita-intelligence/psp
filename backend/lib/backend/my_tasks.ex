@@ -58,29 +58,126 @@ defmodule Backend.MyTasks do
     "request_purchases" => "procurement.po_create"
   }
 
+  # Link CTAs the wizard emits with a `label:` but no `action:` field.
+  # Prefix match against a lower-cased label. Whichever entry wins
+  # decides which permission gates the task on /my-tasks. Order
+  # matters: put more specific prefixes above their shorter parents
+  # (e.g. "open scheduler for mo" wins over "open scheduler" which
+  # wins over "open").
+  #
+  # When nothing matches, `link_permission/1` falls through to
+  # `customer_orders.view` — same rule as the wizard detail page:
+  # if you can see the CO, you can navigate the CO's links.
   @link_task_permission %{
+    # Dispatch / shipments — action-adjacent phrases first
     "register the delivery" => "shipments.confirm_delivery",
     "confirm truck pickup" => "shipments.pickup",
     "truck arrived" => "shipments.pickup",
     "send dispatch form to my phone" => "shipments.pickup",
     "create shipment" => "shipments.edit",
-    "generate invoice" => "customer_invoices.create"
+    "generate invoice" => "customer_invoices.create",
+    "open draft shipment" => "shipments.view",
+    "open shipments" => "shipments.view",
+    "open shipment" => "shipments.view",
+
+    # Procurement
+    "open shortages" => "procurement.po_view",
+    "send po " => "procurement.po_view",
+    "open po " => "procurement.po_view",
+    "open next po" => "procurement.po_view",
+    "send inspection" => "procurement.po_receive",
+    "open inspection" => "procurement.po_receive",
+
+    # Production — MO scheduling, prep, run, QC, closeout, release
+    "open scheduler for mo" => "production.mo_view",
+    "open scheduler" => "production.mo_view",
+    "open mo " => "production.mo_view",
+    "open mo" => "production.mo_view",
+    "mo " => "production.mo_view",
+    "send preflight to device" => "production.preflight",
+    "open preflight" => "production.preflight",
+    "open run" => "production.mo_execute",
+    "open output qc" => "production.qc_output",
+    "send closeout to device" => "production.closeout",
+    "open closeout" => "production.closeout",
+    "open routing step" => "production.mo_release",
+    "open final product release" => "production.final_release",
+
+    # Warehouses — put-away, release queue, pickups
+    "send put-away to phone" => "stock.receive",
+    "open put-away" => "stock.receive",
+    "open release queue" => "production.mo_release",
+    "send pickup to device" => "shipments.pickup",
+    "open pickup on device" => "shipments.pickup",
+    "send return-pickup to device" => "stock.receive",
+
+    # Customer-order editing
+    "open customer" => "customers.view",
+    "go to lines" => "customer_orders.edit",
+    "add lines" => "customer_orders.edit",
+    "build a bom" => "production.bom_edit",
+    "pick a bom and create mo" => "production.mo_create",
+
+    # Lot / stock navigation
+    "lot " => "stock.view"
   }
 
   # Which phases can possibly emit tasks that map to each permission.
   # Used to pre-filter COs before we spend the queries to snapshot
   # them.
+  # Every CO phase the wizard can surface a CTA on. Used as the
+  # fallback for `customer_orders.view` — anyone who can see COs can
+  # follow a wizard link, so pre-filtering by phase would incorrectly
+  # hide COs whose only CTA is navigation.
+  @all_co_phases ~w(
+    setup approval production_planning awaiting_ingredients
+    in_production awaiting_routing ready_to_dispatch awaiting_pickup
+    dispatched delivered closeout final_release
+  )a
+
   @permission_phases %{
+    "customer_orders.view" => @all_co_phases,
     "customer_orders.submit" => [:setup],
     "customer_orders.approve" => [:approval],
     "customer_orders.edit" => [:setup, :approval],
     "production.mo_create" => [:production_planning],
     "production.mo_prepare" => [:production_planning, :in_production],
     "production.mo_approve" => [:production_planning, :in_production],
+    "production.mo_view" => [
+      :production_planning,
+      :awaiting_ingredients,
+      :in_production,
+      :awaiting_routing,
+      :closeout,
+      :final_release
+    ],
+    "production.mo_execute" => [:in_production],
+    "production.preflight" => [:in_production],
+    "production.qc_output" => [:in_production, :closeout],
+    "production.closeout" => [:closeout],
+    "production.mo_release" => [:in_production, :awaiting_routing, :final_release],
+    "production.final_release" => [:final_release],
+    "production.bom_edit" => [:setup, :production_planning],
     "procurement.po_create" => [:production_planning, :awaiting_ingredients],
+    "procurement.po_view" => [:awaiting_ingredients, :production_planning],
+    "procurement.po_receive" => [:awaiting_ingredients, :in_production],
+    "stock.view" => [:in_production, :awaiting_routing, :ready_to_dispatch],
+    "stock.receive" => [
+      :awaiting_ingredients,
+      :in_production,
+      :closeout,
+      :final_release
+    ],
     "shipments.edit" => [:ready_to_dispatch, :awaiting_pickup],
+    "shipments.view" => [
+      :ready_to_dispatch,
+      :awaiting_pickup,
+      :dispatched,
+      :delivered
+    ],
     "shipments.pickup" => [:awaiting_pickup, :dispatched],
     "shipments.confirm_delivery" => [:dispatched],
+    "customers.view" => @all_co_phases,
     "customer_invoices.create" => [:dispatched, :delivered]
   }
 
@@ -394,7 +491,14 @@ defmodule Backend.MyTasks do
 
     Enum.find_value(@link_task_permission, fn {prefix, perm} ->
       if String.starts_with?(label, prefix), do: perm
-    end)
+    end) ||
+      # Fallback — a link CTA is navigation, not a state-changing
+      # action. If nothing in the table matches, gate by the same
+      # rule the wizard detail page follows: seeing the CO is enough
+      # to see the link. Prevents wizard steps from silently
+      # disappearing off /my-tasks the moment we forget to add a
+      # prefix here.
+      "customer_orders.view"
   end
 
   defp blocked_by_four_eyes?(actor, co, "sign_director") do

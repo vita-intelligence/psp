@@ -46,6 +46,14 @@ defmodule Backend.Production.Workstation do
 
     field :is_active, :boolean, default: true
 
+    # Feature flag from phase 6 of the vita-performance integration.
+    # When true, the vita-performance kiosk sources its MO picker
+    # from this workstation via psp_sync instead of the legacy local
+    # Item free-text search. Also gates the WorkstationSession
+    # writeback endpoint — sessions for a workstation with the flag
+    # off are refused (kiosk hasn't been cut over yet).
+    field :psp_source_of_truth, :boolean, default: false
+
     # Station-specific override for the workstation_group's
     # default operation notes. When non-nil, takes precedence on the
     # routing-step prefill once a station is picked. When nil, the
@@ -76,6 +84,7 @@ defmodule Backend.Production.Workstation do
     idle_from idle_to
     is_active
     default_operation_notes
+    psp_source_of_truth
     created_by_id updated_by_id
   )a
 

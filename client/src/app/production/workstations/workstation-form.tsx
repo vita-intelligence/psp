@@ -16,10 +16,22 @@ import {
   Loader2,
   Lock,
   LockKeyhole,
+  Plug,
+  PlugZap,
   Plus,
   Trash2,
   X,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -82,6 +94,7 @@ interface FormState {
   idle_to: string;
   is_active: boolean;
   default_workers: WorkerOption[];
+  psp_source_of_truth: boolean;
 }
 
 interface WorkstationFormProps {
@@ -109,6 +122,7 @@ function initialFrom(ws: Workstation | null): FormState {
       idle_to: "",
       is_active: true,
       default_workers: [],
+      psp_source_of_truth: false,
     };
   }
   return {
@@ -144,6 +158,7 @@ function initialFrom(ws: Workstation | null): FormState {
       label: u.name,
       email: u.email,
     })),
+    psp_source_of_truth: ws.psp_source_of_truth,
   };
 }
 
@@ -239,6 +254,7 @@ export function WorkstationForm({
   );
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
+  const [confirmCutover, setConfirmCutover] = useState(false);
   const [pending, startTransition] = useTransition();
   const [deletePending, setDeletePending] = useState(false);
 
@@ -366,6 +382,7 @@ export function WorkstationForm({
       idle_to: state.idle_to || null,
       is_active: state.is_active,
       default_worker_ids: state.default_workers.map((w) => w.id),
+      psp_source_of_truth: state.psp_source_of_truth,
     };
 
     startTransition(async () => {
@@ -641,7 +658,95 @@ export function WorkstationForm({
                   </span>
                 </div>
               </div>
+
+              {/* --- Vita Performance cut-over toggle --- */}
+              <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
+                <Label className="pt-1.5 text-sm font-medium">
+                  Vita Performance
+                </Label>
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={state.psp_source_of_truth}
+                      onCheckedChange={(v) => {
+                        // Turning ON is a commitment — confirm.
+                        // Turning OFF is silent (dev / ops rollback).
+                        if (v) setConfirmCutover(true);
+                        else setField("psp_source_of_truth", false);
+                      }}
+                      aria-label="Vita Performance kiosk cut-over"
+                      disabled={!canEdit || !isCreator}
+                    />
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-widest ${
+                        state.psp_source_of_truth
+                          ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                          : "border-border text-muted-foreground"
+                      }`}
+                    >
+                      {state.psp_source_of_truth ? (
+                        <>
+                          <PlugZap className="size-3" />
+                          Kiosk Live
+                        </>
+                      ) : (
+                        <>
+                          <Plug className="size-3" />
+                          Local Only
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {state.psp_source_of_truth
+                      ? "Kiosk sessions on vita-performance for this workstation attribute back to PSP — labour cost appears on this MO's cost breakdown automatically."
+                      : "Workstation is invisible to the vita-performance kiosk. Flip on when you're ready to route real production time through PSP."}
+                  </p>
+                </div>
+              </div>
             </div>
+
+            {/* Confirm dialog — cut-over is a live commitment */}
+            <AlertDialog
+              open={confirmCutover}
+              onOpenChange={setConfirmCutover}
+            >
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Cut this workstation over to Vita Performance?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription asChild>
+                    <div className="space-y-2 text-sm">
+                      <p>
+                        From the moment you save this, the Vita Performance
+                        kiosk will pull this workstation on its next sync
+                        and operators will be able to clock into MOs
+                        against it.
+                      </p>
+                      <p>
+                        Sessions completed at the kiosk will auto-post to
+                        PSP — labour + machine cost appears on the MO cost
+                        breakdown against this workstation.
+                      </p>
+                      <p className="font-medium text-foreground">
+                        This is a one-way switch in practice. Flipping it
+                        back off later orphans any labour cost that already
+                        flowed through it.
+                      </p>
+                    </div>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => setField("psp_source_of_truth", true)}
+                  >
+                    Cut over
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
 
             <div className="space-y-3 rounded-md border border-border/60 bg-muted/30 p-4">
               <SectionTitle>Hourly rate</SectionTitle>

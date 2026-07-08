@@ -95,6 +95,15 @@ defmodule Backend.RBAC.Permissions do
     {"certificates.manage", "Create, edit, and delete certificates"}
   ]
 
+  # Machine-to-machine bearer tokens for external systems (currently
+  # vita-performance). One permission for read + write because
+  # rotating a token is the only lifecycle event and belongs to the
+  # same operator who mints them.
+  @integrations [
+    {"integrations.manage",
+     "Mint, list, and revoke integration tokens for external systems"}
+  ]
+
   # Stock operations — lots, placements, movements. View is the read
   # baseline (lot list + detail + movement history). Receive lets the
   # operator create manual lots; Move and Adjust each carry their own
@@ -359,6 +368,20 @@ defmodule Backend.RBAC.Permissions do
   # picked_up lifecycle. Split into three: broad-audience read,
   # paperwork edit (recipient / carrier / waybill / mark-ready /
   # cancel), and the physical truck-arrival confirmation.
+  # HR — shop-floor workforce master data. `view` is the read
+  # baseline (ledger + detail page + wage / reputation timelines).
+  # `create` gates onboarding a new employee; `edit` covers identity
+  # + wage inserts + reputation events (writing wage / reputation is
+  # part of maintaining the employee record, not a distinct gate).
+  # `delete` is soft-archive only — sessions FK the row so we never
+  # hard-delete.
+  @hr [
+    {"hr.view", "View employees, wages, and reputation history"},
+    {"hr.create", "Add new employees"},
+    {"hr.edit", "Edit employees, add wages, record reputation events"},
+    {"hr.delete", "Archive employees"}
+  ]
+
   @shipments [
     {"shipments.view",
      "View the /shipments list + detail pages. Broad audience — sales, finance, customer service, warehouse. Read-only."},
@@ -382,6 +405,7 @@ defmodule Backend.RBAC.Permissions do
         @catalogues ++
         @risk_assessments ++
         @certificates ++
+        @integrations ++
         @stock ++
         @equipment ++
         @vendors ++
@@ -399,7 +423,8 @@ defmodule Backend.RBAC.Permissions do
         @production ++
         @warehouse ++
         @three_pl ++
-        @shipments,
+        @shipments ++
+        @hr,
       &elem(&1, 0)
     )
   end
@@ -417,6 +442,7 @@ defmodule Backend.RBAC.Permissions do
       catalogues: @catalogues,
       risk_assessments: @risk_assessments,
       certificates: @certificates,
+      integrations: @integrations,
       stock: @stock,
       equipment: @equipment,
       vendors: @vendors,
@@ -434,7 +460,8 @@ defmodule Backend.RBAC.Permissions do
       production: @production,
       warehouse: @warehouse,
       three_pl: @three_pl,
-      shipments: @shipments
+      shipments: @shipments,
+      hr: @hr
     }
   end
 
@@ -483,6 +510,16 @@ defmodule Backend.RBAC.Permissions do
             create: "users.invite",
             update: nil,
             delete: "users.deactivate"
+          },
+          %{
+            key: "hr_employees",
+            label: "HR — Employees",
+            description:
+              "Shop-floor workforce master data: identity, wage history, reputation events. Sessions FK the row so delete is soft-archive.",
+            read: "hr.view",
+            create: "hr.create",
+            update: "hr.edit",
+            delete: "hr.delete"
           },
           %{
             key: "templates",
