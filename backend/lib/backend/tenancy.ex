@@ -204,6 +204,13 @@ defmodule Backend.Tenancy do
   def resource_in_tenant?(user, "shipment", uuid),
     do: exists?(Shipments.get_shipment(user.company_id, uuid))
 
+  # --- HR employee ------------------------------------------------
+  # Without this clause the form channel would 403 every operator
+  # trying to edit an employee — the catch-all below deny-all is
+  # not the friendly default we want after a resource ships.
+  def resource_in_tenant?(user, "hr-employee", uuid),
+    do: exists?(Backend.HR.get_employee(user.company_id, uuid))
+
   # Deny anything not listed above. Explicit registration only —
   # keeps the surface auditable.
   def resource_in_tenant?(_user, _resource, _id), do: false

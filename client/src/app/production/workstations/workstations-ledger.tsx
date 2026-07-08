@@ -188,6 +188,20 @@ export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
             </span>
           ),
       },
+      {
+        id: "psp_source_of_truth",
+        header: "Kiosk",
+        widthClassName: "w-32",
+        group: "Status",
+        description:
+          "Cut-over flag. Kiosk Live rows accept sessions from the vita-performance kiosk and post labour cost back to PSP.",
+        cell: (w) =>
+          w.psp_source_of_truth ? (
+            <Badge tone="emerald">Kiosk Live</Badge>
+          ) : (
+            <Badge tone="muted">Local only</Badge>
+          ),
+      },
       // ---- defaultHidden columns below ----
       {
         id: "is_active",

@@ -58,6 +58,6 @@ defmodule Backend.HR.EmployeeReputationEvent do
     ])
     |> validate_required([:company_id, :employee_id, :event_type, :score_delta])
     |> validate_inclusion(:event_type, @event_types)
-    |> validate_length(:reason, max: 500)
+    |> validate_length(:reason, max: 4000)
   end
 end

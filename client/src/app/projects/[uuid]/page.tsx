@@ -7,6 +7,7 @@ import { listCommentsForEntity } from "@/lib/comments/server";
 import { getCustomerOrder } from "@/lib/customer-orders/server";
 import { getOrderWizard } from "@/lib/order-wizard/server";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { listCOSessions } from "@/lib/production/server";
 import { ProjectControlBoard } from "./project-control-board";
 
 export const metadata = { title: "Project Control Board · PSP" };
@@ -42,12 +43,14 @@ export default async function ProjectBoardPage({
 
   const { uuid } = await params;
 
-  const [co, wizard, company, initialComments] = await Promise.all([
-    getCustomerOrder(uuid),
-    getOrderWizard(uuid),
-    getCompanyDefaults(),
-    listCommentsForEntity("customer_order", uuid),
-  ]);
+  const [co, wizard, company, initialComments, initialSessions] =
+    await Promise.all([
+      getCustomerOrder(uuid),
+      getOrderWizard(uuid),
+      getCompanyDefaults(),
+      listCommentsForEntity("customer_order", uuid),
+      listCOSessions(uuid),
+    ]);
 
   if (!co || !company) notFound();
 
@@ -78,6 +81,7 @@ export default async function ProjectBoardPage({
         wizard={wizard}
         prefs={company}
         initialComments={initialComments ?? []}
+        initialSessions={initialSessions}
         currentUserId={user.id}
         permissions={{
           canEdit,

@@ -60,6 +60,23 @@ defmodule Backend.HR.Employee do
                     employee_number company_id user_id created_by_id kiosk_pin)a
   @update_fields ~w(full_name preferred_name email phone hire_date termination_date
                     is_qa is_active updated_by_id kiosk_pin)a
+  # Integration-only surface. Accepts a pre-hashed `kiosk_pin_hash`
+  # (verbatim from vita-performance's Django `pbkdf2_sha256$...` format)
+  # so the seed path can carry PIN identity across without operators
+  # re-typing every worker's code. Skips the virtual `kiosk_pin`
+  # hashing path — `maybe_hash_pin/1` is a no-op when the change
+  # isn't set.
+  #
+  # NOTE: PSP kiosk auth uses Bcrypt.verify_pass/2 (see
+  # `Backend.HR.verify_pin/2`). Values seeded here are Django-format
+  # PBKDF2 strings and WILL NOT verify with Bcrypt today. This is a
+  # deferred cost — kiosk auth on PSP against migrated employees
+  # will need either (a) a dual-format verifier that dispatches on
+  # the hash prefix, or (b) a mandatory PIN-reset flow before first
+  # kiosk use. Flagged inline so future-us can find this.
+  @integration_create_fields ~w(full_name preferred_name email phone hire_date is_qa
+                                external_id employee_number company_id created_by_id
+                                kiosk_pin_hash is_active)a
 
   def create_changeset(struct, attrs) do
     struct
@@ -67,6 +84,22 @@ defmodule Backend.HR.Employee do
     |> validate_required([:full_name, :company_id])
     |> validate_length(:full_name, min: 1, max: 200)
     |> maybe_hash_pin()
+    |> unique_constraint(:employee_number, name: :employees_company_number_index)
+    |> unique_constraint(:external_id, name: :employees_company_external_index)
+  end
+
+  @doc """
+  Integration seed changeset. Accepts a pre-hashed `kiosk_pin_hash`
+  from vita-performance verbatim (Django's `pbkdf2_sha256$...` format).
+  Reuses the same required-field + email-shape validations as
+  `create_changeset/2` so the seed path can't smuggle in a malformed
+  Employee. See the module-level note on the format mismatch.
+  """
+  def integration_create_changeset(struct, attrs) do
+    struct
+    |> cast(attrs, @integration_create_fields)
+    |> validate_required([:full_name, :company_id])
+    |> validate_length(:full_name, min: 1, max: 200)
     |> unique_constraint(:employee_number, name: :employees_company_number_index)
     |> unique_constraint(:external_id, name: :employees_company_external_index)
   end

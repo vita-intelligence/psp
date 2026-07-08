@@ -608,6 +608,13 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  defp resolve_entity_id(actor, "hr_employee", uuid) do
+    case Backend.HR.get_employee(actor.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp resolve_entity_id(actor, "purchase_order_line", uuid) do
     # PO-line uuid is globally unique. Walk to the parent PO to
     # enforce the company scope — a stray uuid from another tenant
@@ -646,6 +653,7 @@ defmodule BackendWeb.CommentsController do
   defp view_perm_for("shipment"), do: "shipments.view"
   defp view_perm_for("purchase_order_line"), do: "procurement.po_view"
   defp view_perm_for("equipment"), do: "equipment.view"
+  defp view_perm_for("hr_employee"), do: "hr.view"
   defp view_perm_for(_), do: nil
 
   defp check_view_perm(actor, entity_type) do

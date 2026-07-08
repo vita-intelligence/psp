@@ -445,6 +445,10 @@ defmodule BackendWeb.Payloads do
       # invoice due date to `today + payment_terms_days` without a
       # second vendor fetch.
       payment_terms_days: v.payment_terms_days,
+      # Vendor default tax rate — surfaced so the new-PO form can
+      # pre-fill the totals preview after a vendor pick without a
+      # second round-trip to /api/vendors/:uuid.
+      tax_rate: v.tax_rate,
       approval_status: v.approval_status,
       is_active: v.is_active
     }
@@ -1897,6 +1901,9 @@ defmodule BackendWeb.Payloads do
       # hint next to an empty field on the station form.
       effective_operation_notes: workstation_effective_operation_notes(w),
       default_workers: workstation_default_workers(w),
+      # Vita-performance integration cut-over flag — controls whether
+      # kiosk sessions for this workstation attribute back to PSP.
+      psp_source_of_truth: w.psp_source_of_truth,
       created_by: actor(w, :created_by),
       updated_by: actor(w, :updated_by),
       inserted_at: w.inserted_at,
@@ -1921,12 +1928,118 @@ defmodule BackendWeb.Payloads do
       is_active: w.is_active,
       idle_from: w.idle_from,
       idle_to: w.idle_to,
+      # Ledger badge signal — is this station cut over to vp?
+      psp_source_of_truth: w.psp_source_of_truth,
       inserted_at: w.inserted_at,
       updated_at: w.updated_at
     }
   end
 
   def workstation_summary(_), do: nil
+
+  # ----- workstation sessions --------------------------------------
+
+  @doc """
+  Serialize a list of WorkstationSession rows for the timeline UI.
+  Batches the employee-name lookup so a hundred-session timeline
+  fires one HR query instead of one per row.
+
+  Session status legend for the FE:
+    * "active"    — currently running; render live-timer, no duration
+    * "completed" — finished at kiosk; duration + qty + performance
+    * "verified"  — QC-approved after the fact
+  """
+  def workstation_sessions(sessions) when is_list(sessions) do
+    employee_names = load_employee_names(sessions)
+    Enum.map(sessions, &workstation_session(&1, employee_names))
+  end
+
+  defp load_employee_names(sessions) do
+    uuids =
+      sessions
+      |> Enum.flat_map(fn s -> s.employee_uuids || [] end)
+      |> Enum.uniq()
+
+    if uuids == [] do
+      %{}
+    else
+      import Ecto.Query
+      alias Backend.HR.Employee
+      alias Backend.Repo
+
+      Repo.all(
+        from e in Employee,
+          where: e.uuid in ^uuids,
+          select: {e.uuid, e.full_name}
+      )
+      |> Enum.into(%{}, fn {u, n} -> {to_string(u), n} end)
+    end
+  end
+
+  defp workstation_session(s, employee_names) do
+    started = s.started_at
+    finished = s.finished_at
+
+    duration_s =
+      case {started, finished} do
+        {%DateTime{} = a, %DateTime{} = b} -> DateTime.diff(b, a, :second)
+        _ -> nil
+      end
+
+    step = Map.get(s, :manufacturing_order_step)
+
+    step_summary =
+      case step do
+        %Backend.Production.ManufacturingOrderStep{} = st ->
+          group = Map.get(st, :workstation_group)
+          mo = Map.get(st, :manufacturing_order)
+
+          %{
+            uuid: st.uuid,
+            operation_description: st.operation_description,
+            sort_order: st.sort_order,
+            workstation_group_name: group && group.name,
+            manufacturing_order_uuid: mo && mo.uuid,
+            manufacturing_order_id: mo && mo.id
+          }
+
+        _ ->
+          nil
+      end
+
+    workstation_summary =
+      case Map.get(s, :workstation) do
+        %Backend.Production.Workstation{} = w ->
+          %{uuid: w.uuid, name: w.name, code: render_code(w, "workstation")}
+
+        _ ->
+          nil
+      end
+
+    worker_names =
+      (s.employee_uuids || [])
+      |> Enum.map(fn uuid -> Map.get(employee_names, to_string(uuid), "Unknown") end)
+
+    %{
+      uuid: s.uuid,
+      external_id: s.external_id,
+      activity_kind: s.activity_kind,
+      activity_label: s.activity_label,
+      status: s.status,
+      started_at: started,
+      finished_at: finished,
+      duration_seconds: duration_s,
+      quantity_produced: s.quantity_produced && to_string(s.quantity_produced),
+      quantity_rejected: s.quantity_rejected && to_string(s.quantity_rejected),
+      performance_percentage: s.performance_percentage,
+      notes: s.notes,
+      workers: worker_names,
+      worker_uuids: Enum.map(s.employee_uuids || [], &to_string/1),
+      workstation: workstation_summary,
+      manufacturing_order_step: step_summary,
+      inserted_at: s.inserted_at
+    }
+  end
 
   # ----- routings --------------------------------------------------
 
@@ -5493,6 +5606,144 @@ defmodule BackendWeb.Payloads do
       created_by: actor(t, :created_by),
       inserted_at: t.inserted_at,
       updated_at: t.updated_at
+    }
+  end
+
+  # ============================================================
+  # HR — employees, wages, reputation events
+  # ============================================================
+
+  @doc """
+  Full employee payload for the detail page. Wage / reputation
+  timelines are fetched via sibling endpoints so this stays cheap;
+  we do embed the currently effective wage row (or nil) so the
+  ledger doesn't need a fan-out for the "current rate" column.
+  """
+  def hr_employee(%Backend.HR.Employee{} = e) do
+    current = Backend.HR.current_wage(e)
+
+    %{
+      id: e.id,
+      uuid: e.uuid,
+      code: render_code(e, "employee") || e.employee_number,
+      employee_number: e.employee_number,
+      external_id: e.external_id,
+      full_name: e.full_name,
+      preferred_name: e.preferred_name,
+      email: e.email,
+      phone: e.phone,
+      hire_date: e.hire_date,
+      termination_date: e.termination_date,
+      is_active: e.is_active,
+      is_qa: e.is_qa,
+      reputation_score: e.reputation_score,
+      has_kiosk_pin: not is_nil(e.kiosk_pin_hash),
+      current_wage:
+        case current do
+          %Backend.HR.EmployeeWage{} = w -> hr_employee_wage(w)
+          _ -> nil
+        end,
+      company_id: e.company_id,
+      user_id: e.user_id,
+      user:
+        case Map.get(e, :user) do
+          %Backend.Accounts.User{} = u -> audit_actor(u)
+          _ -> nil
+        end,
+      created_by: actor(e, :created_by),
+      updated_by: actor(e, :updated_by),
+      inserted_at: e.inserted_at,
+      updated_at: e.updated_at
+    }
+  end
+
+  @doc """
+  Slim summary for the ledger. Same shape the detail payload's
+  `current_wage` uses — the FE can point column renderers at either
+  without a second type.
+  """
+  def hr_employee_summary(%Backend.HR.Employee{} = e) do
+    current = Backend.HR.current_wage(e)
+
+    %{
+      id: e.id,
+      uuid: e.uuid,
+      code: render_code(e, "employee") || e.employee_number,
+      employee_number: e.employee_number,
+      external_id: e.external_id,
+      full_name: e.full_name,
+      preferred_name: e.preferred_name,
+      email: e.email,
+      hire_date: e.hire_date,
+      is_active: e.is_active,
+      is_qa: e.is_qa,
+      reputation_score: e.reputation_score,
+      current_hourly_rate:
+        case current do
+          %Backend.HR.EmployeeWage{hourly_rate: r} -> decimal_to_string(r)
+          _ -> nil
+        end,
+      current_currency_code:
+        case current do
+          %Backend.HR.EmployeeWage{currency_code: c} -> c
+          _ -> nil
+        end,
+      inserted_at: e.inserted_at,
+      updated_at: e.updated_at
+    }
+  end
+
+  @doc """
+  Wage-history row payload. Decimals are stringified so the JSON stays
+  precise; the FE renders via `formatCompanyMoney` from the company
+  settings so the display honours locale.
+  """
+  def hr_employee_wage(%Backend.HR.EmployeeWage{} = w) do
+    %{
+      id: w.id,
+      uuid: w.uuid,
+      employee_id: w.employee_id,
+      effective_from: w.effective_from,
+      effective_to: w.effective_to,
+      hourly_rate: decimal_to_string(w.hourly_rate),
+      currency_code: w.currency_code,
+      tax_treatment: w.tax_treatment,
+      source_kind: w.source_kind,
+      reason: w.reason,
+      approved_by: actor(w, :approved_by),
+      inserted_at: w.inserted_at,
+      updated_at: w.updated_at
+    }
+  end
+
+  @doc """
+  Reputation-event row payload. `resulting_score` is the projection
+  the *event's insertion* produced — we approximate it lazily as
+  `nil` here because computing it after-the-fact per row would need
+  a replay; the current cached score on the employee is enough for
+  every rendered surface today. Wire in if / when the timeline card
+  needs the walk.
+  """
+  def hr_employee_reputation_event(%Backend.HR.EmployeeReputationEvent{} = ev) do
+    %{
+      id: ev.id,
+      uuid: ev.uuid,
+      employee_id: ev.employee_id,
+      session_external_id: ev.session_external_id,
+      event_type: ev.event_type,
+      score_delta: ev.score_delta,
+      reason: ev.reason,
+      created_by_user: actor(ev, :created_by_user),
+      created_by_employee:
+        case Map.get(ev, :created_by_employee) do
+          %Backend.HR.Employee{} = e ->
+            %{id: e.id, uuid: e.uuid, name: e.full_name}
+
+          _ ->
+            nil
+        end,
+      inserted_at: ev.inserted_at,
+      updated_at: ev.updated_at
     }
   end
 end

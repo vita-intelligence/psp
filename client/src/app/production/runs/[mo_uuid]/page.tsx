@@ -5,11 +5,12 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { PageHeader } from "@/components/layout/page-header";
-import { getManufacturingOrder } from "@/lib/production/server";
+import { getManufacturingOrder, listMOSessions } from "@/lib/production/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { ProductionSubnav } from "../../production-subnav";
 import { MOParentBreadcrumb } from "../../manufacturing-orders/mo-sub-production";
 import { ProductionRunDetail } from "./production-run-detail";
+import { MOSessionsCard } from "@/components/production/mo-sessions-card";
 
 export const metadata = { title: "Production run · Production · PSP" };
 
@@ -36,6 +37,8 @@ export default async function ProductionRunDetailPage({
   ]);
 
   if (!mo || !company) notFound();
+
+  const initialSessions = await listMOSessions(mo.id);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -75,6 +78,16 @@ export default async function ProductionRunDetailPage({
           />
 
           <MOParentBreadcrumb mo={mo} />
+
+          {/* Sessions timeline sits prominently under the run header
+              so an operator monitoring the floor sees who's clocked
+              in + live timers without scrolling past the run
+              controls. Realtime channel refreshes in <250ms. */}
+          <MOSessionsCard
+            moUuid={mo.uuid}
+            initialSessions={initialSessions}
+            prefs={company}
+          />
 
           <ProductionRunDetail initialMo={mo} company={company} />
         </div>

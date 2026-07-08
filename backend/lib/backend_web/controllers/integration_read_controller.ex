@@ -36,28 +36,41 @@ defmodule BackendWeb.IntegrationReadController do
     statuses = parse_status_filter(params["status"])
     workstation_uuid = params["workstation_uuid"]
 
+    # MO steps route to a workstation_group, not to a specific
+    # workstation. So "MOs routed to Weighing #1" means "MOs with a
+    # step targeting Weighing #1's group". We look up the group off
+    # the workstation before hitting the MO query so the SQL stays
+    # a plain WHERE, not a JOIN across a nullable chain.
+    group_id =
+      case workstation_uuid do
+        u when is_binary(u) and u != "" ->
+          Repo.one(
+            from w in Workstation,
+              where: w.company_id == ^company_id and w.uuid == ^u,
+              select: w.workstation_group_id
+          )
+
+        _ ->
+          nil
+      end
+
     base =
       from mo in ManufacturingOrder,
         where: mo.company_id == ^company_id and mo.status in ^statuses,
-        preload: [:item, steps: :workstation]
+        preload: [:item, steps: :workstation_group]
 
-    mos = Repo.all(base)
-
-    mos =
-      case workstation_uuid do
-        uuid when is_binary(uuid) and uuid != "" ->
-          Enum.filter(mos, fn mo ->
-            Enum.any?(mo.steps, fn step ->
-              step.workstation && step.workstation.external_id &&
-                to_string(step.workstation.external_id) == uuid
-            end)
-          end)
-
-        _ ->
-          mos
+    base =
+      if group_id do
+        from mo in base,
+          join: s in assoc(mo, :steps),
+          where: s.workstation_group_id == ^group_id,
+          distinct: true
+      else
+        base
       end
 
-    json(conn, %{items: Enum.map(mos, &mo_payload/1)})
+    mos = Repo.all(base)
+    json(conn, %{items: Enum.map(mos, &mo_payload(&1, group_id))})
   end
 
   def get_manufacturing_order(conn, %{"uuid" => uuid}) do
@@ -66,10 +79,10 @@ defmodule BackendWeb.IntegrationReadController do
     case Repo.one(
            from mo in ManufacturingOrder,
              where: mo.company_id == ^company_id and mo.uuid == ^uuid,
-             preload: [:item, steps: [:workstation, :workstation_group]]
+             preload: [:item, steps: :workstation_group]
          ) do
       nil -> {:error, :not_found}
-      mo -> json(conn, %{manufacturing_order: mo_payload(mo)})
+      mo -> json(conn, %{manufacturing_order: mo_payload(mo, nil)})
     end
   end
 
@@ -83,14 +96,23 @@ defmodule BackendWeb.IntegrationReadController do
     |> Enum.filter(&(&1 != ""))
   end
 
-  defp mo_payload(%ManufacturingOrder{} = mo) do
+  defp mo_payload(%ManufacturingOrder{} = mo, filter_group_id) do
     %{
       uuid: mo.uuid,
       status: mo.status,
       quantity: to_string(mo.quantity),
       due_date: mo.due_date,
       item: item_summary(mo.item),
-      steps: Enum.map(mo.steps || [], &mo_step_summary/1)
+      steps:
+        Enum.map(mo.steps || [], fn step ->
+          step
+          |> mo_step_summary()
+          |> Map.put(
+            :for_this_workstation,
+            filter_group_id != nil and
+              step.workstation_group_id == filter_group_id
+          )
+        end)
     }
   end
 
@@ -98,20 +120,28 @@ defmodule BackendWeb.IntegrationReadController do
     %{
       uuid: step.uuid,
       sort_order: step.sort_order,
-      name: Map.get(step, :name) || Map.get(step, :operation_name),
-      status: Map.get(step, :status),
+      # Steps use `operation_description` as their human label; `name`
+      # is a legacy field that no longer exists on the schema.
+      name: step.operation_description,
+      # Steps don't carry their own status column — it's derived from
+      # the parent MO's status + preflight / QC events. Return nil
+      # so callers know to look at the MO status instead.
+      status: nil,
       planned_start: step.planned_start,
-      planned_finish: step.planned_end || step.planned_finish,
+      planned_finish: step.planned_finish,
       actual_start: step.actual_start,
-      actual_finish: step.actual_end || step.actual_finish,
-      workstation: workstation_summary(step.workstation)
+      actual_finish: step.actual_finish,
+      # Steps target a workstation group, not a specific station.
+      # The kiosk uses the group to know "is this MO for any of the
+      # stations in my group?"
+      workstation_group: workstation_group_summary(step.workstation_group)
     }
   end
 
-  defp workstation_summary(nil), do: nil
+  defp workstation_group_summary(nil), do: nil
 
-  defp workstation_summary(%Workstation{} = w) do
-    %{uuid: w.uuid, external_id: w.external_id, name: w.name}
+  defp workstation_group_summary(%{uuid: uuid, name: name}) do
+    %{uuid: uuid, name: name}
   end
 
   defp item_summary(nil), do: nil

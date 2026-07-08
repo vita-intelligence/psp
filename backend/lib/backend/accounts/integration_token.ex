@@ -38,6 +38,7 @@ defmodule Backend.Accounts.IntegrationToken do
     item:read
     user:read
     hr:read
+    hr:write
     hr:write:pin
     hr:write:reputation
   )

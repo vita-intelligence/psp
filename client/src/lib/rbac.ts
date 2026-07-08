@@ -134,7 +134,11 @@ export type PermissionCode =
   | "shipments.edit"
   | "shipments.pickup"
   | "shipments.confirm_delivery"
-  | "integrations.manage";
+  | "integrations.manage"
+  | "hr.view"
+  | "hr.create"
+  | "hr.edit"
+  | "hr.delete";
 
 /**
  * Server-side / RSC-safe permission check. Server components and

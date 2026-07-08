@@ -125,6 +125,11 @@ import {
   type MOActionString,
 } from "@/lib/order-wizard/actions";
 import { useWizardChannel } from "@/lib/order-wizard/use-wizard-channel";
+import { SessionsTimeline } from "@/components/production/sessions-timeline";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
+import type { WorkstationSessionRow } from "@/lib/production/sessions";
+import { Activity } from "lucide-react";
+import { ProductionRoutemap } from "./production-routemap";
 
 // =============================================================================
 // Phase metadata
@@ -479,6 +484,9 @@ interface Props {
   wizard: OrderWizardSnapshot | null;
   prefs: CompanyDefaults;
   initialComments: Comment[];
+  /** Workstation sessions clocked against every MO under this CO —
+   *  server-fetched once, kept fresh by the entity channel below. */
+  initialSessions: WorkstationSessionRow[];
   currentUserId: number;
   permissions: ProjectBoardPermissions;
 }
@@ -492,6 +500,7 @@ export function ProjectControlBoard({
   wizard,
   prefs,
   initialComments,
+  initialSessions,
   currentUserId,
   permissions,
 }: Props) {
@@ -534,6 +543,44 @@ export function ProjectControlBoard({
       });
     },
   });
+
+  // Sessions state — hydrated from the server-fetched initialSessions,
+  // then refreshed from the CO-scoped sessions endpoint every time the
+  // PSP broadcasts a workstation-session change on any of this CO's
+  // MO tree.
+  const [sessions, setSessions] =
+    useState<WorkstationSessionRow[]>(initialSessions);
+  const refreshSessions = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/customer-orders/${encodeURIComponent(co.uuid)}/sessions`,
+        { cache: "no-store" },
+      );
+      if (res.ok) {
+        const body = (await res.json()) as {
+          sessions?: WorkstationSessionRow[];
+        };
+        setSessions(body.sessions ?? []);
+      }
+    } catch {
+      // Non-fatal — the next channel tick will retry.
+    }
+  }, [co.uuid]);
+
+  useEntityChannel({
+    entity: "workstation_session_co",
+    uuid: co.uuid,
+    onEvent: () => {
+      startTransition(() => {
+        void refreshSessions();
+      });
+    },
+  });
+
+  const runningSessionCount = useMemo(
+    () => sessions.filter((s) => s.status === "active").length,
+    [sessions],
+  );
 
   // Modal state — each modal owns one piece of data; only one is open
   // at a time. Lifted here so the action handlers can close + open
@@ -699,6 +746,47 @@ export function ProjectControlBoard({
                 onSpawnMo={handleSpawnMo}
                 onMoAction={handleMoAction}
                 onSendToDevice={setQrModalCta}
+              />
+            </section>
+
+            {/* Production routemap — high-level flow diagram so the room
+                sees the whole route at a glance before drilling into the
+                session-by-session story below. */}
+            <ProductionRoutemap
+              co={co}
+              wizard={snapshot}
+              sessions={sessions}
+              prefs={prefs}
+            />
+
+            {/* Production sessions — chronological session story blending
+                every MO under this CO. Header counter shows total +
+                running (emerald when > 0). */}
+            <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
+              <header className="mb-4 flex items-center gap-2">
+                <Activity className="size-4 text-muted-foreground" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-sm font-semibold tracking-tight">
+                    Production sessions
+                  </h2>
+                  <p className="text-[11px] text-muted-foreground">
+                    {formatCompanyNumber(sessions.length, prefs)} total ·{" "}
+                    <span
+                      className={cn(
+                        runningSessionCount > 0
+                          ? "font-semibold text-emerald-700 dark:text-emerald-400"
+                          : "",
+                      )}
+                    >
+                      {formatCompanyNumber(runningSessionCount, prefs)} running
+                    </span>
+                  </p>
+                </div>
+              </header>
+              <SessionsTimeline
+                sessions={sessions}
+                prefs={prefs}
+                showMOContext
               />
             </section>
 

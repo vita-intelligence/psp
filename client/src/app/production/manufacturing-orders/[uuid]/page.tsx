@@ -7,7 +7,8 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { getManufacturingOrder } from "@/lib/production/server";
+import { getManufacturingOrder, listMOSessions } from "@/lib/production/server";
+import { MOSessionsCard } from "@/components/production/mo-sessions-card";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -45,6 +46,11 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
     listCommentsForEntity("manufacturing_order", uuid),
   ]);
   if (!mo || !company) notFound();
+
+  // Sessions are attributed via mo.id (integer FK), not the uuid,
+  // so this fetch has to run after the MO resolves rather than in
+  // parallel with it.
+  const initialSessions = await listMOSessions(mo.id);
 
   const canEdit = hasPermission(user, "production.mo_edit");
   const canDelete = hasPermission(user, "production.mo_delete");
@@ -103,6 +109,17 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             currentUserId={user.id}
             company={company}
             pageId={`/production/manufacturing-orders/${uuid}`}
+          />
+
+          {/* Production sessions surface immediately after the status
+              actions so an operator monitoring the floor sees the
+              live timeline without hunting down the page — matches
+              the "no cutting corners" placement brief. Realtime
+              broadcasts refresh it in <250ms without a page reload. */}
+          <MOSessionsCard
+            moUuid={mo.uuid}
+            initialSessions={initialSessions}
+            prefs={company}
           />
 
           <MOParentBreadcrumb mo={mo} />

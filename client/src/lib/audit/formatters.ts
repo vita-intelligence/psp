@@ -605,6 +605,33 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     dispatched_at: "Completed at",
     dispatched_by_id: "Completed by",
   },
+  hr_employee: {
+    full_name: "Full name",
+    preferred_name: "Preferred name",
+    email: "Email",
+    phone: "Phone",
+    hire_date: "Hire date",
+    termination_date: "Termination date",
+    external_id: "External ID",
+    employee_number: "Employee number",
+    is_active: "Active",
+    is_qa: "QA sign-off",
+  },
+  employee_wage: {
+    effective_from: "Effective from",
+    effective_to: "Effective to",
+    hourly_rate: "Hourly rate",
+    currency_code: "Currency",
+    tax_treatment: "Tax treatment",
+    source_kind: "Source",
+    reason: "Reason",
+  },
+  employee_reputation_event: {
+    event_type: "Event type",
+    score_delta: "Score delta",
+    reason: "Reason",
+    session_external_id: "Session",
+  },
 };
 
 export function fieldLabel(entityType: EntityType, field: string): string {

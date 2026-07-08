@@ -40,29 +40,51 @@ defmodule BackendWeb.IntegrationSessionController do
 
   def create_mo_session(conn, %{"uuid" => mo_uuid, "step_uuid" => step_uuid} = params) do
     company_id = conn.assigns.current_company_id
+    workstation_uuid = params["workstation_uuid"]
 
-    with %ManufacturingOrder{} = mo <-
-           Repo.one(
-             from m in ManufacturingOrder,
-               where: m.company_id == ^company_id and m.uuid == ^mo_uuid
-           ),
-         %ManufacturingOrderStep{} = step <-
-           Repo.one(
-             from s in ManufacturingOrderStep,
-               where: s.uuid == ^step_uuid and s.manufacturing_order_id == ^mo.id,
-               preload: [:workstation]
-           ),
-         %Workstation{} = ws <- step.workstation,
-         :ok <- guard_source_of_truth(ws),
-         {:ok, session} <- do_upsert_session(company_id, ws.id, step.id, "mo", params),
-         :ok <- maybe_stamp_actuals(step, session) do
+    if is_nil(workstation_uuid) or workstation_uuid == "" do
       conn
-      |> put_status(:created)
-      |> json(%{workstation_session: session_payload(session)})
+      |> put_status(:unprocessable_entity)
+      |> json(
+        Errors.payload(
+          "validation_failed",
+          "workstation_uuid is required — kiosk sends the physical station it ran on."
+        )
+      )
     else
-      nil -> {:error, :not_found}
-      {:error, :not_source_of_truth} -> refuse_not_sot(conn)
-      {:error, %Ecto.Changeset{} = cs} -> changeset_error(conn, cs)
+      # MO steps route to workstation_groups, not to specific
+      # stations. The kiosk knows the station it's running on and
+      # sends `workstation_uuid` in the body — we look it up here
+      # rather than trying to derive it from the step. Cross-company
+      # tampering is blocked by the company_id filter on both.
+      with %ManufacturingOrder{} = mo <-
+             Repo.one(
+               from m in ManufacturingOrder,
+                 where: m.company_id == ^company_id and m.uuid == ^mo_uuid
+             ),
+           %ManufacturingOrderStep{} = step <-
+             Repo.one(
+               from s in ManufacturingOrderStep,
+                 where: s.uuid == ^step_uuid and s.manufacturing_order_id == ^mo.id
+             ),
+           %Workstation{} = ws <-
+             Repo.one(
+               from w in Workstation,
+                 where: w.company_id == ^company_id and w.uuid == ^workstation_uuid
+             ),
+           :ok <- guard_source_of_truth(ws),
+           {:ok, session} <- do_upsert_session(company_id, ws.id, step.id, "mo", params),
+           :ok <- maybe_stamp_actuals(step, session) do
+        broadcast_session(session, mo)
+
+        conn
+        |> put_status(:created)
+        |> json(%{workstation_session: session_payload(session)})
+      else
+        nil -> {:error, :not_found}
+        {:error, :not_source_of_truth} -> refuse_not_sot(conn)
+        {:error, %Ecto.Changeset{} = cs} -> changeset_error(conn, cs)
+      end
     end
   end
 
@@ -80,6 +102,8 @@ defmodule BackendWeb.IntegrationSessionController do
          :ok <- guard_off_mo_activity(params["activity_kind"]),
          {:ok, session} <-
            do_upsert_session(company_id, ws.id, nil, params["activity_kind"], params) do
+      broadcast_session(session, nil)
+
       conn
       |> put_status(:created)
       |> json(%{workstation_session: session_payload(session)})
@@ -128,29 +152,45 @@ defmodule BackendWeb.IntegrationSessionController do
           nil
       end
 
+    attrs = %{
+      company_id: company_id,
+      workstation_id: workstation_id,
+      manufacturing_order_step_id: mo_step_id,
+      external_id: external_id,
+      activity_kind: activity_kind,
+      activity_label: params["activity_label"],
+      employee_uuids: params["employee_uuids"] || [],
+      started_at: parse_dt(params["started_at"]),
+      finished_at: parse_dt(params["finished_at"]),
+      quantity_produced: params["quantity_produced"],
+      quantity_rejected: params["quantity_rejected"],
+      performance_percentage: params["performance_percentage"],
+      notes: params["notes"],
+      form_responses: params["form_responses"] || %{},
+      status: params["status"] || "completed"
+    }
+
     case existing do
-      %WorkstationSession{} = row ->
+      %WorkstationSession{status: "completed"} = row ->
+        # Already sealed — writeback re-runs (retries after a network
+        # hiccup) are silent no-ops. Prevents a kiosk resend from
+        # rolling back a completed session to active.
         {:ok, row}
 
-      nil ->
-        attrs = %{
-          company_id: company_id,
-          workstation_id: workstation_id,
-          manufacturing_order_step_id: mo_step_id,
-          external_id: external_id,
-          activity_kind: activity_kind,
-          activity_label: params["activity_label"],
-          employee_uuids: params["employee_uuids"] || [],
-          started_at: parse_dt(params["started_at"]),
-          finished_at: parse_dt(params["finished_at"]),
-          quantity_produced: params["quantity_produced"],
-          quantity_rejected: params["quantity_rejected"],
-          performance_percentage: params["performance_percentage"],
-          notes: params["notes"],
-          form_responses: params["form_responses"] || %{},
-          status: params["status"] || "completed"
-        }
+      %WorkstationSession{status: "verified"} = row ->
+        {:ok, row}
 
+      %WorkstationSession{} = row ->
+        # Live update: kiosk started a session, now sends the "stop"
+        # payload. Fold the new fields onto the existing row so the
+        # timeline flips from running → completed with proper qty,
+        # performance, and finish time — without inserting a
+        # duplicate row.
+        row
+        |> WorkstationSession.create_changeset(attrs)
+        |> Repo.update()
+
+      nil ->
         %WorkstationSession{}
         |> WorkstationSession.create_changeset(attrs)
         |> Repo.insert()
@@ -224,6 +264,49 @@ defmodule BackendWeb.IntegrationSessionController do
       status: s.status,
       inserted_at: s.inserted_at
     }
+  end
+
+  # Fan a session create out to every subscriber that cares. Fire-
+  # and-forget: broadcast failures never leak back to the kiosk
+  # writeback caller. We push three topics so a wizard viewing the
+  # CO, a user on the MO detail page, and a live-list page all
+  # refresh in <250ms.
+  defp broadcast_session(%WorkstationSession{} = session, mo) do
+    company_id = session.company_id
+    Backend.Broadcasts.entity_changed("workstation_session", session.uuid, company_id, "created")
+
+    if mo do
+      Backend.Broadcasts.entity_changed(
+        "workstation_session_mo",
+        mo.uuid,
+        company_id,
+        "created"
+      )
+
+      # Also broadcast to the parent CO if the MO is tied to one so
+      # the wizard timeline refreshes without polling.
+      case Repo.preload(mo, :customer_order_line) do
+        %ManufacturingOrder{customer_order_line: %{customer_order_id: co_id}}
+        when not is_nil(co_id) ->
+          case Repo.get(Backend.CustomerOrders.CustomerOrder, co_id) do
+            %{uuid: co_uuid} ->
+              Backend.Broadcasts.entity_changed(
+                "workstation_session_co",
+                co_uuid,
+                company_id,
+                "created"
+              )
+
+            _ ->
+              :ok
+          end
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
   end
 
   defp refuse_not_sot(conn) do

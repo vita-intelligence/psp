@@ -84,6 +84,7 @@ defmodule Backend.Production.Workstation do
     idle_from idle_to
     is_active
     default_operation_notes
+    psp_source_of_truth
     created_by_id updated_by_id
   )a
 

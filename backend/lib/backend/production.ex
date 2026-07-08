@@ -572,8 +572,10 @@ defmodule Backend.Production do
       |> ListQueries.apply_sort(sort, @wg_sortable, @wg_default_sort)
       |> preload([:created_by, :updated_by])
 
-    page = ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
-    Map.update(page, :items, [], &populate_workstation_counts/1)
+    {items, next_cursor} =
+      ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+
+    {populate_workstation_counts(items), next_cursor}
   end
 
   defp maybe_wg_kind_filter(query, nil), do: query
@@ -1617,6 +1619,103 @@ defmodule Backend.Production do
       worker_assignments: :user
     ])
     |> Repo.one()
+  end
+
+  @doc """
+  Every WorkstationSession attributed to `mo_id`. Chronological
+  descending (newest first). Preloads the workstation + step so the
+  timeline can show which station a session ran on and which
+  operation it covered.
+  """
+  def list_sessions_for_mo(company_id, mo_id)
+      when is_integer(company_id) and is_integer(mo_id) do
+    from(s in Backend.Production.WorkstationSession,
+      join: step in assoc(s, :manufacturing_order_step),
+      where: s.company_id == ^company_id and step.manufacturing_order_id == ^mo_id,
+      order_by: [desc: s.started_at, desc: s.id],
+      preload: [
+        :workstation,
+        manufacturing_order_step: [:workstation_group, :manufacturing_order]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Every WorkstationSession an employee has ever run — MO-attached
+  and off-MO, chronological desc. Sessions carry the attribution as
+  a `Ecto.UUID[]` array (multiple operators can share a session),
+  so we match with `?` = the ANY-of check.
+
+  Accepts `:limit` (default 5, clamped [1, 100]) + `:cursor` for keyset
+  pagination — same shape the HR reputation / wages timelines use.
+  Returns `{items, next_cursor}` where `next_cursor` is `nil` when the
+  tail has been served. The profile-page sidebar takes the top 5; the
+  dedicated `/hr/employees/:uuid/sessions` page walks the cursor.
+  """
+  def list_sessions_for_employee(company_id, employee_uuid, opts \\ [])
+      when is_integer(company_id) and is_binary(employee_uuid) do
+    sort = {:started_at, :desc}
+
+    base =
+      from(s in Backend.Production.WorkstationSession,
+        where: s.company_id == ^company_id and ^employee_uuid in s.employee_uuids,
+        preload: [
+          :workstation,
+          manufacturing_order_step: [:workstation_group, :manufacturing_order]
+        ]
+      )
+
+    base = ListQueries.apply_sort(base, sort, [:started_at, :id], sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Every WorkstationSession across the whole CO's MO tree. Includes
+  sessions on child MOs (sub-assemblies) — only the top-level MO
+  carries a `customer_order_line_id`, so we walk `parent_mo_id` in
+  a recursive CTE to gather every descendant before joining sessions.
+  """
+  def list_sessions_for_customer_order(company_id, co_id)
+      when is_integer(company_id) and is_integer(co_id) do
+    # Recursive CTE: seed with every MO whose CO line points at this
+    # CO, then grow the set by following parent_mo_id downward until
+    # every descendant is included.
+    tree_query = """
+      WITH RECURSIVE mo_tree AS (
+        SELECT mo.id
+        FROM manufacturing_orders mo
+        JOIN customer_order_lines col ON col.id = mo.customer_order_line_id
+        WHERE col.customer_order_id = $1 AND mo.company_id = $2
+        UNION ALL
+        SELECT child.id
+        FROM manufacturing_orders child
+        JOIN mo_tree parent ON parent.id = child.parent_mo_id
+        WHERE child.company_id = $2
+      )
+      SELECT id FROM mo_tree
+    """
+
+    %{rows: id_rows} = Repo.query!(tree_query, [co_id, company_id])
+    mo_ids = Enum.map(id_rows, &List.first/1)
+
+    if mo_ids == [] do
+      []
+    else
+      from(s in Backend.Production.WorkstationSession,
+        join: step in assoc(s, :manufacturing_order_step),
+        where:
+          s.company_id == ^company_id and
+            step.manufacturing_order_id in ^mo_ids,
+        order_by: [desc: s.started_at, desc: s.id],
+        preload: [
+          :workstation,
+          manufacturing_order_step: [:workstation_group, :manufacturing_order]
+        ]
+      )
+      |> Repo.all()
+    end
   end
 
   def create_manufacturing_order(%User{} = actor, attrs) do

@@ -252,6 +252,11 @@ export interface Workstation {
    *  else null. The form renders the inheritance hint off this. */
   effective_operation_notes: string | null;
   default_workers: WorkstationDefaultWorker[];
+  /** Vita Performance integration cut-over flag. When true, kiosk
+   *  sessions on the vita-performance side attribute back to this
+   *  workstation via the writeback endpoint. Once flipped on, expect
+   *  operational data to start flowing. */
+  psp_source_of_truth: boolean;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;
@@ -271,6 +276,9 @@ export interface WorkstationSummary {
   is_active: boolean;
   idle_from: string | null;
   idle_to: string | null;
+  /** Same signal as on the detail row, exposed on the ledger for the
+   *  cut-over badge. */
+  psp_source_of_truth: boolean;
   inserted_at: string;
   updated_at: string;
 }
@@ -295,6 +303,10 @@ export interface WorkstationUpsertInput {
   /** Wholesale replace — BE wipes the M2M set and reinserts the
    *  ids sent here inside the same transaction. */
   default_worker_ids?: number[];
+  /** Cut over to Vita Performance kiosk. One-way in practice —
+   *  flipping back after real sessions have flowed will orphan
+   *  historical labour cost. Form gates via a confirm dialog. */
+  psp_source_of_truth?: boolean;
 }
 
 // ---------------------------------------------------------------
