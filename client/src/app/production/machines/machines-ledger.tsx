@@ -1,8 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo } from "react";
-import { Wrench } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Printer, Wrench } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
   ColumnFilterValue,
@@ -19,6 +19,7 @@ import type {
   MachineLedgerPage,
   MachineSummary,
 } from "@/lib/production/types";
+import { PrintMachineLabelDialog } from "./print-machine-label-dialog";
 
 interface Props {
   initialPage: MachineLedgerPage;
@@ -99,6 +100,7 @@ function calibrationDaysHint(dueIso: string | null): string | null {
 export function MachinesLedger({ initialPage }: Props) {
   const router = useRouter();
   const prefs = useFormatPrefs();
+  const [printMachine, setPrintMachine] = useState<MachineSummary | null>(null);
 
   const filters = useMemo<FilterDef[]>(() => [IS_ACTIVE_FILTER], []);
 
@@ -246,6 +248,38 @@ export function MachinesLedger({ initialPage }: Props) {
             <Badge tone="muted">No</Badge>
           ),
       },
+      {
+        id: "print_label",
+        header: "",
+        widthClassName: "w-10",
+        align: "center",
+        group: "Actions",
+        description: "Print a stick-on QR label for this machine.",
+        cell: (m) => (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              // Row clicks route to the detail page; suppress that
+              // when the operator only wants to print.
+              e.stopPropagation();
+              setPrintMachine(m);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                setPrintMachine(m);
+              }
+            }}
+            className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label={`Print label for ${m.name}`}
+            title="Print label"
+          >
+            <Printer className="size-3.5" />
+          </span>
+        ),
+      },
       // ---- defaultHidden columns below ----
       {
         id: "last_calibrated_at",
@@ -303,6 +337,7 @@ export function MachinesLedger({ initialPage }: Props) {
   );
 
   return (
+    <>
     <DataTable<MachineSummary>
       tableId="production-machines"
       realtimeEntity="machine"
@@ -355,5 +390,11 @@ export function MachinesLedger({ initialPage }: Props) {
         </div>
       }
     />
+    <PrintMachineLabelDialog
+      machine={printMachine}
+      open={printMachine !== null}
+      onOpenChange={(open) => !open && setPrintMachine(null)}
+    />
+    </>
   );
 }

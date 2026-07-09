@@ -16,6 +16,7 @@ import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { ProductionSubnav } from "../../production-subnav";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { MachineForm } from "../machine-form";
+import { PrintMachineLabelButton } from "../print-machine-label-button";
 
 export const metadata = { title: "Machine · Production · PSP" };
 
@@ -84,6 +85,7 @@ export default async function MachineDetailPage({ params }: Props) {
             }
             backHref="/production/machines"
             backLabel="Back to machines"
+            actions={<PrintMachineLabelButton machine={machine} />}
           />
 
           <EditModeToggle canEdit={canEdit}>
