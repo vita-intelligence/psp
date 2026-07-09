@@ -81,6 +81,7 @@ export function EmployeeSessionsCard({
         sessions={initialSessions}
         prefs={prefs}
         showMOContext
+        mode="chronological"
       />
     </section>
   );

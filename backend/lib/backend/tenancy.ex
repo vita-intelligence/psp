@@ -179,6 +179,9 @@ defmodule Backend.Tenancy do
   def resource_in_tenant?(user, "workstation", uuid),
     do: exists?(Production.get_workstation(user.company_id, uuid))
 
+  def resource_in_tenant?(user, "machine", uuid),
+    do: exists?(Production.get_machine(user.company_id, uuid))
+
   def resource_in_tenant?(user, "routing", uuid),
     do: exists?(Production.get_routing(user.company_id, uuid))
 
@@ -245,6 +248,7 @@ defmodule Backend.Tenancy do
       ["production", "boms", uuid | _] -> {:entity, "bom", uuid}
       ["production", "workstations", uuid | _] -> {:entity, "workstation", uuid}
       ["production", "workstation-groups", uuid | _] -> {:entity, "workstation-group", uuid}
+      ["production", "machines", uuid | _] -> {:entity, "machine", uuid}
       ["production", "routings", uuid | _] -> {:entity, "routing", uuid}
       ["production", "manufacturing-orders", uuid | _] -> {:entity, "manufacturing-order", uuid}
       ["shipments", uuid | _] -> {:entity, "shipment", uuid}

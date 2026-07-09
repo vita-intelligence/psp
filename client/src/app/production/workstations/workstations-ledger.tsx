@@ -173,10 +173,10 @@ export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
       },
       {
         id: "hourly_rate",
-        header: "Hourly rate",
+        header: "Machine cost / h",
         widthClassName: "w-32",
         group: "Amounts",
-        description: "Cost per hour when override enabled — otherwise inherits from the group.",
+        description: "Machinery cost per hour of runtime (energy, depreciation, upkeep). Overrides the group's rate when enabled — otherwise inherits. NOT worker wages.",
         cell: (w) =>
           w.hourly_rate_enabled && w.hourly_rate ? (
             <span className="font-mono text-xs">
@@ -255,12 +255,12 @@ export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
       },
       {
         id: "hourly_rate_enabled",
-        header: "Rate on",
-        widthClassName: "w-20",
+        header: "Machine cost on",
+        widthClassName: "w-32",
         align: "center",
         defaultHidden: true,
         group: "Amounts",
-        description: "Whether this station's own hourly rate override is enabled.",
+        description: "Whether this station overrides the group's machine-cost-per-hour with its own value.",
         cell: (w) =>
           w.hourly_rate_enabled ? (
             <Badge tone="emerald">Yes</Badge>

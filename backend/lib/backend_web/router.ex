@@ -75,6 +75,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "workstation"
   end
 
+  pipeline :comments_machine do
+    plug :put_entity_type, "machine"
+  end
+
   pipeline :comments_routing do
     plug :put_entity_type, "routing"
   end
@@ -598,6 +602,16 @@ defmodule BackendWeb.Router do
       # tree. Powers the "Production sessions" card on the wizard.
       get "/sessions", MOSessionsController, :for_customer_order
 
+      # Project-wide cost roll-up (materials + labour + machine per MO,
+      # totals + running-session tick). Powers the "Project cost so
+      # far" card on the wizard.
+      get "/cost-breakdown", COCostBreakdownController, :show
+
+      # Project-wide wall-clock roll-up (phase durations from CO
+      # created → delivered). Powers the "Project time so far" card
+      # on the wizard.
+      get "/time-breakdown", COTimeBreakdownController, :show
+
       # Wizard CTA: create an MO pre-linked to the chosen CO line.
       post "/lines/:line_uuid/create-mo",
            CustomerOrderController,
@@ -724,6 +738,13 @@ defmodule BackendWeb.Router do
       post "/workstations", WorkstationController, :create
       patch "/workstations/:id", WorkstationController, :update
       delete "/workstations/:id", WorkstationController, :delete
+
+      get "/machines", MachineController, :index
+      get "/machines/:id", MachineController, :show
+      post "/machines", MachineController, :create
+      patch "/machines/:id", MachineController, :update
+      delete "/machines/:id", MachineController, :delete
+      post "/machines/:id/recalibrate", MachineController, :recalibrate
 
       get "/routings", RoutingController, :index
       get "/routings/:id", RoutingController, :show
@@ -1470,6 +1491,22 @@ defmodule BackendWeb.Router do
     delete "/:comment_uuid", CommentsController, :delete
 
     # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
+  end
+
+  scope "/api/production/machines/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_machine]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+
     post "/:comment_uuid/files", CommentsController, :upload_file
     get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
     delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file

@@ -98,6 +98,7 @@ defmodule BackendWeb.AuditController do
     "bom" => "production.bom_view",
     "workstation_group" => "production.workstation_group_view",
     "workstation" => "production.workstation_view",
+    "machine" => "production.machine_view",
     "routing" => "production.routing_view",
     "manufacturing_order" => "production.mo_view",
     "manufacturing_order_step" => "production.mo_view",
@@ -596,6 +597,13 @@ defmodule BackendWeb.AuditController do
 
   defp check_entity_in_company(actor, "workstation", entity_id) do
     case Backend.Repo.get(Backend.Production.Workstation, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "machine", entity_id) do
+    case Backend.Repo.get(Backend.Production.Machine, entity_id) do
       %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end

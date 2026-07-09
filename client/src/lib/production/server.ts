@@ -4,6 +4,8 @@ import { getSessionToken } from "../auth/server";
 import type {
   BOM,
   BOMLedgerPage,
+  Machine,
+  MachineLedgerPage,
   ManufacturingOrder,
   ManufacturingOrderLedgerPage,
   ManufacturingOrderStep,
@@ -152,6 +154,44 @@ export async function getWorkstation(
       { token, cache: "no-store" },
     );
     return workstation;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------
+// Machines
+// ---------------------------------------------------------------
+
+export interface ListMachinesOpts {
+  query?: string;
+}
+
+export async function listMachinesPage(
+  opts: ListMachinesOpts = {},
+): Promise<MachineLedgerPage | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  const qs = opts.query ? `?${opts.query}` : "";
+  try {
+    return await api<MachineLedgerPage>(
+      `/api/production/machines${qs}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function getMachine(uuid: string): Promise<Machine | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const { machine } = await api<{ machine: Machine }>(
+      `/api/production/machines/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return machine;
   } catch {
     return null;
   }

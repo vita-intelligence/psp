@@ -309,6 +309,13 @@ defmodule Backend.RBAC.Permissions do
     {"production.workstation_edit",
      "Edit workstations (group, rate, productivity, idle window, default workers)"},
     {"production.workstation_delete", "Delete workstations"},
+    {"production.machine_view", "View machines attached to workstations"},
+    {"production.machine_create", "Create new machines"},
+    {"production.machine_edit",
+     "Edit machines (rate, asset tag, serial, calibration schedule)"},
+    {"production.machine_delete", "Delete machines"},
+    {"production.machine_recalibrate",
+     "Record a calibration event for a machine"},
     {"production.routing_view", "View routings"},
     {"production.routing_create", "Create new routings"},
     {"production.routing_edit",
@@ -919,6 +926,16 @@ defmodule Backend.RBAC.Permissions do
             create: "production.workstation_create",
             update: "production.workstation_edit",
             delete: "production.workstation_delete"
+          },
+          %{
+            key: "machines",
+            label: "Machines",
+            description:
+              "Physical assets attached to a workstation. Carry their own hourly cost + calibration schedule; MO machine cost is the sum of active machines on the station where the session ran.",
+            read: "production.machine_view",
+            create: "production.machine_create",
+            update: "production.machine_edit",
+            delete: "production.machine_delete"
           },
           %{
             key: "routings",

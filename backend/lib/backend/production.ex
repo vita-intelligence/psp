@@ -32,6 +32,7 @@ defmodule Backend.Production do
     BOM,
     BOMLine,
     BOMVersion,
+    Machine,
     ManufacturingOrder,
     ManufacturingOrderBooking,
     ManufacturingOrderStep,
@@ -1066,6 +1067,250 @@ defmodule Backend.Production do
       idle_to: ws.idle_to,
       is_active: ws.is_active,
       external_id: ws.external_id
+    }
+  end
+
+  # ============================================================
+  # Machines
+  # ============================================================
+  #
+  # Physical assets attached to a Workstation. Cost cascade lives in
+  # Backend.Production.Costing — sum of active machines' hourly rates
+  # falls back to the station's own override, then the group's rate.
+
+  @machine_search [:name, :notes, :asset_tag, :serial_number, :manufacturer, :model]
+  @machine_sortable [
+    :inserted_at,
+    :updated_at,
+    :name,
+    :is_active,
+    :hourly_rate,
+    :workstation_id,
+    :next_calibration_due_at
+  ]
+  @machine_default_sort {:inserted_at, :desc}
+
+  def list_machines_page(company_id, opts \\ []) when is_integer(company_id) do
+    sort = Keyword.get(opts, :sort, @machine_default_sort)
+
+    {station_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "workstation")
+
+    base =
+      Machine
+      |> where([m], m.company_id == ^company_id)
+      |> ListQueries.apply_search(opts[:search], @machine_search)
+      |> maybe_machine_workstation_filter(opts[:workstation_id])
+      |> maybe_active_filter(opts[:is_active])
+      |> maybe_machine_workstation_name_filter(station_needle)
+      |> ListQueries.apply_column_filters(column_filter, @machine_sortable)
+      |> ListQueries.apply_sort(sort, @machine_sortable, @machine_default_sort)
+      |> preload([:workstation, :created_by, :updated_by])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_machine_workstation_filter(query, nil), do: query
+
+  defp maybe_machine_workstation_filter(query, id) when is_integer(id),
+    do: where(query, [m], m.workstation_id == ^id)
+
+  defp maybe_machine_workstation_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [m], m.workstation_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_machine_workstation_filter(query, _), do: query
+
+  defp maybe_machine_workstation_name_filter(query, nil), do: query
+
+  defp maybe_machine_workstation_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from m in query,
+      join: w in Workstation,
+      on: w.id == m.workstation_id,
+      where: ilike(w.name, ^like)
+  end
+
+  def get_machine(company_id, uuid)
+      when is_integer(company_id) and is_binary(uuid) do
+    Machine
+    |> where([m], m.company_id == ^company_id and m.uuid == ^uuid)
+    |> preload([:workstation, :created_by, :updated_by])
+    |> Repo.one()
+  end
+
+  def list_machines_for_workstation(company_id, workstation_id)
+      when is_integer(company_id) and is_integer(workstation_id) do
+    Machine
+    |> where(
+      [m],
+      m.company_id == ^company_id and m.workstation_id == ^workstation_id
+    )
+    |> order_by([m], asc: m.name)
+    |> Repo.all()
+  end
+
+  def create_machine(%User{} = actor, attrs) do
+    attrs = stringify_keys(attrs)
+
+    attrs =
+      attrs
+      |> Map.put("company_id", actor.company_id)
+      |> Map.put("created_by_id", actor.id)
+      |> Map.put("updated_by_id", actor.id)
+
+    with :ok <- ensure_workstation_in_company(actor, attrs["workstation_id"]) do
+      %Machine{}
+      |> Machine.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, machine} ->
+          Audit.record_created(actor, "machine", machine, machine_snapshot(machine))
+          Backend.Broadcasts.entity_changed("machine", machine.uuid, machine.company_id, "created")
+          {:ok, reload_machine(machine)}
+
+        other ->
+          other
+      end
+    end
+  end
+
+  def update_machine(%User{} = actor, %Machine{} = machine, attrs) do
+    attrs = stringify_keys(attrs)
+    before = machine_snapshot(machine)
+
+    attrs =
+      attrs
+      |> Map.delete("company_id")
+      |> Map.delete("created_by_id")
+      |> Map.put("updated_by_id", actor.id)
+
+    with :ok <-
+           (if Map.has_key?(attrs, "workstation_id"),
+              do: ensure_workstation_in_company(actor, attrs["workstation_id"]),
+              else: :ok) do
+      machine
+      |> Machine.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          Audit.record_updated(
+            actor,
+            "machine",
+            updated,
+            before,
+            machine_snapshot(updated)
+          )
+
+          Backend.Broadcasts.entity_changed("machine", updated.uuid, updated.company_id, "updated")
+          {:ok, reload_machine(updated)}
+
+        other ->
+          other
+      end
+    end
+  end
+
+  @doc """
+  Recalibration action — stamps `last_calibrated_at` to today (or the
+  provided date), and if `calibration_frequency_months` is set, auto-
+  computes the next due date. The event is captured in the audit trail
+  as an "updated" record so peers see the change on the Activity card
+  without a bespoke event type.
+  """
+  def recalibrate_machine(%User{} = actor, %Machine{} = machine, attrs \\ %{}) do
+    today = Map.get(attrs, "calibrated_at") || Map.get(attrs, :calibrated_at) || Date.utc_today()
+
+    freq =
+      Map.get(attrs, "frequency_months") || Map.get(attrs, :frequency_months) ||
+        machine.calibration_frequency_months
+
+    next_due =
+      case freq do
+        n when is_integer(n) and n > 0 ->
+          Date.add(today, round(n * 30.4375))
+
+        _ ->
+          nil
+      end
+
+    update_attrs = %{
+      "last_calibrated_at" => today,
+      "next_calibration_due_at" => next_due
+    }
+
+    update_attrs =
+      if freq && freq != machine.calibration_frequency_months do
+        Map.put(update_attrs, "calibration_frequency_months", freq)
+      else
+        update_attrs
+      end
+
+    update_machine(actor, machine, update_attrs)
+  end
+
+  def archive_machine(%User{} = actor, %Machine{} = machine) do
+    update_machine(actor, machine, %{"is_active" => false})
+  end
+
+  def delete_machine(%User{} = actor, %Machine{} = machine) do
+    before = machine_snapshot(machine)
+
+    case Repo.delete(machine) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "machine", deleted, before)
+        Backend.Broadcasts.entity_changed("machine", machine.uuid, machine.company_id, "deleted")
+        {:ok, deleted}
+
+      err ->
+        err
+    end
+  end
+
+  defp reload_machine(%Machine{} = machine) do
+    Repo.preload(machine, [:workstation, :created_by, :updated_by], force: true)
+  end
+
+  defp ensure_workstation_in_company(_actor, nil), do: {:error, :workstation_required}
+
+  defp ensure_workstation_in_company(%User{} = actor, id) do
+    int_id =
+      case id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+        _ -> nil
+      end
+
+    case int_id && Repo.get(Workstation, int_id) do
+      %Workstation{company_id: cid} when cid == actor.company_id -> :ok
+      _ -> {:error, :workstation_not_found}
+    end
+  end
+
+  defp machine_snapshot(%Machine{} = m) do
+    %{
+      name: m.name,
+      notes: m.notes,
+      workstation_id: m.workstation_id,
+      hourly_rate_enabled: m.hourly_rate_enabled,
+      hourly_rate: m.hourly_rate,
+      asset_tag: m.asset_tag,
+      serial_number: m.serial_number,
+      manufacturer: m.manufacturer,
+      model: m.model,
+      commissioned_at: m.commissioned_at,
+      last_calibrated_at: m.last_calibrated_at,
+      next_calibration_due_at: m.next_calibration_due_at,
+      calibration_frequency_months: m.calibration_frequency_months,
+      is_active: m.is_active
     }
   end
 

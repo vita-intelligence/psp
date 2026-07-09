@@ -202,6 +202,7 @@ export interface AuditEvent {
     | "bom"
     | "workstation_group"
     | "workstation"
+    | "machine"
     | "routing"
     | "manufacturing_order"
     | "manufacturing_order_step"
