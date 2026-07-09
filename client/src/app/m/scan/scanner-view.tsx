@@ -166,7 +166,7 @@ export function ScannerView() {
           <Input
             value={manualValue}
             onChange={(e) => setManualValue(e.target.value)}
-            placeholder="https://…/stock/lots/<uuid>"
+            placeholder="https://…/stock/lots/<uuid> or /production/machines/<uuid>"
             className="bg-white/10 text-white placeholder:text-white/40"
             autoFocus
             inputMode="text"
@@ -240,5 +240,8 @@ function routeFromUrl(
   }
   const cellMatch = path.match(/\/stock\/cells\/([^/]+)/);
   if (cellMatch?.[1]) return `/m/scan/cell/${encodeURIComponent(cellMatch[1])}`;
+  const machineMatch = path.match(/\/production\/machines\/([^/]+)/);
+  if (machineMatch?.[1])
+    return `/m/machines/${encodeURIComponent(machineMatch[1])}`;
   return null;
 }
