@@ -20,6 +20,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   bom: "production/boms",
   workstation_group: "production/workstation-groups",
   workstation: "production/workstations",
+  machine: "production/machines",
   routing: "production/routings",
   manufacturing_order: "production/manufacturing-orders",
   manufacturing_order_step: "production/manufacturing-order-steps",

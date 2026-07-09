@@ -11,6 +11,8 @@ import {
 import type {
   BOM,
   BOMUpsertInput,
+  Machine,
+  MachineUpsertInput,
   ManufacturingOrder,
   ManufacturingOrderBooking,
   ManufacturingOrderBookingUpsertInput,
@@ -317,6 +319,124 @@ export async function deleteWorkstationAction(
       ...toErrorResult(err, {
         source: "deleteWorkstationAction",
         fallbackDetail: "Couldn't delete the workstation.",
+      }),
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// Machines
+// ---------------------------------------------------------------
+
+export type MachineResult =
+  | { ok: true; machine: Machine }
+  | (ErrorResult & { ok: false });
+
+export async function createMachineAction(
+  attrs: MachineUpsertInput,
+): Promise<MachineResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("createMachineAction") };
+  try {
+    const { machine } = await api<{ machine: Machine }>(
+      "/api/production/machines",
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/machines");
+    if (machine.workstation_id) {
+      revalidatePath("/production/workstations");
+    }
+    return { ok: true, machine };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "createMachineAction",
+        fallbackDetail: "Couldn't create the machine.",
+      }),
+    };
+  }
+}
+
+export async function updateMachineAction(
+  uuid: string,
+  attrs: MachineUpsertInput,
+): Promise<MachineResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("updateMachineAction") };
+  try {
+    const { machine } = await api<{ machine: Machine }>(
+      `/api/production/machines/${encodeURIComponent(uuid)}`,
+      { method: "PATCH", token, body: JSON.stringify(attrs) },
+    );
+    revalidatePath("/production/machines");
+    revalidatePath(`/production/machines/${uuid}`);
+    revalidatePath("/production/workstations");
+    return { ok: true, machine };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "updateMachineAction",
+        fallbackDetail: "Couldn't save the machine.",
+      }),
+    };
+  }
+}
+
+export async function deleteMachineAction(
+  uuid: string,
+): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("deleteMachineAction") };
+  try {
+    await api<void>(`/api/production/machines/${encodeURIComponent(uuid)}`, {
+      method: "DELETE",
+      token,
+    });
+    revalidatePath("/production/machines");
+    revalidatePath("/production/workstations");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "deleteMachineAction",
+        fallbackDetail: "Couldn't delete the machine.",
+      }),
+    };
+  }
+}
+
+export async function recalibrateMachineAction(
+  uuid: string,
+  attrs: { calibrated_at?: string | null; frequency_months?: number | null },
+): Promise<MachineResult> {
+  const token = await getSessionToken();
+  if (!token)
+    return { ok: false, ...unauthorizedResult("recalibrateMachineAction") };
+  try {
+    const body: Record<string, unknown> = {};
+    if (attrs.calibrated_at) body.calibrated_at = attrs.calibrated_at;
+    if (attrs.frequency_months !== undefined && attrs.frequency_months !== null) {
+      body.frequency_months = attrs.frequency_months;
+    }
+    const { machine } = await api<{ machine: Machine }>(
+      `/api/production/machines/${encodeURIComponent(uuid)}/recalibrate`,
+      { method: "POST", token, body: JSON.stringify(body) },
+    );
+    revalidatePath("/production/machines");
+    revalidatePath(`/production/machines/${uuid}`);
+    return { ok: true, machine };
+  } catch (err) {
+    return {
+      ok: false,
+      ...toErrorResult(err, {
+        source: "recalibrateMachineAction",
+        fallbackDetail: "Couldn't record the recalibration.",
       }),
     };
   }

@@ -310,6 +310,77 @@ export interface WorkstationUpsertInput {
 }
 
 // ---------------------------------------------------------------
+// Machines
+// ---------------------------------------------------------------
+
+export interface Machine {
+  id: number;
+  uuid: string;
+  name: string;
+  notes: string | null;
+  workstation_id: number;
+  workstation: WorkstationSummary | null;
+  hourly_rate_enabled: boolean;
+  hourly_rate: string | null;
+  asset_tag: string | null;
+  serial_number: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  commissioned_at: string | null;
+  last_calibrated_at: string | null;
+  next_calibration_due_at: string | null;
+  calibration_frequency_months: number | null;
+  /** BE-computed: true when `next_calibration_due_at < today` and the
+   *  machine is active. Drives the ledger badge + form warning. */
+  calibration_overdue: boolean;
+  is_active: boolean;
+  created_by: AuditActor | null;
+  updated_by: AuditActor | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface MachineSummary {
+  id: number;
+  uuid: string;
+  name: string;
+  workstation: WorkstationSummary | null;
+  hourly_rate_enabled: boolean;
+  hourly_rate: string | null;
+  asset_tag: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  last_calibrated_at: string | null;
+  next_calibration_due_at: string | null;
+  calibration_overdue: boolean;
+  is_active: boolean;
+  inserted_at: string;
+  updated_at: string;
+}
+
+export interface MachineLedgerPage {
+  items: MachineSummary[];
+  next_cursor: string | null;
+}
+
+export interface MachineUpsertInput {
+  name?: string;
+  notes?: string | null;
+  workstation_id?: number;
+  hourly_rate_enabled?: boolean;
+  hourly_rate?: string | null;
+  asset_tag?: string | null;
+  serial_number?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
+  commissioned_at?: string | null;
+  last_calibrated_at?: string | null;
+  next_calibration_due_at?: string | null;
+  calibration_frequency_months?: number | null;
+  is_active?: boolean;
+}
+
+// ---------------------------------------------------------------
 // Routings
 // ---------------------------------------------------------------
 

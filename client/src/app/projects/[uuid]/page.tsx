@@ -5,6 +5,8 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { getCustomerOrder } from "@/lib/customer-orders/server";
+import { getCOCostBreakdown } from "@/lib/customer-orders/cost";
+import { getCOTimeBreakdown } from "@/lib/customer-orders/time";
 import { getOrderWizard } from "@/lib/order-wizard/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { listCOSessions } from "@/lib/production/server";
@@ -43,14 +45,23 @@ export default async function ProjectBoardPage({
 
   const { uuid } = await params;
 
-  const [co, wizard, company, initialComments, initialSessions] =
-    await Promise.all([
-      getCustomerOrder(uuid),
-      getOrderWizard(uuid),
-      getCompanyDefaults(),
-      listCommentsForEntity("customer_order", uuid),
-      listCOSessions(uuid),
-    ]);
+  const [
+    co,
+    wizard,
+    company,
+    initialComments,
+    initialSessions,
+    initialCost,
+    initialTime,
+  ] = await Promise.all([
+    getCustomerOrder(uuid),
+    getOrderWizard(uuid),
+    getCompanyDefaults(),
+    listCommentsForEntity("customer_order", uuid),
+    listCOSessions(uuid),
+    getCOCostBreakdown(uuid),
+    getCOTimeBreakdown(uuid),
+  ]);
 
   if (!co || !company) notFound();
 
@@ -82,6 +93,8 @@ export default async function ProjectBoardPage({
         prefs={company}
         initialComments={initialComments ?? []}
         initialSessions={initialSessions}
+        initialCost={initialCost}
+        initialTime={initialTime}
         currentUserId={user.id}
         permissions={{
           canEdit,

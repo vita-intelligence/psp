@@ -65,7 +65,7 @@ export function SessionsInfiniteList({
 
   return (
     <div className="space-y-6">
-      <SessionsTimeline sessions={items} prefs={prefs} showMOContext />
+      <SessionsTimeline sessions={items} prefs={prefs} showMOContext mode="chronological" />
 
       {cursor !== null && (
         <div

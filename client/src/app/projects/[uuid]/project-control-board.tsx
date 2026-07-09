@@ -130,6 +130,10 @@ import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type { WorkstationSessionRow } from "@/lib/production/sessions";
 import { Activity } from "lucide-react";
 import { ProductionRoutemap } from "./production-routemap";
+import { ProjectCostCard } from "./project-cost-card";
+import { ProjectTimeCard } from "./project-time-card";
+import type { COTimeBreakdown } from "@/lib/customer-orders/time";
+import type { COCostBreakdown } from "@/lib/customer-orders/cost";
 
 // =============================================================================
 // Phase metadata
@@ -487,6 +491,13 @@ interface Props {
   /** Workstation sessions clocked against every MO under this CO —
    *  server-fetched once, kept fresh by the entity channel below. */
   initialSessions: WorkstationSessionRow[];
+  /** Project-wide cost roll-up (materials + labour + machine per MO).
+   *  Server-fetched on the page; the cost card subscribes to the CO
+   *  session channel to refresh live. Nullable when the fetch fails
+   *  (auth expired etc.) — the card renders nothing in that case. */
+  initialCost: COCostBreakdown | null;
+  /** Wall-clock time roll-up. Same refresh strategy as `initialCost`. */
+  initialTime: COTimeBreakdown | null;
   currentUserId: number;
   permissions: ProjectBoardPermissions;
 }
@@ -501,6 +512,8 @@ export function ProjectControlBoard({
   prefs,
   initialComments,
   initialSessions,
+  initialCost,
+  initialTime,
   currentUserId,
   permissions,
 }: Props) {
@@ -748,6 +761,26 @@ export function ProjectControlBoard({
                 onSendToDevice={setQrModalCta}
               />
             </section>
+
+            {/* Project cost so far — materials + labour + machine
+                rolled up across every MO in the CO tree. Sits above
+                the routemap so the money story is the first thing the
+                room sees when scanning the middle of the board. */}
+            <ProjectCostCard
+              coUuid={co.uuid}
+              initial={initialCost}
+              prefs={prefs}
+            />
+
+            {/* Project time so far — wall-clock elapsed since the CO
+                was drafted, split by wizard phase. Sibling to the
+                cost card: same rhythm (big total → segmented bar →
+                per-row breakdown), same live-refresh strategy. */}
+            <ProjectTimeCard
+              coUuid={co.uuid}
+              initial={initialTime}
+              prefs={prefs}
+            />
 
             {/* Production routemap — high-level flow diagram so the room
                 sees the whole route at a glance before drilling into the

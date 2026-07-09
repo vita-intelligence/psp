@@ -55,6 +55,10 @@ defmodule Backend.Comments do
       "production.workstation_edit",
       "production.workstation_create"
     ],
+    "machine" => [
+      "production.machine_edit",
+      "production.machine_create"
+    ],
     "routing" => [
       "production.routing_edit",
       "production.routing_create"
@@ -234,6 +238,7 @@ defmodule Backend.Comments do
         "bom" -> Backend.Production.BOM
         "workstation_group" -> Backend.Production.WorkstationGroup
         "workstation" -> Backend.Production.Workstation
+        "machine" -> Backend.Production.Machine
         "routing" -> Backend.Production.Routing
         "manufacturing_order" -> Backend.Production.ManufacturingOrder
         "manufacturing_order_step" -> Backend.Production.ManufacturingOrderStep

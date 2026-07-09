@@ -1937,6 +1937,75 @@ defmodule BackendWeb.Payloads do
 
   def workstation_summary(_), do: nil
 
+  # ----- machines --------------------------------------------------
+
+  @doc """
+  Detailed machine payload for the form + detail page.
+
+  `calibration_overdue` is a computed truthy signal so the FE badge
+  logic doesn't need to know the today-vs-due-date rule.
+  """
+  def machine(%Backend.Production.Machine{} = m) do
+    %{
+      id: m.id,
+      uuid: m.uuid,
+      name: m.name,
+      notes: m.notes,
+      workstation_id: m.workstation_id,
+      workstation: workstation_summary(m.workstation),
+      hourly_rate_enabled: m.hourly_rate_enabled,
+      hourly_rate: decimal_to_string(m.hourly_rate),
+      asset_tag: m.asset_tag,
+      serial_number: m.serial_number,
+      manufacturer: m.manufacturer,
+      model: m.model,
+      commissioned_at: m.commissioned_at,
+      last_calibrated_at: m.last_calibrated_at,
+      next_calibration_due_at: m.next_calibration_due_at,
+      calibration_frequency_months: m.calibration_frequency_months,
+      calibration_overdue: machine_calibration_overdue?(m),
+      is_active: m.is_active,
+      created_by: actor(m, :created_by),
+      updated_by: actor(m, :updated_by),
+      inserted_at: m.inserted_at,
+      updated_at: m.updated_at
+    }
+  end
+
+  def machine(_), do: nil
+
+  @doc "Slim machine row for the ledger + workstation form's attached-machines list."
+  def machine_summary(%Backend.Production.Machine{} = m) do
+    %{
+      id: m.id,
+      uuid: m.uuid,
+      name: m.name,
+      workstation: workstation_summary(m.workstation),
+      hourly_rate_enabled: m.hourly_rate_enabled,
+      hourly_rate: decimal_to_string(m.hourly_rate),
+      asset_tag: m.asset_tag,
+      manufacturer: m.manufacturer,
+      model: m.model,
+      last_calibrated_at: m.last_calibrated_at,
+      next_calibration_due_at: m.next_calibration_due_at,
+      calibration_overdue: machine_calibration_overdue?(m),
+      is_active: m.is_active,
+      inserted_at: m.inserted_at,
+      updated_at: m.updated_at
+    }
+  end
+
+  def machine_summary(_), do: nil
+
+  defp machine_calibration_overdue?(%Backend.Production.Machine{
+         is_active: true,
+         next_calibration_due_at: %Date{} = due
+       }) do
+    Date.compare(due, Date.utc_today()) == :lt
+  end
+
+  defp machine_calibration_overdue?(_), do: false
+
   # ----- workstation sessions --------------------------------------
 
   @doc """

@@ -371,6 +371,15 @@ defmodule BackendWeb.FormChannel do
       RBAC.has_permission?(user, "production.workstation_edit") or
         RBAC.has_permission?(user, "production.workstation_create")
 
+  # Machines — physical assets attached to workstations. Recalibrate
+  # action lives on the same form, so the edit/create perm is enough
+  # to gate the channel; the button itself gates on `machine_recalibrate`
+  # client-side.
+  defp can_edit_resource?(user, "machine"),
+    do:
+      RBAC.has_permission?(user, "production.machine_edit") or
+        RBAC.has_permission?(user, "production.machine_create")
+
   defp can_edit_resource?(user, "routing"),
     do:
       RBAC.has_permission?(user, "production.routing_edit") or

@@ -427,8 +427,8 @@ export function WorkstationGroupForm({
                     </span>
                     <span className="text-muted-foreground">
                       {group?.workstation_count === 1
-                        ? "machine in this group"
-                        : "machines in this group"}
+                        ? "workstation in this group"
+                        : "workstations in this group"}
                     </span>
                     {group ? (
                       <Link
@@ -440,9 +440,9 @@ export function WorkstationGroupForm({
                     ) : null}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Capacity is the count of active Workstation rows in this
+                    Capacity is the count of active workstations in this
                     group — the scheduler enforces it so two MOs can&apos;t
-                    occupy the same machine at the same time. Add or remove
+                    occupy the same workstation at the same time. Add or remove
                     workstations to change capacity.
                   </p>
                 </div>
@@ -549,7 +549,7 @@ export function WorkstationGroupForm({
             </div>
 
             <div className="space-y-4 rounded-md border border-border/60 bg-muted/30 p-4">
-              <SectionTitle>Hourly rate</SectionTitle>
+              <SectionTitle>Machine cost per hour</SectionTitle>
               <div className="flex items-start gap-3">
                 <Switch
                   checked={state.hourly_rate_enabled}
@@ -557,22 +557,22 @@ export function WorkstationGroupForm({
                     setField("hourly_rate_enabled", v);
                     if (!v) setField("hourly_rate", "");
                   }}
-                  aria-label="Set a per-hour cost rate"
+                  aria-label="Charge a machine cost per hour of runtime"
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
                     {state.hourly_rate_enabled
-                      ? "Tracking an hourly labour cost"
-                      : "No hourly cost tracked"}
+                      ? "Charging a machine cost per hour"
+                      : "No machine cost charged"}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    When on, manufacturing-order costing includes a
-                    labour charge of{" "}
+                    Per-hour machinery cost (energy, depreciation, upkeep
+                    — whatever you bake in). NOT worker wages — those come
+                    from HR. When on, each MO session on this group accrues{" "}
                     <span className="font-medium text-foreground">
                       {state.hourly_rate || "—"}
                     </span>{" "}
-                    {company.currency_code} per hour of runtime against
-                    this group.
+                    {company.currency_code} per hour of runtime.
                   </p>
                 </div>
               </div>
@@ -582,7 +582,7 @@ export function WorkstationGroupForm({
                     htmlFor="hourly_rate"
                     className="pt-2.5 text-sm font-medium"
                   >
-                    Rate ({company.currency_code})
+                    Machine cost ({company.currency_code} / h)
                   </Label>
                   <div className="space-y-1.5">
                     <div className="relative">

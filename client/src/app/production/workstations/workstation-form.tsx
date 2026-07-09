@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -12,6 +13,8 @@ import {
 import { toast } from "sonner";
 import {
   AlertCircle,
+  AlertTriangle,
+  Boxes,
   Factory,
   Loader2,
   Lock,
@@ -65,7 +68,9 @@ import {
   deleteWorkstationAction,
   updateWorkstationAction,
 } from "@/lib/production/actions";
-import type { Workstation } from "@/lib/production/types";
+import type { MachineSummary, Workstation } from "@/lib/production/types";
+import { formatCompanyMoney } from "@/lib/format/company";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 
 interface GroupOption extends SearchPickerOption {
   hourlyRate: string | null;
@@ -749,7 +754,13 @@ export function WorkstationForm({
             </AlertDialog>
 
             <div className="space-y-3 rounded-md border border-border/60 bg-muted/30 p-4">
-              <SectionTitle>Hourly rate</SectionTitle>
+              <SectionTitle>Machine cost per hour</SectionTitle>
+              <p className="text-xs text-muted-foreground">
+                Per-hour machinery cost (energy, depreciation, upkeep —
+                whatever you bake in). This is NOT worker wages — those
+                come from HR. It's what this specific station charges the
+                MO for every hour of runtime.
+              </p>
               <div className="flex items-start gap-3">
                 <Switch
                   checked={state.hourly_rate_enabled}
@@ -757,13 +768,13 @@ export function WorkstationForm({
                     setField("hourly_rate_enabled", v);
                     if (!v) setField("hourly_rate", "");
                   }}
-                  aria-label="Override the group's hourly rate"
+                  aria-label="Override the group's machine cost per hour"
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
                     {state.hourly_rate_enabled
-                      ? "Custom rate for this workstation"
-                      : "Inheriting from group"}
+                      ? "Custom machine cost for this station"
+                      : "Inheriting machine cost from group"}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     Currently:{" "}
@@ -781,7 +792,7 @@ export function WorkstationForm({
                     htmlFor="hourly_rate"
                     className="pt-2.5 text-sm font-medium"
                   >
-                    Rate ({company.currency_code})
+                    Machine cost ({company.currency_code} / h)
                   </Label>
                   <div className="space-y-1.5">
                     <div className="relative">
@@ -802,6 +813,15 @@ export function WorkstationForm({
                 </div>
               )}
             </div>
+
+            {workstation && (
+              <AttachedMachinesSection
+                workstationId={workstation.id}
+                workstationName={workstation.name}
+                company={company}
+                canManage={canEdit}
+              />
+            )}
 
             <div className="space-y-3 rounded-md border border-border/60 bg-muted/30 p-4">
               <SectionTitle>Default workers</SectionTitle>
@@ -1170,3 +1190,176 @@ function JoinErrorCard({
 // next iteration can wire them in (Plus icon for an "add worker"
 // button if we switch off the inline picker).
 void Plus;
+
+/**
+ * Read-only list of machines attached to this workstation. Edits happen
+ * on the dedicated `/production/machines` pages (own collab form, own
+ * head-of-room gate) — this section links out rather than embedding a
+ * nested editor. Auto-refreshes on any `entity:machine` broadcast so a
+ * peer's create/update/delete lands here without a manual reload.
+ */
+function AttachedMachinesSection({
+  workstationId,
+  workstationName,
+  company,
+  canManage,
+}: {
+  workstationId: number;
+  workstationName: string;
+  company: CompanyDefaults;
+  canManage: boolean;
+}) {
+  const [machines, setMachines] = useState<MachineSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/production/machines?workstation_id=${workstationId}&limit=200`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { items: MachineSummary[] };
+      setMachines(data.items);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load machines");
+    }
+  }, [workstationId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Any machine event in the tenant refreshes the list. The upstream
+  // hook debounces 250ms so a burst of writes collapses to one refetch.
+  useEntityChannel({ entity: "machine", uuid: undefined, onEvent: load });
+
+  const total = machines?.length ?? 0;
+  const contributing =
+    machines?.filter((m) => m.is_active && m.hourly_rate_enabled) ?? [];
+  const overdueCount = machines?.filter((m) => m.calibration_overdue).length ?? 0;
+
+  const summedRate = contributing.reduce((acc, m) => {
+    const n = m.hourly_rate ? Number(m.hourly_rate) : 0;
+    return acc + (Number.isFinite(n) ? n : 0);
+  }, 0);
+
+  return (
+    <div className="space-y-3 rounded-md border border-border/60 bg-muted/30 p-4">
+      <SectionTitle>Attached machines</SectionTitle>
+      <p className="text-xs text-muted-foreground">
+        Physical assets living at this workstation. Machine cost per MO
+        session = sum of every active machine&apos;s rate below × session
+        duration. When no machines are attached the cascade falls back
+        to this station&apos;s own machine cost (or the group&apos;s).
+      </p>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <AlertCircle className="size-3.5" aria-hidden />
+          {error}
+        </div>
+      )}
+
+      {machines === null && !error && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          Loading machines…
+        </div>
+      )}
+
+      {machines && machines.length === 0 && (
+        <div className="rounded-md border border-dashed border-border/60 bg-background px-3 py-4 text-center text-xs text-muted-foreground">
+          No machines attached yet.
+        </div>
+      )}
+
+      {machines && machines.length > 0 && (
+        <>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
+            <span>
+              <span className="font-semibold text-foreground">{total}</span>{" "}
+              <span className="text-muted-foreground">
+                {total === 1 ? "machine" : "machines"} attached
+              </span>
+            </span>
+            <span className="text-muted-foreground">
+              Contributing to hourly cost:{" "}
+              <span className="font-medium text-foreground">
+                {formatCompanyMoney(summedRate.toFixed(4), company)} / h
+              </span>{" "}
+              from {contributing.length} active
+            </span>
+            {overdueCount > 0 && (
+              <span className="inline-flex items-center gap-1 text-destructive">
+                <AlertTriangle className="size-3" aria-hidden />
+                {overdueCount} overdue calibration
+                {overdueCount === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+
+          <ul className="space-y-1.5">
+            {machines.map((m) => (
+              <li
+                key={m.uuid}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/60 bg-background px-3 py-2 text-xs"
+              >
+                <Boxes
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden
+                />
+                <Link
+                  href={`/production/machines/${m.uuid}`}
+                  className="min-w-0 flex-1 truncate font-medium text-foreground underline-offset-2 hover:underline"
+                >
+                  {m.name}
+                </Link>
+                {m.asset_tag && (
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {m.asset_tag}
+                  </span>
+                )}
+                <span className="whitespace-nowrap text-muted-foreground">
+                  {m.hourly_rate_enabled && m.hourly_rate
+                    ? `${formatCompanyMoney(m.hourly_rate, company)} / h`
+                    : "no rate"}
+                </span>
+                {m.calibration_overdue && (
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-destructive/10 px-2 py-0.5 font-medium text-destructive">
+                    <AlertTriangle className="size-3" aria-hidden />
+                    Calibration overdue
+                  </span>
+                )}
+                {!m.is_active && (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                    Archived
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 pt-1">
+        <Link
+          href={`/production/machines?workstation_id=${workstationId}`}
+          className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+        >
+          Manage machines →
+        </Link>
+        {canManage && (
+          <Link
+            href={`/production/machines/new?workstation_id=${workstationId}`}
+            className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
+          >
+            <Plus className="size-3" aria-hidden />
+            Attach machine to {workstationName}
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
