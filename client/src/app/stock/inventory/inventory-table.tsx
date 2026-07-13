@@ -149,9 +149,12 @@ export function InventoryTable({
         header: "Code",
         sortField: "code",
         sortLabels: { asc: "Code A→Z", desc: "Code Z→A" },
+        filterField: "code",
+        filterKind: "text",
+        filterPlaceholder: "MA00001…",
         widthClassName: "w-28",
         group: "Identity",
-        description: "Auto-numbered item code.",
+        description: "Auto-numbered item code — inventory row per item.",
         cell: (r) => (
           <span className="font-mono text-xs text-muted-foreground">
             {r.item_code ?? `#${r.item_id}`}

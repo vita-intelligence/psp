@@ -91,6 +91,11 @@ export function WorkstationsLedger({ initialPage, locationFilters }: Props) {
       {
         id: "code",
         header: "Number",
+        sortField: "id",
+        sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        filterField: "code",
+        filterKind: "text",
+        filterPlaceholder: "WS00001…",
         widthClassName: "w-28",
         group: "Identity",
         description: "Auto-numbered workstation code.",

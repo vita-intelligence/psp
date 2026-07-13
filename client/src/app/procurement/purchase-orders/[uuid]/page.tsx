@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ShoppingCart } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -109,7 +110,18 @@ export default async function PODetailPage({
                 {STATUS_LABEL[po.status]}
               </Badge>
             }
-            title={po.vendor?.name ?? "—"}
+            title={
+              po.vendor?.uuid ? (
+                <Link
+                  href={`/procurement/vendors/${po.vendor.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {po.vendor.name}
+                </Link>
+              ) : (
+                po.vendor?.name ?? "—"
+              )
+            }
             actions={
               <div className="text-right">
                 <p className="text-[11px] uppercase tracking-wider text-muted-foreground">

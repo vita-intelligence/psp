@@ -201,11 +201,11 @@ export function LotsTable({
         sortLabels: { asc: "Oldest first", desc: "Newest first" },
         widthClassName: "w-28",
         hideable: false,
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
-        filterPlaceholder: "SL00001…",
+        filterPlaceholder: "L00001…",
         group: "Identity",
-        description: "Auto-numbered lot code (SL00001, …).",
+        description: "Auto-numbered lot code (L00001, …).",
         cell: (l) => (
           <span className="font-mono text-xs font-semibold">
             {l.code ?? `#${l.id}`}
@@ -223,12 +223,18 @@ export function LotsTable({
         description: "Item this lot belongs to. Filter by item name or SKU.",
         cell: (l) =>
           l.item ? (
-            <div className="space-y-0.5">
-              <p className="truncate font-medium">{l.item.name}</p>
+            <Link
+              href={`/settings/items/${l.item.uuid}`}
+              onClick={(e) => e.stopPropagation()}
+              className="block space-y-0.5 group"
+            >
+              <p className="truncate font-medium underline-offset-2 group-hover:underline">
+                {l.item.name}
+              </p>
               <p className="font-mono text-[11px] text-muted-foreground">
                 {l.item.code ?? l.item.external_sku ?? "—"}
               </p>
-            </div>
+            </Link>
           ) : (
             <span className="text-xs text-muted-foreground">—</span>
           ),
@@ -427,9 +433,13 @@ export function LotsTable({
         cell: (l) => {
           const wh = l.placements?.[0]?.storage_cell?.warehouse ?? null;
           return wh ? (
-            <span className="truncate text-xs text-muted-foreground">
+            <Link
+              href={`/settings/warehouses/${wh.uuid}`}
+              onClick={(e) => e.stopPropagation()}
+              className="truncate text-xs text-muted-foreground underline-offset-2 hover:underline"
+            >
               {wh.name}
-            </span>
+            </Link>
           ) : (
             <span className="text-xs text-muted-foreground/50">—</span>
           );

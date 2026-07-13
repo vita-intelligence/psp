@@ -51,14 +51,18 @@ defmodule Backend.Vendors do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @vendor_default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "vendor")
+
     base =
       Vendor
       |> where([v], v.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @vendor_search)
+      |> ListQueries.apply_search(opts[:search], @vendor_search, {company_id, "vendor"})
       |> maybe_status_filter(opts[:approval_status])
       |> maybe_risk_filter(opts[:vendor_risk])
       |> maybe_active_filter(opts[:is_active])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @vendor_sortable)
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @vendor_sortable)
       |> ListQueries.apply_sort(sort, @vendor_sortable, @vendor_default_sort)
       |> preload([:created_by, :updated_by, :approved_by])
 
@@ -67,6 +71,11 @@ defmodule Backend.Vendors do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [v], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [v], v.id == ^id)
 
   defp maybe_status_filter(query, nil), do: query
   defp maybe_status_filter(query, ""), do: query

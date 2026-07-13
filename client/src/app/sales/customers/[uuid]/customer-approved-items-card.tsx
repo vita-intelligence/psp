@@ -7,6 +7,7 @@
  */
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, PackageOpen, Plus, Trash2 } from "lucide-react";
@@ -125,12 +126,26 @@ export function CustomerApprovedItemsCard({ customer, canEdit }: Props) {
               className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-2"
             >
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {r.item?.name ?? "—"}
-                </p>
-                <p className="truncate font-mono text-[10px] text-muted-foreground">
-                  {r.item?.code ?? `#${r.item_id}`}
-                </p>
+                {r.item?.uuid ? (
+                  <Link
+                    href={`/settings/items/${r.item.uuid}`}
+                    className="block group"
+                  >
+                    <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
+                      {r.item.name}
+                    </p>
+                    <p className="truncate font-mono text-[10px] text-muted-foreground">
+                      {r.item.code ?? `#${r.item_id}`}
+                    </p>
+                  </Link>
+                ) : (
+                  <>
+                    <p className="truncate text-sm font-medium">—</p>
+                    <p className="truncate font-mono text-[10px] text-muted-foreground">
+                      {`#${r.item_id}`}
+                    </p>
+                  </>
+                )}
               </div>
               {canEdit && (
                 <Button

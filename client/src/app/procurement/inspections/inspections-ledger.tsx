@@ -163,7 +163,7 @@ export function InspectionsLedger({
         id: "code",
         header: "GI #",
         widthClassName: "w-28",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "GI00001…",
         group: "Identity",

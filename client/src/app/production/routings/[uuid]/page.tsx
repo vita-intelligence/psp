@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Route } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -71,17 +72,23 @@ export default async function RoutingDetailPage({ params }: Props) {
                 {routing.item && (
                   <>
                     {" "}· Output:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/settings/items/${routing.item.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {routing.item.name}
-                    </span>
+                    </Link>
                   </>
                 )}
                 {routing.bom && (
                   <>
                     {" "}· BOM:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/production/boms/${routing.bom.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {routing.bom.code ?? routing.bom.name}
-                    </span>
+                    </Link>
                   </>
                 )}
               </span>

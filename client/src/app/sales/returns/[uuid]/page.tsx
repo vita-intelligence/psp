@@ -88,7 +88,18 @@ export default async function RMADetailPage({
                 {STATUS_LABEL[rma.status]}
               </Badge>
             }
-            title={rma.customer?.name ?? "—"}
+            title={
+              rma.customer?.uuid ? (
+                <Link
+                  href={`/sales/customers/${rma.customer.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {rma.customer.name}
+                </Link>
+              ) : (
+                rma.customer?.name ?? "—"
+              )
+            }
             subtitle={
               rma.customer_invoice ? (
                 <p className="text-xs text-muted-foreground">

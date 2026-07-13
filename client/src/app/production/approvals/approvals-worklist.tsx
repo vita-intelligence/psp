@@ -62,7 +62,7 @@ export function ApprovalsWorklist({ initialPage }: Props) {
         id: "code",
         header: "MO",
         sortField: "id",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "MO00001…",
         group: "Identity",

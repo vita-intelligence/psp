@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -200,7 +201,16 @@ export function VendorCertificatesCard({ vendor, canEdit }: Props) {
               >
                 <div className="min-w-0 flex-1 space-y-0.5">
                   <p className="truncate text-sm font-medium">
-                    {row.certificate?.name ?? "(unlinked)"}
+                    {row.certificate?.uuid ? (
+                      <Link
+                        href={`/settings/certificates/${row.certificate.uuid}`}
+                        className="underline-offset-2 hover:underline"
+                      >
+                        {row.certificate.name}
+                      </Link>
+                    ) : (
+                      row.certificate?.name ?? "(unlinked)"
+                    )}
                   </p>
                   <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                     {row.certificate_number && (

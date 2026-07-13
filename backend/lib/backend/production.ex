@@ -80,19 +80,28 @@ defmodule Backend.Production do
     {item_needle, column_filter} =
       ListQueries.pop_joined_text_filter(opts[:column_filter], "item")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "bom")
+
     base =
       BOM
       |> where([b], b.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @bom_search)
+      |> ListQueries.apply_search(opts[:search], @bom_search, {company_id, "bom"})
       |> maybe_item_filter(opts[:item_id])
       |> maybe_active_filter(opts[:is_active])
       |> maybe_bom_item_name_filter(item_needle)
+      |> maybe_bom_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @bom_sortable)
       |> ListQueries.apply_sort(sort, @bom_sortable, @bom_default_sort)
       |> preload([:item, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_bom_code_id_filter(query, nil), do: query
+  defp maybe_bom_code_id_filter(query, :no_match), do: where(query, [b], false)
+  defp maybe_bom_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [b], b.id == ^id)
 
   defp maybe_bom_item_name_filter(query, nil), do: query
 
@@ -563,13 +572,17 @@ defmodule Backend.Production do
       when is_integer(company_id) do
     sort = Keyword.get(opts, :sort, @wg_default_sort)
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "workstation_group")
+
     base =
       WorkstationGroup
       |> where([g], g.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @wg_search)
+      |> ListQueries.apply_search(opts[:search], @wg_search, {company_id, "workstation_group"})
       |> maybe_wg_kind_filter(opts[:kind])
       |> maybe_active_filter(opts[:is_active])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @wg_sortable)
+      |> maybe_wg_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @wg_sortable)
       |> ListQueries.apply_sort(sort, @wg_sortable, @wg_default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -578,6 +591,11 @@ defmodule Backend.Production do
 
     {populate_workstation_counts(items), next_cursor}
   end
+
+  defp maybe_wg_code_id_filter(query, nil), do: query
+  defp maybe_wg_code_id_filter(query, :no_match), do: where(query, [g], false)
+  defp maybe_wg_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [g], g.id == ^id)
 
   defp maybe_wg_kind_filter(query, nil), do: query
 
@@ -756,20 +774,29 @@ defmodule Backend.Production do
     {group_needle, column_filter} =
       ListQueries.pop_joined_text_filter(opts[:column_filter], "group")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "workstation")
+
     base =
       Workstation
       |> where([w], w.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @ws_search)
+      |> ListQueries.apply_search(opts[:search], @ws_search, {company_id, "workstation"})
       |> maybe_ws_group_filter(opts[:workstation_group_id])
       |> maybe_ws_warehouse_filter(opts[:warehouse_id])
       |> maybe_active_filter(opts[:is_active])
       |> maybe_ws_group_name_filter(group_needle)
+      |> maybe_ws_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @ws_sortable)
       |> ListQueries.apply_sort(sort, @ws_sortable, @ws_default_sort)
       |> preload([:workstation_group, :warehouse, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_ws_code_id_filter(query, nil), do: query
+  defp maybe_ws_code_id_filter(query, :no_match), do: where(query, [w], false)
+  defp maybe_ws_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [w], w.id == ^id)
 
   defp maybe_ws_group_name_filter(query, nil), do: query
 
@@ -1337,21 +1364,30 @@ defmodule Backend.Production do
     {item_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "item")
     {bom_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "bom")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "routing")
+
     base =
       Routing
       |> where([r], r.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @routing_search)
+      |> ListQueries.apply_search(opts[:search], @routing_search, {company_id, "routing"})
       |> maybe_routing_item_filter(opts[:item_id])
       |> maybe_routing_bom_filter(opts[:bom_id])
       |> maybe_active_filter(opts[:is_active])
       |> maybe_routing_item_name_filter(item_needle)
       |> maybe_routing_bom_name_filter(bom_needle)
+      |> maybe_routing_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @routing_sortable)
       |> ListQueries.apply_sort(sort, @routing_sortable, @routing_default_sort)
       |> preload([:item, :bom, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_routing_code_id_filter(query, nil), do: query
+  defp maybe_routing_code_id_filter(query, :no_match), do: where(query, [r], false)
+  defp maybe_routing_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [r], r.id == ^id)
 
   defp maybe_routing_item_name_filter(query, nil), do: query
 
@@ -1716,16 +1752,20 @@ defmodule Backend.Production do
     {site_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "site")
     {bom_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "bom")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "manufacturing_order")
+
     base =
       ManufacturingOrder
       |> where([m], m.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @mo_search)
+      |> ListQueries.apply_search(opts[:search], @mo_search, {company_id, "manufacturing_order"})
       |> maybe_mo_status_filter(opts[:status])
       |> maybe_mo_item_filter(opts[:item_id])
       |> maybe_mo_warehouse_filter(opts[:warehouse_id])
       |> maybe_mo_product_name_filter(product_needle)
       |> maybe_mo_site_name_filter(site_needle)
       |> maybe_mo_bom_name_filter(bom_needle)
+      |> maybe_mo_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @mo_sortable)
       |> ListQueries.apply_sort(sort, @mo_sortable, @mo_default_sort)
       |> preload([
@@ -1741,6 +1781,11 @@ defmodule Backend.Production do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_mo_code_id_filter(query, nil), do: query
+  defp maybe_mo_code_id_filter(query, :no_match), do: where(query, [m], false)
+  defp maybe_mo_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [m], m.id == ^id)
 
   defp maybe_mo_status_filter(query, nil), do: query
 

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Settings2 } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -71,17 +72,23 @@ export default async function WorkstationDetailPage({ params }: Props) {
                 {ws.workstation_group && (
                   <>
                     {" "}· Group:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/production/workstation-groups/${ws.workstation_group.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {ws.workstation_group.name}
-                    </span>
+                    </Link>
                   </>
                 )}
                 {ws.warehouse && (
                   <>
                     {" "}· Site:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/settings/warehouses/${ws.warehouse.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {ws.warehouse.name}
-                    </span>
+                    </Link>
                   </>
                 )}
               </span>

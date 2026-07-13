@@ -376,7 +376,14 @@ function SummaryCard({
           )}
         </Field>
         <Field label="Vendor">
-          {purchaseOrder?.vendor?.name ?? (
+          {purchaseOrder?.vendor?.uuid ? (
+            <Link
+              href={`/procurement/vendors/${purchaseOrder.vendor.uuid}`}
+              className="hover:underline underline-offset-2"
+            >
+              {purchaseOrder.vendor.name}
+            </Link>
+          ) : (
             <span className="text-muted-foreground/60">—</span>
           )}
         </Field>
@@ -447,9 +454,18 @@ function LinesCard({
             >
               <div className="flex flex-wrap items-start gap-3">
                 <div className="min-w-0 flex-1 space-y-0.5">
-                  <p className="truncate text-sm font-medium">
-                    {line?.item?.name ?? "Unknown item"}
-                  </p>
+                  {line?.item?.uuid ? (
+                    <Link
+                      href={`/settings/items/${line.item.uuid}`}
+                      className="block truncate text-sm font-medium underline-offset-2 hover:underline"
+                    >
+                      {line.item.name}
+                    </Link>
+                  ) : (
+                    <p className="truncate text-sm font-medium">
+                      {line?.item?.name ?? "Unknown item"}
+                    </p>
+                  )}
                   {line?.vendor_part_no && (
                     <p className="font-mono text-[11px] text-muted-foreground">
                       {line.vendor_part_no}

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { ListChecks } from "lucide-react";
@@ -87,6 +88,11 @@ export function BOMsLedger({ initialPage }: Props) {
       {
         id: "code",
         header: "BOM #",
+        sortField: "id",
+        sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        filterField: "code",
+        filterKind: "text",
+        filterPlaceholder: "BOM00001…",
         widthClassName: "w-32",
         group: "Identity",
         description: "Auto-numbered BOM code.",
@@ -125,14 +131,20 @@ export function BOMsLedger({ initialPage }: Props) {
         description: "Output item this recipe produces. Filter by name or SKU.",
         cell: (b) =>
           b.item ? (
-            <div className="min-w-0 space-y-0.5">
-              <p className="truncate text-sm">{b.item.name}</p>
+            <Link
+              href={`/settings/items/${b.item.uuid}`}
+              onClick={(e) => e.stopPropagation()}
+              className="block min-w-0 space-y-0.5 group"
+            >
+              <p className="truncate text-sm underline-offset-2 group-hover:underline">
+                {b.item.name}
+              </p>
               {b.item.code && (
                 <p className="font-mono text-[10px] text-muted-foreground">
                   {b.item.code}
                 </p>
               )}
-            </div>
+            </Link>
           ) : (
             <span className="text-xs text-muted-foreground/50">—</span>
           ),

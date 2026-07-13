@@ -83,12 +83,16 @@ defmodule Backend.Accounts do
   def list_for_company(company_id, opts \\ []) do
     sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "user")
+
     base =
       User
       |> where([u], u.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_search(opts[:search], @search_fields, {company_id, "user"})
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -99,6 +103,11 @@ defmodule Backend.Accounts do
   # because the display code is computed from id + numbering format.
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [u], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [u], u.id == ^id)
 
   @doc """
   Slim org-roster lookup: every active user in the company, sorted by

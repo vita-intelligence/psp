@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Receipt } from "lucide-react";
 import type { VendorItemPrice } from "@/lib/types";
 import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
@@ -54,12 +55,28 @@ export function VendorPriceHistoryCard({ rows }: Props) {
               {rows.map((row) => (
                 <tr key={row.uuid}>
                   <td className="px-3 py-2">
-                    <p className="truncate text-sm font-medium">
-                      {row.item?.name ?? `Item #${row.item_id}`}
-                    </p>
-                    <p className="truncate font-mono text-[10px] text-muted-foreground">
-                      {row.item?.code ?? `#${row.item_id}`}
-                    </p>
+                    {row.item?.uuid ? (
+                      <Link
+                        href={`/settings/items/${row.item.uuid}`}
+                        className="block group"
+                      >
+                        <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
+                          {row.item.name}
+                        </p>
+                        <p className="truncate font-mono text-[10px] text-muted-foreground">
+                          {row.item.code ?? `#${row.item_id}`}
+                        </p>
+                      </Link>
+                    ) : (
+                      <>
+                        <p className="truncate text-sm font-medium">
+                          {`Item #${row.item_id}`}
+                        </p>
+                        <p className="truncate font-mono text-[10px] text-muted-foreground">
+                          {`#${row.item_id}`}
+                        </p>
+                      </>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm font-semibold">
                     {formatCompanyMoney(row.unit_price, prefs, {

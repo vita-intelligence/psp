@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Wrench } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -76,9 +77,12 @@ export default async function MachineDetailPage({ params }: Props) {
                 {machine.workstation && (
                   <>
                     {" "}· Workstation:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/production/workstations/${machine.workstation.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {machine.workstation.name}
-                    </span>
+                    </Link>
                   </>
                 )}
               </span>

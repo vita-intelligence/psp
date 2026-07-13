@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
@@ -112,7 +113,7 @@ export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
         header: "PO",
         sortField: "id",
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "PO00001…",
         group: "Identity",
@@ -133,17 +134,30 @@ export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
         filterPlaceholder: "Vendor name…",
         group: "Identity",
         description: "Supplier this PO is raised against. Filter by vendor name.",
-        cell: (p) => (
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium">
-              {p.vendor?.name ?? "—"}
-            </p>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {p.lines.length} {p.lines.length === 1 ? "line" : "lines"}
-              {p.notes ? ` · ${p.notes}` : ""}
-            </p>
-          </div>
-        ),
+        cell: (p) =>
+          p.vendor?.uuid ? (
+            <Link
+              href={`/procurement/vendors/${p.vendor.uuid}`}
+              onClick={(e) => e.stopPropagation()}
+              className="block min-w-0 group"
+            >
+              <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
+                {p.vendor.name}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {p.lines.length} {p.lines.length === 1 ? "line" : "lines"}
+                {p.notes ? ` · ${p.notes}` : ""}
+              </p>
+            </Link>
+          ) : (
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">—</p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {p.lines.length} {p.lines.length === 1 ? "line" : "lines"}
+                {p.notes ? ` · ${p.notes}` : ""}
+              </p>
+            </div>
+          ),
       },
       {
         id: "status",

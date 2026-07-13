@@ -86,7 +86,18 @@ export default async function InvoiceDetailPage({
                 {STATUS_LABEL[inv.status]}
               </Badge>
             }
-            title={inv.customer?.name ?? "—"}
+            title={
+              inv.customer?.uuid ? (
+                <Link
+                  href={`/sales/customers/${inv.customer.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {inv.customer.name}
+                </Link>
+              ) : (
+                inv.customer?.name ?? "—"
+              )
+            }
             subtitle={
               inv.customer_order ? (
                 <p className="text-xs text-muted-foreground">

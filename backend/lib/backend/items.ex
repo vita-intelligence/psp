@@ -40,12 +40,18 @@ defmodule Backend.Items do
     {family_needle, column_filter} =
       ListQueries.pop_joined_text_filter(opts[:column_filter], "product_family")
 
+    # `code` isn't a stored column — resolve the filter value through
+    # the numbering format so `MA00042` finds item id 42.
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "item")
+
     base =
       Item
       |> where([i], i.company_id == ^company_id)
       |> maybe_type_filter(type_filter)
-      |> apply_item_search(company_id, opts[:search])
+      |> ListQueries.apply_search(opts[:search], @search_fields, {company_id, "item"})
       |> maybe_product_family_filter(family_needle)
+      |> maybe_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:stock_uom, :product_family, :created_by, :updated_by])
@@ -64,51 +70,15 @@ defmodule Backend.Items do
       where: ilike(pf.name, ^like)
   end
 
-  # The DataTable search bar is a single field. Operators type whatever
-  # they're staring at — name, SKU, barcode, or the rendered code chip
-  # in the row (e.g. "MA00070"). The standard column ilike scan doesn't
-  # catch the code because the code is computed from id + numbering
-  # format, not stored as a column. Mirror the stock-lot pattern:
-  # OR a parse-as-code branch onto the regular column scan.
-  defp apply_item_search(query, _company_id, nil), do: query
-  defp apply_item_search(query, _company_id, ""), do: query
-
-  defp apply_item_search(query, company_id, term) when is_binary(term) do
-    trimmed = String.trim(term)
-
-    case trimmed do
-      "" ->
-        query
-
-      _ ->
-        needle = "%" <> escape_like(trimmed) <> "%"
-        id_from_code = parse_item_code(company_id, trimmed)
-
-        from i in query,
-          where:
-            ilike(i.name, ^needle) or
-              ilike(i.external_sku, ^needle) or
-              ilike(i.barcode, ^needle) or
-              ilike(i.description, ^needle) or
-              (^id_from_code != 0 and i.id == ^id_from_code)
-    end
-  end
-
-  defp parse_item_code(company_id, term) do
-    case Repo.get(Backend.Companies.Company, company_id) do
-      nil ->
-        0
-
-      company ->
-        case Backend.Numbering.parse_search(term, company, "item") do
-          nil -> 0
-          id when is_integer(id) -> id
-        end
-    end
-  end
-
-  defp escape_like(s),
-    do: s |> String.replace("\\", "\\\\") |> String.replace("%", "\\%") |> String.replace("_", "\\_")
+  # Applied to every list where the FE ships a `column_filter[code]`
+  # entry. The helper resolves the code text → integer id; `:no_match`
+  # means "operator typed something that isn't a valid code" and we
+  # short-circuit to zero rows so the ledger doesn't silently show
+  # every row (the alternative when a filter is dropped).
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [i], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [i], i.id == ^id)
 
   defp maybe_type_filter(query, nil), do: query
   defp maybe_type_filter(query, ""), do: query

@@ -53,6 +53,9 @@ defmodule Backend.Stock do
     # the rest fall through unchanged.
     {item_name_needle, column_filter} = pop_item_name_filter(opts[:column_filter])
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "stock_lot")
+
     base =
       Lot
       |> where([l], l.company_id == ^company_id)
@@ -62,6 +65,7 @@ defmodule Backend.Stock do
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> apply_lot_search(company_id, opts[:search])
       |> maybe_item_name_column_filter(item_name_needle)
+      |> maybe_lot_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([
@@ -101,6 +105,14 @@ defmodule Backend.Stock do
           ilike(i.external_sku, ^needle) or
           (^id_from_code != 0 and l.id == ^id_from_code)
   end
+
+  # `column_filter[code]` routes through the shared numbering helper —
+  # keeps the top-search's fused-OR fast path untouched but gives the
+  # DataTable header filter a code lookup.
+  defp maybe_lot_code_id_filter(query, nil), do: query
+  defp maybe_lot_code_id_filter(query, :no_match), do: where(query, [l], false)
+  defp maybe_lot_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [l], l.id == ^id)
 
   defp parse_lot_code(company_id, term) do
     case Repo.get(Backend.Companies.Company, company_id) do
@@ -482,12 +494,34 @@ defmodule Backend.Stock do
         base
       end
 
+    # Codes are rendered from `id + numbering_format`, not stored on
+    # items — so ILIKE on plain columns never sees them. Resolve the
+    # search term through Numbering.parse_search and OR the resulting
+    # item id into the search chain when it matches.
+    search_code_id =
+      case opts[:search] do
+        s when is_binary(s) and s != "" ->
+          resolve_item_code_id(company_id, String.trim(s))
+
+        _ ->
+          nil
+      end
+
     base =
-      if search_needle do
-        from [item: i] in base,
-          where: ilike(i.name, ^search_needle) or ilike(i.external_sku, ^search_needle)
-      else
-        base
+      cond do
+        search_needle && search_code_id ->
+          from [item: i] in base,
+            where:
+              ilike(i.name, ^search_needle) or
+                ilike(i.external_sku, ^search_needle) or
+                i.id == ^search_code_id
+
+        search_needle ->
+          from [item: i] in base,
+            where: ilike(i.name, ^search_needle) or ilike(i.external_sku, ^search_needle)
+
+        true ->
+          base
       end
 
     # Per-column ILIKE filters from the DataTable v2 header row. Only
@@ -495,6 +529,24 @@ defmodule Backend.Stock do
     # silently dropped so a UI bug can't 500 the endpoint.
     base = apply_inventory_column_filter(base, :name, opts[:column_filter])
     base = apply_inventory_column_filter(base, :external_sku, opts[:column_filter])
+
+    # `code` on the DataTable maps to the item's rendered code — peel
+    # it off the column-filter map and translate to an id equality
+    # clause. :no_match zeroes the result set so a garbage input
+    # doesn't silently render the whole inventory.
+    {code_id, _rest} =
+      Backend.ListQueries.pop_code_column_filter(
+        opts[:column_filter],
+        company_id,
+        "item"
+      )
+
+    base =
+      case code_id do
+        nil -> base
+        :no_match -> from [item: i] in base, where: false
+        id when is_integer(id) -> from [item: i] in base, where: i.id == ^id
+      end
 
     base =
       if warehouse_id do
@@ -567,6 +619,19 @@ defmodule Backend.Stock do
   end
 
   defp inventory_needle(_), do: nil
+
+  # Rendered codes aren't stored on Item — resolve the term through
+  # the Numbering format to an integer id so the search chain can OR
+  # `i.id == ^id` alongside the plain-text ILIKEs. Nil = term didn't
+  # parse as a valid code (fall through to text search only).
+  defp resolve_item_code_id(company_id, term) when is_integer(company_id) and is_binary(term) do
+    case Repo.get(Backend.Companies.Company, company_id) do
+      nil -> nil
+      %Backend.Companies.Company{} = company -> Backend.Numbering.parse_search(term, company, "item")
+    end
+  end
+
+  defp resolve_item_code_id(_, _), do: nil
 
   defp apply_inventory_column_filter(query, _field, nil), do: query
   defp apply_inventory_column_filter(query, _field, filters) when filters == %{}, do: query

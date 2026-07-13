@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Users } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";

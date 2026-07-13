@@ -82,7 +82,7 @@ export function CertificatesTable({
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "CT00001…",
         group: "Identity",

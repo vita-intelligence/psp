@@ -124,7 +124,7 @@ export function EquipmentTable({ initialPage }: Props) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "EQ00001…",
         group: "Identity",

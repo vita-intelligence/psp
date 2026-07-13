@@ -383,7 +383,18 @@ export function ShipmentDetail({
         <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
           <DetailRow
             label="Item"
-            value={shipment.stock_lot?.item?.name ?? "—"}
+            value={
+              shipment.stock_lot?.item?.uuid ? (
+                <Link
+                  href={`/settings/items/${shipment.stock_lot.item.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {shipment.stock_lot.item.name}
+                </Link>
+              ) : (
+                shipment.stock_lot?.item?.name ?? "—"
+              )
+            }
           />
           <DetailRow
             label="Lot"

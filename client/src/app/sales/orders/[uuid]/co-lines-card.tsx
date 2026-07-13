@@ -7,6 +7,7 @@
  */
 
 import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Plus, Trash2 } from "lucide-react";
@@ -392,11 +393,27 @@ function LineRow({
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_120px_160px_140px_110px] items-center gap-3 px-4 py-2">
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium">{line.item?.name ?? "—"}</p>
-        <p className="truncate font-mono text-[10px] text-muted-foreground">
-          {line.item?.code ?? `#${line.item_id}`}{" "}
-          {line.item?.stock_uom?.symbol ? `· ${line.item.stock_uom.symbol}` : ""}
-        </p>
+        {line.item?.uuid ? (
+          <Link
+            href={`/settings/items/${line.item.uuid}`}
+            className="block group"
+          >
+            <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
+              {line.item.name}
+            </p>
+            <p className="truncate font-mono text-[10px] text-muted-foreground">
+              {line.item.code ?? `#${line.item_id}`}{" "}
+              {line.item.stock_uom?.symbol ? `· ${line.item.stock_uom.symbol}` : ""}
+            </p>
+          </Link>
+        ) : (
+          <>
+            <p className="truncate text-sm font-medium">—</p>
+            <p className="truncate font-mono text-[10px] text-muted-foreground">
+              {`#${line.item_id}`}
+            </p>
+          </>
+        )}
       </div>
       {editing ? (
         <div className="relative">

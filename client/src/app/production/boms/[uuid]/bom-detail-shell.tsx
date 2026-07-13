@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ListChecks, Pencil, Star } from "lucide-react";
@@ -157,11 +158,19 @@ function ReadOnlyView({
             {bom.item && (
               <p className="text-xs text-muted-foreground">
                 Output:{" "}
-                <span className="font-medium">{bom.item.name}</span>
+                <Link
+                  href={`/settings/items/${bom.item.uuid}`}
+                  className="font-medium text-foreground underline-offset-2 hover:underline"
+                >
+                  {bom.item.name}
+                </Link>
                 {bom.item.code && (
-                  <span className="ml-1.5 font-mono text-[11px]">
+                  <Link
+                    href={`/settings/items/${bom.item.uuid}`}
+                    className="ml-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                  >
                     ({bom.item.code})
-                  </span>
+                  </Link>
                 )}
               </p>
             )}
@@ -246,13 +255,22 @@ function ReadOnlyView({
                         {idx + 1}
                       </td>
                       <td className="px-2 py-1.5">
-                        <p className="text-sm">
-                          {line.part?.name ?? `Item #${line.part_id}`}
-                        </p>
-                        {line.part?.code && (
-                          <p className="font-mono text-[10px] text-muted-foreground">
-                            {line.part.code}
-                          </p>
+                        {line.part ? (
+                          <Link
+                            href={`/settings/items/${line.part.uuid}`}
+                            className="block group"
+                          >
+                            <p className="text-sm underline-offset-2 group-hover:underline">
+                              {line.part.name}
+                            </p>
+                            {line.part.code && (
+                              <p className="font-mono text-[10px] text-muted-foreground">
+                                {line.part.code}
+                              </p>
+                            )}
+                          </Link>
+                        ) : (
+                          <p className="text-sm">Item #{line.part_id}</p>
                         )}
                       </td>
                       <td className="px-2 py-1.5 text-[11px] text-muted-foreground">

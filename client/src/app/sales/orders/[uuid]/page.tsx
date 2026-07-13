@@ -119,7 +119,18 @@ export default async function CustomerOrderDetailPage({
             chips={
               <Badge tone={STATUS_TONE[co.status]}>{STATUS_LABEL[co.status]}</Badge>
             }
-            title={co.customer?.name ?? "—"}
+            title={
+              co.customer?.uuid ? (
+                <Link
+                  href={`/sales/customers/${co.customer.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {co.customer.name}
+                </Link>
+              ) : (
+                co.customer?.name ?? "—"
+              )
+            }
             subtitle={
               co.customer_reference ? (
                 <p className="text-xs text-muted-foreground">

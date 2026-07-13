@@ -79,7 +79,7 @@ export function UsersTable({ initialPage }: UsersTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "U00001…",
         group: "Identity",

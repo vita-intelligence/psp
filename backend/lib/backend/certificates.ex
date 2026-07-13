@@ -28,16 +28,25 @@ defmodule Backend.Certificates do
   def list_page(company_id, opts \\ []) do
     sort = normalise_sort(Keyword.get(opts, :sort, @cert_default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "certificate")
+
     base =
       Certificate
       |> where([c], c.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @cert_search)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @cert_sortable)
+      |> ListQueries.apply_search(opts[:search], @cert_search, {company_id, "certificate"})
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @cert_sortable)
       |> ListQueries.apply_sort(sort, @cert_sortable, @cert_default_sort)
       |> preload([:created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [c], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [c], c.id == ^id)
 
   def list_for_company(company_id) do
     Repo.all(

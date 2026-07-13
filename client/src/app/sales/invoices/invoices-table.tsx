@@ -128,7 +128,7 @@ export function InvoicesTable({ initialPage }: Props) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "INV00001…",
         group: "Identity",

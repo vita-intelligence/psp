@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { HandCoins, Move, Printer, Package, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
@@ -60,11 +61,25 @@ export function LotHeader({
             <StatusChip status={lot.status} />
           </div>
           <h1 className="truncate text-2xl font-semibold tracking-tight">
-            {lot.item?.name ?? "—"}
+            {lot.item?.uuid ? (
+              <Link
+                href={`/settings/items/${lot.item.uuid}`}
+                className="underline-offset-2 hover:underline"
+              >
+                {lot.item.name}
+              </Link>
+            ) : (
+              lot.item?.name ?? "—"
+            )}
           </h1>
-          {lot.item?.code && (
+          {lot.item?.code && lot.item?.uuid && (
             <p className="text-xs text-muted-foreground">
-              <span className="font-mono">{lot.item.code}</span>
+              <Link
+                href={`/settings/items/${lot.item.uuid}`}
+                className="font-mono hover:text-foreground"
+              >
+                {lot.item.code}
+              </Link>
               {lot.item.external_sku ? ` · ${lot.item.external_sku}` : ""}
             </p>
           )}

@@ -34,26 +34,65 @@ defmodule Backend.ListQueries do
   @doc """
   Apply a free-text ILIKE search across the given fields. Empty terms
   are a no-op (returns the query unchanged).
-  """
-  def apply_search(query, nil, _fields), do: query
-  def apply_search(query, "", _fields), do: query
 
-  def apply_search(query, term, fields)
-      when is_binary(term) and is_list(fields) and fields != [] do
+  Optional 4th arg `code_key` — a `{company_id, entity_key}` tuple —
+  extends the OR chain with `row.id == ^parsed_id` when the term
+  parses as a rendered code for `entity_key` (see
+  `Backend.Numbering.parse_search/3`). Without this, the top search
+  bar can never find rows by their code (`MA00042` / `CO00007` /
+  `LOT00001`) because codes are computed, not stored — every
+  `ILIKE column, "%code%"` misses.
+  """
+  def apply_search(query, term, fields, code_key \\ nil)
+
+  def apply_search(query, nil, _fields, _code_key), do: query
+  def apply_search(query, "", _fields, _code_key), do: query
+
+  def apply_search(query, term, fields, code_key)
+      when is_binary(term) and is_list(fields) do
     needle = "%" <> escape_like(String.trim(term)) <> "%"
+    code_id = resolve_code_id(String.trim(term), code_key)
 
     # Build the OR-chain as a single `dynamic` and apply it inside one
     # `where`. Folding `or_where: ilike(...)` across the field list
     # instead would OR each ilike with the upstream `where`s (the
     # company-scope clause + any filter), which makes the search a
     # no-op as soon as the upstream clause matches every row.
-    or_clause =
+    text_or =
       Enum.reduce(fields, false, fn field, dyn ->
         dynamic([row], ilike(field(row, ^field), ^needle) or ^dyn)
       end)
 
-    from row in query, where: ^or_clause
+    or_clause =
+      case code_id do
+        nil ->
+          text_or
+
+        id when is_integer(id) ->
+          dynamic([row], row.id == ^id or ^text_or)
+      end
+
+    # Guard against fields=[] with no code_key — the fold above would
+    # leave `false` and produce `WHERE false`. Return the query
+    # unchanged instead so an empty search-fields list is a no-op.
+    case or_clause do
+      false -> query
+      _ -> from row in query, where: ^or_clause
+    end
   end
+
+  defp resolve_code_id(term, {company_id, entity_key})
+       when is_integer(company_id) and is_binary(entity_key) and term != "" do
+    case Backend.Repo.get(Backend.Companies.Company, company_id) do
+      nil ->
+        nil
+
+      %Backend.Companies.Company{} = company ->
+        Backend.Numbering.parse_search(term, company, entity_key)
+    end
+  end
+
+  defp resolve_code_id(_term, _key), do: nil
 
   ## Filter ---------------------------------------------------------
 
@@ -135,6 +174,58 @@ defmodule Backend.ListQueries do
   end
 
   def pop_joined_text_filter(other, _key), do: {nil, other}
+
+  @doc """
+  Peel a `column_filter[code]` entry off the map and resolve it to
+  the underlying integer id via `Backend.Numbering.parse_search/3`.
+
+  Returns `{id_or_nil, remaining_filters}`. Callers apply the id
+  themselves with `where row.id == ^id`. The `nil` case comes in two
+  flavours:
+
+    * the caller sent no `code` filter → `{nil, original_map}`
+    * the value doesn't parse as a valid code for `entity_key` →
+      `{:no_match, remaining_map}` so the caller can emit an
+      `impossible` WHERE and return zero rows (rather than silently
+      showing every row, which happens if you skip the filter).
+
+  The `code` field is expected to arrive as a plain-text filter
+  (op=contains). Every other op is a no-op — this helper only
+  resolves the exact-code case.
+  """
+  def pop_code_column_filter(filters, company_id, entity_key)
+
+  def pop_code_column_filter(nil, _company_id, _entity_key), do: {nil, nil}
+
+  def pop_code_column_filter(%{} = filters, company_id, entity_key)
+      when is_integer(company_id) and is_binary(entity_key) do
+    case Map.pop(filters, "code") do
+      {nil, rest} ->
+        {nil, rest}
+
+      {%{"value" => value} = spec, rest} when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        cond do
+          trimmed == "" ->
+            {nil, rest}
+
+          spec["op"] not in ["contains", "eq", nil] ->
+            {nil, rest}
+
+          true ->
+            case resolve_code_id(trimmed, {company_id, entity_key}) do
+              id when is_integer(id) -> {id, rest}
+              nil -> {:no_match, rest}
+            end
+        end
+
+      {_, rest} ->
+        {nil, rest}
+    end
+  end
+
+  def pop_code_column_filter(other, _company_id, _entity_key), do: {nil, other}
 
   @doc """
   Escape a value for use inside an ILIKE pattern. Exposed for callers
