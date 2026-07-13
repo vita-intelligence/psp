@@ -27,11 +27,15 @@ defmodule Backend.Units do
   def list_page(company_id, opts \\ []) do
     sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "unit_of_measurement")
+
     base =
       UnitOfMeasurement
       |> where([u], u.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @search_fields)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
+      |> ListQueries.apply_search(opts[:search], @search_fields, {company_id, "unit_of_measurement"})
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -40,6 +44,11 @@ defmodule Backend.Units do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [u], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [u], u.id == ^id)
 
   def list_config do
     %{

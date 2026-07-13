@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Truck } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -42,14 +43,53 @@ export default async function ShipmentDetailPage({ params }: Props) {
           <PageHeader
             size="detail"
             icon={Truck}
-            title={shipment.stock_lot?.item?.name ?? "Shipment"}
+            title={
+              shipment.stock_lot?.item?.uuid ? (
+                <Link
+                  href={`/settings/items/${shipment.stock_lot.item.uuid}`}
+                  className="underline-offset-4 hover:underline"
+                >
+                  {shipment.stock_lot.item.name}
+                </Link>
+              ) : (
+                shipment.stock_lot?.item?.name ?? "Shipment"
+              )
+            }
             description={
               <>
                 Lot{" "}
-                <span className="font-mono">
-                  {shipment.stock_lot?.code ?? "—"}
-                </span>{" "}
-                — recipient {shipment.customer?.name ?? "—"}
+                {shipment.stock_lot?.uuid ? (
+                  <Link
+                    href={`/stock/lots/${shipment.stock_lot.uuid}`}
+                    className="font-mono underline-offset-2 hover:underline"
+                  >
+                    {shipment.stock_lot.code ?? `#${shipment.stock_lot.id}`}
+                  </Link>
+                ) : (
+                  <span className="font-mono">—</span>
+                )}{" "}
+                — recipient{" "}
+                {shipment.customer?.uuid ? (
+                  <Link
+                    href={`/sales/customers/${shipment.customer.uuid}`}
+                    className="underline-offset-2 hover:underline"
+                  >
+                    {shipment.customer.name}
+                  </Link>
+                ) : (
+                  shipment.customer?.name ?? "—"
+                )}
+                {shipment.customer_order?.uuid && (
+                  <>
+                    {" "}·{" "}
+                    <Link
+                      href={`/projects/${shipment.customer_order.uuid}`}
+                      className="underline-offset-2 hover:underline"
+                    >
+                      Order
+                    </Link>
+                  </>
+                )}
               </>
             }
             backHref="/shipments"

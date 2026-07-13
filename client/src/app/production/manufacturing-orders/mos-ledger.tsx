@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { Factory } from "lucide-react";
@@ -115,7 +116,7 @@ export function ManufacturingOrdersLedger({
         id: "code",
         header: "MO",
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "MO00001…",
         group: "Identity",
@@ -151,14 +152,20 @@ export function ManufacturingOrdersLedger({
         description: "Item being manufactured. Filter by name or SKU.",
         cell: (m) =>
           m.item ? (
-            <div className="min-w-0 space-y-0.5">
-              <p className="truncate text-sm">{m.item.name}</p>
+            <Link
+              href={`/settings/items/${m.item.uuid}`}
+              onClick={(e) => e.stopPropagation()}
+              className="block min-w-0 space-y-0.5 group"
+            >
+              <p className="truncate text-sm underline-offset-2 group-hover:underline">
+                {m.item.name}
+              </p>
               {m.item.code && (
                 <p className="font-mono text-[10px] text-muted-foreground">
                   {m.item.code}
                 </p>
               )}
-            </div>
+            </Link>
           ) : (
             <span className="text-xs text-muted-foreground/50">—</span>
           ),

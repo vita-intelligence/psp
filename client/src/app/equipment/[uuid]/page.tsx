@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Cog } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -52,7 +53,18 @@ export default async function EquipmentDetailPage({
         <div className="mx-auto max-w-4xl space-y-6">
           <PageHeader
             icon={Cog}
-            title={unit.item?.name ?? "Equipment"}
+            title={
+              unit.item?.uuid ? (
+                <Link
+                  href={`/settings/items/${unit.item.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {unit.item.name}
+                </Link>
+              ) : (
+                unit.item?.name ?? "Equipment"
+              )
+            }
             description={`${unit.code ?? `#${unit.id}`} · Serial ${unit.serial_number}`}
             backHref="/equipment"
           />

@@ -24,16 +24,25 @@ defmodule Backend.Catalogs do
   def list_families_page(company_id, opts \\ []) do
     sort = normalise_sort(Keyword.get(opts, :sort, @family_default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "product_family")
+
     base =
       ProductFamily
       |> where([f], f.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @family_search)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @family_sortable)
+      |> ListQueries.apply_search(opts[:search], @family_search, {company_id, "product_family"})
+      |> maybe_family_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @family_sortable)
       |> ListQueries.apply_sort(sort, @family_sortable, @family_default_sort)
       |> preload([:created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_family_code_id_filter(query, nil), do: query
+  defp maybe_family_code_id_filter(query, :no_match), do: where(query, [f], false)
+  defp maybe_family_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [f], f.id == ^id)
 
   def list_families_for_company(company_id) do
     Repo.all(
@@ -143,17 +152,26 @@ defmodule Backend.Catalogs do
     sort = normalise_sort(Keyword.get(opts, :sort, @attr_default_sort))
     scope_filter = opts[:scope]
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "attribute_definition")
+
     base =
       AttributeDefinition
       |> where([a], a.company_id == ^company_id)
       |> maybe_scope_filter(scope_filter)
-      |> ListQueries.apply_search(opts[:search], @attr_search)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @attr_sortable)
+      |> ListQueries.apply_search(opts[:search], @attr_search, {company_id, "attribute_definition"})
+      |> maybe_attr_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @attr_sortable)
       |> ListQueries.apply_sort(sort, @attr_sortable, @attr_default_sort)
       |> preload([:created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_attr_code_id_filter(query, nil), do: query
+  defp maybe_attr_code_id_filter(query, :no_match), do: where(query, [a], false)
+  defp maybe_attr_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [a], a.id == ^id)
 
   defp maybe_scope_filter(query, nil), do: query
 

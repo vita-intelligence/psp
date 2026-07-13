@@ -105,6 +105,11 @@ export function WorkstationGroupsLedger({ initialPage }: Props) {
       {
         id: "code",
         header: "Number",
+        sortField: "id",
+        sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        filterField: "code",
+        filterKind: "text",
+        filterPlaceholder: "WG00001…",
         widthClassName: "w-28",
         group: "Identity",
         description: "Auto-numbered workstation-group code.",

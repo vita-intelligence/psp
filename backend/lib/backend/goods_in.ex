@@ -103,21 +103,30 @@ defmodule Backend.GoodsIn do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = Keyword.get(opts, :sort, @inspection_default_sort)
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "goods_in_inspection")
+
     base =
       Inspection
       |> where([i], i.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @inspection_search)
+      |> ListQueries.apply_search(opts[:search], @inspection_search, {company_id, "goods_in_inspection"})
       |> maybe_status_filter(opts[:status])
       |> maybe_po_filter(opts[:purchase_order_id])
       |> maybe_warehouse_filter(opts[:warehouse_id])
       |> maybe_date_range(opts[:from_date], opts[:to_date])
       |> maybe_actor_filter(opts[:actor_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @inspection_sortable)
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @inspection_sortable)
       |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
       |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [i], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [i], i.id == ^id)
 
   defp maybe_status_filter(query, nil), do: query
   defp maybe_status_filter(query, ""), do: query

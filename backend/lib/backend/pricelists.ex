@@ -47,12 +47,16 @@ defmodule Backend.Pricelists do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @pricelist_default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "pricelist")
+
     base =
       Pricelist
       |> where([p], p.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @pricelist_search)
+      |> ListQueries.apply_search(opts[:search], @pricelist_search, {company_id, "pricelist"})
       |> maybe_active_filter(opts[:is_active])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @pricelist_sortable)
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @pricelist_sortable)
       |> ListQueries.apply_sort(sort, @pricelist_sortable, @pricelist_default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -61,6 +65,11 @@ defmodule Backend.Pricelists do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [p], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [p], p.id == ^id)
 
   defp maybe_active_filter(query, nil), do: query
 

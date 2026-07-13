@@ -64,13 +64,17 @@ defmodule Backend.CustomerOrders do
     {customer_needle, column_filter} =
       ListQueries.pop_joined_text_filter(opts[:column_filter], "customer")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "customer_order")
+
     base =
       CustomerOrder
       |> where([co], co.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @co_search)
+      |> ListQueries.apply_search(opts[:search], @co_search, {company_id, "customer_order"})
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
       |> maybe_customer_name_filter(customer_needle)
+      |> maybe_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @co_sortable)
       |> ListQueries.apply_sort(sort, @co_sortable, @co_default_sort)
       |> preload([
@@ -90,6 +94,14 @@ defmodule Backend.CustomerOrders do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  # Route the FE's `column_filter[code]` through the numbering format
+  # → integer id. `:no_match` short-circuits to zero rows rather than
+  # dropping the filter (which would silently render every row).
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [co], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [co], co.id == ^id)
 
   defp maybe_status_filter(query, nil), do: query
   defp maybe_status_filter(query, ""), do: query

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -153,6 +154,14 @@ export function EquipmentDetail({ equipment, canAct, prefs }: Props) {
             <p className="font-mono">
               {equipment.current_cell?.name ?? "—"}
             </p>
+            {equipment.current_cell?.warehouse?.uuid && (
+              <Link
+                href={`/settings/warehouses/${equipment.current_cell.warehouse.uuid}`}
+                className="mt-0.5 inline-block text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+              >
+                {equipment.current_cell.warehouse.name}
+              </Link>
+            )}
           </div>
         </div>
       </section>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Plus, Package, X } from "lucide-react";
@@ -122,12 +123,24 @@ export function VendorApprovedItemsCard({ vendor, canEdit }: Props) {
               key={row.uuid}
               className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-muted/40 py-1 pl-3 pr-1 text-xs"
             >
-              <span className="font-mono text-[10px] text-muted-foreground">
-                {row.item?.code ?? `#${row.item_id}`}
-              </span>
-              <span className="font-medium">
-                {row.item?.name ?? `Item #${row.item_id}`}
-              </span>
+              {row.item?.uuid ? (
+                <Link
+                  href={`/settings/items/${row.item.uuid}`}
+                  className="inline-flex items-center gap-2 underline-offset-2 hover:underline"
+                >
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {row.item.code ?? `#${row.item_id}`}
+                  </span>
+                  <span className="font-medium">{row.item.name}</span>
+                </Link>
+              ) : (
+                <>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {`#${row.item_id}`}
+                  </span>
+                  <span className="font-medium">{`Item #${row.item_id}`}</span>
+                </>
+              )}
               {canEdit && (
                 <button
                   type="button"

@@ -79,7 +79,7 @@ export function StorageTagsTable({ initialPage }: StorageTagsTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "TA00001…",
         group: "Identity",

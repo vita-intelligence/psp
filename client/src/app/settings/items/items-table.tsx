@@ -117,7 +117,7 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
         sortField: "code",
         sortLabels: { asc: "A → Z", desc: "Z → A" },
         widthClassName: "w-28",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "MA00001…",
         group: "Identity",

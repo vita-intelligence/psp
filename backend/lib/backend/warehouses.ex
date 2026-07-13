@@ -56,13 +56,17 @@ defmodule Backend.Warehouses do
     # `kind: "production_facility"`; pass `:any` to opt out entirely.
     kind = Keyword.get(opts, :kind, "warehouse")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "warehouse")
+
     base =
       Warehouse
       |> where([w], w.company_id == ^company_id)
       |> kind_scope(kind)
-      |> ListQueries.apply_search(opts[:search], @search_fields)
+      |> ListQueries.apply_search(opts[:search], @search_fields, {company_id, "warehouse"})
       |> ListQueries.apply_filter(opts[:filters], @filter_fields)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -75,6 +79,11 @@ defmodule Backend.Warehouses do
     do: where(query, [w], w.kind == ^kind)
 
   defp kind_scope(query, _other), do: query
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [w], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [w], w.id == ^id)
 
   # FE sends `sort=code:asc` from the Code column header. The display
   # code is `prefix + lpad(id, padding)` so id order = code order under

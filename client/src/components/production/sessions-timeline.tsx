@@ -408,7 +408,16 @@ function SessionRow({
         <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
           <div className="flex items-baseline gap-1.5">
             <span className="text-muted-foreground">Workstation</span>
-            <span className="font-medium">{s.workstation?.name ?? "—"}</span>
+            {s.workstation?.uuid ? (
+              <Link
+                href={`/production/workstations/${s.workstation.uuid}`}
+                className="font-medium underline-offset-2 hover:underline"
+              >
+                {s.workstation.name}
+              </Link>
+            ) : (
+              <span className="font-medium">{s.workstation?.name ?? "—"}</span>
+            )}
             {s.workstation?.code && (
               <span className="text-[10px] text-muted-foreground">({s.workstation.code})</span>
             )}

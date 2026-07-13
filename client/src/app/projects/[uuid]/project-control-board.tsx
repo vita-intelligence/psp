@@ -963,7 +963,16 @@ function StickyHeader({
               )}
             </div>
             <h1 className="mt-0.5 truncate text-lg font-semibold tracking-tight sm:text-xl">
-              {co.customer?.name ?? "—"}
+              {co.customer?.uuid ? (
+                <Link
+                  href={`/sales/customers/${co.customer.uuid}`}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {co.customer.name}
+                </Link>
+              ) : (
+                co.customer?.name ?? "—"
+              )}
             </h1>
           </div>
 

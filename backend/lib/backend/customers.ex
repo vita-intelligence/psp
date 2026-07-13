@@ -73,14 +73,18 @@ defmodule Backend.Customers do
   def list_page(company_id, opts \\ []) when is_integer(company_id) do
     sort = normalise_sort(Keyword.get(opts, :sort, @customer_default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "customer")
+
     base =
       Customer
       |> where([c], c.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @customer_search)
+      |> ListQueries.apply_search(opts[:search], @customer_search, {company_id, "customer"})
       |> maybe_status_filter(opts[:approval_status])
       |> maybe_active_filter(opts[:is_active])
       |> maybe_account_manager_filter(opts[:account_manager_id])
-      |> ListQueries.apply_column_filters(opts[:column_filter], @customer_sortable)
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @customer_sortable)
       |> ListQueries.apply_sort(sort, @customer_sortable, @customer_default_sort)
       |> preload([:created_by, :updated_by, :approved_by, :account_manager])
 
@@ -89,6 +93,11 @@ defmodule Backend.Customers do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [c], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [c], c.id == ^id)
 
   defp maybe_status_filter(query, nil), do: query
   defp maybe_status_filter(query, ""), do: query

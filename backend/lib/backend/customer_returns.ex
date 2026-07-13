@@ -50,15 +50,19 @@ defmodule Backend.CustomerReturns do
     {received_by_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "received_by")
     {resolved_by_needle, column_filter} = ListQueries.pop_joined_text_filter(column_filter, "resolved_by")
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(column_filter, company_id, "customer_return")
+
     base =
       CustomerReturn
       |> where([r], r.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @rma_search)
+      |> ListQueries.apply_search(opts[:search], @rma_search, {company_id, "customer_return"})
       |> maybe_status_filter(opts[:status])
       |> maybe_customer_filter(opts[:customer_id])
       |> maybe_customer_name_filter(customer_needle)
       |> maybe_user_name_filter(:received_by_id, received_by_needle)
       |> maybe_user_name_filter(:resolved_by_id, resolved_by_needle)
+      |> maybe_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @rma_sortable)
       |> ListQueries.apply_sort(sort, @rma_sortable, @rma_default_sort)
       |> preload([
@@ -76,6 +80,11 @@ defmodule Backend.CustomerReturns do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [r], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [r], r.id == ^id)
 
   defp maybe_status_filter(query, nil), do: query
   defp maybe_status_filter(query, ""), do: query

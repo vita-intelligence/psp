@@ -145,7 +145,7 @@ export function VendorsTable({ initialPage }: VendorsTableProps) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "V00001…",
         group: "Identity",

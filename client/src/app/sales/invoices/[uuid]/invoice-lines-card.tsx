@@ -8,6 +8,7 @@
  */
 
 import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Plus, Trash2 } from "lucide-react";
@@ -358,17 +359,38 @@ function LineRow({
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_90px_120px_120px_auto] items-center gap-3 px-4 py-2">
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium">
-          {line.item?.name ?? line.description ?? "—"}
-        </p>
-        <p className="truncate text-[10px] text-muted-foreground">
-          {line.item?.code ? <span className="font-mono">{line.item.code}</span> : null}
-          {line.customer_order_line_id && (
-            <Badge tone="sky" className="ml-1">
-              from CO line
-            </Badge>
-          )}
-        </p>
+        {line.item?.uuid ? (
+          <Link
+            href={`/settings/items/${line.item.uuid}`}
+            className="block group"
+          >
+            <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
+              {line.item.name}
+            </p>
+            <p className="truncate text-[10px] text-muted-foreground">
+              {line.item.code ? <span className="font-mono">{line.item.code}</span> : null}
+              {line.customer_order_line_id && (
+                <Badge tone="sky" className="ml-1">
+                  from CO line
+                </Badge>
+              )}
+            </p>
+          </Link>
+        ) : (
+          <>
+            <p className="truncate text-sm font-medium">
+              {line.item?.name ?? line.description ?? "—"}
+            </p>
+            <p className="truncate text-[10px] text-muted-foreground">
+              {line.item?.code ? <span className="font-mono">{line.item.code}</span> : null}
+              {line.customer_order_line_id && (
+                <Badge tone="sky" className="ml-1">
+                  from CO line
+                </Badge>
+              )}
+            </p>
+          </>
+        )}
       </div>
       {editing ? (
         <Input

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Factory } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
@@ -74,24 +75,41 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
           <PageHeader
             size="detail"
             icon={Factory}
-            title={mo.item ? mo.item.name : "Manufacturing order"}
+            title={
+              mo.item ? (
+                <Link
+                  href={`/settings/items/${mo.item.uuid}`}
+                  className="underline-offset-4 hover:underline"
+                >
+                  {mo.item.name}
+                </Link>
+              ) : (
+                "Manufacturing order"
+              )
+            }
             description={
               <span className="font-mono text-xs">
                 {mo.code ?? `#${mo.id}`}
                 {mo.warehouse && (
                   <>
                     {" "}· Site:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/settings/warehouses/${mo.warehouse.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {mo.warehouse.name}
-                    </span>
+                    </Link>
                   </>
                 )}
                 {mo.bom && (
                   <>
                     {" "}· BOM:{" "}
-                    <span className="font-medium text-foreground">
+                    <Link
+                      href={`/production/boms/${mo.bom.uuid}`}
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                    >
                       {mo.bom.code ?? mo.bom.name}
-                    </span>
+                    </Link>
                   </>
                 )}
               </span>

@@ -92,11 +92,15 @@ defmodule Backend.RBAC do
   def list_templates(company_id, opts \\ []) do
     sort = normalise_sort(Keyword.get(opts, :sort, @default_sort))
 
+    {code_id, column_filter} =
+      ListQueries.pop_code_column_filter(opts[:column_filter], company_id, "template")
+
     base =
       Role
       |> where([r], r.company_id == ^company_id)
-      |> ListQueries.apply_search(opts[:search], @search_fields)
-      |> ListQueries.apply_column_filters(opts[:column_filter], @sortable_fields)
+      |> ListQueries.apply_search(opts[:search], @search_fields, {company_id, "template"})
+      |> maybe_code_id_filter(code_id)
+      |> ListQueries.apply_column_filters(column_filter, @sortable_fields)
       |> ListQueries.apply_sort(sort, @sortable_fields, @default_sort)
       |> preload([:created_by, :updated_by])
 
@@ -105,6 +109,11 @@ defmodule Backend.RBAC do
 
   defp normalise_sort({:code, dir}), do: {:id, dir}
   defp normalise_sort(other), do: other
+
+  defp maybe_code_id_filter(query, nil), do: query
+  defp maybe_code_id_filter(query, :no_match), do: where(query, [r], false)
+  defp maybe_code_id_filter(query, id) when is_integer(id),
+    do: where(query, [r], r.id == ^id)
 
   @doc "Static config the frontend reads to drive its column controls."
   def list_templates_config do

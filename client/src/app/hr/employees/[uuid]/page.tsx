@@ -307,7 +307,17 @@ function ActiveSessionStrip({ session }: { session: WorkstationSessionRow | null
         <span className="truncate text-sm font-semibold">{title}</span>
         {session.workstation && (
           <span className="text-xs text-muted-foreground">
-            at <span className="font-medium text-foreground">{session.workstation.name}</span>
+            at{" "}
+            {session.workstation.uuid ? (
+              <Link
+                href={`/production/workstations/${session.workstation.uuid}`}
+                className="font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                {session.workstation.name}
+              </Link>
+            ) : (
+              <span className="font-medium text-foreground">{session.workstation.name}</span>
+            )}
             {session.workstation.code && <span> ({session.workstation.code})</span>}
           </span>
         )}

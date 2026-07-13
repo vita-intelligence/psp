@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Building2, Layers, MapPin, Sparkles } from "lucide-react";
 import type { StockLot, StockLotPlacement } from "@/lib/types";
 import { getCompanyDefaults } from "@/lib/company/server";
@@ -98,7 +99,16 @@ function PlacementRow({
               collapsed because "(System)" reads as a leak. */}
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             <Building2 className="size-3" />
-            <span>{cell?.warehouse?.name ?? "—"}</span>
+            {cell?.warehouse?.uuid ? (
+              <Link
+                href={`/settings/warehouses/${cell.warehouse.uuid}`}
+                className="hover:text-foreground underline-offset-2 hover:underline"
+              >
+                {cell.warehouse.name}
+              </Link>
+            ) : (
+              <span>{cell?.warehouse?.name ?? "—"}</span>
+            )}
             {!isSystem && cell?.floor?.name && (
               <>
                 <span>/</span>

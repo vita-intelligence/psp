@@ -227,12 +227,28 @@ export function POLinesCard({ po, items, canEdit }: Props) {
               {po.lines.map((l) => (
                 <tr key={l.uuid}>
                   <td className="px-3 py-2">
-                    <p className="truncate text-sm font-medium">
-                      {l.item?.name ?? `Item #${l.item_id}`}
-                    </p>
-                    <p className="truncate font-mono text-[10px] text-muted-foreground">
-                      {l.item?.code ?? `#${l.item_id}`}
-                    </p>
+                    {l.item?.uuid ? (
+                      <Link
+                        href={`/settings/items/${l.item.uuid}`}
+                        className="block group"
+                      >
+                        <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
+                          {l.item.name}
+                        </p>
+                        <p className="truncate font-mono text-[10px] text-muted-foreground">
+                          {l.item.code ?? `#${l.item_id}`}
+                        </p>
+                      </Link>
+                    ) : (
+                      <>
+                        <p className="truncate text-sm font-medium">
+                          {l.item?.name ?? `Item #${l.item_id}`}
+                        </p>
+                        <p className="truncate font-mono text-[10px] text-muted-foreground">
+                          {l.item?.code ?? `#${l.item_id}`}
+                        </p>
+                      </>
+                    )}
                     <ChildLotChip line={l} />
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-sm">

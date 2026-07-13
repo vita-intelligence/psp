@@ -85,6 +85,11 @@ export function RoutingsLedger({ initialPage }: Props) {
       {
         id: "code",
         header: "Number",
+        sortField: "id",
+        sortLabels: { asc: "Oldest first", desc: "Newest first" },
+        filterField: "code",
+        filterKind: "text",
+        filterPlaceholder: "R00001…",
         widthClassName: "w-24",
         group: "Identity",
         description: "Auto-numbered routing code.",

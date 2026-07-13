@@ -153,7 +153,7 @@ export function CustomersTable({ initialPage }: CustomersTableProps) {
         id: "code",
         header: "Code",
         widthClassName: "w-24",
-        filterField: "id",
+        filterField: "code",
         filterKind: "text",
         filterPlaceholder: "C00001…",
         group: "Identity",
