@@ -368,6 +368,60 @@ defmodule Backend.Pricelists do
     end
   end
 
+  @doc """
+  Batch list-price lookup for a set of item ids against the company's
+  active default pricelist at min_quantity 1 (the "list price" tier).
+
+  Returns a map `%{item_id => %{selling_price: Decimal, currency_code: String}}`.
+  Items with no matching pricelist row are simply absent from the
+  result, so a caller can distinguish "priced" from "unpriced" without
+  a second query per item.
+
+  Used by the machine-to-machine integration surface
+  (`GET /api/integration/items`) — NPD needs the price to seed its
+  proposal / spec-sheet price-hint UI. A per-item `price_for/3` call
+  in a loop would be one round-trip per row; this single query
+  handles the whole page.
+
+  When no active default pricelist exists on the company, returns
+  an empty map — callers render "no PSP price" the same way they
+  do for individual missing rows.
+  """
+  def default_list_prices_for_items(company_id, item_ids)
+      when is_integer(company_id) and is_list(item_ids) do
+    case fetch_active_default(company_id) do
+      nil ->
+        %{}
+
+      %Pricelist{} = pricelist ->
+        # Highest-min_quantity row whose threshold ≤ 1 wins — matches
+        # the price_for/3 tier semantics for the list-price case. We
+        # take the row where min_quantity is smallest (typically 1),
+        # per item.
+        one = Decimal.new(1)
+
+        rows =
+          Repo.all(
+            from(li in PricelistItem,
+              where:
+                li.pricelist_id == ^pricelist.id and
+                  li.item_id in ^item_ids and
+                  li.min_quantity <= ^one,
+              order_by: [asc: li.item_id, desc: li.min_quantity]
+            )
+          )
+
+        # First row per item_id wins because of the order_by desc on
+        # min_quantity — matches the fetch_tier/3 semantics.
+        Enum.reduce(rows, %{}, fn row, acc ->
+          Map.put_new(acc, row.item_id, %{
+            selling_price: row.selling_price,
+            currency_code: pricelist.currency_code
+          })
+        end)
+    end
+  end
+
   defp build_price_result(%Pricelist{} = pricelist, %PricelistItem{} = row, source) do
     %{
       unit_price: row.selling_price,
