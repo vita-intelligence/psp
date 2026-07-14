@@ -322,6 +322,43 @@ defmodule BackendWeb.IntegrationReadItemsTest do
     assert row["description"] == "Ascorbic acid powder"
     assert row["use_as"] == "active"
     assert row["is_active"] == true
+    # Full attributes map is exposed so downstream integration
+    # consumers (NPD dose-math needs purity / overage /
+    # extract_ratio) receive everything the PSP-side scientist
+    # recorded, not just the flat ``use_as`` projection.
+    assert row["attributes"] == %{"use_as" => "active"}
+  end
+
+  test "list_items and get_item expose the full attributes map", %{conn: conn} do
+    %{company: company, raw: raw} = seed_company("Attrs Co")
+
+    attrs = %{
+      "use_as" => "active",
+      "purity" => "0.995",
+      "overage" => "0.02",
+      "extract_ratio" => "10:1",
+      "allergen_flags" => ["soy"]
+    }
+
+    item = insert_item(company, %{name: "L-Theanine 200mg", attributes: attrs})
+
+    list_row =
+      conn
+      |> put_req_header("x-integration-token", raw)
+      |> get(~p"/api/integration/items")
+      |> json_response(200)
+      |> Map.fetch!("items")
+      |> Enum.find(&(&1["uuid"] == item.uuid))
+
+    assert list_row["attributes"] == attrs
+
+    detail =
+      conn
+      |> put_req_header("x-integration-token", raw)
+      |> get(~p"/api/integration/items/#{item.uuid}")
+      |> json_response(200)
+
+    assert detail["item"]["attributes"] == attrs
   end
 
   test "get_item 404 for cross-company uuid", %{conn: conn} do

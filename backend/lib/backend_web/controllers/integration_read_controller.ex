@@ -340,6 +340,14 @@ defmodule BackendWeb.IntegrationReadController do
       barcode: i.barcode,
       is_active: i.is_active,
       use_as: use_as,
+      # Full attributes map so downstream integration consumers
+      # (NPD's dose-math reads purity / overage / extract_ratio;
+      # spec sheets read allergen / country-of-origin) can pick up
+      # anything the PSP-side scientist has recorded against the
+      # item. The flat ``use_as`` field above stays for backward
+      # compatibility with early NPD picker code that reads the
+      # projection — cheap to keep and avoids a coordinated FE rev.
+      attributes: attributes,
       product_family:
         case i.product_family do
           nil ->
