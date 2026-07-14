@@ -17,6 +17,7 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.HR
   alias Backend.HR.EmployeeWage
   alias Backend.Items.Item
+  alias Backend.Pricelists
   alias Backend.Production.{ManufacturingOrder, ManufacturingOrderStep, Workstation}
   alias Backend.Repo
 
@@ -24,7 +25,7 @@ defmodule BackendWeb.IntegrationReadController do
        when action in [:list_manufacturing_orders, :get_manufacturing_order]
 
   plug :require_integration_scope, "workstation:read" when action == :list_workstations
-  plug :require_integration_scope, "item:read" when action == :list_items
+  plug :require_integration_scope, "item:read" when action in [:list_items, :get_item]
   plug :require_integration_scope, "hr:read" when action == :list_employees
 
   action_fallback BackendWeb.FallbackController
@@ -183,6 +184,33 @@ defmodule BackendWeb.IntegrationReadController do
 
   # ---- Items ----
 
+  @doc """
+  List items for the integration caller.
+
+  Supports:
+
+  * `item_types=raw_material,packaging` — comma-separated whitelist
+    filter. Omitted → all types.
+  * `search=` — case-insensitive substring match against name,
+    `external_sku`, and barcode. Untrimmed empty strings and
+    whitespace-only values are ignored so a stale FE query state
+    doesn't hide every row.
+  * `use_as=flavouring` — exact match against `attributes.use_as`.
+    Used by NPD's ingredient pickers, which pre-filter items by
+    category (flavouring / colour / gummy_base / …).
+
+  Response fields on each row:
+
+  * Base identity: `uuid`, `name`, `description`, `item_type`,
+    `external_sku`, `barcode`, `is_active`.
+  * `use_as` — sourced from `attributes.use_as` when present.
+  * `product_family` — `{uuid, name}` or `null`.
+  * `selling_price` + `currency_code` — from the company's active
+    default pricelist at the min_quantity=1 tier. Nil when the
+    company has no active default pricelist OR the item has no
+    row on it. Callers render "no PSP price" the same way they
+    handle a missing item.
+  """
   def list_items(conn, params) do
     company_id = conn.assigns.current_company_id
 
@@ -193,31 +221,149 @@ defmodule BackendWeb.IntegrationReadController do
         s -> String.split(s, ",", trim: true)
       end
 
-    base =
-      from i in Item,
-        where: i.company_id == ^company_id and i.is_active == true,
-        order_by: i.name
+    search =
+      case params["search"] do
+        s when is_binary(s) ->
+          trimmed = String.trim(s)
+          if trimmed == "", do: nil, else: trimmed
 
-    query =
-      case types do
-        nil -> base
-        list -> from i in base, where: i.item_type in ^list
+        _ ->
+          nil
       end
 
+    use_as =
+      case params["use_as"] do
+        s when is_binary(s) ->
+          trimmed = String.trim(s)
+          if trimmed == "", do: nil, else: trimmed
+
+        _ ->
+          nil
+      end
+
+    base =
+      from i in Item,
+        left_join: pf in assoc(i, :product_family),
+        where: i.company_id == ^company_id and i.is_active == true,
+        order_by: i.name,
+        preload: [product_family: pf]
+
+    query =
+      base
+      |> maybe_filter_item_types(types)
+      |> maybe_filter_search(search)
+      |> maybe_filter_use_as(use_as)
+
     items = Repo.all(query)
+    prices = load_prices(company_id, items)
 
     json(conn, %{
-      items:
-        Enum.map(items, fn i ->
-          %{
-            uuid: i.uuid,
-            name: i.name,
-            item_type: i.item_type,
-            external_sku: Map.get(i, :external_sku),
-            is_active: i.is_active
-          }
-        end)
+      items: Enum.map(items, &integration_item_shape(&1, prices))
     })
+  end
+
+  @doc """
+  Fetch a single item by UUID. Same wire shape as one entry from
+  `list_items`. 404 when the UUID doesn't belong to the caller's
+  company or the item is inactive — matches the "no existence
+  leak" convention every other integration read enforces.
+  """
+  def get_item(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    item =
+      Repo.one(
+        from i in Item,
+          left_join: pf in assoc(i, :product_family),
+          where:
+            i.company_id == ^company_id and i.uuid == ^uuid and
+              i.is_active == true,
+          preload: [product_family: pf]
+      )
+
+    case item do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "item_not_found"})
+
+      %Item{} ->
+        prices = load_prices(company_id, [item])
+
+        json(conn, %{item: integration_item_shape(item, prices)})
+    end
+  end
+
+  defp maybe_filter_item_types(query, nil), do: query
+  defp maybe_filter_item_types(query, types) do
+    from i in query, where: i.item_type in ^types
+  end
+
+  defp maybe_filter_search(query, nil), do: query
+  defp maybe_filter_search(query, needle) do
+    like = "%#{needle}%"
+
+    from i in query,
+      where:
+        ilike(i.name, ^like) or
+          ilike(i.external_sku, ^like) or
+          ilike(i.barcode, ^like)
+  end
+
+  # ``attributes`` is a jsonb map on the Item row; NPD's ingredient
+  # pickers filter by ``attributes.use_as`` (flavouring / colour /
+  # gummy_base / …). Exact match — the categories are a small
+  # closed vocabulary, no substring semantics needed.
+  defp maybe_filter_use_as(query, nil), do: query
+  defp maybe_filter_use_as(query, needle) do
+    from i in query, where: fragment("?->>'use_as' = ?", i.attributes, ^needle)
+  end
+
+  defp load_prices(_company_id, []), do: %{}
+
+  defp load_prices(company_id, items) do
+    ids = Enum.map(items, & &1.id)
+    Pricelists.default_list_prices_for_items(company_id, ids)
+  end
+
+  defp integration_item_shape(%Item{} = i, prices_by_id) do
+    price = Map.get(prices_by_id, i.id)
+    attributes = i.attributes || %{}
+    use_as = Map.get(attributes, "use_as")
+
+    %{
+      uuid: i.uuid,
+      name: i.name,
+      description: i.description,
+      item_type: i.item_type,
+      external_sku: i.external_sku,
+      barcode: i.barcode,
+      is_active: i.is_active,
+      use_as: use_as,
+      product_family:
+        case i.product_family do
+          nil ->
+            nil
+
+          pf ->
+            %{uuid: pf.uuid, name: pf.name}
+        end,
+      # Selling price snapshot from the active default pricelist at
+      # the qty=1 tier. Serialise as a string so the wire format
+      # matches every other Decimal in this repo — the FE parses
+      # to Number on display and never has to worry about JS
+      # float-precision drift.
+      selling_price:
+        case price do
+          %{selling_price: p} -> Decimal.to_string(p)
+          _ -> nil
+        end,
+      currency_code:
+        case price do
+          %{currency_code: c} -> c
+          _ -> nil
+        end
+    }
   end
 
   # ---- HR / Employees ----

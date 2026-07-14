@@ -1655,6 +1655,7 @@ defmodule BackendWeb.Router do
     get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
     get "/workstations", IntegrationReadController, :list_workstations
     get "/items", IntegrationReadController, :list_items
+    get "/items/:uuid", IntegrationReadController, :get_item
     get "/hr/employees", IntegrationReadController, :list_employees
 
     # Write-side
