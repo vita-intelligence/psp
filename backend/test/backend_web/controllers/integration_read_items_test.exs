@@ -219,6 +219,37 @@ defmodule BackendWeb.IntegrationReadItemsTest do
     assert row["use_as"] == "flavouring"
   end
 
+  test "list_items filters by comma-separated use_as list", %{conn: conn} do
+    # NPD's shared multi-picker pushes its whole ``useAsIn`` set
+    # through in one query (MCC carrier = Sweetener + Bulking
+    # Agent, powder carrier = Carrier + Bulking Agent, etc.).
+    # This locks the behaviour so a future refactor can't
+    # silently narrow it back to single-value.
+    %{company: company, raw: raw} = seed_company("UseAs List Co")
+
+    insert_item(company, %{
+      name: "Sucralose",
+      attributes: %{"use_as" => "Sweetener"}
+    })
+    insert_item(company, %{
+      name: "MCC 101",
+      attributes: %{"use_as" => "Bulking Agent"}
+    })
+    insert_item(company, %{
+      name: "Silica",
+      attributes: %{"use_as" => "Anti-caking"}
+    })
+
+    result =
+      conn
+      |> put_req_header("x-integration-token", raw)
+      |> get(~p"/api/integration/items?use_as=Sweetener,Bulking%20Agent")
+      |> json_response(200)
+
+    assert Enum.sort(Enum.map(result["items"], & &1["name"])) ==
+             ["MCC 101", "Sucralose"]
+  end
+
   test "list_items filters by item_type", %{conn: conn} do
     %{company: company, raw: raw} = seed_company("Types Co")
     insert_item(company, %{name: "raw", item_type: "raw_material"})
