@@ -231,11 +231,21 @@ defmodule BackendWeb.IntegrationReadController do
           nil
       end
 
-    use_as =
+    # Accept comma-separated lists so NPD's shared multi-picker
+    # can push its whole ``useAsIn`` set through in one query
+    # (MCC carrier = Sweetener + Bulking Agent, powder carrier =
+    # Carrier + Bulking Agent, etc.). Single value keeps working
+    # unchanged — that's the vast majority of picker callers.
+    use_as_list =
       case params["use_as"] do
         s when is_binary(s) ->
-          trimmed = String.trim(s)
-          if trimmed == "", do: nil, else: trimmed
+          parts =
+            s
+            |> String.split(",", trim: true)
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+
+          if parts == [], do: nil, else: parts
 
         _ ->
           nil
@@ -252,7 +262,7 @@ defmodule BackendWeb.IntegrationReadController do
       base
       |> maybe_filter_item_types(types)
       |> maybe_filter_search(search)
-      |> maybe_filter_use_as(use_as)
+      |> maybe_filter_use_as(use_as_list)
 
     items = Repo.all(query)
     prices = load_prices(company_id, items)
@@ -314,9 +324,15 @@ defmodule BackendWeb.IntegrationReadController do
   # pickers filter by ``attributes.use_as`` (flavouring / colour /
   # gummy_base / …). Exact match — the categories are a small
   # closed vocabulary, no substring semantics needed.
+  #
+  # Accepts a list so the shared multi-picker in NPD (which drives
+  # MCC carrier = Sweetener + Bulking Agent, powder carrier =
+  # Carrier + Bulking Agent, etc.) can push its whole set through
+  # in one query.
   defp maybe_filter_use_as(query, nil), do: query
-  defp maybe_filter_use_as(query, needle) do
-    from i in query, where: fragment("?->>'use_as' = ?", i.attributes, ^needle)
+  defp maybe_filter_use_as(query, needles) when is_list(needles) do
+    from i in query,
+      where: fragment("?->>'use_as' = ANY(?)", i.attributes, ^needles)
   end
 
   defp load_prices(_company_id, []), do: %{}
