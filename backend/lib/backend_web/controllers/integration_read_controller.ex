@@ -14,9 +14,11 @@ defmodule BackendWeb.IntegrationReadController do
   import Ecto.Query
   import BackendWeb.IntegrationScopePlug
 
+  alias Backend.Companies.Company
   alias Backend.HR
   alias Backend.HR.EmployeeWage
   alias Backend.Items.Item
+  alias Backend.Numbering
   alias Backend.Pricelists
   alias Backend.Production.{ManufacturingOrder, ManufacturingOrderStep, Workstation}
   alias Backend.Repo
@@ -266,9 +268,10 @@ defmodule BackendWeb.IntegrationReadController do
 
     items = Repo.all(query)
     prices = load_prices(company_id, items)
+    company = Repo.get!(Company, company_id)
 
     json(conn, %{
-      items: Enum.map(items, &integration_item_shape(&1, prices))
+      items: Enum.map(items, &integration_item_shape(&1, prices, company))
     })
   end
 
@@ -299,8 +302,9 @@ defmodule BackendWeb.IntegrationReadController do
 
       %Item{} ->
         prices = load_prices(company_id, [item])
+        company = Repo.get!(Company, company_id)
 
-        json(conn, %{item: integration_item_shape(item, prices)})
+        json(conn, %{item: integration_item_shape(item, prices, company)})
     end
   end
 
@@ -342,7 +346,7 @@ defmodule BackendWeb.IntegrationReadController do
     Pricelists.default_list_prices_for_items(company_id, ids)
   end
 
-  defp integration_item_shape(%Item{} = i, prices_by_id) do
+  defp integration_item_shape(%Item{} = i, prices_by_id, %Company{} = company) do
     price = Map.get(prices_by_id, i.id)
     attributes = i.attributes || %{}
     use_as = Map.get(attributes, "use_as")
@@ -353,6 +357,15 @@ defmodule BackendWeb.IntegrationReadController do
       description: i.description,
       item_type: i.item_type,
       external_sku: i.external_sku,
+      # System-generated display code (``MA00295``, ``PT00007``,
+      # ...), rendered on the fly from the item's integer PK
+      # against the company's numbering format. Every item has
+      # one — this is the value the PSP UI prints as "Code" and
+      # what NPD's BOM should show for procurement scans.
+      # ``nil`` when the company has no numbering format
+      # configured for the ``item`` entity key, which the FE
+      # renders as an em-dash.
+      code: Numbering.render(i.id, company, "item"),
       barcode: i.barcode,
       is_active: i.is_active,
       use_as: use_as,

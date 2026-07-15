@@ -219,6 +219,39 @@ defmodule BackendWeb.IntegrationReadItemsTest do
     assert row["use_as"] == "flavouring"
   end
 
+  test "list_items emits system code even when external_sku is nil", %{conn: conn} do
+    # The system-generated code (rendered on the fly from
+    # ``Numbering.render``) is what the PSP UI prints as "Code"
+    # and what NPD's BOM should show for procurement. Items with
+    # no external_sku still get a code — every item has one by
+    # default. Load-bearing regression guard: prior to this the
+    # integration wire only exposed ``external_sku``, so
+    # SKU-less items rendered as ``—`` in NPD downstream.
+    %{company: company, raw: raw} = seed_company("Code Co")
+
+    # ``Numbering.render`` returns ``nil`` unless the company
+    # has a format configured for the ``item`` entity key —
+    # every real company does (seeded on creation); the test
+    # fixture builds a bare company, so we mirror the seeded
+    # format here.
+    company
+    |> Ecto.Changeset.change(numbering_formats: %{"item" => %{"prefix" => "MA", "padding" => 5}})
+    |> Repo.update!()
+
+    item = insert_item(company, %{name: "Beeswax Yellow", external_sku: nil})
+
+    result =
+      conn
+      |> put_req_header("x-integration-token", raw)
+      |> get(~p"/api/integration/items")
+      |> json_response(200)
+
+    row = Enum.find(result["items"], &(&1["uuid"] == item.uuid))
+    assert row["external_sku"] == nil
+    assert is_binary(row["code"]) and row["code"] != ""
+    assert String.starts_with?(row["code"], "MA")
+  end
+
   test "list_items filters by comma-separated use_as list", %{conn: conn} do
     # NPD's shared multi-picker pushes its whole ``useAsIn`` set
     # through in one query (MCC carrier = Sweetener + Bulking
