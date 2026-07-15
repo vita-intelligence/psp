@@ -48,7 +48,7 @@ defmodule BackendWeb.IntegrationBomController do
          {:ok, resolved_lines} <- translate_lines(company_id, params["lines"]),
          :ok <- require_non_empty(resolved_lines) do
       attrs = %{
-        "item_id" => item.uuid,
+        "item_id" => item.id,
         "name" => params["name"] || "#{item.name} BOM",
         "notes" => params["notes"],
         "version_notes" => params["version_notes"] || "Pushed via integration",

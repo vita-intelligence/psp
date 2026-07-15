@@ -1654,6 +1654,7 @@ defmodule BackendWeb.Router do
     get "/manufacturing-orders", IntegrationReadController, :list_manufacturing_orders
     get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
     get "/workstations", IntegrationReadController, :list_workstations
+    get "/workstation-groups", IntegrationReadController, :list_workstation_groups
     get "/items", IntegrationReadController, :list_items
     get "/items/:uuid", IntegrationReadController, :get_item
     get "/hr/employees", IntegrationReadController, :list_employees
@@ -1664,6 +1665,19 @@ defmodule BackendWeb.Router do
     # write a new ``bom_version`` row on the existing BOM so the
     # history captures every push. Requires ``bom:write``.
     put "/items/:uuid/bom", IntegrationBomController, :upsert
+
+    # Create a catalog Item from R&D. Restricted to semi-finished
+    # + finished-product types (the outputs each formulation stage
+    # produces). Idempotent via ``external_sku`` — a repeated POST
+    # for the same sku returns the existing row rather than a
+    # dupe. Requires ``item:write``.
+    post "/items", IntegrationItemController, :create
+
+    # Push an R&D-side Routing snapshot onto a finished-product or
+    # semi-finished item. Upserts by ``(item, name)`` and wholesale-
+    # replaces steps. NPD sends one routing per stage after pushing
+    # that stage's BOM. Requires ``routing:write``.
+    put "/items/:uuid/routing", IntegrationRoutingController, :upsert
 
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
          IntegrationSessionController,
