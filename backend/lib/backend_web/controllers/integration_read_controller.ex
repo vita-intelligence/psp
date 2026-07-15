@@ -14,6 +14,7 @@ defmodule BackendWeb.IntegrationReadController do
   import Ecto.Query
   import BackendWeb.IntegrationScopePlug
 
+  alias Backend.Accounts.User
   alias Backend.Companies.Company
   alias Backend.HR
   alias Backend.HR.EmployeeWage
@@ -36,6 +37,7 @@ defmodule BackendWeb.IntegrationReadController do
        when action in [:list_workstations, :list_workstation_groups]
   plug :require_integration_scope, "item:read" when action in [:list_items, :get_item]
   plug :require_integration_scope, "hr:read" when action == :list_employees
+  plug :require_integration_scope, "user:read" when action == :list_users
 
   action_fallback BackendWeb.FallbackController
 
@@ -224,6 +226,38 @@ defmodule BackendWeb.IntegrationReadController do
             hourly_rate: g.hourly_rate,
             color: g.color,
             default_operation_notes: g.default_operation_notes
+          }
+        end)
+    })
+  end
+
+  # ---- Users ----
+
+  @doc """
+  List active operators the caller can assign to a routing step.
+  NPD's stage builder renders these as the "workers" multi-picker
+  in each stage's operation-details drawer, so scientists can
+  attach the default crew per stage. Returns only active users —
+  disabled accounts stay off the picker.
+  """
+  def list_users(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    users =
+      Repo.all(
+        from u in User,
+          where: u.company_id == ^company_id and u.is_active == true,
+          order_by: u.name
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(users, fn u ->
+          %{
+            uuid: u.uuid,
+            name: u.name,
+            email: u.email,
+            is_admin: u.is_admin
           }
         end)
     })
