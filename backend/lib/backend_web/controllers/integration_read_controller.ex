@@ -18,6 +18,7 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.HR
   alias Backend.HR.EmployeeWage
   alias Backend.Items.Item
+  alias Backend.Items.RawMaterialCompliance
   alias Backend.Numbering
   alias Backend.Pricelists
   alias Backend.Production.{ManufacturingOrder, ManufacturingOrderStep, Workstation}
@@ -258,7 +259,12 @@ defmodule BackendWeb.IntegrationReadController do
         left_join: pf in assoc(i, :product_family),
         where: i.company_id == ^company_id and i.is_active == true,
         order_by: i.name,
-        preload: [product_family: pf]
+        # Preload the raw-material compliance side-table so the
+        # shape helper can pull ``use_as`` from there when it's
+        # not on ``attributes``. Items with no compliance row
+        # (packaging, equipment, ...) come back with a nil assoc,
+        # handled explicitly downstream.
+        preload: [:raw_material_compliance, product_family: pf]
 
     query =
       base
@@ -291,7 +297,7 @@ defmodule BackendWeb.IntegrationReadController do
           where:
             i.company_id == ^company_id and i.uuid == ^uuid and
               i.is_active == true,
-          preload: [product_family: pf]
+          preload: [:raw_material_compliance, product_family: pf]
       )
 
     case item do
@@ -335,8 +341,23 @@ defmodule BackendWeb.IntegrationReadController do
   # in one query.
   defp maybe_filter_use_as(query, nil), do: query
   defp maybe_filter_use_as(query, needles) when is_list(needles) do
+    # ``attributes.use_as`` (JSONB) stores the historical Title
+    # Case values from the NPD import + PSP integration wire.
+    # ``raw_material_compliance.use_as`` (side-table column)
+    # stores lowercase snake_case values from the item-form UI.
+    # A caller filtering ``?use_as=Capsule%20Shell`` should match
+    # items tagged EITHER way — so we probe both sources with
+    # their respective forms.
+    snake_needles =
+      needles
+      |> Enum.map(&RawMaterialCompliance.snake_use_as/1)
+      |> Enum.reject(&is_nil/1)
+
     from i in query,
-      where: fragment("?->>'use_as' = ANY(?)", i.attributes, ^needles)
+      left_join: rmc in assoc(i, :raw_material_compliance),
+      where:
+        fragment("?->>'use_as' = ANY(?)", i.attributes, ^needles) or
+          rmc.use_as in ^snake_needles
   end
 
   defp load_prices(_company_id, []), do: %{}
@@ -349,7 +370,25 @@ defmodule BackendWeb.IntegrationReadController do
   defp integration_item_shape(%Item{} = i, prices_by_id, %Company{} = company) do
     price = Map.get(prices_by_id, i.id)
     attributes = i.attributes || %{}
-    use_as = Map.get(attributes, "use_as")
+    # Two possible sources for ``use_as``:
+    #
+    # 1. ``attributes.use_as`` (a JSONB key) — populated by the
+    #    NPD import + tag scripts using the Title-Case form NPD
+    #    picker filters expect ("Carrier", "Capsule Shell", ...).
+    # 2. ``item.raw_material_compliance.use_as`` (a side-table
+    #    column) — populated by PSP's item form UI using
+    #    lowercase snake ("carrier", "capsule_shell", ...).
+    #
+    # Attributes win when set (they're the direct "wire override"
+    # path). Otherwise fall through to the compliance row and
+    # normalise snake → Title Case via ``display_use_as/1`` so
+    # NPD's picker filters match either source.
+    use_as =
+      case Map.get(attributes, "use_as") do
+        nil -> compliance_use_as(i)
+        "" -> compliance_use_as(i)
+        v -> v
+      end
 
     %{
       uuid: i.uuid,
@@ -402,6 +441,16 @@ defmodule BackendWeb.IntegrationReadController do
         end
     }
   end
+
+  # Read ``use_as`` off the item's raw_material_compliance side-
+  # table (populated by the item form UI) and render it as the
+  # Title Case form the wire has always emitted. Handles the
+  # not-loaded / no-row / packaging-item cases by returning nil.
+  defp compliance_use_as(%Item{raw_material_compliance: %RawMaterialCompliance{use_as: raw}}) do
+    RawMaterialCompliance.display_use_as(raw)
+  end
+
+  defp compliance_use_as(_), do: nil
 
   # ---- HR / Employees ----
 

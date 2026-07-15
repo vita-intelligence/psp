@@ -129,6 +129,7 @@ const USE_AS_OPTIONS: Array<{ value: RawMaterialUseAs; label: string }> = [
   { value: "preservative", label: "Preservative" },
   { value: "carrier", label: "Carrier" },
   { value: "excipient", label: "Excipient" },
+  { value: "capsule_shell", label: "Capsule shell" },
   { value: "other", label: "Other" },
 ];
 

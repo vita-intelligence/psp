@@ -252,6 +252,47 @@ defmodule BackendWeb.IntegrationReadItemsTest do
     assert String.starts_with?(row["code"], "MA")
   end
 
+  test "list_items falls back on compliance use_as when attributes empty", %{conn: conn} do
+    # UI-created items store ``use_as`` on the
+    # ``raw_material_compliance`` side-table in lowercase snake
+    # (``capsule_shell``), not on ``attributes`` in Title Case
+    # (``"Capsule Shell"``). The integration wire has to bridge
+    # the two vocabularies so a UI-tagged item shows up in NPD's
+    # picker filter for ``?use_as=Capsule%20Shell``. Load-bearing
+    # regression guard: without this, adding capsule shells (or
+    # any other use_as) via the PSP UI silently fails to reach
+    # NPD downstream.
+    alias Backend.Items.RawMaterialCompliance
+
+    %{company: company, raw: raw} = seed_company("Compliance Fallback Co")
+    item =
+      insert_item(company, %{
+        name: "Size 00 HPMC Capsule Shell",
+        item_type: "packaging",
+        # Note: attributes is empty — the UI writes to compliance
+        # instead. This is the exact shape a UI-created item has
+        # on the wire.
+        attributes: %{}
+      })
+
+    # Simulate the UI's save path.
+    Backend.Repo.insert!(%RawMaterialCompliance{
+      item_id: item.id,
+      use_as: "capsule_shell"
+    })
+
+    result =
+      conn
+      |> put_req_header("x-integration-token", raw)
+      |> get(~p"/api/integration/items?use_as=Capsule%20Shell")
+      |> json_response(200)
+
+    hit = Enum.find(result["items"], &(&1["uuid"] == item.uuid))
+    assert hit != nil, "expected capsule shell to appear in Capsule Shell filter"
+    # And the wire returns the Title Case form, not the raw snake.
+    assert hit["use_as"] == "Capsule Shell"
+  end
+
   test "list_items filters by comma-separated use_as list", %{conn: conn} do
     # NPD's shared multi-picker pushes its whole ``useAsIn`` set
     # through in one query (MCC carrier = Sweetener + Bulking

@@ -18,7 +18,7 @@ defmodule Backend.Items.RawMaterialCompliance do
   @primary_key {:item_id, :id, autogenerate: false}
   @foreign_key_type :id
 
-  @use_as_choices ~w(active sweetener bulking_agent flavouring colour acidity_regulator glazing_agent gelling_agent emulsifier disintegrant stabiliser anti_caking coating preservative carrier excipient other)
+  @use_as_choices ~w(active sweetener bulking_agent flavouring colour acidity_regulator glazing_agent gelling_agent emulsifier disintegrant stabiliser anti_caking coating preservative carrier excipient capsule_shell other)
   @allergen_statuses ~w(free contains_traces contains)
   @vegan_statuses ~w(vegan vegetarian non_vegetarian unknown)
   @halal_statuses ~w(certified not_certified not_applicable)
@@ -55,6 +55,90 @@ defmodule Backend.Items.RawMaterialCompliance do
   end
 
   def use_as_choices, do: @use_as_choices
+
+  @doc """
+  Render a stored `use_as` value in the Title Case form
+  downstream integrations expect (e.g. NPD's builder picker
+  filters).
+
+  The database column stores lowercase snake_case
+  (`"anti_caking"`, `"capsule_shell"`, ...) because those are
+  the canonical machine values validated by the changeset. The
+  integration wire has always emitted Title Case
+  (`"Anti-caking Agent"`, `"Capsule Shell"`, ...) because the
+  imported NPD dataset was Title Case and downstream picker
+  constants match on that shape. Centralising the mapping here
+  keeps the two vocabularies in one file rather than reinvented
+  at each wire boundary.
+
+  Notes:
+
+  * `sweetener` → `"Sweeteners"` — NPD's picker constant is
+    plural (matches Excel workbook shape); the DB column is
+    singular. Both spellings resolve to the same set of items
+    for picker purposes.
+  * `anti_caking` → `"Anti-caking Agent"` — the DB drops the
+    "Agent" suffix; the wire adds it back so it lines up with
+    the historical Title Case data.
+  * Unknown / new values return `nil` so callers see "no
+    display value" instead of a synthetic one that might not
+    match any picker filter.
+  """
+  def display_use_as(nil), do: nil
+  def display_use_as(""), do: nil
+  def display_use_as("active"), do: "Active"
+  def display_use_as("sweetener"), do: "Sweeteners"
+  def display_use_as("bulking_agent"), do: "Bulking Agent"
+  def display_use_as("flavouring"), do: "Flavouring"
+  def display_use_as("colour"), do: "Colour"
+  def display_use_as("acidity_regulator"), do: "Acidity Regulator"
+  def display_use_as("glazing_agent"), do: "Glazing Agent"
+  def display_use_as("gelling_agent"), do: "Gelling Agent"
+  def display_use_as("emulsifier"), do: "Emulsifier"
+  def display_use_as("disintegrant"), do: "Disintegrant"
+  def display_use_as("stabiliser"), do: "Stabiliser"
+  def display_use_as("anti_caking"), do: "Anti-caking Agent"
+  def display_use_as("coating"), do: "Coating Agent"
+  def display_use_as("preservative"), do: "Preservative"
+  def display_use_as("carrier"), do: "Carrier"
+  def display_use_as("excipient"), do: "Excipient"
+  def display_use_as("capsule_shell"), do: "Capsule Shell"
+  def display_use_as("other"), do: "Other"
+  def display_use_as(_), do: nil
+
+  @doc """
+  Reverse of `display_use_as/1` — snake_case machine value for a
+  Title Case display value. Used by the integration wire when a
+  caller filters ``?use_as=Capsule%20Shell`` and we need to
+  match against `raw_material_compliance.use_as` (which stores
+  the snake form).
+
+  Returns `nil` for unknown display values — the caller falls
+  back to matching against `attributes.use_as` only, which
+  preserves the historical Title Case data unchanged.
+  """
+  def snake_use_as(nil), do: nil
+  def snake_use_as(""), do: nil
+  def snake_use_as("Active"), do: "active"
+  def snake_use_as("Sweeteners"), do: "sweetener"
+  def snake_use_as("Bulking Agent"), do: "bulking_agent"
+  def snake_use_as("Flavouring"), do: "flavouring"
+  def snake_use_as("Colour"), do: "colour"
+  def snake_use_as("Acidity Regulator"), do: "acidity_regulator"
+  def snake_use_as("Glazing Agent"), do: "glazing_agent"
+  def snake_use_as("Gelling Agent"), do: "gelling_agent"
+  def snake_use_as("Emulsifier"), do: "emulsifier"
+  def snake_use_as("Disintegrant"), do: "disintegrant"
+  def snake_use_as("Stabiliser"), do: "stabiliser"
+  def snake_use_as("Anti-caking Agent"), do: "anti_caking"
+  def snake_use_as("Coating Agent"), do: "coating"
+  def snake_use_as("Preservative"), do: "preservative"
+  def snake_use_as("Carrier"), do: "carrier"
+  def snake_use_as("Excipient"), do: "excipient"
+  def snake_use_as("Capsule Shell"), do: "capsule_shell"
+  def snake_use_as("Other"), do: "other"
+  def snake_use_as(_), do: nil
+
   def allergen_statuses, do: @allergen_statuses
   def vegan_statuses, do: @vegan_statuses
   def halal_statuses, do: @halal_statuses
