@@ -63,8 +63,17 @@ defmodule BackendWeb.IntegrationRoutingController do
          {:ok, resolved_steps} <- translate_steps(company_id, params["steps"]) do
       name = normalise_name(params["name"], item)
       notes = params["notes"]
+      # Routing-header overhead — fixed + variable costs that
+      # aren't tied to a specific step. Optional; nil pulls through
+      # to the changeset as "leave existing value alone" on update
+      # (the ``run_upsert`` path merges into the existing attrs).
+      overhead = %{
+        "other_fixed_cost" => params["other_fixed_cost"],
+        "other_variable_cost" => params["other_variable_cost"],
+        "other_variable_cost_basis" => params["other_variable_cost_basis"]
+      }
 
-      run_upsert(conn, actor, item, name, notes, resolved_steps)
+      run_upsert(conn, actor, item, name, notes, resolved_steps, overhead)
     else
       {:error, code, detail} -> unprocessable(conn, code, detail)
       nil -> unprocessable(conn, "item_not_found", item_uuid)
@@ -73,23 +82,28 @@ defmodule BackendWeb.IntegrationRoutingController do
 
   # ---- internals ----
 
-  defp run_upsert(conn, actor, item, name, notes, steps_attrs) do
+  defp run_upsert(conn, actor, item, name, notes, steps_attrs, overhead) do
+    # Only forward non-nil overhead so update calls don't clobber
+    # operator-set values with a re-push that didn't include them.
+    attrs =
+      %{
+        "name" => name,
+        "notes" => notes,
+        "steps" => steps_attrs
+      }
+      |> Map.merge(
+        overhead
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+        |> Map.new()
+      )
+
     result =
       case existing_routing(actor.company_id, item.id, name) do
         nil ->
-          Production.create_routing(actor, %{
-            "item_id" => item.id,
-            "name" => name,
-            "notes" => notes,
-            "steps" => steps_attrs
-          })
+          Production.create_routing(actor, Map.put(attrs, "item_id", item.id))
 
         %Routing{} = routing ->
-          Production.update_routing(actor, routing, %{
-            "name" => name,
-            "notes" => notes,
-            "steps" => steps_attrs
-          })
+          Production.update_routing(actor, routing, attrs)
       end
 
     case result do
