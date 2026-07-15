@@ -1079,6 +1079,7 @@ export type RawMaterialUseAs =
   | "preservative"
   | "carrier"
   | "excipient"
+  | "capsule_shell"
   | "other";
 
 export type AllergenStatus = "free" | "contains_traces" | "contains";
