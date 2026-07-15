@@ -21,13 +21,19 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.Items.RawMaterialCompliance
   alias Backend.Numbering
   alias Backend.Pricelists
-  alias Backend.Production.{ManufacturingOrder, ManufacturingOrderStep, Workstation}
+  alias Backend.Production.{
+    ManufacturingOrder,
+    ManufacturingOrderStep,
+    Workstation,
+    WorkstationGroup
+  }
   alias Backend.Repo
 
   plug :require_integration_scope, "mo:read"
        when action in [:list_manufacturing_orders, :get_manufacturing_order]
 
-  plug :require_integration_scope, "workstation:read" when action == :list_workstations
+  plug :require_integration_scope, "workstation:read"
+       when action in [:list_workstations, :list_workstation_groups]
   plug :require_integration_scope, "item:read" when action in [:list_items, :get_item]
   plug :require_integration_scope, "hr:read" when action == :list_employees
 
@@ -180,6 +186,44 @@ defmodule BackendWeb.IntegrationReadController do
             productivity: w.productivity,
             is_active: w.is_active,
             psp_source_of_truth: w.psp_source_of_truth
+          }
+        end)
+    })
+  end
+
+  # ---- Workstation groups ----
+
+  @doc """
+  List workstation groups the caller can target when pushing a
+  routing. NPD's stage builder renders these as the "run on"
+  dropdown per stage — one row = one machine cluster on the
+  shop floor (blender bank, encapsulation line, bottling line).
+
+  Returns only active groups. `kind` distinguishes operator-driven
+  (`active_processing`) from unattended (`passive_processing`)
+  workstations — NPD surfaces this in the picker so the operator
+  understands why some options carry no cycle-time cost.
+  """
+  def list_workstation_groups(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    groups =
+      Repo.all(
+        from g in WorkstationGroup,
+          where: g.company_id == ^company_id and g.is_active == true,
+          order_by: g.name
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(groups, fn g ->
+          %{
+            uuid: g.uuid,
+            name: g.name,
+            kind: g.kind,
+            hourly_rate: g.hourly_rate,
+            color: g.color,
+            default_operation_notes: g.default_operation_notes
           }
         end)
     })
