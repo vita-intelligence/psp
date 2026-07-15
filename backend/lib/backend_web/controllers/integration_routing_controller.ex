@@ -207,7 +207,9 @@ defmodule BackendWeb.IntegrationRoutingController do
   defp translate_step(company_id, step, index) when is_map(step) do
     with {:ok, group_uuid} <-
            fetch_binary(step, "workstation_group_uuid", index, "missing workstation_group_uuid"),
-         {:ok, group_id} <- resolve_group_id(company_id, group_uuid, index) do
+         {:ok, group_id} <- resolve_group_id(company_id, group_uuid, index),
+         {:ok, worker_ids} <-
+           resolve_worker_ids(company_id, step["default_worker_uuids"], index) do
       attrs =
         %{
           "workstation_group_id" => group_id,
@@ -222,6 +224,13 @@ defmodule BackendWeb.IntegrationRoutingController do
         |> Enum.reject(fn {_k, v} -> is_nil(v) end)
         |> Map.new()
 
+      # ``default_worker_ids`` is what ``Production.replace_routing_steps``
+      # already knows how to consume — it does the M2M insert against
+      # ``routing_step_workers``. Pass an empty list explicitly when the
+      # payload omits workers so a re-push clears any prior assignments
+      # (matches how ``steps`` themselves are wholesale-replaced).
+      attrs = Map.put(attrs, "default_worker_ids", worker_ids)
+
       {:ok, attrs}
     end
   end
@@ -235,6 +244,37 @@ defmodule BackendWeb.IntegrationRoutingController do
       _ -> {:error, "step[#{index}]: #{msg}"}
     end
   end
+
+  defp resolve_worker_ids(_company_id, nil, _index), do: {:ok, []}
+
+  defp resolve_worker_ids(_company_id, [], _index), do: {:ok, []}
+
+  defp resolve_worker_ids(company_id, uuids, index) when is_list(uuids) do
+    # Coerce to strings so a payload with mixed strings + UUID structs
+    # (unlikely but cheap) still resolves. Unknown uuids drop out
+    # silently rather than hard-failing the whole push — matches how
+    # the BOM push handles cross-company drift.
+    strings =
+      uuids
+      |> Enum.map(fn v -> to_string(v || "") end)
+      |> Enum.reject(&(&1 == ""))
+
+    if strings == [] do
+      {:ok, []}
+    else
+      ids =
+        Repo.all(
+          from u in Backend.Accounts.User,
+            where: u.company_id == ^company_id and u.uuid in ^strings and u.is_active == true,
+            select: u.id
+        )
+
+      {:ok, ids}
+    end
+  end
+
+  defp resolve_worker_ids(_company_id, _other, index),
+    do: {:error, "step[#{index}]: default_worker_uuids must be an array"}
 
   defp resolve_group_id(company_id, uuid, index) do
     case Repo.one(

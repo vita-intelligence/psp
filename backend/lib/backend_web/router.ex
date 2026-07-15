@@ -1658,6 +1658,7 @@ defmodule BackendWeb.Router do
     get "/items", IntegrationReadController, :list_items
     get "/items/:uuid", IntegrationReadController, :get_item
     get "/hr/employees", IntegrationReadController, :list_employees
+    get "/users", IntegrationReadController, :list_users
 
     # Write-side
     # Push an R&D-side BOM snapshot onto the finished-product
