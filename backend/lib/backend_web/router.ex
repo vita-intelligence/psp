@@ -1659,6 +1659,12 @@ defmodule BackendWeb.Router do
     get "/hr/employees", IntegrationReadController, :list_employees
 
     # Write-side
+    # Push an R&D-side BOM snapshot onto the finished-product
+    # item. Idempotent from a versioning POV — repeated calls
+    # write a new ``bom_version`` row on the existing BOM so the
+    # history captures every push. Requires ``bom:write``.
+    put "/items/:uuid/bom", IntegrationBomController, :upsert
+
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
          IntegrationSessionController,
          :create_mo_session

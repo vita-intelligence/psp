@@ -36,6 +36,7 @@ defmodule Backend.Accounts.IntegrationToken do
     mo:transition
     workstation:read
     item:read
+    bom:write
     user:read
     hr:read
     hr:write
