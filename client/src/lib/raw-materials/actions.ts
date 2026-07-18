@@ -38,7 +38,7 @@ export async function upsertComplianceAction(
       `/api/items/${itemUuid}/raw-material-compliance`,
       { method: "PUT", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, compliance: res.compliance };
   } catch (err) {
     return toErrorResult(err, {
@@ -60,7 +60,7 @@ export async function upsertRiskAction(
       `/api/items/${itemUuid}/raw-material-risk`,
       { method: "PUT", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, risk: res.risk };
   } catch (err) {
     return toErrorResult(err, {
@@ -86,7 +86,7 @@ export async function setAllergensAction(
         body: JSON.stringify({ allergen_uuids }),
       },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, allergens: res.allergens };
   } catch (err) {
     return toErrorResult(err, {

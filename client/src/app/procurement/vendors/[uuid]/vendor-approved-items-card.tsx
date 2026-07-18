@@ -125,7 +125,7 @@ export function VendorApprovedItemsCard({ vendor, canEdit }: Props) {
             >
               {row.item?.uuid ? (
                 <Link
-                  href={`/settings/items/${row.item.uuid}`}
+                  href={`/production/items/${row.item.uuid}`}
                   className="inline-flex items-center gap-2 underline-offset-2 hover:underline"
                 >
                   <span className="font-mono text-[10px] text-muted-foreground">

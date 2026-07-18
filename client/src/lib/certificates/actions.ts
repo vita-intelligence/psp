@@ -114,7 +114,7 @@ export async function attachCertificateAction(
       `/api/items/${itemUuid}/certificates`,
       { method: "POST", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, item_certificate: res.item_certificate };
   } catch (err) {
     return toErrorResult(err, {
@@ -137,7 +137,7 @@ export async function updateAttachmentAction(
       `/api/items/${itemUuid}/certificates/${attUuid}`,
       { method: "PUT", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, item_certificate: res.item_certificate };
   } catch (err) {
     return toErrorResult(err, {
@@ -159,7 +159,7 @@ export async function detachCertificateAction(
       method: "DELETE",
       token,
     });
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true };
   } catch (err) {
     return toErrorResult(err, {

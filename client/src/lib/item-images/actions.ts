@@ -31,7 +31,7 @@ export async function uploadImageAction(
       `/api/items/${itemUuid}/images`,
       { method: "POST", token, body: formData },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, image: res.image };
   } catch (err) {
     return toErrorResult(err, {
@@ -53,7 +53,7 @@ export async function setPrimaryImageAction(
       `/api/items/${itemUuid}/images/${imageUuid}/primary`,
       { method: "PUT", token },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, image: res.image };
   } catch (err) {
     return toErrorResult(err, {
@@ -76,7 +76,7 @@ export async function updateImageAction(
       `/api/items/${itemUuid}/images/${imageUuid}`,
       { method: "PUT", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, image: res.image };
   } catch (err) {
     return toErrorResult(err, {
@@ -98,7 +98,7 @@ export async function deleteImageAction(
       method: "DELETE",
       token,
     });
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true };
   } catch (err) {
     return toErrorResult(err, {

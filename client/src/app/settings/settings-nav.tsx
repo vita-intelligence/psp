@@ -22,7 +22,6 @@ import {
   ShieldCheck,
   Ruler,
   ChevronDown,
-  Package,
   Layers,
   Award,
   Settings2,
@@ -72,12 +71,10 @@ const ITEMS: NavItem[] = [
     icon: Ruler,
     permission: "units.view",
   },
-  {
-    href: "/settings/items",
-    label: "Items",
-    icon: Package,
-    permission: "items.view",
-  },
+  // Items lives under Production now (raw-material + finished-product
+  // catalogue is a production concern, not a settings one). Removed
+  // from the Settings sidebar in the same change that moved the
+  // pages to /production/items and added the subnav entry there.
   {
     href: "/settings/product-families",
     label: "Product families",

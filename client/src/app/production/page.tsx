@@ -7,6 +7,7 @@ import {
   ListChecks,
   Microscope,
   Network,
+  Package,
   Play,
   Route,
   Settings2,
@@ -34,6 +35,13 @@ interface ProdSection {
 }
 
 const SECTIONS: ProdSection[] = [
+  {
+    href: "/production/items",
+    label: "Items",
+    description:
+      "Raw materials, semi-finished blends, finished products, packaging, and equipment — the catalogue every BOM / MO / stock lot reads from. Moved here from Settings so the whole production module lives under one roof.",
+    Icon: Package,
+  },
   {
     href: "/production/manufacturing-orders",
     label: "Manufacturing orders",

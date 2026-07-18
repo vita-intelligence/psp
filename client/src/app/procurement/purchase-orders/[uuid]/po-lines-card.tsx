@@ -229,7 +229,7 @@ export function POLinesCard({ po, items, canEdit }: Props) {
                   <td className="px-3 py-2">
                     {l.item?.uuid ? (
                       <Link
-                        href={`/settings/items/${l.item.uuid}`}
+                        href={`/production/items/${l.item.uuid}`}
                         className="block group"
                       >
                         <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">

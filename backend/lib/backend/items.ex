@@ -621,6 +621,31 @@ defmodule Backend.Items do
 
   def get_file(_, _), do: nil
 
+  @doc """
+  Delete an item file row + its backing blob. Mirrors
+  `Backend.Items.Images.delete/2` — audit-logged, best-effort blob
+  cleanup (a missing file on the disk no-ops).
+  """
+  def delete_file(%User{} = actor, %ItemFile{} = file) do
+    before_state = %{
+      kind: file.kind,
+      filename: file.filename,
+      mime: file.mime,
+      byte_size: file.byte_size,
+      blob_path: file.blob_path
+    }
+
+    case Repo.delete(file) do
+      {:ok, deleted} ->
+        Backend.Storage.delete(file.blob_path)
+        Audit.record_deleted(actor, "item_file", file, before_state)
+        {:ok, deleted}
+
+      other ->
+        other
+    end
+  end
+
   # ----- helpers ---------------------------------------------------
 
   defp after_create({:ok, item}, actor) do

@@ -1657,6 +1657,12 @@ defmodule BackendWeb.Router do
     get "/workstation-groups", IntegrationReadController, :list_workstation_groups
     get "/items", IntegrationReadController, :list_items
     get "/items/:uuid", IntegrationReadController, :get_item
+    get "/units-of-measurement",
+        IntegrationReadController,
+        :list_units_of_measurement
+    get "/product-families", IntegrationReadController, :list_product_families
+    get "/allergens", IntegrationReadController, :list_allergens
+    get "/storage-tags", IntegrationReadController, :list_storage_tags
     get "/hr/employees", IntegrationReadController, :list_employees
     get "/users", IntegrationReadController, :list_users
 
@@ -1679,6 +1685,26 @@ defmodule BackendWeb.Router do
     # replaces steps. NPD sends one routing per stage after pushing
     # that stage's BOM. Requires ``routing:write``.
     put "/items/:uuid/routing", IntegrationRoutingController, :upsert
+
+    # Push a photo or a compliance file onto an existing catalog Item.
+    # Multipart upload (`file` part + optional `kind` for files). NPD
+    # tracks the returned uuid per formulation photo/file so re-syncs
+    # skip already-pushed rows. Requires ``item:files:write``.
+    post "/items/:item_uuid/images",
+         IntegrationItemImageController,
+         :create
+
+    delete "/items/:item_uuid/images/:id",
+           IntegrationItemImageController,
+           :delete
+
+    post "/items/:item_uuid/files",
+         IntegrationItemFileController,
+         :create
+
+    delete "/items/:item_uuid/files/:id",
+           IntegrationItemFileController,
+           :delete
 
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
          IntegrationSessionController,

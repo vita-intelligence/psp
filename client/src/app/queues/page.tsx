@@ -104,7 +104,7 @@ function ReviewsDueCard({ rows }: { rows: ReviewDueQueueRow[] }) {
                 className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/40 bg-background px-3 py-2.5 text-sm"
               >
                 <Link
-                  href={`/settings/items/${row.item.uuid}`}
+                  href={`/production/items/${row.item.uuid}`}
                   className="min-w-0 flex-1 hover:underline"
                 >
                   <span className="block truncate font-medium">
@@ -161,7 +161,7 @@ function CertsExpiringCard({ rows }: { rows: CertExpiringQueueRow[] }) {
               >
                 <div className="min-w-0 flex-1 space-y-0.5">
                   <Link
-                    href={`/settings/items/${row.item.uuid}`}
+                    href={`/production/items/${row.item.uuid}`}
                     className="block truncate font-medium hover:underline"
                   >
                     {row.item.name}

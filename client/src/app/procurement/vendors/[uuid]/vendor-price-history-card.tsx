@@ -57,7 +57,7 @@ export function VendorPriceHistoryCard({ rows }: Props) {
                   <td className="px-3 py-2">
                     {row.item?.uuid ? (
                       <Link
-                        href={`/settings/items/${row.item.uuid}`}
+                        href={`/production/items/${row.item.uuid}`}
                         className="block group"
                       >
                         <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">

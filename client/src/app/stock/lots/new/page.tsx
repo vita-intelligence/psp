@@ -21,7 +21,7 @@ export default async function ReceiveLotPage() {
   // `/api/items?search=…&limit=50` and `/api/warehouses?search=…&limit=50`
   // on demand, so the page paints instantly regardless of catalogue
   // size. Empty-catalogue UX surfaces via the picker's "no matches"
-  // hint, which links to /settings/items.
+  // hint, which links to /production/items.
   return (
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />

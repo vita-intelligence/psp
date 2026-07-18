@@ -132,7 +132,7 @@ export function BOMsLedger({ initialPage }: Props) {
         cell: (b) =>
           b.item ? (
             <Link
-              href={`/settings/items/${b.item.uuid}`}
+              href={`/production/items/${b.item.uuid}`}
               onClick={(e) => e.stopPropagation()}
               className="block min-w-0 space-y-0.5 group"
             >

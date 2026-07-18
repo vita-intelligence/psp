@@ -22,6 +22,8 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.Items.RawMaterialCompliance
   alias Backend.Numbering
   alias Backend.Pricelists
+  alias Backend.Allergens.Allergen
+  alias Backend.Catalogs.ProductFamily
   alias Backend.Production.{
     ManufacturingOrder,
     ManufacturingOrderStep,
@@ -29,13 +31,23 @@ defmodule BackendWeb.IntegrationReadController do
     WorkstationGroup
   }
   alias Backend.Repo
+  alias Backend.Units.UnitOfMeasurement
+  alias Backend.Warehouses.StorageTag
 
   plug :require_integration_scope, "mo:read"
        when action in [:list_manufacturing_orders, :get_manufacturing_order]
 
   plug :require_integration_scope, "workstation:read"
        when action in [:list_workstations, :list_workstation_groups]
-  plug :require_integration_scope, "item:read" when action in [:list_items, :get_item]
+  plug :require_integration_scope, "item:read"
+       when action in [
+              :list_items,
+              :get_item,
+              :list_units_of_measurement,
+              :list_product_families,
+              :list_allergens,
+              :list_storage_tags
+            ]
   plug :require_integration_scope, "hr:read" when action == :list_employees
   plug :require_integration_scope, "user:read" when action == :list_users
 
@@ -226,6 +238,122 @@ defmodule BackendWeb.IntegrationReadController do
             hourly_rate: g.hourly_rate,
             color: g.color,
             default_operation_notes: g.default_operation_notes
+          }
+        end)
+    })
+  end
+
+  # ---- Units of measurement + product families ----
+
+  @doc """
+  List active units of measurement for the caller's company. NPD's
+  stage form renders these as the ``Stock UOM`` picker so scientists
+  can align the semi-finished / finished-product output units with
+  PSP's own UOM catalog. Returns active only — deprecated UOMs stay
+  off the picker.
+  """
+  def list_units_of_measurement(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    units =
+      Repo.all(
+        from u in UnitOfMeasurement,
+          where: u.company_id == ^company_id and u.is_active == true,
+          order_by: u.name
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(units, fn u ->
+          %{
+            uuid: u.uuid,
+            name: u.name,
+            symbol: u.symbol,
+            dimension: u.dimension
+          }
+        end)
+    })
+  end
+
+  @doc """
+  List active product families. NPD renders these as the ``Product
+  family`` picker on the stage form — a group tag PSP uses to
+  cluster catalogue items in reports + BOM overviews. Returns active
+  only.
+  """
+  def list_product_families(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    families =
+      Repo.all(
+        from f in ProductFamily,
+          where: f.company_id == ^company_id and f.is_active == true,
+          order_by: f.name
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(families, fn f ->
+          %{
+            uuid: f.uuid,
+            name: f.name,
+            description: f.description
+          }
+        end)
+    })
+  end
+
+  # ---- Allergens + storage tags ----
+
+  @doc """
+  List EU FIC Annex II allergens (global, read-only). NPD's Setup
+  tab renders these as checkboxes so scientists can flag which
+  allergens the finished product declares. Rows are seeded by
+  migration; ``uuid`` is the load-bearing key downstream.
+  """
+  def list_allergens(conn, _params) do
+    allergens =
+      Repo.all(
+        from a in Allergen,
+          order_by: [asc: a.sort_order, asc: a.label]
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(allergens, fn a ->
+          %{
+            uuid: a.uuid,
+            key: a.key,
+            label: a.label,
+            source: a.source
+          }
+        end)
+    })
+  end
+
+  @doc """
+  List active storage tags for the caller's company. NPD's Setup
+  tab uses these as a multi-select on the formulation's warehouse
+  identity — every finished-product item carries them so goods-in
+  can auto-route lots on receive.
+  """
+  def list_storage_tags(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    tags =
+      Repo.all(
+        from t in StorageTag,
+          where: t.company_id == ^company_id and t.is_active == true,
+          order_by: t.name
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(tags, fn t ->
+          %{
+            uuid: t.uuid,
+            name: t.name,
+            color: t.color
           }
         end)
     })

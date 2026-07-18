@@ -56,7 +56,7 @@ export default async function EquipmentDetailPage({
             title={
               unit.item?.uuid ? (
                 <Link
-                  href={`/settings/items/${unit.item.uuid}`}
+                  href={`/production/items/${unit.item.uuid}`}
                   className="underline-offset-2 hover:underline"
                 >
                   {unit.item.name}

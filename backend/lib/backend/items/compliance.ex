@@ -66,8 +66,38 @@ defmodule Backend.Items.Compliance do
     rm = item.raw_material_compliance
     risk = item.raw_material_risk
 
+    # ``use_as`` has two source-of-truth columns: the side-table
+    # ``raw_material_compliance.use_as`` (snake_case, written by the
+    # PSP item form) AND ``item.attributes["use_as"]`` (Title Case,
+    # written by the NPD import + PSP integration wire — this is the
+    # column NPD's picker also filters on). An item populated from
+    # only ONE of the two is fully addressable by NPD but shows as
+    # "Not set" in the form, which is the exact source of the
+    # confusion. Treat either source as satisfying the requirement so
+    # the banner stops firing false-negative on items imported via
+    # the integration wire before the operator has hand-filled the
+    # side-table.
+    use_as_present? =
+      cond do
+        not is_nil(rm) and not blank?(rm.use_as) -> true
+        true ->
+          attrs = item.attributes || %{}
+          not blank?(Map.get(attrs, "use_as"))
+      end
+
     rm_blockers =
       cond do
+        is_nil(rm) and use_as_present? ->
+          # Attributes carry ``use_as`` but no side-table row exists —
+          # emit the side-table blocker so the operator fills the rest
+          # (allergen / vegan / GMO / country / shelf-life). Suppress
+          # the standalone ``use_as`` blocker since it's already
+          # satisfied by the attributes bag.
+          [
+            %{field: "raw_material_compliance",
+              reason: "Compliance subtable hasn't been filled in. Open the Raw material section."}
+          ]
+
         is_nil(rm) ->
           [
             %{field: "raw_material_compliance",
@@ -76,8 +106,7 @@ defmodule Backend.Items.Compliance do
 
         true ->
           []
-          |> reject_if_blank(rm.use_as, "raw_material_compliance.use_as",
-            "Functional role on label (active / sweetener / bulking agent / …).")
+          |> reject_if_blank_use_as(use_as_present?)
           |> reject_if_blank(rm.country_of_origin, "raw_material_compliance.country_of_origin",
             "ISO 3166-1 origin is required for traceability (BRCGS § 3.5.1).")
           |> reject_if_blank(rm.allergen_status, "raw_material_compliance.allergen_status",
@@ -210,6 +239,22 @@ defmodule Backend.Items.Compliance do
   defp type_specific_blockers(_), do: []
 
   # ----- helpers ---------------------------------------------------
+
+  # Emit the ``use_as`` blocker only when neither source populated it.
+  # ``present?`` is precomputed by the caller from both the side-table
+  # column AND ``item.attributes["use_as"]`` so the check has one
+  # decision surface.
+  defp reject_if_blank_use_as(acc, true), do: acc
+  defp reject_if_blank_use_as(acc, false) do
+    acc ++
+      [
+        %{
+          field: "raw_material_compliance.use_as",
+          reason:
+            "Functional role on label (active / sweetener / bulking agent / …)."
+        }
+      ]
+  end
 
   defp reject_if_blank(acc, value, field, reason) do
     if blank?(value), do: acc ++ [%{field: field, reason: reason}], else: acc

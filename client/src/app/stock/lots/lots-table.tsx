@@ -224,7 +224,7 @@ export function LotsTable({
         cell: (l) =>
           l.item ? (
             <Link
-              href={`/settings/items/${l.item.uuid}`}
+              href={`/production/items/${l.item.uuid}`}
               onClick={(e) => e.stopPropagation()}
               className="block space-y-0.5 group"
             >

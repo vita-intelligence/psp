@@ -395,7 +395,7 @@ function LineRow({
       <div className="min-w-0">
         {line.item?.uuid ? (
           <Link
-            href={`/settings/items/${line.item.uuid}`}
+            href={`/production/items/${line.item.uuid}`}
             className="block group"
           >
             <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
