@@ -11,6 +11,7 @@ import {
   ListChecks,
   Microscope,
   Network,
+  Package,
   Play,
   Route,
   Settings2,
@@ -34,6 +35,12 @@ interface SubnavItem {
 // the operator sees the planned shape of the module.
 const ITEMS: SubnavItem[] = [
   { href: "/production", label: "Overview", Icon: Home },
+  // Items promoted from Settings so they live alongside the rest of
+  // the production module (BOMs, routings, MOs) — the raw-material +
+  // finished-product catalogue is a production concern, not a
+  // settings one. Old ``/settings/items`` URLs were rewritten
+  // repo-wide to ``/production/items`` in the same change.
+  { href: "/production/items", label: "Items", Icon: Package },
   {
     href: "/production/manufacturing-orders",
     label: "Manufacturing orders",

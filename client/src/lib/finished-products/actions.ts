@@ -26,7 +26,7 @@ export async function upsertFinishedProductSpecAction(
       `/api/items/${itemUuid}/finished-product-spec`,
       { method: "PUT", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, finished_product_spec: res.finished_product_spec };
   } catch (err) {
     return toErrorResult(err, {

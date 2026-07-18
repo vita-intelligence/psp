@@ -78,7 +78,7 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             title={
               mo.item ? (
                 <Link
-                  href={`/settings/items/${mo.item.uuid}`}
+                  href={`/production/items/${mo.item.uuid}`}
                   className="underline-offset-4 hover:underline"
                 >
                   {mo.item.name}

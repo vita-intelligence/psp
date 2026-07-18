@@ -37,6 +37,7 @@ defmodule Backend.Accounts.IntegrationToken do
     workstation:read
     item:read
     item:write
+    item:files:write
     bom:write
     routing:write
     user:read

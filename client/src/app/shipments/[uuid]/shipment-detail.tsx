@@ -386,7 +386,7 @@ export function ShipmentDetail({
             value={
               shipment.stock_lot?.item?.uuid ? (
                 <Link
-                  href={`/settings/items/${shipment.stock_lot.item.uuid}`}
+                  href={`/production/items/${shipment.stock_lot.item.uuid}`}
                   className="underline-offset-2 hover:underline"
                 >
                   {shipment.stock_lot.item.name}

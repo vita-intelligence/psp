@@ -153,7 +153,7 @@ export function ManufacturingOrdersLedger({
         cell: (m) =>
           m.item ? (
             <Link
-              href={`/settings/items/${m.item.uuid}`}
+              href={`/production/items/${m.item.uuid}`}
               onClick={(e) => e.stopPropagation()}
               className="block min-w-0 space-y-0.5 group"
             >

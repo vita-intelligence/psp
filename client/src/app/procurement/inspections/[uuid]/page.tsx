@@ -456,7 +456,7 @@ function LinesCard({
                 <div className="min-w-0 flex-1 space-y-0.5">
                   {line?.item?.uuid ? (
                     <Link
-                      href={`/settings/items/${line.item.uuid}`}
+                      href={`/production/items/${line.item.uuid}`}
                       className="block truncate text-sm font-medium underline-offset-2 hover:underline"
                     >
                       {line.item.name}

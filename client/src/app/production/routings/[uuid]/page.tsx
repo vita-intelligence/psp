@@ -73,7 +73,7 @@ export default async function RoutingDetailPage({ params }: Props) {
                   <>
                     {" "}· Output:{" "}
                     <Link
-                      href={`/settings/items/${routing.item.uuid}`}
+                      href={`/production/items/${routing.item.uuid}`}
                       className="font-medium text-foreground underline-offset-2 hover:underline"
                     >
                       {routing.item.name}

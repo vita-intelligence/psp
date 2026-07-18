@@ -46,7 +46,7 @@ export default async function ShipmentDetailPage({ params }: Props) {
             title={
               shipment.stock_lot?.item?.uuid ? (
                 <Link
-                  href={`/settings/items/${shipment.stock_lot.item.uuid}`}
+                  href={`/production/items/${shipment.stock_lot.item.uuid}`}
                   className="underline-offset-4 hover:underline"
                 >
                   {shipment.stock_lot.item.name}

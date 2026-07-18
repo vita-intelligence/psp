@@ -41,7 +41,7 @@ export async function createItemAction(input: ItemInput): Promise<ItemResult> {
       token,
       body: JSON.stringify(input),
     });
-    revalidatePath(`/settings/items`);
+    revalidatePath(`/production/items`);
     return { ok: true, item: res.item };
   } catch (err) {
     return toErrorResult(err, {
@@ -64,7 +64,7 @@ export async function updateItemAction(
       token,
       body: JSON.stringify(input),
     });
-    revalidatePath(`/settings/items`);
+    revalidatePath(`/production/items`);
     return { ok: true, item: res.item };
   } catch (err) {
     return toErrorResult(err, {
@@ -98,8 +98,8 @@ export async function updateItemFullAction(
       token,
       body: JSON.stringify(input),
     });
-    revalidatePath(`/settings/items`);
-    revalidatePath(`/settings/items/${uuid}`);
+    revalidatePath(`/production/items`);
+    revalidatePath(`/production/items/${uuid}`);
     return { ok: true, item: res.item };
   } catch (err) {
     return toErrorResult(err, {
@@ -115,7 +115,7 @@ export async function deleteItemAction(uuid: string): Promise<DeleteResult> {
 
   try {
     await api<void>(`/api/items/${uuid}`, { method: "DELETE", token });
-    revalidatePath(`/settings/items`);
+    revalidatePath(`/production/items`);
     return { ok: true };
   } catch (err) {
     return toErrorResult(err, {
@@ -144,8 +144,8 @@ export async function markItemReadyAction(
       `/api/items/${encodeURIComponent(uuid)}/mark-ready`,
       { method: "POST", token },
     );
-    revalidatePath(`/settings/items`);
-    revalidatePath(`/settings/items/${uuid}`);
+    revalidatePath(`/production/items`);
+    revalidatePath(`/production/items/${uuid}`);
     return { ok: true, item: res.item };
   } catch (err) {
     const base = toErrorResult(err, {
@@ -174,8 +174,8 @@ export async function revertItemToDraftAction(
       `/api/items/${encodeURIComponent(uuid)}/revert-to-draft`,
       { method: "POST", token, body: JSON.stringify({ reason }) },
     );
-    revalidatePath(`/settings/items`);
-    revalidatePath(`/settings/items/${uuid}`);
+    revalidatePath(`/production/items`);
+    revalidatePath(`/production/items/${uuid}`);
     return { ok: true, item: res.item };
   } catch (err) {
     return toErrorResult(err, {
@@ -205,7 +205,7 @@ export async function uploadItemFileAction(
       `/api/items/${encodeURIComponent(itemUuid)}/files`,
       { method: "POST", token, body: formData },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, file: res.file };
   } catch (err) {
     return toErrorResult(err, {

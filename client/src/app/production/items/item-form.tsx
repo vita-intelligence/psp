@@ -490,7 +490,7 @@ export function ItemForm({
         toast.success("Item created", {
           description: `${creator?.name ?? "The host"} just finalised "${msg.name}".`,
         });
-        router.push("/settings/items");
+        router.push("/production/items");
       } else if (msg.kind === "saved") {
         toast.success("Saved", {
           description: `${creator?.name ?? "The host"} just saved the form.`,
@@ -814,7 +814,7 @@ export function ItemForm({
           uuid: res.item.uuid,
           name: res.item.name,
         });
-        router.push(`/settings/items/${res.item.uuid}`);
+        router.push(`/production/items/${res.item.uuid}`);
       }
     });
   }
@@ -842,7 +842,7 @@ export function ItemForm({
         return;
       }
       toast.success("Item removed");
-      router.push("/settings/items");
+      router.push("/production/items");
       router.refresh();
     });
   }
@@ -1564,7 +1564,7 @@ export function ItemForm({
             {dirty && !pending && isCreator && (
               <Button type="button" variant="ghost" onClick={onReset}>Discard</Button>
             )}
-            <Button type="button" variant="ghost" onClick={() => router.push("/settings/items")}>Cancel</Button>
+            <Button type="button" variant="ghost" onClick={() => router.push("/production/items")}>Cancel</Button>
             {canEdit && (
               <Button type="submit" disabled={!dirty || pending || !isCreator || !(typeof state.name === "string" && state.name.trim())} title={isCreator ? undefined : creator ? `Only ${creator.name} can ${isEdit ? "save" : "create"} from this room.` : undefined}>
                 {pending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Save className="mr-1.5 size-4" />}

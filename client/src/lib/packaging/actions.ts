@@ -26,7 +26,7 @@ export async function upsertPackagingComplianceAction(
       `/api/items/${itemUuid}/packaging-compliance`,
       { method: "PUT", token, body: JSON.stringify(input) },
     );
-    revalidatePath(`/settings/items/${itemUuid}`);
+    revalidatePath(`/production/items/${itemUuid}`);
     return { ok: true, packaging_compliance: res.packaging_compliance };
   } catch (err) {
     return toErrorResult(err, {

@@ -63,7 +63,7 @@ export function LotHeader({
           <h1 className="truncate text-2xl font-semibold tracking-tight">
             {lot.item?.uuid ? (
               <Link
-                href={`/settings/items/${lot.item.uuid}`}
+                href={`/production/items/${lot.item.uuid}`}
                 className="underline-offset-2 hover:underline"
               >
                 {lot.item.name}
@@ -75,7 +75,7 @@ export function LotHeader({
           {lot.item?.code && lot.item?.uuid && (
             <p className="text-xs text-muted-foreground">
               <Link
-                href={`/settings/items/${lot.item.uuid}`}
+                href={`/production/items/${lot.item.uuid}`}
                 className="font-mono hover:text-foreground"
               >
                 {lot.item.code}

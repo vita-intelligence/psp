@@ -417,7 +417,7 @@ export function ItemsTable({ initialPage }: ItemsTableProps) {
       searchPlaceholder="Search by name, SKU, or barcode…"
       defaultSort={DEFAULT_SORT}
       filters={FILTERS}
-      onRowClick={(i) => router.push(`/settings/items/${i.uuid}`)}
+      onRowClick={(i) => router.push(`/production/items/${i.uuid}`)}
       emptyState={
         <div className="space-y-1">
           <p className="text-sm font-medium">No items yet</p>

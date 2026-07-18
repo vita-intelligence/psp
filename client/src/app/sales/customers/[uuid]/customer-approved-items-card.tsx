@@ -128,7 +128,7 @@ export function CustomerApprovedItemsCard({ customer, canEdit }: Props) {
               <div className="min-w-0">
                 {r.item?.uuid ? (
                   <Link
-                    href={`/settings/items/${r.item.uuid}`}
+                    href={`/production/items/${r.item.uuid}`}
                     className="block group"
                   >
                     <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">

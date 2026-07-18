@@ -776,7 +776,7 @@ export function ReceiveForm({ canEdit }: ReceiveFormProps) {
                     This item has no stock UoM set — go to{" "}
                     <a
                       className="underline"
-                      href={`/settings/items/${selectedItem.uuid}`}
+                      href={`/production/items/${selectedItem.uuid}`}
                     >
                       its edit page
                     </a>{" "}

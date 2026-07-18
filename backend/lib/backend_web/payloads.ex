@@ -225,19 +225,29 @@ defmodule BackendWeb.Payloads do
     }
   end
 
-  # Returns the live blocker list ONLY when the per-type subtables are
-  # loaded (show endpoint). On list endpoints the row's
-  # `compliance_status` column is authoritative — we don't run the
-  # validator per row, that'd cost a preload per item.
+  # Returns the live blocker list on the show endpoint (where
+  # per-type subtables are preloaded), or ``nil`` on list endpoints
+  # where the row's ``compliance_status`` column is authoritative and
+  # we can't afford a preload per row.
+  #
+  # Preloaded-nil vs NotLoaded is the key signal: after ``Repo.preload``
+  # a missing side-table row surfaces as ``nil`` (not ``%NotLoaded{}``),
+  # and that's a legitimate answer we want the check to reason about —
+  # ``Compliance.check`` emits a top-level "subtable hasn't been filled
+  # in" blocker for it, which is exactly what the banner should show.
+  # The old ``match?`` guard against the specific struct name treated
+  # ``nil`` as "not loaded" and short-circuited the check to ``nil``,
+  # so items imported without a compliance side-table row showed the
+  # amber "ready to promote" banner even though the promote path would
+  # (correctly) refuse them at ``mark_ready/2`` time.
   defp compliance_blockers(%Backend.Items.Item{} = i) do
-    has_subtables? =
-      match?(%Backend.Items.RawMaterialCompliance{}, i.raw_material_compliance) or
-        match?(%Backend.Items.RawMaterialRiskAssessment{}, i.raw_material_risk) or
-        match?(%Backend.Items.FinishedProductSpec{}, i.finished_product_spec) or
-        match?(%Backend.Items.PackagingCompliance{}, i.packaging_compliance) or
-        i.item_type == "semi_finished"
+    subtables_preloaded? =
+      not match?(%Ecto.Association.NotLoaded{}, i.raw_material_compliance) and
+        not match?(%Ecto.Association.NotLoaded{}, i.raw_material_risk) and
+        not match?(%Ecto.Association.NotLoaded{}, i.finished_product_spec) and
+        not match?(%Ecto.Association.NotLoaded{}, i.packaging_compliance)
 
-    if has_subtables? do
+    if subtables_preloaded? do
       case Backend.Items.Compliance.check(i) do
         {:ok, []} -> []
         {:missing, list} -> list
@@ -286,9 +296,15 @@ defmodule BackendWeb.Payloads do
 
     # Sub-tables are only included when preloaded — list endpoints
     # never load them (saves a join per row), show endpoints do.
+    # ``raw_material_compliance`` is special: when the item is a raw
+    # material and the subtable is preloaded but nil (row doesn't
+    # exist yet — common for items imported from the NPD integration
+    # wire), we still emit a payload keyed to ``item.attributes``
+    # fallbacks so the form's "Used as" dropdown shows whatever the
+    # jsonb bag carries. Without this the form reads blank and the
+    # operator has to re-pick something the system already knows.
     base
-    |> add_optional(:raw_material_compliance, i.raw_material_compliance,
-      &raw_material_compliance(&1, i))
+    |> add_raw_material_compliance(i)
     |> add_optional(:raw_material_risk, i.raw_material_risk, &raw_material_risk/1)
     |> add_optional(:finished_product_spec, i.finished_product_spec,
       &finished_product_spec(&1, i))
@@ -4556,9 +4572,99 @@ defmodule BackendWeb.Payloads do
   defp add_optional(map, key, nil, _shaper), do: Map.put(map, key, nil)
   defp add_optional(map, key, value, shaper), do: Map.put(map, key, shaper.(value))
 
-  def raw_material_compliance(c, item \\ nil) do
+  # Special-case shaper for the raw-material compliance subtable so an
+  # attributes-only item still surfaces a payload (see call site for
+  # rationale). Skips entirely on list endpoints (subtable unloaded)
+  # and on non-raw-material types (nothing to synthesise for them).
+  defp add_raw_material_compliance(
+         map,
+         %Backend.Items.Item{raw_material_compliance: %Ecto.Association.NotLoaded{}}
+       ),
+       do: map
+
+  defp add_raw_material_compliance(
+         map,
+         %Backend.Items.Item{item_type: "raw_material"} = item
+       ) do
+    Map.put(map, :raw_material_compliance, raw_material_compliance(item.raw_material_compliance, item))
+  end
+
+  defp add_raw_material_compliance(map, %Backend.Items.Item{raw_material_compliance: nil}),
+    do: Map.put(map, :raw_material_compliance, nil)
+
+  defp add_raw_material_compliance(
+         map,
+         %Backend.Items.Item{raw_material_compliance: c} = item
+       ),
+       do: Map.put(map, :raw_material_compliance, raw_material_compliance(c, item))
+
+  @doc """
+  Shape a raw-material compliance blob for the item detail payload.
+
+  Accepts a ``%RawMaterialCompliance{}`` (real side-table row) OR
+  ``nil`` (subtable row doesn't exist yet). The ``use_as`` field is
+  the dual-source one: the JSONB ``attributes.use_as`` on the item
+  (Title Case, populated by the NPD integration wire) is a fallback
+  when the side-table column is blank. Every other field is
+  side-table-only; when there's no row, they emit as ``nil`` and the
+  compliance-blocker check flags the whole subtable as missing.
+  """
+  def raw_material_compliance(c, item \\ nil)
+
+  def raw_material_compliance(nil, item) do
+    use_as =
+      case item do
+        %Backend.Items.Item{attributes: attrs} when is_map(attrs) ->
+          Backend.Items.RawMaterialCompliance.snake_use_as(Map.get(attrs, "use_as"))
+
+        _ ->
+          nil
+      end
+
     %{
-      use_as: c.use_as,
+      use_as: use_as,
+      allergen_status: nil,
+      vegan_status: nil,
+      halal_status: nil,
+      kosher_status: nil,
+      organic_status: nil,
+      novel_food_status: nil,
+      gmo_status: nil,
+      country_of_origin: nil,
+      purity_pct: nil,
+      extract_ratio: nil,
+      overage_pct: nil,
+      powder_water_dose_mg_per_ml: nil,
+      shelf_life_months: nil,
+      storage_conditions: nil,
+      spec_document_file: nil,
+      spec_document_file_id: nil,
+      last_reviewed_at: nil,
+      last_reviewed_by: nil,
+      review_frequency_months: nil,
+      review_due_at: nil,
+      inserted_at: nil,
+      updated_at: nil
+    }
+  end
+
+  def raw_material_compliance(c, item) do
+    # Fall through to ``attributes.use_as`` when the side-table
+    # column is blank — same reason as the nil-subtable branch.
+    resolved_use_as =
+      case {c.use_as, item} do
+        {value, _} when is_binary(value) and value != "" ->
+          value
+
+        {_, %Backend.Items.Item{attributes: attrs}} when is_map(attrs) ->
+          Backend.Items.RawMaterialCompliance.snake_use_as(Map.get(attrs, "use_as"))
+
+        _ ->
+          c.use_as
+      end
+
+    %{
+      use_as: resolved_use_as,
       allergen_status: c.allergen_status,
       vegan_status: c.vegan_status,
       halal_status: c.halal_status,
