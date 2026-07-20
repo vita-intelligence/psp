@@ -25,6 +25,8 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.Allergens.Allergen
   alias Backend.Catalogs.ProductFamily
   alias Backend.Production.{
+    BOM,
+    BOMLine,
     ManufacturingOrder,
     ManufacturingOrderStep,
     Workstation,
@@ -43,6 +45,7 @@ defmodule BackendWeb.IntegrationReadController do
        when action in [
               :list_items,
               :get_item,
+              :get_item_bom,
               :list_units_of_measurement,
               :list_product_families,
               :list_allergens,
@@ -518,6 +521,107 @@ defmodule BackendWeb.IntegrationReadController do
 
         json(conn, %{item: integration_item_shape(item, prices, company)})
     end
+  end
+
+  @doc """
+  Return the item's active primary BOM (header + component lines).
+
+  Used by NPD to hydrate a formulation from PSP's existing recipe —
+  the scientist links the finished-product item, hits "Load BOM from
+  PSP", and NPD wholesale-replaces the finished stage's lines with
+  what PSP has. On save the push cascade writes the (possibly-edited)
+  BOM back over the top as a new version.
+
+  Response shape:
+
+      {"bom": {
+         "uuid": "...",
+         "name": "...",
+         "notes": "...",
+         "item_uuid": "...",
+         "lines": [
+           {"sort_order": 0, "qty": "0.5000", "is_fixed": false,
+            "notes": "", "uom_uuid": "...", "uom_symbol": "kg",
+            "part": {<same shape as GET /items/:uuid>}},
+           ...
+         ]}}
+
+  Returns 404 if the item exists but has no primary BOM — that lets
+  the caller distinguish "no BOM yet" from "item not found".
+  """
+  def get_item_bom(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    with %Item{} = item <- fetch_item_by_uuid(company_id, uuid),
+         %BOM{} = bom <- fetch_primary_bom(company_id, item.id) do
+      preloaded_bom =
+        Repo.preload(bom,
+          lines: [
+            :unit_of_measurement,
+            part: [:raw_material_compliance, :product_family]
+          ]
+        )
+
+      lines = Enum.sort_by(preloaded_bom.lines, & &1.sort_order)
+      # Load prices for every line's part in one query so the
+      # projection re-uses `integration_item_shape` without spawning
+      # an N+1 pricelist lookup.
+      parts = Enum.map(lines, & &1.part)
+      prices = load_prices(company_id, parts)
+      company = Repo.get!(Company, company_id)
+
+      json(conn, %{
+        bom: %{
+          uuid: preloaded_bom.uuid,
+          name: preloaded_bom.name,
+          notes: preloaded_bom.notes,
+          is_primary: preloaded_bom.is_primary,
+          is_active: preloaded_bom.is_active,
+          item_uuid: item.uuid,
+          lines:
+            Enum.map(lines, fn line ->
+              %{
+                uuid: line.uuid,
+                sort_order: line.sort_order,
+                qty: (line.qty && Decimal.to_string(line.qty)) || nil,
+                is_fixed: line.is_fixed,
+                notes: line.notes,
+                uom_uuid: line.unit_of_measurement && line.unit_of_measurement.uuid,
+                uom_symbol:
+                  line.unit_of_measurement && line.unit_of_measurement.symbol,
+                uom_name:
+                  line.unit_of_measurement && line.unit_of_measurement.name,
+                part: integration_item_shape(line.part, prices, company)
+              }
+            end)
+        }
+      })
+    else
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "bom_not_found"})
+    end
+  end
+
+  defp fetch_item_by_uuid(company_id, uuid) do
+    Repo.one(
+      from i in Item,
+        where:
+          i.company_id == ^company_id and i.uuid == ^uuid and
+            i.is_active == true,
+        limit: 1
+    )
+  end
+
+  defp fetch_primary_bom(company_id, item_id) do
+    Repo.one(
+      from b in BOM,
+        where:
+          b.company_id == ^company_id and b.item_id == ^item_id and
+            b.is_active == true and b.is_primary == true,
+        limit: 1
+    )
   end
 
   defp maybe_filter_item_types(query, nil), do: query

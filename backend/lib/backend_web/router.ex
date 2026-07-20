@@ -1657,6 +1657,9 @@ defmodule BackendWeb.Router do
     get "/workstation-groups", IntegrationReadController, :list_workstation_groups
     get "/items", IntegrationReadController, :list_items
     get "/items/:uuid", IntegrationReadController, :get_item
+    # Read the item's active primary BOM (lines + parts) so NPD can
+    # hydrate a formulation from PSP's recipe as source of truth.
+    get "/items/:uuid/bom", IntegrationReadController, :get_item_bom
     get "/units-of-measurement",
         IntegrationReadController,
         :list_units_of_measurement
