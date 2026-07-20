@@ -439,11 +439,19 @@ defmodule BackendWeb.IntegrationItemController do
   end
 
   defp payload(%Item{} = item, created: created?) do
+    company = Repo.get(Backend.Companies.Company, item.company_id)
+
     %{
       uuid: item.uuid,
       name: item.name,
       item_type: item.item_type,
       external_sku: item.external_sku,
+      # System-generated numbering (``MA00295`` etc.) — the value PSP
+      # prints as "Code" on its own UI. NPD renders this in place of
+      # the load-bearing-but-ugly ``external_sku`` so the scientist
+      # sees a proper SKU after creating a new item through NPD.
+      # ``nil`` when the company has no numbering format configured.
+      code: (company && Backend.Numbering.render(item.id, company, "item")) || nil,
       description: item.description,
       is_active: item.is_active,
       created: created?
