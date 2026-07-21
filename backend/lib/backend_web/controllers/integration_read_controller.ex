@@ -35,6 +35,7 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.Repo
   alias Backend.Units.UnitOfMeasurement
   alias Backend.Warehouses.StorageTag
+  alias Backend.Certificates.Certificate
 
   plug :require_integration_scope, "mo:read"
        when action in [:list_manufacturing_orders, :get_manufacturing_order]
@@ -49,7 +50,8 @@ defmodule BackendWeb.IntegrationReadController do
               :list_units_of_measurement,
               :list_product_families,
               :list_allergens,
-              :list_storage_tags
+              :list_storage_tags,
+              :list_certificates
             ]
   plug :require_integration_scope, "hr:read" when action == :list_employees
   plug :require_integration_scope, "user:read" when action == :list_users
@@ -357,6 +359,37 @@ defmodule BackendWeb.IntegrationReadController do
             uuid: t.uuid,
             name: t.name,
             color: t.color
+          }
+        end)
+    })
+  end
+
+  @doc """
+  List active certificates from the caller's company registry. NPD's
+  Setup renders these as a picker on the formulation's certificate
+  attach panel — mirrors the PSP item-detail Certificates section so
+  a scientist can attach the same certs from NPD as an operator would
+  add on the PSP item page.
+  """
+  def list_certificates(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    certs =
+      Repo.all(
+        from c in Certificate,
+          where: c.company_id == ^company_id and c.is_active == true,
+          order_by: [asc: c.name]
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(certs, fn c ->
+          %{
+            uuid: c.uuid,
+            name: c.name,
+            certificate_type: c.certificate_type,
+            issuing_body: c.issuing_body,
+            default_validity_months: c.default_validity_months
           }
         end)
     })
