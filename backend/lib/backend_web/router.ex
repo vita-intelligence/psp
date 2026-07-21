@@ -1666,6 +1666,7 @@ defmodule BackendWeb.Router do
     get "/product-families", IntegrationReadController, :list_product_families
     get "/allergens", IntegrationReadController, :list_allergens
     get "/storage-tags", IntegrationReadController, :list_storage_tags
+    get "/certificates", IntegrationReadController, :list_certificates
     get "/hr/employees", IntegrationReadController, :list_employees
     get "/users", IntegrationReadController, :list_users
 
@@ -1716,6 +1717,19 @@ defmodule BackendWeb.Router do
 
     delete "/items/:item_uuid/files/:id",
            IntegrationItemFileController,
+           :delete
+
+    # Per-item certificate attachments. NPD picks a certificate from
+    # `GET /integration/certificates` and attaches it here so the same
+    # row appears in PSP's item-detail Certificates section as if an
+    # operator had added it locally. Attachment UUID (returned by
+    # this endpoint) is what NPD stores + uses on DELETE.
+    post "/items/:item_uuid/certificates",
+         IntegrationItemCertificateController,
+         :create
+
+    delete "/items/:item_uuid/certificates/:id",
+           IntegrationItemCertificateController,
            :delete
 
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
