@@ -1683,6 +1683,15 @@ defmodule BackendWeb.Router do
     # dupe. Requires ``item:write``.
     post "/items", IntegrationItemController, :create
 
+    # Safe-delete for NPD-owned catalog items. Called by NPD when a
+    # formulation stage is removed so the corresponding semi-finished
+    # item on PSP doesn't linger as orphaned data. Refuses (409) when
+    # the item's external_sku no longer matches the NPD-owned
+    # pattern, is referenced as a component in another BOM, or
+    # already carries history (lots, movements, MOs, POs, sales
+    # docs). Requires ``item:write``.
+    delete "/items/:uuid", IntegrationItemController, :delete
+
     # Push an R&D-side Routing snapshot onto a finished-product or
     # semi-finished item. Upserts by ``(item, name)`` and wholesale-
     # replaces steps. NPD sends one routing per stage after pushing
