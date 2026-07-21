@@ -45,6 +45,7 @@ defmodule BackendWeb.IntegrationItemController do
   alias Backend.Accounts.User
   alias Backend.Items
   alias Backend.Items.Item
+  alias Backend.Production.BomLine
   alias Backend.Repo
 
   # The write surface is intentionally narrow: NPD pushes stage
@@ -53,7 +54,15 @@ defmodule BackendWeb.IntegrationItemController do
   # pre-created by an operator. Everything else stays out.
   @allowed_types ~w(semi_finished finished_product)
 
-  plug :require_integration_scope, "item:write" when action == :create
+  # NPD-owned external_sku pattern. Semi-finished stage items are
+  # keyed on ``NPD-STAGE-<formulation_uuid>-<sort_order>``; a
+  # finished-product item created from the New-formulation dialog is
+  # keyed on ``NPD-FP-<formulation_uuid>``. If the sku no longer
+  # matches either shape, someone re-keyed the row on PSP (or a
+  # different integration owns it) and the safe-delete refuses.
+  @npd_sku_pattern ~r/^NPD-(STAGE|FP)-/
+
+  plug :require_integration_scope, "item:write" when action in [:create, :delete]
 
   def create(conn, params) do
     company_id = conn.assigns.current_company_id
@@ -121,6 +130,125 @@ defmodule BackendWeb.IntegrationItemController do
     else
       {:error, code, detail} -> unprocessable(conn, code, detail)
     end
+  end
+
+  @doc """
+  Safe-delete for NPD-owned catalog items. Used by NPD when a
+  formulation stage is removed on the R&D side so the corresponding
+  semi-finished item on PSP doesn't pile up as orphaned data.
+
+  Refuses (409) when the item isn't safe to remove:
+
+  * `sku_not_npd_owned` — the item's `external_sku` no longer matches
+    the `NPD-STAGE-...` / `NPD-FP-...` pattern NPD writes on create.
+    Interpreted as "someone re-keyed this row on PSP or a different
+    integration owns it", so we leave it alone.
+  * `referenced_by_bom` — another BOM lists this item as a component
+    (`bom_line.part_id`). Deleting it would break that parent BOM.
+  * `has_history` — any lot / stock movement / MO / PO line / customer
+    order line / invoice line / return line touches this item.
+    Deleting it would orphan those history rows.
+
+  On success (200) returns the deleted item's uuid. On refusal (409)
+  returns `{"deleted": false, "reason": "<code>"}` so NPD's caller
+  can log the skip without treating it as an error.
+  """
+  def delete(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+    token = conn.assigns.current_integration_token
+
+    with {:ok, %User{} = actor} <- fetch_actor(token),
+         {:ok, %Item{} = item} <- fetch_item(company_id, uuid) do
+      case safe_to_delete(item) do
+        :ok ->
+          case Items.delete(actor, item) do
+            {:ok, _} ->
+              conn
+              |> put_status(:ok)
+              |> json(%{"deleted" => true, "uuid" => uuid})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              unprocessable(conn, "validation_failed", format_changeset(cs))
+
+            other ->
+              unprocessable(conn, "unknown_error", inspect(other))
+          end
+
+        {:refuse, reason} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{"deleted" => false, "reason" => reason, "uuid" => uuid})
+      end
+    else
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{"deleted" => false, "reason" => "not_found", "uuid" => uuid})
+
+      {:error, code, detail} ->
+        unprocessable(conn, code, detail)
+    end
+  end
+
+  # ---- safe-delete gates ----
+
+  defp fetch_item(company_id, uuid) when is_binary(uuid) do
+    case Repo.get_by(Item, uuid: uuid, company_id: company_id) do
+      %Item{} = item -> {:ok, item}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp fetch_item(_company_id, _), do: {:error, :not_found}
+
+  # Guards run in order — first failure wins so the caller gets the
+  # most specific reason. Ownership check runs first because it's the
+  # cheapest and covers "not ours; back off entirely".
+  defp safe_to_delete(%Item{} = item) do
+    with :ok <- gate_npd_owned(item),
+         :ok <- gate_not_referenced_in_bom(item),
+         :ok <- gate_no_history(item) do
+      :ok
+    end
+  end
+
+  defp gate_npd_owned(%Item{external_sku: sku}) when is_binary(sku) do
+    if Regex.match?(@npd_sku_pattern, sku) do
+      :ok
+    else
+      {:refuse, "sku_not_npd_owned"}
+    end
+  end
+
+  defp gate_npd_owned(_), do: {:refuse, "sku_not_npd_owned"}
+
+  defp gate_not_referenced_in_bom(%Item{id: id}) do
+    query = from bl in BomLine, where: bl.part_id == ^id, limit: 1
+    if Repo.exists?(query), do: {:refuse, "referenced_by_bom"}, else: :ok
+  end
+
+  # Any historical event that references this item as a subject (not
+  # as a component — that's the BOM gate above). The idea: an item
+  # NPD never touched inventory-wise is safe to delete; the moment
+  # ops opens a PO or receives a lot against it, PSP owns the row
+  # and we should refuse.
+  defp gate_no_history(%Item{id: id}) do
+    checks = [
+      Backend.Stock.Lot,
+      Backend.Stock.Movement,
+      Backend.Production.ManufacturingOrder,
+      Backend.Purchasing.PurchaseOrderLine,
+      Backend.CustomerOrders.CustomerOrderLine,
+      Backend.CustomerInvoices.CustomerInvoiceLine,
+      Backend.CustomerReturns.CustomerReturnLine
+    ]
+
+    hit? =
+      Enum.any?(checks, fn schema ->
+        Repo.exists?(from row in schema, where: row.item_id == ^id, limit: 1)
+      end)
+
+    if hit?, do: {:refuse, "has_history"}, else: :ok
   end
 
   # ---- internals ----
