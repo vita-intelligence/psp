@@ -342,6 +342,11 @@ defmodule BackendWeb.Router do
       resources "/certificates", ItemCertificateController,
         only: [:create, :update, :delete]
 
+      # Purchase terms — read-only per-item view of every vendor's
+      # quoted commercial baseline. Full CRUD lives under the vendor
+      # route `/api/vendors/:vendor_id/purchase-terms`.
+      get "/purchase-terms", PurchaseTermController, :list_for_item
+
       # Compliance evidence files (spec sheet, food-contact DoC,
       # migration test report, …). Same shape as the vendor / lot /
       # PO / goods-in attachments — bytes live in Backend.Storage,
@@ -403,6 +408,17 @@ defmodule BackendWeb.Router do
       # the rows are maintained by the PO receive flow, not by the
       # vendor edit form.
       get "/price-history", VendorController, :price_history
+
+      # Vendor-quoted purchase terms — the commercial baseline the
+      # PO "suggest unit price" endpoint falls back to when no PO
+      # history exists. CRUD lives on the vendor page; the item page
+      # gets a read-only listing via `/items/:id/purchase-terms`.
+      # Approval-first: create/update requires an ApprovedItem row
+      # for (vendor, item) — enforced in PurchaseTerms.upsert.
+      get "/purchase-terms", PurchaseTermController, :list_for_vendor
+      post "/purchase-terms", PurchaseTermController, :create
+      put "/purchase-terms/:id", PurchaseTermController, :update
+      delete "/purchase-terms/:id", PurchaseTermController, :delete
 
       # Per-vendor certificate attachments. Same shape as
       # /api/items/:id/certificates — reuses the cert registry +
