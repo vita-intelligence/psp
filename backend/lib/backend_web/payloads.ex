@@ -4460,6 +4460,47 @@ defmodule BackendWeb.Payloads do
   history so the FE can branch on `last_paid == null` without a
   separate "missing" code.
   """
+  @doc """
+  One purchase-term row shaped for both the vendor detail page and
+  the item detail page. Vendor + item summaries embed when preloaded
+  so the FE renders identity chips without extra fetches; either can
+  be omitted based on the calling surface (vendor-page rows already
+  know the vendor, item-page rows already know the item).
+  """
+  def purchase_term(%Backend.Purchasing.PurchaseTerm{} = row) do
+    %{
+      uuid: row.uuid,
+      vendor_id: row.vendor_id,
+      item_id: row.item_id,
+      vendor: maybe_vendor_summary(row.vendor),
+      item: maybe_item_summary(row.item),
+      vendor_part_no: row.vendor_part_no,
+      lead_time_days: row.lead_time_days,
+      price: row.price,
+      currency_code: row.currency_code,
+      min_quantity: row.min_quantity,
+      min_quantity_uom: row.min_quantity_uom,
+      priority: row.priority,
+      valid_from: row.valid_from,
+      valid_until: row.valid_until,
+      notes: row.notes,
+      inserted_at: row.inserted_at,
+      updated_at: row.updated_at
+    }
+  end
+
+  defp maybe_vendor_summary(%Backend.Vendors.Vendor{} = v) do
+    %{
+      id: v.id,
+      uuid: v.uuid,
+      code: v.code,
+      name: v.name,
+      approval_status: v.approval_status
+    }
+  end
+
+  defp maybe_vendor_summary(_), do: nil
+
   def vendor_item_price_suggestion(nil), do: nil
 
   def vendor_item_price_suggestion(%{

@@ -237,7 +237,30 @@ defmodule BackendWeb.PurchaseOrderController do
           po.currency_code
         )
 
-      json(conn, %{last_paid: Payloads.vendor_item_price_suggestion(last_paid)})
+      # Fallback chain: PO history wins when it exists; otherwise the
+      # buyer-negotiated purchase term for (vendor, item) fills in.
+      # The FE surfaces a "source: purchase_term" chip so the operator
+      # knows the number came from the negotiated baseline, not a
+      # historical average — useful for first-time orders.
+      purchase_term =
+        if is_nil(last_paid) do
+          Backend.Purchasing.PurchaseTerms.primary_for(
+            po.company_id,
+            po.vendor_id,
+            item_id
+          )
+        end
+
+      json(conn, %{
+        last_paid: Payloads.vendor_item_price_suggestion(last_paid),
+        purchase_term: purchase_term && Payloads.purchase_term(purchase_term),
+        source:
+          cond do
+            last_paid -> "po_history"
+            purchase_term -> "purchase_term"
+            true -> "none"
+          end
+      })
     else
       {:error, :bad_item_id} ->
         unprocessable(conn, "bad_item_id", "item_id query parameter must be a positive integer.")
