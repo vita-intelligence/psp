@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge-mini";
 import { getVendor, listVendorPriceHistory } from "@/lib/vendors/server";
 import { listVendorPurchaseTerms } from "@/lib/purchase-terms";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { listUnitsOfMeasurement } from "@/lib/units/server";
 import { VendorPurchaseTermsCard } from "./vendor-purchase-terms-card";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
@@ -57,14 +58,25 @@ export default async function VendorDetailPage({
   const { uuid } = await params;
   // Items + certificate registries are fetched on-demand by the
   // SearchPicker inside each card, so we skip the bulk lists here.
-  const [vendor, initialComments, priceHistory, purchaseTerms, prefs] =
-    await Promise.all([
-      getVendor(uuid),
-      listCommentsForEntity("vendor", uuid),
-      listVendorPriceHistory(uuid),
-      listVendorPurchaseTerms(uuid),
-      getCompanyDefaults(),
-    ]);
+  const [
+    vendor,
+    initialComments,
+    priceHistory,
+    purchaseTerms,
+    prefs,
+    units,
+  ] = await Promise.all([
+    getVendor(uuid),
+    listCommentsForEntity("vendor", uuid),
+    listVendorPriceHistory(uuid),
+    listVendorPurchaseTerms(uuid),
+    getCompanyDefaults(),
+    // Purchase-term modal's ``Min qty UoM`` dropdown reads from the
+    // company's UoM registry so the operator can only pick a unit
+    // that actually exists in settings. Restrict to the dimensions
+    // that make sense for purchasing: mass / volume / count.
+    listUnitsOfMeasurement(),
+  ]);
   if (!vendor) notFound();
 
   const canEdit = hasPermission(user, "vendors.edit");
@@ -130,6 +142,7 @@ export default async function VendorDetailPage({
               vendor={vendor}
               terms={purchaseTerms}
               prefs={prefs}
+              units={units ?? []}
               canEdit={canEdit}
             />
           )}
