@@ -16,6 +16,7 @@ import {
 } from "@/lib/format/company";
 import type {
   CompanyDefaults,
+  UnitOfMeasurement,
   Vendor,
   VendorPurchaseTerm,
 } from "@/lib/types";
@@ -29,6 +30,13 @@ interface Props {
   vendor: Vendor;
   terms: VendorPurchaseTerm[];
   prefs: CompanyDefaults;
+  /** Every active UoM in the company's settings registry. Feeds the
+   *  modal's ``Min qty UoM`` dropdown — no free-text, so the operator
+   *  can only pick a unit that actually exists in
+   *  /settings/units-of-measurement. Matches the compliance-first
+   *  rule "type your strings — no free-text where a constrained
+   *  type fits". */
+  units: UnitOfMeasurement[];
   canEdit: boolean;
 }
 
@@ -49,6 +57,7 @@ export function VendorPurchaseTermsCard({
   vendor,
   terms,
   prefs,
+  units,
   canEdit,
 }: Props) {
   const [editingRow, setEditingRow] = useState<VendorPurchaseTerm | null>(
@@ -131,6 +140,7 @@ export function VendorPurchaseTermsCard({
           vendor={vendor}
           existing={editingRow}
           approvedItems={vendor.approved_items}
+          units={units}
           onClose={() => {
             setCreating(false);
             setEditingRow(null);
@@ -251,11 +261,13 @@ function TermModal({
   vendor,
   existing,
   approvedItems,
+  units,
   onClose,
 }: {
   vendor: Vendor;
   existing: VendorPurchaseTerm | null;
   approvedItems: Vendor["approved_items"];
+  units: UnitOfMeasurement[];
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -446,14 +458,35 @@ function TermModal({
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm font-mono"
               />
             </Field>
-            <Field label="UoM">
-              <input
-                type="text"
+            <Field label="UoM" hint="from settings">
+              <select
                 value={minQtyUom}
                 onChange={(e) => setMinQtyUom(e.target.value)}
-                placeholder="kg"
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-              />
+              >
+                <option value="">—</option>
+                {/* Only ACTIVE units — retired UoMs stay in the DB
+                    for historical rows but shouldn't appear on new
+                    saves. If the term's existing value doesn't match
+                    any active unit (retired since save), preserve
+                    it as a disabled fallback so the operator can
+                    see + explicitly pick a replacement. */}
+                {minQtyUom &&
+                  !units.some(
+                    (u) => u.is_active && u.symbol === minQtyUom,
+                  ) && (
+                    <option value={minQtyUom} disabled>
+                      {minQtyUom} · retired
+                    </option>
+                  )}
+                {units
+                  .filter((u) => u.is_active)
+                  .map((u) => (
+                    <option key={u.uuid} value={u.symbol}>
+                      {u.symbol} · {u.name}
+                    </option>
+                  ))}
+              </select>
             </Field>
           </div>
 
