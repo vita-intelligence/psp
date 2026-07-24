@@ -6,6 +6,9 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getItem } from "@/lib/items/server";
+import { listItemPurchaseTerms } from "@/lib/purchase-terms";
+import { getCompanyDefaults } from "@/lib/company/server";
+import { ItemPurchaseTermsCard } from "./item-purchase-terms-card";
 import { listUnitsOfMeasurement } from "@/lib/units/server";
 import {
   listActiveAttributeDefinitionsForScope,
@@ -46,6 +49,8 @@ export default async function EditItemPage({
     allergens,
     certificates,
     storageTags,
+    purchaseTerms,
+    prefs,
   ] = await Promise.all([
     listUnitsOfMeasurement(),
     listProductFamiliesForPicker(),
@@ -53,6 +58,8 @@ export default async function EditItemPage({
     listAllergens(),
     listCertificatesForPicker(),
     listStorageTags(),
+    listItemPurchaseTerms(uuid),
+    getCompanyDefaults(),
   ]);
 
   const canEdit = hasPermission(user, "items.edit");
@@ -108,6 +115,13 @@ export default async function EditItemPage({
             canEdit={canEdit}
             certificates={certificates ?? []}
           />
+
+          {/* Purchase terms — vendor-quoted commercial baselines for
+              this item, ranked by priority. Read-only here; CRUD
+              lives on each vendor's detail page. */}
+          {prefs && (
+            <ItemPurchaseTermsCard terms={purchaseTerms} prefs={prefs} />
+          )}
 
           {/* BOMs — visible only when the item's `item_type` is
               bommable (finished_product or semi_finished). Server-

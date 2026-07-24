@@ -8,6 +8,9 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { Badge } from "@/components/ui/badge-mini";
 import { getVendor, listVendorPriceHistory } from "@/lib/vendors/server";
+import { listVendorPurchaseTerms } from "@/lib/purchase-terms";
+import { getCompanyDefaults } from "@/lib/company/server";
+import { VendorPurchaseTermsCard } from "./vendor-purchase-terms-card";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
 import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { CommentThread } from "@/components/comments/comment-thread";
@@ -54,11 +57,14 @@ export default async function VendorDetailPage({
   const { uuid } = await params;
   // Items + certificate registries are fetched on-demand by the
   // SearchPicker inside each card, so we skip the bulk lists here.
-  const [vendor, initialComments, priceHistory] = await Promise.all([
-    getVendor(uuid),
-    listCommentsForEntity("vendor", uuid),
-    listVendorPriceHistory(uuid),
-  ]);
+  const [vendor, initialComments, priceHistory, purchaseTerms, prefs] =
+    await Promise.all([
+      getVendor(uuid),
+      listCommentsForEntity("vendor", uuid),
+      listVendorPriceHistory(uuid),
+      listVendorPurchaseTerms(uuid),
+      getCompanyDefaults(),
+    ]);
   if (!vendor) notFound();
 
   const canEdit = hasPermission(user, "vendors.edit");
@@ -118,6 +124,15 @@ export default async function VendorDetailPage({
           />
 
           <VendorApprovedItemsCard vendor={vendor} canEdit={canEdit} />
+
+          {prefs && (
+            <VendorPurchaseTermsCard
+              vendor={vendor}
+              terms={purchaseTerms}
+              prefs={prefs}
+              canEdit={canEdit}
+            />
+          )}
 
           <VendorCertificatesCard vendor={vendor} canEdit={canEdit} />
 

@@ -391,6 +391,54 @@ export type VendorTraceabilityStatus =
 
 export type VendorPaymentBasis = "invoice_date" | "month_end" | "delivery_date";
 
+/**
+ * Vendor-quoted commercial baseline for a specific item — the row
+ * MRPEasy renders in its Item detail's "Purchase terms" section and
+ * that our PO "suggest unit price" endpoint falls back to when no PO
+ * history exists on the (vendor, item, currency) triple. Distinct
+ * from `VendorItemPrice`, which is the cache of actually-paid PO
+ * prices.
+ */
+export interface VendorPurchaseTerm {
+  uuid: string;
+  vendor_id: number;
+  item_id: number;
+  /** Vendor summary — populated when the payload comes from the
+   *  item detail's list-for-item endpoint (the item page groups by
+   *  vendor). Null on the vendor detail card where the vendor
+   *  identity is already known from the page context. */
+  vendor: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    approval_status: string | null;
+  } | null;
+  /** Item summary — mirror of vendor above; populated when this
+   *  row was fetched from the vendor detail's list-for-vendor
+   *  endpoint. */
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+    item_type: ItemType;
+    external_sku: string | null;
+  } | null;
+  vendor_part_no: string | null;
+  lead_time_days: number | null;
+  price: string;
+  currency_code: string;
+  min_quantity: string | null;
+  min_quantity_uom: string | null;
+  priority: number;
+  valid_from: string | null;
+  valid_until: string | null;
+  notes: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
 export interface VendorApprovedItemRow {
   uuid: string;
   vendor_id: number;
