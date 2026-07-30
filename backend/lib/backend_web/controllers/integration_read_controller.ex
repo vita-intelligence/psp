@@ -637,6 +637,71 @@ defmodule BackendWeb.IntegrationReadController do
     end
   end
 
+  @doc """
+  Bulk cost suggestion for downstream integration callers — feeds
+  vita-cff's real-time formulation cost calculator.
+
+  Body: `{"item_uuids": ["uuid1", "uuid2", ...]}`
+
+  Returns one row per resolved uuid with the best-guess unit_cost
+  and its provenance. Fallback chain per item (vendor-agnostic
+  since the caller has no PO context):
+
+  1. `po_history` — most-recent VendorItemPrice paid across any
+     vendor.
+  2. `purchase_term` — primary term across all vendors quoting the
+     item.
+  3. `none` — no live cost data.
+
+  Response shape:
+
+      {
+        "items": [
+          {
+            "uuid": "...",
+            "unit_cost": "12.50",       // string decimal or null
+            "currency_code": "GBP",
+            "uom_symbol": "kg",         // nullable
+            "source": "po_history",     // | "purchase_term" | "none"
+            "vendor_name": "..."        // nullable when source=none
+          }
+        ]
+      }
+
+  Missing / archived uuids silently drop out of the response so
+  the caller can diff input vs. returned to spot dead references.
+  """
+  def suggest_costs(conn, %{"item_uuids" => uuids}) when is_list(uuids) do
+    company_id = conn.assigns.current_company_id
+
+    rows =
+      Backend.Purchasing.PurchaseTerms.suggest_costs_bulk(company_id, uuids)
+
+    json(conn, %{
+      items:
+        Enum.map(rows, fn row ->
+          %{
+            uuid: row.uuid,
+            unit_cost:
+              case row.unit_cost do
+                nil -> nil
+                d -> Decimal.to_string(d)
+              end,
+            currency_code: row.currency_code,
+            uom_symbol: row.uom_symbol,
+            source: row.source,
+            vendor_name: row.vendor_name
+          }
+        end)
+    })
+  end
+
+  def suggest_costs(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "item_uuids_required"})
+  end
+
   defp fetch_item_by_uuid(company_id, uuid) do
     Repo.one(
       from i in Item,
