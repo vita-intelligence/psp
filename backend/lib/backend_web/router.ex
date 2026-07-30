@@ -1676,6 +1676,13 @@ defmodule BackendWeb.Router do
     # Read the item's active primary BOM (lines + parts) so NPD can
     # hydrate a formulation from PSP's recipe as source of truth.
     get "/items/:uuid/bom", IntegrationReadController, :get_item_bom
+    # Bulk cost suggestion — powers vita-cff's real-time formulation
+    # cost calculator. POST rather than GET so the (potentially long)
+    # item_uuids list travels in the body instead of a query string
+    # that some proxies truncate.
+    post "/items/suggest-costs",
+         IntegrationReadController,
+         :suggest_costs
     get "/units-of-measurement",
         IntegrationReadController,
         :list_units_of_measurement
