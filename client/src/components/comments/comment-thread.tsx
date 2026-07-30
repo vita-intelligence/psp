@@ -62,6 +62,10 @@ interface BannerError {
   detail: string;
   code?: string;
   debug?: ErrorDebug;
+  /** Per-field messages from a ``validation_failed`` response. Lets
+   *  the banner show *which* field the backend rejected rather than
+   *  the generic "Please correct the highlighted fields." */
+  fields?: Record<string, string[]>;
 }
 
 /**
@@ -133,6 +137,10 @@ export function CommentThread({
 
   const applyReaction = useCallback(
     (evt: ReactionEvent, delta: 1 | -1) => {
+      // The reactor already applied the change optimistically inside
+      // ``submitReact``, so their own echo would double-count. Skip it.
+      // Peers still process every event normally to stay in sync.
+      if (evt.own_reacted) return;
       setComments((prev) =>
         prev.map((c) => {
           if (c.uuid !== evt.comment_uuid) return c;
@@ -245,33 +253,61 @@ export function CommentThread({
 
   const submitReact = useCallback(
     (commentUuid: string, emoji: string) => {
-      // No optimistic flip here — the backend fans a `reaction:added`
-      // / `reaction:removed` event back through the channel to every
-      // subscriber including the caller, so applying our own delta
-      // upfront would double-count on top of the incoming event.
-      // Small latency, cleaner state.
+      // Optimistic flip: apply locally BEFORE the network round-trip so
+      // the reactor sees instant feedback. Slack / iMessage do this too.
+      // The BE fires a ``reaction:added`` / ``reaction:removed`` echo
+      // per subscriber; ``applyReaction`` filters ``own_reacted`` events
+      // so the echo doesn't double-count against our optimistic state.
+      // On HTTP failure we roll back to the pre-click reactions.
       const cur = comments.find((c) => c.uuid === commentUuid);
-      const wasReacted = cur?.reactions.some(
-        (r) => r.emoji === emoji && r.own_reacted,
+      if (!cur) return;
+      const prevOwnEmoji =
+        cur.reactions.find((r) => r.own_reacted)?.emoji ?? null;
+      const isSameEmoji = prevOwnEmoji === emoji;
+      const snapshotReactions = cur.reactions;
+
+      setComments((prev) =>
+        prev.map((c) => {
+          if (c.uuid !== commentUuid) return c;
+          return {
+            ...c,
+            reactions: applyOwnReactionSwap(c.reactions, prevOwnEmoji, emoji),
+          };
+        }),
       );
-      startTransition(async () => {
-        const res = wasReacted
-          ? await removeReactionAction(
-              entityType,
-              entityUuid,
-              commentUuid,
-              emoji,
-            )
-          : await addReactionAction(
-              entityType,
-              entityUuid,
-              commentUuid,
-              emoji,
-            );
+
+      //: NOT wrapped in ``startTransition`` — the optimistic setState
+      //: above must render as an urgent update. React 19 + server
+      //: actions inside a transition can defer the parent render past
+      //: the click, which reads to the user as "nothing changed until
+      //: I refresh". A plain fire-and-forget async does the HTTP off
+      //: the critical path without touching render priority.
+      //: One-reaction-per-user semantics: same emoji click removes;
+      //: any other click either adds or swaps. The BE's ``add_reaction``
+      //: handles the swap in a single call, so we don't need two HTTP
+      //: hops for a swap.
+      (async () => {
+        const res = isSameEmoji
+          ? await removeReactionAction(entityType, entityUuid, commentUuid, emoji)
+          : await addReactionAction(entityType, entityUuid, commentUuid, emoji);
         if (!res.ok) {
-          setError({ detail: res.detail, code: res.code, debug: res.debug });
+          // Roll back the optimistic mutation on failure so the UI
+          // matches the server truth.
+          setComments((prev) =>
+            prev.map((c) =>
+              c.uuid === commentUuid
+                ? { ...c, reactions: snapshotReactions }
+                : c,
+            ),
+          );
+          setError({
+            detail: res.detail,
+            code: res.code,
+            debug: res.debug,
+            ...("fields" in res && res.fields ? { fields: res.fields } : {}),
+          });
         }
-      });
+      })();
     },
     [comments, entityType, entityUuid],
   );
@@ -451,6 +487,48 @@ function buildSnippet(c: Comment): string {
   }
   return "(deleted)";
 }
+
+/**
+ * Compute the reactions array for the viewer's own click, given the
+ * previous emoji they had picked (or ``null`` for none) and the emoji
+ * they just clicked. Enforces the one-reaction-per-user rule:
+ *
+ *   * ``prev == next`` → toggle off (remove their reaction).
+ *   * ``prev != null`` and ``prev != next`` → swap: decrement the old,
+ *     increment the new (or add it if it didn't exist yet).
+ *   * ``prev == null`` → add the new reaction.
+ */
+function applyOwnReactionSwap(
+  current: CommentReaction[],
+  prev: string | null,
+  next: string,
+): CommentReaction[] {
+  const toggleOff = prev === next;
+
+  // Step 1 — strip the viewer's previous reaction (if any).
+  let out: CommentReaction[] = current;
+  if (prev !== null) {
+    out = current
+      .map((r) =>
+        r.emoji === prev
+          ? { ...r, count: Math.max(0, r.count - 1), own_reacted: false }
+          : r,
+      )
+      .filter((r) => r.count > 0);
+  }
+
+  if (toggleOff) return out;
+
+  // Step 2 — add / bump the newly-picked emoji.
+  const existing = out.find((r) => r.emoji === next);
+  if (existing) {
+    return out.map((r) =>
+      r.emoji === next ? { ...r, count: r.count + 1, own_reacted: true } : r,
+    );
+  }
+  return [...out, { emoji: next, count: 1, own_reacted: true }];
+}
+
 
 function applyReactionDelta(
   current: CommentReaction[],

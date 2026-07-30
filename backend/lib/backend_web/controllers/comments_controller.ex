@@ -407,12 +407,37 @@ defmodule BackendWeb.CommentsController do
          %Comment{} = comment <- Comments.get_for_company(actor.company_id, comment_uuid),
          :ok <- check_entity_match(comment, entity_type) do
       case Comments.add_reaction(actor, comment, emoji) do
-        {:ok, reaction} ->
-          broadcast_event(entity_type, entity_uuid, "reaction:added", %{
-            comment_uuid: comment.uuid,
-            emoji: reaction.emoji,
-            user_id: actor.id
-          })
+        {:ok, reaction, effect} ->
+          # Slack-style single-reaction semantics: ``:added`` on a
+          # fresh insert, ``{:replaced, prev_emoji}`` when swapping,
+          # ``:no_change`` when the user re-tapped the same emoji.
+          # For a swap we emit BOTH events so subscribers get the
+          # net delta and can decrement the old + increment the new
+          # in a single tick.
+          case effect do
+            :added ->
+              broadcast_event(entity_type, entity_uuid, "reaction:added", %{
+                comment_uuid: comment.uuid,
+                emoji: reaction.emoji,
+                user_id: actor.id
+              })
+
+            {:replaced, prev} ->
+              broadcast_event(entity_type, entity_uuid, "reaction:removed", %{
+                comment_uuid: comment.uuid,
+                emoji: prev,
+                user_id: actor.id
+              })
+
+              broadcast_event(entity_type, entity_uuid, "reaction:added", %{
+                comment_uuid: comment.uuid,
+                emoji: reaction.emoji,
+                user_id: actor.id
+              })
+
+            :no_change ->
+              :ok
+          end
 
           json(conn, %{ok: true, emoji: reaction.emoji})
 

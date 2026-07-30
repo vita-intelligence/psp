@@ -159,6 +159,21 @@ defmodule BackendWeb.Router do
     post "/integration-tokens", IntegrationTokenController, :create
     post "/integration-tokens/:id/revoke", IntegrationTokenController, :revoke
 
+    # NPD reverse-integration config surface (base URL + Cloak-encrypted
+    # token). NPD calls INTO PSP through ``/api/integration/customer-orders/sync``
+    # every ``save_version``; this trio of routes only exposes the
+    # settings-page workbench where the token + URL are configured and
+    # verified.
+    get "/settings/npd-integration",
+        NpdIntegrationSettingsController,
+        :show
+    put "/settings/npd-integration",
+        NpdIntegrationSettingsController,
+        :update
+    post "/settings/npd-integration/test",
+         NpdIntegrationSettingsController,
+         :test_connection
+
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label
@@ -1671,6 +1686,12 @@ defmodule BackendWeb.Router do
     get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
     get "/workstations", IntegrationReadController, :list_workstations
     get "/workstation-groups", IntegrationReadController, :list_workstation_groups
+    # Bulk cost + historical throughput estimate for a set of
+    # workstation groups. POST so the (potentially long) uuid list
+    # travels in the body, matching `/items/suggest-costs` shape.
+    post "/workstation-groups/costs",
+         IntegrationReadController,
+         :workstation_group_costs
     get "/items", IntegrationReadController, :list_items
     get "/items/:uuid", IntegrationReadController, :get_item
     # Read the item's active primary BOM (lines + parts) so NPD can
@@ -1783,6 +1804,31 @@ defmodule BackendWeb.Router do
     post "/hr/employees/:employee_uuid/reputation-events",
          IntegrationHRController,
          :create_reputation_event
+
+    # NPD (vita-cff) → PSP CustomerOrder sync. Fired by NPD's
+    # ``save_version`` cascade; idempotent by ``npd_formulation_uuid``.
+    # Requires the ``customer_order:sync:npd`` scope on the token.
+    post "/customer-orders/sync",
+         IntegrationCustomerOrderController,
+         :sync
+
+    # NPD proposal-created merge. Fired when a Proposal is drafted on
+    # NPD spanning N spec sheets — consolidates the N R&D draft COs
+    # into one primary + attaches proposal identity so the wizard
+    # advances through the three proposal blocks (Awaiting approval →
+    # Ready to send → Awaiting customer signature). Same scope as the
+    # sync.
+    post "/customer-orders/from-proposal",
+         IntegrationCustomerOrderController,
+         :from_proposal
+
+    # NPD proposal-deleted unmerge. Fired when NPD deletes the
+    # underlying Proposal — restores the N R&D drafts on PSP by
+    # fanning comments back, clearing ``merged_into_id`` on every
+    # secondary, and wiping the primary's proposal identity + lines.
+    delete "/customer-orders/from-proposal/:proposal_uuid",
+           IntegrationCustomerOrderController,
+           :unmerge_from_proposal
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development.

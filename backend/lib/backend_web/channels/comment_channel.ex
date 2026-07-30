@@ -31,6 +31,14 @@ defmodule BackendWeb.CommentChannel do
   alias Backend.{Accounts, Comments, Purchasing, RBAC, Stock, Vendors}
   alias BackendWeb.Presence
 
+  # Intercept the reaction fan-outs so ``handle_out/3`` can stamp the
+  # viewer-specific ``own_reacted`` flag before pushing to the socket.
+  # Without this the payload from ``Endpoint.broadcast/3`` reaches every
+  # subscriber identically — including the reactor — and the FE can't
+  # tell which reaction it owns without an extra lookup. Intercepting
+  # is per-channel-process so the cost is bounded to open threads.
+  intercept ["reaction:added", "reaction:removed"]
+
   @impl true
   def join("comments:" <> rest, _params, socket) do
     # Refresh the user (mirrors form_channel — permissions might have
@@ -91,6 +99,20 @@ defmodule BackendWeb.CommentChannel do
   end
 
   def handle_in(_event, _payload, socket), do: {:noreply, socket}
+
+  # Per-subscriber ``own_reacted`` stamping. The controller broadcasts
+  # ``%{comment_uuid, emoji, user_id}``; here we set
+  # ``own_reacted = (user_id == viewer.id)`` before pushing so the FE
+  # doesn't need the actor's identity to decide whether to highlight
+  # the reaction as its own.
+  @impl true
+  def handle_out(event, payload, socket)
+      when event in ["reaction:added", "reaction:removed"] do
+    viewer_id = socket.assigns.current_user.id
+    actor_id = payload[:user_id] || payload["user_id"]
+    push(socket, event, Map.put(payload, :own_reacted, actor_id == viewer_id))
+    {:noreply, socket}
+  end
 
   ## ------------------------------------------------------------------
 

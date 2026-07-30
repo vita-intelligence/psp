@@ -77,6 +77,14 @@ defmodule Backend.Companies.Company do
     # window starts ticking. See `Backend.Companies.update_security/2`.
     field :require_mfa, :boolean, default: false
 
+    # ----- NPD reverse-integration config ------------------------------
+    # Mirrors the shape NPD holds on ``Organization.psp_config``. Only
+    # the token is encrypted at rest — base URL is operationally handy
+    # in plaintext (deploys, health checks, log lines).
+    field :npd_integration_enabled, :boolean, default: false
+    field :npd_base_url, :string
+    field :npd_integration_token, Backend.Encrypted.Binary, redact: true
+
     has_many :roles, Role
     has_many :users, User
 
@@ -180,6 +188,62 @@ defmodule Backend.Companies.Company do
       name: :companies_default_pickup_window_positive,
       message: "must be greater than zero"
     )
+  end
+
+  @doc """
+  NPD reverse-integration changeset. Stores what PSP needs to reach
+  the NPD read API (base URL + bearer token) plus a master enabled
+  flag. Token is written only when the incoming payload actually
+  carries a fresh string — a nil token here means "keep whatever is
+  already stored", so a save that only flips ``enabled`` doesn't need
+  to re-collect the secret.
+  """
+  def npd_integration_changeset(company, attrs) do
+    company
+    |> cast(attrs, [
+      :npd_integration_enabled,
+      :npd_base_url,
+      :npd_integration_token
+    ])
+    |> validate_length(:npd_base_url, max: 500)
+    |> validate_length(:npd_integration_token, max: 1000)
+    |> validate_base_url_when_enabled()
+    |> preserve_existing_token_when_blank()
+  end
+
+  defp validate_base_url_when_enabled(changeset) do
+    enabled = get_field(changeset, :npd_integration_enabled)
+    url = get_field(changeset, :npd_base_url)
+
+    cond do
+      not enabled ->
+        changeset
+
+      is_nil(url) or String.trim(url) == "" ->
+        add_error(changeset, :npd_base_url, "required when integration enabled")
+
+      not String.starts_with?(url, ["http://", "https://"]) ->
+        add_error(changeset, :npd_base_url, "must start with http:// or https://")
+
+      true ->
+        changeset
+    end
+  end
+
+  # Empty-string tokens on write are treated as "no change" so the
+  # settings form can submit without re-entering the secret on every
+  # save. Overwrite requires an explicit new value.
+  defp preserve_existing_token_when_blank(changeset) do
+    case get_change(changeset, :npd_integration_token) do
+      nil ->
+        changeset
+
+      "" ->
+        delete_change(changeset, :npd_integration_token)
+
+      _ ->
+        changeset
+    end
   end
 
   @currency_rates_sources ~w(manual ecb_auto)

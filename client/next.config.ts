@@ -23,11 +23,14 @@ const nextConfig: NextConfig = {
   ],
   experimental: {
     serverActions: {
-      // Multipart image uploads (item gallery) flow through server
-      // actions. Default cap is 1 MB; bump to match the backend's
-      // per-image limit so users see the proper "file too large" error
-      // from the API rather than a confusing Next.js render crash.
-      bodySizeLimit: "6mb",
+      // Multipart image uploads (item gallery + comment attachments)
+      // flow through server actions. Modern phones routinely emit
+      // 8–15 MB HEIC/JPEG originals; 6 MB tripped on a phone photo
+      // dropped into the project chat. 25 MB covers full-res phone
+      // captures with headroom while still blocking runaway uploads.
+      // Backend enforces its own per-file cap so this is a UX guard,
+      // not a security one.
+      bodySizeLimit: "25mb",
       // Server actions verify Origin matches the host. Phones land on
       // the LAN URL, so list both the .local hostname (preferred —
       // Safari persists cookies for it) and the raw IP fallback.

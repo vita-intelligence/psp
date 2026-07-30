@@ -67,6 +67,79 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :cancelled_at, :utc_datetime
     field :cancellation_reason, :string
 
+    # NPD (vita-cff) formulation identity. Planted on first sync from
+    # NPD's ``save_version`` cascade so the same UUID identifies the
+    # project on both sides. Null on any CO that was created directly
+    # from PSP's own new-project flow (pre-NPD or non-R&D orders).
+    field :npd_formulation_uuid, Ecto.UUID
+    # Denormalised R&D team + deep-link mirrored from NPD's sync
+    # payload. Refreshed on every re-sync so a role reassignment on
+    # NPD reaches PSP without a separate messaging channel. All three
+    # are nullable — R&D projects often start with no assignments.
+    field :npd_lead_scientist_name, :string
+    field :npd_sales_person_name, :string
+    field :npd_app_url, :string
+    # Linked customer mirrored from NPD's ``link_customer`` flow.
+    # Both fields empty until Sales attaches a client on NPD; they
+    # clear back to nil on unlink. Display-only today — PSP still
+    # writes ``customer_id`` from its own picker for the real FK.
+    field :npd_customer_uuid, Ecto.UUID
+    field :npd_customer_display_name, :string
+    # CFF submission mirrored from NPD's ``assign_to_project`` /
+    # ``detach_from_project`` hooks. Cleared on unlink so the PSP
+    # project page mirrors whatever the scientist sees on NPD.
+    field :npd_cff_uuid, Ecto.UUID
+    field :npd_cff_url, :string
+    field :npd_cff_submitter_name, :string
+    field :npd_cff_submitter_email, :string
+    # Spec-sheet identity + sign-off, populated on the NPD sheet's
+    # ``in_review → approved`` transition. The presence of
+    # ``npd_spec_approved_at`` is the phase-gate signal: a draft CO
+    # with a director-signed spec moves from ``:r_and_d`` to
+    # ``:awaiting_proposal`` on the wizard. A subsequent proposal
+    # merge sync moves the wizard through the three proposal blocks
+    # (Awaiting approval → Ready to send → Awaiting customer signature).
+    field :npd_spec_sheet_uuid, Ecto.UUID
+    field :npd_spec_sheet_url, :string
+    field :npd_spec_prepared_by_name, :string
+    field :npd_spec_prepared_at, :utc_datetime
+    field :npd_spec_director_name, :string
+    field :npd_spec_approved_at, :utc_datetime
+    # Proposal identity, planted on the primary CO by the merge sync
+    # (``Backend.CustomerOrders.ProposalMerge``). Presence of
+    # ``npd_proposal_uuid`` is the phase-gate signal: draft CO with a
+    # proposal moves from ``:awaiting_proposal`` to ``:awaiting_signature``
+    # on the wizard.
+    field :npd_proposal_uuid, Ecto.UUID
+    field :npd_proposal_code, :string
+    field :npd_proposal_url, :string
+    # Per-transition timestamps + actor names mirrored from NPD's
+    # ``ProposalStatusTransition`` table. Populate the timeline card
+    # so operators see when the proposal was drafted, director-signed,
+    # sent to the customer, and customer-signed — without a cross-app
+    # fetch. NULL until the transition happens on NPD.
+    field :npd_proposal_created_at, :utc_datetime
+    field :npd_proposal_created_by_name, :string
+    field :npd_proposal_director_approved_at, :utc_datetime
+    field :npd_proposal_director_name, :string
+    field :npd_proposal_sent_at, :utc_datetime
+    field :npd_proposal_sent_by_name, :string
+    field :npd_proposal_accepted_at, :utc_datetime
+    field :npd_proposal_accepted_by_name, :string
+    # Full audit-preserving event log — one entry per NPD-side event
+    # (formulation created, spec transitioned, proposal transitioned).
+    # NPD is authoritative and replaces the array on every sync so a
+    # correction or revert-and-redo is reflected without merging
+    # deltas. Entries are opaque maps; see the migration for shape.
+    field :npd_timeline, {:array, :map}, default: []
+    # Mirrored NPD proposal status. Determines which of the three
+    # post-merge wizard blocks the CO sits in:
+    # draft/in_review → :awaiting_proposal_approval,
+    # approved       → :proposal_ready_to_send,
+    # sent           → :awaiting_customer_signature.
+    field :npd_proposal_status, :string
+
+    belongs_to :merged_into, __MODULE__, foreign_key: :merged_into_id
     belongs_to :customer, Customer
     belongs_to :company, Company
     belongs_to :created_by, User

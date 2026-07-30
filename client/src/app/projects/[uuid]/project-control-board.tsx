@@ -38,6 +38,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Ban,
+  Beaker,
   Calendar,
   CheckCircle2,
   ArrowDown,
@@ -56,6 +57,7 @@ import {
   PackageOpen,
   PackagePlus,
   Receipt,
+  Send,
   ShieldCheck,
   ShoppingBag,
   ShoppingCart,
@@ -140,6 +142,11 @@ import type { COCostBreakdown } from "@/lib/customer-orders/cost";
 // =============================================================================
 
 const PHASE_ORDER: OrderWizardPhaseKey[] = [
+  "r_and_d",
+  "awaiting_proposal",
+  "awaiting_proposal_approval",
+  "proposal_ready_to_send",
+  "awaiting_customer_signature",
   "setup",
   "approval",
   "production_planning",
@@ -155,6 +162,11 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
 ];
 
 const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
+  r_and_d: "R&D",
+  awaiting_proposal: "Awaiting proposal",
+  awaiting_proposal_approval: "Awaiting approval",
+  proposal_ready_to_send: "Ready to send",
+  awaiting_customer_signature: "Awaiting signature",
   setup: "Setup",
   approval: "Approval",
   production_planning: "Planning",
@@ -171,6 +183,14 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
 };
 
 const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
+  r_and_d: "Formulation is being developed on NPD.",
+  awaiting_proposal: "Spec is director-signed. Sales owns the proposal.",
+  awaiting_proposal_approval:
+    "Proposal drafted. Director needs to review and approve.",
+  proposal_ready_to_send:
+    "Director signed. Waiting for the proposal to be sent to the customer.",
+  awaiting_customer_signature:
+    "Proposal is out. Waiting for the customer's kiosk signature.",
   setup: "Add lines and price the order.",
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
@@ -195,6 +215,11 @@ const PHASE_ICON: Record<
   OrderWizardPhaseKey,
   React.ComponentType<{ className?: string }>
 > = {
+  r_and_d: Beaker,
+  awaiting_proposal: FileText,
+  awaiting_proposal_approval: ShieldCheck,
+  proposal_ready_to_send: Send,
+  awaiting_customer_signature: FileText,
   setup: FileText,
   approval: ShieldCheck,
   production_planning: Factory,
@@ -850,6 +875,12 @@ export function ProjectControlBoard({
                 prefs={prefs}
                 onClick={() => setCustomerModalOpen(true)}
               />
+              {/* R&D team + Open-on-NPD affordance. Only mounts when
+                  the CO carries an ``npd_formulation_uuid`` (i.e. it
+                  was mirrored from NPD via save_version / Sync to
+                  PSP). For plain PSP-authored orders it stays hidden
+                  — nothing to link back to. */}
+              <RandDTeamCard co={co} prefs={prefs} />
               <TimelineCard timeline={timeline} prefs={prefs} />
             </div>
           </div>
@@ -962,18 +993,44 @@ function StickyHeader({
                 </span>
               )}
             </div>
-            <h1 className="mt-0.5 truncate text-lg font-semibold tracking-tight sm:text-xl">
-              {co.customer?.uuid ? (
-                <Link
-                  href={`/sales/customers/${co.customer.uuid}`}
-                  className="underline-offset-2 hover:underline"
-                >
-                  {co.customer.name}
-                </Link>
-              ) : (
-                co.customer?.name ?? "—"
-              )}
-            </h1>
+            {(() => {
+              // R&D-owned drafts (mirrored from NPD via ``save_version``
+              // / Sync to PSP) don't have a real customer yet — the
+              // placeholder is literally named "NPD Placeholder", which
+              // reads as junk. Prefer the formulation title (stashed in
+              // ``customer_reference``) for the H1 and surface the
+              // "no customer" state as a plain sub-line, so the operator
+              // knows what still needs to happen (link a customer via
+              // the proposal flow on NPD).
+              const isPlaceholderCustomer =
+                co.customer?.name === "NPD Placeholder";
+              const showFormulationTitle =
+                isPlaceholderCustomer && !!co.customer_reference;
+              return (
+                <>
+                  <h1 className="mt-0.5 truncate text-lg font-semibold tracking-tight sm:text-xl">
+                    {showFormulationTitle ? (
+                      co.customer_reference
+                    ) : co.customer?.uuid && !isPlaceholderCustomer ? (
+                      <Link
+                        href={`/sales/customers/${co.customer.uuid}`}
+                        className="underline-offset-2 hover:underline"
+                      >
+                        {co.customer.name}
+                      </Link>
+                    ) : (
+                      co.customer?.name ?? "—"
+                    )}
+                  </h1>
+                  {isPlaceholderCustomer ? (
+                    <p className="mt-0.5 text-xs italic text-muted-foreground">
+                      No customer assigned yet — link one via the proposal
+                      flow on NPD.
+                    </p>
+                  ) : null}
+                </>
+              );
+            })()}
           </div>
 
           <Badge tone={phaseBadgeTone(phase.key)} className="shrink-0 px-3 py-1 text-sm">
@@ -1405,6 +1462,26 @@ const PHASE_EXPLAINER: Record<
   OrderWizardPhaseKey,
   { title: string; body: string } | null
 > = {
+  r_and_d: {
+    title: "Formulation is still on the R&D bench.",
+    body: "A scientist is designing the recipe on NPD (vita-cff). Nothing to do on PSP yet — the customer order gets a customer + lines once R&D hands over. Open in NPD to follow the build.",
+  },
+  awaiting_proposal: {
+    title: "Spec is director-signed — sales owns the next move.",
+    body: "The internal spec sheet is signed off, so the recipe is quotable. Sales drafts a proposal against it on NPD; once a customer + lines land here, the order rolls into Setup.",
+  },
+  awaiting_proposal_approval: {
+    title: "Proposal drafted — director needs to approve.",
+    body: "Sales built the proposal on NPD. Director reviews and signs off — once approved, the order moves to Ready to send.",
+  },
+  proposal_ready_to_send: {
+    title: "Approved — waiting to be sent.",
+    body: "Director signed off. The next step is sending the proposal to the customer from NPD. Once sent, the order moves to Awaiting customer signature.",
+  },
+  awaiting_customer_signature: {
+    title: "Proposal is out — waiting on the customer.",
+    body: "The proposal is with the customer on the kiosk. When they sign, PSP takes over and the order advances to Setup.",
+  },
   setup: {
     title: "You're building the order.",
     body: "Pick the customer, add the lines they want, set ship date and address. Nothing is locked yet — edit freely. When you're done, submit for approval.",
@@ -2586,6 +2663,16 @@ function CustomerCard({
   onClick: () => void;
 }) {
   const c = co.customer;
+  // R&D-owned drafts are mirrored from NPD via ``save_version`` /
+  // Sync to PSP. NPD doesn't know the customer at that point, so the
+  // sync auto-attaches a per-company placeholder customer literally
+  // named "NPD Placeholder" — that's a plumbing detail, not something
+  // the operator should see. Render the card as an empty state until
+  // someone links a real customer via the proposal flow on NPD.
+  const isPlaceholderCustomer = c?.name === "NPD Placeholder";
+  const npdCustomerName = (co.npd_customer_display_name || "").trim();
+  const hasNpdLinkedCustomer =
+    isPlaceholderCustomer && npdCustomerName.length > 0;
   return (
     <Card className="border-border/60">
       <CardHeader className="pb-3">
@@ -2595,44 +2682,260 @@ function CustomerCard({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <button
-          type="button"
-          onClick={onClick}
-          className="w-full rounded-md border border-border/40 bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
-        >
-          <p className="text-sm font-semibold tracking-tight">
-            {c?.name ?? "—"}
-          </p>
-          <p className="mt-0.5 text-[11px] font-mono text-muted-foreground">
-            {c?.code ?? "—"}
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
-            {c?.payment_terms_days != null && (
-              <Badge tone="muted">
-                Terms: {c.payment_terms_days}d {c.payment_terms_basis}
-              </Badge>
-            )}
-            {c?.effective_approval_status && (
-              <Badge
-                tone={
-                  c.effective_approval_status === "approved"
-                    ? "emerald"
-                    : c.effective_approval_status === "suspended"
-                      ? "destructive"
-                      : "amber"
-                }
-              >
-                {c.effective_approval_status}
-              </Badge>
-            )}
-          </div>
-          {co.expected_ship_date && (
-            <p className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-              <Truck className="size-3" />
-              Ship by {formatCompanyDate(co.expected_ship_date, prefs)}
+        {hasNpdLinkedCustomer ? (
+          // NPD attached a real customer via ``link_customer`` but PSP
+          // hasn't been switched off the placeholder FK yet (that swap
+          // happens when Sales picks the customer in PSP's own picker,
+          // presumably at proposal time). Show the NPD-side name so
+          // the operator doesn't stare at "NPD Placeholder" any longer
+          // than needed.
+          <div className="w-full rounded-md border border-border/40 bg-muted/20 px-3 py-2.5">
+            <p className="text-sm font-semibold tracking-tight">
+              {npdCustomerName}
             </p>
-          )}
-        </button>
+            <p className="mt-1 text-[11px] leading-snug italic text-muted-foreground/80">
+              Linked on NPD. Pick the matching PSP customer at proposal
+              time to swap the placeholder for the real FK.
+            </p>
+          </div>
+        ) : isPlaceholderCustomer ? (
+          <div className="w-full rounded-md border border-dashed border-border/60 bg-muted/10 px-3 py-3 text-center">
+            <p className="text-sm font-medium text-muted-foreground">
+              No customer assigned yet
+            </p>
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground/80">
+              This project came from NPD before a customer was linked.
+              Attach one via the proposal flow on NPD and it&rsquo;ll
+              show up here on the next sync.
+            </p>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onClick}
+            className="w-full rounded-md border border-border/40 bg-muted/20 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+          >
+            <p className="text-sm font-semibold tracking-tight">
+              {c?.name ?? "—"}
+            </p>
+            <p className="mt-0.5 text-[11px] font-mono text-muted-foreground">
+              {c?.code ?? "—"}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+              {c?.payment_terms_days != null && (
+                <Badge tone="muted">
+                  Terms: {c.payment_terms_days}d {c.payment_terms_basis}
+                </Badge>
+              )}
+              {c?.effective_approval_status && (
+                <Badge
+                  tone={
+                    c.effective_approval_status === "approved"
+                      ? "emerald"
+                      : c.effective_approval_status === "suspended"
+                        ? "destructive"
+                        : "amber"
+                  }
+                >
+                  {c.effective_approval_status}
+                </Badge>
+              )}
+            </div>
+            {co.expected_ship_date && (
+              <p className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Truck className="size-3" />
+                Ship by {formatCompanyDate(co.expected_ship_date, prefs)}
+              </p>
+            )}
+          </button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RandDTeamCard({
+  co,
+  prefs,
+}: {
+  co: CustomerOrder;
+  prefs: CompanyDefaults;
+}) {
+  // Only relevant for NPD-mirrored projects. Everyone else has no
+  // R&D team to display and no NPD deep-link to render.
+  if (!co.npd_formulation_uuid) return null;
+
+  const lead = (co.npd_lead_scientist_name || "").trim();
+  const sales = (co.npd_sales_person_name || "").trim();
+  const appUrl = (co.npd_app_url || "").trim();
+  const specUrl = (co.npd_spec_sheet_url || "").trim();
+  const preparedBy = (co.npd_spec_prepared_by_name || "").trim();
+  const preparedAt = co.npd_spec_prepared_at;
+  const directorName = (co.npd_spec_director_name || "").trim();
+  const approvedAt = co.npd_spec_approved_at;
+  const hasSpec = !!approvedAt;
+  const cffUrl = (co.npd_cff_url || "").trim();
+  const cffSubmitter = (co.npd_cff_submitter_name || "").trim();
+  const cffSubmitterEmail = (co.npd_cff_submitter_email || "").trim();
+  const hasCff = !!co.npd_cff_uuid;
+
+  return (
+    <Card className="border-fuchsia-200/70 bg-gradient-to-br from-fuchsia-50/60 via-background to-background dark:border-fuchsia-900/40 dark:from-fuchsia-950/20">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Beaker className="size-4 text-fuchsia-600 dark:text-fuchsia-400" />
+          R&amp;D on NPD
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <dl className="space-y-2 text-xs">
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">Lead scientist</dt>
+            <dd
+              className={cn(
+                "truncate text-right font-medium",
+                !lead && "text-muted-foreground/60 italic font-normal",
+              )}
+              title={lead || undefined}
+            >
+              {lead || "Unassigned"}
+            </dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">Sales person</dt>
+            <dd
+              className={cn(
+                "truncate text-right font-medium",
+                !sales && "text-muted-foreground/60 italic font-normal",
+              )}
+              title={sales || undefined}
+            >
+              {sales || "Unassigned"}
+            </dd>
+          </div>
+        </dl>
+
+        {/* Spec sign-off block — appears only once the director has
+            signed on NPD. Rendered as a distinct violet-tinted panel
+            so the "R&D handed over" state is visually obvious next
+            to the team fields. */}
+        {hasSpec ? (
+          <div className="rounded-md border border-violet-200/70 bg-violet-50/70 p-2.5 dark:border-violet-900/40 dark:bg-violet-950/20">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+              <ShieldCheck className="size-3" />
+              Spec approved
+            </div>
+            <dl className="space-y-1.5 text-[11px]">
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Prepared by</dt>
+                <dd className="truncate text-right font-medium">
+                  {preparedBy || "—"}
+                  {preparedAt ? (
+                    <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                      · {formatCompanyDate(preparedAt, prefs)}
+                    </span>
+                  ) : null}
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Director signed</dt>
+                <dd className="truncate text-right font-medium">
+                  {directorName || "—"}
+                  {approvedAt ? (
+                    <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                      · {formatCompanyDate(approvedAt, prefs)}
+                    </span>
+                  ) : null}
+                </dd>
+              </div>
+            </dl>
+            {specUrl ? (
+              <a
+                href={specUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-violet-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:bg-violet-900/40"
+                title="Opens the approved spec sheet on NPD in a new tab"
+              >
+                <ExternalLink className="size-3" />
+                Open spec on NPD
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Linked CFF — mirrored from NPD's assign_to_project /
+            detach_from_project hooks. Sky-tinted so it reads as
+            distinct from the spec sign-off (which is a "hard
+            handover" signal); this is provenance context, not a
+            state transition. */}
+        {hasCff ? (
+          <div className="rounded-md border border-sky-200/70 bg-sky-50/70 p-2.5 dark:border-sky-900/40 dark:bg-sky-950/20">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+              <ClipboardList className="size-3" />
+              Linked CFF
+            </div>
+            <dl className="space-y-1 text-[11px]">
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Submitter</dt>
+                <dd
+                  className={cn(
+                    "truncate text-right font-medium",
+                    !cffSubmitter &&
+                      "text-muted-foreground/60 italic font-normal",
+                  )}
+                  title={cffSubmitter || undefined}
+                >
+                  {cffSubmitter || "—"}
+                </dd>
+              </div>
+              {cffSubmitterEmail ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-muted-foreground">Email</dt>
+                  <dd
+                    className="truncate text-right font-medium"
+                    title={cffSubmitterEmail}
+                  >
+                    {cffSubmitterEmail}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            {cffUrl ? (
+              <a
+                href={cffUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-sky-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-sky-700 shadow-sm transition-colors hover:bg-sky-50 dark:border-sky-800/60 dark:bg-sky-950/30 dark:text-sky-300 dark:hover:bg-sky-900/40"
+                title="Opens the CFF submission on NPD in a new tab"
+              >
+                <ExternalLink className="size-3" />
+                Open CFF on NPD
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
+        {appUrl ? (
+          <a
+            href={appUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-fuchsia-300/70 bg-white px-3 py-2 text-xs font-semibold text-fuchsia-700 shadow-sm transition-colors hover:bg-fuchsia-50 dark:border-fuchsia-800/60 dark:bg-fuchsia-950/30 dark:text-fuchsia-300 dark:hover:bg-fuchsia-900/40"
+            title="Opens the formulation builder on NPD (vita-cff) in a new tab"
+          >
+            <ExternalLink className="size-3.5" />
+            Open on NPD
+          </a>
+        ) : (
+          <p className="rounded-md border border-dashed border-border/60 bg-muted/20 px-2 py-1.5 text-center text-[11px] leading-snug text-muted-foreground">
+            NPD deep-link unavailable — configure{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-[10px]">
+              APP_BASE_URL
+            </code>{" "}
+            on vita-cff.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -3749,6 +4052,16 @@ function phaseBadgeTone(
   key: OrderWizardPhaseKey,
 ): "muted" | "sky" | "amber" | "emerald" | "destructive" {
   switch (key) {
+    case "r_and_d":
+      return "muted";
+    case "awaiting_proposal":
+      return "sky";
+    case "awaiting_proposal_approval":
+      return "sky";
+    case "proposal_ready_to_send":
+      return "sky";
+    case "awaiting_customer_signature":
+      return "sky";
     case "setup":
       return "muted";
     case "approval":

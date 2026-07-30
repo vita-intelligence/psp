@@ -90,6 +90,22 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  NPD reverse-integration payload. Token is never returned — the FE
+  gets a boolean ``has_token`` so the settings form can show a
+  "token is set (retype to change)" hint without decrypting the
+  plaintext into the response.
+  """
+  def npd_integration(company) do
+    %{
+      enabled: company.npd_integration_enabled,
+      base_url: company.npd_base_url,
+      has_token:
+        is_binary(company.npd_integration_token) and
+          String.trim(company.npd_integration_token) != ""
+    }
+  end
+
+  @doc """
   Slim org-context payload returned by `GET /api/company/defaults`.
   Any authed user can read this — it carries only the inheritable /
   display fields downstream pages need (timezone the warehouse picker
@@ -736,6 +752,22 @@ defmodule BackendWeb.Payloads do
       delivery_address: co.delivery_address,
       customer_reference: co.customer_reference,
       notes: co.notes,
+      npd_formulation_uuid: co.npd_formulation_uuid,
+      npd_lead_scientist_name: co.npd_lead_scientist_name,
+      npd_sales_person_name: co.npd_sales_person_name,
+      npd_app_url: co.npd_app_url,
+      npd_customer_uuid: co.npd_customer_uuid,
+      npd_customer_display_name: co.npd_customer_display_name,
+      npd_cff_uuid: co.npd_cff_uuid,
+      npd_cff_url: co.npd_cff_url,
+      npd_cff_submitter_name: co.npd_cff_submitter_name,
+      npd_cff_submitter_email: co.npd_cff_submitter_email,
+      npd_spec_sheet_uuid: co.npd_spec_sheet_uuid,
+      npd_spec_sheet_url: co.npd_spec_sheet_url,
+      npd_spec_prepared_by_name: co.npd_spec_prepared_by_name,
+      npd_spec_prepared_at: co.npd_spec_prepared_at,
+      npd_spec_director_name: co.npd_spec_director_name,
+      npd_spec_approved_at: co.npd_spec_approved_at,
       default_warehouse_id: co.default_warehouse_id,
       default_warehouse: maybe_warehouse_compact(co.default_warehouse),
       submitted_at: co.submitted_at,
