@@ -552,40 +552,65 @@ defmodule Backend.Comments do
   author, can react — that's the whole point).
   """
   def add_reaction(%User{} = actor, %Comment{} = comment, emoji) when is_binary(emoji) do
-    with :ok <- authorize_reaction(actor, comment),
-         :ok <- ensure_reaction_capacity(comment.id) do
-      attrs = %{
-        "company_id" => comment.company_id,
-        "comment_id" => comment.id,
-        "user_id" => actor.id,
-        "emoji" => emoji
-      }
+    trimmed = String.trim(emoji)
 
-      %CommentReaction{}
-      |> CommentReaction.changeset(attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, reaction} ->
-          {:ok, Repo.preload(reaction, :user)}
+    with :ok <- authorize_reaction(actor, comment) do
+      # One reaction per user per comment (Slack / iMessage semantics).
+      # Look for an existing row FIRST — if the user already reacted
+      # with the same emoji this is a no-op; a different emoji swaps
+      # the value; nothing existing → insert. The three paths return
+      # a shared shape so the controller can broadcast the right
+      # event (added / changed / no-op).
+      existing =
+        Repo.one(
+          from(r in CommentReaction,
+            where: r.comment_id == ^comment.id and r.user_id == ^actor.id
+          )
+        )
 
-        {:error, %Ecto.Changeset{errors: errors}} = err ->
-          case Keyword.get(errors, :emoji) do
-            {"already reacted", _} ->
-              existing =
-                Repo.one(
-                  from(r in CommentReaction,
-                    where:
-                      r.comment_id == ^comment.id and
-                        r.user_id == ^actor.id and
-                        r.emoji == ^String.trim(emoji),
-                    preload: [:user]
-                  )
+      cond do
+        existing && existing.emoji == trimmed ->
+          {:ok, Repo.preload(existing, :user), :no_change}
+
+        existing ->
+          existing
+          |> Ecto.Changeset.change(%{emoji: trimmed})
+          |> Repo.update()
+          |> case do
+            {:ok, updated} ->
+              {:ok, Repo.preload(updated, :user), {:replaced, existing.emoji}}
+
+            {:error, cs} ->
+              {:error, cs}
+          end
+
+        true ->
+          with :ok <- ensure_reaction_capacity(comment.id) do
+            attrs = %{
+              "company_id" => comment.company_id,
+              "comment_id" => comment.id,
+              "user_id" => actor.id,
+              "emoji" => trimmed
+            }
+
+            %CommentReaction{}
+            |> CommentReaction.changeset(attrs)
+            |> Repo.insert()
+            |> case do
+              {:ok, reaction} ->
+                {:ok, Repo.preload(reaction, :user), :added}
+
+              {:error, %Ecto.Changeset{errors: errors}} = err ->
+                require Logger
+
+                Logger.warning(
+                  "CommentReaction insert failed comment_id=#{comment.id} " <>
+                    "user_id=#{actor.id} emoji_repr=#{inspect(trimmed)} " <>
+                    "errors=#{inspect(errors)}"
                 )
 
-              if existing, do: {:ok, existing}, else: err
-
-            _ ->
-              err
+                err
+            end
           end
       end
     end

@@ -67,6 +67,31 @@ defmodule Backend.Companies do
     |> broadcast_company_change("locale_updated")
   end
 
+  @doc """
+  Persist the NPD reverse-integration config for the company. Wraps
+  ``Company.npd_integration_changeset/2`` and fires the standard
+  settings broadcast so any open ``/settings/integrations`` page
+  refreshes.
+  """
+  def update_npd_integration(%Company{} = company, attrs) do
+    company
+    |> Company.npd_integration_changeset(attrs)
+    |> Repo.update()
+    |> broadcast_company_change("npd_integration_updated")
+  end
+
+  @doc """
+  True when the company has NPD reverse-integration flipped on AND
+  the required fields are captured. The FE reads this to decide
+  whether to hit the NPD-fetching helpers on the /projects page.
+  """
+  def npd_integration_live?(%Company{} = c) do
+    c.npd_integration_enabled and
+      is_binary(c.npd_base_url) and String.trim(c.npd_base_url) != "" and
+      is_binary(c.npd_integration_token) and
+      String.trim(c.npd_integration_token) != ""
+  end
+
   # Fire a single-tenant company channel refresh on every successful
   # settings write. The topic is `entity:company:<company_id>` so any
   # /settings page listener re-fetches.

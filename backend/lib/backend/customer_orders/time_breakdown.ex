@@ -11,7 +11,21 @@ defmodule Backend.CustomerOrders.TimeBreakdown do
   but only some have a clean transition timestamp. This module ships
   what we can compute today and groups the fuzzy middle:
 
+    * `:r_and_d`                      co.inserted_at → co.submitted_at
+                                      (only when co.npd_formulation_uuid
+                                      is set — the CO was mirrored from
+                                      NPD's ``save_version``, so its
+                                      "draft" time is R&D formulation
+                                      work, not order-setup work). For
+                                      R&D-owned COs the `:setup` row
+                                      renders as "not reached" — setup
+                                      is skipped until a customer + lines
+                                      are attached, which happens after
+                                      R&D hands over.
     * `:setup`                        co.inserted_at → co.submitted_at
+                                      (only when co.npd_formulation_uuid
+                                      is nil — a traditionally-authored
+                                      order that never touched NPD).
     * `:approval`                     co.submitted_at → co.confirmed_at
     * `:preparing_production`         co.confirmed_at → first session started
                                       (covers wizard's :production_planning
@@ -66,11 +80,24 @@ defmodule Backend.CustomerOrders.TimeBreakdown do
       mo_ids = fetch_mo_tree_ids(company_id, co_id)
       session_stats = fetch_session_stats(mo_ids, company_id)
       shipment_stats = fetch_shipment_stats(company_id, co_id)
+      # Every R&D CO that was folded into this one on a proposal-create
+      # merge. Their inserted_at → updated_at (updated_at gets bumped
+      # when we set merged_into_id) counts as this CO's R&D time — the
+      # merged primary owns the combined R&D story.
+      merged_children = fetch_merged_children(company_id, co_id)
 
-      raw_phases = build_phases(co, session_stats, shipment_stats, now)
+      raw_phases = build_phases(co, session_stats, shipment_stats, merged_children, now)
       phases = mark_current(raw_phases, co)
 
-      started_at = co.inserted_at
+      # Header start widens to the earliest inserted_at across the
+      # primary + every merged child — a proposal that consolidated a
+      # project started weeks ago SHOULD show weeks-worth of wall-clock
+      # here, not just the primary's own age. Keeps the header total
+      # in sync with the R&D row (both use the widest window).
+      started_at =
+        [co.inserted_at | Enum.map(merged_children, & &1.inserted_at)]
+        |> Enum.reject(&is_nil/1)
+        |> earliest_or_nil()
       ended_at = terminal_end(co, shipment_stats)
       is_live = is_nil(ended_at) && co.status != "cancelled"
       total_seconds = if started_at, do: seconds_between(started_at, ended_at || now), else: 0
@@ -95,11 +122,82 @@ defmodule Backend.CustomerOrders.TimeBreakdown do
 
   # ---------- Phase construction ----------
 
-  defp build_phases(co, sessions, shipments, now) do
+  defp fetch_merged_children(company_id, co_id) do
+    Repo.all(
+      from c in CustomerOrder,
+        where: c.company_id == ^company_id,
+        where: c.merged_into_id == ^co_id,
+        select: %{inserted_at: c.inserted_at, updated_at: c.updated_at}
+    )
+  end
+
+  defp build_phases(co, sessions, shipments, merged_children, now) do
+    # R&D and setup are mutually exclusive on the draft slot:
+    #
+    #   - NPD-owned draft (`npd_formulation_uuid` set): the "draft"
+    #     window is R&D — a scientist is designing the recipe on
+    #     vita-cff. Setup is skipped (no customer / no lines yet).
+    #   - Standard draft: the "draft" window is Setup — sales is
+    #     building a customer order.
+    #
+    # Currently we stop the R&D timer at `submitted_at` (same signal
+    # setup used to stop at) because that's the only draft→next-phase
+    # timestamp the CO carries today. The user will nominate a more
+    # accurate "handover" signal later; when they do, thread it in
+    # here and setup can pick up from that point.
+    is_rd_owned = not is_nil(co.npd_formulation_uuid)
+
+    r_and_d =
+      if is_rd_owned do
+        # Widen the start-window to the earliest ``inserted_at`` across
+        # the primary + every merged secondary. Duration is straight
+        # wall-clock from that earliest start → submitted_at (or now
+        # if still ticking) — matches the header total. Summing
+        # per-project scientist-hours would double-count parallel work
+        # and diverge from the "since <date>" header, which reads as a
+        # bug.
+        earliest_started =
+          [co.inserted_at | Enum.map(merged_children, & &1.inserted_at)]
+          |> Enum.reject(&is_nil/1)
+          |> earliest_or_nil()
+
+        merged_count = length(merged_children)
+
+        description =
+          if merged_count > 0 do
+            "Combined R&D across #{merged_count + 1} merged projects. " <>
+              "Wall-clock from the earliest project's first save."
+          else
+            "Formulation development on NPD (vita-cff). Ticks live while " <>
+              "the scientist is still iterating; stops when the project moves " <>
+              "on."
+          end
+
+        phase(
+          :r_and_d,
+          "R&D",
+          earliest_started,
+          co.submitted_at,
+          now,
+          description: description
+        )
+      end
+
     setup =
-      phase(:setup, "Setup", co.inserted_at, co.submitted_at, now,
-        description: "Draft the order + line up the customer, price, and delivery."
-      )
+      if is_rd_owned do
+        # R&D-owned CO: setup is skipped until a customer is linked.
+        # We surface the row as "not reached" so the FE renders it in
+        # the phase list without a duration.
+        phase(:setup, "Setup", nil, nil, now,
+          description:
+            "Skipped for R&D-owned projects — setup starts once a customer + " <>
+              "lines are attached after handover."
+        )
+      else
+        phase(:setup, "Setup", co.inserted_at, co.submitted_at, now,
+          description: "Draft the order + line up the customer, price, and delivery."
+        )
+      end
 
     approval =
       phase(:approval, "Approval", co.submitted_at, co.confirmed_at, now,
@@ -171,16 +269,19 @@ defmodule Backend.CustomerOrders.TimeBreakdown do
         description: "Every shipment signed off at destination."
       )
 
-    base = [
-      setup,
-      approval,
-      preparing,
-      producing,
-      post_pre_dispatch,
-      awaiting_pickup,
-      dispatched,
-      delivered
-    ]
+    base =
+      [
+        r_and_d,
+        setup,
+        approval,
+        preparing,
+        producing,
+        post_pre_dispatch,
+        awaiting_pickup,
+        dispatched,
+        delivered
+      ]
+      |> Enum.reject(&is_nil/1)
 
     if co.status == "cancelled" and co.cancelled_at do
       # Any phase that hasn't finished by cancellation is truncated
@@ -216,6 +317,21 @@ defmodule Backend.CustomerOrders.TimeBreakdown do
         ]
     else
       base
+    end
+  end
+
+  # Earliest datetime in a list, or nil if the list is empty. Handles
+  # both string and DateTime inputs (Ecto surfaces one or the other
+  # depending on where the row came from).
+  defp earliest_or_nil([]), do: nil
+
+  defp earliest_or_nil(list) do
+    list
+    |> Enum.map(&maybe_dt/1)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      dts -> Enum.min_by(dts, &DateTime.to_unix/1)
     end
   end
 

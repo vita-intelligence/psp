@@ -41,7 +41,11 @@ defmodule BackendWeb.IntegrationReadController do
        when action in [:list_manufacturing_orders, :get_manufacturing_order]
 
   plug :require_integration_scope, "workstation:read"
-       when action in [:list_workstations, :list_workstation_groups]
+       when action in [
+              :list_workstations,
+              :list_workstation_groups,
+              :workstation_group_costs
+            ]
   plug :require_integration_scope, "item:read"
        when action in [
               :list_items,
@@ -246,6 +250,33 @@ defmodule BackendWeb.IntegrationReadController do
           }
         end)
     })
+  end
+
+  @doc """
+  Bulk cost + throughput lookup for the workstation groups referenced
+  by a formulation's stages. Powers vita-cff's real-time routing cost
+  estimate. Body: `{"workstation_group_uuids": ["...", "..."]}`.
+
+  Response per group carries `machine_hourly_rate`,
+  `avg_labour_hourly_rate`, `avg_seconds_per_unit`, `session_count`
+  — see `Backend.Production.WorkstationCosts` for how they're
+  derived. Missing / archived / cross-tenant uuids silently drop out
+  of the response so the caller can diff input vs output to spot
+  stale references.
+  """
+  def workstation_group_costs(conn, params) do
+    company_id = conn.assigns.current_company_id
+
+    uuids =
+      case params["workstation_group_uuids"] do
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    items =
+      Backend.Production.WorkstationCosts.bulk_costs(company_id, uuids)
+
+    json(conn, %{items: items})
   end
 
   # ---- Units of measurement + product families ----

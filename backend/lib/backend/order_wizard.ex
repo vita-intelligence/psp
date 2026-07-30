@@ -45,9 +45,11 @@ defmodule Backend.OrderWizard do
   alias Backend.Shipments.Shipment
   alias Backend.Stock.Lot
 
-  @phases [:setup, :approval, :production_planning, :awaiting_ingredients,
-           :in_production, :closeout, :final_release, :awaiting_routing,
-           :ready_to_dispatch, :awaiting_pickup, :dispatched, :delivered]
+  @phases [:r_and_d, :awaiting_proposal, :awaiting_proposal_approval,
+           :proposal_ready_to_send, :awaiting_customer_signature, :setup, :approval,
+           :production_planning, :awaiting_ingredients, :in_production, :closeout,
+           :final_release, :awaiting_routing, :ready_to_dispatch, :awaiting_pickup,
+           :dispatched, :delivered]
   @total_phases length(@phases)
 
   @doc """
@@ -120,6 +122,10 @@ defmodule Backend.OrderWizard do
     from(co in CustomerOrder,
       where: co.company_id == ^company_id,
       where: co.status != "cancelled",
+      # Superseded R&D drafts (their proposal was merged into another
+      # CO) have no ongoing story of their own — the primary carries
+      # the state now. Hide them from every board view.
+      where: is_nil(co.merged_into_id),
       order_by: [asc: co.id]
     )
     |> Repo.all()
@@ -289,6 +295,75 @@ defmodule Backend.OrderWizard do
   # ----- phase derivation ----------------------------------------
 
   defp derive_phase(%CustomerOrder{status: "cancelled"}, _, _), do: :cancelled
+
+  # Superseded R&D draft — the proposal-merge sync consolidated this
+  # row into a primary CO. Hide it from the pipeline entirely; the
+  # merged row carries the ongoing story. Phase is placeholder; UI
+  # never renders it because ``list_active`` filters merged rows out.
+  defp derive_phase(
+         %CustomerOrder{merged_into_id: mid},
+         _line_states,
+         _mos
+       )
+       when not is_nil(mid),
+       do: :merged
+
+  # NPD-owned draft with a proposal on it: N R&D formulations were
+  # merged into ONE, the primary CO now carries the proposal identity.
+  # The proposal moves through three internal stages before PSP owns
+  # the order — each maps to a distinct wizard block so operators see
+  # exactly whose bat's next.
+  #
+  # ``npd_proposal_status`` is the mirrored NPD-side value; the merge
+  # sync + every subsequent proposal transition_status hook re-plants
+  # it on the CO. When the customer accepts (``status == "accepted"``)
+  # the CO falls through to the standard flow (:setup and beyond).
+  defp derive_phase(
+         %CustomerOrder{
+           status: "draft",
+           npd_proposal_uuid: proposal_uuid,
+           npd_proposal_status: proposal_status
+         },
+         _line_states,
+         _mos
+       )
+       when not is_nil(proposal_uuid) do
+    case proposal_status do
+      s when s in ["draft", "in_review", nil] -> :awaiting_proposal_approval
+      "approved" -> :proposal_ready_to_send
+      "sent" -> :awaiting_customer_signature
+      # ``accepted`` = customer signed on the kiosk. Fall through to
+      # ``:setup`` — PSP takes ownership from here.
+      _ -> :setup
+    end
+  end
+
+  # NPD-owned draft with a director-signed spec: R&D handed over,
+  # sales can start the proposal. Presence of ``npd_spec_approved_at``
+  # is the phase-gate signal — NPD fires a sync on the sheet's
+  # ``in_review → approved`` transition to plant that timestamp here.
+  defp derive_phase(
+         %CustomerOrder{
+           status: "draft",
+           npd_formulation_uuid: uuid,
+           npd_spec_approved_at: approved
+         },
+         _line_states,
+         _mos
+       )
+       when not is_nil(uuid) and not is_nil(approved),
+       do: :awaiting_proposal
+
+  # NPD-owned draft: mirrored from vita-cff's ``save_version`` cascade,
+  # keyed by ``npd_formulation_uuid``. Sits in its own :r_and_d bucket
+  # until the scientist gets a spec director-signed.
+  defp derive_phase(
+         %CustomerOrder{status: "draft", npd_formulation_uuid: uuid},
+         _line_states,
+         _mos
+       )
+       when not is_nil(uuid),
+       do: :r_and_d
 
   defp derive_phase(%CustomerOrder{status: "draft"}, _line_states, _mos), do: :setup
 
@@ -470,6 +545,12 @@ defmodule Backend.OrderWizard do
     }
   end
 
+  defp phase_label(:r_and_d), do: "R&D in development"
+  defp phase_label(:awaiting_proposal), do: "Awaiting proposal"
+  defp phase_label(:awaiting_proposal_approval), do: "Awaiting proposal approval"
+  defp phase_label(:proposal_ready_to_send), do: "Ready to send proposal"
+  defp phase_label(:awaiting_customer_signature), do: "Awaiting customer signature"
+  defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
   defp phase_label(:approval), do: "Approval"
   defp phase_label(:production_planning), do: "Production planning"
@@ -493,6 +574,118 @@ defmodule Backend.OrderWizard do
       detail:
         co.cancellation_reason && "Reason: #{co.cancellation_reason}",
       primary_cta: nil,
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:r_and_d, co, _line_states, _mos, _signers) do
+    # NPD-owned draft — the scientist is still designing on vita-cff.
+    # PSP only mirrors identity so the CO exists in the pipeline; the
+    # active work happens in the NPD app until the spec is quotable.
+    href = co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "npd_in_progress",
+      title: "Formulation still in development on NPD.",
+      detail:
+        "This project is being designed in vita-cff. When the spec sheet is director-signed, the order advances to Awaiting proposal here.",
+      primary_cta: %{
+        label: "Open in NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:awaiting_proposal_approval, co, _line_states, _mos, _signers) do
+    href = co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "awaiting_proposal_approval",
+      title: "Proposal drafted — awaiting director approval.",
+      detail:
+        "The proposal has been drafted on NPD. The director needs to review and sign off before it can be sent to the customer.",
+      primary_cta: %{
+        label: "Open proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:proposal_ready_to_send, co, _line_states, _mos, _signers) do
+    href = co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "proposal_ready_to_send",
+      title: "Director signed — send the proposal.",
+      detail:
+        "The director approved the proposal. Send it to the customer from NPD; once sent, this order moves to Awaiting customer signature.",
+      primary_cta: %{
+        label: "Open proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:awaiting_customer_signature, co, _line_states, _mos, _signers) do
+    href = co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "awaiting_customer_signature",
+      title: "Proposal out — awaiting customer signature.",
+      detail:
+        "The proposal is with the customer on the kiosk. When they sign, this order advances to Setup and PSP takes over.",
+      primary_cta: %{
+        label: "Open proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:merged, co, _line_states, _mos, _signers) do
+    # Merged rows aren't shown on the pipeline (``list_active``
+    # filters them out) but the detail page can still be opened via a
+    # deep link. Point the operator at the primary CO so they don't
+    # try to work the stale one.
+    primary_href =
+      if co.merged_into_id, do: "/sales/orders/id/#{co.merged_into_id}", else: nil
+
+    %{
+      code: "merged_into_primary",
+      title: "This R&D draft was merged into another order.",
+      detail:
+        "A proposal on NPD bundled this project with others. Continue working on the primary customer order.",
+      primary_cta:
+        primary_href &&
+          %{label: "Open primary order", kind: "link", href: primary_href},
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:awaiting_proposal, co, _line_states, _mos, _signers) do
+    # Spec is director-signed on NPD — sales owns the next move:
+    # draft a proposal against the approved spec. Once the proposal is
+    # linked (customer + lines land on the CO) the phase drops into
+    # :setup automatically.
+    href = co.npd_spec_sheet_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "spec_ready_for_proposal",
+      title: "Spec approved — draft the proposal.",
+      detail:
+        "The director signed off on this spec sheet, so it's quotable. Open it on NPD, build the proposal, and once a customer + lines are attached the order rolls into Setup here.",
+      primary_cta: %{
+        label: "Open spec on NPD",
+        kind: "link",
+        href: href
+      },
       secondary_ctas: []
     }
   end
@@ -2611,25 +2804,57 @@ defmodule Backend.OrderWizard do
           signers.director.signed_by
         )
 
-    [
-      co.inserted_at &&
-        co_event(co.inserted_at, "Order drafted", co, co.created_by),
-      co.submitted_at &&
-        co_event(co.submitted_at, "Submitted for approval", co, co.submitted_by),
-      approver_event,
-      director_event,
-      co.confirmed_at &&
-        co_event(
-          co.confirmed_at,
-          "Confirmed — released for production",
-          co,
-          co.confirmed_by
-        ),
-      co.cancelled_at &&
-        co_event(co.cancelled_at, "Order cancelled", co, co.cancelled_by)
-    ]
-    |> Enum.reject(&is_nil/1)
+    # NPD-authored history — one row per event (formulation created,
+    # spec approved, proposal transition, revert-and-redo cycles).
+    # NPD replaces this array in full on every sync, so an audit trail
+    # is preserved across corrections.
+    npd_events = Enum.map(co.npd_timeline || [], &npd_timeline_entry(&1, co))
+
+    core_events =
+      [
+        co.inserted_at &&
+          co_event(co.inserted_at, "Order drafted", co, co.created_by),
+        co.submitted_at &&
+          co_event(co.submitted_at, "Submitted for approval", co, co.submitted_by),
+        approver_event,
+        director_event,
+        co.confirmed_at &&
+          co_event(
+            co.confirmed_at,
+            "Confirmed — released for production",
+            co,
+            co.confirmed_by
+          ),
+        co.cancelled_at &&
+          co_event(co.cancelled_at, "Order cancelled", co, co.cancelled_by)
+      ]
+
+    (core_events ++ npd_events) |> Enum.reject(&is_nil/1)
   end
+
+  # Map one NPD timeline event (opaque map from the JSONB column) into
+  # the shared timeline-entry shape. Silently drops entries missing
+  # ``at`` or ``label`` — the merge module normalised them, but the
+  # extra guard means an older row can never break the render.
+  defp npd_timeline_entry(%{"at" => at, "label" => label} = raw, co)
+       when is_binary(at) and is_binary(label) do
+    with {:ok, dt, _} <- DateTime.from_iso8601(at) do
+      %{
+        at: dt,
+        label: label,
+        scope: "co",
+        actor: raw["actor"],
+        record_ref: "Order",
+        record_code: render_code(co, "customer_order") || "##{co.id}",
+        href: raw["href"],
+        href_label: raw["href"] && "Open on NPD"
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp npd_timeline_entry(_, _), do: nil
 
   defp co_event(at, label, co, actor) do
     %{

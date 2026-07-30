@@ -36,6 +36,7 @@ export function EmojiPicker({
   side = "top",
   buttonClassName,
   closeOnSelect = true,
+  variant = "compact",
 }: {
   onSelect: (emoji: string) => void;
   triggerAriaLabel?: string;
@@ -49,6 +50,12 @@ export function EmojiPicker({
    *  benefits from staying open so the user can chain multiple picks
    *  without reopening. Default true (react semantics). */
   closeOnSelect?: boolean;
+  /** ``compact`` (default) — only the 7-emoji quick-react bar. Used
+   *  for reactions, which are meant to be single-tap muscle memory.
+   *  ``full`` — quick-react bar PLUS the searchable 1800-emoji picker
+   *  underneath. Used by the composer where the user might want any
+   *  emoji inline in the message. */
+  variant?: "compact" | "full";
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -98,17 +105,19 @@ export function EmojiPicker({
           })}
         </div>
 
-        <Picker
-          onEmojiClick={(data) => {
-            onSelect(data.emoji);
-            if (closeOnSelect) setOpen(false);
-          }}
-          width={340}
-          height={380}
-          previewConfig={{ showPreview: false }}
-          searchPlaceholder="Search emoji"
-          lazyLoadEmojis
-        />
+        {variant === "full" ? (
+          <Picker
+            onEmojiClick={(data) => {
+              onSelect(data.emoji);
+              if (closeOnSelect) setOpen(false);
+            }}
+            width={340}
+            height={380}
+            previewConfig={{ showPreview: false }}
+            searchPlaceholder="Search emoji"
+            lazyLoadEmojis
+          />
+        ) : null}
       </PopoverContent>
     </Popover>
   );

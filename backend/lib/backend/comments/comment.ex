@@ -50,6 +50,12 @@ defmodule Backend.Comments.Comment do
     field :entity_type, :string
     field :entity_id, :integer
 
+    # Set only when a comment has been reassigned by a proposal merge.
+    # Holds the original ``entity_id`` so unmerge can fan the comment
+    # back to its home CustomerOrder. Nil for anything born on its
+    # current entity.
+    field :pre_merge_entity_id, :integer
+
     field :body, :string
     field :visibility, :string, default: "internal"
 

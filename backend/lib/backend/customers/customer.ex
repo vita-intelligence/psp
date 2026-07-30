@@ -105,6 +105,13 @@ defmodule Backend.Customers.Customer do
 
     field :is_active, :boolean, default: true
 
+    # NPD (vita-cff) origin id. Populated by ``Backend.CustomerOrders.NpdSync``
+    # when a formulation's ``link_customer`` action fires a sync — PSP
+    # auto-provisions a shell customer keyed on this uuid so the CO
+    # can point at a real Customer FK instead of the placeholder. Nil
+    # on customers entered directly through the PSP UI.
+    field :npd_source_uuid, Ecto.UUID
+
     belongs_to :company, Company
     belongs_to :account_manager, User
     belongs_to :loyalty_program, Backend.Loyalty.LoyaltyProgram

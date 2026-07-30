@@ -2221,6 +2221,42 @@ export interface CustomerOrder {
   delivery_address: string | null;
   customer_reference: string | null;
   notes: string | null;
+  /** NPD (vita-cff) formulation identity when this CO came from R&D.
+   *  Null on plain sales-authored orders. */
+  npd_formulation_uuid: string | null;
+  /** Denormalised R&D team from NPD's sync payload. Refreshed on
+   *  every `save_version` / manual sync. Null when the project has
+   *  no assignment on NPD yet, or when the CO wasn't NPD-sourced. */
+  npd_lead_scientist_name: string | null;
+  npd_sales_person_name: string | null;
+  /** Deep link into NPD's own formulation detail page. Built on the
+   *  NPD side (locale + base URL are NPD-owned). Null when NPD's
+   *  ``APP_BASE_URL`` env var is unset. */
+  npd_app_url: string | null;
+  /** Linked customer mirrored from NPD's ``link_customer`` flow.
+   *  ``npd_customer_display_name`` is what the kanban / project
+   *  page shows once the client is attached, replacing the "NPD
+   *  Placeholder" stub. Null until a customer is linked. */
+  npd_customer_uuid: string | null;
+  npd_customer_display_name: string | null;
+  /** CFF (Customer Feedback Form) submission attached to the
+   *  formulation on NPD. Mirrored from the ``assign_to_project`` /
+   *  ``detach_from_project`` hooks so PSP surfaces the same "who
+   *  asked for this?" context. Null when no CFF is linked. */
+  npd_cff_uuid: string | null;
+  npd_cff_url: string | null;
+  npd_cff_submitter_name: string | null;
+  npd_cff_submitter_email: string | null;
+  /** Spec sheet mirrored from NPD's ``in_review → approved`` hook.
+   *  ``npd_spec_approved_at`` (director signed) is what gates the
+   *  wizard phase move from R&D to Awaiting proposal. All null on
+   *  a CO whose spec hasn't been director-signed yet. */
+  npd_spec_sheet_uuid: string | null;
+  npd_spec_sheet_url: string | null;
+  npd_spec_prepared_by_name: string | null;
+  npd_spec_prepared_at: string | null;
+  npd_spec_director_name: string | null;
+  npd_spec_approved_at: string | null;
   default_warehouse_id: number | null;
   default_warehouse: { id: number; uuid: string; name: string } | null;
   submitted_at: string | null;
@@ -2775,6 +2811,11 @@ export interface LoyaltyDashboard {
 // ---------------------------------------------------------------
 
 export type OrderWizardPhaseKey =
+  | "r_and_d"
+  | "awaiting_proposal"
+  | "awaiting_proposal_approval"
+  | "proposal_ready_to_send"
+  | "awaiting_customer_signature"
   | "setup"
   | "approval"
   | "production_planning"

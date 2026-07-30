@@ -9,7 +9,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { listIntegrationTokens } from "@/lib/integrations/server";
+import { loadNpdIntegrationConfig } from "@/lib/npd-integration/server";
 import { IntegrationsClient } from "./integrations-client";
+import { NpdIntegrationCard } from "./npd-integration-card";
 import type { IntegrationScope } from "@/lib/integrations/types";
 
 export const metadata = { title: "Integrations · Settings · PSP" };
@@ -35,27 +37,38 @@ export default async function IntegrationsPage() {
     redirect("/settings/profile");
   }
 
-  const initial = await listIntegrationTokens();
+  const [initial, npdConfig] = await Promise.all([
+    listIntegrationTokens(),
+    loadNpdIntegrationConfig(),
+  ]);
 
   return (
-    <Card className="border-border/60">
-      <CardHeader>
-        <div className="min-w-0 space-y-1.5">
-          <CardTitle>Integrations</CardTitle>
-          <CardDescription>
-            Bearer tokens for machine-to-machine access to PSP. Each token
-            is scoped to specific capabilities (list a token to see them).
-            Rotate a token by minting a new one, updating the consumer,
-            then revoking the old one — tokens can't be edited in place.
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <IntegrationsClient
-          initialTokens={initial?.items ?? []}
-          knownScopes={initial?.known_scopes ?? FALLBACK_SCOPES}
-        />
-      </CardContent>
-    </Card>
+    <div className="space-y-6">
+      {/* Reverse integration lives at the top — it's what makes the
+          R&D column show on /projects, and it's the newer, less-
+          familiar surface, so operators get here first. */}
+      <NpdIntegrationCard initialConfig={npdConfig} />
+
+      <Card className="border-border/60">
+        <CardHeader>
+          <div className="min-w-0 space-y-1.5">
+            <CardTitle>Outbound integration tokens</CardTitle>
+            <CardDescription>
+              Bearer tokens for machine-to-machine access INTO PSP.
+              Each token is scoped to specific capabilities (list a
+              token to see them). Rotate a token by minting a new one,
+              updating the consumer, then revoking the old one —
+              tokens can't be edited in place.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <IntegrationsClient
+            initialTokens={initial?.items ?? []}
+            knownScopes={initial?.known_scopes ?? FALLBACK_SCOPES}
+          />
+        </CardContent>
+      </Card>
+    </div>
   );
 }

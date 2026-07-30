@@ -349,6 +349,7 @@ export function CommentComposer({
             triggerAriaLabel="Insert emoji"
             onSelect={insertAtCaret}
             closeOnSelect={false}
+            variant="full"
           />
 
           {hasBody || editTarget ? (

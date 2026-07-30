@@ -131,11 +131,14 @@ function ThreadNode({
   // Build a flat list of (comment) for this node + its direct
   // (leaf) children, then group consecutive same-author entries so a
   // burst from one person collapses into a single visual block.
-  const flat = useMemo(
-    () => flattenBranch(node),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [node.comment.uuid, node.children.length],
-  );
+  //
+  // Depend on ``node`` itself, not ``[node.comment.uuid, node.children.length]``.
+  // The old key set stayed stable when a comment's inner fields (body,
+  // reactions, files) changed — a fresh tree with fresh comment refs
+  // still hashed to the same key, so ``flat`` kept the stale comment
+  // references and the bubble rendered old reactions after every
+  // optimistic update.
+  const flat = useMemo(() => flattenBranch(node), [node]);
   const grouped = useMemo(() => groupSiblings(flat), [flat]);
 
   return (

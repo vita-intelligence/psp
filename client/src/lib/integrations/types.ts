@@ -7,10 +7,16 @@ export type IntegrationScope =
   | "mo:transition"
   | "workstation:read"
   | "item:read"
+  | "item:write"
+  | "item:files:write"
+  | "bom:write"
+  | "routing:write"
   | "user:read"
   | "hr:read"
+  | "hr:write"
   | "hr:write:pin"
-  | "hr:write:reputation";
+  | "hr:write:reputation"
+  | "customer_order:sync:npd";
 
 export interface IntegrationTokenActor {
   id: number;

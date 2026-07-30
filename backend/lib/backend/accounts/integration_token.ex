@@ -45,6 +45,7 @@ defmodule Backend.Accounts.IntegrationToken do
     hr:write
     hr:write:pin
     hr:write:reputation
+    customer_order:sync:npd
   )
 
   @doc "Whitelist of scope strings this schema accepts."

@@ -27,6 +27,7 @@ export interface COTimeBreakdown {
      *  `production_planning` + `awaiting_ingredients` because we don't
      *  log the transition between them yet). */
     key:
+      | "r_and_d"
       | "setup"
       | "approval"
       | "preparing_production"

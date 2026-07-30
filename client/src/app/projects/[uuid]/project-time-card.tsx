@@ -32,6 +32,7 @@ export interface ProjectTimeCardProps {
 }
 
 const PHASE_TONE: Record<COTimeBreakdown["phases"][number]["key"], string> = {
+  r_and_d: "bg-fuchsia-500",
   setup: "bg-slate-400",
   approval: "bg-amber-400",
   preparing_production: "bg-indigo-400",

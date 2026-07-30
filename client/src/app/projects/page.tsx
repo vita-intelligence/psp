@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Ban,
+  Beaker,
   CheckCircle2,
   ClipboardList,
   Cog,
@@ -11,6 +12,7 @@ import {
   FileText,
   PackageOpen,
   Plus,
+  Send,
   ShieldCheck,
   Truck,
 } from "lucide-react";
@@ -40,6 +42,11 @@ export const metadata = { title: "Production pipeline · PSP" };
 // glance from across the room shows where today's bottleneck sits.
 
 const PHASE_COLUMNS: ReadonlyArray<OrderWizardPhaseKey> = [
+  "r_and_d",
+  "awaiting_proposal",
+  "awaiting_proposal_approval",
+  "proposal_ready_to_send",
+  "awaiting_customer_signature",
   "setup",
   "approval",
   "production_planning",
@@ -55,6 +62,11 @@ const PHASE_COLUMNS: ReadonlyArray<OrderWizardPhaseKey> = [
 ];
 
 const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
+  r_and_d: Beaker,
+  awaiting_proposal: FileText,
+  awaiting_proposal_approval: ShieldCheck,
+  proposal_ready_to_send: Send,
+  awaiting_customer_signature: FileText,
   setup: FileText,
   approval: ShieldCheck,
   production_planning: Factory,
@@ -71,6 +83,11 @@ const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
 };
 
 const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
+  r_and_d: "R&D in development",
+  awaiting_proposal: "Awaiting proposal",
+  awaiting_proposal_approval: "Awaiting proposal approval",
+  proposal_ready_to_send: "Ready to send proposal",
+  awaiting_customer_signature: "Awaiting customer signature",
   setup: "Order setup",
   approval: "Awaiting approval",
   production_planning: "Need MO created",
@@ -100,6 +117,11 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
  *   - ready to ship   → emerald     (done, awaiting customer)
  */
 const PHASE_ACCENT: Record<OrderWizardPhaseKey, string> = {
+  r_and_d: "bg-fuchsia-500/80 dark:bg-fuchsia-400/80",
+  awaiting_proposal: "bg-violet-500/80 dark:bg-violet-400/80",
+  awaiting_proposal_approval: "bg-indigo-500/80 dark:bg-indigo-400/80",
+  proposal_ready_to_send: "bg-blue-500/80 dark:bg-blue-400/80",
+  awaiting_customer_signature: "bg-cyan-500/80 dark:bg-cyan-400/80",
   setup: "bg-slate-400/70 dark:bg-slate-500/70",
   approval: "bg-sky-500/80 dark:bg-sky-400/80",
   production_planning: "bg-sky-500/80 dark:bg-sky-400/80",
@@ -119,6 +141,11 @@ const PHASE_COUNT_TONE: Record<
   OrderWizardPhaseKey,
   "muted" | "sky" | "amber" | "emerald" | "destructive"
 > = {
+  r_and_d: "muted",
+  awaiting_proposal: "sky",
+  awaiting_proposal_approval: "sky",
+  proposal_ready_to_send: "sky",
+  awaiting_customer_signature: "sky",
   setup: "muted",
   approval: "sky",
   production_planning: "sky",
@@ -140,6 +167,11 @@ export default async function ProjectsPage() {
     redirect("/settings/profile");
   }
 
+  // Customer-order pipeline is the primary payload. Every project on
+  // NPD (vita-cff) is mirrored here as a CustomerOrder keyed by the
+  // NPD formulation UUID, so R&D-in-development cards flow into the
+  // ``r_and_d`` phase column of the standard kanban — no ad-hoc
+  // sidechannel fetch to a foreign backend.
   const projects = await listProjects();
   const rows = projects ?? [];
   const total = rows.length;
@@ -223,9 +255,6 @@ function KanbanBoard({
 }: {
   grouped: Partial<Record<OrderWizardPhaseKey, ProjectSummary[]>>;
 }) {
-  // Outer wrapper takes the horizontal scroll; the inner row is the
-  // actual flex container. Min-width on each column keeps them from
-  // collapsing into unreadable widths on wide-but-busy viewports.
   return (
     <div className="-mx-2 overflow-x-auto pb-4 sm:-mx-4">
       <div className="flex min-w-min gap-3 px-2 sm:gap-4 sm:px-4">
@@ -295,6 +324,25 @@ function KanbanColumn({
 function ProjectCard({ project }: { project: ProjectSummary }) {
   const co = project.customer_order;
   const customerName = co.customer?.name ?? "—";
+  // NPD-mirrored drafts (R&D, Awaiting proposal, and any downstream
+  // phase before Sales links a real customer via the proposal flow)
+  // all point at the same auto-created stub called "NPD Placeholder".
+  // That name reads as plumbing junk on the kanban — swap in the
+  // formulation title (stashed in ``customer_reference`` by the
+  // sync) whenever the placeholder is what we've got. The real
+  // customer name takes over on the very next sync once linked.
+  const isPlaceholderCustomer = co.customer?.name === "NPD Placeholder";
+  // Preference order when the placeholder is still attached:
+  //   1. NPD's linked-customer display name (real client, mirrored
+  //      via Formulation.customer)
+  //   2. NPD's formulation title stashed in customer_reference
+  //   3. Whatever we've got.
+  const title =
+    (isPlaceholderCustomer &&
+      (co.npd_customer_display_name || co.customer_reference)) ||
+    customerName ||
+    co.customer_reference ||
+    "—";
 
   return (
     <Link
@@ -307,9 +355,10 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
         {co.code ?? `CO #${co.id}`}
       </p>
 
-      {/* Customer name */}
+      {/* Project title — NPD formulation name for R&D, customer name
+          otherwise. */}
       <h3 className="mt-0.5 truncate text-sm font-semibold tracking-tight">
-        {customerName}
+        {title}
       </h3>
 
       {/* Next action */}

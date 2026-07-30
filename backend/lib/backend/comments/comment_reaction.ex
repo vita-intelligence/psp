@@ -39,8 +39,8 @@ defmodule Backend.Comments.CommentReaction do
       e -> e |> to_string() |> String.trim()
     end)
     |> validate_length(:emoji, min: 1, max: @emoji_max)
-    |> unique_constraint([:comment_id, :user_id, :emoji],
-      name: :comment_reactions_comment_id_user_id_emoji_index,
+    |> unique_constraint([:comment_id, :user_id],
+      name: :comment_reactions_comment_id_user_id_index,
       message: "already reacted"
     )
     |> foreign_key_constraint(:comment_id)
