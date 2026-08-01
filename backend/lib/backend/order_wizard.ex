@@ -47,7 +47,7 @@ defmodule Backend.OrderWizard do
 
   @phases [:r_and_d, :awaiting_proposal, :awaiting_proposal_approval,
            :proposal_in_review, :proposal_ready_to_send, :awaiting_customer_signature,
-           :setup, :approval,
+           :proposal_accepted, :setup, :approval,
            :production_planning, :awaiting_ingredients, :in_production, :closeout,
            :final_release, :awaiting_routing, :ready_to_dispatch, :awaiting_pickup,
            :dispatched, :delivered]
@@ -340,8 +340,15 @@ defmodule Backend.OrderWizard do
       # ``:awaiting_proposal``. The rejection reason travels via
       # ``npd_timeline`` so operators can see WHY.
       "rejected" -> :awaiting_proposal
-      # ``accepted`` = customer signed on the kiosk. Fall through to
-      # ``:setup`` — PSP takes ownership from here.
+      # Customer signed on the kiosk — the deal is closed and PSP
+      # takes ownership. Sits in its own ``:proposal_accepted``
+      # column so the sales team sees "signed, ready to kick off"
+      # as a distinct milestone before the CO moves into the normal
+      # ``:setup`` / ``:approval`` flow. The CO auto-leaves this
+      # column as soon as its own status advances past ``draft``
+      # (Submit for approval → the earlier proposal-uuid clause
+      # stops matching because it's gated on ``status: "draft"``).
+      "accepted" -> :proposal_accepted
       _ -> :setup
     end
   end
@@ -559,6 +566,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:proposal_in_review), do: "Proposal in review"
   defp phase_label(:proposal_ready_to_send), do: "Ready to send proposal"
   defp phase_label(:awaiting_customer_signature), do: "Sent to client"
+  defp phase_label(:proposal_accepted), do: "Proposal signed by client"
   defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
   defp phase_label(:approval), do: "Approval"
@@ -665,9 +673,26 @@ defmodule Backend.OrderWizard do
       code: "awaiting_customer_signature",
       title: "Proposal sent to client — awaiting kiosk signature.",
       detail:
-        "The proposal is with the customer on the kiosk. When they sign, this order advances to Setup and PSP takes over.",
+        "The proposal is with the customer on the kiosk. When they sign, this order advances to Proposal signed by client for order kickoff.",
       primary_cta: %{
         label: "Open proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:proposal_accepted, co, _line_states, _mos, _signers) do
+    href = co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "proposal_accepted",
+      title: "Customer signed — kick off the order.",
+      detail:
+        "The customer has signed the proposal on the kiosk (contract). The lines from the proposal have been merged onto this CO — review them, then submit for approval to advance into the standard production flow.",
+      primary_cta: %{
+        label: "Open signed proposal on NPD",
         kind: "link",
         href: href
       },
