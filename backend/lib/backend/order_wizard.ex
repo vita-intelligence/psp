@@ -46,7 +46,8 @@ defmodule Backend.OrderWizard do
   alias Backend.Stock.Lot
 
   @phases [:r_and_d, :awaiting_proposal, :awaiting_proposal_approval,
-           :proposal_ready_to_send, :awaiting_customer_signature, :setup, :approval,
+           :proposal_in_review, :proposal_ready_to_send, :awaiting_customer_signature,
+           :setup, :approval,
            :production_planning, :awaiting_ingredients, :in_production, :closeout,
            :final_release, :awaiting_routing, :ready_to_dispatch, :awaiting_pickup,
            :dispatched, :delivered]
@@ -329,9 +330,16 @@ defmodule Backend.OrderWizard do
        )
        when not is_nil(proposal_uuid) do
     case proposal_status do
-      s when s in ["draft", "in_review", nil] -> :awaiting_proposal_approval
+      s when s in ["draft", nil] -> :awaiting_proposal_approval
+      "in_review" -> :proposal_in_review
       "approved" -> :proposal_ready_to_send
       "sent" -> :awaiting_customer_signature
+      # Rejected (customer said no on the kiosk, or staff closed on
+      # their behalf). The spec is still director-signed so a new
+      # proposal can be drafted — bounce the CO back to
+      # ``:awaiting_proposal``. The rejection reason travels via
+      # ``npd_timeline`` so operators can see WHY.
+      "rejected" -> :awaiting_proposal
       # ``accepted`` = customer signed on the kiosk. Fall through to
       # ``:setup`` — PSP takes ownership from here.
       _ -> :setup
@@ -547,9 +555,10 @@ defmodule Backend.OrderWizard do
 
   defp phase_label(:r_and_d), do: "R&D in development"
   defp phase_label(:awaiting_proposal), do: "Awaiting proposal"
-  defp phase_label(:awaiting_proposal_approval), do: "Awaiting proposal approval"
+  defp phase_label(:awaiting_proposal_approval), do: "Drafting proposal"
+  defp phase_label(:proposal_in_review), do: "Proposal in review"
   defp phase_label(:proposal_ready_to_send), do: "Ready to send proposal"
-  defp phase_label(:awaiting_customer_signature), do: "Awaiting customer signature"
+  defp phase_label(:awaiting_customer_signature), do: "Sent to client"
   defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
   defp phase_label(:approval), do: "Approval"
@@ -603,9 +612,26 @@ defmodule Backend.OrderWizard do
 
     %{
       code: "awaiting_proposal_approval",
-      title: "Proposal drafted — awaiting director approval.",
+      title: "Proposal is still being drafted on NPD.",
       detail:
-        "The proposal has been drafted on NPD. The director needs to review and sign off before it can be sent to the customer.",
+        "Sales is writing the proposal in NPD. When they send it for internal review, this order advances to Proposal in review.",
+      primary_cta: %{
+        label: "Open proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:proposal_in_review, co, _line_states, _mos, _signers) do
+    href = co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "proposal_in_review",
+      title: "Proposal in review — awaiting director sign-off.",
+      detail:
+        "Sales sent the proposal for internal review. The director needs to approve it before it can go to the customer. If it's reverted to draft, the order moves back to Drafting proposal.",
       primary_cta: %{
         label: "Open proposal on NPD",
         kind: "link",
@@ -637,7 +663,7 @@ defmodule Backend.OrderWizard do
 
     %{
       code: "awaiting_customer_signature",
-      title: "Proposal out — awaiting customer signature.",
+      title: "Proposal sent to client — awaiting kiosk signature.",
       detail:
         "The proposal is with the customer on the kiosk. When they sign, this order advances to Setup and PSP takes over.",
       primary_cta: %{
@@ -670,24 +696,52 @@ defmodule Backend.OrderWizard do
   end
 
   defp next_action_for(:awaiting_proposal, co, _line_states, _mos, _signers) do
-    # Spec is director-signed on NPD — sales owns the next move:
-    # draft a proposal against the approved spec. Once the proposal is
-    # linked (customer + lines land on the CO) the phase drops into
-    # :setup automatically.
-    href = co.npd_spec_sheet_url || co.npd_app_url || "/projects/#{co.uuid}"
+    # Two paths into :awaiting_proposal:
+    #   1. First-run — spec is director-signed, no proposal drafted yet.
+    #   2. Post-rejection — the previous proposal was rejected (customer
+    #      declined on the kiosk, or staff closed on their behalf). The
+    #      spec is still valid; sales needs to draft a fresh proposal.
+    # Surface the two paths with different copy so the operator knows
+    # whether they're seeing a clean start or a comeback. The rejection
+    # reason lives in ``npd_timeline`` (rendered separately) so we
+    # don't repeat it here.
+    rejected? =
+      not is_nil(co.npd_proposal_uuid) and co.npd_proposal_status == "rejected"
 
-    %{
-      code: "spec_ready_for_proposal",
-      title: "Spec approved — draft the proposal.",
-      detail:
-        "The director signed off on this spec sheet, so it's quotable. Open it on NPD, build the proposal, and once a customer + lines are attached the order rolls into Setup here.",
-      primary_cta: %{
-        label: "Open spec on NPD",
-        kind: "link",
-        href: href
-      },
-      secondary_ctas: []
-    }
+    href =
+      if rejected? do
+        co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+      else
+        co.npd_spec_sheet_url || co.npd_app_url || "/projects/#{co.uuid}"
+      end
+
+    if rejected? do
+      %{
+        code: "proposal_rejected",
+        title: "Previous proposal was rejected — draft a new one.",
+        detail:
+          "The last proposal for this order was rejected. The spec is still director-signed, so sales can draft a fresh proposal against it on NPD. Check the timeline for the rejection reason.",
+        primary_cta: %{
+          label: "Open on NPD",
+          kind: "link",
+          href: href
+        },
+        secondary_ctas: []
+      }
+    else
+      %{
+        code: "spec_ready_for_proposal",
+        title: "Spec approved — draft the proposal.",
+        detail:
+          "The director signed off on this spec sheet, so it's quotable. Open it on NPD, build the proposal, and once a customer + lines are attached the order rolls into Setup here.",
+        primary_cta: %{
+          label: "Open spec on NPD",
+          kind: "link",
+          href: href
+        },
+        secondary_ctas: []
+      }
+    end
   end
 
   defp next_action_for(:setup, co, _line_states, _mos, _signers) do
