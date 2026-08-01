@@ -145,6 +145,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "r_and_d",
   "awaiting_proposal",
   "awaiting_proposal_approval",
+  "proposal_in_review",
   "proposal_ready_to_send",
   "awaiting_customer_signature",
   "setup",
@@ -164,9 +165,10 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
 const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   r_and_d: "R&D",
   awaiting_proposal: "Awaiting proposal",
-  awaiting_proposal_approval: "Awaiting approval",
+  awaiting_proposal_approval: "Drafting proposal",
+  proposal_in_review: "Proposal in review",
   proposal_ready_to_send: "Ready to send",
-  awaiting_customer_signature: "Awaiting signature",
+  awaiting_customer_signature: "Sent to client",
   setup: "Setup",
   approval: "Approval",
   production_planning: "Planning",
@@ -186,11 +188,13 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   r_and_d: "Formulation is being developed on NPD.",
   awaiting_proposal: "Spec is director-signed. Sales owns the proposal.",
   awaiting_proposal_approval:
-    "Proposal drafted. Director needs to review and approve.",
+    "Proposal is being drafted on NPD. Advances once sales sends it for internal review.",
+  proposal_in_review:
+    "Sales sent the proposal for internal review. Director needs to sign off; reverts here if kicked back to draft.",
   proposal_ready_to_send:
     "Director signed. Waiting for the proposal to be sent to the customer.",
   awaiting_customer_signature:
-    "Proposal is out. Waiting for the customer's kiosk signature.",
+    "Proposal is with the client. Waiting for the customer's kiosk signature.",
   setup: "Add lines and price the order.",
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
@@ -217,7 +221,8 @@ const PHASE_ICON: Record<
 > = {
   r_and_d: Beaker,
   awaiting_proposal: FileText,
-  awaiting_proposal_approval: ShieldCheck,
+  awaiting_proposal_approval: FileText,
+  proposal_in_review: ShieldCheck,
   proposal_ready_to_send: Send,
   awaiting_customer_signature: FileText,
   setup: FileText,
@@ -1471,15 +1476,19 @@ const PHASE_EXPLAINER: Record<
     body: "The internal spec sheet is signed off, so the recipe is quotable. Sales drafts a proposal against it on NPD; once a customer + lines land here, the order rolls into Setup.",
   },
   awaiting_proposal_approval: {
-    title: "Proposal drafted — director needs to approve.",
-    body: "Sales built the proposal on NPD. Director reviews and signs off — once approved, the order moves to Ready to send.",
+    title: "Proposal is still being drafted on NPD.",
+    body: "Sales is writing the proposal in NPD. When they send it for internal review, this order advances to Proposal in review. If it comes back to draft later, the order flips back here automatically.",
+  },
+  proposal_in_review: {
+    title: "Proposal in review — director signs off next.",
+    body: "Sales sent the proposal for internal review. The director needs to approve it before it can be sent to the customer. If it's reverted to draft, this order moves back to Drafting proposal.",
   },
   proposal_ready_to_send: {
     title: "Approved — waiting to be sent.",
     body: "Director signed off. The next step is sending the proposal to the customer from NPD. Once sent, the order moves to Awaiting customer signature.",
   },
   awaiting_customer_signature: {
-    title: "Proposal is out — waiting on the customer.",
+    title: "Proposal sent to client — waiting on kiosk signature.",
     body: "The proposal is with the customer on the kiosk. When they sign, PSP takes over and the order advances to Setup.",
   },
   setup: {
@@ -4057,6 +4066,8 @@ function phaseBadgeTone(
     case "awaiting_proposal":
       return "sky";
     case "awaiting_proposal_approval":
+      return "sky";
+    case "proposal_in_review":
       return "sky";
     case "proposal_ready_to_send":
       return "sky";

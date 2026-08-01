@@ -132,11 +132,14 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     # correction or revert-and-redo is reflected without merging
     # deltas. Entries are opaque maps; see the migration for shape.
     field :npd_timeline, {:array, :map}, default: []
-    # Mirrored NPD proposal status. Determines which of the three
+    # Mirrored NPD proposal status. Determines which of the four
     # post-merge wizard blocks the CO sits in:
-    # draft/in_review → :awaiting_proposal_approval,
-    # approved       → :proposal_ready_to_send,
-    # sent           → :awaiting_customer_signature.
+    # draft     → :awaiting_proposal_approval  ("Drafting proposal")
+    # in_review → :proposal_in_review          ("Proposal in review")
+    # approved  → :proposal_ready_to_send
+    # sent      → :awaiting_customer_signature.
+    # Every NPD ``transition_status`` call re-syncs, so reverting
+    # in_review → draft moves the CO back to the drafting block.
     field :npd_proposal_status, :string
 
     belongs_to :merged_into, __MODULE__, foreign_key: :merged_into_id

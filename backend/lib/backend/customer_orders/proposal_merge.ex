@@ -138,12 +138,28 @@ defmodule Backend.CustomerOrders.ProposalMerge do
               where: co.merged_into_id == ^primary.id
           )
 
+        # Snapshot the primary's timeline BEFORE any mutation and
+        # build the unmerge event once. Both the primary (which
+        # keeps its own history + the new event) and every secondary
+        # (which inherits the whole primary timeline so each split-
+        # back project shows the full lifecycle: formulation drafted
+        # → spec approved → merged → proposal transitions → rejected
+        # → unmerged) get the same audit anchor. Without this, an
+        # audit reader looking at a split-back R&D project would see
+        # an empty timeline and no evidence that the project ever
+        # rode a proposal, which is exactly the trail
+        # BRCGS/ISO auditors look for.
+        pre_unmerge_timeline = primary.npd_timeline || []
+        unmerge_event = build_unmerge_event(primary)
+        inherited_timeline = pre_unmerge_timeline ++ [unmerge_event]
+
         Enum.each(secondaries, fn co ->
           restore_comments_to!(co.id)
           clear_merged_into!(co)
+          write_timeline!(co, inherited_timeline)
         end)
 
-        wipe_proposal_identity!(primary)
+        wipe_proposal_identity!(primary, unmerge_event)
         delete_primary_lines!(primary.id)
 
         # Refresh so the notify carries clean fields; the wizard
@@ -162,6 +178,33 @@ defmodule Backend.CustomerOrders.ProposalMerge do
            unmerged_secondaries: Enum.map(secondaries, & &1.uuid)
          }}
     end
+  end
+
+  # Build the timeline entry that records the unmerge itself.
+  # Placed at the end of the inherited timeline so readers see it
+  # after every prior lifecycle event (including any "Proposal
+  # moved from Sent to Rejected — Reason: …" entries that NPD
+  # sends). Rejection context lives in those earlier entries,
+  # not here — this event is just the "curtain call" marker.
+  defp build_unmerge_event(%CustomerOrder{} = primary) do
+    code = primary.npd_proposal_code || "proposal"
+
+    %{
+      "at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "label" =>
+        "Unmerged from #{code} — split back into individual R&D project.",
+      "actor" => "",
+      "href" => primary.npd_proposal_url || "",
+      "kind" => "proposal_unmerged"
+    }
+  end
+
+  defp write_timeline!(%CustomerOrder{} = co, timeline) when is_list(timeline) do
+    co
+    |> Ecto.Changeset.change(%{npd_timeline: timeline})
+    |> Repo.update!()
+
+    :ok
   end
 
   # Fan every comment tagged with ``pre_merge_entity_id = source_co_id``
@@ -185,7 +228,15 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     :ok
   end
 
-  defp wipe_proposal_identity!(%CustomerOrder{} = primary) do
+  defp wipe_proposal_identity!(%CustomerOrder{} = primary, unmerge_event) do
+    # Clear the *identity* fields so the wizard bounces back to
+    # ``:r_and_d`` — but PRESERVE the timeline and append the unmerge
+    # event. The proposal is dead; the story of what happened is not.
+    # Auditors need to be able to reconstruct that this CO was once
+    # part of a proposal, that proposal was rejected/deleted (with
+    # reason, if provided), and it was split back out on this date.
+    new_timeline = (primary.npd_timeline || []) ++ [unmerge_event]
+
     primary
     |> Ecto.Changeset.change(%{
       npd_proposal_uuid: nil,
@@ -200,7 +251,7 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       npd_proposal_sent_by_name: nil,
       npd_proposal_accepted_at: nil,
       npd_proposal_accepted_by_name: nil,
-      npd_timeline: []
+      npd_timeline: new_timeline
     })
     |> Repo.update!()
 
