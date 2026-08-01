@@ -93,7 +93,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   proposal_in_review: "Proposal in review",
   proposal_ready_to_send: "Ready to send proposal",
   awaiting_customer_signature: "Sent to client",
-  proposal_accepted: "Proposal signed by client",
+  proposal_accepted: "Awaiting R&D payment",
   setup: "Order setup",
   approval: "Awaiting approval",
   production_planning: "Need MO created",

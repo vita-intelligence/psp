@@ -566,7 +566,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:proposal_in_review), do: "Proposal in review"
   defp phase_label(:proposal_ready_to_send), do: "Ready to send proposal"
   defp phase_label(:awaiting_customer_signature), do: "Sent to client"
-  defp phase_label(:proposal_accepted), do: "Proposal signed by client"
+  defp phase_label(:proposal_accepted), do: "Awaiting R&D payment"
   defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
   defp phase_label(:approval), do: "Approval"
@@ -673,7 +673,7 @@ defmodule Backend.OrderWizard do
       code: "awaiting_customer_signature",
       title: "Proposal sent to client — awaiting kiosk signature.",
       detail:
-        "The proposal is with the customer on the kiosk. When they sign, this order advances to Proposal signed by client for order kickoff.",
+        "The proposal is with the customer on the kiosk. When they sign, this order advances to Awaiting R&D payment — trial batches unlock once finance confirms the deposit.",
       primary_cta: %{
         label: "Open proposal on NPD",
         kind: "link",
@@ -688,9 +688,9 @@ defmodule Backend.OrderWizard do
 
     %{
       code: "proposal_accepted",
-      title: "Customer signed — kick off the order.",
+      title: "Customer signed — awaiting R&D deposit.",
       detail:
-        "The customer has signed the proposal on the kiosk (contract). The lines from the proposal have been merged onto this CO — review them, then submit for approval to advance into the standard production flow.",
+        "The customer has signed the proposal (contract), but finance hasn't confirmed the deposit yet. Trial batches on NPD are locked until the deposit lands. Once finance approves it, this order can be submitted for approval and continue through the standard production flow.",
       primary_cta: %{
         label: "Open signed proposal on NPD",
         kind: "link",
