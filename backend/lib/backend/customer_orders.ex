@@ -882,7 +882,11 @@ defmodule Backend.CustomerOrders do
       :default_warehouse,
       [files: [:uploaded_by]],
       [approvals: [:signed_by]],
-      [lines: [item: :stock_uom, pricelist: [], warehouse: []]]
+      [lines: [item: :stock_uom, pricelist: [], warehouse: []]],
+      # Sibling COs folded into this primary during a proposal merge.
+      # The R&D card on the FE uses this to render one "Open spec on
+      # NPD" link per formulation, not just the primary's own spec.
+      :merged_secondaries
     ])
   end
 

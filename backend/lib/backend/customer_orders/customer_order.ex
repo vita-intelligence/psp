@@ -155,6 +155,13 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     has_many :lines, CustomerOrderLine, foreign_key: :customer_order_id
     has_many :approvals, CustomerOrderApproval, foreign_key: :customer_order_id
     has_many :files, CustomerOrderFile, foreign_key: :customer_order_id
+    # Every CO that was folded into this one during a proposal merge.
+    # Preloaded on the detail fetch so the payload can enumerate the
+    # spec sheets of the sibling formulations that came in via the
+    # same bundled proposal — the primary CO only holds ONE
+    # ``npd_spec_sheet_uuid`` on its own row, but a bundled proposal
+    # spans N formulations each with its own spec.
+    has_many :merged_secondaries, __MODULE__, foreign_key: :merged_into_id
 
     timestamps(type: :utc_datetime)
   end

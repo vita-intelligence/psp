@@ -768,6 +768,13 @@ defmodule BackendWeb.Payloads do
       npd_spec_prepared_at: co.npd_spec_prepared_at,
       npd_spec_director_name: co.npd_spec_director_name,
       npd_spec_approved_at: co.npd_spec_approved_at,
+      bundled_specs: bundled_specs(co),
+      npd_proposal_uuid: co.npd_proposal_uuid,
+      npd_proposal_code: co.npd_proposal_code,
+      npd_proposal_url: co.npd_proposal_url,
+      npd_proposal_status: co.npd_proposal_status,
+      npd_proposal_accepted_at: co.npd_proposal_accepted_at,
+      npd_proposal_accepted_by_name: co.npd_proposal_accepted_by_name,
       default_warehouse_id: co.default_warehouse_id,
       default_warehouse: maybe_warehouse_compact(co.default_warehouse),
       submitted_at: co.submitted_at,
@@ -810,6 +817,47 @@ defmodule BackendWeb.Payloads do
   end
 
   defp maybe_warehouse_compact(_), do: nil
+
+  # Every spec sheet referenced by this CO or by any of its merged
+  # secondaries. A bundled proposal spans N formulations, but the
+  # primary CO only stores ONE ``npd_spec_sheet_uuid`` on its own
+  # row — the sibling specs live on the secondary COs. This helper
+  # flattens the manifest so the FE can render one "Open spec on
+  # NPD" link per formulation.
+  #
+  # Ordering: primary first (matches "first picked" in the merge
+  # semantics), then secondaries in insertion order. Entries with
+  # no ``npd_spec_sheet_uuid`` are dropped so the list never
+  # renders a broken link.
+  defp bundled_specs(%Backend.CustomerOrders.CustomerOrder{} = co) do
+    secondaries =
+      case co.merged_secondaries do
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    ([co] ++ secondaries)
+    |> Enum.map(&spec_entry/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp spec_entry(%Backend.CustomerOrders.CustomerOrder{} = row) do
+    if row.npd_spec_sheet_uuid do
+      %{
+        formulation_uuid: row.npd_formulation_uuid,
+        # ``customer_reference`` is where the NPD sync plants the
+        # human label ("Immunity Complex Gummies (MA01421)") — reuse
+        # it so we don't have to make another round trip for a name.
+        formulation_label: row.customer_reference,
+        spec_sheet_uuid: row.npd_spec_sheet_uuid,
+        spec_sheet_url: row.npd_spec_sheet_url,
+        prepared_by_name: row.npd_spec_prepared_by_name,
+        prepared_at: row.npd_spec_prepared_at,
+        director_name: row.npd_spec_director_name,
+        approved_at: row.npd_spec_approved_at
+      }
+    end
+  end
 
   @doc """
   One CO line — item + quoted price + tier (line_subtotal already

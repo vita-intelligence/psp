@@ -2257,6 +2257,35 @@ export interface CustomerOrder {
   npd_spec_prepared_at: string | null;
   npd_spec_director_name: string | null;
   npd_spec_approved_at: string | null;
+  /** Every spec sheet on this CO's proposal bundle. Length ≥ 1 when
+   *  the CO carries an NPD spec: primary's own spec first, then one
+   *  entry per merged secondary CO. Length > 1 indicates a bundled
+   *  proposal — render the list of "Open spec on NPD" links instead
+   *  of the single-link fallback. */
+  bundled_specs: Array<{
+    formulation_uuid: string | null;
+    formulation_label: string | null;
+    spec_sheet_uuid: string | null;
+    spec_sheet_url: string | null;
+    prepared_by_name: string | null;
+    prepared_at: string | null;
+    director_name: string | null;
+    approved_at: string | null;
+  }>;
+  /** Proposal mirrored from NPD when this CO was folded into one on
+   *  ``ProposalMerge.merge_from_proposal``. Populated on the primary
+   *  CO only; secondaries carry ``merged_into_id`` instead. Fields
+   *  are cleared when NPD deletes the proposal (unmerge fans the
+   *  secondaries back out and wipes the primary's proposal identity).
+   *  ``npd_proposal_accepted_at`` is set once the customer signs
+   *  on the kiosk — used to render the "Proposal signed" block on
+   *  the R&D card. */
+  npd_proposal_uuid: string | null;
+  npd_proposal_code: string | null;
+  npd_proposal_url: string | null;
+  npd_proposal_status: string | null;
+  npd_proposal_accepted_at: string | null;
+  npd_proposal_accepted_by_name: string | null;
   default_warehouse_id: number | null;
   default_warehouse: { id: number; uuid: string; name: string } | null;
   submitted_at: string | null;

@@ -2796,6 +2796,15 @@ function RandDTeamCard({
   const cffSubmitter = (co.npd_cff_submitter_name || "").trim();
   const cffSubmitterEmail = (co.npd_cff_submitter_email || "").trim();
   const hasCff = !!co.npd_cff_uuid;
+  //: Customer-signed proposal — kiosk-finalize sync plants
+  //: ``npd_proposal_accepted_at`` on the CO. Emerald block reads
+  //: as a positive milestone (matches the ``:proposal_accepted``
+  //: kanban column's tone).
+  const proposalCode = (co.npd_proposal_code || "").trim();
+  const proposalUrl = (co.npd_proposal_url || "").trim();
+  const proposalAcceptedAt = co.npd_proposal_accepted_at;
+  const proposalAcceptedBy = (co.npd_proposal_accepted_by_name || "").trim();
+  const hasSignedProposal = !!proposalAcceptedAt;
 
   return (
     <Card className="border-fuchsia-200/70 bg-gradient-to-br from-fuchsia-50/60 via-background to-background dark:border-fuchsia-900/40 dark:from-fuchsia-950/20">
@@ -2867,18 +2876,52 @@ function RandDTeamCard({
                 </dd>
               </div>
             </dl>
-            {specUrl ? (
-              <a
-                href={specUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-violet-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:bg-violet-900/40"
-                title="Opens the approved spec sheet on NPD in a new tab"
-              >
-                <ExternalLink className="size-3" />
-                Open spec on NPD
-              </a>
-            ) : null}
+            {(() => {
+              // A bundled proposal spans N spec sheets. Render one
+              // link per sheet so the operator can jump into any of
+              // the bundled formulations, not just the primary.
+              // Single-sheet CO falls back to the plain "Open spec"
+              // button for identical UX to the non-bundled case.
+              const bundled = (co.bundled_specs || []).filter(
+                (s) => (s.spec_sheet_url || "").trim(),
+              );
+              if (bundled.length > 1) {
+                return (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-700/80 dark:text-violet-300/80">
+                      {bundled.length} sheets on this proposal
+                    </div>
+                    {bundled.map((s) => (
+                      <a
+                        key={s.spec_sheet_uuid ?? s.formulation_uuid ?? Math.random()}
+                        href={s.spec_sheet_url ?? "#"}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="flex items-center justify-between gap-2 rounded-md border border-violet-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:bg-violet-900/40"
+                        title={`Open ${s.formulation_label || "spec"} on NPD`}
+                      >
+                        <span className="truncate">
+                          {s.formulation_label || s.spec_sheet_uuid}
+                        </span>
+                        <ExternalLink className="size-3 shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                );
+              }
+              return specUrl ? (
+                <a
+                  href={specUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-violet-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:bg-violet-900/40"
+                  title="Opens the approved spec sheet on NPD in a new tab"
+                >
+                  <ExternalLink className="size-3" />
+                  Open spec on NPD
+                </a>
+              ) : null;
+            })()}
           </div>
         ) : null}
 
@@ -2929,6 +2972,64 @@ function RandDTeamCard({
               >
                 <ExternalLink className="size-3" />
                 Open CFF on NPD
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Customer-signed proposal — populated once the kiosk-
+            finalize sync lands (``npd_proposal_accepted_at``).
+            Emerald-tinted to mirror the ``:proposal_accepted``
+            kanban column so operators see the signed status
+            consistently across surfaces. */}
+        {hasSignedProposal ? (
+          <div className="rounded-md border border-emerald-200/70 bg-emerald-50/70 p-2.5 dark:border-emerald-900/40 dark:bg-emerald-950/20">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="size-3" />
+              Proposal signed
+            </div>
+            <dl className="space-y-1.5 text-[11px]">
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Proposal</dt>
+                <dd
+                  className={cn(
+                    "truncate text-right font-medium",
+                    !proposalCode &&
+                      "text-muted-foreground/60 italic font-normal",
+                  )}
+                  title={proposalCode || undefined}
+                >
+                  {proposalCode || "—"}
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Signed on</dt>
+                <dd className="truncate text-right font-medium">
+                  {formatCompanyDate(proposalAcceptedAt, prefs)}
+                </dd>
+              </div>
+              {proposalAcceptedBy ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-muted-foreground">Recorded by</dt>
+                  <dd
+                    className="truncate text-right font-medium"
+                    title={proposalAcceptedBy}
+                  >
+                    {proposalAcceptedBy}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            {proposalUrl ? (
+              <a
+                href={proposalUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 shadow-sm transition-colors hover:bg-emerald-50 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-900/40"
+                title="Opens the signed proposal on NPD in a new tab"
+              >
+                <ExternalLink className="size-3" />
+                Open signed proposal on NPD
               </a>
             ) : null}
           </div>
