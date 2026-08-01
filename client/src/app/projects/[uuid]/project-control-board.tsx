@@ -170,7 +170,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   proposal_in_review: "Proposal in review",
   proposal_ready_to_send: "Ready to send",
   awaiting_customer_signature: "Sent to client",
-  proposal_accepted: "Proposal signed",
+  proposal_accepted: "Awaiting R&D payment",
   setup: "Setup",
   approval: "Approval",
   production_planning: "Planning",
@@ -198,7 +198,7 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   awaiting_customer_signature:
     "Proposal is with the client. Waiting for the customer's kiosk signature.",
   proposal_accepted:
-    "Customer signed. Review the merged lines, then submit for approval to kick off production.",
+    "Customer signed. Awaiting the R&D deposit — trial batches unlock once finance approves the payment.",
   setup: "Add lines and price the order.",
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
@@ -1494,11 +1494,11 @@ const PHASE_EXPLAINER: Record<
   },
   awaiting_customer_signature: {
     title: "Proposal sent to client — waiting on kiosk signature.",
-    body: "The proposal is with the customer on the kiosk. When they sign, the order advances to Proposal signed for order kickoff.",
+    body: "The proposal is with the customer on the kiosk. When they sign, the order advances to Awaiting R&D payment.",
   },
   proposal_accepted: {
-    title: "Customer signed — kick off the order.",
-    body: "The customer has signed the proposal on the kiosk (contract). The lines from the proposal are already merged onto this CO — review them, then submit for approval to advance into the standard production flow.",
+    title: "Customer signed — awaiting R&D deposit.",
+    body: "The customer has signed the proposal (legally binding contract), but finance hasn't confirmed the deposit yet. Trial batches on NPD are locked until the deposit lands. Once finance approves the payment, the order can be submitted for approval and continue through the standard production flow.",
   },
   setup: {
     title: "You're building the order.",
