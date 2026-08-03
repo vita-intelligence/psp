@@ -2153,6 +2153,15 @@ defmodule Backend.Production do
             # start when they're ready.
             "assigned_to_id" => mo.assigned_to_id,
             "revision" => mo.revision,
+            # Inherit the parent's stream. Without this, a trial MO
+            # whose BOM needs a semi-finished part spawns a
+            # ``production`` child by default (the schema default),
+            # and the child's allocator then books from production
+            # stock — exactly the cross-stream leak the whole
+            # ``is_rnd`` machinery exists to prevent. Trial +
+            # sample children stay in their own pool; production
+            # children are unaffected.
+            "project_type" => mo.project_type,
             "created_by_id" => actor.id,
             "updated_by_id" => actor.id
           }
