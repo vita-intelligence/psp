@@ -134,14 +134,15 @@ export default async function StorageTagsPage() {
           <div>
             <h3 className="text-sm font-semibold">R&amp;D stream tag</h3>
             <p className="text-xs text-muted-foreground">
-              Tag any storage cell with{" "}
+              Tag a whole rack or an individual cell with{" "}
               <span className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
                 rnd
               </span>{" "}
               in the warehouse plan editor to mark it as an R&amp;D shelf.
-              Trial / sample manufacturing orders auto-route their pickup
-              output to these cells. Seeded by the platform — can&apos;t be
-              renamed or deleted.
+              (Tagging the rack cascades to every level inside it.) Trial /
+              sample manufacturing orders auto-route their pickup output to
+              these cells. Seeded by the platform — can&apos;t be renamed or
+              deleted.
             </p>
           </div>
           <ul className="grid gap-2 sm:grid-cols-2">
