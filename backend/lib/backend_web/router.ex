@@ -1780,7 +1780,10 @@ defmodule BackendWeb.Router do
     # ``npd_trial_batch_uuid`` — a retry (network blip, page refresh,
     # background queue re-fire) returns the existing MO. Auto-books
     # FEFO against the R&D stock pool; refuses cross-stream picks
-    # (see Phase B booking guard). Requires ``mo:write``.
+    # (see Phase B booking guard). Requires ``mo:write:npd`` — the
+    # NPD integration token gets this alongside
+    # ``customer_order:sync:npd``; bare ``mo:write`` isn't a
+    # granted scope on any current token.
     post "/manufacturing-orders",
          IntegrationManufacturingOrderController,
          :create

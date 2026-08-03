@@ -21,6 +21,7 @@ export const metadata = { title: "Integrations · Settings · PSP" };
 // when the server fetch fails so the mint dialog can still render.
 const FALLBACK_SCOPES: IntegrationScope[] = [
   "mo:read",
+  "mo:write:npd",
   "mo:write:session",
   "mo:transition",
   "workstation:read",
