@@ -4698,6 +4698,21 @@ defmodule Backend.Production do
         _ -> []
       end
 
+    # R&D stream guard. Production MOs refuse to consume items tagged
+    # "rnd" — those live in the R&D stock pool that trial batches
+    # spend against, and a shop-floor production run pulling from it
+    # would silently drain research inventory. Trial MOs stay
+    # permissive (they can still pull generic items) so scientists
+    # aren't forced to procure rnd-tagged mini-lots of every single
+    # ingredient before they can run their first trial. Tighten to
+    # symmetric refusal later if the "trial stole production sugar"
+    # complaint ever surfaces.
+    with :ok <- refuse_cross_stream_booking(mo, bom_lines) do
+      book_all_for_mo_txn(actor, mo, bom_lines, strategy)
+    end
+  end
+
+  defp book_all_for_mo_txn(actor, mo, bom_lines, strategy) do
     Repo.transaction(fn ->
       Enum.flat_map(bom_lines, fn line ->
         already =
@@ -4737,6 +4752,40 @@ defmodule Backend.Production do
       err -> err
     end
   end
+
+  # R&D stream check. Production MOs refuse when any BOM line resolves
+  # to an rnd-tagged item (its stock lives in the R&D pool that trial
+  # batches spend against). Trial + sample MOs return :ok — they can
+  # pull from either pool, favouring rnd-tagged when both exist.
+  #
+  # Returns `{:error, {:rd_stream_mismatch, [item_id, ...]}}` with the
+  # offenders so callers can surface a precise message ("part X is
+  # tagged rnd — production runs can't consume from the R&D pool").
+  defp refuse_cross_stream_booking(%ManufacturingOrder{project_type: pt}, _bom_lines)
+       when pt in ["trial", "sample"] do
+    :ok
+  end
+
+  defp refuse_cross_stream_booking(%ManufacturingOrder{project_type: "production"}, bom_lines) do
+    offenders =
+      Enum.filter(bom_lines, fn line ->
+        tags = (line.part && line.part.storage_tags) || []
+        "rnd" in tags
+      end)
+      |> Enum.map(& &1.part_id)
+
+    case offenders do
+      [] -> :ok
+      _ -> {:error, {:rd_stream_mismatch, offenders}}
+    end
+  end
+
+  # Catch-all for MOs whose project_type is unset / unknown — treat as
+  # production and enforce. Defensive: the changeset validates against
+  # @project_types on write, but a hand-built struct in a test might
+  # slip through.
+  defp refuse_cross_stream_booking(_mo, bom_lines),
+    do: refuse_cross_stream_booking(%ManufacturingOrder{project_type: "production"}, bom_lines)
 
   @doc """
   Release every active booking on the MO AND cascade-cancel its
@@ -6999,7 +7048,7 @@ defmodule Backend.Production do
         {:error, :no_bookings_to_transfer}
 
       true ->
-        case fetch_production_feed_cell(mo.company_id, target_cell_uuid) do
+        case fetch_pickup_target_cell(mo, target_cell_uuid) do
           {:error, reason} ->
             {:error, reason}
 
@@ -7015,6 +7064,45 @@ defmodule Backend.Production do
         end
     end
   end
+
+  # Pickup-target resolver. Production MOs land on a purpose=production_feed
+  # cell (the historical contract). Trial MOs additionally accept the
+  # company's configured `rd_consumption_cell` — the R&D bench where
+  # scientists want their trial materials to arrive. Any other cell
+  # is refused with the same :production_cell_wrong_purpose reason so
+  # the picker UI can render one unified error.
+  defp fetch_pickup_target_cell(%ManufacturingOrder{} = mo, uuid) do
+    case Repo.get_by(Backend.Warehouses.StorageCell, uuid: uuid, company_id: mo.company_id) do
+      nil ->
+        {:error, :production_cell_not_found}
+
+      %Backend.Warehouses.StorageCell{purpose: "production_feed"} = cell ->
+        {:ok, cell}
+
+      %Backend.Warehouses.StorageCell{id: cell_id} = cell ->
+        if mo.project_type in ["trial", "sample"] and
+             rd_consumption_cell_id_for_company(mo.company_id) == cell_id do
+          {:ok, cell}
+        else
+          {:error, :production_cell_wrong_purpose}
+        end
+    end
+  end
+
+  # Read-through helper — avoids preloading a company row for every
+  # pickup transfer just to check one integer. Fetches only the FK
+  # column. Returns nil when no default is configured (which fails
+  # the trial branch above and preserves the "purpose must match"
+  # error path).
+  defp rd_consumption_cell_id_for_company(company_id) when is_integer(company_id) do
+    from(c in Backend.Companies.Company,
+      where: c.id == ^company_id,
+      select: c.rd_consumption_cell_id
+    )
+    |> Repo.one()
+  end
+
+  defp rd_consumption_cell_id_for_company(_), do: nil
 
   defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls, override_fit?) do
     Repo.transaction(fn ->
@@ -10608,17 +10696,9 @@ defmodule Backend.Production do
     end
   end
 
-  defp fetch_production_feed_cell(company_id, uuid) do
-    case Repo.get_by(Backend.Warehouses.StorageCell, uuid: uuid, company_id: company_id) do
-      nil ->
-        {:error, :production_cell_not_found}
-
-      %Backend.Warehouses.StorageCell{purpose: "production_feed"} = cell ->
-        {:ok, cell}
-
-      %Backend.Warehouses.StorageCell{} ->
-        {:error, :production_cell_wrong_purpose}
-    end
-  end
+  # Superseded by fetch_pickup_target_cell/2 which additionally
+  # accepts a company's rd_consumption_cell when the MO is a trial or
+  # sample. Left here as a marker in case a future caller needs the
+  # strict production-only variant back.
 
 end
