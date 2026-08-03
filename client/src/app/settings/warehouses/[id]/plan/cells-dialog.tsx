@@ -747,6 +747,7 @@ function CellRow({
               helpText:
                 "Reserved — set via the Purpose dropdown above, not as a tag.",
             }))}
+            systemStreamKeys={["rnd"]}
           />
           <FieldEditingIndicator peer={fieldEditors[keyFor("tags")]} />
         </div>

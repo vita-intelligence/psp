@@ -42,6 +42,13 @@ interface TagPickerProps {
    *  are managed elsewhere (e.g. cell.purpose). Rendered as locked
    *  informational rows in the dropdown so searching finds them. */
   systemReserved?: TagPickerSystemKey[];
+  /** Keys of registry tags that are seeded + locked at the source
+   *  (rename / delete refused server-side) but still SELECTABLE. Any
+   *  matching row in ``known`` is lifted into its own "System stream
+   *  tags" section above the freeform list with a lock icon, so
+   *  operators can tell "system-owned key" apart from "your team's
+   *  vocabulary". Example: ["rnd"] for the R&D stream marker. */
+  systemStreamKeys?: readonly string[];
 }
 
 /** Chip-based multi-select. Selected tags appear as chips at the
@@ -57,7 +64,12 @@ export function TagPicker({
   readOnly,
   onCommit,
   systemReserved = [],
+  systemStreamKeys = [],
 }: TagPickerProps) {
+  const systemStreamKeySet = useMemo(
+    () => new Set(systemStreamKeys),
+    [systemStreamKeys],
+  );
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -68,7 +80,11 @@ export function TagPicker({
     [known, kind],
   );
 
-  const filtered = useMemo(() => {
+  // Filter first, then split into system-stream rows (rendered in a
+  // distinct locked-but-selectable section above) and freeform rows.
+  // Keeps the "search finds everything" behaviour intact regardless
+  // of which bucket the match lands in.
+  const filteredAll = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q.length === 0) return available;
     return available.filter(
@@ -78,6 +94,16 @@ export function TagPicker({
         (t.description ?? "").toLowerCase().includes(q),
     );
   }, [available, query]);
+
+  const filteredSystemStream = useMemo(
+    () => filteredAll.filter((t) => systemStreamKeySet.has(t.key)),
+    [filteredAll, systemStreamKeySet],
+  );
+
+  const filtered = useMemo(
+    () => filteredAll.filter((t) => !systemStreamKeySet.has(t.key)),
+    [filteredAll, systemStreamKeySet],
+  );
 
   const filteredSystem = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -265,7 +291,76 @@ export function TagPicker({
                 </div>
               )}
 
-              {filtered.length === 0 && filteredSystem.length === 0 ? (
+              {filteredSystemStream.length > 0 && (
+                <div className="border-b border-border/60">
+                  <div className="flex items-center gap-1.5 px-3 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Lock className="size-2.5" />
+                    System stream tags
+                  </div>
+                  <ul className="py-1">
+                    {filteredSystemStream.map((t) => {
+                      const active = value.includes(t.key);
+                      return (
+                        <li key={t.id}>
+                          <button
+                            type="button"
+                            onClick={() => toggle(t.key)}
+                            className={cn(
+                              "flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs",
+                              "hover:bg-muted/60",
+                              active && "bg-primary/[0.08]",
+                            )}
+                            title="System-owned key — selectable, but can't be renamed or deleted."
+                          >
+                            <span
+                              className={cn(
+                                "mt-0.5 inline-flex size-3 shrink-0 items-center justify-center rounded-sm border",
+                                active
+                                  ? "border-primary bg-primary text-primary-foreground"
+                                  : "border-border",
+                              )}
+                            >
+                              {active && (
+                                <svg
+                                  viewBox="0 0 16 16"
+                                  fill="none"
+                                  className="size-2.5"
+                                >
+                                  <path
+                                    d="M3 8.5l3 3 7-7"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              )}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="font-medium">{t.label}</span>
+                                <Lock className="size-2.5 text-muted-foreground" />
+                              </span>
+                              <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                                {t.key}
+                              </span>
+                              {t.description && (
+                                <span className="block text-[10px] text-muted-foreground">
+                                  {t.description}
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {filtered.length === 0 &&
+              filteredSystem.length === 0 &&
+              filteredSystemStream.length === 0 ? (
                 <p className="px-3 py-4 text-center text-[11px] text-muted-foreground">
                   No tags match. Manage the list at{" "}
                   <Link
