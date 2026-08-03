@@ -108,32 +108,6 @@ export async function updateCompanySecurityAction(input: {
   }
 }
 
-export async function updateCompanyRdConsumptionCellAction(
-  input: { rd_consumption_cell_id: number | null },
-): Promise<CompanyResult> {
-  const token = await getSessionToken();
-  if (!token)
-    return unauthorizedResult("updateCompanyRdConsumptionCellAction");
-
-  try {
-    const res = await api<{ company: Company }>(
-      "/api/company/rd-consumption-cell",
-      {
-        method: "PUT",
-        token,
-        body: JSON.stringify(input),
-      },
-    );
-    revalidatePath("/settings/company");
-    return { ok: true, company: res.company };
-  } catch (err) {
-    return toErrorResult(err, {
-      source: "updateCompanyRdConsumptionCellAction",
-      fallbackDetail: "Couldn't save the R&D consumption cell.",
-    });
-  }
-}
-
 export async function updateCompanyThreePlRateAction(
   input: { three_pl_rate_per_m3_per_day: string | null },
 ): Promise<CompanyResult> {

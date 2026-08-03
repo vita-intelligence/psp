@@ -85,13 +85,12 @@ defmodule Backend.Companies.Company do
     field :npd_base_url, :string
     field :npd_integration_token, Backend.Encrypted.Binary, redact: true
 
-    # Default landing cell for R&D / trial-batch pickup output. When
-    # a trial MO releases to the warehouse, the picker's confirmed
-    # load moves to THIS cell instead of the standard production_feed
-    # target. Nullable so companies without an R&D lifecycle don't
-    # need to configure one; SET NULL on cell delete so the reference
-    # is safe against operator warehouse edits.
-    belongs_to :rd_consumption_cell, Backend.Warehouses.StorageCell
+    # Superseded by the reserved ``rnd_consumption`` cell tag —
+    # migration 20260803140000 drops the FK and seeds the tag into
+    # every company's storage_tags registry. Trial / sample MO
+    # pickup validates against any cell whose effective tags include
+    # the key, giving operators multi-bench flexibility without a
+    # settings-page picker.
 
     has_many :roles, Role
     has_many :users, User
@@ -294,25 +293,6 @@ defmodule Backend.Companies.Company do
     else
       changeset
     end
-  end
-
-  @doc """
-  R&D consumption cell picker card. A single FK — the storage cell
-  the trial-batch pickup flow drops confirmed loads into. Nullable so
-  companies without an R&D lifecycle can leave it blank; setting to
-  ``nil`` explicitly clears a previously chosen cell (the FE emits
-  ``{"rd_consumption_cell_id": null}`` from the picker's "Clear"
-  button).
-
-  The value is validated at write-time only for FK existence — we
-  can't gate on ``purpose == :consumption`` because operators may
-  reuse a shared cell that carries multiple purposes via tags. The
-  Phase B booking guard already isolates R&D from production stock.
-  """
-  def rd_consumption_cell_changeset(company, attrs) do
-    company
-    |> cast(attrs, [:rd_consumption_cell_id])
-    |> foreign_key_constraint(:rd_consumption_cell_id)
   end
 
   @doc """
