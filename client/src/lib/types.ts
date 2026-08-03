@@ -1008,6 +1008,10 @@ export interface PurchaseOrder {
   expected_delivery_date: string | null;
   delivery_address: string | null;
   notes: string | null;
+  /** R&D stream flag. When true, received lots inherit `is_rnd = true`
+   *  and only trial / sample MOs can book against them. Immutable once
+   *  the PO leaves draft. */
+  is_rnd: boolean;
   /** Supplier paperwork (quote PDF, spec sheet, etc.). Uploaded to
    *  Backend.Storage; URL streams through the BE so we keep ACL. */
   files: PurchaseOrderFile[];
@@ -1960,6 +1964,11 @@ export interface StockLot {
   ownership_kind: "own" | "bailee";
   bailee_routed_at: string | null;
   bailee_customer: { id: number; uuid: string; name: string } | null;
+  /** R&D stream flag inherited from the parent PO at receive. Immutable
+   *  once written — moving the lot between cells doesn't change what
+   *  it is. Trial / sample MOs book only `is_rnd = true` lots;
+   *  production MOs book only `is_rnd = false` lots. */
+  is_rnd: boolean;
   inserted_at: string;
   updated_at: string;
   created_by?: AuditActor | null;

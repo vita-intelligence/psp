@@ -3707,6 +3707,12 @@ defmodule Backend.Production do
       when is_integer(item_id) do
     exclude_booking_id = Keyword.get(opts, :exclude_booking_id)
     strategy = normalise_strategy(Keyword.get(opts, :strategy, :fefo))
+    # Optional R&D stream filter. When set, lots must match the
+    # requested stream — trial / sample MOs pass ``true`` so they
+    # only see rnd-received stock, production MOs pass ``false`` so
+    # they only see production stock. ``nil`` (the default) skips
+    # the filter — admin listings that want every lot still work.
+    is_rnd = Keyword.get(opts, :is_rnd)
 
     eligible_statuses = ~w(received available)
 
@@ -3716,6 +3722,12 @@ defmodule Backend.Production do
       |> where([l], l.item_id == ^item_id)
       |> where([l], l.status in ^eligible_statuses)
       |> preload([:item, placements: :storage_cell])
+
+    query =
+      case is_rnd do
+        nil -> query
+        v when is_boolean(v) -> where(query, [l], l.is_rnd == ^v)
+      end
 
     query =
       case strategy do
@@ -4698,18 +4710,13 @@ defmodule Backend.Production do
         _ -> []
       end
 
-    # R&D stream guard. Production MOs refuse to consume items tagged
-    # "rnd" — those live in the R&D stock pool that trial batches
-    # spend against, and a shop-floor production run pulling from it
-    # would silently drain research inventory. Trial MOs stay
-    # permissive (they can still pull generic items) so scientists
-    # aren't forced to procure rnd-tagged mini-lots of every single
-    # ingredient before they can run their first trial. Tighten to
-    # symmetric refusal later if the "trial stole production sugar"
-    # complaint ever surfaces.
-    with :ok <- refuse_cross_stream_booking(mo, bom_lines) do
-      book_all_for_mo_txn(actor, mo, bom_lines, strategy)
-    end
+    # R&D stream isolation. The allocator (see ``allocate_for_item``
+    # → ``list_bookable_lots``) filters lots by the ``is_rnd`` flag
+    # on each lot so production MOs never see R&D stock and vice
+    # versa. The item-side ``rnd`` tag check that used to live here
+    # was superseded by that lot-level filter — items are shared
+    # across streams, the separation lives on the physical lot.
+    book_all_for_mo_txn(actor, mo, bom_lines, strategy)
   end
 
   defp book_all_for_mo_txn(actor, mo, bom_lines, strategy) do
@@ -4753,39 +4760,22 @@ defmodule Backend.Production do
     end
   end
 
-  # R&D stream check. Production MOs refuse when any BOM line resolves
-  # to an rnd-tagged item (its stock lives in the R&D pool that trial
-  # batches spend against). Trial + sample MOs return :ok — they can
-  # pull from either pool, favouring rnd-tagged when both exist.
-  #
-  # Returns `{:error, {:rd_stream_mismatch, [item_id, ...]}}` with the
-  # offenders so callers can surface a precise message ("part X is
-  # tagged rnd — production runs can't consume from the R&D pool").
-  defp refuse_cross_stream_booking(%ManufacturingOrder{project_type: pt}, _bom_lines)
-       when pt in ["trial", "sample"] do
-    :ok
-  end
+  # Superseded by lot-level ``is_rnd`` filtering in
+  # ``list_bookable_lots``. The allocator now returns only lots whose
+  # stream matches the MO's ``project_type``, so a mismatched booking
+  # can't be created in the first place — no separate refusal guard
+  # needed.
 
-  defp refuse_cross_stream_booking(%ManufacturingOrder{project_type: "production"}, bom_lines) do
-    offenders =
-      Enum.filter(bom_lines, fn line ->
-        tags = (line.part && line.part.storage_tags) || []
-        "rnd" in tags
-      end)
-      |> Enum.map(& &1.part_id)
+  @doc """
+  True when the MO consumes from the R&D stock pool (trial + sample
+  runs). Exposed as a public helper so the booking controller can
+  gate its picker query without re-deriving the mapping.
+  """
+  def mo_expects_rnd?(%ManufacturingOrder{project_type: pt})
+      when pt in ["trial", "sample"],
+      do: true
 
-    case offenders do
-      [] -> :ok
-      _ -> {:error, {:rd_stream_mismatch, offenders}}
-    end
-  end
-
-  # Catch-all for MOs whose project_type is unset / unknown — treat as
-  # production and enforce. Defensive: the changeset validates against
-  # @project_types on write, but a hand-built struct in a test might
-  # slip through.
-  defp refuse_cross_stream_booking(_mo, bom_lines),
-    do: refuse_cross_stream_booking(%ManufacturingOrder{project_type: "production"}, bom_lines)
+  def mo_expects_rnd?(%ManufacturingOrder{}), do: false
 
   @doc """
   Release every active booking on the MO AND cascade-cancel its
@@ -4848,7 +4838,15 @@ defmodule Backend.Production do
          needed,
          strategy \\ :fefo
        ) do
-    lots = list_bookable_lots(actor, item_id, strategy: strategy)
+    # Route trial / sample MOs at the rnd stock pool; production MOs
+    # at the production pool. ``list_bookable_lots`` gates on the
+    # lot's ``is_rnd`` flag so cross-stream lots never even make it
+    # into the candidate list.
+    lots =
+      list_bookable_lots(actor, item_id,
+        strategy: strategy,
+        is_rnd: mo_expects_rnd?(mo)
+      )
 
     {bookings, _remaining} =
       Enum.reduce_while(lots, {[], needed}, fn {lot, available, cell}, {acc, left} ->

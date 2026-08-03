@@ -128,6 +128,9 @@ interface FormState {
   tax_rate: string;
   shipping_fees: string;
   additional_fees: string;
+  /** R&D stream flag. When true, received lots inherit `is_rnd = true`
+   *  so only trial / sample MOs can book them. */
+  is_rnd: boolean;
   lines: POLineDraft[];
 }
 
@@ -141,6 +144,7 @@ const INITIAL: FormState = {
   tax_rate: "",
   shipping_fees: "",
   additional_fees: "",
+  is_rnd: false,
   lines: [],
 };
 
@@ -707,6 +711,7 @@ export function NewPOForm({
         default_warehouse_id: state.default_warehouse_id
           ? Number(state.default_warehouse_id)
           : null,
+        is_rnd: state.is_rnd,
       };
       const lines: POLineInput[] = state.lines.map((l) => {
         // Strip empty / zero reservations — keeps the BE FIFO
@@ -1004,6 +1009,44 @@ export function NewPOForm({
             <p className="text-[10px] text-muted-foreground">
               Lines without an override deliver here.
             </p>
+          </div>
+
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label
+              htmlFor="is_rnd"
+              className="text-[11px] uppercase tracking-wider text-muted-foreground"
+            >
+              Stream
+            </Label>
+            <label
+              htmlFor="is_rnd"
+              className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-xs transition-colors ${
+                state.is_rnd
+                  ? "border-purple-400 bg-purple-50"
+                  : "border-border/60 bg-muted/20 hover:bg-muted/40"
+              }`}
+            >
+              <input
+                id="is_rnd"
+                type="checkbox"
+                checked={state.is_rnd}
+                onChange={(e) => setField("is_rnd", e.target.checked)}
+                onFocus={() => focusField("is_rnd")}
+                onBlur={() => blurField("is_rnd")}
+                className="mt-0.5 h-4 w-4 rounded border-input"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="font-medium text-foreground">
+                  For R&amp;D
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Received lots inherit the R&amp;D flag — only trial /
+                  sample MOs can book against them. Leave off for a
+                  normal production order.
+                </span>
+              </span>
+              <FieldEditingIndicator peer={fieldEditors.is_rnd} />
+            </label>
           </div>
 
           <div className="space-y-1.5 sm:col-span-2">

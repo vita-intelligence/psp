@@ -3659,6 +3659,7 @@ defmodule BackendWeb.Payloads do
       currency: lot.currency,
       supplier_batch_no: lot.supplier_batch_no,
       available_qty: decimal_to_string(available),
+      is_rnd: lot.is_rnd || false,
       storage_location: mo_booking_cell_summary(cell)
     }
   end
@@ -4160,6 +4161,7 @@ defmodule BackendWeb.Payloads do
       cancelled_at: po.cancelled_at,
       cancelled_by: actor(po, :cancelled_by),
       cancellation_reason: po.cancellation_reason,
+      is_rnd: po.is_rnd || false,
       lines: preloaded_list(po, :lines, &purchase_order_line/1),
       approvals: preloaded_list(po, :approvals, &purchase_order_approval/1),
       files: preloaded_list(po, :files, fn f -> po_file(f, po) end),
@@ -5015,6 +5017,7 @@ defmodule BackendWeb.Payloads do
       package_weight_kg: l.package_weight_kg,
       units_per_package: l.units_per_package,
       stack_factor: l.stack_factor,
+      is_rnd: l.is_rnd || false,
       # 3PL / bailee custody snapshot. `own` = we own the goods (default);
       # `bailee` = customer-owned, held by us post Positive Release +
       # 3PL routing. `bailee_customer` + `bailee_routed_at` populate
