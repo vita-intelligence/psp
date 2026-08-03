@@ -123,6 +123,49 @@ export default async function StorageTagsPage() {
           </p>
         </section>
 
+        {/* System stream tags — cell tags baked into the app's
+            routing logic. Distinct from cell purposes (which route on
+            the typed enum); these route on the tag membership of the
+            cell. Rendered here so operators know the key + can find
+            which cells carry it, but not editable / deletable via
+            this page (the storage-tag controller refuses those calls
+            for keys in ``system_stream_keys``). */}
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-sm font-semibold">R&amp;D stream tag</h3>
+            <p className="text-xs text-muted-foreground">
+              Tag any storage cell with{" "}
+              <span className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                rnd
+              </span>{" "}
+              in the warehouse plan editor to mark it as an R&amp;D shelf.
+              Trial / sample manufacturing orders auto-route their pickup
+              output to these cells. Seeded by the platform — can&apos;t be
+              renamed or deleted.
+            </p>
+          </div>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            <li className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+              <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full border border-purple-500/30 bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-purple-700 dark:text-purple-400">
+                R&amp;D
+              </span>
+              <div className="min-w-0 flex-1 space-y-1">
+                <p className="font-mono text-[10px] text-muted-foreground">
+                  rnd
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  R&amp;D shelf. Trial / sample MO pickup accepts any cell
+                  whose effective tags include this key.
+                </p>
+              </div>
+              <Lock
+                className="mt-1 size-3.5 shrink-0 text-muted-foreground"
+                aria-label="System reserved"
+              />
+            </li>
+          </ul>
+        </section>
+
         <section className="space-y-2">
           <div>
             <h3 className="text-sm font-semibold">Your tags</h3>

@@ -29,9 +29,22 @@ defmodule Backend.Warehouses.StorageTag do
   # `quarantine` would expect the auto-router to send incoming lots
   # there, but the router only consumes `cell.purpose`. Blocking the
   # key here keeps the two systems disjoint and obvious.
-  @reserved_keys ~w(regular quarantine hold rejected dispatch
-                    production_feed finished_quarantine)
+  @cell_purpose_keys ~w(regular quarantine hold rejected dispatch
+                        production_feed finished_quarantine)
 
+  # Keys reserved for system-driven stream / routing semantics that
+  # aren't cell purposes. These tags are seeded by migration + are
+  # load-bearing in code (renaming or deleting silently breaks the
+  # allocator). Blocking create + update + delete on these keys keeps
+  # the semantics stable across companies.
+  @system_stream_keys ~w(rnd)
+
+  # Union — anything an operator can't freely mint or edit. Aliased
+  # as `reserved_keys/0` for callers that don't care about the split.
+  @reserved_keys @cell_purpose_keys ++ @system_stream_keys
+
+  def cell_purpose_keys, do: @cell_purpose_keys
+  def system_stream_keys, do: @system_stream_keys
   def reserved_keys, do: @reserved_keys
 
   schema "storage_tags" do
@@ -71,14 +84,35 @@ defmodule Backend.Warehouses.StorageTag do
     |> validate_inclusion(:kind, @valid_kinds,
       message: "must be one of: #{Enum.join(@valid_kinds, ", ")}"
     )
-    |> validate_exclusion(:key, @reserved_keys,
-      message:
-        "is reserved for the cell-purpose enum — set the cell's Purpose instead of using a tag"
-    )
+    |> validate_key_not_reserved()
     |> unique_constraint([:company_id, :key],
       name: :storage_tags_company_id_key_index,
       message: "this key is already in use"
     )
+  end
+
+  # Per-key error messages — cell purposes and system stream keys
+  # are both reserved but for different reasons, so the error should
+  # point the operator at the right remediation.
+  defp validate_key_not_reserved(changeset) do
+    case get_field(changeset, :key) do
+      key when key in @cell_purpose_keys ->
+        add_error(
+          changeset,
+          :key,
+          "is reserved for the cell-purpose enum — set the cell's Purpose instead of using a tag"
+        )
+
+      key when key in @system_stream_keys ->
+        add_error(
+          changeset,
+          :key,
+          "is reserved for system stream routing — seeded by migration, can't be created or renamed"
+        )
+
+      _ ->
+        changeset
+    end
   end
 
   # Same lowercase + trim treatment as the inline arrays so a
