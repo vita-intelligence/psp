@@ -32,7 +32,7 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   alias Backend.Warehouses.Warehouse
 
   plug :require_integration_scope, "mo:write" when action in [:create]
-  plug :require_integration_scope, "mo:read" when action in [:list_bookings]
+  plug :require_integration_scope, "mo:read" when action in [:list_bookings, :chain]
 
   action_fallback BackendWeb.FallbackController
 
@@ -178,7 +178,81 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
     end
   end
 
+  @doc """
+  GET /api/integration/manufacturing-orders/:uuid/chain
+
+  Returns the full parent → child MO tree rooted at the trial MO
+  (walks up to the root, then collects every descendant BFS). NPD's
+  trial-batch panel uses this to render the stage chain — one row
+  per stage MO, indented by depth, with per-MO status.
+  """
+  def chain(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where: mo.company_id == ^company_id and mo.uuid == ^uuid
+         ) do
+      nil ->
+        {:error, :not_found}
+
+      %ManufacturingOrder{} = mo ->
+        chain = Production.mo_chain(mo)
+        depth_by_id = compute_depth_by_id(chain)
+
+        json(conn, %{
+          chain:
+            chain
+            |> Enum.map(fn m -> chain_node_payload(m, chain, depth_by_id) end)
+            |> Enum.sort_by(fn n -> {n.depth, n.inserted_at || ""} end)
+        })
+    end
+  end
+
   # ---- helpers ----
+
+  # BFS depth from the root: root = 0, its direct children = 1, etc.
+  # Computed once against the flat chain so the payload can carry
+  # a stable indentation hint to the FE without it having to
+  # re-derive the tree.
+  defp compute_depth_by_id(chain) do
+    by_id = Map.new(chain, fn m -> {m.id, m} end)
+
+    Enum.reduce(chain, %{}, fn mo, acc ->
+      Map.put(acc, mo.id, depth_for(mo, by_id, 0))
+    end)
+  end
+
+  defp depth_for(%ManufacturingOrder{parent_mo_id: nil}, _by_id, depth), do: depth
+
+  defp depth_for(%ManufacturingOrder{parent_mo_id: pid}, by_id, depth) do
+    case Map.get(by_id, pid) do
+      nil -> depth
+      parent -> depth_for(parent, by_id, depth + 1)
+    end
+  end
+
+  defp chain_node_payload(%ManufacturingOrder{} = mo, chain, depth_by_id) do
+    parent =
+      case mo.parent_mo_id do
+        nil -> nil
+        pid -> Enum.find(chain, fn m -> m.id == pid end)
+      end
+
+    %{
+      uuid: mo.uuid,
+      status: mo.status,
+      quantity: to_string(mo.quantity),
+      project_type: mo.project_type,
+      npd_trial_batch_uuid: mo.npd_trial_batch_uuid,
+      due_date: mo.due_date,
+      inserted_at: mo.inserted_at,
+      parent_uuid: parent && parent.uuid,
+      depth: Map.get(depth_by_id, mo.id, 0),
+      is_root: is_nil(mo.parent_mo_id),
+      item: mo.item && %{uuid: mo.item.uuid, name: mo.item.name}
+    }
+  end
 
   defp resolve_actor(%{created_by_id: uid}) when is_integer(uid) do
     case Repo.get(Backend.Accounts.User, uid) do
