@@ -79,6 +79,19 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
 
   const hasAnyBookings = mo.parts.some((p) => p.bookings.length > 0);
 
+  // Data-integrity guard: NPD's BOM push scales mg → the child
+  // item's native unit via ``_UOM_MG_FACTOR`` keyed off the local
+  // ``Item.unit`` field. Items pushed without a ``unit`` set fall
+  // back to factor 1 (identity), so the qty rides through in mg
+  // even when the operator meant kg / L. That's the failure mode
+  // that turned a water line into "160,165" for a 10 L drink.
+  // Surface it aggressively — a single missing UoM on the row is
+  // enough to make every other number on the sheet suspicious.
+  const missingUomCount = mo.parts.filter(
+    (p) =>
+      !(p.unit_of_measurement?.symbol ?? p.part?.stock_uom?.symbol ?? "").trim(),
+  ).length;
+
   function onReleaseAll() {
     if (!canEdit) return;
     if (
@@ -121,6 +134,23 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
           {mo.item?.stock_uom?.symbol ?? "Each"}
         </p>
       </header>
+
+      {missingUomCount > 0 ? (
+        <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-800 dark:text-red-300">
+          <p className="font-medium">
+            {missingUomCount} row{missingUomCount === 1 ? "" : "s"} on this BOM
+            {missingUomCount === 1 ? " has" : " have"} no unit of measurement.
+          </p>
+          <p className="mt-0.5 text-[11px] leading-snug">
+            Quantities render with <span className="font-mono">?</span> where
+            the UoM is missing. NPD&apos;s push cascade also falls back to
+            treating them as raw mg — the numbers below may be off (mg
+            interpreted when the recipe meant g or kg). Open each part on
+            <span className="font-mono"> /production/items </span>and set
+            its Stock UoM to fix.
+          </p>
+        </div>
+      ) : null}
 
       {canEdit && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -274,8 +304,18 @@ function PartRows({
   const hasBookings =
     p.bookings.length > 0 || p.pending_from_sub_mos.length > 0 || hasUnbooked;
   const [open, setOpen] = useState(hasBookings);
-  const uom =
+  // ``uomSymbol`` is the raw label (mg / g / kg / L / …). Falls back
+  // to ``?`` when neither the BOM line nor the part carries a
+  // ``stock_uom`` — that ambiguity is the reason NPD's push
+  // conversion goes wrong (see #TBD): the local Item without a
+  // ``unit`` field hits ``_UOM_MG_FACTOR`` default of 1 and the mg
+  // rides through unchanged. Rendering ``?`` instead of a silent
+  // blank surfaces the missing metadata to the operator so nobody
+  // mistakes a bare number for a unit-implied one.
+  const uomSymbol =
     p.unit_of_measurement?.symbol ?? p.part?.stock_uom?.symbol ?? "";
+  const uom = uomSymbol || "?";
+  const uomMissing = !uomSymbol;
 
   return (
     <>
