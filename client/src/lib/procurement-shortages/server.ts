@@ -21,6 +21,12 @@ export interface ShortageRow {
     item_type: string;
     stock_uom: { id: number; symbol: string; name: string } | null;
   } | null;
+  /** R&D stream flag. When true, this row aggregates demand only
+   *  from trial / sample MOs; when false, from production MOs. A
+   *  single item can appear as two rows (one per stream) — pushing
+   *  the buyer to create separate POs so the ``For R&D`` flag is
+   *  set correctly and the booking guard on trial MOs stays happy. */
+  is_rnd: boolean;
   required_qty: string;
   booked_qty: string;
   expecting_qty: string;

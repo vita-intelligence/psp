@@ -186,12 +186,18 @@ interface NewPOFormProps {
    *  currency / tax_rate defaults. Null skips the prefill and the
    *  buyer picks a vendor themselves. */
   prefillVendorId?: string | null;
+  /** ``For R&D`` flag from the shortages page — set when the row
+   *  aggregates trial / sample MO demand. Pre-ticks the checkbox
+   *  so received lots inherit ``is_rnd = true`` and the booking
+   *  guard on trial MOs stays satisfied. */
+  prefillIsRnd?: boolean;
 }
 
 export function NewPOForm({
   prefillItemUuid = null,
   prefillQty = null,
   prefillVendorId = null,
+  prefillIsRnd = false,
 }: NewPOFormProps = {}) {
   const router = useRouter();
   const prefillAppliedRef = useRef(false);
@@ -493,6 +499,12 @@ export function NewPOForm({
   const vendorPrefillRef = useRef(false);
   useEffect(() => {
     if (vendorPrefillRef.current) return;
+    // Pre-tick the R&D checkbox when the shortages page linked us
+    // from an R&D row. Runs before the vendor / item prefill so the
+    // flag is set by the time the user sees the form.
+    if (prefillIsRnd) {
+      setField("is_rnd", true);
+    }
     if (!prefillVendorId) return;
     if (state.vendorId) return;
     vendorPrefillRef.current = true;
