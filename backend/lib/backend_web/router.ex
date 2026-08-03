@@ -1776,6 +1776,22 @@ defmodule BackendWeb.Router do
            IntegrationItemCertificateController,
            :delete
 
+    # NPD trial-batch → PSP MO creation. Idempotent by
+    # ``npd_trial_batch_uuid`` — a retry (network blip, page refresh,
+    # background queue re-fire) returns the existing MO. Auto-books
+    # FEFO against the R&D stock pool; refuses cross-stream picks
+    # (see Phase B booking guard). Requires ``mo:write``.
+    post "/manufacturing-orders",
+         IntegrationManufacturingOrderController,
+         :create
+
+    # Per-booking pick / consumption state for the trial-batch card.
+    # NPD polls this to render the live "picker at step 3 of 5"
+    # indicator. Requires ``mo:read``.
+    get "/manufacturing-orders/:uuid/bookings",
+        IntegrationManufacturingOrderController,
+        :list_bookings
+
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
          IntegrationSessionController,
          :create_mo_session

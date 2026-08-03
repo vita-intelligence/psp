@@ -65,6 +65,13 @@ defmodule Backend.Production.ManufacturingOrder do
     # R&D from production streams, and changing the flag mid-flight
     # would break bookings that were already made against one pool.
     field :project_type, :string, default: "production"
+    # Idempotency handle for the NPD trial-batch → PSP MO create flow.
+    # NPD sends its TrialBatch.id on POST; a re-fire of the same
+    # payload (retry, page refresh) returns the existing MO instead
+    # of spawning a duplicate. Nullable everywhere except NPD-driven
+    # trial rows; unique partial index enforces one-per-trial when
+    # set (see migration 20260803130000).
+    field :npd_trial_batch_uuid, Ecto.UUID
 
     field :approved_at, :utc_datetime
     field :prepared_at, :utc_datetime
@@ -201,6 +208,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :notes,
       :pickup_window_hours,
       :project_type,
+      :npd_trial_batch_uuid,
       :created_by_id,
       :updated_by_id
     ])
@@ -218,6 +226,10 @@ defmodule Backend.Production.ManufacturingOrder do
     |> validate_number(:pickup_window_hours, greater_than: 0)
     |> validate_inclusion(:project_type, @project_types,
       message: "must be one of: #{Enum.join(@project_types, ", ")}"
+    )
+    |> unique_constraint(:npd_trial_batch_uuid,
+      name: :manufacturing_orders_npd_trial_batch_uuid_unique,
+      message: "an MO already exists for this trial batch"
     )
     |> assoc_constraint(:company)
     |> assoc_constraint(:warehouse)

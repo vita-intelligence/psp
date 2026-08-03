@@ -136,6 +136,16 @@ defmodule BackendWeb.IntegrationReadController do
       quantity: to_string(mo.quantity),
       due_date: mo.due_date,
       item: item_summary(mo.item),
+      # Additive fields — NPD polls the read endpoint to render the
+      # trial-batch detail page's "MO on PSP" card. Existing
+      # vita-performance consumers ignore the extras.
+      project_type: mo.project_type,
+      npd_trial_batch_uuid: mo.npd_trial_batch_uuid,
+      pickup: %{
+        released_at: mo.released_to_warehouse_at,
+        started_at: mo.pickup_started_at,
+        completed_at: mo.pickup_completed_at
+      },
       steps:
         Enum.map(mo.steps || [], fn step ->
           step
