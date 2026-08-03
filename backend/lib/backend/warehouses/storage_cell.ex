@@ -40,8 +40,16 @@ defmodule Backend.Warehouses.StorageCell do
   # so a warehouse audit can trace bailed vs owned inventory without
   # crossing paperwork. Billing accrues from the day a lot lands here
   # until it dispatches.
+  #
+  # `rnd` marks storage dedicated to the R&D stream — trial-batch
+  # ingredient consumption + trial output land here, kept physically
+  # separate from the production stock stream. NPD's Create-MO-on-PSP
+  # dropdown filters warehouses by presence of ≥1 `rnd` cell. Was
+  # previously an orthogonal system-stream tag (`tags = ["rnd"]`);
+  # promoted to a first-class purpose in migration 20260803180000
+  # so the shelf editor exposes one dropdown instead of two.
   @purposes ~w(regular quarantine hold rejected dispatch production_feed
-               finished_quarantine three_pl_storage)
+               finished_quarantine three_pl_storage rnd)
   def purposes, do: @purposes
 
   schema "storage_cells" do

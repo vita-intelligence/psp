@@ -1652,7 +1652,8 @@ export type StorageCellPurpose =
   | "rejected"
   | "dispatch"
   | "finished_quarantine"
-  | "three_pl_storage";
+  | "three_pl_storage"
+  | "rnd";
 
 /** One physical level / subdivision of a storage location. A shelf
  *  with five usable levels has five cells, ordered bottom-to-top
