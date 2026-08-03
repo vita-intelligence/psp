@@ -10,6 +10,7 @@ import { CurrencyRatesForm } from "./currency-rates-form";
 import { AllowedIpsForm } from "./allowed-ips-form";
 import { NumberingFormatsForm } from "./numbering-formats-form";
 import { WarehousePickupForm } from "./warehouse-pickup-form";
+import { RdConsumptionCellForm } from "./rd-consumption-cell-form";
 import { ThreePlRateForm } from "./three-pl-rate-form";
 import { SecurityForm } from "./security-form";
 import { AlertCircle } from "lucide-react";
@@ -50,6 +51,7 @@ export default async function CompanySettingsPage() {
       <WorkingHoursForm company={company} canEdit={canEdit} />
       <HolidaysForm company={company} canEdit={canEdit} />
       <WarehousePickupForm company={company} canEdit={canEdit} />
+      <RdConsumptionCellForm company={company} canEdit={canEdit} />
       <ThreePlRateForm company={company} canEdit={canEdit} />
       <CurrencyRatesForm company={company} canEdit={canEdit} />
       <AllowedIpsForm company={company} canEdit={canEdit} />

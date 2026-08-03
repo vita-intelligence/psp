@@ -122,6 +122,17 @@ export interface Company {
    *  £0.00 lines. String because the backend sends decimals as
    *  strings to avoid JS float rounding. */
   three_pl_rate_per_m3_per_day: string | null;
+  /** R&D consumption cell FK — the default storage cell trial-batch
+   *  MO pickup routes to when the warehouse releases picked
+   *  materials for a scientist. Nullable — companies without an R&D
+   *  lifecycle leave it blank; trial MOs fall through to the picker's
+   *  manual choice in that case. */
+  rd_consumption_cell_id: number | null;
+  /** Preloaded picker breadcrumb for `rd_consumption_cell_id`. Shaped
+   *  like `StockCellPickerRow` so the settings form can seed
+   *  `<CellPicker selected={…} />` without a follow-up fetch. `null`
+   *  when the FK is null or the row wasn't preloaded by the endpoint. */
+  rd_consumption_cell: StockCellPickerRow | null;
   /** Admin toggle. When true, every user in the company must have MFA
    *  enrolled; un-enrolled users get a 7-day grace period from the
    *  moment the flag flipped. Login refuses without a TOTP code past
