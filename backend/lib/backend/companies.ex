@@ -174,6 +174,19 @@ defmodule Backend.Companies do
   end
 
   @doc """
+  R&D consumption cell — single FK the trial-batch pickup flow
+  targets. Passing ``nil`` clears the reference (settings picker's
+  "Clear" button emits that). Broadcasts the standard company
+  settings change so any open ``/settings/company`` page refreshes.
+  """
+  def update_rd_consumption_cell(%Company{} = company, attrs) do
+    company
+    |> Company.rd_consumption_cell_changeset(attrs)
+    |> Repo.update()
+    |> broadcast_company_change("rd_consumption_cell_updated")
+  end
+
+  @doc """
   3PL storage rate — persisted in company base currency, applied to
   every bailee lot from `bailee_routed_at` until dispatch. Passing
   `nil` clears the rate (settings card exposes an explicit "no rate"

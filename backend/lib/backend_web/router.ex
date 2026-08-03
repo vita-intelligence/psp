@@ -212,6 +212,9 @@ defmodule BackendWeb.Router do
     put "/company/locale", CompanyController, :update_locale
     put "/company/security", CompanyController, :update_security
     put "/company/warehouse-pickup", CompanyController, :update_warehouse_pickup
+    put "/company/rd-consumption-cell",
+        CompanyController,
+        :update_rd_consumption_cell
     put "/company/three-pl-rate", CompanyController, :update_three_pl_rate
     put "/company/bag", CompanyController, :update_bag
 

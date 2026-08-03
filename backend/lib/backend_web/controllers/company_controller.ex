@@ -36,6 +36,7 @@ defmodule BackendWeb.CompanyController do
               :update_locale,
               :update_bag,
               :update_warehouse_pickup,
+              :update_rd_consumption_cell,
               :update_three_pl_rate,
               :update_currency_rates_auto_pull,
               :refresh_currency_rates_now
@@ -43,10 +44,20 @@ defmodule BackendWeb.CompanyController do
 
   action_fallback BackendWeb.FallbackController
 
+  # Preload chain for the settings payload so the FE's <CellPicker>
+  # can render its breadcrumb without a follow-up fetch. `current/0`
+  # doesn't preload — it's called on hot paths where the R&D cell
+  # isn't relevant, so we opt-in per response.
+  defp preload_settings(company) do
+    Backend.Repo.preload(company,
+      rd_consumption_cell: [storage_location: [:floor, :warehouse]]
+    )
+  end
+
   @bag_fields ~w(working_hours holidays currency_rates allowed_ips numbering_formats)
 
   def show(conn, _params) do
-    json(conn, %{company: Payloads.company(Companies.current())})
+    json(conn, %{company: Payloads.company(preload_settings(Companies.current()))})
   end
 
   def defaults(conn, _params) do
@@ -56,7 +67,7 @@ defmodule BackendWeb.CompanyController do
   def update(conn, params) do
     case Companies.update_identity(Companies.current(), params) do
       {:ok, company} ->
-        json(conn, %{company: Payloads.company(company)})
+        json(conn, %{company: Payloads.company(preload_settings(company))})
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn
@@ -74,7 +85,7 @@ defmodule BackendWeb.CompanyController do
   def update_locale(conn, params) do
     case Companies.update_locale(Companies.current(), params) do
       {:ok, company} ->
-        json(conn, %{company: Payloads.company(company)})
+        json(conn, %{company: Payloads.company(preload_settings(company))})
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn
@@ -113,7 +124,7 @@ defmodule BackendWeb.CompanyController do
             )
           end
 
-          json(conn, %{company: Payloads.company(company)})
+          json(conn, %{company: Payloads.company(preload_settings(company))})
 
         {:error, %Ecto.Changeset{} = cs} ->
           conn
@@ -138,7 +149,7 @@ defmodule BackendWeb.CompanyController do
   def update_warehouse_pickup(conn, params) do
     case Companies.update_warehouse_pickup(Companies.current(), params) do
       {:ok, company} ->
-        json(conn, %{company: Payloads.company(company)})
+        json(conn, %{company: Payloads.company(preload_settings(company))})
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn
@@ -153,10 +164,28 @@ defmodule BackendWeb.CompanyController do
     end
   end
 
+  def update_rd_consumption_cell(conn, params) do
+    case Companies.update_rd_consumption_cell(Companies.current(), params) do
+      {:ok, company} ->
+        json(conn, %{company: Payloads.company(preload_settings(company))})
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Please pick a valid consumption cell.",
+            Errors.changeset_fields(cs)
+          )
+        )
+    end
+  end
+
   def update_three_pl_rate(conn, params) do
     case Companies.update_three_pl_rate(Companies.current(), params) do
       {:ok, company} ->
-        json(conn, %{company: Payloads.company(company)})
+        json(conn, %{company: Payloads.company(preload_settings(company))})
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn
@@ -180,7 +209,7 @@ defmodule BackendWeb.CompanyController do
     # growing the atom table.
     case Companies.update_bag(Companies.current(), String.to_existing_atom(field), value) do
       {:ok, company} ->
-        json(conn, %{company: Payloads.company(company)})
+        json(conn, %{company: Payloads.company(preload_settings(company))})
 
       {:error, %Ecto.Changeset{} = cs} ->
         conn

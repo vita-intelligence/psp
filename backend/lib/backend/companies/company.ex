@@ -297,6 +297,25 @@ defmodule Backend.Companies.Company do
   end
 
   @doc """
+  R&D consumption cell picker card. A single FK — the storage cell
+  the trial-batch pickup flow drops confirmed loads into. Nullable so
+  companies without an R&D lifecycle can leave it blank; setting to
+  ``nil`` explicitly clears a previously chosen cell (the FE emits
+  ``{"rd_consumption_cell_id": null}`` from the picker's "Clear"
+  button).
+
+  The value is validated at write-time only for FK existence — we
+  can't gate on ``purpose == :consumption`` because operators may
+  reuse a shared cell that carries multiple purposes via tags. The
+  Phase B booking guard already isolates R&D from production stock.
+  """
+  def rd_consumption_cell_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:rd_consumption_cell_id])
+    |> foreign_key_constraint(:rd_consumption_cell_id)
+  end
+
+  @doc """
   3PL storage rate card — currency-agnostic decimal expressed in the
   company's base `currency_code`. Nullable + non-negative; the
   settings card writes a null when the operator wants to unset a
