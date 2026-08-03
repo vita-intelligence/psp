@@ -1785,6 +1785,14 @@ defmodule BackendWeb.Router do
          IntegrationManufacturingOrderController,
          :create
 
+    # R&D-tagged warehouses for the Create-MO modal's picker.
+    # Filtered to warehouses with ≥1 cell (or rack) carrying the
+    # reserved ``rnd`` stream tag. Requires ``mo:write`` — same
+    # scope as the create endpoint since it's part of that flow.
+    get "/warehouses",
+        IntegrationManufacturingOrderController,
+        :list_warehouses
+
     # Per-booking pick / consumption state for the trial-batch card.
     # NPD polls this to render the live "picker at step 3 of 5"
     # indicator. Requires ``mo:read``.

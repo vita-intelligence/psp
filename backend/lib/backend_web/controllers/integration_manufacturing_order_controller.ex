@@ -31,7 +31,7 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   alias Backend.Repo
   alias Backend.Warehouses.Warehouse
 
-  plug :require_integration_scope, "mo:write" when action in [:create]
+  plug :require_integration_scope, "mo:write" when action in [:create, :list_warehouses]
   plug :require_integration_scope, "mo:read" when action in [:list_bookings, :chain]
 
   action_fallback BackendWeb.FallbackController
@@ -207,6 +207,53 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
             |> Enum.sort_by(fn n -> {n.depth, n.inserted_at || ""} end)
         })
     end
+  end
+
+  @doc """
+  GET /api/integration/warehouses
+
+  Lists warehouses tagged for R&D use — a warehouse qualifies when
+  at least one of its cells (or one of its racks / storage
+  locations) carries the reserved ``rnd`` system-stream tag. That's
+  the same "effective tags" semantics used by the pickup allocator
+  in ``Backend.Production.fetch_pickup_target_cell/2``.
+
+  Powers the warehouse dropdown in NPD's Create-MO-on-PSP modal —
+  scientists pick per-MO instead of relying on a global setting, so
+  a multi-site company can route different trial batches to
+  different R&D warehouses. Filtering to R&D-tagged warehouses
+  enforces the stream-isolation posture at picker time.
+
+  Returns ``{"warehouses": [{"uuid", "name"}, ...]}``, sorted by
+  name. Empty list when the company has no R&D-tagged warehouses —
+  NPD surfaces "no R&D warehouse configured on PSP".
+  """
+  def list_warehouses(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    rnd_warehouse_ids =
+      from(w in Warehouse,
+        join: l in Backend.Warehouses.StorageLocation,
+        on: l.warehouse_id == w.id,
+        left_join: c in Backend.Warehouses.StorageCell,
+        on: c.storage_location_id == l.id,
+        where: w.company_id == ^company_id and w.is_active == true,
+        where:
+          fragment("? @> ARRAY[?]::varchar[]", l.tags, "rnd") or
+            fragment("? @> ARRAY[?]::varchar[]", c.tags, "rnd"),
+        distinct: true,
+        select: w.id
+      )
+
+    warehouses =
+      Repo.all(
+        from w in Warehouse,
+          where: w.id in subquery(rnd_warehouse_ids),
+          order_by: [asc: w.name],
+          select: %{uuid: w.uuid, name: w.name}
+      )
+
+    json(conn, %{warehouses: warehouses})
   end
 
   # ---- helpers ----
