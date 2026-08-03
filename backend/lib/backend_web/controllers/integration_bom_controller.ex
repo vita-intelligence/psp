@@ -134,14 +134,16 @@ defmodule BackendWeb.IntegrationBomController do
   defp translate_line(company_id, line, index) when is_map(line) do
     with {:ok, part_uuid} <- fetch_binary(line, "part_uuid", index, "missing part_uuid"),
          {:ok, part_id} <- resolve_part_id(company_id, part_uuid, index),
-         {:ok, qty} <- to_decimal(line["qty"], index) do
+         {:ok, qty} <- to_decimal(line["qty"], index),
+         {:ok, uom_id} <- resolve_uom_id(company_id, line["uom_uuid"], index) do
       attrs =
         %{
           "part_id" => part_id,
           "qty" => qty,
           "sort_order" => line["sort_order"] || index,
           "is_fixed" => line["is_fixed"] || false,
-          "notes" => line["notes"]
+          "notes" => line["notes"],
+          "unit_of_measurement_id" => uom_id
         }
 
       {:ok, attrs}
@@ -150,6 +152,29 @@ defmodule BackendWeb.IntegrationBomController do
 
   defp translate_line(_company_id, _line, index),
     do: {:error, "line[#{index}]: not an object"}
+
+  # Optional per-line UoM. NPD started sending it after PR #TBD so a
+  # child item without a ``stock_uom`` still resolves in the MO Parts
+  # table (previously the FE fell back to blank and the operator
+  # couldn't tell mg from g). Nil / blank ``uom_uuid`` = leave the
+  # line's UoM null (existing behaviour), which means the FE resolves
+  # back to the part's stock_uom.
+  defp resolve_uom_id(_company_id, nil, _index), do: {:ok, nil}
+  defp resolve_uom_id(_company_id, "", _index), do: {:ok, nil}
+
+  defp resolve_uom_id(company_id, uuid, index) when is_binary(uuid) do
+    case Repo.one(
+           from u in Backend.Units.UnitOfMeasurement,
+             where: u.company_id == ^company_id and u.uuid == ^uuid,
+             select: u.id
+         ) do
+      nil -> {:error, "line[#{index}]: uom_uuid #{uuid} not found"}
+      id -> {:ok, id}
+    end
+  end
+
+  defp resolve_uom_id(_company_id, _other, index),
+    do: {:error, "line[#{index}]: uom_uuid must be a string"}
 
   defp fetch_binary(map, key, index, msg) do
     case Map.get(map, key) do
