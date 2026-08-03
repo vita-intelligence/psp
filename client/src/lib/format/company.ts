@@ -76,6 +76,73 @@ export function formatCompanyNumber(
 }
 
 /**
+ * Human-scale quantity formatter — takes a raw ``qty + uom`` pair
+ * and auto-scales to the friendliest neighbouring unit so operators
+ * aren't reading ``160,165 mg`` when ``160.16 g`` is more legible.
+ *
+ * Scaling rules (mass / volume only — count-based UoMs pass
+ * through untouched):
+ *
+ *   mg → g (÷ 1_000)  when |qty| ≥ 1_000
+ *   g  → kg (÷ 1_000) when |qty| ≥ 1_000
+ *   ml → l  (÷ 1_000) when |qty| ≥ 1_000
+ *
+ * Returns the same shape the caller can splice into JSX:
+ * ``{ value, unit }`` where ``value`` is already formatted per
+ * company defaults. The rule chains — 1_500_000 mg → 1.5 kg —
+ * because the caller can call the helper once and get the most
+ * human unit without re-invoking. Kept in one place so every
+ * surface that renders raw ingredient qty (MO parts table, stock
+ * lot placements, spec sheet, …) reads the same way.
+ */
+export function formatQtyHumanized(
+  value: string | number | null | undefined,
+  uom: string | null | undefined,
+  prefs: FormatPrefs | null | undefined,
+): { value: string; unit: string } {
+  const rawUnit = (uom ?? "").trim();
+  if (value === null || value === undefined) {
+    return { value: "—", unit: rawUnit };
+  }
+  const n = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(n)) {
+    return {
+      value: formatCompanyNumber(value, prefs),
+      unit: rawUnit,
+    };
+  }
+
+  // Chain: mg → g → kg  |  ml → l  |  everything else untouched.
+  let scaled = n;
+  let unit = rawUnit.toLowerCase();
+  const step = (from: string, to: string): boolean => {
+    if (unit === from && Math.abs(scaled) >= 1000) {
+      scaled = scaled / 1000;
+      unit = to;
+      return true;
+    }
+    return false;
+  };
+  // Walk both chains until we can't step further.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (step("mg", "g")) continue;
+    if (step("g", "kg")) continue;
+    if (step("ml", "l")) continue;
+    break;
+  }
+
+  return {
+    value: formatCompanyNumber(scaled, prefs),
+    // Restore the caller's original casing when we didn't scale
+    // (so "L" stays "L", "mg" stays "mg"). When we did scale, use
+    // our lowercase target since the SI form is universal.
+    unit: unit === rawUnit.toLowerCase() ? rawUnit : unit,
+  };
+}
+
+
+/**
  * Money formatter — combines the number formatter above with the
  * company's currency code + sign placement. Sign defaults to the
  * code's natural symbol where we have a mapping; otherwise the
