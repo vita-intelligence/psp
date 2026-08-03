@@ -2025,7 +2025,12 @@ defmodule Backend.Production do
       |> maybe_resolve_bom(actor)
       |> maybe_resolve_routing(actor)
 
-    with :ok <- ensure_mo_site_production_facility(actor, attrs["warehouse_id"]),
+    with :ok <-
+           ensure_mo_site_valid_for_project_type(
+             actor,
+             attrs["warehouse_id"],
+             attrs["project_type"]
+           ),
          :ok <- ensure_mo_bom_for_item(actor, attrs["item_id"], attrs["bom_id"]) do
       Repo.transaction(fn ->
         with {:ok, mo} <-
@@ -2826,7 +2831,12 @@ defmodule Backend.Production do
 
     with :ok <-
            (if Map.has_key?(attrs, "warehouse_id"),
-              do: ensure_mo_site_production_facility(actor, attrs["warehouse_id"]),
+              do:
+                ensure_mo_site_valid_for_project_type(
+                  actor,
+                  attrs["warehouse_id"],
+                  attrs["project_type"] || mo.project_type
+                ),
               else: :ok),
          :ok <-
            (if Map.has_key?(attrs, "bom_id") or Map.has_key?(attrs, "item_id"),
@@ -3468,6 +3478,58 @@ defmodule Backend.Production do
 
       _ ->
         {:error, :warehouse_not_found}
+    end
+  end
+
+  # Dispatches the warehouse-kind guard based on project_type. R&D
+  # (trial / sample) MOs run in R&D warehouses — those are not
+  # ``kind = production_facility`` by design (the production-facility
+  # constraint exists to keep production MOs out of R&D warehouses,
+  # not the other way around). For trial / sample we require the
+  # warehouse have at least one cell whose Purpose is ``rnd``, which
+  # matches the picker filter NPD uses.
+  defp ensure_mo_site_valid_for_project_type(actor, warehouse_id, project_type)
+       when project_type in ["trial", "sample"] do
+    ensure_mo_site_has_rnd_cell(actor, warehouse_id)
+  end
+
+  defp ensure_mo_site_valid_for_project_type(actor, warehouse_id, _project_type) do
+    ensure_mo_site_production_facility(actor, warehouse_id)
+  end
+
+  defp ensure_mo_site_has_rnd_cell(_actor, nil), do: {:error, :warehouse_required}
+
+  defp ensure_mo_site_has_rnd_cell(%User{} = actor, id) do
+    int_id =
+      case id do
+        n when is_integer(n) -> n
+        s when is_binary(s) ->
+          case Integer.parse(s) do
+            {n, ""} -> n
+            _ -> nil
+          end
+
+        _ -> nil
+      end
+
+    with %{company_id: cid} = wh when cid == actor.company_id <-
+           int_id && Repo.get(Backend.Warehouses.Warehouse, int_id) do
+      rnd_count =
+        Repo.one(
+          from c in Backend.Warehouses.StorageCell,
+            join: l in Backend.Warehouses.StorageLocation,
+            on: l.id == c.storage_location_id,
+            where: l.warehouse_id == ^wh.id and c.purpose == "rnd",
+            select: count(c.id)
+        )
+
+      if rnd_count && rnd_count > 0 do
+        :ok
+      else
+        {:error, :site_missing_rnd_cell}
+      end
+    else
+      _ -> {:error, :warehouse_not_found}
     end
   end
 
