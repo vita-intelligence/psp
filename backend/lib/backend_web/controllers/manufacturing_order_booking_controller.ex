@@ -261,6 +261,10 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
           {:unprocessable_entity, "item_mismatch",
            "The PO line's item doesn't match the booking line."}
 
+        :rd_stream_mismatch ->
+          {:unprocessable_entity, "rd_stream_mismatch",
+           "R&D-stream mismatch: trial and sample MOs can only book lots received as R&D, and production MOs can only book non-R&D lots. Pick a lot from the correct stream."}
+
         :over_reservation ->
           {:unprocessable_entity, "over_reservation",
            "Reservation exceeds the remaining qty on that PO line (free: #{inspect(extra)})."}

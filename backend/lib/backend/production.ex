@@ -3923,6 +3923,7 @@ defmodule Backend.Production do
     with :ok <- ensure_bookings_not_locked(mo),
          :ok <- ensure_lot_belongs_to_company(actor, attrs["stock_lot_id"]),
          :ok <- ensure_item_matches_lot(attrs["item_id"], attrs["stock_lot_id"]),
+         :ok <- ensure_lot_matches_mo_stream(mo, attrs["stock_lot_id"]),
          :ok <-
            ensure_capacity(
              attrs["stock_lot_id"],
@@ -3947,6 +3948,33 @@ defmodule Backend.Production do
         err ->
           err
       end
+    end
+  end
+
+  # R&D stream isolation for manual bookings. Auto-book +
+  # bookable-lots picker already filter by ``lot.is_rnd`` via
+  # ``list_bookable_lots``, but ``create_booking/3`` accepts a raw
+  # ``stock_lot_id`` from the request, so a curl / stale FE cache
+  # / adventurous operator could otherwise cross the streams
+  # (production lot booked to a trial MO, or vice versa). The DB
+  # doesn't back this up (both are just booleans), so the guard
+  # here is the compliance line.
+  defp ensure_lot_matches_mo_stream(_mo, nil), do: :ok
+
+  defp ensure_lot_matches_mo_stream(%ManufacturingOrder{} = mo, lot_id) do
+    case Repo.get(StockLot, lot_id) do
+      %StockLot{is_rnd: lot_is_rnd} ->
+        if !!lot_is_rnd == mo_expects_rnd?(mo) do
+          :ok
+        else
+          {:error, :rd_stream_mismatch}
+        end
+
+      _ ->
+        # No lot means ensure_lot_belongs_to_company already
+        # rejected — this clause never runs in practice, kept for
+        # defensiveness so the guard is total.
+        :ok
     end
   end
 
