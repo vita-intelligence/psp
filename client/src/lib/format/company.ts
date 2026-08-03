@@ -76,24 +76,28 @@ export function formatCompanyNumber(
 }
 
 /**
- * Human-scale quantity formatter — takes a raw ``qty + uom`` pair
- * and auto-scales to the friendliest neighbouring unit so operators
- * aren't reading ``160,165 mg`` when ``160.16 g`` is more legible.
+ * MO-facing quantity formatter — always renders in kg for mass or
+ * L for volume, no matter how the underlying line was stored. The
+ * MO Parts breakdown reads like a batching sheet, and operators
+ * asked for a single consistent unit across every row so
+ * quantities are directly comparable and sum-able without mental
+ * unit conversion.
  *
- * Scaling rules (mass / volume only — count-based UoMs pass
- * through untouched):
+ * Conversion table (kept in the same place so every surface that
+ * renders raw ingredient qty reads the same way):
  *
- *   mg → g (÷ 1_000)  when |qty| ≥ 1_000
- *   g  → kg (÷ 1_000) when |qty| ≥ 1_000
- *   ml → l  (÷ 1_000) when |qty| ≥ 1_000
+ *   mass:   mg → kg (÷ 1_000_000)
+ *           g  → kg (÷ 1_000)
+ *           kg → kg (identity)
+ *   volume: ml → l  (÷ 1_000)
+ *           l  → l  (identity)
+ *   other:  count / unit / pcs / … pass through untouched
  *
- * Returns the same shape the caller can splice into JSX:
- * ``{ value, unit }`` where ``value`` is already formatted per
- * company defaults. The rule chains — 1_500_000 mg → 1.5 kg —
- * because the caller can call the helper once and get the most
- * human unit without re-invoking. Kept in one place so every
- * surface that renders raw ingredient qty (MO parts table, stock
- * lot placements, spec sheet, …) reads the same way.
+ * ``maxFractionDigits`` — enough precision to keep tiny doses (a
+ * 60 mg active = 0.00006 kg) distinguishable from zero when they
+ * share a table with kg-scale bulk items. Formatted through the
+ * company number formatter so the operator's decimal / thousands
+ * separators still apply.
  */
 export function formatQtyHumanized(
   value: string | number | null | undefined,
@@ -112,32 +116,42 @@ export function formatQtyHumanized(
     };
   }
 
-  // Chain: mg → g → kg  |  ml → l  |  everything else untouched.
+  // Mass → kg, volume → l, everything else stays as-is.
+  const lower = rawUnit.toLowerCase();
   let scaled = n;
-  let unit = rawUnit.toLowerCase();
-  const step = (from: string, to: string): boolean => {
-    if (unit === from && Math.abs(scaled) >= 1000) {
-      scaled = scaled / 1000;
-      unit = to;
-      return true;
-    }
-    return false;
-  };
-  // Walk both chains until we can't step further.
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    if (step("mg", "g")) continue;
-    if (step("g", "kg")) continue;
-    if (step("ml", "l")) continue;
-    break;
+  let unit = lower;
+  switch (lower) {
+    case "mg":
+      scaled = n / 1_000_000;
+      unit = "kg";
+      break;
+    case "g":
+      scaled = n / 1_000;
+      unit = "kg";
+      break;
+    case "kg":
+      unit = "kg";
+      break;
+    case "ml":
+      scaled = n / 1_000;
+      unit = "l";
+      break;
+    case "l":
+      unit = "l";
+      break;
+    default:
+      // Unknown / count-based — leave the caller's original label
+      // and value alone. Preserves the caller's casing so ``L`` /
+      // ``Each`` / ``bottle`` render unchanged.
+      return {
+        value: formatCompanyNumber(value, prefs),
+        unit: rawUnit,
+      };
   }
 
   return {
-    value: formatCompanyNumber(scaled, prefs),
-    // Restore the caller's original casing when we didn't scale
-    // (so "L" stays "L", "mg" stays "mg"). When we did scale, use
-    // our lowercase target since the SI form is universal.
-    unit: unit === rawUnit.toLowerCase() ? rawUnit : unit,
+    value: formatCompanyNumber(scaled, prefs, { maxFractionDigits: 6 }),
+    unit,
   };
 }
 
