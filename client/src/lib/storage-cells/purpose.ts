@@ -69,6 +69,14 @@ export const CELL_PURPOSES: PurposeMeta[] = [
     chipClassName:
       "bg-violet-500/10 text-violet-700 border border-violet-500/30 dark:text-violet-400",
   },
+  {
+    value: "rnd",
+    label: "R&D",
+    description:
+      "Storage dedicated to the R&D stream — trial-batch ingredient consumption and trial output land here, physically separated from production stock. NPD's Create-MO-on-PSP dropdown filters warehouses to those with at least one R&D cell.",
+    chipClassName:
+      "bg-purple-500/10 text-purple-700 border border-purple-500/30 dark:text-purple-400",
+  },
 ];
 
 export const PURPOSE_BY_VALUE: Record<StorageCellPurpose, PurposeMeta> =

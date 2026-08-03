@@ -29,15 +29,19 @@ defmodule Backend.Warehouses.StorageTag do
   # `quarantine` would expect the auto-router to send incoming lots
   # there, but the router only consumes `cell.purpose`. Blocking the
   # key here keeps the two systems disjoint and obvious.
+  #
+  # ``rnd`` used to live in a separate ``@system_stream_keys`` block
+  # here — it's now a first-class cell purpose (``rnd``) and no
+  # longer a reserved tag. Migration 20260803180000 promoted every
+  # rnd-tagged cell to ``purpose = rnd`` and stripped the tag.
   @cell_purpose_keys ~w(regular quarantine hold rejected dispatch
-                        production_feed finished_quarantine)
+                        production_feed finished_quarantine rnd)
 
-  # Keys reserved for system-driven stream / routing semantics that
-  # aren't cell purposes. These tags are seeded by migration + are
-  # load-bearing in code (renaming or deleting silently breaks the
-  # allocator). Blocking create + update + delete on these keys keeps
-  # the semantics stable across companies.
-  @system_stream_keys ~w(rnd)
+  # No non-purpose reserved keys anymore. Kept as an empty list so
+  # callers (FE picker, refuse_system_stream_edit guard) don't crash
+  # on the reference; can be inlined later once every caller is
+  # simplified.
+  @system_stream_keys []
 
   # Union — anything an operator can't freely mint or edit. Aliased
   # as `reserved_keys/0` for callers that don't care about the split.

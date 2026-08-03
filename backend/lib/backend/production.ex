@@ -7098,22 +7098,14 @@ defmodule Backend.Production do
     end
   end
 
-  # Effective-tag check for the R&D drop-off gate. Reads the union of
-  # the cell's own tags + its parent storage location's tags — the
-  # same "effective tags" semantics used by the receive-form and
-  # cell-picker paths, so an operator can tag a whole location once
-  # rather than every cell inside it. Preloads on demand to keep the
-  # hot pickup path stateless.
-  defp cell_tagged_rnd?(%Backend.Warehouses.StorageCell{} = cell) do
-    cell = Repo.preload(cell, :storage_location)
-    location_tags =
-      case cell.storage_location do
-        %Backend.Warehouses.StorageLocation{tags: tags} when is_list(tags) -> tags
-        _ -> []
-      end
-
-    "rnd" in ((cell.tags || []) ++ location_tags)
-  end
+  # R&D drop-off gate. Was previously an "effective tags" check
+  # (cell.tags ∪ rack.tags contains "rnd"); R&D is now a first-class
+  # cell purpose, so the check collapses to a straight purpose
+  # comparison. Migration 20260803180000 promoted every rnd-tagged
+  # cell to purpose = "rnd", so this new check catches every cell
+  # the tag check used to.
+  defp cell_tagged_rnd?(%Backend.Warehouses.StorageCell{purpose: "rnd"}), do: true
+  defp cell_tagged_rnd?(%Backend.Warehouses.StorageCell{}), do: false
 
   defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls, override_fit?) do
     Repo.transaction(fn ->

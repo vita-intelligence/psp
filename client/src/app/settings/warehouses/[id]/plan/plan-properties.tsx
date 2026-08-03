@@ -901,7 +901,6 @@ function LocationBody({
             helpText:
               "Reserved — cell purposes are set per-level in the cell dialog, not as a rack tag.",
           }))}
-          systemStreamKeys={["rnd"]}
         />
 
         <AlertDialog
