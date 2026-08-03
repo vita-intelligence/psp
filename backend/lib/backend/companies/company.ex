@@ -85,6 +85,14 @@ defmodule Backend.Companies.Company do
     field :npd_base_url, :string
     field :npd_integration_token, Backend.Encrypted.Binary, redact: true
 
+    # Default landing cell for R&D / trial-batch pickup output. When
+    # a trial MO releases to the warehouse, the picker's confirmed
+    # load moves to THIS cell instead of the standard production_feed
+    # target. Nullable so companies without an R&D lifecycle don't
+    # need to configure one; SET NULL on cell delete so the reference
+    # is safe against operator warehouse edits.
+    belongs_to :rd_consumption_cell, Backend.Warehouses.StorageCell
+
     has_many :roles, Role
     has_many :users, User
 
