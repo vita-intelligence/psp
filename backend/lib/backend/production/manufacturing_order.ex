@@ -45,9 +45,10 @@ defmodule Backend.Production.ManufacturingOrder do
 
   # Project types. Everything on the shop floor is "production"; NPD
   # trial batches create "trial" MOs that consume rnd-tagged stock and
-  # route the pickup output to Company.rd_consumption_cell. "sample" is
-  # reserved for bench-scale one-offs that log against the same rnd
-  # pool without the full trial workflow.
+  # route the pickup output to any cell whose effective tags include
+  # the reserved ``rnd_consumption`` key. "sample" is reserved for
+  # bench-scale one-offs that log against the same rnd pool without
+  # the full trial workflow.
   @project_types ~w(production trial sample)
   def project_types, do: @project_types
 

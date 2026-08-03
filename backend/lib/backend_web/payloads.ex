@@ -83,59 +83,10 @@ defmodule BackendWeb.Payloads do
       default_pickup_window_hours: company.default_pickup_window_hours,
       three_pl_rate_per_m3_per_day:
         decimal_to_string(company.three_pl_rate_per_m3_per_day),
-      rd_consumption_cell_id: company.rd_consumption_cell_id,
-      # Picker breadcrumb — nil when the cell isn't set or wasn't
-      # preloaded. Shaped like a StockCellPickerRow so the settings
-      # form can seed <CellPicker selected={…} /> without a follow-up
-      # fetch. `nil` when the FK is nil OR the loader didn't preload
-      # the association (e.g. the /defaults endpoint).
-      rd_consumption_cell: rd_consumption_cell_picker_row(company),
       require_mfa: company.require_mfa,
       inserted_at: company.inserted_at,
       updated_at: company.updated_at
     }
-  end
-
-  defp rd_consumption_cell_picker_row(company) do
-    case company.rd_consumption_cell do
-      %Backend.Warehouses.StorageCell{} = cell ->
-        loc = cell.storage_location
-        floor = loc && loc.floor
-        warehouse = (loc && loc.warehouse) || (floor && floor.warehouse)
-
-        if is_nil(loc) or is_nil(floor) or is_nil(warehouse) do
-          # Association scaffold wasn't preloaded — return nil rather
-          # than a half-shaped row that would trip the FE picker's
-          # breadcrumb rendering.
-          nil
-        else
-          %{
-            id: cell.id,
-            uuid: cell.uuid,
-            ordinal: cell.ordinal,
-            name: cell.name,
-            tags: cell.tags || [],
-            effective_tags:
-              Enum.uniq((cell.tags || []) ++ (loc.tags || [])),
-            storage_location: %{
-              id: loc.id,
-              uuid: loc.uuid,
-              name: loc.name,
-              code: render_entity_code(loc, "storage_location"),
-              tags: loc.tags || []
-            },
-            floor: %{id: floor.id, uuid: floor.uuid, name: floor.name},
-            warehouse: %{
-              id: warehouse.id,
-              uuid: warehouse.uuid,
-              name: warehouse.name
-            }
-          }
-        end
-
-      _ ->
-        nil
-    end
   end
 
   @doc """

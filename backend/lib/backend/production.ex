@@ -7066,11 +7066,13 @@ defmodule Backend.Production do
   end
 
   # Pickup-target resolver. Production MOs land on a purpose=production_feed
-  # cell (the historical contract). Trial MOs additionally accept the
-  # company's configured `rd_consumption_cell` — the R&D bench where
-  # scientists want their trial materials to arrive. Any other cell
-  # is refused with the same :production_cell_wrong_purpose reason so
-  # the picker UI can render one unified error.
+  # cell (the historical contract). Trial / sample MOs additionally
+  # accept any cell whose effective tags (cell.tags ∪ location.tags)
+  # include the reserved ``rnd_consumption`` key — operators tag any
+  # R&D bench with it in Warehouse settings and any tagged cell
+  # becomes a valid drop-off. Any other cell is refused with the same
+  # :production_cell_wrong_purpose reason so the picker UI can render
+  # one unified error.
   defp fetch_pickup_target_cell(%ManufacturingOrder{} = mo, uuid) do
     case Repo.get_by(Backend.Warehouses.StorageCell, uuid: uuid, company_id: mo.company_id) do
       nil ->
@@ -7079,9 +7081,9 @@ defmodule Backend.Production do
       %Backend.Warehouses.StorageCell{purpose: "production_feed"} = cell ->
         {:ok, cell}
 
-      %Backend.Warehouses.StorageCell{id: cell_id} = cell ->
+      %Backend.Warehouses.StorageCell{} = cell ->
         if mo.project_type in ["trial", "sample"] and
-             rd_consumption_cell_id_for_company(mo.company_id) == cell_id do
+             cell_tagged_rnd_consumption?(cell) do
           {:ok, cell}
         else
           {:error, :production_cell_wrong_purpose}
@@ -7089,20 +7091,22 @@ defmodule Backend.Production do
     end
   end
 
-  # Read-through helper — avoids preloading a company row for every
-  # pickup transfer just to check one integer. Fetches only the FK
-  # column. Returns nil when no default is configured (which fails
-  # the trial branch above and preserves the "purpose must match"
-  # error path).
-  defp rd_consumption_cell_id_for_company(company_id) when is_integer(company_id) do
-    from(c in Backend.Companies.Company,
-      where: c.id == ^company_id,
-      select: c.rd_consumption_cell_id
-    )
-    |> Repo.one()
-  end
+  # Effective-tag check for the R&D drop-off gate. Reads the union of
+  # the cell's own tags + its parent storage location's tags — the
+  # same "effective tags" semantics used by the receive-form and
+  # cell-picker paths, so an operator can tag a whole location once
+  # rather than every cell inside it. Preloads on demand to keep the
+  # hot pickup path stateless.
+  defp cell_tagged_rnd_consumption?(%Backend.Warehouses.StorageCell{} = cell) do
+    cell = Repo.preload(cell, :storage_location)
+    location_tags =
+      case cell.storage_location do
+        %Backend.Warehouses.StorageLocation{tags: tags} when is_list(tags) -> tags
+        _ -> []
+      end
 
-  defp rd_consumption_cell_id_for_company(_), do: nil
+    "rnd_consumption" in ((cell.tags || []) ++ location_tags)
+  end
 
   defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls, override_fit?) do
     Repo.transaction(fn ->
@@ -10697,8 +10701,8 @@ defmodule Backend.Production do
   end
 
   # Superseded by fetch_pickup_target_cell/2 which additionally
-  # accepts a company's rd_consumption_cell when the MO is a trial or
-  # sample. Left here as a marker in case a future caller needs the
-  # strict production-only variant back.
+  # accepts any cell tagged ``rnd_consumption`` when the MO is a trial
+  # or sample. Left here as a marker in case a future caller needs
+  # the strict production-only variant back.
 
 end
