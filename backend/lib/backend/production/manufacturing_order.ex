@@ -43,6 +43,14 @@ defmodule Backend.Production.ManufacturingOrder do
   @statuses ~w(draft prepared approved scheduled in_progress completed cancelled)
   def statuses, do: @statuses
 
+  # Project types. Everything on the shop floor is "production"; NPD
+  # trial batches create "trial" MOs that consume rnd-tagged stock and
+  # route the pickup output to Company.rd_consumption_cell. "sample" is
+  # reserved for bench-scale one-offs that log against the same rnd
+  # pool without the full trial workflow.
+  @project_types ~w(production trial sample)
+  def project_types, do: @project_types
+
   schema "manufacturing_orders" do
     field :uuid, Ecto.UUID, autogenerate: true
 
@@ -52,6 +60,11 @@ defmodule Backend.Production.ManufacturingOrder do
 
     field :revision, :string, default: "V00"
     field :status, :string, default: "draft"
+    # Project context. Read-only after create — downstream services
+    # (booking, pickup routing, dashboards) branch on this to isolate
+    # R&D from production streams, and changing the flag mid-flight
+    # would break bookings that were already made against one pool.
+    field :project_type, :string, default: "production"
 
     field :approved_at, :utc_datetime
     field :prepared_at, :utc_datetime
@@ -187,6 +200,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :revision,
       :notes,
       :pickup_window_hours,
+      :project_type,
       :created_by_id,
       :updated_by_id
     ])
@@ -202,6 +216,9 @@ defmodule Backend.Production.ManufacturingOrder do
     |> validate_length(:notes, max: 4000)
     |> validate_number(:quantity, greater_than: 0)
     |> validate_number(:pickup_window_hours, greater_than: 0)
+    |> validate_inclusion(:project_type, @project_types,
+      message: "must be one of: #{Enum.join(@project_types, ", ")}"
+    )
     |> assoc_constraint(:company)
     |> assoc_constraint(:warehouse)
     |> assoc_constraint(:item)
