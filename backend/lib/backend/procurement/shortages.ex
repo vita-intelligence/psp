@@ -4,9 +4,14 @@ defmodule Backend.Procurement.Shortages do
   order" across every open MO in the system. Drives the
   `/procurement/shortages` table:
 
-    * One row per raw_material / packaging item with positive shortage
-    * Total required across all open MOs - total booked - qty already
-      on open POs = net shortage
+    * One row per `(raw_material / packaging item, R&D stream)`
+      combo with positive shortage. R&D (trial / sample MOs) and
+      production streams are split so a buyer creating a PO for a
+      row ticks the right ``For R&D`` flag automatically. Mixing
+      the streams would break the booking guard on trial MOs —
+      they can only book lots received as R&D.
+    * Total required across all open MOs of that stream - total
+      booked - qty already on open POs of that stream = net shortage
     * List of dependent MOs so procurement can see who's blocked
 
   Semi-finished items are excluded — they're produced internally by
@@ -29,6 +34,11 @@ defmodule Backend.Procurement.Shortages do
   @open_mo_statuses ~w(draft approved scheduled in_progress)
   @procurable_item_types ~w(raw_material packaging)
   @open_po_statuses ~w(ordered partially_received)
+
+  # Project types that draw from the R&D stock stream. Kept in one
+  # place because the same list gates the booking allocator too
+  # (see ``Backend.Production.mo_expects_rnd?/1``).
+  @rnd_project_types ~w(trial sample)
 
   @doc """
   Paginated shortage feed for the procurement table. Drives the
@@ -158,18 +168,21 @@ defmodule Backend.Procurement.Shortages do
       }
   """
   def list_for(company_id) when is_integer(company_id) do
+    # All four maps are now keyed by ``{item_id, is_rnd}`` so
+    # streams stay separate end-to-end. Row keys come from the
+    # requirements map (there's no shortage without demand); the
+    # other maps default to zero on missing keys.
     requirements = compute_requirements(company_id)
     bookings = compute_bookings(company_id)
-    # Placeholder bookings — reservations against open PO lines that
-    # haven't yet produced a stock_lot. They DON'T inflate the
-    # "expecting" total separately because their qty is already part
-    # of `bookings` (their status is "requested" so the bookings
-    # query picks them up). But we still surface them as a separate
-    # facet so the FE can label "Reserved on PO00xxx" rows.
     expecting = compute_expecting(company_id)
-    on_hand = compute_on_hand(company_id, Map.keys(requirements))
 
-    item_ids = Map.keys(requirements)
+    item_ids =
+      requirements
+      |> Map.keys()
+      |> Enum.map(fn {item_id, _is_rnd} -> item_id end)
+      |> Enum.uniq()
+
+    on_hand = compute_on_hand(company_id, item_ids)
 
     items =
       from(i in Item,
@@ -181,12 +194,11 @@ defmodule Backend.Procurement.Shortages do
 
     dependent_mos = compute_dependent_mos(company_id, item_ids)
 
-    item_ids
-    |> Enum.map(fn item_id ->
-      required = Map.get(requirements, item_id, Decimal.new(0))
-      booked = Map.get(bookings, item_id, Decimal.new(0))
-      exp = Map.get(expecting, item_id, Decimal.new(0))
-      hand = Map.get(on_hand, item_id, Decimal.new(0))
+    requirements
+    |> Enum.map(fn {{item_id, is_rnd}, required} ->
+      booked = Map.get(bookings, {item_id, is_rnd}, Decimal.new(0))
+      exp = Map.get(expecting, {item_id, is_rnd}, Decimal.new(0))
+      hand = Map.get(on_hand, {item_id, is_rnd}, Decimal.new(0))
 
       # Shortage = what procurement still owes after subtracting
       # everything that already covers demand. Three "covering" sources:
@@ -208,12 +220,13 @@ defmodule Backend.Procurement.Shortages do
 
       %{
         item: item_payload(Map.get(items, item_id)),
+        is_rnd: is_rnd,
         required_qty: Decimal.to_string(required),
         booked_qty: Decimal.to_string(booked),
         expecting_qty: Decimal.to_string(exp),
         shortage_qty: Decimal.to_string(shortage),
         on_hand_qty: Decimal.to_string(hand),
-        dependent_mos: Map.get(dependent_mos, item_id, [])
+        dependent_mos: Map.get(dependent_mos, {item_id, is_rnd}, [])
       }
     end)
     |> Enum.reject(fn row -> Decimal.compare(Decimal.new(row.shortage_qty), Decimal.new(0)) != :gt end)
@@ -221,9 +234,13 @@ defmodule Backend.Procurement.Shortages do
   end
 
   # Sum of (BOM line qty × MO qty, or line.qty if fixed) across all
-  # open MOs, grouped by part_id. Limited to procurable item types so
-  # semi-finished items don't pollute the procurement queue (those
-  # are child-MO concerns).
+  # open MOs, grouped by ``{part_id, is_rnd}`` where ``is_rnd`` comes
+  # from ``mo.project_type in ["trial", "sample"]``. Same stream-
+  # isolation rule the booking allocator uses — a trial MO's demand
+  # can only be met by R&D stock, so its shortage row must be
+  # separate. Limited to procurable item types so semi-finished
+  # items don't pollute the procurement queue (those are child-MO
+  # concerns).
   defp compute_requirements(company_id) do
     from(line in BOMLine,
       join: bom in BOM,
@@ -241,7 +258,8 @@ defmodule Backend.Procurement.Shortages do
         part_id: line.part_id,
         line_qty: line.qty,
         is_fixed: line.is_fixed,
-        mo_qty: mo.quantity
+        mo_qty: mo.quantity,
+        mo_project_type: mo.project_type
       }
     )
     |> Repo.all()
@@ -255,24 +273,47 @@ defmodule Backend.Procurement.Shortages do
             Decimal.mult(row.line_qty || Decimal.new(0), row.mo_qty || Decimal.new(0))
         end
 
-      Map.update(acc, row.part_id, qty, &Decimal.add(&1, qty))
+      is_rnd = row.mo_project_type in @rnd_project_types
+      Map.update(acc, {row.part_id, is_rnd}, qty, &Decimal.add(&1, qty))
     end)
   end
 
   defp compute_bookings(company_id) do
+    # Bookings can be lot-backed (``stock_lot_id`` set — carries the
+    # lot's ``is_rnd``) or placeholder against an open PO (``stock_lot_id``
+    # nil, ``purchase_order_line_id`` set — carries the PO's
+    # ``is_rnd``). Both need bucketing so the coverage bucket lines
+    # up with the requirements bucket.
     from(b in ManufacturingOrderBooking,
       join: mo in ManufacturingOrder,
       on: mo.id == b.manufacturing_order_id,
+      left_join: lot in Backend.Stock.Lot,
+      on: lot.id == b.stock_lot_id,
+      left_join: pol in Backend.Purchasing.PurchaseOrderLine,
+      on: pol.id == b.purchase_order_line_id,
+      left_join: po in Backend.Purchasing.PurchaseOrder,
+      on: po.id == pol.purchase_order_id,
       where:
         b.company_id == ^company_id and
           b.status == "requested" and
           mo.status in ^@open_mo_statuses and
           (mo.status != "draft" or not is_nil(mo.purchasing_requested_at)),
-      group_by: b.item_id,
-      select: {b.item_id, sum(b.quantity)}
+      select: %{
+        item_id: b.item_id,
+        quantity: b.quantity,
+        lot_is_rnd: lot.is_rnd,
+        po_is_rnd: po.is_rnd
+      }
     )
     |> Repo.all()
-    |> Map.new()
+    |> Enum.reduce(%{}, fn row, acc ->
+      # Lot side wins when present (that's the concrete allocation);
+      # placeholder falls back to the PO's flag. Anything nil is
+      # ``false`` — matches the field default.
+      is_rnd = row.lot_is_rnd || row.po_is_rnd || false
+      qty = row.quantity || Decimal.new(0)
+      Map.update(acc, {row.item_id, is_rnd}, qty, &Decimal.add(&1, qty))
+    end)
   end
 
   defp compute_expecting(company_id) do
@@ -283,11 +324,18 @@ defmodule Backend.Procurement.Shortages do
         l.company_id == ^company_id and
           po.status in ^@open_po_statuses and
           l.qty_received < l.qty_ordered,
-      group_by: l.item_id,
-      select: {l.item_id, sum(l.qty_ordered) - sum(l.qty_received)}
+      group_by: [l.item_id, po.is_rnd],
+      select: %{
+        item_id: l.item_id,
+        po_is_rnd: po.is_rnd,
+        unrealised: sum(l.qty_ordered) - sum(l.qty_received)
+      }
     )
     |> Repo.all()
-    |> Map.new()
+    |> Enum.reduce(%{}, fn row, acc ->
+      is_rnd = row.po_is_rnd || false
+      Map.update(acc, {row.item_id, is_rnd}, row.unrealised, &Decimal.add(&1, row.unrealised))
+    end)
   end
 
   defp compute_on_hand(_company_id, []), do: %{}
@@ -301,11 +349,14 @@ defmodule Backend.Procurement.Shortages do
           l.item_id in ^item_ids and
           l.status == "available" and
           p.qty > 0,
-      group_by: l.item_id,
-      select: {l.item_id, sum(p.qty)}
+      group_by: [l.item_id, l.is_rnd],
+      select: %{item_id: l.item_id, is_rnd: l.is_rnd, qty: sum(p.qty)}
     )
     |> Repo.all()
-    |> Map.new()
+    |> Enum.reduce(%{}, fn row, acc ->
+      is_rnd = row.is_rnd || false
+      Map.update(acc, {row.item_id, is_rnd}, row.qty, &Decimal.add(&1, row.qty))
+    end)
   end
 
   defp compute_dependent_mos(_company_id, []), do: %{}
@@ -333,14 +384,18 @@ defmodule Backend.Procurement.Shortages do
           quantity: mo.quantity,
           mo_item_id: mo.item_id,
           mo_item_name: mo_item.name,
+          mo_project_type: mo.project_type,
           planned_start: s.planned_start
         }
       )
       |> Repo.all()
 
+    # Grouped by ``{part_id, is_rnd}`` so a row can list only the MOs
+    # from its own stream — production row for Acai lists production
+    # MOs, R&D row lists trial / sample MOs.
     rows
-    |> Enum.group_by(& &1.part_id)
-    |> Map.new(fn {part_id, rows} ->
+    |> Enum.group_by(fn r -> {r.part_id, r.mo_project_type in @rnd_project_types} end)
+    |> Map.new(fn {key, rows} ->
       mo_payloads =
         rows
         |> Enum.group_by(& &1.mo_id)
@@ -366,7 +421,7 @@ defmodule Backend.Procurement.Shortages do
         end)
         |> Enum.sort_by(fn r -> r.planned_start || ~U[2099-01-01 00:00:00Z] end, DateTime)
 
-      {part_id, mo_payloads}
+      {key, mo_payloads}
     end)
   end
 

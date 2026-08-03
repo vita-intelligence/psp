@@ -99,9 +99,19 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         description: "Raw material or packaging item that's short.",
         cell: (r) => (
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium">
-              {r.item?.name ?? "Unknown item"}
-            </p>
+            <div className="flex items-center gap-1.5">
+              <p className="truncate text-sm font-medium">
+                {r.item?.name ?? "Unknown item"}
+              </p>
+              {r.is_rnd ? (
+                <span
+                  title="R&D stream — this row aggregates demand from trial / sample MOs. Create a separate PO with the For R&D flag ticked."
+                  className="shrink-0 rounded-full border border-purple-500/30 bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-400"
+                >
+                  R&amp;D
+                </span>
+              ) : null}
+            </div>
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
               {r.item?.item_type ?? "—"}
             </p>
@@ -346,7 +356,9 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
             <Link
               href={`/procurement/purchase-orders/new?item_uuid=${encodeURIComponent(
                 r.item?.uuid ?? "",
-              )}&qty=${encodeURIComponent(r.shortage_qty)}`}
+              )}&qty=${encodeURIComponent(r.shortage_qty)}${
+                r.is_rnd ? "&is_rnd=1" : ""
+              }`}
             >
               <ShoppingCart className="mr-1.5 size-3.5" />
               Create PO
