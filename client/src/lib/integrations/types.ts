@@ -3,6 +3,7 @@
 
 export type IntegrationScope =
   | "mo:read"
+  | "mo:write:npd"
   | "mo:write:session"
   | "mo:transition"
   | "workstation:read"

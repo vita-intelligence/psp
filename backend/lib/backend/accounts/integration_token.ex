@@ -32,6 +32,7 @@ defmodule Backend.Accounts.IntegrationToken do
   # capability tokens for other integrations.
   @known_scopes ~w(
     mo:read
+    mo:write:npd
     mo:write:session
     mo:transition
     workstation:read
