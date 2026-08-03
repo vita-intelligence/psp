@@ -48,7 +48,7 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
       nil ->
         not_found(conn, "Manufacturing order not found.")
 
-      %ManufacturingOrder{} ->
+      %ManufacturingOrder{} = mo ->
         case Integer.parse(to_string(item_raw)) do
           {item_id, ""} ->
             exclude =
@@ -57,8 +57,13 @@ defmodule BackendWeb.ManufacturingOrderBookingController do
                 v -> Integer.parse(to_string(v)) |> elem(0)
               end
 
+            # Match the auto-allocator: pass the MO's stream so the
+            # picker only surfaces lots the MO could actually consume.
             lots =
-              Production.list_bookable_lots(actor, item_id, exclude_booking_id: exclude)
+              Production.list_bookable_lots(actor, item_id,
+                exclude_booking_id: exclude,
+                is_rnd: Production.mo_expects_rnd?(mo)
+              )
 
             json(conn, %{
               items:

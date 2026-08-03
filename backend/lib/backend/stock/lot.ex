@@ -97,6 +97,15 @@ defmodule Backend.Stock.Lot do
     field :ownership_kind, :string, default: "own"
     field :bailee_routed_at, :utc_datetime
 
+    # R&D stream flag. Inherited from the parent PO's ``is_rnd`` at
+    # receive-time (see ``Purchasing.build_lot_attrs``) or stamped
+    # ``true`` when a trial / sample MO produces the lot. Default
+    # false so lots born outside those flows (manual receive, opening
+    # balance) land in the production pool. Immutable after receive —
+    # a lot's stream is a traceability fact; moving stock between
+    # cells doesn't change what it *is*.
+    field :is_rnd, :boolean, default: false
+
     belongs_to :company, Company
     belongs_to :item, Item
     belongs_to :unit_of_measurement, UnitOfMeasurement
@@ -171,6 +180,7 @@ defmodule Backend.Stock.Lot do
       :ownership_kind,
       :bailee_customer_id,
       :bailee_routed_at,
+      :is_rnd,
       :created_by_id,
       :updated_by_id,
       :goods_in_inspection_id,

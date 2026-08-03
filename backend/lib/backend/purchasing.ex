@@ -1912,6 +1912,10 @@ defmodule Backend.Purchasing do
       "package_weight_kg" => pack[:package_weight_kg],
       "units_per_package" => pack[:units_per_package],
       "stack_factor" => pack[:stack_factor],
+      # Inherit the R&D stream flag from the parent PO. Once written
+      # it's immutable — a lot's R&D-ness is a traceability fact and
+      # moving stock cells doesn't change what it *is*.
+      "is_rnd" => po.is_rnd || false,
       "status" => "received"
     }
   end

@@ -60,6 +60,15 @@ defmodule Backend.Purchasing.PurchaseOrder do
     field :cancelled_at, :utc_datetime
     field :cancellation_reason, :string
 
+    # R&D stream flag. Ticked by the operator on the PO create form
+    # ("For R&D"); receiving lots inherit ``is_rnd = true`` and only
+    # trial / sample MOs can book against them. Default false — every
+    # existing PO stays production without any migration backfill.
+    # Immutable once the PO leaves draft: a lot's R&D-ness is a
+    # traceability fact, and flipping the parent PO mid-flight would
+    # let already-received R&D stock be re-labelled as production.
+    field :is_rnd, :boolean, default: false
+
     belongs_to :vendor, Vendor
     belongs_to :company, Company
     belongs_to :created_by, User
@@ -103,6 +112,7 @@ defmodule Backend.Purchasing.PurchaseOrder do
       :expected_delivery_date,
       :delivery_address,
       :notes,
+      :is_rnd,
       :created_by_id,
       :updated_by_id
     ])

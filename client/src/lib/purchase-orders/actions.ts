@@ -34,6 +34,10 @@ export interface POHeaderInput {
   shipping_fees?: string | null;
   additional_fees?: string | null;
   default_warehouse_id?: number | null;
+  /** R&D stream flag. When true, received lots inherit `is_rnd = true`
+   *  and only trial / sample MOs can book against them. Default false —
+   *  omit for a production PO. Immutable once the PO leaves draft. */
+  is_rnd?: boolean;
 }
 
 export interface POLineReservation {
