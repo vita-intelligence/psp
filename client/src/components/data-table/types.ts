@@ -178,6 +178,14 @@ export interface DataTableProps<T> {
   defaultSort?: SortSpec;
   /** Row click handler — typically navigates to the resource detail. */
   onRowClick?: (row: T) => void;
+  /** Row-level href. When set, each cell content is wrapped in a
+   *  Next.js `<Link>` pointing to this URL — clicking anywhere on the
+   *  row navigates natively via the anchor (no JS event handling).
+   *  Prefer this over `onRowClick` for pure "open detail page" flows:
+   *  it survives Turbopack HMR quirks, works with Cmd+Click for new
+   *  tab, and doesn't fight nested links/buttons inside cells (they
+   *  paint over the row Link with their own `z-10`). */
+  rowHref?: (row: T) => string;
   /** Override the per-page limit (server clamps to its own max). */
   pageSize?: number;
   /** Empty-state when no rows AND no active search/filter. */

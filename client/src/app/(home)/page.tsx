@@ -15,7 +15,7 @@ export default async function HomePage() {
       <PresenceMount />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-6xl space-y-10">
+        <div className="mx-auto max-w-7xl space-y-10">
           <header className="space-y-1.5">
             <p className="text-sm font-medium text-brand">{greeting}</p>
             <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">

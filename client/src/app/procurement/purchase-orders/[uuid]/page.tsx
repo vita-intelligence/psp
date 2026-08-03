@@ -100,7 +100,7 @@ export default async function PODetailPage({
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <PageCursorAnchor
           pageId={`/procurement/purchase-orders/${uuid}`}
-          className="mx-auto max-w-5xl space-y-6"
+          className="mx-auto max-w-7xl space-y-6"
         >
           <RecordHero
             icon={ShoppingCart}

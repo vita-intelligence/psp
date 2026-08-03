@@ -758,6 +758,10 @@ defmodule Backend.Purchasing do
 
       true ->
         po = preload(po)
+        # If the header default is blank but every line shipped to the
+        # same warehouse, backfill the header from the lines so the
+        # buyer doesn't get blocked over a redundant pick.
+        po = backfill_default_warehouse_from_lines(po, actor)
 
         with :ok <- ensure_lines_present(po),
              :ok <- ensure_default_warehouse(po),
@@ -1396,6 +1400,43 @@ defmodule Backend.Purchasing do
        do: :ok
 
   defp ensure_default_warehouse(_), do: {:error, :default_warehouse_required}
+
+  # If the header default_warehouse is missing but every line landed on
+  # the same warehouse, copy that value onto the header. Silent — the
+  # buyer's intent is unambiguous ("everything ships to warehouse X"),
+  # so forcing them to also pick it at the header is a redundant tap
+  # that produced spurious ``default_warehouse_required`` errors on
+  # submit. When lines are mixed (or empty) we leave the header alone
+  # and let the existing gate fire.
+  defp backfill_default_warehouse_from_lines(
+         %PurchaseOrder{default_warehouse_id: nil, lines: lines} = po,
+         %User{} = actor
+       )
+       when is_list(lines) and lines != [] do
+    line_uoms =
+      lines
+      |> Enum.map(& &1.warehouse_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case line_uoms do
+      [single] ->
+        case po
+             |> PurchaseOrder.changeset(%{
+               "default_warehouse_id" => single,
+               "updated_by_id" => actor.id
+             })
+             |> Repo.update() do
+          {:ok, updated} -> preload(updated)
+          _ -> po
+        end
+
+      _ ->
+        po
+    end
+  end
+
+  defp backfill_default_warehouse_from_lines(po, _actor), do: po
 
   defp ensure_lines_have_warehouse(%PurchaseOrder{lines: lines}) when is_list(lines) do
     missing = Enum.filter(lines, &is_nil(&1.warehouse_id))

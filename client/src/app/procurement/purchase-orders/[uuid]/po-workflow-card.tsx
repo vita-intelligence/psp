@@ -6,12 +6,14 @@ import { toast } from "sonner";
 import {
   CheckCircle2,
   Loader2,
+  Pencil,
   Send,
   ShieldCheck,
   ShieldX,
   Truck,
   Workflow,
 } from "lucide-react";
+import { POHeaderEditModal } from "./po-header-edit-modal";
 import {
   Dialog,
   DialogContent,
@@ -63,6 +65,7 @@ export function POWorkflowCard({
   const locked = !!pageId && !isLeader && !!leader;
   const [pending, startTransition] = useTransition();
   const [openDialog, setOpenDialog] = useState<DialogAction>(null);
+  const [editHeaderOpen, setEditHeaderOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<{
@@ -231,6 +234,18 @@ export function POWorkflowCard({
       {locked && <PageLockBanner leader={leader} />}
       <PageLockGuard pageId={pageId ?? ""} disabled={!pageId}>
         <div className="flex flex-wrap gap-2">
+          {po.status === "draft" && canCancel && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setEditHeaderOpen(true)}
+              disabled={pending || locked}
+              title="Edit vendor-agnostic header fields (warehouse, delivery date, notes). Lines edit inline below."
+            >
+              <Pencil className="mr-1.5 size-4" />
+              Edit header
+            </Button>
+          )}
           {po.status === "draft" && canSubmit && (
             <Button size="sm" onClick={onSubmit} disabled={pending || locked}>
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
@@ -292,6 +307,12 @@ export function POWorkflowCard({
             )}
         </div>
       </PageLockGuard>
+
+      <POHeaderEditModal
+        po={po}
+        open={editHeaderOpen}
+        onOpenChange={setEditHeaderOpen}
+      />
 
       <Dialog
         open={openDialog === "approver" || openDialog === "director"}

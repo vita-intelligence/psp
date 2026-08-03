@@ -478,7 +478,9 @@ function EventRow({
           ) : (
             <span className="italic text-muted-foreground">Unknown user</span>
           )}
-          <span className="text-muted-foreground">{summary}</span>
+          <span className="min-w-0 flex-1 break-all text-muted-foreground line-clamp-2">
+            {summary}
+          </span>
           <span
             className="text-muted-foreground/70"
             title={when.toLocaleString()}

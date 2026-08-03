@@ -452,7 +452,8 @@ export function ManufacturingOrdersLedger({
             <Badge tone={STATUS_TONE[m.status]}>{STATUS_LABEL[m.status]}</Badge>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            {formatCompanyNumber(m.quantity, prefs)} Each · {m.warehouse?.name}
+            {formatCompanyNumber(m.quantity, prefs)}{" "}
+            {m.item?.stock_uom?.symbol ?? "each"} · {m.warehouse?.name}
           </p>
         </div>
       )}

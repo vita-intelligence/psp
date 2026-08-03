@@ -54,7 +54,7 @@ export default async function RoutingDetailPage({ params }: Props) {
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <PageCursorAnchor
           pageId={`/production/routings/${uuid}`}
-          className="mx-auto max-w-5xl space-y-6"
+          className="mx-auto max-w-7xl space-y-6"
           suppressBanner
         >
           <PageHeader

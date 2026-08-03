@@ -27,6 +27,12 @@ export interface ShortageRow {
    *  the buyer to create separate POs so the ``For R&D`` flag is
    *  set correctly and the booking guard on trial MOs stays happy. */
   is_rnd: boolean;
+  /** The UoM every contributing BOM line for this row actually
+   *  stores its qty in (kg / L after the NPD base-unit normaliser).
+   *  Prefer this over ``item.stock_uom`` when rendering the row's
+   *  numbers so the label matches the value. Null on legacy rows
+   *  where no BOM line has a UoM set. */
+  line_uom: { id: number; symbol: string; name: string } | null;
   required_qty: string;
   booked_qty: string;
   expecting_qty: string;

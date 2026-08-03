@@ -98,9 +98,9 @@ export function SalesSubnav() {
   return (
     <nav
       aria-label="Sales sections"
-      className="sticky top-16 z-[5] border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60"
+      className="sticky top-16 z-[5] border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 px-4 sm:px-8"
     >
-      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 px-4 py-2 sm:grid-cols-6 sm:px-8 lg:grid-cols-11">
+      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 py-2 sm:grid-cols-6 lg:grid-cols-11">
         {ITEMS.map((item) => {
           const active = isActive(item.href);
 

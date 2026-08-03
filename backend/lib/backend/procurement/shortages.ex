@@ -172,7 +172,7 @@ defmodule Backend.Procurement.Shortages do
     # streams stay separate end-to-end. Row keys come from the
     # requirements map (there's no shortage without demand); the
     # other maps default to zero on missing keys.
-    requirements = compute_requirements(company_id)
+    {requirements, line_uoms_by_key} = compute_requirements(company_id)
     bookings = compute_bookings(company_id)
     expecting = compute_expecting(company_id)
 
@@ -192,6 +192,20 @@ defmodule Backend.Procurement.Shortages do
       |> Repo.all()
       |> Map.new(&{&1.id, &1})
 
+    line_uoms_by_id =
+      line_uoms_by_key
+      |> Map.values()
+      |> Enum.uniq()
+      |> case do
+        [] ->
+          %{}
+
+        ids ->
+          from(u in Backend.Units.UnitOfMeasurement, where: u.id in ^ids)
+          |> Repo.all()
+          |> Map.new(&{&1.id, &1})
+      end
+
     dependent_mos = compute_dependent_mos(company_id, item_ids)
 
     requirements
@@ -199,6 +213,8 @@ defmodule Backend.Procurement.Shortages do
       booked = Map.get(bookings, {item_id, is_rnd}, Decimal.new(0))
       exp = Map.get(expecting, {item_id, is_rnd}, Decimal.new(0))
       hand = Map.get(on_hand, {item_id, is_rnd}, Decimal.new(0))
+      line_uom_id = Map.get(line_uoms_by_key, {item_id, is_rnd})
+      line_uom = line_uom_id && Map.get(line_uoms_by_id, line_uom_id)
 
       # Shortage = what procurement still owes after subtracting
       # everything that already covers demand. Three "covering" sources:
@@ -221,6 +237,12 @@ defmodule Backend.Procurement.Shortages do
       %{
         item: item_payload(Map.get(items, item_id)),
         is_rnd: is_rnd,
+        # ``line_uom`` reflects the UoM every contributing BOM line
+        # actually stores its qty in (kg / L after the NPD normalizer
+        # lands). The FE prefers this over ``item.stock_uom`` when
+        # rendering the row so the number + label always match.
+        # Falls back to null for legacy lines without a line UoM.
+        line_uom: uom_payload(line_uom),
         required_qty: Decimal.to_string(required),
         booked_qty: Decimal.to_string(booked),
         expecting_qty: Decimal.to_string(exp),
@@ -257,13 +279,14 @@ defmodule Backend.Procurement.Shortages do
       select: %{
         part_id: line.part_id,
         line_qty: line.qty,
+        line_uom_id: line.unit_of_measurement_id,
         is_fixed: line.is_fixed,
         mo_qty: mo.quantity,
         mo_project_type: mo.project_type
       }
     )
     |> Repo.all()
-    |> Enum.reduce(%{}, fn row, acc ->
+    |> Enum.reduce({%{}, %{}}, fn row, {qty_acc, uom_acc} ->
       qty =
         cond do
           row.is_fixed ->
@@ -274,7 +297,17 @@ defmodule Backend.Procurement.Shortages do
         end
 
       is_rnd = row.mo_project_type in @rnd_project_types
-      Map.update(acc, {row.part_id, is_rnd}, qty, &Decimal.add(&1, qty))
+      key = {row.part_id, is_rnd}
+      qty_acc = Map.update(qty_acc, key, qty, &Decimal.add(&1, qty))
+      # Remember the last non-nil line UoM per (part, stream). After
+      # the NPD-side base-unit normalisation lands, every line for a
+      # given part will use the same UoM (kg / L) so "last" is stable;
+      # for legacy data we pick something reasonable rather than
+      # crashing.
+      uom_acc =
+        if row.line_uom_id, do: Map.put(uom_acc, key, row.line_uom_id), else: uom_acc
+
+      {qty_acc, uom_acc}
     end)
   end
 
@@ -437,5 +470,11 @@ defmodule Backend.Procurement.Shortages do
         item.stock_uom &&
           %{id: item.stock_uom.id, symbol: item.stock_uom.symbol, name: item.stock_uom.name}
     }
+  end
+
+  defp uom_payload(nil), do: nil
+
+  defp uom_payload(%Backend.Units.UnitOfMeasurement{} = uom) do
+    %{id: uom.id, symbol: uom.symbol, name: uom.name}
   end
 end

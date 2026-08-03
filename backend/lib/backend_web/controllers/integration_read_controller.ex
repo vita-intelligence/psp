@@ -315,7 +315,15 @@ defmodule BackendWeb.IntegrationReadController do
             uuid: u.uuid,
             name: u.name,
             symbol: u.symbol,
-            dimension: u.dimension
+            dimension: u.dimension,
+            # Conversion metadata — NPD reads these to normalise BOM
+            # line qty into the dimension's base unit (kg for mass, L
+            # for volume, …) at write time. Without this the upstream
+            # pipeline would still POST raw mg / mL and every consumer
+            # (shortages, MO Parts, PO create) would render huge
+            # numbers a human can't compare across items.
+            factor_to_base: Decimal.to_string(u.factor_to_base),
+            is_base: u.is_base
           }
         end)
     })

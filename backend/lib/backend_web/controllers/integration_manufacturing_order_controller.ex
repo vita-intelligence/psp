@@ -328,12 +328,18 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   end
 
   defp lookup_by_trial(company_id, trial_uuid) do
+    # Only ACTIVE MOs count as an idempotency hit. A cancelled MO
+    # frees the trial-batch slot so NPD can re-fire ``Create MO``
+    # without minting a new trial batch (the plan persists, the run
+    # is what gets re-attempted). The partial unique index enforces
+    # this on the DB side too.
     row =
       Repo.one(
         from mo in ManufacturingOrder,
           where:
             mo.company_id == ^company_id and
-              mo.npd_trial_batch_uuid == ^trial_uuid
+              mo.npd_trial_batch_uuid == ^trial_uuid and
+              mo.status != "cancelled"
       )
 
     {:ok, row}
