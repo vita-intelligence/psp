@@ -16,6 +16,7 @@ import {
   formatCompanyMoney,
   formatCompanyNumber,
   formatCompanyDate,
+  formatQtyHumanized,
 } from "@/lib/format/company";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -351,22 +352,28 @@ function PartRows({
           </div>
         </td>
         <td className="px-2 py-2 text-right font-mono">
-          {p.required_qty
-            ? `${formatCompanyNumber(p.required_qty, company)} ${uom}`.trim()
-            : "—"}
+          {(() => {
+            if (!p.required_qty) return "—";
+            const h = formatQtyHumanized(p.required_qty, uom, company);
+            return `${h.value} ${h.unit}`.trim();
+          })()}
           {p.is_fixed && (
             <p className="text-[9px] text-muted-foreground">fixed</p>
           )}
         </td>
         <td className="px-2 py-2 text-right font-mono">
-          {p.consumed_qty
-            ? `${formatCompanyNumber(p.consumed_qty, company)} ${uom}`.trim()
-            : `0 ${uom}`.trim()}
+          {(() => {
+            const src = p.consumed_qty || "0";
+            const h = formatQtyHumanized(src, uom, company);
+            return `${h.value} ${h.unit}`.trim();
+          })()}
         </td>
         <td className="px-2 py-2 text-right font-mono">
-          {p.booked_qty
-            ? `${formatCompanyNumber(p.booked_qty, company)} ${uom}`.trim()
-            : `0 ${uom}`.trim()}
+          {(() => {
+            const src = p.booked_qty || "0";
+            const h = formatQtyHumanized(src, uom, company);
+            return `${h.value} ${h.unit}`.trim();
+          })()}
         </td>
         <td className="px-2 py-2 text-right font-mono">
           {p.unit_cost ? formatCompanyMoney(p.unit_cost, company) : "—"}
@@ -545,12 +552,20 @@ function BookingRow({
       <td className="px-2 py-1.5 pl-8 text-muted-foreground" />
       <td className="px-2 py-1.5 text-right" />
       <td className="px-2 py-1.5 text-right font-mono">
-        {booking.consumed_quantity
-          ? `${formatCompanyNumber(booking.consumed_quantity, company)} ${uom}`.trim()
-          : `0 ${uom}`.trim()}
+        {(() => {
+          const h = formatQtyHumanized(
+            booking.consumed_quantity || "0",
+            uom,
+            company,
+          );
+          return `${h.value} ${h.unit}`.trim();
+        })()}
       </td>
       <td className="px-2 py-1.5 text-right font-mono">
-        {formatCompanyNumber(booking.quantity, company)} {uom}
+        {(() => {
+          const h = formatQtyHumanized(booking.quantity, uom, company);
+          return `${h.value} ${h.unit}`.trim();
+        })()}
       </td>
       <td className="px-2 py-1.5 text-right font-mono">
         {unitCost ? formatCompanyMoney(unitCost, company) : "—"}
@@ -827,7 +842,10 @@ function NotBookedRow({
         —
       </td>
       <td className={cn("px-2 py-1.5 text-right font-mono", qtyTone)}>
-        {formatCompanyNumber(unbookedQty, company)} {uom}
+        {(() => {
+          const h = formatQtyHumanized(unbookedQty, uom, company);
+          return `${h.value} ${h.unit}`.trim();
+        })()}
       </td>
       <td className="px-2 py-1.5 text-right font-mono">
         {unitCost ? formatCompanyMoney(unitCost, company) : "—"}
@@ -919,9 +937,17 @@ function PendingSubMoRow({
         </Link>
       </td>
       <td className="px-2 py-1.5 text-right" />
-      <td className="px-2 py-1.5 text-right font-mono">{`0 ${uom}`.trim()}</td>
+      <td className="px-2 py-1.5 text-right font-mono">
+        {(() => {
+          const h = formatQtyHumanized("0", uom, company);
+          return `${h.value} ${h.unit}`.trim();
+        })()}
+      </td>
       <td className="px-2 py-1.5 text-right font-mono text-amber-800 dark:text-amber-300">
-        {formatCompanyNumber(child.quantity, company)} {uom}
+        {(() => {
+          const h = formatQtyHumanized(child.quantity, uom, company);
+          return `${h.value} ${h.unit}`.trim();
+        })()}
       </td>
       <td className="px-2 py-1.5 text-right font-mono">
         {unitCost ? formatCompanyMoney(unitCost, company) : "—"}
