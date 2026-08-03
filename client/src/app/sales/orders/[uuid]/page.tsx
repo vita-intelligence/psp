@@ -95,7 +95,7 @@ export default async function CustomerOrderDetailPage({
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
         <PageCursorAnchor
           pageId={`/sales/orders/${uuid}`}
-          className="mx-auto max-w-5xl space-y-6"
+          className="mx-auto max-w-7xl space-y-6"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Button asChild variant="ghost" size="sm" className="text-muted-foreground">

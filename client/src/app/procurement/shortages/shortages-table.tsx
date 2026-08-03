@@ -85,7 +85,11 @@ async function fetchShortagesPage(params: {
 export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
   const columns = useMemo<DataTableColumn<ShortageRow>[]>(() => {
     function uomOf(r: ShortageRow): string {
-      return r.item?.stock_uom?.symbol ?? "";
+      // Prefer the UoM every contributing BOM line actually stores
+      // its qty in (kg / L after NPD's base-unit normalisation).
+      // Falls back to the item's stock_uom for legacy rows and the
+      // ultimate empty string only when neither is set.
+      return r.line_uom?.symbol ?? r.item?.stock_uom?.symbol ?? "";
     }
 
     return [

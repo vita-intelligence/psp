@@ -48,7 +48,7 @@ export default async function QueuesPage() {
       <PresenceMount />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-6xl space-y-6">
+        <div className="mx-auto max-w-7xl space-y-6">
           <PageHeader
             title="Queues"
             description="Things needing attention in the next 30 days. Already overdue entries surface first."

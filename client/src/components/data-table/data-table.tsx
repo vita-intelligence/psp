@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -72,6 +73,7 @@ export function DataTable<T>({
   filters,
   defaultSort,
   onRowClick,
+  rowHref,
   pageSize = 25,
   emptyState,
   toolbarActions,
@@ -382,29 +384,69 @@ export function DataTable<T>({
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
-                  <TableRow
-                    key={rowKey(row)}
-                    data-collab-id={`row:${tableId}:${rowKey(row)}`}
-                    onClick={onRowClick ? () => onRowClick(row) : undefined}
-                    className={cn(
-                      onRowClick && "cursor-pointer",
-                    )}
-                  >
-                    {orderedColumns.map((col) => (
-                      <TableCell
-                        key={col.id}
-                        className={cn(
-                          col.align === "right" && "text-right",
-                          col.align === "center" && "text-center",
-                          col.widthClassName,
-                        )}
-                      >
-                        {col.cell(row)}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))
+                rows.map((row) => {
+                  // When `rowHref` is set, every cell wraps its content
+                  // in a Next.js Link overlay. Clicking anywhere on
+                  // that cell is *native anchor navigation* — no JS
+                  // event handling, no bubbling races with nested
+                  // links/buttons, works with Cmd/Ctrl+Click for a new
+                  // tab. Nested links & buttons inside cell content
+                  // paint over the overlay via `relative z-10` and win
+                  // their own click.
+                  const href = rowHref ? rowHref(row) : null;
+                  return (
+                    <TableRow
+                      key={rowKey(row)}
+                      data-collab-id={`row:${tableId}:${rowKey(row)}`}
+                      onClick={
+                        !href && onRowClick
+                          ? (e) => {
+                              const target = e.target as HTMLElement | null;
+                              if (
+                                target?.closest(
+                                  'a,button,[role="button"],[data-row-click-skip]',
+                                )
+                              ) {
+                                return;
+                              }
+                              onRowClick(row);
+                            }
+                          : undefined
+                      }
+                      className={cn(
+                        (href || onRowClick) && "cursor-pointer",
+                      )}
+                    >
+                      {orderedColumns.map((col) => (
+                        <TableCell
+                          key={col.id}
+                          className={cn(
+                            "relative",
+                            col.align === "right" && "text-right",
+                            col.align === "center" && "text-center",
+                            col.widthClassName,
+                          )}
+                        >
+                          {href && (
+                            <Link
+                              href={href}
+                              className="absolute inset-0 z-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+                              aria-label="Open detail"
+                              tabIndex={col.id === orderedColumns[0]?.id ? 0 : -1}
+                            />
+                          )}
+                          <div
+                            className={cn(
+                              href && "pointer-events-none relative z-0 [&_a]:pointer-events-auto [&_button]:pointer-events-auto [&_[role=button]]:pointer-events-auto [&_a]:relative [&_a]:z-10 [&_button]:relative [&_button]:z-10 [&_[role=button]]:relative [&_[role=button]]:z-10",
+                            )}
+                          >
+                            {col.cell(row)}
+                          </div>
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -425,38 +467,55 @@ export function DataTable<T>({
                 : (emptyState ?? "Nothing here yet.")}
             </div>
           ) : (
-            rows.map((row) => (
-              <button
-                key={rowKey(row)}
-                type="button"
-                data-collab-id={`row:${tableId}:${rowKey(row)}`}
-                onClick={() => onRowClick?.(row)}
-                className={cn(
-                  "block w-full rounded-md border border-border/60 bg-background p-3 text-left",
-                  onRowClick && "transition-colors hover:bg-muted/30",
-                )}
-              >
-                {renderMobileCard ? (
-                  renderMobileCard(row)
-                ) : (
-                  <dl className="space-y-1.5">
-                    {orderedColumns.map((col) => (
-                      <div
-                        key={col.id}
-                        className="flex items-start justify-between gap-3"
-                      >
-                        <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                          {col.header}
-                        </dt>
-                        <dd className="min-w-0 text-right text-sm">
-                          {(col.mobileCell ?? col.cell)(row)}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                )}
-              </button>
-            ))
+            rows.map((row) => {
+              const href = rowHref ? rowHref(row) : null;
+              const cardBody = renderMobileCard ? (
+                renderMobileCard(row)
+              ) : (
+                <dl className="space-y-1.5">
+                  {orderedColumns.map((col) => (
+                    <div
+                      key={col.id}
+                      className="flex items-start justify-between gap-3"
+                    >
+                      <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                        {col.header}
+                      </dt>
+                      <dd className="min-w-0 text-right text-sm">
+                        {(col.mobileCell ?? col.cell)(row)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              );
+              const cardClass = cn(
+                "block w-full rounded-md border border-border/60 bg-background p-3 text-left",
+                (href || onRowClick) && "transition-colors hover:bg-muted/30",
+              );
+              if (href) {
+                return (
+                  <Link
+                    key={rowKey(row)}
+                    href={href}
+                    data-collab-id={`row:${tableId}:${rowKey(row)}`}
+                    className={cardClass}
+                  >
+                    {cardBody}
+                  </Link>
+                );
+              }
+              return (
+                <button
+                  key={rowKey(row)}
+                  type="button"
+                  data-collab-id={`row:${tableId}:${rowKey(row)}`}
+                  onClick={() => onRowClick?.(row)}
+                  className={cardClass}
+                >
+                  {cardBody}
+                </button>
+              );
+            })
           )}
         </div>
       </div>

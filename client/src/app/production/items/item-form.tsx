@@ -21,6 +21,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import { CountryPicker } from "@/components/forms/country-picker";
 import { TagPicker } from "@/components/forms/tag-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -565,11 +566,61 @@ export function ItemForm({
 
   const dirty = JSON.stringify(state) !== JSON.stringify(original);
 
+  // Attribute keys the item form ALREADY exposes as first-class rows
+  // (backed by a dedicated schema column with typed validation +
+  // compliance-blocker wiring). Rendering them again from the
+  // attributes bag double-books the field: two inputs, two saves,
+  // two sources of truth. Hide the attribute-bag copy so the
+  // first-class row is the single edit surface. The catalog importer
+  // populated these keys for legacy reasons; the definitions stay
+  // so historical values still round-trip on save, but the UI stops
+  // showing them.
+  //
+  // Raw material — matches raw_material_compliance + raw_material_risk.
+  // Only keys with a REAL first-class row on the form. Attribute keys
+  // that don't have an equivalent (``active_ingredient``,
+  // ``allergen``, ``allergen_source``, ``control_measures``,
+  // ``regulated``, ``total_hazard_score``, ``overall_risk_level``)
+  // stay in the Custom Attributes bag so the operator has some UI to
+  // edit them — otherwise the value sits invisibly in state and the
+  // server rejects the save with no field visible to fix.
+  const RAW_MATERIAL_FIRST_CLASS_KEYS = new Set([
+    "use_as",
+    "vegan",
+    "halal",
+    "kosher",
+    "organic",
+    "gmo_status",
+    "novel_food",
+    "country_of_origin",
+    "typical_country_of_origin",
+    "purity",
+    "extract_ratio",
+    "overage",
+    "powder_water_dose_mg_per_ml",
+    "shelf_life_months",
+    "storage_conditions",
+    "physical_risk_score",
+    "chemical_risk_score",
+    "biological_risk_score",
+    "allergen_risk_score",
+    "radiological_risk_score",
+    "fraud_vulnerability_score",
+    "malicious_risk_score",
+    "justification",
+    "required_controls",
+  ]);
+
   const visibleAttributeDefinitions = useMemo(
     () =>
-      attributeDefinitions.filter(
-        (a) => a.scope === state.item_type || a.scope === "item_any",
-      ),
+      attributeDefinitions
+        .filter((a) => a.scope === state.item_type || a.scope === "item_any")
+        .filter((a) => {
+          if (state.item_type === "raw_material") {
+            return !RAW_MATERIAL_FIRST_CLASS_KEYS.has(a.key);
+          }
+          return true;
+        }),
     [attributeDefinitions, state.item_type],
   );
 
@@ -629,7 +680,22 @@ export function ItemForm({
         barcode: s("barcode").trim() || null,
         stock_uom_id: state.stock_uom_id,
         product_family_id: state.product_family_id,
-        attributes: state.attributes,
+        // Strip attribute keys shadowed by first-class rows before
+        // sending — the value on ``rm_use_as`` (typed picker) is
+        // authoritative; the legacy attributes.``use_as`` (from CSV
+        // import) would otherwise fight the enum validator if the
+        // catalog importer wrote something outside the current enum
+        // choices. The keys still exist in local state so downstream
+        // consumers reading ``state.attributes`` see them, we just
+        // don't ship them across the wire.
+        attributes:
+          state.item_type === "raw_material"
+            ? Object.fromEntries(
+                Object.entries(state.attributes).filter(
+                  ([k]) => !(k in ATTR_TO_FIRST_CLASS_BLOCKER),
+                ),
+              )
+            : state.attributes,
         storage_tags: state.storage_tags,
         is_active: state.is_active,
         // Reorder points only meaningful for bought-in item types.
@@ -797,6 +863,51 @@ export function ItemForm({
       if (!res.ok) {
         setFieldErrors(res.fields ?? {});
         setActionError(res);
+        // Scroll to the first offending field so the operator can
+        // start typing without hunting through 2000+ lines of form.
+        // Priority:
+        //   1) res.fields keys (already dotted paths like
+        //      ``raw_material_compliance.use_as``)
+        //   2) Attribute-bag errors leak through the top-level detail
+        //      as ``invalid_attributes: <key>: <reason>``. Extract the
+        //      key and scroll to ``attributes.<key>``.
+        const firstErrorKey =
+          Object.keys(res.fields ?? {})[0] ??
+          (() => {
+            const m = /invalid_attributes:\s*([a-z0-9_]+)\s*:/i.exec(
+              res.detail ?? "",
+            );
+            return m ? `attributes.${m[1]}` : null;
+          })();
+        if (firstErrorKey) {
+          window.requestAnimationFrame(() => {
+            const el = document.querySelector(
+              `[data-field-key="${firstErrorKey}"]`,
+            ) as HTMLElement | null;
+            if (!el) return;
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.classList.add(
+              "ring-2",
+              "ring-destructive/70",
+              "ring-offset-2",
+              "rounded-md",
+              "transition-all",
+            );
+            window.setTimeout(() => {
+              el.classList.remove(
+                "ring-2",
+                "ring-destructive/70",
+                "ring-offset-2",
+                "rounded-md",
+                "transition-all",
+              );
+            }, 2500);
+            const focusable = el.querySelector<HTMLElement>(
+              "input, select, textarea, [role='combobox']",
+            );
+            focusable?.focus();
+          });
+        }
         return;
       }
 
@@ -1178,23 +1289,64 @@ export function ItemForm({
 
           {visibleAttributeDefinitions.length > 0 && (
             <>
-              <SectionHeader
-                title="Custom attributes"
-                hint={`Admin-defined fields for ${ITEM_TYPE_OPTIONS.find((o) => o.value === state.item_type)?.label.toLowerCase() ?? "this type"}.`}
-              />
-              <Grid>
-                {visibleAttributeDefinitions.map((def_) => (
-                  <DynamicAttributeRow
-                    key={def_.uuid}
-                    def_={def_}
-                    value={state.attributes[def_.key]}
-                    onChange={(v) => setAttribute(def_.key, v)}
-                    onFocus={() => focusField(`attr:${def_.key}`)}
-                    onBlur={() => blurField(`attr:${def_.key}`)}
-                    editor={fieldEditors[`attr:${def_.key}`]}
-                  />
-                ))}
-              </Grid>
+              {(() => {
+                // Group attributes into readable buckets by key-name
+                // rules. Was a flat "Custom attributes" wall of 26+
+                // rows; ops couldn't tell risk fields from allergen
+                // fields from labelling fields at a glance. Grouping
+                // is keyword-based on the key + label so no schema
+                // change is needed to reap the visual win.
+                const groups: Array<{ title: string; hint?: string; defs: typeof visibleAttributeDefinitions }> = [
+                  { title: "Risk assessment", hint: "Per-hazard scores + overall verdict.", defs: [] },
+                  { title: "Certifications", hint: "Halal / kosher / vegan / organic / GMO.", defs: [] },
+                  { title: "Allergens", hint: "Presence + source of the 14 declared allergens.", defs: [] },
+                  { title: "Nutrition (per 100g / 100ml)", hint: "Nutrient values used by label + spec.", defs: [] },
+                  { title: "Labelling", hint: "Names shown on packs / nutrition panels.", defs: [] },
+                  { title: "Sourcing", hint: "Country of origin, supplier metadata.", defs: [] },
+                  { title: "Ingredient properties", hint: "Extract ratio, purity, use category.", defs: [] },
+                  { title: "Other attributes", defs: [] },
+                ];
+                const nutritionKeys = new Set([
+                  "energy_kcal","energy_kj","protein","fat","fat_saturated","fat_trans","carbs","sugar","fibre","salt","sodium",
+                ]);
+                const aminoAcidKeys = new Set([
+                  "arginine","alanine","asparagine","aspartic_acid","cysteine","glutamic_acid","glutamine","glycine","histidine","isoleucine","leucine","lysine","methionine","phenylalanine","proline","serine","threonine","tryptophan","tyrosine","valine",
+                ]);
+                function bucketFor(def_: AttributeDefinition): number {
+                  const k = def_.key.toLowerCase();
+                  if (/risk|hazard|control_measures|justification/.test(k)) return 0;
+                  if (/halal|kosher|vegan|organic|gmo/.test(k)) return 1;
+                  if (/allergen/.test(k)) return 2;
+                  if (nutritionKeys.has(k) || aminoAcidKeys.has(k)) return 3;
+                  if (/name$|_list_name|nutrition_information/.test(k)) return 4;
+                  if (/country|origin/.test(k)) return 5;
+                  if (/active_ingredient|use_as|extract_ratio|purity|overage|type$|regulated/.test(k)) return 6;
+                  return 7;
+                }
+                for (const def_ of visibleAttributeDefinitions) {
+                  groups[bucketFor(def_)].defs.push(def_);
+                }
+                return groups
+                  .filter((g) => g.defs.length > 0)
+                  .map((g) => (
+                    <div key={g.title}>
+                      <SectionHeader title={g.title} hint={g.hint} />
+                      <Grid>
+                        {g.defs.map((def_) => (
+                          <DynamicAttributeRow
+                            key={def_.uuid}
+                            def_={def_}
+                            value={state.attributes[def_.key]}
+                            onChange={(v) => setAttribute(def_.key, v)}
+                            onFocus={() => focusField(`attr:${def_.key}`)}
+                            onBlur={() => blurField(`attr:${def_.key}`)}
+                            editor={fieldEditors[`attr:${def_.key}`]}
+                          />
+                        ))}
+                      </Grid>
+                    </div>
+                  ));
+              })()}
             </>
           )}
 
@@ -1204,6 +1356,7 @@ export function ItemForm({
               <SectionHeader
                 title="Regulatory compliance"
                 hint="Dietary, regulatory, sourcing, review cadence."
+                anchor="raw_material_compliance"
               />
               <Grid>
                 <EnumLiveRow label="Used as" fieldKey="rm_use_as" value={state.rm_use_as} options={USE_AS_OPTIONS} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_use_as"]} errors={fieldErrors["raw_material_compliance.use_as"]} />
@@ -1214,14 +1367,24 @@ export function ItemForm({
                 <EnumLiveRow label="Organic" fieldKey="rm_organic_status" value={state.rm_organic_status} options={ORGANIC_OPTIONS} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_organic_status"]} errors={fieldErrors["raw_material_compliance.organic_status"]} />
                 <EnumLiveRow label="Novel food" fieldKey="rm_novel_food_status" value={state.rm_novel_food_status} options={NOVEL_FOOD_OPTIONS} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_novel_food_status"]} errors={fieldErrors["raw_material_compliance.novel_food_status"]} />
                 <EnumLiveRow label="GMO status" fieldKey="rm_gmo_status" value={state.rm_gmo_status} options={GMO_OPTIONS} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_gmo_status"]} errors={fieldErrors["raw_material_compliance.gmo_status"]} />
-                <TextLiveRow label="Country of origin" fieldKey="rm_country_of_origin" value={state.rm_country_of_origin} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_country_of_origin"]} errors={fieldErrors["raw_material_compliance.country_of_origin"]} placeholder="GB" maxLength={2} mono hint="ISO 3166-1 alpha-2." transform={(v) => v.toUpperCase()} />
+                <FieldRow label="Country of origin" blockerKey="raw_material_compliance.country_of_origin" hint="ISO 3166-1 alpha-2.">
+                  <CountryPicker
+                    value={state.rm_country_of_origin || null}
+                    onChange={(code) => setField("rm_country_of_origin", code ?? "")}
+                    onFocus={() => focusField("rm_country_of_origin")}
+                    onBlur={() => blurField("rm_country_of_origin")}
+                    placeholder="Pick a country…"
+                  />
+                  <FieldEditingIndicator peer={fieldEditors["rm_country_of_origin"]} />
+                  <FieldError messages={fieldErrors["raw_material_compliance.country_of_origin"]} />
+                </FieldRow>
                 <TextLiveRow label="Purity (%)" fieldKey="rm_purity_pct" value={state.rm_purity_pct} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_purity_pct"]} errors={fieldErrors["raw_material_compliance.purity_pct"]} type="number" step="0.01" mono />
                 <TextLiveRow label="Extract ratio" fieldKey="rm_extract_ratio" value={state.rm_extract_ratio} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_extract_ratio"]} errors={fieldErrors["raw_material_compliance.extract_ratio"]} placeholder="4:1" maxLength={20} />
                 <TextLiveRow label="Overage (%)" fieldKey="rm_overage_pct" value={state.rm_overage_pct} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_overage_pct"]} errors={fieldErrors["raw_material_compliance.overage_pct"]} type="number" step="0.01" mono hint="Manufacturing tolerance." />
                 <TextLiveRow label="Powder water dose (mg/mL)" fieldKey="rm_powder_water_dose_mg_per_ml" value={state.rm_powder_water_dose_mg_per_ml} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_powder_water_dose_mg_per_ml"]} errors={fieldErrors["raw_material_compliance.powder_water_dose_mg_per_ml"]} type="number" step="0.001" mono hint="For powder acidity regulators only." />
                 <TextLiveRow label="Shelf life (months)" fieldKey="rm_shelf_life_months" value={state.rm_shelf_life_months} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["rm_shelf_life_months"]} errors={fieldErrors["raw_material_compliance.shelf_life_months"]} type="number" />
               </Grid>
-              <FieldRow label="Storage conditions">
+              <FieldRow label="Storage conditions" blockerKey="raw_material_compliance.storage_conditions">
                 <Textarea value={state.rm_storage_conditions} onChange={(e) => setField("rm_storage_conditions", e.target.value)} onFocus={() => focusField("rm_storage_conditions")} onBlur={() => blurField("rm_storage_conditions")} rows={2} placeholder="Store below 25 °C, away from direct light." />
                 <FieldEditingIndicator peer={fieldEditors["rm_storage_conditions"]} />
                 <FieldError messages={fieldErrors["raw_material_compliance.storage_conditions"]} />
@@ -1297,9 +1460,12 @@ export function ItemForm({
 
               {canEditRisk && (
                 <>
-                  <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border/40 pt-6">
+                  <div
+                    className="mt-8 flex flex-wrap items-start justify-between gap-3 border-t-2 border-border pt-6"
+                    data-field-key="raw_material_risk"
+                  >
                     <div className="space-y-0.5">
-                      <h3 className="flex items-center gap-2 text-sm font-semibold">
+                      <h3 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-foreground">
                         <ShieldAlert className="size-4 text-muted-foreground" />
                         Risk assessment
                       </h3>
@@ -1319,19 +1485,24 @@ export function ItemForm({
                   </div>
                   <Grid>
                     {RISK_SCORE_FIELDS.map((f) => (
-                      <FieldRow key={f.key} label={f.label} hint={f.hint}>
+                      <FieldRow
+                        key={f.key}
+                        label={f.label}
+                        hint={f.hint}
+                        blockerKey={`raw_material_risk.${(f.key as string).replace(/^rmrisk_/, "")}`}
+                      >
                         <Input type="number" min={0} max={5} inputMode="numeric" value={String(state[f.key] ?? "")} onChange={(e) => setField(f.key, e.target.value as never)} onFocus={() => focusField(f.key as string)} onBlur={() => blurField(f.key as string)} placeholder="0 – 5" className="font-mono" />
                         <FieldEditingIndicator peer={fieldEditors[f.key as string]} />
                         <FieldError messages={fieldErrors[`raw_material_risk.${(f.key as string).replace(/^rmrisk_/, "")}`]} />
                       </FieldRow>
                     ))}
                   </Grid>
-                  <FieldRow label="Justification (why these scores)">
+                  <FieldRow label="Justification (why these scores)" blockerKey="raw_material_risk.justification">
                     <Textarea value={state.rmrisk_justification} onChange={(e) => setField("rmrisk_justification", e.target.value)} onFocus={() => focusField("rmrisk_justification")} onBlur={() => blurField("rmrisk_justification")} rows={3} />
                     <FieldEditingIndicator peer={fieldEditors["rmrisk_justification"]} />
                     <FieldError messages={fieldErrors["raw_material_risk.justification"]} />
                   </FieldRow>
-                  <FieldRow label="Required controls / mitigations">
+                  <FieldRow label="Required controls / mitigations" blockerKey="raw_material_risk.required_controls">
                     <Textarea value={state.rmrisk_required_controls} onChange={(e) => setField("rmrisk_required_controls", e.target.value)} onFocus={() => focusField("rmrisk_required_controls")} onBlur={() => blurField("rmrisk_required_controls")} rows={3} />
                     <FieldEditingIndicator peer={fieldEditors["rmrisk_required_controls"]} />
                     <FieldError messages={fieldErrors["raw_material_risk.required_controls"]} />
@@ -1374,7 +1545,7 @@ export function ItemForm({
           {/* Finished product spec */}
           {isFinishedProduct && isEdit && (
             <>
-              <SectionHeader title="Finished-product spec" />
+              <SectionHeader title="Finished-product spec" anchor="finished_product_spec" />
               <Grid>
                 <EnumLiveRow label="Regulatory category" fieldKey="fp_regulatory_category" value={state.fp_regulatory_category} options={REGULATORY_CATEGORIES} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["fp_regulatory_category"]} errors={fieldErrors["finished_product_spec.regulatory_category"]} />
                 <EnumLiveRow label="Dosage form" fieldKey="fp_dosage_form" value={state.fp_dosage_form} options={DOSAGE_FORMS} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["fp_dosage_form"]} errors={fieldErrors["finished_product_spec.dosage_form"]} />
@@ -1475,7 +1646,7 @@ export function ItemForm({
           {/* Packaging */}
           {isPackaging && isEdit && (
             <>
-              <SectionHeader title="Packaging compliance" />
+              <SectionHeader title="Packaging compliance" anchor="packaging_compliance" />
               <Grid>
                 <EnumLiveRow label="Material" fieldKey="pkg_material" value={state.pkg_material} options={PACKAGING_MATERIALS} setField={setField} focusField={focusField} blurField={blurField} editor={fieldEditors["pkg_material"]} errors={fieldErrors["packaging_compliance.material"]} />
                 <FieldRow label="Recyclability code">
@@ -1538,7 +1709,32 @@ export function ItemForm({
         </fieldset>
 
         {actionError && (
-          <ErrorBanner detail={actionError.detail} code={actionError.code} debug={actionError.debug} />
+          <div className="space-y-2">
+            <ErrorBanner
+              detail={friendlyErrorDetail(actionError)}
+              code={actionError.code}
+              debug={actionError.debug}
+            />
+            {(() => {
+              // Pull the offending field out of ``res.fields`` (dotted
+              // path already) or the raw ``invalid_attributes: <key>:``
+              // pattern in the top-level detail. Render a CTA button
+              // that scrolls + highlights, so the operator never has
+              // to hunt manually.
+              const key = firstErrorField(actionError);
+              if (!key) return null;
+              return (
+                <button
+                  type="button"
+                  onClick={() => scrollToFieldKey(key)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-background px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/5"
+                >
+                  <AlertCircle className="size-3.5" />
+                  Jump to “{key.split(".").slice(-1)[0].replace(/_/g, " ")}” field
+                </button>
+              );
+            })()}
+          </div>
         )}
 
         {canEdit && !isCreator && creator && (
@@ -1550,27 +1746,42 @@ export function ItemForm({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {isEdit && canEdit && isCreator ? (
-            <Button type="button" variant="ghost" size="sm" onClick={onDelete} disabled={pending} className="text-destructive hover:text-destructive">
-              <Trash2 className="mr-1.5 size-3.5" />
-              Delete item
-            </Button>
-          ) : (
-            <span />
-          )}
+        {/* Sticky action bar. Was pinned to the bottom of a 2000-line
+            form so operators had to scroll all the way down to Save
+            after fixing a single field. Now hovers just above the
+            viewport bottom, negative margin cancels the parent's
+            ``space-y-8`` so the bar hugs the content above it. On
+            mobile it drops to auto so a very tall dialog doesn't
+            hide half the form under the sticky element. */}
+        <div className="sticky bottom-0 -mx-4 mt-4 sm:-mx-8 md:sticky md:mt-8">
+          <div className="border-t border-border/60 bg-background/95 px-4 py-3 shadow-[0_-4px_16px_-8px_rgba(0,0,0,0.08)] backdrop-blur-md sm:px-8">
+            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2">
+              {isEdit && canEdit && isCreator ? (
+                <Button type="button" variant="ghost" size="sm" onClick={onDelete} disabled={pending} className="text-destructive hover:text-destructive">
+                  <Trash2 className="mr-1.5 size-3.5" />
+                  Delete item
+                </Button>
+              ) : (
+                <span />
+              )}
 
-          <div className="flex items-center gap-2">
-            {dirty && !pending && isCreator && (
-              <Button type="button" variant="ghost" onClick={onReset}>Discard</Button>
-            )}
-            <Button type="button" variant="ghost" onClick={() => router.push("/production/items")}>Cancel</Button>
-            {canEdit && (
-              <Button type="submit" disabled={!dirty || pending || !isCreator || !(typeof state.name === "string" && state.name.trim())} title={isCreator ? undefined : creator ? `Only ${creator.name} can ${isEdit ? "save" : "create"} from this room.` : undefined}>
-                {pending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Save className="mr-1.5 size-4" />}
-                {isEdit ? "Save changes" : "Create item"}
-              </Button>
-            )}
+              <div className="flex items-center gap-2">
+                {dirty && (
+                  <span className="text-[11px] text-muted-foreground">
+                    Unsaved changes
+                  </span>
+                )}
+                {dirty && !pending && isCreator && (
+                  <Button type="button" variant="ghost" onClick={onReset}>Discard</Button>
+                )}
+                {canEdit && (
+                  <Button type="submit" disabled={!dirty || pending || !isCreator || !(typeof state.name === "string" && state.name.trim())} title={isCreator ? undefined : creator ? `Only ${creator.name} can ${isEdit ? "save" : "create"} from this room.` : undefined}>
+                    {pending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Save className="mr-1.5 size-4" />}
+                    {isEdit ? "Save changes" : "Create item"}
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </form>
@@ -1578,11 +1789,34 @@ export function ItemForm({
   );
 }
 
-function SectionHeader({ title, hint }: { title: string; hint?: string }) {
+function SectionHeader({
+  title,
+  hint,
+  anchor,
+}: {
+  title: string;
+  hint?: string;
+  /** Server-side blocker anchor for whole-subtable errors like
+   *  ``raw_material_compliance`` (no dotted subfield). Enables the
+   *  readiness banner to scroll straight to the section when the
+   *  entire subtable isn't filled in yet. */
+  anchor?: string;
+}) {
   return (
-    <div className="space-y-0.5 border-t border-border/40 pt-6">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    // Beefier separator: full-width top border, bigger top padding,
+    // uppercase eyebrow-style title so sections read as distinct
+    // regions on a long-scroll form. Was an anaemic 1px border
+    // that operators couldn't see landing between sections.
+    <div
+      className="mt-8 space-y-1 border-t-2 border-border pt-6"
+      data-field-key={anchor}
+    >
+      <h3 className="text-[13px] font-semibold uppercase tracking-wide text-foreground">
+        {title}
+      </h3>
+      {hint && (
+        <p className="text-xs text-muted-foreground">{hint}</p>
+      )}
     </div>
   );
 }
@@ -1597,15 +1831,19 @@ function FieldRow({
   required,
   hint,
   children,
+  blockerKey,
 }: {
   label: string;
   htmlFor?: string;
   required?: boolean;
   hint?: string;
   children: React.ReactNode;
+  /** Server-side blocker path (e.g. ``raw_material_risk.justification``).
+   *  Enables click-to-scroll from the readiness banner. */
+  blockerKey?: string;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5" data-field-key={blockerKey}>
       <Label htmlFor={htmlFor} className="text-sm">
         {label}
         {required && <span className="ml-0.5 text-destructive">*</span>}
@@ -1614,6 +1852,154 @@ function FieldRow({
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   );
+}
+
+/**
+ * Map a form-state field name to the server-side dotted path used in
+ * compliance-blocker payloads. Enables the readiness banner's
+ * click-to-scroll to find the offending input without every callsite
+ * having to hand-write a ``blockerKey`` prop.
+ *
+ * Prefix rules:
+ *   rm_*      → raw_material_compliance.*
+ *   rmrisk_*  → raw_material_risk.*
+ *   fp_*      → finished_product_spec.*
+ *   pkg_*     → packaging_compliance.*
+ *
+ * Special cases:
+ *   rm_allergen_status / vegan_status / halal_status / kosher_status /
+ *   organic_status / gmo_status → keep the ``_status`` suffix because
+ *   the schema column name matches.
+ *
+ * Falls back to the raw field key so anything not covered still gets a
+ * unique ``data-field-key`` (even if the blocker banner won't find it).
+ */
+/**
+ * Extract the first field path from a save-error payload. Prefers the
+ * structured ``fields`` map; falls back to a regex over the raw
+ * ``invalid_attributes: <key>: ...`` pattern the backend uses for
+ * attribute-bag validation failures.
+ */
+/**
+ * Attribute keys that are shadowed by a first-class row on the form
+ * (e.g. attributes.``use_as`` is edited via the ``rm_use_as`` field).
+ * When the server rejects one of these via an attributes-bag error,
+ * the scroll target has to be the first-class row's data-field-key,
+ * not the (deduped, non-existent) attributes.<key> element.
+ */
+const ATTR_TO_FIRST_CLASS_BLOCKER: Record<string, string> = {
+  use_as: "raw_material_compliance.use_as",
+  vegan: "raw_material_compliance.vegan_status",
+  halal: "raw_material_compliance.halal_status",
+  kosher: "raw_material_compliance.kosher_status",
+  organic: "raw_material_compliance.organic_status",
+  gmo_status: "raw_material_compliance.gmo_status",
+  country_of_origin: "raw_material_compliance.country_of_origin",
+  typical_country_of_origin: "raw_material_compliance.country_of_origin",
+  purity: "raw_material_compliance.purity_pct",
+  extract_ratio: "raw_material_compliance.extract_ratio",
+  overage: "raw_material_compliance.overage_pct",
+  shelf_life_months: "raw_material_compliance.shelf_life_months",
+  storage_conditions: "raw_material_compliance.storage_conditions",
+  physical_risk_score: "raw_material_risk.physical_risk_score",
+  chemical_risk_score: "raw_material_risk.chemical_risk_score",
+  biological_risk_score: "raw_material_risk.biological_risk_score",
+  allergen_risk_score: "raw_material_risk.allergen_risk_score",
+  radiological_risk_score: "raw_material_risk.radiological_risk_score",
+  fraud_vulnerability_score: "raw_material_risk.fraud_vulnerability_score",
+  malicious_risk_score: "raw_material_risk.malicious_risk_score",
+  justification: "raw_material_risk.justification",
+  required_controls: "raw_material_risk.required_controls",
+};
+
+function firstErrorField(err: ErrorResult): string | null {
+  const fields =
+    "fields" in err
+      ? ((err as unknown as { fields?: Record<string, unknown> }).fields ?? null)
+      : null;
+  if (fields && typeof fields === "object") {
+    const keys = Object.keys(fields);
+    if (keys.length > 0) return keys[0];
+  }
+  // Try in order: structured detail (``invalid_attributes: <key>:``),
+  // bare ``<key>: <reason>`` (the server sometimes strips the leading
+  // ``invalid_attributes:``), the debug.exception (still has the
+  // full prefix when detail is truncated).
+  const candidates = [
+    err.detail ?? "",
+    (err.debug as { exception?: string } | undefined)?.exception ?? "",
+  ];
+  for (const s of candidates) {
+    const m1 = /invalid_attributes:\s*([a-z0-9_]+)\s*:/i.exec(s);
+    if (m1) {
+      return ATTR_TO_FIRST_CLASS_BLOCKER[m1[1]] ?? `attributes.${m1[1]}`;
+    }
+    const m2 = /^([a-z0-9_]+):\s*must be/i.exec(s);
+    if (m2) {
+      return ATTR_TO_FIRST_CLASS_BLOCKER[m2[1]] ?? `attributes.${m2[1]}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Rewrite the raw exception on the banner into something an operator
+ * (not an engineer) can parse. Strips the ``invalid_*:`` prefix + the
+ * attribute key when the key is going to appear on the "Jump to
+ * field" CTA anyway.
+ */
+function friendlyErrorDetail(err: ErrorResult): string {
+  const raw = err.detail ?? "Save failed.";
+  // Strip both the ``invalid_attributes:`` prefix AND the leading
+  // ``<field>:`` when a field is present (its name is on the "Jump
+  // to field" CTA, so repeating it in the sentence is noise).
+  const full = /^invalid_attributes:\s*[a-z0-9_]+\s*:\s*(.+)$/i.exec(raw);
+  if (full) return `That field ${full[1]}`;
+  const bare = /^[a-z0-9_]+:\s*(.+)$/i.exec(raw);
+  if (bare) return `That field ${bare[1]}`;
+  return raw;
+}
+
+/**
+ * Shared scroll + highlight + focus helper. Same effect as the
+ * readiness-banner click: smooth-scroll the row into view, red ring
+ * for 2.5s, then focus the first input.
+ */
+function scrollToFieldKey(key: string) {
+  const el = document.querySelector(
+    `[data-field-key="${key}"]`,
+  ) as HTMLElement | null;
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add(
+    "ring-2",
+    "ring-destructive/70",
+    "ring-offset-2",
+    "rounded-md",
+    "transition-all",
+  );
+  window.setTimeout(() => {
+    el.classList.remove(
+      "ring-2",
+      "ring-destructive/70",
+      "ring-offset-2",
+      "rounded-md",
+      "transition-all",
+    );
+  }, 2500);
+  const focusable = el.querySelector<HTMLElement>(
+    "input, select, textarea, [role='combobox']",
+  );
+  focusable?.focus();
+}
+
+function deriveBlockerKey(fieldKey: keyof FormState | string): string {
+  const key = String(fieldKey);
+  if (key.startsWith("rmrisk_")) return `raw_material_risk.${key.slice(7)}`;
+  if (key.startsWith("rm_")) return `raw_material_compliance.${key.slice(3)}`;
+  if (key.startsWith("fp_")) return `finished_product_spec.${key.slice(3)}`;
+  if (key.startsWith("pkg_")) return `packaging_compliance.${key.slice(4)}`;
+  return key;
 }
 
 function EnumLiveRow({
@@ -1627,6 +2013,7 @@ function EnumLiveRow({
   editor,
   errors,
   hint,
+  blockerKey,
 }: {
   label: string;
   fieldKey: keyof FormState;
@@ -1638,9 +2025,17 @@ function EnumLiveRow({
   editor: CollabPeer | null | undefined;
   errors?: string[];
   hint?: string;
+  /** Server-side blocker path (e.g. ``raw_material_compliance.use_as``).
+   *  When set, the readiness banner's click-to-scroll uses this to
+   *  find the row via ``[data-field-key]`` and highlights it. Falls
+   *  back to auto-derivation from the ``rm_`` / ``rmrisk_`` /
+   *  ``fp_`` / ``pkg_`` prefix so 90% of the raw-material rows work
+   *  without a per-row prop. */
+  blockerKey?: string;
 }) {
+  const resolvedBlockerKey = blockerKey ?? deriveBlockerKey(fieldKey);
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5" data-field-key={resolvedBlockerKey}>
       <Label className="text-sm">{label}</Label>
       <div className="relative">
         <Select value={value === "" ? ANY_SENTINEL : value} onValueChange={(v) => setField(fieldKey, (v === ANY_SENTINEL ? "" : v) as never)}>
@@ -1678,6 +2073,7 @@ function TextLiveRow({
   maxLength,
   mono,
   transform,
+  blockerKey,
 }: {
   label: string;
   fieldKey: keyof FormState;
@@ -1694,9 +2090,12 @@ function TextLiveRow({
   maxLength?: number;
   mono?: boolean;
   transform?: (v: string) => string;
+  /** Server-side blocker path — see EnumLiveRow.blockerKey. */
+  blockerKey?: string;
 }) {
+  const resolvedBlockerKey = blockerKey ?? deriveBlockerKey(fieldKey);
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5" data-field-key={resolvedBlockerKey}>
       <Label className="text-sm">{label}</Label>
       <div className="relative">
         <Input type={type} step={step} maxLength={maxLength} inputMode={type === "number" ? "decimal" : undefined} value={value} onChange={(e) => setField(fieldKey, (transform ? transform(e.target.value) : e.target.value) as never)} onFocus={() => focusField(fieldKey as string)} onBlur={() => blurField(fieldKey as string)} placeholder={placeholder} className={mono ? "font-mono" : undefined} />
@@ -1768,14 +2167,33 @@ function DynamicAttributeRow({
 }) {
   const hint = def_.help_text ?? undefined;
   return (
-    <div className="space-y-1.5">
+    // ``data-field-key`` = ``attributes.<key>`` so save-error scroll
+    // (invalid_attributes / attribute validation failures) lands on
+    // the exact row the operator needs to fix.
+    <div className="space-y-1.5" data-field-key={`attributes.${def_.key}`}>
       <Label className="text-sm">
         {def_.label}
         {def_.required && <span className="ml-0.5 text-destructive">*</span>}
         {def_.unit_symbol && <span className="ml-1 text-xs text-muted-foreground">({def_.unit_symbol})</span>}
       </Label>
       <div className="relative">
-        {def_.attribute_type === "text" && (<Input type="text" value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} onFocus={onFocus} onBlur={onBlur} />)}
+        {def_.attribute_type === "text" && /country/i.test(def_.key) ? (
+          // Country-flavoured attribute → ISO 3166 picker instead of
+          // free-text. Detects any key containing "country" so
+          // ``country_of_origin`` / ``typical_country_of_origin`` /
+          // ``import_country`` all get the same picker. Value is the
+          // ISO alpha-2 code (or the country name — CountryPicker
+          // resolves both, so legacy names still display).
+          <CountryPicker
+            value={typeof value === "string" && value !== "" ? value : null}
+            onChange={(code) => onChange(code ?? "")}
+            onFocus={onFocus}
+            onBlur={onBlur}
+            placeholder="Pick a country…"
+          />
+        ) : def_.attribute_type === "text" ? (
+          <Input type="text" value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} onFocus={onFocus} onBlur={onBlur} />
+        ) : null}
         {def_.attribute_type === "url" && (<Input type="url" value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} onFocus={onFocus} onBlur={onBlur} placeholder="https://…" />)}
         {def_.attribute_type === "number" && (<Input type="number" value={typeof value === "number" || typeof value === "string" ? String(value) : ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))} onFocus={onFocus} onBlur={onBlur} inputMode="decimal" className="font-mono" />)}
         {def_.attribute_type === "date" && (<Input type="date" value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value || null)} onFocus={onFocus} onBlur={onBlur} />)}
@@ -2077,31 +2495,55 @@ function ComplianceGateBanner({
         {!isReady && blockers.length > 0 && (
           <ul className="mt-3 space-y-1.5 text-[12px]">
             {blockers.map((b) => (
-              <li
-                key={b.field}
-                className="flex items-start gap-2 rounded-sm border border-destructive/20 bg-background/60 px-2 py-1.5"
-              >
-                <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-destructive" />
-                <div className="min-w-0 flex-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const el = document.querySelector(
-                        `[data-field-key="${b.field}"]`,
+              <li key={b.field}>
+                {/* Full-row click target — was just the tiny mono
+                    field name. Ops wants to hit the whole row and be
+                    scrolled to the offending input with a flash. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const el = document.querySelector(
+                      `[data-field-key="${b.field}"]`,
+                    ) as HTMLElement | null;
+                    if (!el) return;
+                    el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    // Attach a 2-second highlight ring so the eye lands on
+                    // the right field after the scroll settles. Uses a
+                    // class you can restyle in globals.css if needed;
+                    // inline classNames keep the effect self-contained.
+                    el.classList.add(
+                      "ring-2",
+                      "ring-destructive/70",
+                      "ring-offset-2",
+                      "rounded-md",
+                      "transition-all",
+                    );
+                    window.setTimeout(() => {
+                      el.classList.remove(
+                        "ring-2",
+                        "ring-destructive/70",
+                        "ring-offset-2",
+                        "rounded-md",
+                        "transition-all",
                       );
-                      if (el && "scrollIntoView" in el) {
-                        (el as HTMLElement).scrollIntoView({
-                          behavior: "smooth",
-                          block: "center",
-                        });
-                      }
-                    }}
-                    className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline"
-                  >
-                    {b.field}
-                  </button>
-                  <p className="text-foreground">{b.reason}</p>
-                </div>
+                    }, 2000);
+                    // Focus the first focusable input inside the row
+                    // so the operator can start typing immediately.
+                    const focusable = el.querySelector<HTMLElement>(
+                      "input, select, textarea, [role='combobox']",
+                    );
+                    focusable?.focus();
+                  }}
+                  className="flex w-full items-start gap-2 rounded-sm border border-destructive/20 bg-background/60 px-2 py-1.5 text-left transition-colors hover:border-destructive/50 hover:bg-destructive/5"
+                >
+                  <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-destructive" />
+                  <div className="min-w-0 flex-1">
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {b.field}
+                    </span>
+                    <p className="text-foreground">{b.reason}</p>
+                  </div>
+                </button>
               </li>
             ))}
           </ul>

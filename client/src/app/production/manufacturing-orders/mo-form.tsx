@@ -63,6 +63,11 @@ interface SiteOption extends SearchPickerOption {
 
 interface ItemOption extends SearchPickerOption {
   uuid: string;
+  /** Snapshot of the item's stock-UoM symbol at pick time so the
+   *  Quantity field can render "kg" / "L" instead of a hardcoded
+   *  "each". Nullable — an item without a stock_uom set falls back
+   *  to "each" downstream. */
+  uomSymbol?: string | null;
 }
 
 interface BOMOption extends SearchPickerOption {
@@ -123,7 +128,13 @@ function initialFrom(mo: ManufacturingOrder | null): FormState {
         }
       : null,
     product: mo.item
-      ? { id: mo.item.id, uuid: mo.item.uuid, label: mo.item.name, code: mo.item.code }
+      ? {
+          id: mo.item.id,
+          uuid: mo.item.uuid,
+          label: mo.item.name,
+          code: mo.item.code,
+          uomSymbol: mo.item.stock_uom?.symbol ?? null,
+        }
       : null,
     bom: mo.bom
       ? {
@@ -281,6 +292,7 @@ export function ManufacturingOrderForm({
         uuid: i.uuid,
         label: i.name,
         code: i.code,
+        uomSymbol: i.stock_uom?.symbol ?? null,
       }));
     } catch {
       return [];
@@ -545,7 +557,9 @@ export function ManufacturingOrderForm({
                     />
                     <FieldEditingIndicator peer={fieldEditors.quantity} />
                   </div>
-                  <span className="text-xs text-muted-foreground">Each</span>
+                  <span className="text-xs text-muted-foreground">
+                    {state.product?.uomSymbol ?? mo?.item?.stock_uom?.symbol ?? "each"}
+                  </span>
                 </div>
                 <FieldError messages={fieldErrors.quantity} />
               </div>

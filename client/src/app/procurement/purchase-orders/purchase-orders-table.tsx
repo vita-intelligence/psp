@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DataTable } from "@/components/data-table";
 import type {
@@ -98,7 +96,6 @@ async function fetchPOPage(params: {
 }
 
 export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
-  const router = useRouter();
   const prefs = useFormatPrefs();
 
   const filters = useMemo<FilterDef[]>(
@@ -134,30 +131,24 @@ export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
         filterPlaceholder: "Vendor name…",
         group: "Identity",
         description: "Supplier this PO is raised against. Filter by vendor name.",
-        cell: (p) =>
-          p.vendor?.uuid ? (
-            <Link
-              href={`/procurement/vendors/${p.vendor.uuid}`}
-              onClick={(e) => e.stopPropagation()}
-              className="block min-w-0 group"
-            >
-              <p className="truncate text-sm font-medium underline-offset-2 group-hover:underline">
-                {p.vendor.name}
-              </p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                {p.lines.length} {p.lines.length === 1 ? "line" : "lines"}
-                {p.notes ? ` · ${p.notes}` : ""}
-              </p>
-            </Link>
-          ) : (
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">—</p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                {p.lines.length} {p.lines.length === 1 ? "line" : "lines"}
-                {p.notes ? ` · ${p.notes}` : ""}
-              </p>
-            </div>
-          ),
+        // Vendor name is intentionally NOT a link on the list — the
+        // whole row is one click target ("open PO detail"). The PO
+        // detail page has a Link to the vendor at the top; that's the
+        // single source of truth for "jump to vendor from a PO".
+        // Keeping the vendor name here as static text avoids the trap
+        // where a nested Link inside a clickable row races with the
+        // row's own onClick handler.
+        cell: (p) => (
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">
+              {p.vendor?.name ?? "—"}
+            </p>
+            <p className="truncate text-[11px] text-muted-foreground">
+              {p.lines.length} {p.lines.length === 1 ? "line" : "lines"}
+              {p.notes ? ` · ${p.notes}` : ""}
+            </p>
+          </div>
+        ),
       },
       {
         id: "status",
@@ -428,7 +419,7 @@ export function PurchaseOrdersTable({ initialPage, locationFilters }: Props) {
       defaultSort={DEFAULT_SORT}
       searchPlaceholder="Search notes, address…"
       filters={filters}
-      onRowClick={(p) => router.push(`/procurement/purchase-orders/${p.uuid}`)}
+      rowHref={(p) => `/procurement/purchase-orders/${p.uuid}`}
       renderMobileCard={(p) => (
         <div className="space-y-2">
           <div className="flex items-start justify-between gap-3">
