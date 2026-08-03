@@ -82,7 +82,8 @@ defmodule BackendWeb.StorageTagController do
   def update(conn, %{"id" => uuid} = params) do
     actor = conn.assigns.current_user
 
-    with %{} = tag <- StorageTags.get_for_company(actor.company_id, uuid) do
+    with %{} = tag <- StorageTags.get_for_company(actor.company_id, uuid),
+         :ok <- refuse_system_stream_edit(tag) do
       case StorageTags.update(actor, tag, Map.drop(params, ["id"])) do
         {:ok, updated} ->
           json(conn, %{tag: Payloads.storage_tag(updated)})
@@ -91,7 +92,17 @@ defmodule BackendWeb.StorageTagController do
           changeset_error(conn, cs)
       end
     else
-      _ -> {:error, :not_found}
+      {:error, :system_stream_reserved} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "system_stream_reserved",
+          detail:
+            "This tag drives R&D stream routing — seeded by migration and can't be renamed or edited."
+        })
+
+      _ ->
+        {:error, :not_found}
     end
   end
 
@@ -99,10 +110,33 @@ defmodule BackendWeb.StorageTagController do
     actor = conn.assigns.current_user
 
     with %{} = tag <- StorageTags.get_for_company(actor.company_id, uuid),
+         :ok <- refuse_system_stream_edit(tag),
          {:ok, _} <- StorageTags.delete(actor, tag) do
       send_resp(conn, :no_content, "")
     else
-      _ -> {:error, :not_found}
+      {:error, :system_stream_reserved} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "system_stream_reserved",
+          detail:
+            "This tag drives R&D stream routing — seeded by migration and can't be deleted."
+        })
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  # Gate edits/deletes on tags whose key is in the reserved system
+  # stream list (see ``Backend.Warehouses.StorageTag.system_stream_keys``).
+  # These tags are load-bearing — renaming ``rnd`` would silently
+  # break the pickup-target validator.
+  defp refuse_system_stream_edit(%{key: key}) do
+    if key in Backend.Warehouses.StorageTag.system_stream_keys() do
+      {:error, :system_stream_reserved}
+    else
+      :ok
     end
   end
 

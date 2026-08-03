@@ -7081,7 +7081,7 @@ defmodule Backend.Production do
 
       %Backend.Warehouses.StorageCell{} = cell ->
         if mo.project_type in ["trial", "sample"] and
-             cell_tagged_rnd_consumption?(cell) do
+             cell_tagged_rnd?(cell) do
           {:ok, cell}
         else
           {:error, :production_cell_wrong_purpose}
@@ -7095,7 +7095,7 @@ defmodule Backend.Production do
   # cell-picker paths, so an operator can tag a whole location once
   # rather than every cell inside it. Preloads on demand to keep the
   # hot pickup path stateless.
-  defp cell_tagged_rnd_consumption?(%Backend.Warehouses.StorageCell{} = cell) do
+  defp cell_tagged_rnd?(%Backend.Warehouses.StorageCell{} = cell) do
     cell = Repo.preload(cell, :storage_location)
     location_tags =
       case cell.storage_location do
@@ -7103,7 +7103,7 @@ defmodule Backend.Production do
         _ -> []
       end
 
-    "rnd_consumption" in ((cell.tags || []) ++ location_tags)
+    "rnd" in ((cell.tags || []) ++ location_tags)
   end
 
   defp do_confirm_pickup_transfer(actor, mo, bookings, target_cell, photo_urls, override_fit?) do
