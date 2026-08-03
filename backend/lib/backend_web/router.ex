@@ -1792,6 +1792,13 @@ defmodule BackendWeb.Router do
         IntegrationManufacturingOrderController,
         :list_bookings
 
+    # Full parent → child MO tree. NPD's trial-batch panel renders
+    # the stage chain from this — one row per stage MO, indented by
+    # depth. Requires ``mo:read``.
+    get "/manufacturing-orders/:uuid/chain",
+        IntegrationManufacturingOrderController,
+        :chain
+
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
          IntegrationSessionController,
          :create_mo_session
