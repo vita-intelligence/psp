@@ -31,8 +31,9 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   alias Backend.Repo
   alias Backend.Warehouses.Warehouse
 
-  plug :require_integration_scope, "mo:write" when action in [:create, :list_warehouses]
-  plug :require_integration_scope, "mo:read" when action in [:list_bookings, :chain]
+  plug :require_integration_scope, "mo:write" when action in [:create]
+  plug :require_integration_scope, "mo:read"
+       when action in [:list_bookings, :chain, :list_warehouses]
 
   action_fallback BackendWeb.FallbackController
 

@@ -1786,9 +1786,10 @@ defmodule BackendWeb.Router do
          :create
 
     # R&D-tagged warehouses for the Create-MO modal's picker.
-    # Filtered to warehouses with ≥1 cell (or rack) carrying the
-    # reserved ``rnd`` stream tag. Requires ``mo:write`` — same
-    # scope as the create endpoint since it's part of that flow.
+    # Filtered to warehouses with ≥1 cell whose Purpose is ``rnd``.
+    # Requires ``mo:read`` — it's a read-only listing endpoint, and
+    # the NPD integration token doesn't carry bare ``mo:write``
+    # (only ``mo:write:session`` + ``mo:transition``).
     get "/warehouses",
         IntegrationManufacturingOrderController,
         :list_warehouses
