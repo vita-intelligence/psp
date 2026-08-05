@@ -57,11 +57,26 @@ defmodule BackendWeb.ProductionCloseoutController do
           "Closeout is only valid for completed MOs."
         )
 
-      %{mo: mo, bookings: bookings, output_lots: output_lots} ->
+      {:error, :awaiting_output_qc} ->
+        unprocessable(
+          conn,
+          "awaiting_output_qc",
+          "This MO's produced output hasn't been signed off in Output QC yet. Run Output QC first — closeout opens once the lot passes QA."
+        )
+
+      %{
+        mo: mo,
+        bookings: bookings,
+        output_lots: output_lots,
+        output_lot_reservations: reservations
+      } ->
         json(conn, %{
           mo: Payloads.manufacturing_order(mo),
           bookings: Enum.map(bookings, &Payloads.mo_booking/1),
-          output_lots: Enum.map(output_lots, &Payloads.closeout_output_lot/1)
+          output_lots:
+            Enum.map(output_lots, fn lot ->
+              Payloads.closeout_output_lot(lot, Map.get(reservations, lot.id, []))
+            end)
         })
     end
   end
@@ -161,6 +176,24 @@ defmodule BackendWeb.ProductionCloseoutController do
     actor = conn.assigns.current_user
 
     case Production.closeout_output_lot(actor, lot_uuid, params) do
+      {:ok, {:reserved, lot, reservations}} ->
+        # Reserved-in-place path: the output lot is already booked
+        # to a live downstream MO, so closeout skips the dispatch
+        # move. Return the lot + a `reserved_by` summary so the FE
+        # can render the "left in place — reserved for MO-X" chip.
+        json(conn, %{
+          lot: Payloads.stock_lot(lot),
+          reserved: true,
+          reserved_by:
+            Enum.map(reservations, fn r ->
+              %{
+                mo_uuid: r.mo_uuid,
+                mo_code: r.mo_code,
+                qty: to_string(r.qty)
+              }
+            end)
+        })
+
       {:ok, lot} ->
         json(conn, %{lot: Payloads.stock_lot(lot)})
 

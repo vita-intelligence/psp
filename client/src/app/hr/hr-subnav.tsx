@@ -24,20 +24,10 @@ interface SubnavItem {
 const ITEMS: SubnavItem[] = [
     { href: "/hr", label: "Overview", Icon: Home },
     { href: "/hr/employees", label: "Employees", Icon: Users2 },
-    { href: "/hr/wages", label: "Wages", Icon: Coins, comingSoon: true },
-    {
-        href: "/hr/reputation",
-        label: "Reputation",
-        Icon: Award,
-        comingSoon: true,
-    },
-    { href: "/hr/shifts", label: "Shifts", Icon: CalendarDays, comingSoon: true },
-    {
-        href: "/hr/statistics",
-        label: "Statistics",
-        Icon: TrendingUp,
-        comingSoon: true,
-    },
+    { href: "/hr/wages", label: "Wages", Icon: Coins },
+    { href: "/hr/reputation", label: "Reputation", Icon: Award },
+    { href: "/hr/shifts", label: "Shifts", Icon: CalendarDays },
+    { href: "/hr/statistics", label: "Statistics", Icon: TrendingUp },
 ];
 
 /**

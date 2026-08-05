@@ -1221,6 +1221,7 @@ defmodule Backend.Stock do
          :ok <- ensure_not_locked_by_pickup(lot),
          {:ok, to_cell} <-
            fetch_cell_by_uuid(actor.company_id, attrs["to_cell_uuid"]),
+         :ok <- ensure_rnd_stream_match(lot, to_cell),
          {:ok, from_placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
          {:ok, qty} <- resolve_move_qty(from_placement, attrs["qty"]),
          :ok <- ensure_distinct_cells(from_placement.storage_cell_id, to_cell.id),
@@ -1768,6 +1769,23 @@ defmodule Backend.Stock do
 
   defp ensure_distinct_cells(_, _), do: :ok
 
+  # R&D-stream isolation. R&D lots (`is_rnd = true` — inherited from an
+  # R&D PO or an R&D MO) MUST land in an `rnd`-purpose cell; production
+  # lots MUST NOT land in one. This is the same rule the auto-router
+  # + move recommender apply — the hard guard exists so a manual
+  # scan-cell put-away can't sneak R&D stock onto a production shelf
+  # (breaks the segregation the R&D stream was built for).
+  defp ensure_rnd_stream_match(%Lot{is_rnd: true}, %StorageCell{purpose: "rnd"}),
+    do: :ok
+
+  defp ensure_rnd_stream_match(%Lot{is_rnd: true}, %StorageCell{}),
+    do: {:error, :rnd_lot_needs_rnd_cell}
+
+  defp ensure_rnd_stream_match(%Lot{}, %StorageCell{purpose: "rnd"}),
+    do: {:error, :production_lot_in_rnd_cell}
+
+  defp ensure_rnd_stream_match(_, _), do: :ok
+
   # Trolley guard — refuse physical placement mutations on a lot that
   # is currently booked to a pickup-in-progress MO. Matches the QC
   # event guard in Stock.Lifecycle so both lot-status and lot-quantity
@@ -2156,6 +2174,14 @@ defmodule Backend.Stock do
   #
   # Everything else (raw material put-away, post-release relocation)
   # goes to `regular`.
+  # R&D-stream lots are physically segregated. Every put-away for an
+  # R&D lot MUST land in an `rnd`-purpose cell — mixing R&D stock with
+  # production stock breaks the audit chain the R&D isolation was built
+  # for (Phase A/B/E of the R&D stream work). Ranked ABOVE every other
+  # branch so this holds for R&D MO outputs, R&D-PO receipts, bailee
+  # R&D lots, etc.
+  defp move_target_purpose(%Lot{is_rnd: true}), do: "rnd"
+
   defp move_target_purpose(%Lot{
          id: lot_id,
          company_id: company_id,

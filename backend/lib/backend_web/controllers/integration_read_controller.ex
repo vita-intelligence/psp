@@ -30,7 +30,8 @@ defmodule BackendWeb.IntegrationReadController do
     ManufacturingOrder,
     ManufacturingOrderStep,
     Workstation,
-    WorkstationGroup
+    WorkstationGroup,
+    WorkstationSession
   }
   alias Backend.Repo
   alias Backend.Units.UnitOfMeasurement
@@ -103,7 +104,8 @@ defmodule BackendWeb.IntegrationReadController do
       end
 
     mos = Repo.all(base)
-    json(conn, %{items: Enum.map(mos, &mo_payload(&1, group_id))})
+    step_produced = load_step_produced(step_ids_of(mos))
+    json(conn, %{items: Enum.map(mos, &mo_payload(&1, group_id, step_produced))})
   end
 
   def get_manufacturing_order(conn, %{"uuid" => uuid}) do
@@ -114,9 +116,37 @@ defmodule BackendWeb.IntegrationReadController do
              where: mo.company_id == ^company_id and mo.uuid == ^uuid,
              preload: [:item, steps: :workstation_group]
          ) do
-      nil -> {:error, :not_found}
-      mo -> json(conn, %{manufacturing_order: mo_payload(mo, nil)})
+      nil ->
+        {:error, :not_found}
+
+      mo ->
+        step_produced = load_step_produced(step_ids_of([mo]))
+        json(conn, %{manufacturing_order: mo_payload(mo, nil, step_produced)})
     end
+  end
+
+  defp step_ids_of(mos) do
+    mos
+    |> Enum.flat_map(fn mo -> mo.steps || [] end)
+    |> Enum.map(& &1.id)
+  end
+
+  # SUM(quantity_produced) grouped by step for every session that
+  # references one of the given steps. Powers the MO progress bar on
+  # the personal kiosk MO picker — one query per list call, not one
+  # per MO. Rejected qty is intentionally excluded.
+  defp load_step_produced([]), do: %{}
+
+  defp load_step_produced(step_ids) do
+    from(s in WorkstationSession,
+      where:
+        s.manufacturing_order_step_id in ^step_ids and
+          not is_nil(s.quantity_produced),
+      group_by: s.manufacturing_order_step_id,
+      select: {s.manufacturing_order_step_id, sum(s.quantity_produced)}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   defp parse_status_filter(nil), do: ["scheduled", "in_progress"]
@@ -129,7 +159,7 @@ defmodule BackendWeb.IntegrationReadController do
     |> Enum.filter(&(&1 != ""))
   end
 
-  defp mo_payload(%ManufacturingOrder{} = mo, filter_group_id) do
+  defp mo_payload(%ManufacturingOrder{} = mo, filter_group_id, step_produced) do
     %{
       uuid: mo.uuid,
       status: mo.status,
@@ -149,7 +179,7 @@ defmodule BackendWeb.IntegrationReadController do
       steps:
         Enum.map(mo.steps || [], fn step ->
           step
-          |> mo_step_summary()
+          |> mo_step_summary(Map.get(step_produced, step.id))
           |> Map.put(
             :for_this_workstation,
             filter_group_id != nil and
@@ -159,7 +189,7 @@ defmodule BackendWeb.IntegrationReadController do
     }
   end
 
-  defp mo_step_summary(%ManufacturingOrderStep{} = step) do
+  defp mo_step_summary(%ManufacturingOrderStep{} = step, produced) do
     %{
       uuid: step.uuid,
       sort_order: step.sort_order,
@@ -174,6 +204,10 @@ defmodule BackendWeb.IntegrationReadController do
       planned_finish: step.planned_finish,
       actual_start: step.actual_start,
       actual_finish: step.actual_finish,
+      # Running total from every WorkstationSession booked against this
+      # step — powers the "3 / 10 done" progress bar in the kiosk MO
+      # picker. Nil when nothing's been logged yet.
+      quantity_produced: produced && to_string(produced),
       # Steps target a workstation group, not a specific station.
       # The kiosk uses the group to know "is this MO for any of the
       # stations in my group?"

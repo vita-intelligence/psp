@@ -82,9 +82,13 @@ export async function closeoutBookingAction(
 }
 
 export interface CloseOutputInput {
-  scanned_cell_uuid: string;
+  /** Null when the output lot has a live downstream reservation —
+   *  the BE short-circuits and leaves the lot in place, so no
+   *  dispatch cell is needed. Required otherwise. */
+  scanned_cell_uuid: string | null;
   /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
-   *  must be set — gated by the closeout panel. */
+   *  must be set — gated by the closeout panel. Ignored (and can be
+   *  null) for reserved-in-place outputs since nothing moves. */
   photo_url: string | null;
   skip_photo_reason: string | null;
 }
@@ -99,9 +103,9 @@ export async function closeoutOutputLotAction(
   const t = await token();
   if (!t) return unauthorized("closeoutOutputLotAction");
 
-  const body: Record<string, unknown> = {
-    scanned_cell_uuid: input.scanned_cell_uuid,
-  };
+  const body: Record<string, unknown> = {};
+  if (input.scanned_cell_uuid)
+    body.scanned_cell_uuid = input.scanned_cell_uuid;
   if (input.photo_url) body.photo_url = input.photo_url;
   if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
 

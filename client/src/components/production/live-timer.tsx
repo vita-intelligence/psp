@@ -34,12 +34,13 @@ export function LiveTimer({ startedAt, finishedAt, className }: Props) {
   const started = new Date(startedAt).getTime();
   const finished = finishedAt ? new Date(finishedAt).getTime() : null;
 
-  const computeElapsed = () => {
-    const now = finished ?? Date.now();
-    return (now - started) / 1000;
-  };
-
-  const [elapsed, setElapsed] = useState<number>(computeElapsed);
+  // Finished sessions are deterministic (finished - started) so it's
+  // safe to render them server-side. Live sessions depend on Date.now()
+  // — we defer to a post-mount render to avoid hydration mismatches
+  // where the server's tick and the client's tick disagree.
+  const [elapsed, setElapsed] = useState<number | null>(() =>
+    finished !== null ? (finished - started) / 1000 : null,
+  );
 
   useEffect(() => {
     if (finished !== null) {
@@ -57,8 +58,9 @@ export function LiveTimer({ startedAt, finishedAt, className }: Props) {
     <span
       className={cn("font-mono tabular-nums", className)}
       aria-live={finished === null ? "polite" : "off"}
+      suppressHydrationWarning
     >
-      {formatHMS(elapsed)}
+      {elapsed === null ? "--:--:--" : formatHMS(elapsed)}
     </span>
   );
 }

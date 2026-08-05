@@ -35,7 +35,7 @@ defmodule Backend.HR do
   alias Backend.Accounts.User
   alias Backend.Audit
   alias Backend.Broadcasts
-  alias Backend.HR.{Employee, EmployeeReputationEvent, EmployeeWage}
+  alias Backend.HR.{Employee, EmployeeReputationEvent, EmployeeShift, EmployeeWage}
   alias Backend.ListQueries
   alias Backend.Repo
 
@@ -570,6 +570,330 @@ defmodule Backend.HR do
     employee
     |> Ecto.Changeset.change(reputation_score: clamped)
     |> Repo.update()
+  end
+
+  ## Company-wide timeline pages ------------------------------------
+
+  @doc """
+  Company-wide wage-history feed, newest-first. Optional
+  ``employee_uuid`` filter narrows to a single worker (matches the FE
+  wage-page filter dropdown). Preloads the employee so the row can
+  render the worker link.
+  """
+  def list_wages_page(company_id, opts \\ []) do
+    sort = {:inserted_at, :desc}
+    employee_uuid = opts[:employee_uuid]
+
+    base =
+      from w in EmployeeWage,
+        join: e in assoc(w, :employee),
+        where: e.company_id == ^company_id,
+        preload: [:employee, :approved_by]
+
+    base =
+      if is_binary(employee_uuid) and employee_uuid != "" do
+        from [w, e] in base, where: e.uuid == ^employee_uuid
+      else
+        base
+      end
+
+    base = ListQueries.apply_sort(base, sort, [:inserted_at, :id], sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Company-wide reputation-event feed, newest-first. Optional
+  ``employee_uuid`` narrows to one worker. Preloads actors + employee
+  so the row payload carries names without an N+1 fetch.
+  """
+  def list_reputation_events_page(company_id, opts \\ []) do
+    sort = {:inserted_at, :desc}
+    employee_uuid = opts[:employee_uuid]
+
+    base =
+      from ev in EmployeeReputationEvent,
+        join: e in assoc(ev, :employee),
+        where: e.company_id == ^company_id,
+        preload: [:employee, :created_by_user, :created_by_employee]
+
+    base =
+      if is_binary(employee_uuid) and employee_uuid != "" do
+        from [ev, e] in base, where: e.uuid == ^employee_uuid
+      else
+        base
+      end
+
+    base = ListQueries.apply_sort(base, sort, [:inserted_at, :id], sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Aggregate HR statistics for the /hr/statistics page. Rolls up shifts,
+  sessions, wage totals per employee across the past ``days`` (default
+  30). Values are computed live off the same tables the ledgers read,
+  so the numbers stay in sync with the timelines.
+  """
+  def statistics_summary(company_id, opts \\ []) do
+    days = opts[:days] || 30
+    cutoff = DateTime.add(DateTime.utc_now(), -days * 86_400, :second)
+
+    employees =
+      Repo.all(
+        from e in Employee,
+          where: e.company_id == ^company_id and e.is_active == true,
+          order_by: [asc: e.full_name]
+      )
+
+    shifts_by_employee =
+      Repo.all(
+        from s in EmployeeShift,
+          where:
+            s.company_id == ^company_id and
+              s.started_at >= ^cutoff and
+              not is_nil(s.duration_seconds),
+          group_by: s.employee_id,
+          select:
+            {s.employee_id,
+             %{
+               shift_count: count(s.id),
+               total_seconds: sum(s.duration_seconds)
+             }}
+      )
+      |> Map.new()
+
+    sessions_by_employee = sessions_stats_by_employee(company_id, cutoff)
+
+    employees
+    |> Enum.map(fn e ->
+      shift_stats = Map.get(shifts_by_employee, e.id, %{shift_count: 0, total_seconds: 0})
+      session_stats =
+        Map.get(sessions_by_employee, e.id, %{
+          session_count: 0,
+          total_produced: nil,
+          avg_performance: nil
+        })
+
+      wage = fetch_current_wage(e.id)
+
+      %{
+        employee: %{
+          id: e.id,
+          uuid: e.uuid,
+          name: e.full_name,
+          reputation_score: e.reputation_score,
+          is_qa: e.is_qa
+        },
+        shift_count: shift_stats.shift_count || 0,
+        shift_seconds: shift_stats.total_seconds || 0,
+        session_count: session_stats.session_count,
+        avg_performance: session_stats.avg_performance,
+        total_produced: session_stats.total_produced,
+        hourly_rate:
+          case wage do
+            %EmployeeWage{hourly_rate: r, currency_code: c} ->
+              %{hourly_rate: r && to_string(r), currency_code: c}
+
+            _ ->
+              nil
+          end,
+        estimated_labour_cost: estimate_labour_cost(shift_stats.total_seconds, wage)
+      }
+    end)
+    |> then(fn rows ->
+      %{
+        days: days,
+        rows: rows,
+        totals: %{
+          employees: length(rows),
+          shift_count: Enum.reduce(rows, 0, &(&2 + &1.shift_count)),
+          shift_seconds: Enum.reduce(rows, 0, &(&2 + (&1.shift_seconds || 0))),
+          session_count: Enum.reduce(rows, 0, &(&2 + &1.session_count))
+        }
+      }
+    end)
+  end
+
+  defp sessions_stats_by_employee(company_id, cutoff) do
+    # WorkstationSession stores `employee_uuids :: {array, Ecto.UUID}`
+    # — one session can have N workers. Unnest so each employee gets
+    # their share (they all get the full session duration, not a
+    # fraction, so the numbers match what the operator saw on the kiosk).
+    query = """
+      SELECT e.id,
+             COUNT(*) AS session_count,
+             SUM(s.quantity_produced) AS total_produced,
+             AVG(s.performance_percentage) AS avg_performance
+      FROM workstation_sessions s
+      JOIN LATERAL unnest(s.employee_uuids) AS uid ON TRUE
+      JOIN employees e ON e.uuid = uid::text::uuid AND e.company_id = $1
+      WHERE s.company_id = $1
+        AND s.started_at >= $2
+      GROUP BY e.id
+    """
+
+    %{rows: rows} = Repo.query!(query, [company_id, cutoff])
+
+    Enum.reduce(rows, %{}, fn [emp_id, session_count, produced, avg_perf], acc ->
+      Map.put(acc, emp_id, %{
+        session_count: session_count || 0,
+        total_produced: produced && to_string(produced),
+        avg_performance: avg_perf && Float.round(avg_perf * 1.0, 1)
+      })
+    end)
+  end
+
+  defp fetch_current_wage(employee_id) do
+    Repo.one(
+      from w in EmployeeWage,
+        where: w.employee_id == ^employee_id and is_nil(w.effective_to),
+        limit: 1
+    )
+  end
+
+  defp estimate_labour_cost(nil, _), do: nil
+  defp estimate_labour_cost(0, _), do: nil
+  defp estimate_labour_cost(_seconds, nil), do: nil
+
+  defp estimate_labour_cost(seconds, %EmployeeWage{hourly_rate: %Decimal{} = rate}) do
+    hours =
+      seconds
+      |> Decimal.new()
+      |> Decimal.div(Decimal.new(3600))
+
+    rate
+    |> Decimal.mult(hours)
+    |> Decimal.round(2)
+    |> to_string()
+  end
+
+  defp estimate_labour_cost(_, _), do: nil
+
+  ## Shifts ---------------------------------------------------------
+
+  @doc """
+  Paginated shifts for a single employee, newest-first. Matches the
+  wage / reputation timeline pattern so the FE consumer looks the
+  same across all three streams.
+  """
+  def list_shifts_for_employee(employee_or_id, opts \\ [])
+
+  def list_shifts_for_employee(%Employee{id: id}, opts),
+    do: list_shifts_for_employee(id, opts)
+
+  def list_shifts_for_employee(employee_id, opts) when is_integer(employee_id) do
+    sort = {:started_at, :desc}
+
+    base =
+      from s in EmployeeShift,
+        where: s.employee_id == ^employee_id
+
+    base = ListQueries.apply_sort(base, sort, [:started_at, :id], sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Company-wide shifts feed, newest-first. Optional ``employee_uuid``
+  narrows to one worker (matches the FE shifts-page filter dropdown).
+  Powers the /hr/shifts overview page.
+  """
+  def list_shifts_page(company_id, opts \\ []) do
+    sort = {:started_at, :desc}
+    employee_uuid = opts[:employee_uuid]
+
+    base =
+      from s in EmployeeShift,
+        join: e in assoc(s, :employee),
+        where: s.company_id == ^company_id,
+        preload: [:employee]
+
+    base =
+      if is_binary(employee_uuid) and employee_uuid != "" do
+        from [s, e] in base, where: e.uuid == ^employee_uuid
+      else
+        base
+      end
+
+    base = ListQueries.apply_sort(base, sort, [:started_at, :id], sort)
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Upsert a shift by (`company_id`, `external_id`). Called by the
+  integration endpoint on every vp writeback so an open shift's
+  clock-out mutates the existing row instead of duplicating.
+  """
+  def upsert_shift_from_integration(%Employee{} = employee, attrs) do
+    external_id = Map.get(attrs, "external_id") || Map.get(attrs, :external_id)
+
+    existing =
+      case external_id do
+        id when is_binary(id) and id != "" ->
+          Repo.one(
+            from s in EmployeeShift,
+              where:
+                s.company_id == ^employee.company_id and
+                  s.external_id == ^id
+          )
+
+        _ ->
+          nil
+      end
+
+    result =
+      case existing do
+        %EmployeeShift{} = row ->
+          row
+          |> EmployeeShift.update_changeset(stringify_keys(attrs))
+          |> Repo.update()
+          |> case do
+            {:ok, updated} -> {:ok, %{row: updated, matched: true}}
+            other -> other
+          end
+
+        nil ->
+          attrs =
+            attrs
+            |> stringify_keys()
+            |> Map.merge(%{
+              "company_id" => employee.company_id,
+              "employee_id" => employee.id
+            })
+
+          %EmployeeShift{}
+          |> EmployeeShift.create_changeset(attrs)
+          |> Repo.insert()
+          |> case do
+            {:ok, row} -> {:ok, %{row: row, matched: false}}
+            other -> other
+          end
+      end
+
+    case result do
+      {:ok, %{row: row}} = ok ->
+        Broadcasts.entity_changed(
+          "hr-employee",
+          employee.uuid,
+          employee.company_id,
+          "shift"
+        )
+
+        Broadcasts.entity_changed(
+          "hr-employee-shifts",
+          nil,
+          employee.company_id,
+          "changed"
+        )
+
+        _ = row
+        ok
+
+      other ->
+        other
+    end
   end
 
   ## ------------------------------------------------------------------

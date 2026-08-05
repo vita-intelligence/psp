@@ -53,6 +53,7 @@ import { MOCostSummary } from "../../manufacturing-orders/mo-cost-summary";
 import { MOPartsTable } from "../../manufacturing-orders/mo-parts-table";
 import { MOOperationsTable } from "../../manufacturing-orders/mo-operations-table";
 import { MOChainRoadmap } from "../../manufacturing-orders/mo-chain-roadmap";
+import { MOSpecSheet } from "../../manufacturing-orders/mo-spec-sheet";
 
 interface Props {
   initialMo: ManufacturingOrder;
@@ -101,7 +102,7 @@ export function ProductionRunDetail({ initialMo, company }: Props) {
 
   return (
     <section className="space-y-6">
-      <StageBanner stage={stage} />
+      <StageBanner stage={stage} isRnd={isRndMo(mo)} />
 
       {actionError && <ErrorBanner detail={actionError} />}
 
@@ -126,6 +127,8 @@ export function ProductionRunDetail({ initialMo, company }: Props) {
       <MOCostSummary mo={mo} company={company} />
       <MOPartsTable mo={mo} company={company} canEdit={false} />
       <MOOperationsTable mo={mo} company={company} canEdit={false} />
+
+      <MOSpecSheet moUuid={mo.uuid} />
 
       <FinishDialog
         open={finishOpen}
@@ -236,15 +239,24 @@ function ContextCard({
 
 type Stage = "preflight_pending" | "ready" | "running" | "completed" | "other";
 
+function isRndMo(mo: ManufacturingOrder): boolean {
+  return mo.project_type === "trial" || mo.project_type === "sample";
+}
+
 function stageOf(mo: ManufacturingOrder): Stage {
   if (mo.status === "completed") return "completed";
   if (mo.status === "in_progress") return "running";
+  // R&D still requires pickup — trial + sample MOs skip the per-
+  // booking preflight sign-off ceremony, but the physical materials
+  // must arrive at the production cell before Start becomes valid.
+  // Once pickup is done, `ready`. Before pickup, treat as preflight-
+  // pending so the operator sees why Start isn't available.
   if (mo.status === "scheduled" && mo.pickup_completed_at) return "ready";
   if (mo.status === "scheduled") return "preflight_pending";
   return "other";
 }
 
-function StageBanner({ stage }: { stage: Stage }) {
+function StageBanner({ stage, isRnd }: { stage: Stage; isRnd: boolean }) {
   if (stage === "preflight_pending") {
     return (
       <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
@@ -297,8 +309,9 @@ function StageBanner({ stage }: { stage: Stage }) {
         <div>
           <p className="font-medium">Ready to start</p>
           <p className="text-[12px] opacity-80">
-            Every booking is signed off. Materials are at the
-            production-feed cell.
+            {isRnd
+              ? "R&D run — warehouse has delivered the materials. Tap Start when the trial begins on the floor."
+              : "Every booking is signed off. Materials are at the production-feed cell."}
           </p>
         </div>
       </div>

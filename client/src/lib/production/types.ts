@@ -917,6 +917,15 @@ export interface CloseoutOutputLot {
     uuid: string;
     name: string | null;
   } | null;
+  /** Live downstream reservations against this lot. Non-empty ⇒ the
+   *  lot is booked as ingredient for another live MO; closeout skips
+   *  the "scan dispatch cell + move" step and the FE shows a
+   *  "reserved for MO-X" chip. Empty ⇒ standard hand-off to dispatch. */
+  reserved_by: Array<{
+    mo_uuid: string;
+    mo_code: string | null;
+    qty: string;
+  }>;
 }
 
 /** Production-side dispatch cell shown in the destination picker. */
@@ -1105,6 +1114,10 @@ export interface ManufacturingOrder {
   code: string | null;
   status: ManufacturingOrderStatus;
   revision: string;
+  /** Stream marker. `production` = normal MOs; `trial` / `sample` =
+   *  R&D (created from NPD trial batches). Drives the R&D fast-path
+   *  Run button on the detail page + the row chip on the ledger. */
+  project_type: "production" | "trial" | "sample";
   quantity: string;
   due_date: string | null;
   /** Derived from min(steps.planned_start) — null when unscheduled. */
@@ -1306,6 +1319,10 @@ export interface ManufacturingOrderSummary {
   code: string | null;
   status: ManufacturingOrderStatus;
   revision: string;
+  /** Stream marker on the ledger. `production` = normal MOs;
+   *  `trial` / `sample` = R&D (created from NPD trial batches).
+   *  Drives the tab strip filter + row chip on the ledger. */
+  project_type: "production" | "trial" | "sample";
   quantity: string;
   due_date: string | null;
   /** Derived from steps; null when unscheduled. */
@@ -1395,8 +1412,55 @@ export interface OutputQcEntry {
     quantity: string;
     quantity_produced: string | null;
     actual_finish: string | null;
+    project_type: string | null;
+    workstation_groups: Array<{ uuid: string; name: string }>;
     pickup_completed_by: AuditActor | null;
   } | null;
+  /** Finished-product spec — the lot's item's own spec if it has one,
+   *  otherwise inherited from the closest ancestor MO's item (walk up
+   *  the parent chain to find the terminal finished product). Null
+   *  only when neither the lot nor any ancestor has a spec. */
+  finished_product_spec: FinishedProductSpec | null;
+  /** Where the surfaced spec came from — helps QA understand whether
+   *  they're seeing the lot's own spec, or the parent product's spec
+   *  because the lot is a semi-finished intermediate. */
+  finished_product_spec_source:
+    | { kind: "own" }
+    | { kind: "parent"; mo_uuid: string; item_name: string | null }
+    | { kind: "none" };
+  /** Item type — finished_product / semi_finished / raw_material /
+   *  packaging / consumable. Useful for triage. */
+  item_type: string | null;
+}
+
+export interface FinishedProductSpec {
+  regulatory_category: string | null;
+  dosage_form: string | null;
+  capsule_size: string | null;
+  tablet_size_mm: string | null;
+  powder_type: string | null;
+  serving_size: string | null;
+  servings_per_pack: number | null;
+  net_quantity: string | null;
+  directions_of_use: string | null;
+  suggested_dosage: string | null;
+  warnings_text: string | null;
+  appearance: string | null;
+  disintegration_spec: string | null;
+  weight_uniformity_pct: string | null;
+  shelf_life_months: number | null;
+  storage_conditions: string | null;
+  food_contact_status: string | null;
+  active_claims: unknown[];
+  general_claims: unknown[];
+  target_markets: string[];
+  may_contain_allergens: string[];
+  may_contain_justification: string | null;
+}
+
+export interface OutputQcQueuePage {
+  items: OutputQcEntry[];
+  next_cursor: string | null;
 }
 
 /** Row of the production-run queue. Preflight-cleared MOs ready to

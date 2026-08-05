@@ -24,6 +24,7 @@ import {
   getHREmployee,
   listHREmployeeReputationEvents,
   listHREmployeeSessions,
+  listHREmployeeShifts,
   listHREmployeeWages,
 } from "@/lib/hr/server";
 import type { HREmployee } from "@/lib/hr/types";
@@ -33,6 +34,7 @@ import { EmployeeForm } from "../../employee-form";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { WagesCard } from "../../wages-card";
 import { ReputationCard } from "../../reputation-card";
+import { ShiftsCard } from "../../shifts-card";
 import { ArchiveEmployeeButton } from "./archive-employee-button";
 import { EmployeeSessionsCard } from "./employee-sessions-card";
 
@@ -48,19 +50,27 @@ export default async function HREmployeeDetailPage({
   if (!hasPermission(user, "hr.view")) redirect("/");
 
   const { uuid } = await params;
-  const [employee, prefs, wagesPage, reputationPage, sessionsPage, comments] =
-    await Promise.all([
-      getHREmployee(uuid),
-      getCompanyDefaults(),
-      // Tight preview — only the top 5 of each timeline lands on the
-      // profile sidebar. "View all →" jumps to the dedicated
-      // infinite-scroll page. Rendering 700+ rows here was the
-      // regression this ticket fixes.
-      listHREmployeeWages(uuid, { limit: 5 }),
-      listHREmployeeReputationEvents(uuid, { limit: 5 }),
-      listHREmployeeSessions(uuid, { limit: 5 }),
-      listCommentsForEntity("hr_employee", uuid),
-    ]);
+  const [
+    employee,
+    prefs,
+    wagesPage,
+    reputationPage,
+    sessionsPage,
+    shiftsPage,
+    comments,
+  ] = await Promise.all([
+    getHREmployee(uuid),
+    getCompanyDefaults(),
+    // Tight preview — only the top 5 of each timeline lands on the
+    // profile sidebar. "View all →" jumps to the dedicated
+    // infinite-scroll page. Rendering 700+ rows here was the
+    // regression this ticket fixes.
+    listHREmployeeWages(uuid, { limit: 5 }),
+    listHREmployeeReputationEvents(uuid, { limit: 5 }),
+    listHREmployeeSessions(uuid, { limit: 5 }),
+    listHREmployeeShifts(uuid, { limit: 5 }),
+    listCommentsForEntity("hr_employee", uuid),
+  ]);
   if (!employee) notFound();
   if (!prefs) notFound();
 
@@ -69,6 +79,7 @@ export default async function HREmployeeDetailPage({
   const wages = wagesPage.items;
   const reputationEvents = reputationPage.items;
   const sessions = sessionsPage.items;
+  const shifts = shiftsPage.items;
   const active = sessions.find((s) => s.status === "active") ?? null;
   // Only surface the "View all →" link when there's actually a next
   // page — a worker with 3 events shouldn't have to click through to a
@@ -85,6 +96,8 @@ export default async function HREmployeeDetailPage({
     sessionsPage.next_cursor
       ? `/hr/employees/${employee.uuid}/sessions`
       : undefined;
+  const shiftsViewAll =
+    shiftsPage.next_cursor ? "/hr/shifts" : undefined;
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 sm:py-8">
@@ -140,6 +153,7 @@ export default async function HREmployeeDetailPage({
             canEdit={canEdit}
             viewAllHref={reputationViewAll}
           />
+          <ShiftsCard initial={shifts} viewAllHref={shiftsViewAll} />
           <IdentityFacts employee={employee} prefs={prefs} />
           <AuditMetaSection
             inserted_at={employee.inserted_at}

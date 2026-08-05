@@ -10,6 +10,8 @@ import {
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { PageHeader } from "@/components/layout/page-header";
+import { listHREmployeesFirstPage } from "@/lib/hr/server";
+import { listAllShifts } from "@/lib/hr/server";
 
 export const metadata = { title: "HR · PSP" };
 
@@ -23,47 +25,49 @@ interface HRSection {
     comingSoon?: boolean;
 }
 
-const SECTIONS: HRSection[] = [
-    {
-        href: "/hr/employees",
-        label: "Employees",
-        description:
-            "Master data for the shop-floor workforce. Identity, kiosk PIN, wage-history timeline, and reputation events. Sessions FK the record so archive is soft-delete.",
-        Icon: Users2,
-    },
-    {
-        href: "/hr/wages",
-        label: "Wages",
-        description:
-            "Point-in-time wage lookup across every employee. Powers the MO cost breakdown's labour column — wages resolve at session start, not now.",
-        Icon: Coins,
-        comingSoon: true,
-    },
-    {
-        href: "/hr/reputation",
-        label: "Reputation",
-        description:
-            "Per-employee reputation score with 180-day linear decay. Positive events lift, negative events dock; the score is a projection of the underlying event stream.",
-        Icon: Award,
-        comingSoon: true,
-    },
-    {
-        href: "/hr/shifts",
-        label: "Shifts",
-        description:
-            "Planned attendance windows per employee. Cross-references kiosk sessions so absent-when-scheduled becomes a first-class metric.",
-        Icon: CalendarDays,
-        comingSoon: true,
-    },
-    {
-        href: "/hr/statistics",
-        label: "Statistics",
-        description:
-            "Overtime hours, average performance %, session count by employee, wage-run totals per period.",
-        Icon: TrendingUp,
-        comingSoon: true,
-    },
-];
+function buildSections(counts: { employees: number | null; runningShifts: number }): HRSection[] {
+    return [
+        {
+            href: "/hr/employees",
+            label: "Employees",
+            description:
+                counts.employees == null
+                    ? "Master data for the shop-floor workforce. Identity, kiosk PIN, wage-history timeline, and reputation events."
+                    : `${counts.employees} on file. Identity, kiosk PIN, wage-history timeline, and reputation events all live on the employee record.`,
+            Icon: Users2,
+        },
+        {
+            href: "/hr/wages",
+            label: "Wages",
+            description:
+                "Company-wide wage timeline. Every rate change writes a new row; the current row (no end date) is what the MO cost breakdown reads at session start.",
+            Icon: Coins,
+        },
+        {
+            href: "/hr/reputation",
+            label: "Reputation",
+            description:
+                "Per-employee reputation event log with 180-day linear decay. Positive events lift, negative events dock; the cached score is a projection of the stream.",
+            Icon: Award,
+        },
+        {
+            href: "/hr/shifts",
+            label: "Shifts",
+            description:
+                counts.runningShifts > 0
+                    ? `${counts.runningShifts} shift${counts.runningShifts === 1 ? "" : "s"} currently open. Kiosk clock-in / clock-out windows synced from vita-performance.`
+                    : "Kiosk clock-in / clock-out windows synced from vita-performance. Filter by worker, infinite scroll.",
+            Icon: CalendarDays,
+        },
+        {
+            href: "/hr/statistics",
+            label: "Statistics",
+            description:
+                "Aggregate per-worker metrics: shifts logged, hours worked, session count, avg performance %, current rate, and estimated labour cost across a rolling window.",
+            Icon: TrendingUp,
+        },
+    ];
+}
 
 export default async function HRHomePage() {
     const user = await requireUser();
@@ -71,16 +75,29 @@ export default async function HRHomePage() {
         redirect("/");
     }
 
+    // Lightweight counts for the tiles — first page of each is enough
+    // for the summary. Failure is silent (fetchers already return null
+    // / empty pages) so a transient PSP glitch doesn't blank the
+    // landing.
+    const [employeesPage, shiftsPage] = await Promise.all([
+        listHREmployeesFirstPage(),
+        listAllShifts({ limit: 50 }),
+    ]);
+    const sections = buildSections({
+        employees: employeesPage?.items?.length ?? null,
+        runningShifts: shiftsPage.items.filter((s) => s.ended_at === null).length,
+    });
+
     return (
         <div className="space-y-8">
             <PageHeader
                 icon={Users2}
                 title="HR"
-                description="Employees, wages, and reputation for the shop-floor workforce. Slices ship one at a time — Employees first."
+                description="Employees, wages, reputation, and kiosk shifts for the shop-floor workforce. Data flows from vita-performance's personal kiosk."
             />
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {SECTIONS.map((s) => {
+                {sections.map((s) => {
                     const className = s.comingSoon
                         ? "block rounded-lg border border-dashed border-border/60 bg-muted/30 p-4 opacity-70"
                         : "block rounded-lg border border-border/60 bg-card p-4 transition-colors hover:border-foreground/30 hover:bg-muted/30";
@@ -108,7 +125,7 @@ export default async function HRHomePage() {
 
                     return s.comingSoon ? (
                         <div
-                            key={s.href}
+                            key={s.label}
                             className={className}
                             title={`${s.label} — coming soon`}
                         >
@@ -116,7 +133,7 @@ export default async function HRHomePage() {
                         </div>
                     ) : (
                         <Link
-                            key={s.href}
+                            key={s.label}
                             href={s.href}
                             className={className}
                         >

@@ -40,6 +40,9 @@ defmodule BackendWeb.IntegrationHRController do
   plug :require_integration_scope,
        "hr:write:reputation" when action == :create_reputation_event
 
+  plug :require_integration_scope,
+       "hr:write:shift" when action == :upsert_shift
+
   action_fallback BackendWeb.FallbackController
 
   ## Employees ------------------------------------------------------
@@ -298,6 +301,70 @@ defmodule BackendWeb.IntegrationHRController do
   end
 
   defp maybe_backdate(ev, _), do: ev
+
+  ## Shifts ---------------------------------------------------------
+
+  @doc """
+  Idempotent upsert for a single clock-in / clock-out window. vp's
+  personal kiosk posts on close (and on open, if we start pushing the
+  live shift). Repeated posts for the same vp shift (identified by
+  `external_id`) update the existing row rather than creating a new
+  one — so an open shift's clock-out arrives as an update to the same
+  PSP row.
+  """
+  def upsert_shift(conn, %{"employee_uuid" => employee_uuid} = params) do
+    company_id = conn.assigns.current_company_id
+
+    case HR.get_employee(company_id, employee_uuid) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(Errors.payload("employee_not_found", "Employee not found for the given uuid.", %{}))
+
+      %Employee{} = employee ->
+        attrs = build_shift_attrs(params)
+
+        case HR.upsert_shift_from_integration(employee, attrs) do
+          {:ok, %{row: row, matched: matched}} ->
+            conn
+            |> put_status(if matched, do: :ok, else: :created)
+            |> json(%{shift: Payloads.hr_employee_shift(row), matched: matched})
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "validation_failed",
+                "Please correct the highlighted fields.",
+                Errors.changeset_fields(cs)
+              )
+            )
+        end
+    end
+  end
+
+  defp build_shift_attrs(params) do
+    %{
+      "external_id" => params["external_id"],
+      "started_at" => parse_iso_datetime(params["started_at"]),
+      "ended_at" => parse_iso_datetime(params["ended_at"]),
+      "duration_seconds" => params["duration_seconds"],
+      "device_id" => params["device_id"] || "",
+      "notes" => params["notes"] || ""
+    }
+  end
+
+  defp parse_iso_datetime(nil), do: nil
+
+  defp parse_iso_datetime(v) when is_binary(v) do
+    case DateTime.from_iso8601(v) do
+      {:ok, dt, _} -> DateTime.truncate(dt, :second)
+      _ -> nil
+    end
+  end
+
+  defp parse_iso_datetime(_), do: nil
 
   ## Helpers --------------------------------------------------------
 

@@ -2294,6 +2294,11 @@ defmodule BackendWeb.Payloads do
       code: render_code(mo, "manufacturing_order"),
       status: mo.status,
       revision: mo.revision,
+      # R&D stream marker. `production` = normal MOs, `trial` /
+      # `sample` = R&D. Drives the R&D fast-path Run button on the
+      # detail page (see mo-status-actions.tsx) + the row chip on
+      # the ledger.
+      project_type: mo.project_type,
       quantity: decimal_to_string(mo.quantity),
       due_date: mo.due_date,
       # Derived from steps — null when the MO is unscheduled.
@@ -2448,6 +2453,12 @@ defmodule BackendWeb.Payloads do
       code: render_code(mo, "manufacturing_order"),
       status: mo.status,
       revision: mo.revision,
+      # R&D stream marker on the ledger. `production` = normal MOs,
+      # `trial` / `sample` = R&D (created from NPD trial batches). The
+      # FE ledger tab strip flips a server filter based on this value
+      # AND stamps a row chip so an R&D row leaking through the "All"
+      # tab is unmistakable.
+      project_type: mo.project_type,
       quantity: decimal_to_string(mo.quantity),
       due_date: mo.due_date,
       start_at: start_at,
@@ -3053,7 +3064,9 @@ defmodule BackendWeb.Payloads do
   in `received` status + its source MO context so the QC operator
   can verify which production run produced it.
   """
-  def output_qc_entry(%{lot: %Backend.Stock.Lot{} = lot, mo: mo}) do
+  def output_qc_entry(%{lot: %Backend.Stock.Lot{} = lot, mo: mo} = entry) do
+    resolved_spec_item = Map.get(entry, :resolved_spec_item)
+    resolved_spec_source = Map.get(entry, :resolved_spec_source, :none)
     cell =
       case lot.placements do
         [%{storage_cell: %Backend.Warehouses.StorageCell{} = c} | _] -> c
@@ -3114,10 +3127,87 @@ defmodule BackendWeb.Payloads do
             quantity: decimal_to_string(mo.quantity),
             quantity_produced: decimal_to_string(mo.quantity_produced),
             actual_finish: mo.actual_finish,
+            project_type: mo.project_type,
+            workstation_groups: mo_workstation_groups(mo),
             pickup_completed_by: actor(mo, :pickup_completed_by)
-          }
+          },
+      finished_product_spec:
+        finished_product_spec_payload(resolved_spec_item || lot.item),
+      finished_product_spec_source:
+        case resolved_spec_source do
+          :own ->
+            %{kind: "own"}
+
+          {:parent, %Backend.Production.ManufacturingOrder{} = parent_mo} ->
+            %{
+              kind: "parent",
+              mo_uuid: parent_mo.uuid,
+              item_name:
+                case Map.get(parent_mo, :item) do
+                  %Backend.Items.Item{name: n} -> n
+                  _ -> nil
+                end
+            }
+
+          _ ->
+            %{kind: "none"}
+        end,
+      item_type: lot.item && lot.item.item_type
     }
   end
+
+  defp mo_workstation_groups(%Backend.Production.ManufacturingOrder{steps: steps})
+       when is_list(steps) do
+    steps
+    |> Enum.map(fn s ->
+      case Map.get(s, :workstation_group) do
+        %Backend.Production.WorkstationGroup{uuid: uuid, name: name} ->
+          %{uuid: uuid, name: name}
+
+        _ ->
+          nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(& &1.uuid)
+  end
+
+  defp mo_workstation_groups(_), do: []
+
+  # Compact projection of the finished-product spec (from NPD or PSP
+  # manual). Only the fields a QA operator would compare against the
+  # physical lot — dosage form, appearance, disintegration, weight
+  # uniformity, shelf life, storage, allergens, and any claims list.
+  # Nil when the item isn't a finished product or the spec hasn't been
+  # filled in yet.
+  defp finished_product_spec_payload(%Backend.Items.Item{finished_product_spec: %Backend.Items.FinishedProductSpec{} = s}) do
+    %{
+      regulatory_category: s.regulatory_category,
+      dosage_form: s.dosage_form,
+      capsule_size: s.capsule_size,
+      tablet_size_mm: decimal_to_string(s.tablet_size_mm),
+      powder_type: s.powder_type,
+      serving_size: decimal_to_string(s.serving_size),
+      servings_per_pack: s.servings_per_pack,
+      net_quantity: decimal_to_string(s.net_quantity),
+      directions_of_use: s.directions_of_use,
+      suggested_dosage: s.suggested_dosage,
+      warnings_text: s.warnings_text,
+      appearance: s.appearance,
+      disintegration_spec: s.disintegration_spec,
+      weight_uniformity_pct: decimal_to_string(s.weight_uniformity_pct),
+      shelf_life_months: s.shelf_life_months,
+      storage_conditions: s.storage_conditions,
+      food_contact_status: s.food_contact_status,
+      active_claims: s.active_claims,
+      general_claims: s.general_claims,
+      target_markets: s.target_markets,
+      may_contain_allergens: s.may_contain_allergens,
+      may_contain_justification: s.may_contain_justification
+    }
+  end
+
+  defp finished_product_spec_payload(_), do: nil
 
   def output_qc_entry(_), do: nil
 
@@ -3146,7 +3236,9 @@ defmodule BackendWeb.Payloads do
   Shaped like a slimmed booking row so the mobile flow can render
   them in the same list as bookings (same scan-photo-qty pattern).
   """
-  def closeout_output_lot(%Backend.Stock.Lot{} = lot) do
+  def closeout_output_lot(lot, reservations \\ [])
+
+  def closeout_output_lot(%Backend.Stock.Lot{} = lot, reservations) do
     cell =
       case lot.placements do
         [%{storage_cell: %Backend.Warehouses.StorageCell{} = c} | _] -> c
@@ -3195,11 +3287,24 @@ defmodule BackendWeb.Payloads do
             id: cell.id,
             uuid: cell.uuid,
             name: cell.name
+          },
+      # Live downstream reservations — populated by the closeout
+      # controller so the FE can render the "reserved for MO-X" chip
+      # and hide the scan-cell / photo requirement (a reserved lot
+      # stays in place at the production feed cell for the downstream
+      # picker to grab). Empty list == fresh lot, no downstream owner.
+      reserved_by:
+        Enum.map(reservations, fn r ->
+          %{
+            mo_uuid: r.mo_uuid,
+            mo_code: r.mo_code,
+            qty: to_string(r.qty)
           }
+        end)
     }
   end
 
-  def closeout_output_lot(_), do: nil
+  def closeout_output_lot(_, _), do: nil
 
   @doc """
   Production-dispatch cell row for the closeout flow's
@@ -3465,11 +3570,18 @@ defmodule BackendWeb.Payloads do
     # the dispatch match here caused the loose-bucket payload to
     # render 0 kg + a missing source cell whenever the lot was
     # stranded at production_feed.
+    # `rnd` joins the source list too — R&D closeout leaves the
+    # produced lot / raw-material leftovers on the R&D shelf, and
+    # ``Backend.Warehouses.ReturnPickup.list_queue`` now surfaces
+    # them alongside standard production. Without `rnd` here the
+    # queue rendered the row (via the ReturnPickup source-cell
+    # allowlist) but the payload's placement lookup returned nil,
+    # printing "0 kg" on every line.
     Enum.find(list, fn p ->
       Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt and
         match?(
           %Backend.Warehouses.StorageCell{purpose: purpose}
-          when purpose in ["dispatch", "production_feed"],
+          when purpose in ["dispatch", "production_feed", "rnd"],
           p.storage_cell
         )
     end)
@@ -6044,5 +6156,35 @@ defmodule BackendWeb.Payloads do
       inserted_at: ev.inserted_at,
       updated_at: ev.updated_at
     }
+  end
+
+  @doc """
+  Shift-row payload. `employee` is populated only when the caller
+  preloaded it (company-wide feed does; per-employee timelines skip
+  the redundant nested employee). `duration_seconds` is materialised
+  on close so listing pages never need to compute it per row.
+  """
+  def hr_employee_shift(%Backend.HR.EmployeeShift{} = s) do
+    base = %{
+      id: s.id,
+      uuid: s.uuid,
+      employee_id: s.employee_id,
+      external_id: s.external_id,
+      started_at: s.started_at,
+      ended_at: s.ended_at,
+      duration_seconds: s.duration_seconds,
+      device_id: s.device_id,
+      notes: s.notes,
+      inserted_at: s.inserted_at,
+      updated_at: s.updated_at
+    }
+
+    case Map.get(s, :employee) do
+      %Backend.HR.Employee{} = e ->
+        Map.put(base, :employee, %{id: e.id, uuid: e.uuid, name: e.full_name})
+
+      _ ->
+        base
+    end
   end
 end

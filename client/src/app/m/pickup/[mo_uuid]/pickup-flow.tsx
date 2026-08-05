@@ -155,6 +155,15 @@ export function PickupFlow({
     return "not_released";
   }, [mo]);
 
+  // R&D pickups land on `rnd` benches rather than production-feed
+  // shelves — the copy + the DirectionsBody purpose need to reflect
+  // that so the operator isn't told to walk to the wrong side of the
+  // facility. Backend enforces the same split via
+  // `pickup_target_purpose/1`.
+  const isRnd =
+    mo.project_type === "trial" || mo.project_type === "sample";
+  const dropOffLabel = isRnd ? "R&D bench" : "production-feed cell";
+
   const allPicked = useMemo(
     () =>
       bookings.length > 0 && bookings.every((b) => b.picked_at !== null),
@@ -246,9 +255,22 @@ export function PickupFlow({
       );
       if (res.ok) {
         setBookings((prev) =>
-          prev.map((b) =>
-            b.uuid === bookingUuid ? { ...b, ...res.booking } : b,
-          ),
+          prev.map((b) => {
+            if (b.uuid !== bookingUuid) return b;
+            // Defensive merge — the mark-picked endpoint preloads
+            // item + stock_lot now, but if any future refactor drops
+            // the preload the shallow spread would clobber the
+            // nested objects with nulls (bug that caused the
+            // "this lot" fallback on the picked-confirm screen).
+            // Keep the existing associations when the response
+            // returns thinner data for them.
+            return {
+              ...b,
+              ...res.booking,
+              item: res.booking.item ?? b.item,
+              stock_lot: res.booking.stock_lot ?? b.stock_lot,
+            };
+          }),
         );
         // Pause on a "put it on the trolley now" instruction screen
         // before the operator chases the next booking — the scan was
@@ -296,7 +318,7 @@ export function PickupFlow({
       } else if (res.code === "production_cell_not_found") {
         toast.error("Scanned cell wasn't found.");
       } else if (res.code === "production_cell_wrong_purpose") {
-        toast.error("That cell isn't a production-feed cell.");
+        toast.error(`That cell isn't a valid ${dropOffLabel}.`);
       } else if (res.code === "bookings_not_all_picked") {
         toast.error("Some bookings still aren't picked.");
         await refresh();
@@ -380,7 +402,9 @@ export function PickupFlow({
           headline="Walk to the lot"
           cell={booking.storage_location}
           lotCode={booking.stock_lot?.code ?? null}
-          qty={booking.quantity}
+          qty={booking.stock_lot?.qty_on_hand ?? booking.quantity}
+          uom={booking.item?.stock_uom?.symbol ?? null}
+          recipeQty={booking.quantity}
           itemName={booking.item?.name ?? null}
           lastPhotoUrl={booking.stock_lot?.last_photo_url ?? null}
           onContinue={() =>
@@ -463,6 +487,7 @@ export function PickupFlow({
         booking={booking ?? null}
         remainingCount={stillPending.length}
         nextBooking={nextBooking}
+        dropOffLabel={dropOffLabel}
         onNextItem={() =>
           nextBooking
             ? setStep({ kind: "directions", bookingUuid: nextBooking.uuid })
@@ -480,6 +505,7 @@ export function PickupFlow({
         companyDateFormat={companyDateFormat}
         productionCell={productionCell}
         overrideFit={overrideFit}
+        dropOffLabel={dropOffLabel}
         onOverrideFitChange={setOverrideFit}
         onPickCell={(cell) => setProductionCell(cell)}
         onScanCell={() => setStep({ kind: "transfer_scan_cell" })}
@@ -492,24 +518,25 @@ export function PickupFlow({
       body = (
         <div className="px-4 py-4">
           <p className="text-sm text-destructive">
-            No production-feed cell selected yet.
+            No {dropOffLabel} selected yet.
           </p>
         </div>
       );
     } else {
       body = (
         <DirectionsBody
-          headline="Walk to production-feed cell"
+          headline={`Walk to ${dropOffLabel}`}
           cell={{
             id: 0,
             uuid: productionCell.uuid,
             name: productionCell.name ?? productionCell.code,
-            purpose: "production_feed",
+            purpose: isRnd ? "rnd" : "production_feed",
             ordinal: null,
             storage_location: productionCell.location,
           }}
           lotCode={null}
           qty={null}
+          uom={null}
           itemName={null}
           onContinue={() => setStep({ kind: "transfer_scan_cell" })}
           onBack={() => setStep({ kind: "transfer_overview" })}
@@ -563,6 +590,7 @@ export function PickupFlow({
         itemName={mo.item?.name ?? null}
         bookingCount={bookings.length}
         cellLabel={productionCell?.code ?? null}
+        dropOffLabel={dropOffLabel}
         onBackToQueue={() => router.push("/m/pickup")}
       />
     );
@@ -667,6 +695,8 @@ function DirectionsBody({
   cell,
   lotCode,
   qty,
+  uom,
+  recipeQty,
   itemName,
   lastPhotoUrl,
   onContinue,
@@ -675,7 +705,17 @@ function DirectionsBody({
   headline: string;
   cell: ManufacturingOrderBookingCellSummary;
   lotCode: string | null;
+  /** Physical qty the picker walks with — the WHOLE LOT amount at
+   *  the source cell, not the recipe target. Renders as "25 kg" with
+   *  the actual UoM symbol so a picker can eyeball the container. */
   qty: string | null;
+  /** UoM symbol (kg, g, ml, pcs, ea...). Falls back to "units" if
+   *  the item didn't have a stock_uom set. */
+  uom: string | null;
+  /** Optional recipe target rendered as a secondary line so the
+   *  picker knows the run needs less than the whole lot — no
+   *  "wait, why am I taking the whole drum" surprise. */
+  recipeQty?: string | null;
   itemName: string | null;
   /** Pass `string | null` to render the "Last known photo" tile (with
    *  the empty-state placeholder if null). Omit when the step isn't
@@ -731,12 +771,18 @@ function DirectionsBody({
         {(lotCode || itemName || qty) && (
           <div className="rounded-xl border border-border/60 bg-card px-3 py-2">
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Picking
+              Picking · whole lot
             </p>
             <p className="text-sm font-medium">
               {itemName ?? "—"}
-              {qty ? ` · ${qty} units` : ""}
+              {qty ? ` · ${qty} ${uom ?? "units"}` : ""}
             </p>
+            {recipeQty ? (
+              <p className="text-[11px] text-muted-foreground">
+                Recipe needs {recipeQty} {uom ?? "units"} — take the
+                whole container, leftover returns after the run.
+              </p>
+            ) : null}
             {lotCode && (
               <p className="font-mono text-[11px] text-muted-foreground">
                 {lotCode}
@@ -1028,7 +1074,10 @@ function BookingRow({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-            <span>{booking.quantity}</span>
+            <span>
+              {booking.stock_lot?.qty_on_hand ?? booking.quantity}{" "}
+              {booking.item?.stock_uom?.symbol ?? ""} (whole lot)
+            </span>
             {booking.stock_lot?.code && (
               <span className="font-mono">{booking.stock_lot.code}</span>
             )}
@@ -1125,6 +1174,7 @@ interface TransferOverviewBodyProps {
   companyDateFormat: FormatPrefs | null;
   productionCell: ProductionCellChoice | null;
   overrideFit: boolean;
+  dropOffLabel: string;
   onOverrideFitChange: (next: boolean) => void;
   onPickCell: (cell: ProductionCellChoice) => void;
   onScanCell: () => void;
@@ -1160,6 +1210,7 @@ function TransferOverviewBody({
   bookings,
   productionCell,
   overrideFit,
+  dropOffLabel,
   onOverrideFitChange,
   onPickCell,
   onScanCell,
@@ -1299,7 +1350,7 @@ function TransferOverviewBody({
           <h3 className="text-sm font-semibold">Production drop-off</h3>
           {loading ? (
             <p className="mt-1 text-xs text-muted-foreground">
-              Finding an empty production-feed cell…
+              Finding an empty {dropOffLabel}…
             </p>
           ) : productionCell ? (
             <p className="mt-1 text-xs text-muted-foreground">
@@ -1582,7 +1633,8 @@ function PhotoRow({
           </p>
           <p className="text-[11px] text-muted-foreground">
             {booking.stock_lot?.code ?? booking.stock_lot?.uuid?.slice(0, 8) ?? "—"} ·{" "}
-            {booking.quantity}
+            {booking.stock_lot?.qty_on_hand ?? booking.quantity}{" "}
+            {booking.item?.stock_uom?.symbol ?? ""} (whole lot)
           </p>
         </div>
         {photoUrl ? (
@@ -1659,6 +1711,7 @@ function PickedConfirmBody({
   booking,
   remainingCount,
   nextBooking,
+  dropOffLabel,
   onNextItem,
   onTransfer,
   onBack,
@@ -1666,13 +1719,15 @@ function PickedConfirmBody({
   booking: ManufacturingOrderBooking | null;
   remainingCount: number;
   nextBooking: ManufacturingOrderBooking | null;
+  dropOffLabel: string;
   onNextItem: () => void;
   onTransfer: () => void;
   onBack: () => void;
 }) {
   const itemName = booking?.item?.name ?? "this lot";
   const lotCode = booking?.stock_lot?.code ?? null;
-  const qty = booking?.quantity ?? null;
+  const recipeQty = booking?.quantity ?? null;
+  const lotQty = booking?.stock_lot?.qty_on_hand ?? null;
   const uom = booking?.item?.stock_uom?.symbol ?? "";
   const allDone = remainingCount === 0;
 
@@ -1686,37 +1741,43 @@ function PickedConfirmBody({
           Scanned · recorded
         </p>
         <h2 className="mt-1 text-xl font-semibold tracking-tight">
-          Put it on your trolley now
+          Take the whole lot to your trolley
         </h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          The system has it on file — physically move {itemName} from
-          the shelf onto your trolley before you walk away.
+          Lots are never split on the shelf — walk the entire container
+          of {itemName} to the trolley. Any leftover after the run gets
+          returned to the warehouse.
         </p>
       </section>
 
       <section className="rounded-xl border border-border/60 bg-card px-4 py-3">
         <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          Just picked
+          Just picked · whole lot
         </p>
         <p className="mt-0.5 text-sm font-semibold">{itemName}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          {qty ? (
+          {lotQty ? (
             <span>
-              {qty} {uom}
+              {lotQty} {uom} moved
             </span>
           ) : null}
-          {qty && lotCode ? " · " : null}
+          {lotQty && lotCode ? " · " : null}
           {lotCode && (
             <span className="font-mono">{lotCode}</span>
           )}
         </p>
+        {recipeQty ? (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Recipe uses {recipeQty} {uom} — leftover returns after the run.
+          </p>
+        ) : null}
       </section>
 
       <section className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
         {allDone ? (
           <p>
             <strong className="text-foreground">All items picked.</strong>
-            {" "}Walk the trolley to the production-feed cell next — the
+            {" "}Walk the trolley to the {dropOffLabel} next — the
             transfer step will record where it landed.
           </p>
         ) : (
@@ -1764,12 +1825,14 @@ function TransferDoneBody({
   itemName,
   bookingCount,
   cellLabel,
+  dropOffLabel,
   onBackToQueue,
 }: {
   moCode: string;
   itemName: string | null;
   bookingCount: number;
   cellLabel: string | null;
+  dropOffLabel: string;
   onBackToQueue: () => void;
 }) {
   return (
@@ -1791,7 +1854,7 @@ function TransferDoneBody({
               {" "}<span className="font-mono">{cellLabel}</span>
             </>
           ) : (
-            " the production-feed cell"
+            ` the ${dropOffLabel}`
           )}
           . Production runs the preflight check from here.
         </p>

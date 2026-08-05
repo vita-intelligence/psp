@@ -12,7 +12,7 @@ export default function HomeLoading() {
     <div className="flex flex-1 flex-col">
       <TopBarSkeleton />
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-6xl space-y-8">
+        <div className="mx-auto max-w-7xl space-y-8">
           <header className="space-y-2">
             <Skeleton className="h-4 w-28" />
             <Skeleton className="h-9 w-44 sm:h-10" />

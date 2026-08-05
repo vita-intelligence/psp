@@ -9,6 +9,7 @@ import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getManufacturingOrder, listMOSessions } from "@/lib/production/server";
+import { getMOCostBreakdown } from "@/lib/production/mo-cost";
 import { MOSessionsCard } from "@/components/production/mo-sessions-card";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { CommentThread } from "@/components/comments/comment-thread";
@@ -50,8 +51,12 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
 
   // Sessions are attributed via mo.id (integer FK), not the uuid,
   // so this fetch has to run after the MO resolves rather than in
-  // parallel with it.
-  const initialSessions = await listMOSessions(mo.id);
+  // parallel with it. Cost breakdown does its own MO lookup on the
+  // backend so it can go in parallel with the sessions fetch.
+  const [initialSessions, initialCost] = await Promise.all([
+    listMOSessions(mo.id),
+    getMOCostBreakdown(uuid),
+  ]);
 
   const canEdit = hasPermission(user, "production.mo_edit");
   const canDelete = hasPermission(user, "production.mo_delete");
@@ -153,7 +158,7 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             />
           </EditModeToggle>
 
-          <MOCostSummary mo={mo} company={company} />
+          <MOCostSummary mo={mo} company={company} initialCost={initialCost} />
           <MOPartsTable mo={mo} company={company} canEdit={canEdit} />
           <MOOperationsTable mo={mo} company={company} canEdit={canEdit} />
 
