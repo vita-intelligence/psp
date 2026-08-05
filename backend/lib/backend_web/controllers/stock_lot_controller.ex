@@ -912,6 +912,20 @@ defmodule BackendWeb.StockLotController do
           "Lot is on a picker's trolley right now — wait for that pickup to finish or abort before moving it."
         )
 
+      {:error, :rnd_lot_needs_rnd_cell} ->
+        unprocessable(
+          conn,
+          "rnd_lot_needs_rnd_cell",
+          "This is an R&D lot — it can only be placed in an R&D-purpose cell. Segregation is required to keep R&D stock separate from production stock."
+        )
+
+      {:error, :production_lot_in_rnd_cell} ->
+        unprocessable(
+          conn,
+          "production_lot_in_rnd_cell",
+          "This cell is reserved for R&D stock. Production lots can't be placed here."
+        )
+
       {:error, {:cell_full, reason}} ->
         unprocessable(conn, "cell_full", cell_full_detail(reason))
 

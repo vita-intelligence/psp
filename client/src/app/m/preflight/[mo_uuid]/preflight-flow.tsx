@@ -25,6 +25,7 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
+  Camera,
   CheckCircle2,
   ChevronRight,
   Clipboard,
@@ -41,6 +42,7 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import { confirmBookingReceivedAction } from "@/lib/production-preflight/actions";
+import { PhotoLightbox } from "@/app/m/lots/[uuid]/move/last-seen-photo";
 import type {
   ManufacturingOrder,
   ManufacturingOrderBooking,
@@ -254,8 +256,14 @@ function BookingRow({
 }: BookingRowProps) {
   const received = !!booking.received_at;
   const [expanded, setExpanded] = useState<boolean>(!received);
+  // Whole-lot transfer: pre-fill with what physically arrived (lot's
+  // qty_on_hand at the prod-feed cell), not the recipe target. Under
+  // the old split model booking.quantity == what moved; under whole-
+  // lot it's just the theoretical consumption.
+  const transferredQty =
+    booking.stock_lot?.qty_on_hand ?? booking.quantity;
   const [qty, setQty] = useState<string>(
-    booking.received_qty ?? booking.quantity,
+    booking.received_qty ?? transferredQty,
   );
   const [notes, setNotes] = useState<string>(booking.received_notes ?? "");
   const [pending, startTransition] = useTransition();
@@ -287,14 +295,20 @@ function BookingRow({
   }
 
   const drift = useMemo(() => {
+    // Compare against what got transferred (whole lot), not against
+    // the recipe target — otherwise every R&D booking would light up
+    // as "+24.84 kg" because the whole 25 kg drum arrived for a
+    // 0.16 kg recipe. Consumption drift vs recipe is closeout's job.
     if (!received || !booking.received_qty) return null;
-    const bookedNum = Number(booking.quantity);
+    const expectedNum = Number(transferredQty);
     const recvNum = Number(booking.received_qty);
-    if (Number.isNaN(bookedNum) || Number.isNaN(recvNum)) return null;
-    const diff = recvNum - bookedNum;
+    if (Number.isNaN(expectedNum) || Number.isNaN(recvNum)) return null;
+    const diff = recvNum - expectedNum;
     if (Math.abs(diff) < 0.0001) return null;
     return diff;
-  }, [received, booking.received_qty, booking.quantity]);
+  }, [received, booking.received_qty, transferredQty]);
+
+  const photoUrl = booking.stock_lot?.last_photo_url ?? null;
 
   return (
     <li
@@ -303,11 +317,24 @@ function BookingRow({
         received ? "border-emerald-500/40" : "border-border/60",
       )}
     >
-      <button
-        type="button"
+      {/* div + role=button (not <button>) so the child photo <button>
+          that opens the lightbox is valid HTML — buttons can't nest. */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-3 px-3 py-3 text-left"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setExpanded((v) => !v);
+          }
+        }}
+        className="flex w-full cursor-pointer items-center gap-3 px-3 py-3 text-left"
       >
+        <RowThumb
+          url={photoUrl}
+          alt={booking.item?.name ?? "Lot"}
+        />
         <div className="flex-1 min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-1.5">
             {received ? (
@@ -343,8 +370,11 @@ function BookingRow({
 
           <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
             <span>
-              Booked: {booking.quantity} {uomSymbol}
+              Transferred: {transferredQty} {uomSymbol}
               {uomName ? ` (${uomName})` : ""}
+            </span>
+            <span className="opacity-70">
+              Recipe: {booking.quantity} {uomSymbol}
             </span>
             {booking.stock_lot?.code && (
               <span className="font-mono">{booking.stock_lot.code}</span>
@@ -363,7 +393,7 @@ function BookingRow({
             expanded && "rotate-90",
           )}
         />
-      </button>
+      </div>
 
       {expanded && (
         <div className="space-y-3 border-t border-border/60 px-3 py-3">
@@ -381,9 +411,10 @@ function BookingRow({
               className="h-11 font-mono text-base"
             />
             <p className="text-[11px] text-muted-foreground">
-              Booked {booking.quantity} {uomSymbol}
-              {uomName ? ` · ${uomName}` : ""}. Override if the actual count
-              differs — drift is recorded for traceability.
+              Transferred {transferredQty} {uomSymbol} (whole lot).
+              Recipe needs {booking.quantity} {uomSymbol}
+              {uomName ? ` · ${uomName}` : ""}. Confirm what physically
+              arrived — drift vs transferred is recorded.
             </p>
           </div>
 
@@ -427,5 +458,56 @@ function BookingRow({
         </div>
       )}
     </li>
+  );
+}
+
+// Compact square thumbnail of the warehouse worker's put-away photo,
+// pinned to the row header so the production operator can eyeball
+// each container before expanding. Tap opens a fullscreen lightbox
+// (backdrop / X / Esc close, body scroll locked) — much friendlier
+// than punching into a new tab from a phone browser. Click bubbling
+// is stopped so tapping the photo doesn't also toggle the row.
+function RowThumb({
+  url,
+  alt,
+}: {
+  url: string | null;
+  alt: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (!url) {
+    return (
+      <div className="flex size-12 shrink-0 items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/40 text-muted-foreground">
+        <Camera className="size-4 opacity-60" />
+      </div>
+    );
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        className="block size-12 shrink-0 overflow-hidden rounded-md border border-border/60 bg-muted transition-opacity active:opacity-70"
+        title="Tap to enlarge"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={alt}
+          className="block size-full object-cover"
+        />
+      </button>
+      {open && (
+        <PhotoLightbox
+          url={url}
+          caption={alt}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }

@@ -1,16 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import {
   AlertTriangle,
   CheckCheck,
   CheckCircle2,
+  FileText,
   Loader2,
   Microscope,
   Package,
   PackageOpen,
   Pencil,
   RefreshCw,
+  Search,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -25,103 +34,407 @@ import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type { OutputQcEntry } from "@/lib/production/types";
 import { signOffOutputQcAction } from "@/lib/production-output-qc/actions";
 
-const POLL_INTERVAL_MS = 30_000;
+interface Filters {
+  search: string;
+  itemType: string;
+  projectType: string;
+  workstationGroupUuid: string;
+}
+
+interface WorkstationGroupOption {
+  uuid: string;
+  name: string;
+}
 
 interface Props {
   initialQueue: OutputQcEntry[];
+  initialCursor: string | null;
+  initialFilters: Filters;
+  workstationGroups: WorkstationGroupOption[];
   companyDateFormat: FormatPrefs | null;
 }
 
-export function OutputQcWorkspace({ initialQueue, companyDateFormat }: Props) {
+export function OutputQcWorkspace({
+  initialQueue,
+  initialCursor,
+  initialFilters,
+  workstationGroups,
+  companyDateFormat,
+}: Props) {
   const [queue, setQueue] = useState<OutputQcEntry[]>(initialQueue);
+  const [cursor, setCursor] = useState<string | null>(initialCursor);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [filters, setFilters] = useState<Filters>(initialFilters);
+  const [searchInput, setSearchInput] = useState(initialFilters.search);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setIsRefreshing(true);
-    try {
-      const res = await fetch("/api/production/output-qc", {
-        cache: "no-store",
-      });
-      if (!res.ok) {
-        if (!silent)
-          setErrorDetail(`Couldn't refresh the queue (${res.status}).`);
-        return;
-      }
-      const body = (await res.json()) as { items: OutputQcEntry[] };
-      setQueue(body.items);
-      if (!silent) setErrorDetail(null);
-    } catch (err) {
-      if (!silent)
-        setErrorDetail(
-          err instanceof Error ? err.message : "Network blip — try again.",
-        );
-    } finally {
-      if (!silent) setIsRefreshing(false);
-    }
-  }, []);
+  const filterQs = useMemo(() => {
+    const p = new URLSearchParams();
+    p.set("limit", "50");
+    if (filters.search) p.set("search", filters.search);
+    if (filters.itemType) p.set("item_type", filters.itemType);
+    if (filters.projectType) p.set("project_type", filters.projectType);
+    if (filters.workstationGroupUuid)
+      p.set("workstation_group_uuid", filters.workstationGroupUuid);
+    return p;
+  }, [filters]);
 
+  // Debounce search input → filters
   useEffect(() => {
-    const id = window.setInterval(() => void refresh(true), POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+    if (searchInput === filters.search) return;
+    const id = window.setTimeout(() => {
+      setFilters((f) => ({ ...f, search: searchInput.trim() }));
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [searchInput, filters.search]);
 
-  function onSignedOff(uuid: string) {
-    setQueue((prev) => prev.filter((e) => e.lot.uuid !== uuid));
-  }
+  // Re-fetch first page whenever filters change
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/production/output-qc?${filterQs.toString()}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          if (!cancelled)
+            setErrorDetail(`Couldn't load the queue (${res.status}).`);
+          return;
+        }
+        const body = (await res.json()) as {
+          items: OutputQcEntry[];
+          next_cursor: string | null;
+        };
+        if (cancelled) return;
+        setQueue(body.items);
+        setCursor(body.next_cursor);
+        setErrorDetail(null);
+      } catch (err) {
+        if (!cancelled)
+          setErrorDetail(
+            err instanceof Error ? err.message : "Network blip — try again.",
+          );
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [filterQs]);
+
+  // Infinite scroll: fetch next page when sentinel is visible
+  useEffect(() => {
+    if (!cursor) return;
+    const node = sentinelRef.current;
+    if (!node) return;
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        if (isLoading) return;
+
+        setIsLoading(true);
+        const p = new URLSearchParams(filterQs);
+        p.set("cursor", cursor);
+        fetch(`/api/production/output-qc?${p.toString()}`, { cache: "no-store" })
+          .then((res) => (res.ok ? res.json() : Promise.reject(res.status)))
+          .then((body: { items: OutputQcEntry[]; next_cursor: string | null }) => {
+            setQueue((prev) => prev.concat(body.items));
+            setCursor(body.next_cursor);
+            setErrorDetail(null);
+          })
+          .catch((e) =>
+            setErrorDetail(
+              typeof e === "number"
+                ? `Couldn't load more (${e}).`
+                : "Network blip — try again.",
+            ),
+          )
+          .finally(() => setIsLoading(false));
+      },
+      { rootMargin: "400px 0px" },
+    );
+
+    io.observe(node);
+    return () => io.disconnect();
+  }, [cursor, filterQs, isLoading]);
 
   return (
     <section className="space-y-3">
+      <FilterBar
+        searchInput={searchInput}
+        setSearchInput={setSearchInput}
+        filters={filters}
+        setFilters={setFilters}
+        workstationGroups={workstationGroups}
+      />
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
           {queue.length === 0
-            ? "Nothing awaiting QC."
-            : `${queue.length} lot${queue.length === 1 ? "" : "s"} awaiting verdict`}
+            ? isLoading
+              ? "Loading queue…"
+              : "Nothing matches these filters."
+            : `${queue.length} lot${queue.length === 1 ? "" : "s"} loaded${cursor ? " (more available)" : ""}`}
         </p>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => void refresh(false)}
-          disabled={isRefreshing}
-        >
-          {isRefreshing ? (
-            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="mr-1.5 size-3.5" />
-          )}
-          Refresh
-        </Button>
+        {(filters.search ||
+          filters.itemType ||
+          filters.projectType ||
+          filters.workstationGroupUuid) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSearchInput("");
+              setFilters({
+                search: "",
+                itemType: "",
+                projectType: "",
+                workstationGroupUuid: "",
+              });
+            }}
+          >
+            Clear filters
+          </Button>
+        )}
       </div>
 
       {errorDetail && <ErrorBanner detail={errorDetail} />}
 
-      {queue.length === 0 ? (
+      {queue.length === 0 && !isLoading ? (
         <EmptyState />
       ) : (
-        <ul className="space-y-3">
-          {queue.map((entry) => (
-            <QcCard
-              key={entry.lot.uuid}
-              entry={entry}
-              companyDateFormat={companyDateFormat}
-              onSignedOff={() => onSignedOff(entry.lot.uuid)}
-            />
-          ))}
-        </ul>
+        <QueueTable entries={queue} companyDateFormat={companyDateFormat} />
       )}
+
+      {cursor && (
+        <div
+          ref={sentinelRef}
+          className="flex items-center justify-center py-4 text-xs text-muted-foreground"
+        >
+          {isLoading && (
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="size-3 animate-spin" /> Loading more…
+            </span>
+          )}
+        </div>
+      )}
+
+      {!cursor && queue.length > 0 && (
+        <p className="border-t border-border/60 pt-3 text-center text-[11px] text-muted-foreground">
+          End of queue · {queue.length} total
+        </p>
+      )}
+
     </section>
   );
 }
 
-function QcCard({
+function QueueTable({
+  entries,
+  companyDateFormat,
+}: {
+  entries: OutputQcEntry[];
+  companyDateFormat: FormatPrefs | null;
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border/60 bg-card">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border/60 bg-muted/30 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+            <th className="px-3 py-2 font-semibold">Item</th>
+            <th className="px-3 py-2 font-semibold">Type</th>
+            <th className="px-3 py-2 font-semibold">Project</th>
+            <th className="px-3 py-2 font-semibold">MO</th>
+            <th className="px-3 py-2 text-right font-semibold">Qty</th>
+            <th className="px-3 py-2 font-semibold">Finished</th>
+            <th className="px-3 py-2 font-semibold">Lot code</th>
+            <th className="w-0 px-3 py-2 text-right font-semibold" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/40">
+          {entries.map((entry) => (
+            <QueueRow
+              key={entry.lot.uuid}
+              entry={entry}
+              companyDateFormat={companyDateFormat}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function QueueRow({
+  entry,
+  companyDateFormat,
+}: {
+  entry: OutputQcEntry;
+  companyDateFormat: FormatPrefs | null;
+}) {
+  const { lot, mo } = entry;
+  const uomSymbol = lot.uom?.symbol ?? "ea";
+  const href = `/production/output-qc/${encodeURIComponent(lot.uuid)}`;
+
+  return (
+    <tr className="hover:bg-muted/40">
+      <td className="px-3 py-2">
+        <a
+          href={href}
+          className="font-medium underline-offset-2 hover:underline"
+        >
+          {lot.item?.name ?? "Unknown item"}
+        </a>
+      </td>
+      <td className="px-3 py-2 text-muted-foreground">
+        {entry.item_type ? (
+          <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+            {entry.item_type.replace("_", " ")}
+          </span>
+        ) : (
+          "—"
+        )}
+      </td>
+      <td className="px-3 py-2">
+        {mo?.project_type && mo.project_type !== "production" ? (
+          <span className="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-400">
+            {mo.project_type}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">production</span>
+        )}
+      </td>
+      <td className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
+        {mo?.code ?? (mo ? `MO #${mo.id}` : "—")}
+      </td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums">
+        {lot.qty_received}
+        <span className="ml-1 text-[10px] text-muted-foreground">{uomSymbol}</span>
+      </td>
+      <td className="px-3 py-2 text-muted-foreground">
+        {mo?.actual_finish
+          ? formatCompanyDate(mo.actual_finish, companyDateFormat)
+          : "—"}
+      </td>
+      <td className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
+        {lot.code ?? "—"}
+      </td>
+      <td className="px-3 py-2 text-right">
+        <Button asChild size="sm" variant="outline" className="h-7">
+          <a href={href}>Review →</a>
+        </Button>
+      </td>
+    </tr>
+  );
+}
+
+function FilterBar({
+  searchInput,
+  setSearchInput,
+  filters,
+  setFilters,
+  workstationGroups,
+}: {
+  searchInput: string;
+  setSearchInput: (v: string) => void;
+  filters: Filters;
+  setFilters: (fn: (prev: Filters) => Filters) => void;
+  workstationGroups: WorkstationGroupOption[];
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card p-3">
+      <div className="relative min-w-[14rem] flex-1">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search item name…"
+          className="pl-8 h-9 text-sm"
+        />
+      </div>
+      <FilterSelect
+        label="Item type"
+        value={filters.itemType}
+        onChange={(v) => setFilters((p) => ({ ...p, itemType: v }))}
+        options={[
+          { value: "", label: "All types" },
+          { value: "finished_product", label: "Finished" },
+          { value: "semi_finished", label: "Semi-finished" },
+          { value: "raw_material", label: "Raw material" },
+          { value: "packaging", label: "Packaging" },
+          { value: "consumable", label: "Consumable" },
+        ]}
+      />
+      <FilterSelect
+        label="Project"
+        value={filters.projectType}
+        onChange={(v) => setFilters((p) => ({ ...p, projectType: v }))}
+        options={[
+          { value: "", label: "All projects" },
+          { value: "production", label: "Production" },
+          { value: "trial", label: "Trial" },
+          { value: "sample", label: "Sample" },
+        ]}
+      />
+      <FilterSelect
+        label="Cell"
+        value={filters.workstationGroupUuid}
+        onChange={(v) => setFilters((p) => ({ ...p, workstationGroupUuid: v }))}
+        options={[
+          { value: "", label: "All cells" },
+          ...workstationGroups.map((g) => ({ value: g.uuid, label: g.name })),
+        ]}
+      />
+    </div>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="sr-only">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+        className="h-9 min-w-[9rem] rounded-md border border-border/60 bg-background px-2 text-xs text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+export function QcCard({
   entry,
   companyDateFormat,
   onSignedOff,
+  onViewSpec,
 }: {
   entry: OutputQcEntry;
   companyDateFormat: FormatPrefs | null;
   onSignedOff: () => void;
+  onViewSpec?: () => void;
 }) {
   const { lot, mo } = entry;
   const [reason, setReason] = useState("");
@@ -316,9 +629,33 @@ function QcCard({
               </span>
             )}
           </div>
-          <p className="text-sm font-medium">
-            {lot.item?.name ?? "Unknown item"}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-medium">
+              {lot.item?.name ?? "Unknown item"}
+            </p>
+            {entry.item_type && (
+              <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                {entry.item_type.replace("_", " ")}
+              </span>
+            )}
+            {mo?.project_type && mo.project_type !== "production" && (
+              <span className="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-400">
+                {mo.project_type}
+              </span>
+            )}
+            {onViewSpec && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onViewSpec}
+                className="ml-auto h-6 px-2 text-[10px] font-medium"
+              >
+                <FileText className="mr-1 size-3" />
+                View spec
+              </Button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <PackageOpen className="size-3" />

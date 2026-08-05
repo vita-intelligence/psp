@@ -6,7 +6,9 @@ import type {
   HREmployee,
   HREmployeeLedgerPage,
   HREmployeeReputationEvent,
+  HREmployeeShift,
   HREmployeeWage,
+  HRStatisticsSummary,
 } from "./types";
 
 /** First page of the HR employees ledger. Server components render this
@@ -88,6 +90,100 @@ export async function listHREmployeeWages(
     return { items: data.items ?? [], next_cursor: data.next_cursor ?? null };
   } catch {
     return emptyPage<HREmployeeWage>();
+  }
+}
+
+export async function listHREmployeeShifts(
+  uuid: string,
+  opts: HRTimelineOpts = {},
+): Promise<HRTimelinePage<HREmployeeShift>> {
+  const token = await getSessionToken();
+  if (!token) return emptyPage<HREmployeeShift>();
+  try {
+    const data = await api<HRTimelinePage<HREmployeeShift>>(
+      `/api/hr/employees/${encodeURIComponent(uuid)}/shifts${toQuery(opts)}`,
+      { token, cache: "no-store" },
+    );
+    return { items: data.items ?? [], next_cursor: data.next_cursor ?? null };
+  } catch {
+    return emptyPage<HREmployeeShift>();
+  }
+}
+
+export interface CompanyFeedOpts extends HRTimelineOpts {
+  /** Narrow to a single worker. */
+  employee_uuid?: string | null;
+}
+
+function toCompanyQuery({ limit, cursor, employee_uuid }: CompanyFeedOpts): string {
+  const params = new URLSearchParams();
+  if (typeof limit === "number") params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
+  if (employee_uuid) params.set("employee_uuid", employee_uuid);
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
+
+export async function listAllShifts(
+  opts: CompanyFeedOpts = {},
+): Promise<HRTimelinePage<HREmployeeShift>> {
+  const token = await getSessionToken();
+  if (!token) return emptyPage<HREmployeeShift>();
+  try {
+    const data = await api<HRTimelinePage<HREmployeeShift>>(
+      `/api/hr/shifts${toCompanyQuery(opts)}`,
+      { token, cache: "no-store" },
+    );
+    return { items: data.items ?? [], next_cursor: data.next_cursor ?? null };
+  } catch {
+    return emptyPage<HREmployeeShift>();
+  }
+}
+
+export async function listAllWages(
+  opts: CompanyFeedOpts = {},
+): Promise<HRTimelinePage<HREmployeeWage>> {
+  const token = await getSessionToken();
+  if (!token) return emptyPage<HREmployeeWage>();
+  try {
+    const data = await api<HRTimelinePage<HREmployeeWage>>(
+      `/api/hr/wages${toCompanyQuery(opts)}`,
+      { token, cache: "no-store" },
+    );
+    return { items: data.items ?? [], next_cursor: data.next_cursor ?? null };
+  } catch {
+    return emptyPage<HREmployeeWage>();
+  }
+}
+
+export async function listAllReputationEvents(
+  opts: CompanyFeedOpts = {},
+): Promise<HRTimelinePage<HREmployeeReputationEvent>> {
+  const token = await getSessionToken();
+  if (!token) return emptyPage<HREmployeeReputationEvent>();
+  try {
+    const data = await api<HRTimelinePage<HREmployeeReputationEvent>>(
+      `/api/hr/reputation-events${toCompanyQuery(opts)}`,
+      { token, cache: "no-store" },
+    );
+    return { items: data.items ?? [], next_cursor: data.next_cursor ?? null };
+  } catch {
+    return emptyPage<HREmployeeReputationEvent>();
+  }
+}
+
+export async function getHRStatistics(
+  days = 30,
+): Promise<HRStatisticsSummary | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    return await api<HRStatisticsSummary>(
+      `/api/hr/statistics?days=${days}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
   }
 }
 

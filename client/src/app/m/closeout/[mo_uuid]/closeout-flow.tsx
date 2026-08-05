@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Building2,
+  Check,
   CheckCircle2,
   Camera,
   ChevronRight,
@@ -103,6 +104,12 @@ interface CloseoutItem {
   onHandQty: string | null;
   uomSymbol: string;
   bookingUuid?: string;
+  /** Downstream reservations against an output lot. Non-empty ⇒ the
+   *  produced lot is already booked to a live downstream MO and
+   *  closeout skips the "scan dispatch cell + move" step — the lot
+   *  stays where it was born for the downstream picker to grab.
+   *  Only populated for `kind: "output"`. */
+  reservedBy?: Array<{ mo_uuid: string; mo_code: string | null; qty: string }>;
 }
 
 export function CloseoutFlow({
@@ -175,6 +182,7 @@ export function CloseoutFlow({
       // "/ on hand" suffix on the info row.
       onHandQty: null,
       uomSymbol: l.uom?.symbol ?? "ea",
+      reservedBy: l.reserved_by,
     }));
     return [...bookingItems, ...outputItems];
   }, [bookings, outputLots]);
@@ -279,7 +287,16 @@ export function CloseoutFlow({
         return;
       }
     }
-    if ((activeItem.kind === "output" || remaining > 0) && !targetCell) {
+    const isReservedOutput =
+      activeItem.kind === "output" &&
+      (activeItem.reservedBy ?? []).length > 0;
+    // Reserved output stays in place — the BE short-circuits and no
+    // dispatch cell is used. Skip the guard for that path.
+    if (
+      !isReservedOutput &&
+      (activeItem.kind === "output" || remaining > 0) &&
+      !targetCell
+    ) {
       setErrorDetail(
         "Scan a production-dispatch cell before submitting.",
       );
@@ -316,12 +333,16 @@ export function CloseoutFlow({
         }
       } else {
         const res = await closeoutOutputLotAction(mo.uuid, activeItem.lotUuid, {
-          scanned_cell_uuid: targetCell!.uuid,
+          scanned_cell_uuid: targetCell?.uuid ?? null,
           photo_url: photoUrl,
           skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
         });
         if (res.ok) {
-          toast.success("Output handed off to dispatch");
+          toast.success(
+            isReservedOutput
+              ? "Left in place — reserved for downstream MO"
+              : "Output handed off to dispatch",
+          );
           setOutputLots((prev) =>
             prev.filter((l) => l.uuid !== activeItem.lotUuid),
           );
@@ -663,6 +684,20 @@ export function CloseoutFlow({
                 })()}
               </div>
             </div>
+          ) : (activeItem.reservedBy ?? []).length > 0 ? (
+            <div className="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-900 dark:text-sky-200">
+              <p className="font-medium">
+                Reserved for{" "}
+                {(activeItem.reservedBy ?? [])
+                  .map((r) => r.mo_code ?? r.mo_uuid.slice(0, 8))
+                  .join(", ")}
+              </p>
+              <p className="opacity-80">
+                {activeItem.bookedQty} {activeItem.uomSymbol} stays in
+                place — a downstream MO will pick it up from here. No
+                dispatch scan needed.
+              </p>
+            </div>
           ) : (
             <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-900 dark:text-emerald-200">
               <p className="font-medium">
@@ -758,7 +793,16 @@ export function CloseoutFlow({
               type="button"
               onClick={() => {
                 const remaining = Number(remainingQty);
-                if (
+                const isReservedOutput =
+                  activeItem.kind === "output" &&
+                  (activeItem.reservedBy ?? []).length > 0;
+                if (isReservedOutput) {
+                  // Reserved output stays in place — no scan needed.
+                  // BE also short-circuits, but bypassing the scan
+                  // step keeps the UI honest instead of walking the
+                  // operator to a cell they won't actually move to.
+                  submit();
+                } else if (
                   activeItem.kind === "output" ||
                   (!Number.isNaN(remaining) && remaining > 0)
                 ) {
@@ -781,12 +825,27 @@ export function CloseoutFlow({
               disabled={
                 pending ||
                 photoUploading ||
-                (!photoUrl && !skipPhotoReason)
+                // Reserved output stays in place — skip the
+                // photo-or-reason requirement since no movement is
+                // being recorded. BE mirrors this by short-circuiting
+                // ``ensure_photo_or_skip`` for reserved lots.
+                (!(
+                  activeItem.kind === "output" &&
+                  (activeItem.reservedBy ?? []).length > 0
+                ) &&
+                  !photoUrl &&
+                  !skipPhotoReason)
               }
             >
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-              {activeItem.kind === "output" ||
-              Number(remainingQty) > 0 ? (
+              {activeItem.kind === "output" &&
+              (activeItem.reservedBy ?? []).length > 0 ? (
+                <>
+                  <Check className="mr-1.5 size-4" />
+                  Leave in place — reserved
+                </>
+              ) : activeItem.kind === "output" ||
+                Number(remainingQty) > 0 ? (
                 <>
                   <ScanLine className="mr-1.5 size-4" />
                   Continue to dispatch hand-off

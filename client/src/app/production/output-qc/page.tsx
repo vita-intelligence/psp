@@ -7,29 +7,57 @@ import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getOutputQcQueue } from "@/lib/production-output-qc/server";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { listWorkstationGroupsPage } from "@/lib/production/server";
 import { ProductionSubnav } from "../production-subnav";
 import { OutputQcWorkspace } from "./output-qc-workspace";
 
 export const metadata = { title: "Output QC · Production · PSP" };
+export const dynamic = "force-dynamic";
 
 /**
  * Production-side quality sign-off on manufactured output lots.
- * Lists every lot still in `received` status (the state every Finish
- * call inserts in); operator passes or fails each one to flip it to
- * `available` or `qc_failed`. Gated by `production.qc_output` — a
- * separate capability from `stock.qc` so a finished-goods QC role
- * doesn't bleed into incoming-PO inspections.
+ * Server-paginated (cursor / limit 50), searchable by item name, and
+ * filterable by item type, project type, and workstation group. Each
+ * card links to the item's finished-product spec so a QA operator can
+ * compare the physical lot against the intended targets.
  */
-export default async function OutputQcPage() {
+export default async function OutputQcPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    search?: string;
+    item_type?: string;
+    project_type?: string;
+    workstation_group_uuid?: string;
+  }>;
+}) {
   const user = await requireUser();
   if (!hasPermission(user, "production.qc_output")) {
     redirect("/production");
   }
 
-  const [queue, company] = await Promise.all([
-    getOutputQcQueue(),
+  const sp = await searchParams;
+  const filters = {
+    search: sp.search?.trim() ?? "",
+    itemType: sp.item_type?.trim() ?? "",
+    projectType: sp.project_type?.trim() ?? "",
+    workstationGroupUuid: sp.workstation_group_uuid?.trim() ?? "",
+  };
+
+  const [queue, company, wsGroupsPage] = await Promise.all([
+    getOutputQcQueue({
+      limit: 50,
+      search: filters.search || null,
+      item_type: filters.itemType || null,
+      project_type: filters.projectType || null,
+      workstation_group_uuid: filters.workstationGroupUuid || null,
+    }),
     getCompanyDefaults(),
+    listWorkstationGroupsPage(),
   ]);
+
+  const workstationGroups =
+    wsGroupsPage?.items.map((g) => ({ uuid: g.uuid, name: g.name })) ?? [];
 
   return (
     <div className="flex flex-1 flex-col">
@@ -44,26 +72,18 @@ export default async function OutputQcPage() {
             title="Output QC"
             description={
               <>
-                Pass or fail manufactured output lots before they
-                transfer to the warehouse. The lot stays{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
-                  received
-                </code>{" "}
-                until you sign off — passing flips it to{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
-                  available
-                </code>
-                , failing flips it to{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
-                  qc_failed
-                </code>{" "}
-                for investigation.
+                Pass or fail manufactured output lots before they transfer to
+                the warehouse. Search, filter, and open the item&apos;s
+                finished-product spec to compare against the physical lot.
               </>
             }
           />
 
           <OutputQcWorkspace
             initialQueue={queue?.items ?? []}
+            initialCursor={queue?.next_cursor ?? null}
+            initialFilters={filters}
+            workstationGroups={workstationGroups}
             companyDateFormat={company}
           />
         </div>

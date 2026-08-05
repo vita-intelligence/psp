@@ -27,7 +27,7 @@ defmodule Backend.Warehouses.ReturnPickup do
   alias Backend.Repo
   alias Backend.Stock
   alias Backend.Stock.{Lot, Placement}
-  alias Backend.Warehouses.{ReturnPick, StorageCell}
+  alias Backend.Warehouses.{ReturnPick, StorageCell, StorageLocation, Warehouse}
 
   # ----- Queue + detail loaders --------------------------------
 
@@ -35,8 +35,35 @@ defmodule Backend.Warehouses.ReturnPickup do
   # `dispatch` is the leftover-after-consume handoff target;
   # `production_feed` is where the picker walked stock TO for an
   # active run, and any lot stranded there after the run aborted /
-  # regressed is also a return-pickup candidate.
-  @return_pickup_purposes ~w(dispatch production_feed)
+  # regressed is also a return-pickup candidate. `rnd` is the R&D
+  # stream's equivalent — trial / sample MO leftovers + produced
+  # lots park here at closeout and still need the warehouse worker
+  # to walk them back to the R&D warehouse area (the placement
+  # layer's `ensure_rnd_stream_match` guard keeps them landing in
+  # an `rnd`-tagged warehouse cell, preserving stream isolation
+  # end-to-end).
+  @return_pickup_purposes ~w(dispatch production_feed rnd)
+
+  # Cells the return-pickup flow pulls lots OUT of. Scoped to
+  # ``production_facility`` warehouses so a warehouse-side ``rnd``
+  # put-away cell (a legitimate DESTINATION) doesn't get mistaken
+  # for a source. Without the ``warehouse.kind`` filter the queue
+  # re-listed lots the operator had just successfully returned —
+  # the ``rnd`` purpose alone matched both the shop-floor R&D shelf
+  # (source) and the warehouse-side R&D storage (destination).
+  defp production_source_cell_ids_subq(company_id) do
+    from(c in StorageCell,
+      join: sl in StorageLocation,
+      on: sl.id == c.storage_location_id,
+      join: w in Warehouse,
+      on: w.id == sl.warehouse_id,
+      where:
+        c.company_id == ^company_id and
+          w.kind == "production_facility" and
+          c.purpose in @return_pickup_purposes,
+      select: c.id
+    )
+  end
 
   @doc """
   Mobile queue. Lists every MO that has at least one lot sitting at
@@ -51,12 +78,23 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: rp.stock_lot_id
       )
 
-    # Lots that a live downstream MO already picked as ingredients
-    # (picked_at set, consumed_at null, MO not cancelled). Physically
-    # these are "in flight for consumption" — the correct next action
-    # is closeout on the CONSUMING MO, which will drain them. Walking
-    # them back to warehouse via return-pickup would double-book the
-    # ingredient and force the consumer MO into needs_replan.
+    # Lots that a live downstream MO has claimed as ingredients — the
+    # correct next action is closeout on the CONSUMING MO, which will
+    # drain them. Walking them back to warehouse via return-pickup
+    # would double-book the ingredient and force the consumer MO
+    # into needs_replan.
+    #
+    # Covers BOTH shapes of claim:
+    #
+    #   * ``picked_at IS NOT NULL`` — the picker physically walked
+    #     the lot to production; it's now on the line for consumption.
+    #   * ``picked_at IS NULL``     — a logical reservation, either
+    #     auto-created by the child-MO-finish hand-off
+    #     (``auto_book_output_to_parent_mo``) or manually reserved
+    #     from the parent's booking screen. Either way the lot is
+    #     spoken for; return-pickup must respect the claim or the
+    #     child output ends up back in warehouse just to be re-picked
+    #     for the parent's next run.
     lots_committed_to_open_bookings =
       from(b in ManufacturingOrderBooking,
         join: mo in ManufacturingOrder,
@@ -64,7 +102,6 @@ defmodule Backend.Warehouses.ReturnPickup do
         where:
           b.company_id == ^company_id and
             b.status == "requested" and
-            not is_nil(b.picked_at) and
             is_nil(b.consumed_at) and
             mo.status != "cancelled",
         distinct: true,
@@ -118,12 +155,12 @@ defmodule Backend.Warehouses.ReturnPickup do
     # as another MO's ingredients (semi-finished blend feeding a
     # finished-product MO), the correct next step is the consumer
     # MO's closeout, not walking the lot back to warehouse.
+    prod_source_cells = production_source_cell_ids_subq(company_id)
+
     output_mos =
       from(p in Placement,
         join: l in Lot,
         on: l.id == p.stock_lot_id,
-        join: c in StorageCell,
-        on: c.id == p.storage_cell_id,
         join: m in ManufacturingOrder,
         on: fragment("?::text", m.uuid) == l.source_ref,
         where:
@@ -131,7 +168,7 @@ defmodule Backend.Warehouses.ReturnPickup do
             l.source_kind == "manufacturing_order" and
             l.status == "available" and
             p.qty > 0 and
-            c.purpose in @return_pickup_purposes and
+            p.storage_cell_id in subquery(prod_source_cells) and
             l.id not in subquery(open_picks_subq) and
             l.id not in subquery(lots_committed_to_open_bookings) and
             l.id not in subquery(outbound_path_lot_ids) and
@@ -149,8 +186,6 @@ defmodule Backend.Warehouses.ReturnPickup do
       from(b in ManufacturingOrderBooking,
         join: p in Placement,
         on: p.stock_lot_id == b.stock_lot_id,
-        join: c in StorageCell,
-        on: c.id == p.storage_cell_id,
         join: l in Lot,
         on: l.id == p.stock_lot_id,
         where:
@@ -158,8 +193,16 @@ defmodule Backend.Warehouses.ReturnPickup do
             not is_nil(b.consumed_at) and
             l.status == "available" and
             p.qty > 0 and
-            c.purpose in @return_pickup_purposes and
+            p.storage_cell_id in subquery(prod_source_cells) and
             l.id not in subquery(open_picks_subq) and
+            # Same claim-guard the outer ``output_mos`` bucket + the
+            # per-MO detail loader use. Without it, an old completed
+            # MO surfaces here just because it once consumed a lot
+            # whose remainder now has a live downstream reservation
+            # (draft / in-progress MO booking) — clicking in shows an
+            # empty card because ``get_detail`` correctly filters the
+            # committed lot out.
+            l.id not in subquery(lots_committed_to_open_bookings) and
             b.manufacturing_order_id not in subquery(mos_with_pending_closeout),
         distinct: true,
         select: b.manufacturing_order_id
@@ -176,8 +219,6 @@ defmodule Backend.Warehouses.ReturnPickup do
         on: mo.id == b.manufacturing_order_id,
         join: p in Placement,
         on: p.stock_lot_id == b.stock_lot_id,
-        join: c in StorageCell,
-        on: c.id == p.storage_cell_id,
         join: l in Lot,
         on: l.id == p.stock_lot_id,
         where:
@@ -188,7 +229,7 @@ defmodule Backend.Warehouses.ReturnPickup do
             is_nil(b.consumed_at) and
             l.status == "available" and
             p.qty > 0 and
-            c.purpose in @return_pickup_purposes and
+            p.storage_cell_id in subquery(prod_source_cells) and
             l.id not in subquery(open_picks_subq),
         distinct: true,
         select: b.manufacturing_order_id
@@ -240,13 +281,13 @@ defmodule Backend.Warehouses.ReturnPickup do
         select: b.stock_lot_id
       )
 
-    # Same "committed to open bookings" filter as list_queue/1 — a lot
-    # that a live downstream MO already picked as an ingredient
-    # (opening-balance blend + packaging picked into a finished-product
-    # MO, closeout still pending) belongs to the CONSUMER MO's closeout,
-    # not to a warehouse return. Without this the loose bucket surfaced
-    # them and the picker was tempted to walk them back — which would
-    # force the consumer MO into needs_replan.
+    # Same "committed to open bookings" filter as list_queue/1 — any
+    # live downstream MO claim (physical pick OR logical auto-book
+    # reservation) hides the lot from return-pickup, otherwise the
+    # child MO's output ends up walked back to warehouse just to be
+    # re-picked for the parent's next run. Matches the outer queue
+    # so the two views agree on which lots are still owed to a
+    # consumer MO.
     lots_committed_to_open_bookings =
       from(b in ManufacturingOrderBooking,
         join: mo in ManufacturingOrder,
@@ -254,7 +295,6 @@ defmodule Backend.Warehouses.ReturnPickup do
         where:
           b.company_id == ^company_id and
             b.status == "requested" and
-            not is_nil(b.picked_at) and
             is_nil(b.consumed_at) and
             mo.status != "cancelled",
         distinct: true,
@@ -264,14 +304,12 @@ defmodule Backend.Warehouses.ReturnPickup do
     from(l in Lot,
       join: p in Placement,
       on: p.stock_lot_id == l.id,
-      join: c in StorageCell,
-      on: c.id == p.storage_cell_id,
       where:
         l.company_id == ^company_id and
           l.source_kind != "manufacturing_order" and
           l.status == "available" and
           p.qty > 0 and
-          c.purpose in @return_pickup_purposes and
+          p.storage_cell_id in subquery(production_source_cell_ids_subq(company_id)) and
           l.id not in subquery(open_picks_subq) and
           l.id not in subquery(booked_lot_ids_subq) and
           l.id not in subquery(lots_committed_to_open_bookings),
@@ -320,18 +358,37 @@ defmodule Backend.Warehouses.ReturnPickup do
           )
           |> Repo.all()
 
+        # Same "committed to open bookings" filter as ``list_queue``.
+        # Prevents a child MO's produced output — auto-booked to its
+        # parent at ``finish_mo_production`` time — from appearing on
+        # the child's return-pickup detail card, where the warehouse
+        # worker would walk it back to warehouse only to have the
+        # parent's picker fetch it right back the next day.
+        committed_lot_ids_subq =
+          from(b in ManufacturingOrderBooking,
+            join: parent in ManufacturingOrder,
+            on: parent.id == b.manufacturing_order_id,
+            where:
+              b.company_id == ^actor.company_id and
+                b.status == "requested" and
+                is_nil(b.consumed_at) and
+                parent.status != "cancelled",
+            distinct: true,
+            select: b.stock_lot_id
+          )
+
         lots_at_dispatch =
           from(l in Lot,
             join: p in Placement,
             on: p.stock_lot_id == l.id,
-            join: c in StorageCell,
-            on: c.id == p.storage_cell_id,
             where:
               l.company_id == ^actor.company_id and
                 l.status == "available" and
                 p.qty > 0 and
-                c.purpose in @return_pickup_purposes and
+                p.storage_cell_id in
+                  subquery(production_source_cell_ids_subq(actor.company_id)) and
                 l.id not in subquery(open_picks_subq) and
+                l.id not in subquery(committed_lot_ids_subq) and
                 ((l.source_kind == "manufacturing_order" and
                     l.source_ref == ^mo_uuid) or
                    l.id in ^ingredient_lot_ids),
@@ -454,7 +511,7 @@ defmodule Backend.Warehouses.ReturnPickup do
     with {:ok, lot} <- fetch_lot(actor.company_id, lot_uuid),
          :ok <- ensure_status_available(lot),
          {:ok, cell} <- fetch_cell(actor.company_id, attrs["scanned_cell_uuid"]),
-         :ok <- ensure_dispatch_cell(cell),
+         :ok <- ensure_dispatch_cell(cell, actor.company_id),
          {:ok, placement} <- ensure_lot_on_cell(lot, cell),
          :ok <- ensure_no_open_pick(actor.company_id, lot.id) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -673,11 +730,31 @@ defmodule Backend.Warehouses.ReturnPickup do
   defp ensure_status_available(%Lot{status: "available"}), do: :ok
   defp ensure_status_available(_), do: {:error, :lot_unavailable}
 
-  defp ensure_dispatch_cell(%StorageCell{purpose: purpose})
-       when purpose in @return_pickup_purposes,
-       do: :ok
+  defp ensure_dispatch_cell(%StorageCell{id: cell_id, purpose: purpose}, company_id)
+       when purpose in @return_pickup_purposes and is_integer(company_id) do
+    # Cell must live in a production-facility warehouse. Blocks the
+    # operator from "picking" from a warehouse-side ``rnd`` cell —
+    # which is a legitimate DESTINATION for R&D return-pickup, not a
+    # source. Without this guard the round trip
+    # (production → warehouse → picked again → back to production)
+    # was possible on any single-cell R&D floor.
+    exists? =
+      Repo.exists?(
+        from c in StorageCell,
+          join: sl in StorageLocation,
+          on: sl.id == c.storage_location_id,
+          join: w in Warehouse,
+          on: w.id == sl.warehouse_id,
+          where:
+            c.id == ^cell_id and
+              c.company_id == ^company_id and
+              w.kind == "production_facility"
+      )
 
-  defp ensure_dispatch_cell(_), do: {:error, :not_a_dispatch_cell}
+    if exists?, do: :ok, else: {:error, :not_a_dispatch_cell}
+  end
+
+  defp ensure_dispatch_cell(_, _), do: {:error, :not_a_dispatch_cell}
 
   defp ensure_lot_on_cell(%Lot{id: lot_id}, %StorageCell{id: cell_id}) do
     case Repo.get_by(Placement, stock_lot_id: lot_id, storage_cell_id: cell_id) do
@@ -745,6 +822,20 @@ defmodule Backend.Warehouses.ReturnPickup do
     # re-inspect on the way in".
     :ok
   end
+
+  # R&D lots (trial / sample stream) can return-pickup back to any
+  # `rnd`-purpose warehouse cell — this is their put-away target on
+  # the warehouse side, mirroring how `regular` serves the standard
+  # stream. The lot-level ``ensure_rnd_stream_match`` guard in
+  # ``Backend.Stock`` re-enforces the isolation on the actual
+  # placement write; refusing a production lot here keeps the failure
+  # surface friendly (``destination_invalid``) instead of leaking the
+  # ``production_lot_in_rnd_cell`` error to the mobile UI.
+  defp ensure_placeable_cell(%StorageCell{purpose: "rnd"}, %Lot{is_rnd: true}),
+    do: :ok
+
+  defp ensure_placeable_cell(%StorageCell{purpose: "rnd"}, %Lot{}),
+    do: {:error, :destination_invalid}
 
   defp ensure_placeable_cell(_, _), do: {:error, :destination_invalid}
 

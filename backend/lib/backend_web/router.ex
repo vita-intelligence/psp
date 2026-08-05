@@ -7,7 +7,11 @@ defmodule BackendWeb.Router do
   end
 
   pipeline :api_authed do
-    plug :accepts, ["json"]
+    # `html` accepted so the Output-QC NPD spec proxy can respond with
+    # `text/html` — that endpoint streams NPD's server-rendered sheet
+    # back for iframe embedding. Every other route continues to answer
+    # with JSON per its `render/json/2` call.
+    plug :accepts, ["json", "html"]
     plug BackendWeb.Plugs.SecureHeaders
     plug BackendWeb.Plugs.RequireAuth
   end
@@ -393,7 +397,30 @@ defmodule BackendWeb.Router do
       # Every WorkstationSession this employee has run — feeds the
       # profile page's timeline + active-run card.
       get "/sessions", HREmployeeController, :list_sessions
+
+      # Clock-in / clock-out history for this employee. vp pushes each
+      # shift on close, PSP mirrors, this endpoint serves the profile
+      # page's ShiftsCard + the day-overview picker.
+      get "/shifts", HREmployeeController, :list_shifts
     end
+
+    # Company-wide shifts feed. Powers the /hr/shifts overview page —
+    # blends every employee's clock-in windows into one chronological
+    # feed with infinite scroll. Accepts `?employee_uuid=` for filter.
+    get "/hr/shifts", HREmployeeController, :list_all_shifts
+
+    # Company-wide wage-history feed. Powers /hr/wages. Every rate
+    # change becomes one row; the topmost row per employee (no
+    # effective_to) is what the cost breakdown reads.
+    get "/hr/wages", HREmployeeController, :list_all_wages
+
+    # Company-wide reputation-event feed. Powers /hr/reputation.
+    get "/hr/reputation-events",
+        HREmployeeController,
+        :list_all_reputation_events
+
+    # Aggregate HR stats — one row per employee. Powers /hr/statistics.
+    get "/hr/statistics", HREmployeeController, :statistics_summary
 
     # Vendor registry. Holds the approved-supplier list + per-vendor
     # certificate evidence the PO line validator + GFSI audits read.
@@ -867,6 +894,29 @@ defmodule BackendWeb.Router do
       # lot before it can transfer to the warehouse. Distinct from the
       # `stock.qc` flow that covers incoming PO receives.
       get "/output-qc", ManufacturingOrderController, :output_qc_queue
+
+      # Single entry for the detail page — same shape as one item of
+      # the queue, but for a specific lot uuid.
+      get "/output-qc/:lot_uuid",
+          ManufacturingOrderController,
+          :output_qc_show
+
+      # Server-side proxy to NPD's rendered spec sheet HTML.
+      # PSP iframes this endpoint on the Output-QC detail page so QA
+      # sees the identical NPD document (actives / nutrition / amino
+      # acids / excipients / ingredients / signatures / history) —
+      # not a PSP re-implementation that could drift.
+      get "/output-qc/:lot_uuid/npd-spec.html",
+          ManufacturingOrderController,
+          :output_qc_npd_spec_html
+
+      # Same NPD-embed pattern, keyed on an MO uuid — used by the MO
+      # detail page's Spec sheet card. Server walks the parent chain
+      # when the MO's own item lacks a spec so semi-finished runs
+      # still show the ancestor product's sheet.
+      get "/manufacturing-orders/:uuid/npd-spec.html",
+          ManufacturingOrderController,
+          :mo_npd_spec_html
 
       post "/output-qc/:lot_uuid",
            ManufacturingOrderController,
@@ -1839,6 +1889,15 @@ defmodule BackendWeb.Router do
     post "/hr/employees/:employee_uuid/reputation-events",
          IntegrationHRController,
          :create_reputation_event
+
+    # Upsert one clock-in / clock-out window from vp's personal kiosk.
+    # Idempotent via `external_id` — the same vp `WorkerShift.pk` maps
+    # to the same PSP row, so the "open shift" push and the later
+    # "closed shift" push both target the same row. Requires
+    # `hr:write:shift`.
+    post "/hr/employees/:employee_uuid/shifts",
+         IntegrationHRController,
+         :upsert_shift
 
     # NPD (vita-cff) → PSP CustomerOrder sync. Fired by NPD's
     # ``save_version`` cascade; idempotent by ``npd_formulation_uuid``.

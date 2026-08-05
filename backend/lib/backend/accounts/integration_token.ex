@@ -46,6 +46,7 @@ defmodule Backend.Accounts.IntegrationToken do
     hr:write
     hr:write:pin
     hr:write:reputation
+    hr:write:shift
     customer_order:sync:npd
   )
 

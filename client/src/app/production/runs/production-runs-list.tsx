@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   CheckCheck,
   ChevronRight,
   Clock,
   Factory,
+  FlaskConical,
   Loader2,
   PackageOpen,
   Play,
@@ -21,6 +23,20 @@ import type { ProductionRunEntry } from "@/lib/production/types";
 
 const POLL_INTERVAL_MS = 30_000;
 
+// Stream tab. Mirrors the MOs ledger pattern (see mos-ledger.tsx):
+// URL is the source of truth so refresh + share + back/forward all
+// stay in sync. `production` = normal MOs on the floor, `rnd` = trial
+// / sample MOs (fast-path — no pickup ceremony), `all` = both.
+type Stream = "production" | "rnd" | "all";
+
+function normaliseStream(raw: string | null | undefined): Stream {
+  return raw === "rnd" || raw === "all" ? raw : "production";
+}
+
+function isRndProjectType(pt: string | undefined): boolean {
+  return pt === "trial" || pt === "sample";
+}
+
 interface Props {
   initialQueue: ProductionRunEntry[];
   companyDateFormat: FormatPrefs | null;
@@ -30,9 +46,35 @@ export function ProductionRunsList({
   initialQueue,
   companyDateFormat,
 }: Props) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const stream: Stream = normaliseStream(searchParams.get("stream"));
+
   const [queue, setQueue] = useState<ProductionRunEntry[]>(initialQueue);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Filter client-side. The queue is naturally small (only
+  // preflight-cleared + in_progress + approved R&D runs), so
+  // shipping the whole list once + filtering locally is cheaper
+  // than a round-trip per tab click.
+  const visibleQueue = useMemo(
+    () =>
+      queue.filter((entry) => {
+        if (stream === "all") return true;
+        const rnd = isRndProjectType(entry.mo.project_type);
+        return stream === "rnd" ? rnd : !rnd;
+      }),
+    [queue, stream],
+  );
+
+  function chooseStream(next: Stream) {
+    if (next === stream) return;
+    const qs = new URLSearchParams(searchParams.toString());
+    qs.set("stream", next);
+    router.replace(`${pathname}?${qs.toString()}`);
+  }
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setIsRefreshing(true);
@@ -65,11 +107,13 @@ export function ProductionRunsList({
 
   return (
     <section className="space-y-3">
+      <StreamTabStrip stream={stream} onChange={chooseStream} />
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          {queue.length === 0
-            ? "No production runs ready."
-            : `${queue.length} run${queue.length === 1 ? "" : "s"} on the floor`}
+          {visibleQueue.length === 0
+            ? "No production runs in this view."
+            : `${visibleQueue.length} run${visibleQueue.length === 1 ? "" : "s"} on the floor`}
         </p>
         <Button
           type="button"
@@ -89,11 +133,11 @@ export function ProductionRunsList({
 
       {errorDetail && <ErrorBanner detail={errorDetail} />}
 
-      {queue.length === 0 ? (
-        <EmptyState />
+      {visibleQueue.length === 0 ? (
+        <EmptyState stream={stream} />
       ) : (
         <ul className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card">
-          {queue.map((entry) => (
+          {visibleQueue.map((entry) => (
             <RunRow
               key={entry.mo.uuid}
               entry={entry}
@@ -103,6 +147,62 @@ export function ProductionRunsList({
         </ul>
       )}
     </section>
+  );
+}
+
+const STREAM_TABS: Array<{ value: Stream; label: string; hint: string }> = [
+  {
+    value: "production",
+    label: "Production",
+    hint: "Preflight-cleared production runs on the floor.",
+  },
+  {
+    value: "rnd",
+    label: "R&D",
+    hint: "Trial + sample runs — bypass the warehouse-pickup ceremony.",
+  },
+  {
+    value: "all",
+    label: "All",
+    hint: "Both streams. R&D rows are chipped.",
+  },
+];
+
+function StreamTabStrip({
+  stream,
+  onChange,
+}: {
+  stream: Stream;
+  onChange: (next: Stream) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Production runs stream"
+      className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/30 p-1 text-sm"
+    >
+      {STREAM_TABS.map((t) => {
+        const active = t.value === stream;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={t.hint}
+            onClick={() => onChange(t.value)}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+              active
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -143,6 +243,15 @@ function RunRow({
             <span className="font-mono text-xs font-semibold text-muted-foreground">
               {mo.code ?? `#${mo.id}`}
             </span>
+            {isRndProjectType(mo.project_type) && (
+              <span
+                title="R&D — trial or sample run. Books R&D-tagged lots only."
+                className="inline-flex items-center gap-0.5 rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-violet-700 dark:text-violet-300"
+              >
+                <FlaskConical className="size-2.5" />
+                R&D
+              </span>
+            )}
             <span className="truncate text-sm font-medium">
               {mo.item?.name ?? "Unknown item"}
             </span>
@@ -181,17 +290,29 @@ function RunRow({
   );
 }
 
-function EmptyState() {
+function EmptyState({ stream }: { stream: Stream }) {
+  const copy =
+    stream === "rnd"
+      ? {
+          title: "No R&D runs on the floor",
+          body: "Approved R&D MOs (trial + sample) appear here immediately — no warehouse pickup ceremony required.",
+        }
+      : stream === "production"
+        ? {
+            title: "No production runs ready",
+            body: "Once an MO is preflight-cleared (warehouse pickup done + every booking signed off under Pre-production), it'll appear here ready to start.",
+          }
+        : {
+            title: "Nothing on the floor",
+            body: "No production or R&D runs in either stream right now.",
+          };
+
   return (
     <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/60 px-4 py-12 text-center">
       <CheckCheck className="size-7 text-emerald-500/70" />
       <div className="space-y-1">
-        <p className="text-sm font-semibold">Nothing on the floor</p>
-        <p className="text-xs text-muted-foreground">
-          Once an MO is preflight-cleared (warehouse pickup done +
-          every booking signed off under Pre-production), it&apos;ll
-          appear here ready to start.
-        </p>
+        <p className="text-sm font-semibold">{copy.title}</p>
+        <p className="text-xs text-muted-foreground">{copy.body}</p>
       </div>
     </div>
   );

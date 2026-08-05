@@ -41,7 +41,12 @@ defmodule BackendWeb.HREmployeeController do
               :show,
               :list_wages,
               :list_reputation_events,
-              :list_sessions
+              :list_sessions,
+              :list_shifts,
+              :list_all_shifts,
+              :list_all_wages,
+              :list_all_reputation_events,
+              :statistics_summary
             ]
 
   plug RequirePermission, "hr.create" when action in [:create]
@@ -289,6 +294,135 @@ defmodule BackendWeb.HREmployeeController do
       search: params["search"]
     ]
   end
+
+  ## Shifts ---------------------------------------------------------
+
+  def list_shifts(conn, %{"hr_employee_id" => id} = params) do
+    user = conn.assigns.current_user
+
+    case HR.get_employee(user.company_id, id) do
+      nil ->
+        {:error, :not_found}
+
+      employee ->
+        {shifts, next_cursor} = HR.list_shifts_for_employee(employee, page_opts(params))
+
+        json(conn, %{
+          items: Enum.map(shifts, &Payloads.hr_employee_shift/1),
+          next_cursor: next_cursor
+        })
+    end
+  end
+
+  @doc """
+  Company-wide shifts feed used by the /hr/shifts overview page.
+  Accepts optional `?employee_uuid=` for per-worker filtering.
+  """
+  def list_all_shifts(conn, params) do
+    user = conn.assigns.current_user
+
+    {shifts, next_cursor} =
+      HR.list_shifts_page(
+        user.company_id,
+        Keyword.merge(page_opts(params), employee_uuid: params["employee_uuid"])
+      )
+
+    json(conn, %{
+      items: Enum.map(shifts, &Payloads.hr_employee_shift/1),
+      next_cursor: next_cursor
+    })
+  end
+
+  @doc """
+  Company-wide wage-history feed used by the /hr/wages overview page.
+  Accepts optional `?employee_uuid=` for per-worker filtering.
+  """
+  def list_all_wages(conn, params) do
+    user = conn.assigns.current_user
+
+    {wages, next_cursor} =
+      HR.list_wages_page(
+        user.company_id,
+        Keyword.merge(page_opts(params), employee_uuid: params["employee_uuid"])
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(wages, fn w ->
+          w
+          |> Payloads.hr_employee_wage()
+          |> Map.put(
+            :employee,
+            case Map.get(w, :employee) do
+              %Backend.HR.Employee{} = e ->
+                %{id: e.id, uuid: e.uuid, name: e.full_name}
+
+              _ ->
+                nil
+            end
+          )
+        end),
+      next_cursor: next_cursor
+    })
+  end
+
+  @doc """
+  Company-wide reputation-event feed used by the /hr/reputation
+  overview page. Accepts optional `?employee_uuid=`.
+  """
+  def list_all_reputation_events(conn, params) do
+    user = conn.assigns.current_user
+
+    {events, next_cursor} =
+      HR.list_reputation_events_page(
+        user.company_id,
+        Keyword.merge(page_opts(params), employee_uuid: params["employee_uuid"])
+      )
+
+    json(conn, %{
+      items:
+        Enum.map(events, fn ev ->
+          ev
+          |> Payloads.hr_employee_reputation_event()
+          |> Map.put(
+            :employee,
+            case Map.get(ev, :employee) do
+              %Backend.HR.Employee{} = e ->
+                %{id: e.id, uuid: e.uuid, name: e.full_name}
+
+              _ ->
+                nil
+            end
+          )
+        end),
+      next_cursor: next_cursor
+    })
+  end
+
+  @doc """
+  Aggregate HR statistics — one row per employee across the past
+  `?days=` window (default 30). Powers the /hr/statistics page.
+  """
+  def statistics_summary(conn, params) do
+    user = conn.assigns.current_user
+    days = parse_int(params["days"]) || 30
+
+    summary = HR.statistics_summary(user.company_id, days: days)
+
+    json(conn, summary)
+  end
+
+  defp parse_int(nil), do: nil
+  defp parse_int(v) when is_integer(v), do: v
+
+  defp parse_int(v) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, _} when n > 0 and n <= 365 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_int(_), do: nil
 
   ## Sessions -------------------------------------------------------
 

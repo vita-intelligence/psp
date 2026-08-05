@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { format as formatDateFns } from "date-fns";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import {
+  releaseManufacturingOrderToWarehouseAction,
   signMOAction,
   transitionManufacturingOrderAction,
 } from "@/lib/production/actions";
@@ -196,6 +197,23 @@ export function MOStatusActions({
     });
   }
 
+  function runRelease(label: string) {
+    if (locked) return;
+    setActionError(null);
+    setPendingLabel(label);
+    startTransition(async () => {
+      const res = await releaseManufacturingOrderToWarehouseAction(mo.uuid);
+      setPendingLabel(null);
+      if (res.ok) {
+        toast.success("Pickup requested — warehouse will pick materials.");
+        invalidateAudit("manufacturing_order", mo.id);
+        router.refresh();
+      } else {
+        setActionError({ detail: res.detail, code: res.code });
+      }
+    });
+  }
+
   function submitReject(reason: string) {
     if (locked) return;
     setActionError(null);
@@ -300,6 +318,7 @@ export function MOStatusActions({
           onCancelPurchaseRequest={() =>
             runSignature("Cancel purchase request", "cancel_purchase_request")
           }
+          onRequestPickup={() => runRelease("Request pickup")}
           onStart={() => runStatus("Start", "in_progress")}
           onComplete={() => runStatus("Complete", "completed")}
           onCancel={() =>
@@ -419,6 +438,7 @@ interface ActionStripProps {
   onAmend: () => void;
   onRequestPurchases: () => void;
   onCancelPurchaseRequest: () => void;
+  onRequestPickup: () => void;
   onStart: () => void;
   onComplete: () => void;
   onCancel: () => void;
@@ -565,7 +585,30 @@ function ActionStrip(props: ActionStripProps) {
     }
   }
 
+  const isRnd = mo.project_type === "trial" || mo.project_type === "sample";
+
   if (mo.status === "approved") {
+    // R&D approved-stage button: request pickup so the warehouse
+    // brings materials to the production cell. Only after pickup is
+    // complete does "Go to run operations" appear (handled in the
+    // `scheduled` branch below). Skipping pickup entirely is wrong —
+    // the operator physically needs the ingredients on the floor.
+    //
+    // Chain gate still applies: a parent R&D MO can't request pickup
+    // (or start) until every sub-MO has completed / been cancelled.
+    if (canExecute && isRnd) {
+      const chainBlocked = mo.blocking_children_count > 0;
+      actionButton({
+        label: "Request pickup",
+        icon: ShoppingCart,
+        onClick: props.onRequestPickup,
+        disabled: chainBlocked,
+        title: chainBlocked
+          ? `Waiting on ${mo.blocking_children_count} sub-MO${mo.blocking_children_count === 1 ? "" : "s"}. Finish or cancel every child before requesting pickup.`
+          : "R&D MO — hand over to the warehouse. They pick the materials, then the run page unlocks.",
+      });
+    }
+
     if (canApprove) {
       // Unapprove bounces back to draft (clears both signatures) so
       // the planner can edit bookings again. Blocked once the MO is
@@ -592,6 +635,48 @@ function ActionStrip(props: ActionStripProps) {
     }
   }
 
+  // R&D scheduled — MO is post-release, pickup in flight or complete.
+  // Once pickup is done the operator can jump to the run page and
+  // start (the R&D branch in `start_mo_production` still applies:
+  // pickup required, preflight skipped). Before pickup completes,
+  // surface a disabled button so the operator knows what they're
+  // waiting on.
+  if (mo.status === "scheduled" && isRnd && canExecute) {
+    const pickupDone = mo.pickup_completed_at != null;
+    const chainBlocked = mo.blocking_children_count > 0;
+    const disabled = !pickupDone || chainBlocked;
+    buttons.push(
+      <Button
+        key="Run"
+        asChild={!disabled && !locked}
+        type="button"
+        size="sm"
+        disabled={locked || disabled}
+        title={
+          locked
+            ? "Only the head of the room can act here."
+            : chainBlocked
+              ? `Waiting on ${mo.blocking_children_count} sub-MO${mo.blocking_children_count === 1 ? "" : "s"}. Finish or cancel every child before running the parent.`
+              : !pickupDone
+                ? "Warehouse still picking materials. This unlocks once pickup is complete."
+                : "R&D MO — jump to the run page and start the batch."
+        }
+      >
+        {disabled || locked ? (
+          <>
+            <Play className="size-3.5" />
+            {pickupDone ? "Go to run operations" : "Awaiting warehouse pickup"}
+          </>
+        ) : (
+          <Link href={`/production/runs/${mo.uuid}`}>
+            <Play className="size-3.5" />
+            Go to run operations
+          </Link>
+        )}
+      </Button>,
+    );
+  }
+
   // Start is valid only when the MO has been released to the warehouse,
   // the pickup is complete (lots are at the production-feed cell), AND
   // every booking has been preflight-signed by the production operator
@@ -600,7 +685,12 @@ function ActionStrip(props: ActionStripProps) {
   // appears when it can actually fire, and never on a still-approved
   // (not-yet-scheduled) MO. The dedicated production-run page is the
   // primary place to start; this button is a desktop shortcut.
-  if (mo.status === "scheduled" && canExecute) {
+  //
+  // Skipped for R&D — the R&D branch shows "Go to run operations"
+  // above, which routes to the run page where Start lives with the
+  // operations checklist in view. Two Start-equivalent buttons on the
+  // same header was confusing (see PR feedback).
+  if (mo.status === "scheduled" && canExecute && !isRnd) {
     const pickupDone = mo.pickup_completed_at != null;
     const preflightDone =
       pickupDone &&

@@ -14,14 +14,30 @@ import { ManufacturingOrdersLedger } from "./mos-ledger";
 
 export const metadata = { title: "Manufacturing orders · Production · PSP" };
 
-export default async function ManufacturingOrdersPage() {
+export default async function ManufacturingOrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ stream?: string }>;
+}) {
   const user = await requireUser();
   if (!hasPermission(user, "production.mo_view")) {
     redirect("/settings/profile");
   }
 
+  // URL is the source of truth for the stream tab. That kills the
+  // desync between client-state and the server-fetched first page:
+  // `?stream=rnd` on the URL → server renders the R&D page → the
+  // ledger reads the same param and paints the R&D tab active. Also
+  // makes deep-links + back/forward + refresh work without a client-
+  // side reconciliation flicker.
+  const { stream: rawStream } = await searchParams;
+  const stream: "production" | "rnd" | "all" =
+    rawStream === "rnd" || rawStream === "all" ? rawStream : "production";
+
   const [initialPage, locationFilters] = await Promise.all([
-    listManufacturingOrdersPage(),
+    listManufacturingOrdersPage({
+      query: stream === "all" ? "" : `stream=${stream}`,
+    }),
     buildLocationFilters({ warehouse: true, productionSite: true }),
   ]);
   const canCreate = hasPermission(user, "production.mo_create");
@@ -52,6 +68,7 @@ export default async function ManufacturingOrdersPage() {
 
           <ManufacturingOrdersLedger
             initialPage={initialPage ?? { items: [], next_cursor: null }}
+            initialStream={stream}
             locationFilters={locationFilters}
           />
         </div>

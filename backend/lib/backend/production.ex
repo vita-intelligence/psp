@@ -1760,6 +1760,7 @@ defmodule Backend.Production do
       |> where([m], m.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @mo_search, {company_id, "manufacturing_order"})
       |> maybe_mo_status_filter(opts[:status])
+      |> maybe_mo_stream_filter(opts[:stream])
       |> maybe_mo_item_filter(opts[:item_id])
       |> maybe_mo_warehouse_filter(opts[:warehouse_id])
       |> maybe_mo_product_name_filter(product_needle)
@@ -1793,6 +1794,19 @@ defmodule Backend.Production do
     do: where(query, [m], m.status == ^s)
 
   defp maybe_mo_status_filter(query, _), do: query
+
+  # Ledger tab strip on the FE. `production` = normal manufacturing;
+  # `rnd` = trial + sample MOs (created from NPD trial batches).
+  # Absent / "all" / any other value = no filter. Kept as a virtual
+  # `stream` param instead of routing through `project_type` directly
+  # so the API surface stays stable if we add more R&D flavours later.
+  defp maybe_mo_stream_filter(query, "production"),
+    do: where(query, [m], m.project_type == "production")
+
+  defp maybe_mo_stream_filter(query, "rnd"),
+    do: where(query, [m], m.project_type in ["trial", "sample"])
+
+  defp maybe_mo_stream_filter(query, _), do: query
 
   defp maybe_mo_item_filter(query, nil), do: query
 
@@ -5935,9 +5949,19 @@ defmodule Backend.Production do
 
   @doc """
   Operations to render on the production schedule for `warehouse`
-  between `from_date` and `to_date` (inclusive). Returns the MO
-  steps from any scheduled or in_progress MO whose
-  planned_start/planned_finish intersects the window.
+  between `from_date` and `to_date` (inclusive). Returns every MO
+  step (any lifecycle status — approved / scheduled / in_progress /
+  completed / cancelled) whose planned window overlaps the visible
+  range. Everything visible = everything scoped to the current view;
+  MOs outside the window never touch the payload.
+
+  Design note: at millions of MOs, "just show the last 10 completed
+  regardless of window" clutters the calendar with steps from months
+  ago that have no bearing on what the planner is looking at now.
+  The single windowed query scales because the composite index on
+  `mo_steps (warehouse_id_via_join, planned_start, planned_finish)`
+  clips at row level — the DB never materialises history it can't
+  render.
 
   `approved` MOs without a schedule sit in the backlog instead —
   see `list_backlog_manufacturing_orders/2`.
@@ -5946,16 +5970,20 @@ defmodule Backend.Production do
     from_dt = DateTime.new!(from_date, ~T[00:00:00], "Etc/UTC")
     to_dt = DateTime.new!(to_date, ~T[23:59:59], "Etc/UTC")
 
-    # Live MOs in the visible window — planned-but-not-finished work
-    # the planner actively manages.
-    live_ops =
+    ops =
       from(s in ManufacturingOrderStep,
         join: mo in ManufacturingOrder,
         on: mo.id == s.manufacturing_order_id,
         where:
           s.company_id == ^actor.company_id and
             mo.warehouse_id == ^warehouse.id and
-            mo.status in ["approved", "scheduled", "in_progress"] and
+            mo.status in [
+              "approved",
+              "scheduled",
+              "in_progress",
+              "completed",
+              "cancelled"
+            ] and
             not is_nil(s.planned_start) and
             not is_nil(s.planned_finish) and
             s.planned_finish >= ^from_dt and
@@ -5964,41 +5992,6 @@ defmodule Backend.Production do
         order_by: [asc: s.planned_start, asc: s.id]
       )
       |> Repo.all()
-
-    # Most recently completed MOs (10) — kept on the calendar for
-    # context so the planner can see what just ran on the lines.
-    # Without this, a `completed` MO disappears the moment Finish is
-    # tapped, leaving the calendar feeling amnesiac.
-    recent_completed_mo_ids =
-      from(mo in ManufacturingOrder,
-        where:
-          mo.company_id == ^actor.company_id and
-            mo.warehouse_id == ^warehouse.id and
-            mo.status == "completed",
-        order_by: [
-          desc_nulls_last: mo.actual_finish,
-          desc: mo.updated_at,
-          desc: mo.id
-        ],
-        limit: 10,
-        select: mo.id
-      )
-      |> Repo.all()
-
-    completed_ops =
-      from(s in ManufacturingOrderStep,
-        join: mo in ManufacturingOrder,
-        on: mo.id == s.manufacturing_order_id,
-        where:
-          mo.id in ^recent_completed_mo_ids and
-            not is_nil(s.planned_start) and
-            not is_nil(s.planned_finish),
-        preload: [:workstation_group, manufacturing_order: [:item, :warehouse]],
-        order_by: [asc: s.planned_start, asc: s.id]
-      )
-      |> Repo.all()
-
-    ops = live_ops ++ completed_ops
 
     # Stamp each operation's preloaded MO with qc_pending_count +
     # broken_bookings_count + under_booked_count so the planner sees
@@ -6692,9 +6685,15 @@ defmodule Backend.Production do
     # placement no longer auto-flips status. We also accept "scheduled"
     # as a no-op re-release (e.g. legacy MOs already in "scheduled"
     # from the old semantic) so the planner isn't blocked.
+    #
+    # R&D bypass — trial + sample MOs don't sit on the production
+    # calendar (they use a fast path with no schedule), but they still
+    # need the physical pickup so ingredients arrive at the production
+    # cell. Skip the `ensure_has_planned_start` gate for R&D so the
+    # planner can hit "Request pickup" straight from approved.
     with :ok <- ensure_status_in(mo, ["approved", "scheduled"]),
          :ok <- ensure_not_needing_replan(mo),
-         :ok <- ensure_has_planned_start(mo),
+         :ok <- ensure_calendar_or_rnd(mo),
          :ok <- ensure_all_lines_fully_booked(mo),
          :ok <- ensure_all_lines_have_real_bookings(mo),
          :ok <- ensure_all_booked_lots_available(mo),
@@ -6734,6 +6733,17 @@ defmodule Backend.Production do
 
     if has_any?, do: :ok, else: {:error, :not_on_calendar}
   end
+
+  # R&D MOs (trial + sample) bypass the calendar-placement gate — they
+  # go straight from `approved` → pickup → run without a scheduled slot.
+  # Production MOs still need the calendar step (the planner has to
+  # commit to when the line will actually run).
+  defp ensure_calendar_or_rnd(%ManufacturingOrder{project_type: pt} = mo)
+       when pt in ["trial", "sample"],
+       do: :ok
+
+  defp ensure_calendar_or_rnd(%ManufacturingOrder{} = mo),
+    do: ensure_has_planned_start(mo)
 
   # Cross-MO trolley guard. If any booked lot is currently sitting on
   # ANOTHER MO's trolley (different MO with pickup_started_at set,
@@ -7052,7 +7062,22 @@ defmodule Backend.Production do
               booking_snapshot(updated)
             )
 
-            {:ok, updated}
+            # Preload nested associations before returning so the FE
+            # payload (Payloads.mo_booking/1) still carries `item.name`
+            # + `stock_lot.code` + qty. Without this the shallow spread
+            # on the FE (`{...b, ...res.booking}`) clobbers the nested
+            # objects with %NotLoaded{}-driven nils, and the picked-
+            # confirm screen falls back to "this lot" until the next
+            # full MO refetch. Placements are needed by
+            # `mo_booking_lot_summary` to sum qty_on_hand — the
+            # confirm card renders "whole lot moved" using that value.
+            preloaded =
+              Repo.preload(updated, [
+                item: [:stock_uom],
+                stock_lot: [:unit_of_measurement, :placements]
+              ])
+
+            {:ok, preloaded}
 
           err ->
             err
@@ -7869,15 +7894,24 @@ defmodule Backend.Production do
   counts as empty when no placement on it has positive qty. Returns
   newest-first so a planner who just provisioned a fresh cell sees
   it surface immediately.
+
+  The `purpose` arg is `"production_feed"` for production MOs and
+  `"rnd"` for R&D (trial / sample) MOs — the R&D stream stays
+  physically segregated from production, so R&D pickups land on an
+  empty rnd bench, not a production-feed shelf. The transfer target
+  gate (`fetch_pickup_target_cell/2`) accepts either purpose for R&D
+  MOs; the candidate list narrows to just the correct one so the
+  picker isn't offered production-feed cells for an R&D pickup.
   """
-  def list_empty_production_feed_cells(company_id) when is_integer(company_id) do
+  def list_empty_production_feed_cells(company_id, purpose \\ "production_feed")
+      when is_integer(company_id) and is_binary(purpose) do
     occupied_subq =
       from(p in Backend.Stock.Placement,
         join: c in Backend.Warehouses.StorageCell,
         on: c.id == p.storage_cell_id,
         where:
           c.company_id == ^company_id and
-            c.purpose == "production_feed" and
+            c.purpose == ^purpose and
             p.qty > 0,
         select: c.id,
         distinct: true
@@ -7886,13 +7920,23 @@ defmodule Backend.Production do
     from(c in Backend.Warehouses.StorageCell,
       where:
         c.company_id == ^company_id and
-          c.purpose == "production_feed" and
+          c.purpose == ^purpose and
           c.id not in subquery(occupied_subq),
       preload: [storage_location: [floor: [:warehouse]]],
       order_by: [desc: c.inserted_at, desc: c.id]
     )
     |> Repo.all()
   end
+
+  # Which cell purpose an MO's pickup lands on. Production MOs use
+  # `production_feed` (dedicated in-plant staging shelves); R&D MOs
+  # use `rnd` (the trial bench itself — R&D lots stay inside the R&D
+  # stream from receiving through consumption).
+  defp pickup_target_purpose(%ManufacturingOrder{project_type: pt})
+       when pt in ["trial", "sample"],
+       do: "rnd"
+
+  defp pickup_target_purpose(%ManufacturingOrder{}), do: "production_feed"
 
   @doc """
   Pre-flight fit check per production-feed cell for an MO's pickup.
@@ -7908,7 +7952,7 @@ defmodule Backend.Production do
   policy).
   """
   def list_empty_production_feed_cells_with_fit(company_id, %ManufacturingOrder{} = mo) do
-    cells = list_empty_production_feed_cells(company_id)
+    cells = list_empty_production_feed_cells(company_id, pickup_target_purpose(mo))
     bookings = list_pickup_bookings(mo)
 
     # Whole-lot footprint sum — mirrors the picker's whole-lot
@@ -7984,29 +8028,357 @@ defmodule Backend.Production do
   QC operator passes (`qc_passed` → `available`) or fails them
   (`qc_failed` → `qc_failed`).
   """
-  def list_pending_output_qc(company_id) when is_integer(company_id) do
-    from(l in StockLot,
-      where:
-        l.company_id == ^company_id and
-          l.source_kind == "manufacturing_order" and
-          l.status == "received",
-      preload: [
+  def list_pending_output_qc(company_id, opts \\ []) when is_integer(company_id) do
+    limit = clamp_limit(opts[:limit], 50)
+    search = opts[:search]
+    filter_item_type = opts[:filter_item_type]
+    filter_project_type = opts[:filter_project_type]
+    filter_ws_group_uuid = opts[:filter_workstation_group_uuid]
+    cursor = decode_output_qc_cursor(opts[:cursor])
+
+    # Build the MO id set first when workstation-group / project-type
+    # filters are active — a lot's queue eligibility depends on its
+    # source MO, and the source_ref is text-uuid so we can't join on
+    # it directly without a cast. Resolving mo_ids up front keeps the
+    # lot query pure keyset for good indexed pagination.
+    filtered_mo_ids = filtered_mo_ids(company_id, filter_ws_group_uuid, filter_project_type)
+
+    base =
+      from l in StockLot,
+        as: :lot,
+        join: i in assoc(l, :item),
+        as: :item,
+        where:
+          l.company_id == ^company_id and
+            l.source_kind == "manufacturing_order" and
+            l.status == "received"
+
+    base =
+      case cursor do
+        {ts, id} ->
+          from [lot: l] in base,
+            where: {l.inserted_at, l.id} > {^ts, ^id}
+
+        _ ->
+          base
+      end
+
+    base =
+      if is_binary(filter_item_type) and filter_item_type != "" do
+        from [item: i] in base,
+          where: i.item_type == ^filter_item_type
+      else
+        base
+      end
+
+    base =
+      if is_binary(search) and String.trim(search) != "" do
+        pattern = "%" <> String.trim(search) <> "%"
+
+        from [item: i] in base,
+          where: ilike(i.name, ^pattern)
+      else
+        base
+      end
+
+    base =
+      case filtered_mo_ids do
+        :no_filter ->
+          base
+
+        [] ->
+          from [lot: l] in base, where: false
+
+        ids when is_list(ids) ->
+          # Source_ref is a stringified MO uuid — filter by matching
+          # against the resolved MO uuids from filtered_mo_ids.
+          uuids =
+            from(mo in ManufacturingOrder,
+              where: mo.id in ^ids,
+              select: fragment("?::text", mo.uuid)
+            )
+            |> Repo.all()
+
+          from [lot: l] in base, where: l.source_ref in ^uuids
+      end
+
+    lots =
+      base
+      |> preload([
         :item,
         :unit_of_measurement,
+        item: [
+          :finished_product_spec,
+          :raw_material_compliance
+        ],
         placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
-      ],
-      order_by: [asc: l.inserted_at, asc: l.id]
-    )
-    |> Repo.all()
-    |> Enum.map(fn lot ->
-      mo =
-        case Repo.get_by(ManufacturingOrder, uuid: lot.source_ref) do
-          nil -> nil
-          mo -> Repo.preload(mo, [:item, :pickup_completed_by])
+      ])
+      |> order_by([lot: l], asc: l.inserted_at, asc: l.id)
+      |> limit(^(limit + 1))
+      |> Repo.all()
+
+    {page, next_cursor} =
+      case Enum.split(lots, limit) do
+        {page, [next | _]} ->
+          {page, encode_output_qc_cursor(next)}
+
+        {page, []} ->
+          {page, nil}
+      end
+
+    entries =
+      Enum.map(page, fn lot ->
+        mo =
+          case Repo.get_by(ManufacturingOrder, uuid: lot.source_ref) do
+            nil ->
+              nil
+
+            mo ->
+              Repo.preload(mo, [
+                :item,
+                :pickup_completed_by,
+                steps: [:workstation_group]
+              ])
+          end
+
+        # Semi-finished intermediates (Water Producing, etc.) don't
+        # carry their own finished-product spec — NPD attaches the
+        # spec to the terminal finished product only. Walk up the MO
+        # parent chain to find the closest ancestor whose item HAS a
+        # spec, and surface it as "parent product spec" so QA still
+        # gets a target to compare against.
+        {resolved_spec_item, resolved_spec_source} =
+          resolve_reference_spec_item(lot.item, mo)
+
+        %{
+          lot: lot,
+          mo: mo,
+          resolved_spec_item: resolved_spec_item,
+          resolved_spec_source: resolved_spec_source
+        }
+      end)
+
+    {entries, next_cursor}
+  end
+
+  # Returns {item_with_spec, source} where source is:
+  #   :own — the lot's item has its own finished-product spec.
+  #   {:parent, %ManufacturingOrder{}} — an ancestor MO's item carries
+  #      the spec (the current lot is a semi-finished intermediate).
+  #   :none — no spec anywhere in the chain.
+  defp resolve_reference_spec_item(%Item{finished_product_spec: %_{}} = item, _mo),
+    do: {item, :own}
+
+  defp resolve_reference_spec_item(_item, %ManufacturingOrder{parent_mo_id: parent_id} = _mo)
+       when is_integer(parent_id) do
+    walk_parent_chain_for_spec(parent_id, _max_hops = 5)
+  end
+
+  defp resolve_reference_spec_item(_item, _mo), do: {nil, :none}
+
+  defp walk_parent_chain_for_spec(_mo_id, 0), do: {nil, :none}
+
+  defp walk_parent_chain_for_spec(mo_id, hops) do
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where: mo.id == ^mo_id,
+             preload: [item: :finished_product_spec]
+         ) do
+      nil ->
+        {nil, :none}
+
+      %ManufacturingOrder{item: %Item{finished_product_spec: %_{}} = item} = mo ->
+        {item, {:parent, mo}}
+
+      %ManufacturingOrder{parent_mo_id: nil} ->
+        {nil, :none}
+
+      %ManufacturingOrder{parent_mo_id: parent_id} ->
+        walk_parent_chain_for_spec(parent_id, hops - 1)
+    end
+  end
+
+  @doc """
+  Single-entry fetch for the Output QC detail page. Returns the same
+  shape as one item of `list_pending_output_qc/2` (lot, mo, resolved
+  reference spec item + source), or nil when the lot doesn't belong
+  to this company / isn't in `received` state / isn't manufactured.
+  """
+  def get_output_qc_entry_by_lot_uuid(company_id, lot_uuid)
+      when is_integer(company_id) and is_binary(lot_uuid) do
+    lot =
+      Repo.one(
+        from l in StockLot,
+          where:
+            l.company_id == ^company_id and
+              l.uuid == ^lot_uuid and
+              l.source_kind == "manufacturing_order" and
+              l.status == "received",
+          preload: [
+            :item,
+            :unit_of_measurement,
+            item: [
+              :finished_product_spec,
+              :raw_material_compliance
+            ],
+            placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+          ]
+      )
+
+    case lot do
+      nil ->
+        nil
+
+      %StockLot{} ->
+        mo =
+          case Repo.get_by(ManufacturingOrder, uuid: lot.source_ref) do
+            nil -> nil
+            m -> Repo.preload(m, [:item, :pickup_completed_by, steps: [:workstation_group]])
+          end
+
+        {resolved_spec_item, resolved_spec_source} =
+          resolve_reference_spec_item(lot.item, mo)
+
+        %{
+          lot: lot,
+          mo: mo,
+          resolved_spec_item: resolved_spec_item,
+          resolved_spec_source: resolved_spec_source
+        }
+    end
+  end
+
+  @doc """
+  Resolve the reference item UUID QA compares an Output-QC lot against.
+
+  Returns:
+
+    * `{:ok, uuid, source}` where `source` is `:own` (the lot's own item
+      has the spec) or `:parent` (walked up the MO chain to a finished
+      product ancestor). `uuid` is the STRING form of the resolved
+      `Item.uuid`.
+    * `{:error, :lot_not_found | :no_reference_item}`.
+
+  Callers use this to bridge into NPD — NPD keys its
+  `Formulation.psp_finished_product_uuid` by PSP's `Item.uuid`, so
+  once we know the reference item, we know which NPD sheet to fetch.
+  """
+  def resolve_output_qc_reference_item_uuid(company_id, lot_uuid)
+      when is_integer(company_id) and is_binary(lot_uuid) do
+    case get_output_qc_entry_by_lot_uuid(company_id, lot_uuid) do
+      nil ->
+        {:error, :lot_not_found}
+
+      %{resolved_spec_item: nil} ->
+        {:error, :no_reference_item}
+
+      %{resolved_spec_item: %Item{uuid: nil}} ->
+        {:error, :no_reference_item}
+
+      %{resolved_spec_item: %Item{uuid: uuid}, resolved_spec_source: source} ->
+        {:ok, uuid, source_kind_from(source)}
+    end
+  end
+
+  defp source_kind_from(:own), do: :own
+  defp source_kind_from({:parent, _mo}), do: :parent
+  defp source_kind_from(_), do: :none
+
+  @doc """
+  Same shape as `resolve_output_qc_reference_item_uuid/2` but keyed
+  on a manufacturing-order uuid. Used by the MO detail page's spec
+  sheet embed — walks the parent chain when the MO's own item has
+  no spec so the operator sees the finished product's spec even
+  while running a semi-finished intermediate.
+  """
+  def resolve_reference_item_uuid_for_mo(company_id, mo_uuid)
+      when is_integer(company_id) and is_binary(mo_uuid) do
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where: mo.company_id == ^company_id and mo.uuid == ^mo_uuid,
+             preload: [item: :finished_product_spec]
+         ) do
+      nil ->
+        {:error, :mo_not_found}
+
+      %ManufacturingOrder{} = mo ->
+        case resolve_reference_spec_item(mo.item, mo) do
+          {nil, _} ->
+            {:error, :no_reference_item}
+
+          {%Item{uuid: nil}, _} ->
+            {:error, :no_reference_item}
+
+          {%Item{uuid: uuid}, source} ->
+            {:ok, uuid, source_kind_from(source)}
+        end
+    end
+  end
+
+  defp clamp_limit(v, default) do
+    case v do
+      n when is_integer(n) and n > 0 and n <= 200 -> n
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {n, _} when n > 0 and n <= 200 -> n
+          _ -> default
         end
 
-      %{lot: lot, mo: mo}
-    end)
+      _ -> default
+    end
+  end
+
+  defp encode_output_qc_cursor(%StockLot{inserted_at: ts, id: id}) do
+    Base.url_encode64("#{DateTime.to_iso8601(ts)}|#{id}", padding: false)
+  end
+
+  defp decode_output_qc_cursor(nil), do: nil
+  defp decode_output_qc_cursor(""), do: nil
+
+  defp decode_output_qc_cursor(cursor) when is_binary(cursor) do
+    with {:ok, raw} <- Base.url_decode64(cursor, padding: false),
+         [ts_str, id_str] <- String.split(raw, "|", parts: 2),
+         {:ok, ts, _} <- DateTime.from_iso8601(ts_str),
+         {id, ""} <- Integer.parse(id_str) do
+      {DateTime.truncate(ts, :second), id}
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode_output_qc_cursor(_), do: nil
+
+  # Returns :no_filter when neither ws-group nor project-type filter is
+  # active. Returns a list (possibly empty) of MO ids that match both
+  # filters when at least one is active. Empty list ⇒ signal "no
+  # matches"; the caller short-circuits to an empty queue.
+  defp filtered_mo_ids(_company_id, nil, nil), do: :no_filter
+  defp filtered_mo_ids(_company_id, "", nil), do: :no_filter
+  defp filtered_mo_ids(_company_id, nil, ""), do: :no_filter
+  defp filtered_mo_ids(_company_id, "", ""), do: :no_filter
+
+  defp filtered_mo_ids(company_id, ws_group_uuid, project_type) do
+    base = from(mo in ManufacturingOrder, where: mo.company_id == ^company_id)
+
+    base =
+      if is_binary(project_type) and project_type != "" do
+        from mo in base, where: mo.project_type == ^project_type
+      else
+        base
+      end
+
+    base =
+      if is_binary(ws_group_uuid) and ws_group_uuid != "" do
+        from mo in base,
+          join: s in assoc(mo, :steps),
+          join: g in assoc(s, :workstation_group),
+          where: g.uuid == ^ws_group_uuid,
+          distinct: mo.id
+      else
+        base
+      end
+
+    from(mo in base, select: mo.id) |> Repo.all()
   end
 
   @doc """
@@ -8880,10 +9252,29 @@ defmodule Backend.Production do
         distinct: true
       )
 
+    # QC gate: an MO's outputs must clear Output QC before its
+    # closeout row opens. A produced lot lives at ``received`` until
+    # QA signs off (pass → ``available``, fail → ``rejected``), so any
+    # MO with an outstanding ``received`` lot is still owed a QC
+    # verdict and must not surface in the closeout queue. This matches
+    # the compliance flow: Run → Output QC → Closeout → Release.
+    awaiting_qc_mos =
+      from(l in StockLot,
+        join: m in ManufacturingOrder,
+        on: fragment("?::text", m.uuid) == l.source_ref,
+        where:
+          l.company_id == ^company_id and
+            l.source_kind == "manufacturing_order" and
+            l.status == "received",
+        select: m.id,
+        distinct: true
+      )
+
     from(mo in ManufacturingOrder,
       where:
         mo.company_id == ^company_id and
           mo.status == "completed" and
+          mo.id not in subquery(awaiting_qc_mos) and
           (mo.id in subquery(open_booking_mos) or mo.id in subquery(output_at_feed)),
       preload: [:item, :warehouse, :production_cell, steps: []],
       order_by: [asc: mo.actual_finish, asc: mo.id]
@@ -8903,17 +9294,38 @@ defmodule Backend.Production do
         nil
 
       %ManufacturingOrder{status: "completed"} = mo ->
-        bookings =
-          list_pickup_bookings(mo)
-          |> Enum.filter(&is_nil(&1.consumed_at))
+        if mo_awaiting_output_qc?(mo) do
+          {:error, :awaiting_output_qc}
+        else
+          bookings =
+            list_pickup_bookings(mo)
+            |> Enum.filter(&is_nil(&1.consumed_at))
 
-        output_lots = list_open_output_lots(mo)
+          output_lots = list_open_output_lots(mo)
+          reservations = output_lot_reservations_for_ids(Enum.map(output_lots, & &1.id))
 
-        %{mo: mo, bookings: bookings, output_lots: output_lots}
+          %{
+            mo: mo,
+            bookings: bookings,
+            output_lots: output_lots,
+            output_lot_reservations: reservations
+          }
+        end
 
       %ManufacturingOrder{} ->
         {:error, :not_completed}
     end
+  end
+
+  defp mo_awaiting_output_qc?(%ManufacturingOrder{} = mo) do
+    Repo.exists?(
+      from l in StockLot,
+        where:
+          l.company_id == ^mo.company_id and
+            l.source_kind == "manufacturing_order" and
+            l.source_ref == ^mo.uuid and
+            l.status == "received"
+    )
   end
 
   defp list_open_output_lots(%ManufacturingOrder{} = mo) do
@@ -8938,6 +9350,45 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Live downstream reservations against a produced output lot.
+
+  A "live" booking = ``status: "requested"``, ``consumed_at IS NULL``,
+  parent MO not cancelled. Used by the closeout flow to short-circuit
+  the "scan dispatch cell + move" step when the output is already
+  spoken for — the downstream MO's picker will grab the lot straight
+  from the production feed cell, avoiding a pointless round-trip
+  through the dispatch bay + return-pickup queue.
+
+  Returns a list of `%{mo_id, mo_uuid, mo_code, qty, booking_uuid}`
+  maps, one per active reservation (usually one; empty when the lot
+  is unreserved).
+  """
+  def output_lot_reservations(%StockLot{} = lot),
+    do: output_lot_reservations_for_ids([lot.id]) |> Map.get(lot.id, [])
+
+  def output_lot_reservations_for_ids(lot_ids) when is_list(lot_ids) do
+    from(b in ManufacturingOrderBooking,
+      join: mo in ManufacturingOrder,
+      on: mo.id == b.manufacturing_order_id,
+      where:
+        b.stock_lot_id in ^lot_ids and
+          b.status == "requested" and
+          is_nil(b.consumed_at) and
+          mo.status != "cancelled",
+      select: %{
+        lot_id: b.stock_lot_id,
+        booking_uuid: b.uuid,
+        qty: b.quantity,
+        mo_id: mo.id,
+        mo_uuid: mo.uuid,
+        mo_code: mo.code
+      }
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.lot_id)
+  end
+
+  @doc """
   Empty production-side dispatch cells the FE picks the destination
   from. Filters on the MO's production facility so an MO running on
   Unit 11 doesn't accidentally hand off to Unit 12's dispatch lane.
@@ -8945,26 +9396,81 @@ defmodule Backend.Production do
   def list_dispatch_cells_for_mo(company_id, mo_uuid)
       when is_integer(company_id) and is_binary(mo_uuid) do
     case get_manufacturing_order(company_id, mo_uuid) do
-      %ManufacturingOrder{warehouse_id: warehouse_id}
-      when is_integer(warehouse_id) ->
-        from(c in Backend.Warehouses.StorageCell,
-          join: l in Backend.Warehouses.StorageLocation,
-          on: l.id == c.storage_location_id,
-          join: f in Backend.Warehouses.Floor,
-          on: f.id == l.floor_id,
-          where:
-            c.company_id == ^company_id and
-              c.purpose == "dispatch" and
-              f.warehouse_id == ^warehouse_id,
-          preload: [storage_location: [floor: [:warehouse]]],
-          order_by: [asc: l.code, asc: c.ordinal]
-        )
-        |> Repo.all()
+      %ManufacturingOrder{} = mo ->
+        purposes = closeout_dest_purposes(mo)
+        filter_wh_id = closeout_facility_warehouse_id(mo)
+
+        if is_integer(filter_wh_id) do
+          from(c in Backend.Warehouses.StorageCell,
+            join: l in Backend.Warehouses.StorageLocation,
+            on: l.id == c.storage_location_id,
+            join: f in Backend.Warehouses.Floor,
+            on: f.id == l.floor_id,
+            where:
+              c.company_id == ^company_id and
+                c.purpose in ^purposes and
+                f.warehouse_id == ^filter_wh_id,
+            preload: [storage_location: [floor: [:warehouse]]],
+            order_by: [asc: l.code, asc: c.ordinal]
+          )
+          |> Repo.all()
+        else
+          []
+        end
 
       _ ->
         []
     end
   end
+
+  # The closeout drop-off must land INSIDE the production facility
+  # where the MO ran — not in the finished-goods warehouse. We resolve
+  # the facility from `production_cell_id` (its parent warehouse is
+  # `kind=production_facility`) so the operator scans a cell on the
+  # same shop floor they just left, and only walks the finished lot
+  # to the warehouse via the pickup / release flow.
+  #
+  # If the MO never had a production cell (e.g. a parent MO that
+  # spawned children but was never itself placed on a workstation),
+  # fall back to `mo.warehouse_id` so the picker still surfaces
+  # something — otherwise closeout would be impossible.
+  defp closeout_facility_warehouse_id(%ManufacturingOrder{production_cell_id: cell_id})
+       when is_integer(cell_id) do
+    from(c in Backend.Warehouses.StorageCell,
+      join: l in Backend.Warehouses.StorageLocation,
+      on: l.id == c.storage_location_id,
+      join: f in Backend.Warehouses.Floor,
+      on: f.id == l.floor_id,
+      where: c.id == ^cell_id,
+      select: f.warehouse_id
+    )
+    |> Repo.one()
+  end
+
+  defp closeout_facility_warehouse_id(%ManufacturingOrder{warehouse_id: id}), do: id
+
+  # R&D MOs (trial / sample) never leave the R&D floor via shipping —
+  # their output lives in `rnd`-purpose cells for follow-up work. We
+  # keep `dispatch` in the accepted list as a fallback so a site that
+  # hasn't tagged any cells `rnd` yet still has SOMEWHERE to drop to.
+  # Production MOs use the usual `dispatch` staging bays.
+  # R&D MOs (trial / sample) close out to an R&D-tagged cell only. The
+  # ``ensure_rnd_stream_match`` guard in ``Backend.Stock`` hard-refuses
+  # any R&D lot landing in a non-``rnd`` cell, so offering ``dispatch``
+  # as a fallback here creates a dead option — the operator picks it,
+  # the move fails with ``rnd_lot_needs_rnd_cell``. Better to surface
+  # only the cells the placement layer will actually accept; sites
+  # without a tagged R&D cell need to tag one on the warehouse plan
+  # before running R&D MOs.
+  defp closeout_dest_purposes(%ManufacturingOrder{project_type: pt})
+       when pt in ["trial", "sample"],
+       do: ["rnd"]
+
+  defp closeout_dest_purposes(%ManufacturingOrder{}), do: ["dispatch"]
+
+  # Defensive: if the source MO can't be found (deleted / not preloaded),
+  # fall back to the safer default — a production dispatch cell.
+  defp closeout_dest_purposes(_), do: ["dispatch"]
 
   @doc """
   Production-worker action — close out one booking. Stamps
@@ -8990,13 +9496,21 @@ defmodule Backend.Production do
     # qty — booking is the planned amount, not a ceiling on actual use.
     on_hand = lot_on_hand(booking.stock_lot_id)
 
+    booking_mo = Repo.get(ManufacturingOrder, booking.manufacturing_order_id)
+    accepted_purposes = closeout_dest_purposes(booking_mo)
+
     with :ok <- ensure_booking_not_closed(booking),
          :ok <- ensure_output_qc_done(booking),
          {:ok, remaining} <- parse_remaining_qty(attrs, on_hand),
          consumed = Decimal.sub(on_hand, remaining),
          :ok <- ensure_photo_or_skip(attrs),
          {:ok, dest_cell} <-
-           maybe_resolve_dispatch_cell(actor.company_id, attrs, remaining) do
+           maybe_resolve_dispatch_cell(
+             actor.company_id,
+             attrs,
+             remaining,
+             accepted_purposes
+           ) do
       photo_meta = %{
         "photo_url" => attrs["photo_url"],
         "skip_photo_reason" => attrs["skip_photo_reason"]
@@ -9151,15 +9665,22 @@ defmodule Backend.Production do
   # When the operator's leaving 0 behind, no destination is needed —
   # the placement just drops to 0. Anything > 0 must land in a real,
   # dispatch-purpose cell.
-  defp maybe_resolve_dispatch_cell(_company_id, _attrs, %Decimal{coef: 0}), do: {:ok, nil}
+  defp maybe_resolve_dispatch_cell(_company_id, _attrs, %Decimal{coef: 0}, _purposes),
+    do: {:ok, nil}
 
-  defp maybe_resolve_dispatch_cell(company_id, attrs, _remaining) do
+  defp maybe_resolve_dispatch_cell(company_id, attrs, _remaining, accepted_purposes) do
     case attrs["scanned_cell_uuid"] || attrs[:scanned_cell_uuid] do
       uuid when is_binary(uuid) and byte_size(uuid) > 0 ->
         case Repo.get_by(Backend.Warehouses.StorageCell, uuid: uuid, company_id: company_id) do
-          %Backend.Warehouses.StorageCell{purpose: "dispatch"} = cell -> {:ok, cell}
-          %Backend.Warehouses.StorageCell{} -> {:error, :dispatch_cell_required}
-          _ -> {:error, :cell_not_found}
+          %Backend.Warehouses.StorageCell{purpose: purpose} = cell ->
+            if purpose in accepted_purposes do
+              {:ok, cell}
+            else
+              {:error, :dispatch_cell_required}
+            end
+
+          _ ->
+            {:error, :cell_not_found}
         end
 
       _ ->
@@ -9378,6 +9899,17 @@ defmodule Backend.Production do
         # reaching this branch means the request bypassed validation.
         {:error, :missing_dispatch_cell}
 
+      feed_placement.storage_cell_id == dest_cell.id ->
+        # Same-cell scenario. Happens in single-cell R&D facilities
+        # where the production feed cell IS the R&D put-away cell —
+        # only one rnd-tagged spot in the facility so from == to.
+        # ``Backend.Stock.move_placement`` refuses ``from == to`` as
+        # ``:same_cell``; skipping the move is the correct answer
+        # because the leftover already sits where the operator wants
+        # it. The booking closeout above has already stamped the
+        # consumption + audit trail; no physical movement is owed.
+        :ok
+
       true ->
         case Backend.Stock.move_placement(actor, lot.uuid, %{
                "from_cell_uuid" => feed_placement.storage_cell.uuid,
@@ -9540,27 +10072,68 @@ defmodule Backend.Production do
   """
   def closeout_output_lot(%User{} = actor, lot_uuid, attrs)
       when is_binary(lot_uuid) and is_map(attrs) do
-    with :ok <- ensure_photo_or_skip(attrs),
-         %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
+    # Reservation short-circuit. When the produced lot is already
+    # booked to a live downstream MO (child-into-parent semi-finished
+    # feed being the canonical case), moving it to a dispatch cell
+    # just to have the downstream picker walk it back is a wasted
+    # trip. Leave the lot at the production feed cell and mark
+    # closeout done — the downstream MO's pickup will grab it in
+    # place. Excess above the reserved qty falls through to normal
+    # return-pickup after the downstream MO closes out (already
+    # handled by the ``ingredient_mos`` bucket).
+    with %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
-         {:ok, dest_cell} <-
-           maybe_resolve_dispatch_cell(actor.company_id, attrs, Decimal.new(1)),
-         placement when not is_nil(placement) <- locate_output_lot_placement(lot) do
-      case Backend.Stock.move_placement(actor, lot.uuid, %{
-             "from_cell_uuid" => placement.storage_cell.uuid,
-             "to_cell_uuid" => dest_cell.uuid,
-             "qty" => Decimal.to_string(placement.qty),
-             "photo_url" => attrs["photo_url"],
-             "skip_photo_reason" => attrs["skip_photo_reason"],
-             "reference_kind" => "manufacturing_order",
-             "reference_uuid" => lot.source_ref
-           }) do
-        {:ok, moved_lot} -> {:ok, moved_lot}
-        {:error, reason} -> {:error, {:move_failed, reason}}
+         reservations <- output_lot_reservations(lot) do
+      if reservations != [] do
+        {:ok, {:reserved, lot, reservations}}
+      else
+        closeout_output_lot_move(actor, lot, attrs)
       end
     else
       nil -> {:error, :lot_not_found}
       %StockLot{status: status} -> {:error, {:wrong_status, status}}
+    end
+  end
+
+  defp closeout_output_lot_move(%User{} = actor, %StockLot{} = lot, attrs) do
+    with :ok <- ensure_photo_or_skip(attrs),
+         # Output lot's source MO determines whether we accept `rnd`
+         # or `dispatch` destinations — an R&D output stays on the R&D
+         # floor, a production output stages in the shipping bay.
+         source_mo <- Repo.get_by(ManufacturingOrder, uuid: lot.source_ref),
+         accepted_purposes <- closeout_dest_purposes(source_mo),
+         {:ok, dest_cell} <-
+           maybe_resolve_dispatch_cell(
+             actor.company_id,
+             attrs,
+             Decimal.new(1),
+             accepted_purposes
+           ),
+         placement when not is_nil(placement) <- locate_output_lot_placement(lot) do
+      # Same-cell scenario. Single-cell R&D facilities use one
+      # ``rnd``-tagged spot for the whole flow — production feed +
+      # dispatch — so the output lot is born at the destination and
+      # nothing needs to move. ``move_placement`` refuses ``from == to``
+      # as ``:same_cell``; treat it as a no-op success because the
+      # lot is already where the closeout wants it.
+      if placement.storage_cell_id == dest_cell.id do
+        {:ok, lot}
+      else
+        case Backend.Stock.move_placement(actor, lot.uuid, %{
+               "from_cell_uuid" => placement.storage_cell.uuid,
+               "to_cell_uuid" => dest_cell.uuid,
+               "qty" => Decimal.to_string(placement.qty),
+               "photo_url" => attrs["photo_url"],
+               "skip_photo_reason" => attrs["skip_photo_reason"],
+               "reference_kind" => "manufacturing_order",
+               "reference_uuid" => lot.source_ref
+             }) do
+          {:ok, moved_lot} -> {:ok, moved_lot}
+          {:error, reason} -> {:error, {:move_failed, reason}}
+        end
+      end
+    else
+      nil -> {:error, :placement_missing}
       {:error, _} = err -> err
     end
   end
@@ -9662,7 +10235,13 @@ defmodule Backend.Production do
           |> Map.put("updated_by_id", actor.id)
 
         if update_attrs == %{"updated_by_id" => actor.id} do
-          {:ok, Repo.preload(booking, [:item, :stock_lot, :picked_by, :received_by])}
+          {:ok,
+           Repo.preload(booking, [
+             :picked_by,
+             :received_by,
+             item: :stock_uom,
+             stock_lot: [:unit_of_measurement, placements: :storage_cell]
+           ])}
         else
           prev_received_qty = booking.received_qty || booking.quantity
 
@@ -9694,22 +10273,49 @@ defmodule Backend.Production do
             }
             |> maybe_put_received_notes(attrs)
 
-          # First confirm. Compare measured against booked qty (what
-          # the picker physically transferred to the production-feed
-          # cell). Any delta → emit a variance movement so the lot's
-          # placement at the production-feed cell snaps to the
-          # operator's measurement and the missing / extra kg is
-          # accounted for in the audit trail.
+          # First confirm. Under whole-lot transfer the picker moved
+          # the ENTIRE lot to the production-feed cell — so the
+          # baseline the operator's measurement compares against is
+          # the qty physically sitting at that cell (i.e. the lot
+          # placement post-transfer), NOT booking.quantity (which is
+          # the recipe target, always smaller than the whole lot).
+          # If we baselined against booking.quantity, every whole-lot
+          # confirm would emit a huge positive variance and try to
+          # inflate the placement into non-existent stock — that's
+          # what caused the "one or more fields failed validation"
+          # error on preflight submit.
+          baseline_qty = physical_baseline_for_preflight(booking, mo)
+
           run_confirm_received_txn(
             actor,
             booking,
             mo,
             update_attrs,
-            booking.quantity,
+            baseline_qty,
             qty,
             attrs
           )
         end
+    end
+  end
+
+  # Physical qty the operator is signing off against. Looks up the
+  # lot's placement at the MO's production-feed cell (that's where
+  # the whole lot lives after the picker's confirm-transfer).
+  # Falls back to booking.quantity when we can't find a placement —
+  # preserves the pre-whole-lot behaviour for legacy MOs whose
+  # placement records were reconciled outside the normal flow.
+  defp physical_baseline_for_preflight(
+         %ManufacturingOrderBooking{} = booking,
+         %ManufacturingOrder{} = mo
+       ) do
+    with lot_id when is_integer(lot_id) <- booking.stock_lot_id,
+         %StockLot{} = lot <- Repo.get(StockLot, lot_id),
+         %Backend.Stock.Placement{qty: qty} <-
+           locate_production_feed_placement(lot, mo.production_cell_id) do
+      qty
+    else
+      _ -> booking.quantity
     end
   end
 
@@ -9737,7 +10343,21 @@ defmodule Backend.Production do
                new_qty,
                attrs
              ) do
-        updated
+        # Preload the same nested assocs the list endpoint hydrates
+        # so the FE payload after confirm renders `qty_on_hand` + UoM
+        # symbol properly. Without this the row falls back to
+        # booking.quantity / "ea" and the drift chip shows a fake
+        # "+49.979 EA" because it's comparing whole-lot received
+        # against recipe qty instead of physical placement qty.
+        Repo.preload(
+          updated,
+          [
+            :picked_by,
+            :received_by,
+            item: :stock_uom,
+            stock_lot: [:unit_of_measurement, placements: :storage_cell]
+          ]
+        )
       else
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -9941,10 +10561,22 @@ defmodule Backend.Production do
   # ----- Production run (Start / Finish) -------------------------
 
   @doc """
-  Production operator's queue. MOs that are preflight-cleared and
-  either ready-to-start (`scheduled` + every raw/packaging booking
-  received) or actively in_progress. Sorted with in-progress first
-  so the line operator sees the active run on top.
+  Production operator's queue.
+
+  * **Production MOs** — must be preflight-cleared: `scheduled` with
+    pickup done + every raw/packaging booking received, or actively
+    `in_progress`. The pickup + preflight ceremony is a BRCGS-adjacent
+    compliance gate — no production MO reaches the floor without it.
+
+  * **R&D MOs** (`project_type in [trial, sample]`) — skip the
+    per-booking preflight sign-off, but still need the physical
+    pickup so ingredients arrive at the production cell. Show up on
+    the queue once `pickup_completed_at` is set (or when already
+    `in_progress`). Skipping pickup entirely was a mistake — R&D
+    still needs the operator to physically have the materials.
+
+  Sorted with in-progress first so the line operator sees the active
+  run on top.
   """
   def list_production_runs(company_id) when is_integer(company_id) do
     mos =
@@ -9969,11 +10601,14 @@ defmodule Backend.Production do
       )
       |> Repo.all()
 
-    # `scheduled` MOs only qualify if every booking is received —
-    # preflight is the gate. Done in Elixir off the preloaded rows
-    # so we keep the SQL simple.
+    # Preflight gate only applies to `scheduled` production MOs.
+    # R&D MOs + already-running MOs are surfaced regardless.
     Enum.filter(mos, fn mo ->
-      mo.status == "in_progress" or mo_preflight_complete?(mo)
+      cond do
+        mo.status == "in_progress" -> true
+        mo.project_type in ["trial", "sample"] -> true
+        true -> mo_preflight_complete?(mo)
+      end
     end)
   end
 
@@ -9983,6 +10618,8 @@ defmodule Backend.Production do
   on an already-running MO is a no-op.
   """
   def start_mo_production(%User{} = actor, %ManufacturingOrder{} = mo) do
+    is_rnd = mo.project_type in ["trial", "sample"]
+
     cond do
       # Already in_progress AND has a real actual_start — pure no-op.
       mo.status == "in_progress" and not is_nil(mo.actual_start) ->
@@ -10003,6 +10640,17 @@ defmodule Backend.Production do
 
       is_nil(mo.pickup_completed_at) ->
         {:error, :pickup_not_completed}
+
+      # R&D path — pickup done, skip preflight per-booking sign-off
+      # (that ceremony targets full production compliance). Chain
+      # guard still applies via ensure_children_complete elsewhere;
+      # the FE mirrors it via blocking_children_count.
+      is_rnd ->
+        apply_run_changeset(actor, mo, %{
+          "status" => "in_progress",
+          "actual_start" => now(),
+          "updated_by_id" => actor.id
+        })
 
       not mo_preflight_complete?(mo) ->
         {:error, :preflight_incomplete}
@@ -10074,13 +10722,237 @@ defmodule Backend.Production do
                  # source_kind=manufacturing_order, source_ref=mo.uuid.
                  "produced_lot_id" => List.first(lots).id,
                  "updated_by_id" => actor.id
-               }) do
+               }),
+             :ok <- auto_book_output_to_parent(actor, mo_updated, lots) do
           mo_updated
         else
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
     end
+  end
+
+  # When a child MO finishes, its output lots should immediately book
+  # against the parent MO's BOM line for the same item — otherwise the
+  # parent's "Booked" column drops to zero (the child's `pending`
+  # coverage was contingent on the child still being open) and the
+  # release gate fires a misleading "short by N, book the missing qty"
+  # error even though the material physically exists. Post-book, the
+  # parent's release gate correctly waits on `ensure_all_booked_lots_available`
+  # which surfaces the honest reason: "the lot is in quarantine
+  # pending QC".
+  #
+  # Silent no-op when the child has no parent (root MO), or when the
+  # parent's BOM doesn't call for this item (defensive — a mis-linked
+  # MO shouldn't crash the run).
+  defp auto_book_output_to_parent(_actor, %ManufacturingOrder{parent_mo_id: nil}, _lots),
+    do: :ok
+
+  defp auto_book_output_to_parent(%User{} = actor, %ManufacturingOrder{} = child, lots) do
+    case Repo.get(ManufacturingOrder, child.parent_mo_id) do
+      nil ->
+        :ok
+
+      %ManufacturingOrder{} = parent ->
+        # Skip if the parent's bookings are locked (already scheduled
+        # or later). An operator can still book manually via the
+        # unlock flow; auto-book stays courteous.
+        case ensure_bookings_not_locked(parent) do
+          {:error, _} ->
+            :ok
+
+          :ok ->
+            result =
+              lots
+              |> Enum.reduce_while(:ok, fn lot, _acc ->
+                case insert_auto_booking(actor, parent, child, lot) do
+                  {:ok, _} -> {:cont, :ok}
+                  :skip -> {:cont, :ok}
+                  {:error, reason} -> {:halt, {:error, reason}}
+                end
+              end)
+
+            with :ok <- result do
+              maybe_auto_complete_pickup(actor, parent)
+            end
+        end
+    end
+  end
+
+  # Fully skip the warehouse-pickup ceremony when every ingredient
+  # booking is already delivered — i.e. all bookings have
+  # ``picked_at`` + ``received_at`` stamped (auto-delivered because
+  # the lot's already at a production-facility cell). Stamps
+  # ``pickup_started_at`` + ``pickup_completed_at`` +
+  # ``production_cell_id`` in one shot so the MO exits the picker
+  # queue and the production-run screen shows "Start" instead of
+  # "Awaiting warehouse pickup".
+  #
+  # The MO's ``production_cell_id`` is derived from where the
+  # ingredients physically sit — for a single-cell R&D setup that's
+  # the same rnd cell; for chained runs it's the shared feed cell.
+  # Silent no-op when any booking is still missing delivery stamps
+  # (partial pickup still owed from warehouse) or when the MO is
+  # already past the pickup phase.
+  defp maybe_auto_complete_pickup(%User{} = actor, %ManufacturingOrder{} = parent) do
+    parent = Repo.reload(parent)
+
+    cond do
+      is_nil(parent) ->
+        :ok
+
+      parent.status != "scheduled" ->
+        :ok
+
+      not is_nil(parent.pickup_completed_at) ->
+        :ok
+
+      true ->
+        bookings = list_pickup_bookings(parent)
+
+        cond do
+          bookings == [] ->
+            :ok
+
+          Enum.any?(bookings, fn b ->
+            is_nil(b.picked_at) or is_nil(b.received_at)
+          end) ->
+            :ok
+
+          true ->
+            derived_cell_id = derive_pickup_cell_id(bookings)
+
+            if derived_cell_id do
+              now = now()
+
+              apply_run_changeset(actor, parent, %{
+                "pickup_started_at" => now,
+                "pickup_completed_at" => now,
+                "pickup_started_by_id" => actor.id,
+                "pickup_completed_by_id" => actor.id,
+                "production_cell_id" => derived_cell_id,
+                "updated_by_id" => actor.id
+              })
+              |> case do
+                {:ok, _} -> :ok
+                _ -> :ok
+              end
+            else
+              :ok
+            end
+        end
+    end
+  end
+
+  defp derive_pickup_cell_id(bookings) do
+    bookings
+    |> Enum.find_value(fn b ->
+      case b.stock_lot do
+        %{placements: placements} when is_list(placements) ->
+          Enum.find_value(placements, fn p ->
+            cond do
+              is_nil(p.storage_cell_id) -> nil
+              Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) != :gt -> nil
+              true -> p.storage_cell_id
+            end
+          end)
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  defp insert_auto_booking(
+         %User{} = actor,
+         %ManufacturingOrder{} = parent,
+         %ManufacturingOrder{item_id: item_id},
+         %{id: lot_id, qty_received: qty}
+       ) do
+    # De-dup — if a previous run of this same completion transaction
+    # already wrote the booking, skip. `stock_lot_id` is unique per
+    # booking in practice; a duplicate would double-count.
+    existing =
+      Repo.one(
+        from b in ManufacturingOrderBooking,
+          where:
+            b.manufacturing_order_id == ^parent.id and
+              b.stock_lot_id == ^lot_id,
+          limit: 1
+      )
+
+    if existing do
+      :skip
+    else
+      # Reserved-in-place short-circuit for the pickup step. When the
+      # child's produced lot already lives at a production-facility
+      # cell (its natural spot after the child finished — same rnd
+      # cell in a single-cell R&D facility, or the shared
+      # production_feed cell for a chained parent-child run), the
+      # warehouse-pickup ceremony is a no-op: the picker would walk
+      # up to a lot that's already in production and mark it picked.
+      #
+      # Stamp ``picked_at`` + ``received_at`` at auto-book time so the
+      # parent's pickup screen treats this ingredient as delivered.
+      # The trolley step exists to walk stock FROM the warehouse;
+      # nothing to move here.
+      #
+      # We can't check ``parent.production_cell_id`` — that gets set
+      # only at pickup-confirm time, so at auto-book time it's nil.
+      # Match on the warehouse kind of the lot's current placement
+      # instead: a lot at a ``production_facility`` cell is already
+      # inside the production perimeter.
+      now = now()
+      auto_delivered? = lot_at_production_facility?(lot_id)
+
+      base_attrs = %{
+        "company_id" => parent.company_id,
+        "manufacturing_order_id" => parent.id,
+        "item_id" => item_id,
+        "stock_lot_id" => lot_id,
+        "quantity" => qty,
+        "status" => "requested",
+        "note" => "Auto-booked from child MO output",
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      }
+
+      attrs =
+        if auto_delivered? do
+          base_attrs
+          |> Map.put("picked_at", now)
+          |> Map.put("picked_by_id", actor.id)
+          |> Map.put("received_at", now)
+          |> Map.put("received_by_id", actor.id)
+        else
+          base_attrs
+        end
+
+      %ManufacturingOrderBooking{}
+      |> ManufacturingOrderBooking.changeset(attrs)
+      |> Repo.insert()
+    end
+  end
+
+  # True when the given lot has a live placement at any cell inside a
+  # production-facility warehouse (dispatch / production_feed / rnd
+  # bay). Signals that the lot is already on the shop floor — the
+  # warehouse-pickup step can be short-circuited because there's
+  # nothing to fetch.
+  defp lot_at_production_facility?(lot_id) do
+    Repo.exists?(
+      from p in Backend.Stock.Placement,
+        join: c in Backend.Warehouses.StorageCell,
+        on: c.id == p.storage_cell_id,
+        join: sl in Backend.Warehouses.StorageLocation,
+        on: sl.id == c.storage_location_id,
+        join: w in Backend.Warehouses.Warehouse,
+        on: w.id == sl.warehouse_id,
+        where:
+          p.stock_lot_id == ^lot_id and
+            p.qty > 0 and
+            w.kind == "production_facility"
+    )
   end
 
   # Packs — one row per physical package. Each pack becomes a lot.
@@ -10258,6 +11130,15 @@ defmodule Backend.Production do
       "unit_of_measurement_id" => item.stock_uom_id,
       "qty_received" => qty,
       "status" => "received",
+      # R&D stream isolation — an R&D MO (trial / sample) MUST produce
+      # an R&D lot. Without this flag the produced lot renders as a
+      # production lot and the placement guard
+      # (``ensure_rnd_stream_match``) refuses to let it land in the
+      # R&D dispatch cell at closeout, blocking the operator. The
+      # helper (also used by pickup + booking filters) drives the
+      # ``is_rnd`` decision from ``project_type`` so raw materials,
+      # WIP + finished output all agree on the stream.
+      "is_rnd" => mo_expects_rnd?(mo),
       "source_kind" => "manufacturing_order",
       "source_ref" => mo.uuid,
       "received_at" => now(),
@@ -10730,10 +11611,24 @@ defmodule Backend.Production do
   # warehouse return-pickup before the parent can release.
   defp ensure_all_booked_lots_in_warehouse(%ManufacturingOrder{} = mo) do
     # Conditional sum: count placement.qty only when the joined cell
-    # has purpose=regular. A plain `sum(p.qty)` would double-count any
-    # placement (including production_feed / dispatch ones) because
-    # the LEFT JOIN keeps the placement row even when the cell join
-    # misses — we'd think a lot at production_feed was "in warehouse".
+    # is a "warehouse" cell for this MO's stream. A plain `sum(p.qty)`
+    # would double-count any placement (including production_feed /
+    # dispatch ones) because the LEFT JOIN keeps the placement row
+    # even when the cell join misses — we'd think a lot at
+    # production_feed was "in warehouse".
+    #
+    # Stream-aware purpose match:
+    #   * production MOs → `regular` cells only.
+    #   * R&D MOs (trial + sample) → `rnd` cells count too. R&D lots
+    #     are physically segregated in R&D shelves after goods-in
+    #     (see the R&D stream isolation work), so requiring `regular`
+    #     would block every R&D release even when the operator has
+    #     already put the lots away correctly.
+    allowed_purposes =
+      if mo.project_type in ["trial", "sample"],
+        do: ["regular", "rnd"],
+        else: ["regular"]
+
     mis =
       from(b in ManufacturingOrderBooking,
         join: it in Item,
@@ -10743,7 +11638,7 @@ defmodule Backend.Production do
         left_join: p in Backend.Stock.Placement,
         on: p.stock_lot_id == l.id,
         left_join: c in Backend.Warehouses.StorageCell,
-        on: c.id == p.storage_cell_id and c.purpose == "regular",
+        on: c.id == p.storage_cell_id and c.purpose in ^allowed_purposes,
         where:
           b.manufacturing_order_id == ^mo.id and
             b.status == "requested" and

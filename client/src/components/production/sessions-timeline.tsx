@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Check, Factory, FileText, HelpCircle, History, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { Check, ChevronRight, Factory, FileText, HelpCircle, History, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import type { CompanyDefaults } from "@/lib/types";
 import { formatCompanyDate, formatCompanyNumber } from "@/lib/format/company";
 import { UserAvatar } from "@/components/users/user-avatar";
@@ -252,18 +252,14 @@ function GroupSummaryRow({
         <Icon className={cn("size-3.5", tone.icon)} aria-hidden />
       </span>
 
-      <details className="group/details rounded-md border border-border/60 bg-background/40 open:bg-card">
-        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 rounded-md px-3 py-2 hover:bg-muted/40">
+      <details className="group/details">
+        <summary className="-mx-2 flex cursor-pointer list-none flex-wrap items-center gap-2 rounded-md px-2 py-1.5 outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open/details:rotate-90"
+            aria-hidden
+          />
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <h3 className="truncate text-xs font-semibold uppercase tracking-wide">{title}</h3>
-            <span
-              className={cn(
-                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                tone.chip,
-              )}
-            >
-              {KIND_LABEL[first.activity_kind]}
-            </span>
             {step?.sort_order != null && (
               <span className="text-[10px] font-medium text-muted-foreground">Step {step.sort_order}</span>
             )}
@@ -276,17 +272,11 @@ function GroupSummaryRow({
                 MO #{step.manufacturing_order_id}
               </Link>
             )}
-            <span className="inline-flex items-center rounded-full border border-border/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-              {group.sessions.length} runs
+            <span className="text-[10px] font-medium text-muted-foreground">
+              · {group.sessions.length} run{group.sessions.length === 1 ? "" : "s"}
             </span>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-            {workstationNames.length > 0 && (
-              <span className="hidden truncate sm:inline">
-                {workstationNames.slice(0, 2).join(", ")}
-                {workstationNames.length > 2 && ` +${workstationNames.length - 2}`}
-              </span>
-            )}
+          <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
             {totalProduced > 0 && (
               <span className="hidden font-medium text-foreground sm:inline">
                 {formatCompanyNumber(totalProduced, prefs)} units
@@ -308,14 +298,14 @@ function GroupSummaryRow({
           </div>
         </summary>
 
-        <div className="border-t border-border/60 px-3 py-3">
+        <div className="ml-[7px] mt-2 border-l border-border/60 pl-4">
           {operators.length > 0 && (
             <div className="mb-3 flex flex-wrap items-baseline gap-1.5 text-[11px]">
               <span className="text-muted-foreground">Operators</span>
               <WorkerChips workers={operators} />
             </div>
           )}
-          <ul className="space-y-3">
+          <ul className="divide-y divide-border/40">
             {group.sessions.map((s) => (
               <SessionRow key={s.uuid} s={s} prefs={prefs} showMOContext={false} compact />
             ))}
@@ -349,7 +339,10 @@ function SessionRow({
   const opDesc = step?.operation_description;
 
   return (
-    <li role="listitem" className="relative">
+    <li
+      role="listitem"
+      className={cn("relative", compact && "py-2.5 first:pt-0 last:pb-0")}
+    >
       {!compact && (
         <span
           className={cn(
@@ -472,54 +465,47 @@ export function SessionsTimeline({ sessions, prefs, showMOContext = false, mode 
 
   if (sessions.length === 0) {
     return (
-      <section className="rounded-lg border border-dashed border-border/60 bg-card/40 p-8 text-center shadow-sm">
-        <div className="mx-auto mb-3 inline-flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+      <div className="flex flex-col items-center py-6 text-center">
+        <div className="mb-3 inline-flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
           <History className="size-5" aria-hidden />
         </div>
-        <h2 className="text-sm font-semibold">No production sessions yet</h2>
-        <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+        <p className="text-sm font-semibold">No production sessions yet</p>
+        <p className="mt-1 max-w-md text-xs text-muted-foreground">
           Sessions appear here as operators clock in at the kiosk.
         </p>
-      </section>
+      </div>
     );
   }
 
+  // No wrapping card / heading — the caller (e.g. MOSessionsCard) owns
+  // that shell. The timeline renders as content, not as a nested card.
   return (
-    <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-      <header className="mb-4 flex items-center gap-2">
-        <h2 className="text-sm font-semibold">Session story</h2>
-        <span className="ml-auto text-[11px] text-muted-foreground">
-          {sessions.length} session{sessions.length === 1 ? "" : "s"}
-        </span>
-      </header>
-
-      <ul
-        role="list"
-        aria-live={hasRunning ? "polite" : "off"}
-        className="relative space-y-4 border-l border-border/60 pl-6"
-      >
-        {mode === "chronological"
-          ? sessions.map((s) => (
-              <SessionRow key={s.uuid} s={s} prefs={prefs} showMOContext={showMOContext} />
-            ))
-          : groupSessions(sessions).map((g) =>
-              g.sessions.length > 1 ? (
-                <GroupSummaryRow
-                  key={g.key}
-                  group={g}
-                  prefs={prefs}
-                  showMOContext={showMOContext}
-                />
-              ) : (
-                <SessionRow
-                  key={g.sessions[0]!.uuid}
-                  s={g.sessions[0]!}
-                  prefs={prefs}
-                  showMOContext={showMOContext}
-                />
-              ),
-            )}
-      </ul>
-    </section>
+    <ul
+      role="list"
+      aria-live={hasRunning ? "polite" : "off"}
+      className="relative space-y-4 border-l border-border/60 pl-6"
+    >
+      {mode === "chronological"
+        ? sessions.map((s) => (
+            <SessionRow key={s.uuid} s={s} prefs={prefs} showMOContext={showMOContext} />
+          ))
+        : groupSessions(sessions).map((g) =>
+            g.sessions.length > 1 ? (
+              <GroupSummaryRow
+                key={g.key}
+                group={g}
+                prefs={prefs}
+                showMOContext={showMOContext}
+              />
+            ) : (
+              <SessionRow
+                key={g.sessions[0]!.uuid}
+                s={g.sessions[0]!}
+                prefs={prefs}
+                showMOContext={showMOContext}
+              />
+            ),
+          )}
+    </ul>
   );
 }

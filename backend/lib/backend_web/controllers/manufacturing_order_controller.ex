@@ -47,7 +47,11 @@ defmodule BackendWeb.ManufacturingOrderController do
         column_filter: params["column_filter"],
         status: params["status"],
         item_id: params["item_id"],
-        warehouse_id: params["warehouse_id"]
+        warehouse_id: params["warehouse_id"],
+        # Stream tab on the ledger — `production` narrows to
+        # project_type=production, `rnd` narrows to trial/sample.
+        # Absent / `all` = no filter.
+        stream: params["stream"]
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -893,15 +897,247 @@ defmodule BackendWeb.ManufacturingOrderController do
   # dedicated `production.qc_output` perm so a finished-goods QC role
   # can be granted without also handing out `stock.qc` (which covers
   # incoming PO inspections).
-  def output_qc_queue(conn, _params) do
+  def output_qc_queue(conn, params) do
     actor = conn.assigns.current_user
 
     if RBAC.has_permission?(actor, "production.qc_output") do
-      entries = Production.list_pending_output_qc(actor.company_id)
-      json(conn, %{items: Enum.map(entries, &Payloads.output_qc_entry/1)})
+      opts = [
+        limit: params["limit"],
+        cursor: params["cursor"],
+        search: params["search"],
+        filter_item_type: params["item_type"],
+        filter_project_type: params["project_type"],
+        filter_workstation_group_uuid: params["workstation_group_uuid"]
+      ]
+
+      {entries, next_cursor} =
+        Production.list_pending_output_qc(actor.company_id, opts)
+
+      json(conn, %{
+        items: Enum.map(entries, &Payloads.output_qc_entry/1),
+        next_cursor: next_cursor
+      })
     else
       forbidden(conn, "Missing production.qc_output permission.")
     end
+  end
+
+  # GET /api/production/output-qc/:lot_uuid
+  # Single-entry fetch for the detail page. Same shape as one row of
+  # the queue.
+  def output_qc_show(conn, %{"lot_uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    if RBAC.has_permission?(actor, "production.qc_output") do
+      case Production.get_output_qc_entry_by_lot_uuid(actor.company_id, uuid) do
+        nil -> {:error, :not_found}
+        entry -> json(conn, %{entry: Payloads.output_qc_entry(entry)})
+      end
+    else
+      forbidden(conn, "Missing production.qc_output permission.")
+    end
+  end
+
+  # GET /api/production/output-qc/:lot_uuid/npd-spec.html
+  #
+  # Server-side proxy to NPD's `/api/psp-integration/specifications/latest.html`.
+  # Returns the same HTML NPD renders for its Spec Sheet page (WeasyPrint
+  # template) so PSP can iframe it and show QA an identical document —
+  # the same primitives, actives / nutrition / amino-acids / excipients /
+  # ingredients / signatures / workflow-history the NPD user sees.
+  #
+  # Auth chain:
+  #   * PSP session (permission `production.qc_output`) gates the browser.
+  #   * PSP → NPD server-to-server bearer (`company.npd_integration_token`).
+  #     The NPD URL is never exposed to the browser; PSP proxies the body.
+  #
+  # Errors surface as HTML fragments (not JSON) so an iframe pointed at
+  # this endpoint always renders something — a broken sheet + a reason
+  # beats an empty white iframe.
+  def output_qc_npd_spec_html(conn, %{"lot_uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with :ok <- require_permission(actor, "production.qc_output"),
+         {:ok, item_uuid, _source} <-
+           Production.resolve_output_qc_reference_item_uuid(actor.company_id, uuid),
+         company <- Backend.Companies.current(),
+         :ok <- ensure_npd_live(company),
+         {:ok, html} <- fetch_npd_spec_html(company, item_uuid) do
+      conn
+      |> put_resp_content_type("text/html")
+      |> put_resp_header("cache-control", "no-store")
+      |> put_resp_header("x-frame-options", "SAMEORIGIN")
+      |> send_resp(200, html)
+    else
+      {:error, :forbidden} ->
+        html_stub(conn, 403, "Missing production.qc_output permission.")
+
+      {:error, :lot_not_found} ->
+        html_stub(conn, 404, "Lot not found or not awaiting Output QC.")
+
+      {:error, :no_reference_item} ->
+        html_stub(
+          conn,
+          404,
+          "No reference item on this lot — neither the lot's item nor any ancestor MO carries a finished-product spec."
+        )
+
+      {:error, :npd_not_configured} ->
+        html_stub(
+          conn,
+          503,
+          "NPD integration isn't configured. Set the base URL + token on /settings/integrations."
+        )
+
+      {:error, :npd_not_found} ->
+        html_stub(
+          conn,
+          404,
+          "NPD has no spec sheet on file for this product yet."
+        )
+
+      {:error, {:npd_error, status}} ->
+        html_stub(conn, 502, "NPD returned #{status} while rendering the sheet.")
+
+      {:error, {:transport, reason}} ->
+        html_stub(
+          conn,
+          502,
+          "Couldn't reach NPD: #{inspect(reason)}."
+        )
+    end
+  end
+
+  # GET /api/production/manufacturing-orders/:uuid/npd-spec.html
+  #
+  # Same NPD-embed pattern as `output_qc_npd_spec_html/2` but keyed on
+  # an MO uuid. Resolves the reference item (walks the parent chain
+  # when the MO's own item lacks a spec) and streams NPD's rendered
+  # HTML back for iframe embedding on the MO detail page.
+  def mo_npd_spec_html(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with :ok <- require_permission(actor, "production.mo_view"),
+         {:ok, item_uuid, _source} <-
+           Production.resolve_reference_item_uuid_for_mo(actor.company_id, uuid),
+         company <- Backend.Companies.current(),
+         :ok <- ensure_npd_live(company),
+         {:ok, html} <- fetch_npd_spec_html(company, item_uuid) do
+      conn
+      |> put_resp_content_type("text/html")
+      |> put_resp_header("cache-control", "no-store")
+      |> put_resp_header("x-frame-options", "SAMEORIGIN")
+      |> send_resp(200, html)
+    else
+      {:error, :forbidden} ->
+        html_stub(conn, 403, "Missing production.mo_view permission.")
+
+      {:error, :mo_not_found} ->
+        html_stub(conn, 404, "Manufacturing order not found.")
+
+      {:error, :no_reference_item} ->
+        html_stub(
+          conn,
+          404,
+          "No spec on file — neither this MO's item nor any ancestor carries a finished-product spec."
+        )
+
+      {:error, :npd_not_configured} ->
+        html_stub(
+          conn,
+          503,
+          "NPD integration isn't configured. Set the base URL + token on /settings/integrations."
+        )
+
+      {:error, :npd_not_found} ->
+        html_stub(conn, 404, "NPD has no spec sheet on file for this product yet.")
+
+      {:error, {:npd_error, status}} ->
+        html_stub(conn, 502, "NPD returned #{status} while rendering the sheet.")
+
+      {:error, {:transport, reason}} ->
+        html_stub(conn, 502, "Couldn't reach NPD: #{inspect(reason)}.")
+    end
+  end
+
+  defp require_permission(actor, perm) do
+    if RBAC.has_permission?(actor, perm), do: :ok, else: {:error, :forbidden}
+  end
+
+  defp ensure_npd_live(company) do
+    if Backend.Companies.npd_integration_live?(company),
+      do: :ok,
+      else: {:error, :npd_not_configured}
+  end
+
+  defp fetch_npd_spec_html(company, item_uuid) do
+    base = String.trim_trailing(company.npd_base_url, "/")
+    url = base <> "/api/psp-integration/specifications/latest.html"
+
+    req =
+      Req.new(
+        url: url,
+        params: [psp_item_uuid: item_uuid],
+        headers: [{"authorization", "Bearer " <> company.npd_integration_token}],
+        receive_timeout: 15_000
+      )
+
+    case Req.get(req) do
+      {:ok, %Req.Response{status: 200, body: body}} when is_binary(body) ->
+        {:ok, body}
+
+      {:ok, %Req.Response{status: 404}} ->
+        {:error, :npd_not_found}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, {:npd_error, status}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
+  defp html_stub(conn, status, message) do
+    body = """
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Spec sheet unavailable</title>
+        <style>
+          body {
+            font-family: Arial, Helvetica, sans-serif;
+            padding: 32px;
+            color: #111;
+            background: #fff;
+            font-size: 13px;
+          }
+          .card {
+            max-width: 520px;
+            margin: 48px auto;
+            border: 1px solid #ddd;
+            padding: 24px;
+            border-radius: 8px;
+          }
+          h1 {
+            font-size: 15px;
+            margin: 0 0 8px 0;
+          }
+          p { margin: 0; color: #444; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>Spec sheet unavailable</h1>
+          <p>#{Plug.HTML.html_escape(message)}</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    conn
+    |> put_resp_content_type("text/html")
+    |> send_resp(status, body)
   end
 
   # POST /api/production/output-qc/:lot_uuid

@@ -51,9 +51,22 @@ defmodule BackendWeb.ProductionPreflightController do
         not_found(conn)
 
       %{mo: mo, bookings: bookings} ->
+        # Look up the last put-away photo per lot so the FE can render
+        # a "this is what the container looked like" thumbnail on
+        # every booking row. Same shape the pickup show endpoint
+        # uses — operator recognises the drum / pouch by eye rather
+        # than by rack code alone. Without this map the FE thumbs
+        # render the empty-camera fallback for every row.
+        last_photo_urls =
+          bookings
+          |> Enum.map(& &1.stock_lot_id)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq()
+          |> then(&Backend.Stock.last_photo_url_by_lot_ids(actor.company_id, &1))
+
         json(conn, %{
           mo: Payloads.manufacturing_order(mo),
-          bookings: Enum.map(bookings, &Payloads.mo_booking/1),
+          bookings: Enum.map(bookings, &Payloads.mo_booking(&1, last_photo_urls)),
           preflight_complete: Production.mo_preflight_complete?(mo)
         })
     end
@@ -67,8 +80,17 @@ defmodule BackendWeb.ProductionPreflightController do
     with {:ok, mo} <- fetch_mo(actor.company_id, mo_uuid),
          {:ok, booking} <- fetch_booking(mo, booking_uuid),
          {:ok, updated} <- Production.confirm_booking_received(actor, booking, params) do
+      # Include the last put-away photo in the single-booking response
+      # so the row keeps its thumbnail after a hot update — the FE
+      # merges this payload over the local booking on receipt sign-off.
+      last_photo_urls =
+        case updated.stock_lot_id do
+          nil -> %{}
+          lot_id -> Backend.Stock.last_photo_url_by_lot_ids(actor.company_id, [lot_id])
+        end
+
       json(conn, %{
-        booking: Payloads.mo_booking(updated),
+        booking: Payloads.mo_booking(updated, last_photo_urls),
         preflight_complete: Production.mo_preflight_complete?(mo)
       })
     else
