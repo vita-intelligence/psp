@@ -4832,44 +4832,145 @@ defmodule Backend.Production do
     book_all_for_mo_txn(actor, mo, bom_lines, strategy)
   end
 
+  # ``true`` when the NPD scientist picked a packaging combo (or
+  # explicitly chose no-packaging) for this trial-batch MO. Non-nil
+  # ``packaging_combo_items`` = overlay is active, which flips two
+  # switches inside the booking loop:
+  #
+  #   1. Default packaging-typed BOM lines are skipped.
+  #   2. The overlay items (may be empty for "no packaging") are
+  #      booked in their place.
+  #
+  # Empty list is deliberate — sample MO with no combo picked
+  # produces loose bulk, which is the exact behaviour a trial MO
+  # already has today. It's how the scientist says "same recipe,
+  # skip the pack".
+  defp packaging_overlay_active?(%ManufacturingOrder{packaging_combo_items: items})
+       when is_list(items),
+       do: true
+
+  defp packaging_overlay_active?(_mo), do: false
+
   defp book_all_for_mo_txn(actor, mo, bom_lines, strategy) do
+    overlay_active? = packaging_overlay_active?(mo)
+
     Repo.transaction(fn ->
-      Enum.flat_map(bom_lines, fn line ->
-        already =
-          mo.bookings
-          |> Enum.filter(fn b ->
-            b.item_id == line.part_id and b.status == "requested"
-          end)
-          |> Enum.reduce(Decimal.new(0), fn b, acc ->
-            Decimal.add(acc, b.quantity || Decimal.new(0))
-          end)
-
-        # is_fixed lines stay at the BOM-line qty regardless of MO
-        # qty (e.g. "use exactly 1 packet"). Everything else scales.
-        per_output_qty = line.qty || Decimal.new(0)
-
-        line_total =
-          if line.is_fixed do
-            per_output_qty
+      default_bookings =
+        Enum.flat_map(bom_lines, fn line ->
+          # Skip packaging-typed lines when the caller has attached
+          # an overlay — the combo items below take their place.
+          if overlay_active? and is_packaging_line?(line) do
+            []
           else
-            Decimal.mult(per_output_qty, mo.quantity || Decimal.new(0))
+            book_one_bom_line(actor, mo, line, strategy)
           end
+        end)
 
-        needed = Decimal.sub(line_total, already)
-
-        if Decimal.compare(needed, Decimal.new("0")) != :gt do
-          []
+      overlay_bookings =
+        if overlay_active? do
+          book_packaging_overlay(actor, mo, strategy)
         else
-          allocate_for_item(actor, mo, line.part_id, needed, strategy)
+          []
         end
-      end)
-      |> case do
-        bookings -> bookings
-      end
+
+      default_bookings ++ overlay_bookings
     end)
     |> case do
       {:ok, bookings} -> {:ok, bookings}
       err -> err
+    end
+  end
+
+  # A BOM line whose part is a packaging SKU. The overlay
+  # substitution only touches these; raw materials + semi-finished
+  # parts always come through the default BOM path so trial batches
+  # still consume the same actives + excipients no matter which
+  # combo the scientist picked.
+  defp is_packaging_line?(%{part: %Item{item_type: "packaging"}}), do: true
+  defp is_packaging_line?(_), do: false
+
+  defp book_one_bom_line(actor, mo, line, strategy) do
+    already =
+      mo.bookings
+      |> Enum.filter(fn b ->
+        b.item_id == line.part_id and b.status == "requested"
+      end)
+      |> Enum.reduce(Decimal.new(0), fn b, acc ->
+        Decimal.add(acc, b.quantity || Decimal.new(0))
+      end)
+
+    # is_fixed lines stay at the BOM-line qty regardless of MO
+    # qty (e.g. "use exactly 1 packet"). Everything else scales.
+    per_output_qty = line.qty || Decimal.new(0)
+
+    line_total =
+      if line.is_fixed do
+        per_output_qty
+      else
+        Decimal.mult(per_output_qty, mo.quantity || Decimal.new(0))
+      end
+
+    needed = Decimal.sub(line_total, already)
+
+    if Decimal.compare(needed, Decimal.new("0")) != :gt do
+      []
+    else
+      allocate_for_item(actor, mo, line.part_id, needed, strategy)
+    end
+  end
+
+  # Book each item from the packaging combo overlay against the R&D
+  # stock pool. Quantities are per-finished-unit (same convention as
+  # a BOM line's ``qty``), so we scale by ``mo.quantity`` to reach
+  # the total run requirement.
+  #
+  # A malformed row (missing ``item_id``, un-parseable ``quantity``)
+  # is silently skipped — the caller's contract with the integration
+  # controller already resolved uuids to ids at insert time, so any
+  # bad row here means someone hand-edited the JSON and we'd rather
+  # produce a partial MO than crash the booking transaction. The
+  # unbooked shortage will surface on the picker screen anyway.
+  defp book_packaging_overlay(actor, mo, strategy) do
+    mo_qty = mo.quantity || Decimal.new(0)
+
+    Enum.flat_map(mo.packaging_combo_items || [], fn row ->
+      with {:ok, item_id} <- extract_int(row, "item_id"),
+           {:ok, per_unit} <- extract_decimal(row, "quantity") do
+        needed = Decimal.mult(per_unit, mo_qty)
+
+        if Decimal.compare(needed, Decimal.new("0")) == :gt do
+          allocate_for_item(actor, mo, item_id, needed, strategy)
+        else
+          []
+        end
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  defp extract_int(row, key) do
+    case Map.get(row, key) do
+      i when is_integer(i) -> {:ok, i}
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {i, ""} -> {:ok, i}
+          _ -> :error
+        end
+      _ -> :error
+    end
+  end
+
+  defp extract_decimal(row, key) do
+    case Map.get(row, key) do
+      %Decimal{} = d -> {:ok, d}
+      n when is_integer(n) -> {:ok, Decimal.new(n)}
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} -> {:ok, d}
+          _ -> :error
+        end
+      _ -> :error
     end
   end
 
