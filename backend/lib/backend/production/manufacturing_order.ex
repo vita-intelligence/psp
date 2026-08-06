@@ -91,6 +91,23 @@ defmodule Backend.Production.ManufacturingOrder do
     field :npd_validation_synced_at, :utc_datetime
     field :npd_validation_failure_reason, :string
 
+    # Packaging overlay for R&D sample MOs coming in from NPD.
+    #
+    # ``NULL`` = no overlay. The MO consumes whatever packaging the
+    # finished product's default BOM defines (pre-existing behaviour
+    # for every MO created before this column existed + every
+    # ``trial`` batch + every non-NPD MO).
+    #
+    # Non-nil = the scientist picked a ``PackagingCombo`` on the
+    # NPD side. Each entry is
+    # ``%{"item_id" => integer, "quantity" => decimal_string}``.
+    # ``Backend.Production.book_all_for_mo`` skips packaging-typed
+    # BOM lines and books these instead. An empty list ``[]`` is
+    # meaningful too — "sample, no packaging picked" — which
+    # bypasses the finished item's default packaging without
+    # booking replacement items (the output lot is loose bulk).
+    field :packaging_combo_items, {:array, :map}
+
     field :approved_at, :utc_datetime
     field :prepared_at, :utc_datetime
     field :rejection_reason, :string
@@ -239,6 +256,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :project_type,
       :npd_trial_batch_uuid,
       :npd_formulation_uuid,
+      :packaging_combo_items,
       :created_by_id,
       :updated_by_id
     ])

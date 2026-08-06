@@ -48,7 +48,15 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         "project_type" => "trial",       # defaults to "trial" for this endpoint
         "npd_trial_batch_uuid" => "…",   # required — idempotency key
         "due_date" => "2026-08-15",      # optional
-        "notes" => "…"                   # optional
+        "notes" => "…",                  # optional
+        # Optional packaging overlay for ``sample``-kind trials.
+        # Non-nil = substitute the finished item's default packaging
+        # BOM lines with these items instead. Empty list ``[]`` =
+        # sample with no packaging picked (loose bulk output). Nil /
+        # absent = use default packaging (trial + legacy behaviour).
+        "packaging_combo_items" => [
+          %{"item_uuid" => "…", "quantity" => "1"}
+        ]
       }
 
   Returns 201 on create, 200 on idempotent re-fire (same trial uuid),
@@ -93,7 +101,9 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
 
   defp do_create(conn, actor, company_id, trial_uuid, params) do
     with {:ok, item_id} <- resolve_item_id(company_id, params["item_uuid"]),
-         {:ok, warehouse_id} <- resolve_warehouse_id(company_id, params["warehouse_uuid"]) do
+         {:ok, warehouse_id} <- resolve_warehouse_id(company_id, params["warehouse_uuid"]),
+         {:ok, combo_items} <-
+           resolve_packaging_combo_items(company_id, params["packaging_combo_items"]) do
       attrs = %{
         "item_id" => item_id,
         "warehouse_id" => warehouse_id,
@@ -106,6 +116,7 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         # A malformed value falls through to Ecto's UUID cast (422 with
         # a per-field error) rather than a 500.
         "npd_formulation_uuid" => Map.get(params, "npd_formulation_uuid"),
+        "packaging_combo_items" => combo_items,
         "due_date" => params["due_date"],
         "notes" => Map.get(params, "notes", "")
       }
@@ -149,8 +160,70 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         conn
         |> put_status(:bad_request)
         |> json(%{error: "warehouse_not_found"})
+
+      {:error, {:packaging_combo_item_not_found, uuid}} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{
+          error: "packaging_combo_item_not_found",
+          detail:
+            "One of the packaging combo items (`#{uuid}`) does not exist on PSP. " <>
+              "Mirror the item first, then retry.",
+          item_uuid: uuid
+        })
+
+      {:error, :invalid_packaging_combo_items} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{
+          error: "invalid_packaging_combo_items",
+          detail:
+            "packaging_combo_items must be an array of " <>
+              "%{item_uuid, quantity} objects."
+        })
     end
   end
+
+  # NPD posts an array like ``[%{"item_uuid" => "…", "quantity" => "1"}, …]``.
+  # Resolve each uuid → local ``item_id`` up-front so the booking loop
+  # doesn't have to hit ``items`` by uuid on every allocate call, and
+  # so a bad uuid fails fast at insert time rather than mid-transaction.
+  #
+  # Return semantics:
+  #   * ``nil`` → no field sent (legacy trial batch, or trial-kind).
+  #     Overlay stays inactive; MO uses default packaging.
+  #   * ``[]`` → sample MO with no combo picked. Overlay is active
+  #     but empty — default packaging is skipped and nothing is
+  #     booked in its place (loose bulk output).
+  #   * populated list → normal combo. Same treatment as [], plus
+  #     each item gets booked at ``quantity × mo.quantity``.
+  defp resolve_packaging_combo_items(_company_id, nil), do: {:ok, nil}
+
+  defp resolve_packaging_combo_items(_company_id, []), do: {:ok, []}
+
+  defp resolve_packaging_combo_items(company_id, rows) when is_list(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      with true <- is_map(row),
+           uuid when is_binary(uuid) and uuid != "" <- Map.get(row, "item_uuid"),
+           qty when qty not in [nil, ""] <- Map.get(row, "quantity") do
+        case resolve_item_id(company_id, uuid) do
+          {:ok, item_id} ->
+            {:cont,
+             {:ok,
+              acc ++
+                [%{"item_id" => item_id, "quantity" => to_string(qty)}]}}
+
+          {:error, :item_not_found} ->
+            {:halt, {:error, {:packaging_combo_item_not_found, uuid}}}
+        end
+      else
+        _ -> {:halt, {:error, :invalid_packaging_combo_items}}
+      end
+    end)
+  end
+
+  defp resolve_packaging_combo_items(_company_id, _),
+    do: {:error, :invalid_packaging_combo_items}
 
   @doc """
   GET /api/integration/manufacturing-orders/:uuid/bookings
