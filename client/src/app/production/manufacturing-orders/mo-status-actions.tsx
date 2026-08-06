@@ -718,12 +718,36 @@ function ActionStrip(props: ActionStripProps) {
     }
   }
 
+  // In-progress MOs never complete from the header — the operator
+  // must go to the production-run page and finish there so the run
+  // output (produced qty, output lot) is captured on the floor.
   if (mo.status === "in_progress" && canExecute) {
-    actionButton({
-      label: "Complete",
-      icon: CheckCircle2,
-      onClick: props.onComplete,
-    });
+    buttons.push(
+      <Button
+        key="Go to run"
+        asChild={!locked}
+        type="button"
+        size="sm"
+        disabled={locked}
+        title={
+          locked
+            ? "Only the head of the room can act here."
+            : "Open the production-run page to record output and finish the MO."
+        }
+      >
+        {locked ? (
+          <>
+            <Play className="size-3.5" />
+            Go to production run
+          </>
+        ) : (
+          <Link href={`/production/runs/${mo.uuid}`}>
+            <Play className="size-3.5" />
+            Go to production run
+          </Link>
+        )}
+      </Button>,
+    );
   }
 
   // Cancel is available at every pre-complete stage when canExecute.

@@ -74,6 +74,23 @@ defmodule Backend.Production.ManufacturingOrder do
     # set (see migration 20260803130000).
     field :npd_trial_batch_uuid, Ecto.UUID
 
+    # NPD-side formulation UUID — the parent of the trial batch. Kept
+    # separately so the Output QC page can deep-link into NPD's
+    # `/formulations/{uuid}/qc/` without a live cross-service lookup.
+    # Nullable; only populated on NPD-driven MOs.
+    field :npd_formulation_uuid, Ecto.UUID
+
+    # NPD ProductValidation snapshot — pushed by the
+    # `/api/integration/trial-validations/sync` webhook every time
+    # NPD's state machine advances. The PSP Output QC pass gate
+    # refuses the lot until `npd_validation_status == "passed"` for
+    # trial/sample MOs. `failed` state auto-triggers Output QC fail
+    # server-side (system actor).
+    field :npd_validation_uuid, Ecto.UUID
+    field :npd_validation_status, :string
+    field :npd_validation_synced_at, :utc_datetime
+    field :npd_validation_failure_reason, :string
+
     field :approved_at, :utc_datetime
     field :prepared_at, :utc_datetime
     field :rejection_reason, :string
@@ -112,6 +129,16 @@ defmodule Backend.Production.ManufacturingOrder do
     field :actual_finish, :utc_datetime
     field :quantity_produced, :decimal
 
+    # Operator-marked "closeout done" state. Distinct from `actual_finish`
+    # (production ended) — closeout is the post-run accounting: consume
+    # booked ingredients, hand output over. Stamped by
+    # `Backend.Production.maybe_stamp_closeout_completed/2` once every
+    # booking has `consumed_at` set AND every output lot has been
+    # handled (dispatched OR resolved via same-cell short-circuit).
+    # The mobile Closeout queue filters on `is_nil(closeout_completed_at)`
+    # so a stamped MO drops off the list.
+    field :closeout_completed_at, :utc_datetime
+
     # Virtual — count of raw_material / packaging bookings whose lot is
     # not yet "available" (i.e. still in quarantine / received, awaiting
     # Goods-In Inspection). Populated by Production.with_qc_pending_count
@@ -146,6 +173,7 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :released_to_warehouse_by, User
     belongs_to :pickup_started_by, User
     belongs_to :pickup_completed_by, User
+    belongs_to :closeout_completed_by, User
     belongs_to :purchasing_requested_by, User
     belongs_to :production_cell, Backend.Warehouses.StorageCell
     belongs_to :produced_lot, Backend.Stock.Lot
@@ -210,6 +238,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :pickup_window_hours,
       :project_type,
       :npd_trial_batch_uuid,
+      :npd_formulation_uuid,
       :created_by_id,
       :updated_by_id
     ])
@@ -242,6 +271,29 @@ defmodule Backend.Production.ManufacturingOrder do
       name: :manufacturing_orders_quantity_positive,
       message: "must be greater than zero"
     )
+  end
+
+  @validation_statuses ~w(draft in_progress passed failed)
+
+  @doc """
+  Narrow changeset used only by the NPD trial-validation sync webhook.
+  Touches just the four NPD-validation fields so a webhook can't
+  accidentally overwrite quantity, warehouse, or any other MO
+  attribute. `synced_at` is stamped by the caller.
+  """
+  def npd_validation_sync_changeset(mo, attrs) do
+    mo
+    |> cast(attrs, [
+      :npd_validation_uuid,
+      :npd_validation_status,
+      :npd_validation_synced_at,
+      :npd_validation_failure_reason
+    ])
+    |> validate_required([:npd_validation_uuid, :npd_validation_status, :npd_validation_synced_at])
+    |> validate_inclusion(:npd_validation_status, @validation_statuses,
+      message: "must be one of: #{Enum.join(@validation_statuses, ", ")}"
+    )
+    |> validate_length(:npd_validation_failure_reason, max: 4000)
   end
 
   @doc """

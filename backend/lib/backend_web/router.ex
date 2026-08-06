@@ -171,6 +171,11 @@ defmodule BackendWeb.Router do
     get "/settings/npd-integration",
         NpdIntegrationSettingsController,
         :show
+    # Non-privileged read — base URL + enabled flag only, no token.
+    # Used by the Output QC page's "Validate on NPD" link.
+    get "/settings/npd-integration/public",
+        NpdIntegrationSettingsController,
+        :public
     put "/settings/npd-integration",
         NpdIntegrationSettingsController,
         :update
@@ -918,6 +923,16 @@ defmodule BackendWeb.Router do
           ManufacturingOrderController,
           :mo_npd_spec_html
 
+      # NPD-side product-validation sheet, iframe-embedded on the
+      # Output QC + MO detail pages. Server-to-server bearer + PSP
+      # session gate, mirroring the spec-sheet pattern above.
+      get "/output-qc/:lot_uuid/npd-validation.html",
+          ManufacturingOrderController,
+          :output_qc_npd_validation_html
+      get "/manufacturing-orders/:uuid/npd-validation.html",
+          ManufacturingOrderController,
+          :mo_npd_validation_html
+
       post "/output-qc/:lot_uuid",
            ManufacturingOrderController,
            :output_qc_sign_off
@@ -1181,6 +1196,12 @@ defmodule BackendWeb.Router do
     # mirrors the FE route. Same RequireAuth pipeline as the rest of
     # /api — device tokens fall through transparently.
     scope "/m" do
+      # Badge counts for every tile on the mobile home screen — one
+      # capped-COUNT per bucket so the response stays O(cap) even
+      # against millions of rows. Permission-scoped inside the
+      # controller so hidden tiles cost zero queries.
+      get "/home-counts", MobileHomeController, :counts
+
       get "/incoming", MobileIncomingController, :index
 
       # Warehouse pickup workflow. The picker queue surfaces released
@@ -1733,6 +1754,13 @@ defmodule BackendWeb.Router do
 
     # Read-side (per-action scope check happens inside the controller).
     get "/manufacturing-orders", IntegrationReadController, :list_manufacturing_orders
+    # Bulk MO lookup across a set of workstations. POST so the (potentially
+    # long) workstation_uuids list travels in the body, and so PSP does the
+    # whole cross-workstation aggregation in one round-trip / two SQL queries
+    # instead of the caller fanning out per station. Powers vp's Jobs list.
+    post "/manufacturing-orders/for-workstations",
+         IntegrationReadController,
+         :manufacturing_orders_for_workstations
     get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
     get "/workstations", IntegrationReadController, :list_workstations
     get "/workstation-groups", IntegrationReadController, :list_workstation_groups
@@ -1860,6 +1888,14 @@ defmodule BackendWeb.Router do
     get "/manufacturing-orders/:uuid/chain",
         IntegrationManufacturingOrderController,
         :chain
+
+    # Reverse webhook — NPD pushes ProductValidation state changes
+    # here so the PSP Output QC gate knows whether to unblock (passed)
+    # or auto-fail the output lot (failed). Same ``mo:write:npd``
+    # scope as MO create.
+    post "/trial-validations/sync",
+         IntegrationTrialValidationController,
+         :sync
 
     post "/manufacturing-orders/:uuid/steps/:step_uuid/sessions",
          IntegrationSessionController,

@@ -439,7 +439,14 @@ export function QcCard({
   const { lot, mo } = entry;
   const [reason, setReason] = useState("");
   const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  // Track the whole error envelope, not just detail — the BE returns
+  // per-field messages under `fields` on 422 responses, and we want
+  // the operator to see "units_per_package: must be greater than 0"
+  // instead of the generic "One or more fields failed validation."
+  const [error, setError] = useState<{
+    detail: string;
+    fields?: Record<string, string[]>;
+  } | null>(null);
   const [mode, setMode] = useState<"idle" | "fail" | "edit">("idle");
   const [scope, setScope] = useState<"full" | "partial">("full");
   // Pass-with-adjustments draft. Pre-filled with whatever production
@@ -474,6 +481,12 @@ export function QcCard({
     stack_factor: "1",
   });
   const uomSymbol = lot.uom?.symbol ?? "ea";
+
+  // R&D pass gate — trial/sample MOs can't pass Output QC until NPD
+  // has signed off the paired ProductValidation. The BE enforces the
+  // same rule; this just disables the button + explains why so the
+  // operator isn't clicking a button that always errors.
+  const npdGate = computeNpdGate(mo);
 
   function pass() {
     setError(null);
@@ -513,7 +526,7 @@ export function QcCard({
         );
         onSignedOff();
       } else {
-        setError(res.detail);
+        setError({ detail: res.detail, fields: res.fields });
       }
     });
   }
@@ -528,7 +541,7 @@ export function QcCard({
       return;
     }
     if (!reason.trim()) {
-      setError("Add a reason before failing the lot.");
+      setError({ detail: "Add a reason before failing the lot." });
       return;
     }
 
@@ -536,13 +549,13 @@ export function QcCard({
       const qtyNum = Number(rejectQty.trim());
       const fullQty = Number(lot.qty_received);
       if (!rejectQty.trim() || Number.isNaN(qtyNum) || qtyNum <= 0) {
-        setError("Reject qty must be a positive number.");
+        setError({ detail: "Reject qty must be a positive number." });
         return;
       }
       if (qtyNum >= fullQty) {
-        setError(
-          `Reject qty must be less than the lot's ${fullQty} ${uomSymbol} — switch to Fail all to reject everything.`,
-        );
+        setError({
+          detail: `Reject qty must be less than the lot's ${fullQty} ${uomSymbol} — switch to Fail all to reject everything.`,
+        });
         return;
       }
       // Both packagings required + positive.
@@ -554,9 +567,9 @@ export function QcCard({
         for (const [field, val] of Object.entries(pkg)) {
           const n = Number(val.toString().trim());
           if (val.toString().trim() === "" || Number.isNaN(n) || n <= 0) {
-            setError(
-              `${label} packaging: ${field.replace("_", " ")} must be a positive number.`,
-            );
+            setError({
+              detail: `${label} packaging: ${field.replace("_", " ")} must be a positive number.`,
+            });
             return;
           }
         }
@@ -597,7 +610,7 @@ export function QcCard({
         );
         onSignedOff();
       } else {
-        setError(res.detail);
+        setError({ detail: res.detail, fields: res.fields });
       }
     });
   }
@@ -717,7 +730,8 @@ export function QcCard({
               type="button"
               size="sm"
               onClick={pass}
-              disabled={pending}
+              disabled={pending || npdGate.blocked}
+              title={npdGate.blocked ? npdGate.reason : undefined}
             >
               {pending && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
               <CheckCircle2 className="mr-1.5 size-3.5" />
@@ -875,7 +889,7 @@ export function QcCard({
         </div>
       )}
 
-      {error && <ErrorBanner detail={error} />}
+      {error && <ErrorBanner detail={error.detail} fields={error.fields} />}
     </li>
   );
 }
@@ -1147,4 +1161,43 @@ function EmptyState() {
       </div>
     </div>
   );
+}
+
+/**
+ * Compute whether the Output QC pass button is blocked by NPD's
+ * product validation. Server-side rule (mirrored here for UX):
+ *
+ *   * Non-R&D MO (production) → always open, no NPD gate applies.
+ *   * Trial / sample MO → open only when
+ *     `npd_validation_status === "passed"`. Anything else
+ *     (null, draft, in_progress, failed) blocks.
+ *
+ * `failed` is a distinct case: the lot has already been auto-
+ * rejected by the webhook, so the pass button being disabled is
+ * academic — the fail banner in `NpdValidationCard` tells the
+ * operator what's next.
+ */
+function computeNpdGate(
+  mo: OutputQcEntry["mo"],
+): { blocked: boolean; reason?: string } {
+  if (!mo) return { blocked: false };
+  if (mo.project_type !== "trial" && mo.project_type !== "sample") {
+    return { blocked: false };
+  }
+  const status = mo.npd_validation_status;
+  if (status === "passed") return { blocked: false };
+
+  const label =
+    status === "failed"
+      ? "failed"
+      : status === "in_progress"
+        ? "in progress"
+        : status === "draft"
+          ? "draft"
+          : "not started";
+
+  return {
+    blocked: true,
+    reason: `Waiting for NPD product validation to pass. Current status: ${label}. Open the validation on NPD to complete it.`,
+  };
 }

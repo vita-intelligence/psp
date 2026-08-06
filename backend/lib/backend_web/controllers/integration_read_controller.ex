@@ -39,7 +39,11 @@ defmodule BackendWeb.IntegrationReadController do
   alias Backend.Certificates.Certificate
 
   plug :require_integration_scope, "mo:read"
-       when action in [:list_manufacturing_orders, :get_manufacturing_order]
+       when action in [
+              :list_manufacturing_orders,
+              :get_manufacturing_order,
+              :manufacturing_orders_for_workstations
+            ]
 
   plug :require_integration_scope, "workstation:read"
        when action in [
@@ -108,6 +112,118 @@ defmodule BackendWeb.IntegrationReadController do
     json(conn, %{items: Enum.map(mos, &mo_payload(&1, group_id, step_produced))})
   end
 
+  @doc """
+  Bulk MO lookup across a set of workstations.
+
+  Powers vita-performance's cross-workstation "Jobs" list. The naive
+  approach fans out one HTTP call per workstation the worker can open
+  and re-issues N SELECTs on our side; that's O(N) round-trips + O(N)
+  queries. This action does the whole thing in TWO queries:
+
+    1. Map input workstation_uuids → their workstation_group_ids.
+    2. Load every MO whose step targets any of those groups, plus
+       the SUM(quantity_produced) rollup for those steps.
+
+  Returns a flat list of `{mo, matched_step, workstation_uuid}` rows —
+  PSP does the cross-product so the caller doesn't have to reshape
+  its own hash map. Scales to millions of MOs because the aggregation
+  runs on the DB, not the caller's process.
+  """
+  def manufacturing_orders_for_workstations(conn, params) do
+    company_id = conn.assigns.current_company_id
+
+    workstation_uuids =
+      case params["workstation_uuids"] do
+        list when is_list(list) ->
+          list
+          |> Enum.filter(&is_binary/1)
+          |> Enum.uniq()
+
+        _ ->
+          []
+      end
+
+    statuses = parse_status_filter(params["status"] || params["statuses"])
+
+    if workstation_uuids == [] do
+      json(conn, %{items: []})
+    else
+      # STEP 1 — resolve every input workstation_uuid to its group_id.
+      # One query, one round-trip. We keep the reverse map (group_id →
+      # [workstation_uuid]) because a group can back multiple workstations
+      # and we need every match on the return path.
+      ws_rows =
+        Repo.all(
+          from w in Workstation,
+            where:
+              w.company_id == ^company_id and
+                w.uuid in ^workstation_uuids and
+                not is_nil(w.workstation_group_id),
+            select: {w.uuid, w.workstation_group_id}
+        )
+
+      group_ids = ws_rows |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+      if group_ids == [] do
+        json(conn, %{items: []})
+      else
+        # group_id → list of workstation_uuids that need this MO row.
+        ws_uuids_by_group =
+          Enum.reduce(ws_rows, %{}, fn {uuid, group_id}, acc ->
+            Map.update(acc, group_id, [uuid], &[uuid | &1])
+          end)
+
+        # STEP 2 — every MO whose step targets one of those groups.
+        # We DISTINCT on the MO because a single MO can hit multiple
+        # groups; we deduplicate matched-step selection in Elixir.
+        mos =
+          Repo.all(
+            from mo in ManufacturingOrder,
+              join: s in assoc(mo, :steps),
+              where:
+                mo.company_id == ^company_id and
+                  mo.status in ^statuses and
+                  s.workstation_group_id in ^group_ids,
+              distinct: true,
+              preload: [:item, steps: :workstation_group]
+          )
+
+        step_produced = load_step_produced(step_ids_of(mos))
+
+        # Flatten the cross-product: for each MO × matching step × each
+        # workstation whose group == step.workstation_group_id, emit
+        # one row. Client maps workstation_uuid → local id and renders.
+        items =
+          mos
+          |> Enum.flat_map(fn mo ->
+            mo.steps
+            |> Enum.filter(&Map.has_key?(ws_uuids_by_group, &1.workstation_group_id))
+            |> Enum.flat_map(fn step ->
+              produced = Map.get(step_produced, step.id)
+              step_json = mo_step_summary(step, produced) |> Map.put(:for_this_workstation, true)
+
+              for ws_uuid <- Map.fetch!(ws_uuids_by_group, step.workstation_group_id) do
+                %{
+                  workstation_uuid: ws_uuid,
+                  mo: %{
+                    uuid: mo.uuid,
+                    status: mo.status,
+                    quantity: to_string(mo.quantity),
+                    due_date: mo.due_date,
+                    item: item_summary(mo.item),
+                    project_type: mo.project_type
+                  },
+                  step: step_json
+                }
+              end
+            end)
+          end)
+
+        json(conn, %{items: items})
+      end
+    end
+  end
+
   def get_manufacturing_order(conn, %{"uuid" => uuid}) do
     company_id = conn.assigns.current_company_id
 
@@ -157,6 +273,17 @@ defmodule BackendWeb.IntegrationReadController do
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.filter(&(&1 != ""))
+  end
+
+  defp parse_status_filter(list) when is_list(list) do
+    list
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&(&1 != ""))
+    |> case do
+      [] -> ["scheduled", "in_progress"]
+      xs -> xs
+    end
   end
 
   defp mo_payload(%ManufacturingOrder{} = mo, filter_group_id, step_produced) do

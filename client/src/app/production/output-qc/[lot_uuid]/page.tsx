@@ -7,11 +7,14 @@ import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { getNpdPublicConfig } from "@/lib/npd/config";
 import { getOutputQcEntry } from "@/lib/production-output-qc/entry";
 import { Button } from "@/components/ui/button";
 import { ProductionSubnav } from "../../production-subnav";
+import { NpdValidationEmbed } from "@/components/production/npd-validation-embed";
 import { SpecSheet } from "./spec-sheet";
 import { QcActionsCard } from "./qc-actions-card";
+import { NpdValidationCard } from "./npd-validation-card";
 
 export const metadata = { title: "Review lot · Output QC · PSP" };
 export const dynamic = "force-dynamic";
@@ -27,9 +30,10 @@ export default async function OutputQcDetailPage({
   }
 
   const { lot_uuid } = await params;
-  const [entry, company] = await Promise.all([
+  const [entry, company, npdConfig] = await Promise.all([
     getOutputQcEntry(lot_uuid),
     getCompanyDefaults(),
+    getNpdPublicConfig(),
   ]);
 
   if (!entry) notFound();
@@ -99,7 +103,26 @@ export default async function OutputQcDetailPage({
             }
           />
 
+          {(mo?.project_type === "trial" || mo?.project_type === "sample") &&
+            npdConfig.enabled &&
+            npdConfig.frontend_url && (
+              <NpdValidationCard
+                entry={entry}
+                npdBaseUrl={npdConfig.frontend_url}
+              />
+            )}
+
           <SpecSheet entry={entry} />
+
+          {/* NPD product validation sheet — only for R&D lots whose
+              MO carries a trial batch. Collapsed by default so the
+              iframe request only fires on operator expand. */}
+          {mo?.npd_trial_batch_uuid && (
+            <NpdValidationEmbed
+              src={`/api/production/output-qc/${encodeURIComponent(lot_uuid)}/npd-validation.html`}
+            />
+          )}
+
           <QcActionsCard entry={entry} companyDateFormat={company} />
         </div>
       </main>

@@ -54,6 +54,7 @@ import { MOPartsTable } from "../../manufacturing-orders/mo-parts-table";
 import { MOOperationsTable } from "../../manufacturing-orders/mo-operations-table";
 import { MOChainRoadmap } from "../../manufacturing-orders/mo-chain-roadmap";
 import { MOSpecSheet } from "../../manufacturing-orders/mo-spec-sheet";
+import { NpdValidationEmbed } from "@/components/production/npd-validation-embed";
 
 interface Props {
   initialMo: ManufacturingOrder;
@@ -129,6 +130,16 @@ export function ProductionRunDetail({ initialMo, company }: Props) {
       <MOOperationsTable mo={mo} company={company} canEdit={false} />
 
       <MOSpecSheet moUuid={mo.uuid} />
+
+      {/* NPD product validation sheet — only for R&D MOs whose
+          trial batch has a passed/failed validation on NPD. Same
+          card treatment as MOSpecSheet: collapsed by default, lazy
+          iframe, kept mounted after first open. */}
+      {mo.npd_trial_batch_uuid && (
+        <NpdValidationEmbed
+          src={`/api/production/manufacturing-orders/${encodeURIComponent(mo.uuid)}/npd-validation.html`}
+        />
+      )}
 
       <FinishDialog
         open={finishOpen}

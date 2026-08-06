@@ -32,7 +32,14 @@ defmodule Backend.Stock.LotEvent do
   # write an audit-trailed decision row so operators know where the
   # next put-away should land + so the 3PL tab can show when a lot
   # entered bailee custody.
-  @kinds ~w(expected requested received routed_to_quarantine qc_passed qc_failed
+  # `output_qc_passed` is the MO-output analogue of `qc_passed` for
+  # top-of-tree finished goods with no downstream MO booking. It
+  # projects to `awaiting_release` (not `available`) so QA can do the
+  # Final Product Release before the lot becomes dispatchable — BRCGS
+  # Issue 9 § 5.6. The projection + transition matrix live in
+  # `Backend.Stock.Lifecycle`; this list has to match.
+  @kinds ~w(expected requested received routed_to_quarantine
+            qc_passed output_qc_passed qc_failed
             held released disposed consumed_to_zero canceled
             routed_to_3pl routed_to_shipment)
 

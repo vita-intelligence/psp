@@ -42,10 +42,38 @@ defmodule BackendWeb.NpdIntegrationSettingsController do
     json(conn, %{npd_integration: Payloads.npd_integration(Companies.current())})
   end
 
+  @doc """
+  GET /api/settings/npd-integration/public
+
+  Non-privileged read of the NPD base URL + enabled flag. Used by
+  surfaces that build deep-links into NPD (e.g. the Output QC page's
+  "Validate on NPD" card) so every authenticated user can construct
+  the URL without holding `integrations.manage`.
+
+  The token is deliberately NOT surfaced here — only `base_url` and
+  `enabled`. The URL itself is not a secret (it's tenant-configured
+  and shown in the settings page anyway); the token is.
+  """
+  def public(conn, _params) do
+    company = Companies.current()
+
+    json(conn, %{
+      npd_integration: %{
+        enabled: company.npd_integration_enabled == true,
+        # Frontend URL is what deep-links to NPD pages use (Next.js
+        # in dev, e.g. localhost:3001). Backend API calls stay on
+        # ``npd_base_url`` and never leave the server, so we don't
+        # expose it here.
+        frontend_url: company.npd_frontend_url
+      }
+    })
+  end
+
   def update(conn, params) do
     attrs = %{
       "npd_integration_enabled" => params["enabled"],
       "npd_base_url" => params["base_url"],
+      "npd_frontend_url" => params["frontend_url"],
       # An omitted / blank token means "keep the stored value"; the
       # changeset drops the change when it sees an empty string.
       "npd_integration_token" => params["token"]

@@ -17,6 +17,11 @@ interface ErrorBannerProps {
    *  When present, the banner exposes a collapsed "Technical details"
    *  drawer with a Copy-to-clipboard button. */
   debug?: ErrorDebug;
+  /** Per-field validation errors from the BE — `{field: ["message"]}`.
+   *  Rendered as a compact bullet list beneath the detail so an
+   *  operator sees which specific column failed and why, instead of a
+   *  generic "One or more fields failed validation." */
+  fields?: Record<string, string[]>;
   /** Override the banner's icon/colour scheme. Default is destructive
    *  red; pass `tone="warning"` for soft yellow (e.g. validation
    *  errors that aren't really crashes). */
@@ -44,9 +49,13 @@ export function ErrorBanner({
   detail,
   code,
   debug,
+  fields,
   tone = "destructive",
   className,
 }: ErrorBannerProps) {
+  const fieldEntries = fields
+    ? Object.entries(fields).filter(([, msgs]) => msgs && msgs.length > 0)
+    : [];
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -94,6 +103,19 @@ export function ErrorBanner({
         <AlertCircle className="mt-0.5 size-4 shrink-0" />
         <div className="min-w-0 flex-1 space-y-1">
           <p className="font-medium leading-snug">{detail}</p>
+
+          {fieldEntries.length > 0 && (
+            <ul className="mt-1 space-y-0.5 text-xs">
+              {fieldEntries.map(([field, msgs]) => (
+                <li key={field} className="flex gap-1.5">
+                  <span className="font-mono font-semibold opacity-90">
+                    {humanizeField(field)}:
+                  </span>
+                  <span className="opacity-90">{msgs.join(", ")}</span>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {hasDetails && (
             <button
@@ -171,6 +193,14 @@ function DetailsTable({
       )}
     </dl>
   );
+}
+
+// snake_case column names → "Snake case column" so per-field errors
+// read as English on the banner. `package_length_mm` → `Package length mm`.
+function humanizeField(field: string): string {
+  if (!field) return field;
+  const spaced = field.replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 function formatForCopy({

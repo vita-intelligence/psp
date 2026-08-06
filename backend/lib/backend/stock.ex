@@ -1896,6 +1896,14 @@ defmodule Backend.Stock do
     # that need a release ceremony (no terminal release row) AND
     # aren't reserved by any live downstream MO (those ride the
     # parent's release).
+    #
+    # `is_rnd` is excluded — the BRCGS Final Product Release flow is
+    # for commercial finished goods bound for dispatch. R&D trial
+    # lots live on the R&D floor for internal QA and never move
+    # through `finished_quarantine`; surfacing them here (with a
+    # "walk to finished_quarantine" nudge that doesn't apply) is
+    # what "the lot is still in put-away after I put it away"
+    # feels like on the mobile.
     not_released_lot_ids =
       from(l in Lot,
         left_join: r in Backend.Production.FinalRelease,
@@ -1910,6 +1918,7 @@ defmodule Backend.Stock do
           l.company_id == ^company_id and
             l.source_kind == "manufacturing_order" and
             l.status in ["awaiting_release", "available"] and
+            l.is_rnd == false and
             is_nil(r.id) and
             is_nil(mo.id),
         select: l.id

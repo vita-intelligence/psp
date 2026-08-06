@@ -157,6 +157,25 @@ defmodule Backend.Warehouses.ReturnPickup do
     # MO's closeout, not walking the lot back to warehouse.
     prod_source_cells = production_source_cell_ids_subq(company_id)
 
+    # Lots that a downstream MO has ALREADY CONSUMED as an ingredient —
+    # the leftover is accounted for under the consumer MO's
+    # `ingredient_mos` bucket. Without this exclusion the same physical
+    # lot surfaces twice (once under the producing MO's output card,
+    # once under the consuming MO's ingredient card), which reads as
+    # "the picker's about to return the same lot twice". Prefer the
+    # ingredient-side row — that's where the return work actually
+    # belongs (the consumer MO's closeout decided to hand the remainder
+    # back).
+    lots_already_consumed_downstream =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.company_id == ^company_id and
+            not is_nil(b.stock_lot_id) and
+            not is_nil(b.consumed_at),
+        select: b.stock_lot_id,
+        distinct: true
+      )
+
     output_mos =
       from(p in Placement,
         join: l in Lot,
@@ -171,6 +190,7 @@ defmodule Backend.Warehouses.ReturnPickup do
             p.storage_cell_id in subquery(prod_source_cells) and
             l.id not in subquery(open_picks_subq) and
             l.id not in subquery(lots_committed_to_open_bookings) and
+            l.id not in subquery(lots_already_consumed_downstream) and
             l.id not in subquery(outbound_path_lot_ids) and
             m.id not in subquery(mos_with_pending_closeout),
         distinct: true,
