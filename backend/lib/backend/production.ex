@@ -4891,6 +4891,21 @@ defmodule Backend.Production do
   def mo_expects_rnd?(%ManufacturingOrder{}), do: false
 
   @doc """
+  True when the MO's produced output lot should carry ``is_rnd = true``.
+
+  Narrower than `mo_expects_rnd?/1` (which covers ingredient sourcing +
+  stream isolation across the run). Only ``trial`` MOs' outputs are
+  internal lab batches — they live on the R&D floor for QA and never
+  move through commercial finished-quarantine / Final Product Release.
+  ``sample`` MOs use the R&D area for the physical run but their
+  finished output follows the commercial path (put-away → finished
+  quarantine → Final Product Release → dispatchable) so operators
+  learn the procedure they'll use for scale-up.
+  """
+  def mo_produces_rnd_lot?(%ManufacturingOrder{project_type: "trial"}), do: true
+  def mo_produces_rnd_lot?(%ManufacturingOrder{}), do: false
+
+  @doc """
   Release every active booking on the MO AND cascade-cancel its
   draft/approved descendants (recursively, because transition_mo
   itself releases bookings + cancels children on every cancel).
@@ -8415,11 +8430,31 @@ defmodule Backend.Production do
     with :ok <- guard_npd_validation_gate(actor, lot_uuid) do
       kind =
         case Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
-          %StockLot{id: lot_id, source_kind: "manufacturing_order"} ->
-            if lot_committed_to_downstream_mo?(actor.company_id, lot_id) do
-              "qc_passed"
-            else
-              "output_qc_passed"
+          %StockLot{id: lot_id, source_kind: "manufacturing_order"} = lot ->
+            cond do
+              lot_committed_to_downstream_mo?(actor.company_id, lot_id) ->
+                "qc_passed"
+
+              # R&D ``trial`` MOs produce internal lab batches, not
+              # commercial finished goods — they live on the R&D floor
+              # for QA and never move through commercial
+              # finished-quarantine. The Final Product Release gate
+              # (BRCGS Issue 9 § 5.6) is scoped to commercial output,
+              # and there's no attached Customer Order wizard to fire
+              # release for a trial batch — so requiring it strands
+              # the lot in ``awaiting_release`` forever. Skip straight
+              # to ``available``.
+              #
+              # ``sample`` MOs deliberately do NOT bypass — samples
+              # are pilot pre-production runs that follow the full
+              # commercial procedure so operators rehearse scale-up.
+              # They fall through to the ``output_qc_passed`` path
+              # below.
+              rd_output_lot?(actor.company_id, lot) ->
+                "qc_passed"
+
+              true ->
+                "output_qc_passed"
             end
 
           _ ->
@@ -8427,6 +8462,17 @@ defmodule Backend.Production do
         end
 
       do_full_qc(actor, lot_uuid, kind, attrs)
+    end
+  end
+
+  # True when the lot's source MO produces an R&D-only output —
+  # a ``trial`` batch. Uses the same helper as produced-lot
+  # creation (`mo_produces_rnd_lot?/1`) so the QC-pass routing +
+  # the `is_rnd` flag agree on what "commercial" means.
+  defp rd_output_lot?(company_id, %StockLot{} = lot) do
+    case source_mo_for_lot(company_id, lot) do
+      %ManufacturingOrder{} = mo -> mo_produces_rnd_lot?(mo)
+      _ -> false
     end
   end
 
@@ -8660,6 +8706,15 @@ defmodule Backend.Production do
             # On QC pass, auto-book the freshly-available output onto
             # the parent MO that was waiting for it.
             auto_book_output_to_parent_mo(actor, reloaded)
+          end
+
+          if kind in ["qc_passed", "output_qc_passed"] do
+            # Trial MOs whose only remaining "closeout work" was the
+            # output lot at the production cell now qualify for
+            # `closeout_completed_at`. `maybe_stamp_closeout_completed`
+            # rechecks the whole predicate — production/sample MOs
+            # with genuine remaining work stay un-stamped.
+            maybe_stamp_closeout_completed(actor, reloaded.source_ref)
           end
 
           Repo.preload(
@@ -9460,6 +9515,13 @@ defmodule Backend.Production do
     # source_ref is varchar; m.uuid is uuid — cast to text on the
     # MO side so PG accepts the equality without an implicit
     # cross-type comparison error.
+    # ``trial`` MOs are excluded from the ``output_at_feed`` bucket:
+    # trial outputs naturally rest at the R&D production cell (an
+    # ``rnd``-purpose cell) until return-pickup walks them to R&D
+    # storage. There's no separate "closeout output move" step, so
+    # matching this shape would double-list the MO in BOTH closeout
+    # + return-pickup. Production / sample MOs still owe the
+    # explicit move (dispatch / finished-quarantine respectively).
     output_at_feed =
       from(p in Backend.Stock.Placement,
         join: l in StockLot,
@@ -9472,6 +9534,7 @@ defmodule Backend.Production do
             l.status == "available" and
             p.qty > 0 and
             p.storage_cell_id == m.production_cell_id and
+            m.project_type != "trial" and
             l.id not in subquery(committed_lot_ids),
         select: m.id,
         distinct: true
@@ -10420,34 +10483,46 @@ defmodule Backend.Production do
         )
       )
 
-    output_lot_at_feed? =
-      Repo.exists?(
-        from(l in StockLot,
-          join: p in Backend.Stock.Placement,
-          on: p.stock_lot_id == l.id,
-          where:
-            l.company_id == ^mo.company_id and
-              l.source_kind == "manufacturing_order" and
-              l.source_ref == ^mo.uuid and
-              l.status == "available" and
-              p.qty > 0 and
-              p.storage_cell_id == ^mo.production_cell_id and
-              l.id not in subquery(
-                from(bb in ManufacturingOrderBooking,
-                  join: dmo in ManufacturingOrder,
-                  on: dmo.id == bb.manufacturing_order_id,
-                  where:
-                    not is_nil(bb.stock_lot_id) and
-                      bb.status == "requested" and
-                      dmo.status != "cancelled",
-                  select: bb.stock_lot_id,
-                  distinct: true
-                )
-              )
-        )
-      )
+    open_bookings? or mo_owes_output_at_feed?(mo)
+  end
 
-    open_bookings? or output_lot_at_feed?
+  # Trial MOs' output naturally rests at the R&D `production_cell` (an
+  # `rnd`-purpose cell) until return-pickup walks it to R&D storage —
+  # there's no separate "closeout output move" step for a single-cell
+  # R&D flow. Counting the output-at-feed shape as remaining closeout
+  # work double-lists these MOs (they show up in BOTH the closeout
+  # queue AND return-pickup). For production / sample MOs the output
+  # DOES have to physically leave the production cell (dispatch bay
+  # for production, finished-quarantine for sample) before closeout
+  # is done, so the check still fires there.
+  defp mo_owes_output_at_feed?(%ManufacturingOrder{project_type: "trial"}), do: false
+
+  defp mo_owes_output_at_feed?(%ManufacturingOrder{} = mo) do
+    Repo.exists?(
+      from(l in StockLot,
+        join: p in Backend.Stock.Placement,
+        on: p.stock_lot_id == l.id,
+        where:
+          l.company_id == ^mo.company_id and
+            l.source_kind == "manufacturing_order" and
+            l.source_ref == ^mo.uuid and
+            l.status == "available" and
+            p.qty > 0 and
+            p.storage_cell_id == ^mo.production_cell_id and
+            l.id not in subquery(
+              from(bb in ManufacturingOrderBooking,
+                join: dmo in ManufacturingOrder,
+                on: dmo.id == bb.manufacturing_order_id,
+                where:
+                  not is_nil(bb.stock_lot_id) and
+                    bb.status == "requested" and
+                    dmo.status != "cancelled",
+                select: bb.stock_lot_id,
+                distinct: true
+              )
+            )
+      )
+    )
   end
 
   defp closeout_output_lot_move(%User{} = actor, %StockLot{} = lot, attrs) do
@@ -11485,15 +11560,20 @@ defmodule Backend.Production do
       "unit_of_measurement_id" => item.stock_uom_id,
       "qty_received" => qty,
       "status" => "received",
-      # R&D stream isolation — an R&D MO (trial / sample) MUST produce
-      # an R&D lot. Without this flag the produced lot renders as a
-      # production lot and the placement guard
-      # (``ensure_rnd_stream_match``) refuses to let it land in the
-      # R&D dispatch cell at closeout, blocking the operator. The
-      # helper (also used by pickup + booking filters) drives the
-      # ``is_rnd`` decision from ``project_type`` so raw materials,
-      # WIP + finished output all agree on the stream.
-      "is_rnd" => mo_expects_rnd?(mo),
+      # Produced-lot stream. Only ``trial`` outputs stay R&D — they
+      # live on the R&D floor for internal QA and never move through
+      # commercial finished-quarantine / Final Product Release.
+      # ``sample`` outputs are pilot pre-production batches: the run
+      # happens in the R&D area, but the finished lot flows through
+      # the commercial path (put-away → finished quarantine → Final
+      # Product Release → dispatchable) so the operator learns the
+      # procedure they'll use at scale.
+      #
+      # The `ensure_rnd_stream_match` guard only fires on MOVES, not
+      # placements at creation, so a sample lot (``is_rnd = false``)
+      # can be born at the R&D production_cell (`rnd` purpose) and
+      # still move commercially out of it via the autorouter.
+      "is_rnd" => mo_produces_rnd_lot?(mo),
       "source_kind" => "manufacturing_order",
       "source_ref" => mo.uuid,
       "received_at" => now(),
