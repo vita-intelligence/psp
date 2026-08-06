@@ -1097,6 +1097,205 @@ defmodule BackendWeb.ManufacturingOrderController do
     end
   end
 
+  # GET /api/production/output-qc/:lot_uuid/npd-validation.html
+  #
+  # Sibling of ``output_qc_npd_spec_html/2`` — proxies NPD's rendered
+  # product-validation sheet for the trial batch attached to the lot's
+  # producing MO. Returns 404 when the MO has no ``npd_trial_batch_uuid``
+  # (non-R&D lots) or when NPD has no passed/failed validation yet
+  # (the sheet only surfaces terminal-state validations; draft /
+  # in_progress aren't meaningful QA artefacts).
+  def output_qc_npd_validation_html(conn, %{"lot_uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with :ok <- require_permission(actor, "production.qc_output"),
+         {:ok, trial_batch_uuid} <-
+           trial_batch_for_output_qc_lot(actor.company_id, uuid),
+         company <- Backend.Companies.current(),
+         :ok <- ensure_npd_live(company),
+         {:ok, html} <- fetch_npd_validation_html(company, trial_batch_uuid) do
+      conn
+      |> put_resp_content_type("text/html")
+      |> put_resp_header("cache-control", "no-store")
+      |> put_resp_header("x-frame-options", "SAMEORIGIN")
+      |> send_resp(200, html)
+    else
+      {:error, :forbidden} ->
+        html_stub(conn, 403, "Missing production.qc_output permission.")
+
+      {:error, :lot_not_found} ->
+        html_stub(conn, 404, "Lot not found or not awaiting Output QC.")
+
+      {:error, :no_trial_batch} ->
+        html_stub(
+          conn,
+          404,
+          "This lot's MO isn't linked to an NPD trial batch — no validation to show."
+        )
+
+      {:error, :npd_not_configured} ->
+        html_stub(conn, 503, "NPD integration isn't configured.")
+
+      {:error, :npd_not_found} ->
+        html_stub(
+          conn,
+          404,
+          "NPD hasn't recorded a passed/failed validation for this trial batch yet."
+        )
+
+      {:error, {:npd_error, status}} ->
+        html_stub(conn, 502, "NPD returned #{status} while rendering the validation.")
+
+      {:error, {:transport, reason}} ->
+        html_stub(conn, 502, "Couldn't reach NPD: #{inspect(reason)}.")
+    end
+  end
+
+  # GET /api/production/manufacturing-orders/:uuid/npd-validation.html
+  # Same as `output_qc_npd_validation_html/2`, keyed by MO uuid.
+  def mo_npd_validation_html(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with :ok <- require_permission(actor, "production.mo_view"),
+         {:ok, trial_batch_uuid} <-
+           trial_batch_for_mo(actor.company_id, uuid),
+         company <- Backend.Companies.current(),
+         :ok <- ensure_npd_live(company),
+         {:ok, html} <- fetch_npd_validation_html(company, trial_batch_uuid) do
+      conn
+      |> put_resp_content_type("text/html")
+      |> put_resp_header("cache-control", "no-store")
+      |> put_resp_header("x-frame-options", "SAMEORIGIN")
+      |> send_resp(200, html)
+    else
+      {:error, :forbidden} ->
+        html_stub(conn, 403, "Missing production.mo_view permission.")
+
+      {:error, :mo_not_found} ->
+        html_stub(conn, 404, "Manufacturing order not found.")
+
+      {:error, :no_trial_batch} ->
+        html_stub(
+          conn,
+          404,
+          "This MO isn't linked to an NPD trial batch — no validation to show."
+        )
+
+      {:error, :npd_not_configured} ->
+        html_stub(conn, 503, "NPD integration isn't configured.")
+
+      {:error, :npd_not_found} ->
+        html_stub(
+          conn,
+          404,
+          "NPD hasn't recorded a passed/failed validation for this trial batch yet."
+        )
+
+      {:error, {:npd_error, status}} ->
+        html_stub(conn, 502, "NPD returned #{status} while rendering the validation.")
+
+      {:error, {:transport, reason}} ->
+        html_stub(conn, 502, "Couldn't reach NPD: #{inspect(reason)}.")
+    end
+  end
+
+  # Resolve the trial batch uuid for a lot at Output QC. Walks lot →
+  # source MO → npd_trial_batch_uuid. When the lot is a semi-finished
+  # intermediate, walks up the parent chain to find the root R&D MO
+  # (its trial batch drives QA sign-off).
+  defp trial_batch_for_output_qc_lot(company_id, lot_uuid) do
+    import Ecto.Query
+
+    with %Backend.Stock.Lot{source_kind: "manufacturing_order", source_ref: mo_uuid} <-
+           Backend.Stock.get_for_company(company_id, lot_uuid),
+         %Backend.Production.ManufacturingOrder{} = mo <-
+           Backend.Repo.one(
+             from m in Backend.Production.ManufacturingOrder,
+               where:
+                 m.company_id == ^company_id and
+                   fragment("?::text", m.uuid) == ^mo_uuid
+           ) do
+      case mo do
+        %{npd_trial_batch_uuid: uuid} when is_binary(uuid) and byte_size(uuid) > 0 ->
+          {:ok, uuid}
+
+        _ ->
+          # Walk up to the root MO in case this is a semi-finished lot.
+          trial_batch_from_ancestors(company_id, mo)
+      end
+    else
+      nil -> {:error, :lot_not_found}
+      %Backend.Stock.Lot{} -> {:error, :lot_not_found}
+    end
+  end
+
+  defp trial_batch_for_mo(company_id, mo_uuid) do
+    import Ecto.Query
+
+    case Backend.Repo.one(
+           from m in Backend.Production.ManufacturingOrder,
+             where: m.company_id == ^company_id and m.uuid == ^mo_uuid
+         ) do
+      nil ->
+        {:error, :mo_not_found}
+
+      %{npd_trial_batch_uuid: uuid} when is_binary(uuid) and byte_size(uuid) > 0 ->
+        {:ok, uuid}
+
+      mo ->
+        trial_batch_from_ancestors(company_id, mo)
+    end
+  end
+
+  defp trial_batch_from_ancestors(company_id, mo) do
+    case mo.parent_mo_id do
+      nil ->
+        {:error, :no_trial_batch}
+
+      parent_id ->
+        parent = Backend.Repo.get(Backend.Production.ManufacturingOrder, parent_id)
+
+        case parent do
+          %{company_id: ^company_id, npd_trial_batch_uuid: uuid}
+          when is_binary(uuid) and byte_size(uuid) > 0 ->
+            {:ok, uuid}
+
+          %{company_id: ^company_id} = parent_mo ->
+            trial_batch_from_ancestors(company_id, parent_mo)
+
+          _ ->
+            {:error, :no_trial_batch}
+        end
+    end
+  end
+
+  defp fetch_npd_validation_html(company, trial_batch_uuid) do
+    base = String.trim_trailing(company.npd_base_url, "/")
+    url = base <> "/api/psp-integration/validations/latest.html"
+
+    req =
+      Req.new(
+        url: url,
+        params: [trial_batch: trial_batch_uuid],
+        headers: [{"authorization", "Bearer " <> company.npd_integration_token}],
+        receive_timeout: 15_000
+      )
+
+    case Req.get(req) do
+      {:ok, %Req.Response{status: 200, body: body}} when is_binary(body) ->
+        {:ok, body}
+
+      {:ok, %Req.Response{status: 404}} ->
+        {:error, :npd_not_found}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, {:npd_error, status}}
+
+      {:error, reason} ->
+        {:error, {:transport, reason}}
+    end
+  end
+
   defp html_stub(conn, status, message) do
     body = """
     <!doctype html>
@@ -1224,6 +1423,20 @@ defmodule BackendWeb.ManufacturingOrderController do
             "qc_adjustment_below_zero",
             "The qty adjustment you typed would drop the lot's on-hand placement below zero. Check the measured qty before passing."
           )
+
+        {:error, {:npd_validation_not_passed, current_status}} ->
+          # R&D MO Output QC gate — NPD ProductValidation must reach
+          # `passed` before PSP can accept the operator's pass. The FE
+          # already disables the button; this covers the direct API
+          # path + race conditions.
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "npd_validation_not_passed",
+            detail:
+              "This lot is from an R&D trial/sample MO. The NPD product validation must reach 'passed' before Output QC can pass. Current status: #{current_status || "not started"}.",
+            npd_validation_status: current_status
+          })
 
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)

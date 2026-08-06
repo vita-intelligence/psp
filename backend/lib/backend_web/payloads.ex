@@ -99,6 +99,7 @@ defmodule BackendWeb.Payloads do
     %{
       enabled: company.npd_integration_enabled,
       base_url: company.npd_base_url,
+      frontend_url: company.npd_frontend_url,
       has_token:
         is_binary(company.npd_integration_token) and
           String.trim(company.npd_integration_token) != ""
@@ -2299,6 +2300,17 @@ defmodule BackendWeb.Payloads do
       # detail page (see mo-status-actions.tsx) + the row chip on
       # the ledger.
       project_type: mo.project_type,
+      # NPD linkage — populated only on trial/sample MOs created via
+      # the NPD integration. `npd_trial_batch_uuid` is the dedupe key
+      # NPD uses to open the matching validation; the FE reads it to
+      # decide whether to render the validation-sheet embed on the
+      # MO run page.
+      npd_formulation_uuid: mo.npd_formulation_uuid,
+      npd_trial_batch_uuid: mo.npd_trial_batch_uuid,
+      npd_validation_uuid: mo.npd_validation_uuid,
+      npd_validation_status: mo.npd_validation_status,
+      npd_validation_synced_at: mo.npd_validation_synced_at,
+      npd_validation_failure_reason: mo.npd_validation_failure_reason,
       quantity: decimal_to_string(mo.quantity),
       due_date: mo.due_date,
       # Derived from steps — null when the MO is unscheduled.
@@ -3128,6 +3140,19 @@ defmodule BackendWeb.Payloads do
             quantity_produced: decimal_to_string(mo.quantity_produced),
             actual_finish: mo.actual_finish,
             project_type: mo.project_type,
+            # NPD back-refs let the FE build a deep-link into NPD's
+            # QC page (formulation-scoped) with the trial batch as
+            # dedupe key — clicking opens the existing validation for
+            # this batch or creates a new one.
+            npd_formulation_uuid: mo.npd_formulation_uuid,
+            npd_trial_batch_uuid: mo.npd_trial_batch_uuid,
+            # NPD ProductValidation snapshot pushed by the sync
+            # webhook. Drives the Output QC pass button gate + the
+            # status pill on the NPD validation card.
+            npd_validation_uuid: mo.npd_validation_uuid,
+            npd_validation_status: mo.npd_validation_status,
+            npd_validation_synced_at: mo.npd_validation_synced_at,
+            npd_validation_failure_reason: mo.npd_validation_failure_reason,
             workstation_groups: mo_workstation_groups(mo),
             pickup_completed_by: actor(mo, :pickup_completed_by)
           },
@@ -3297,7 +3322,10 @@ defmodule BackendWeb.Payloads do
         Enum.map(reservations, fn r ->
           %{
             mo_uuid: r.mo_uuid,
-            mo_code: r.mo_code,
+            # `mo_code` is rendered from the numbering sequence per
+            # tenant — MO has no `code` column. See
+            # `Backend.Production.output_lot_reservations_for_ids/1`.
+            mo_code: render_code(%{id: r.mo_id}, "manufacturing_order"),
             qty: to_string(r.qty)
           }
         end)

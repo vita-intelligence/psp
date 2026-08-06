@@ -83,6 +83,11 @@ defmodule Backend.Companies.Company do
     # in plaintext (deploys, health checks, log lines).
     field :npd_integration_enabled, :boolean, default: false
     field :npd_base_url, :string
+    # Distinct from ``npd_base_url``: this one is NPD's Next.js
+    # frontend URL, used to build browser-facing deep-links (e.g.
+    # the Output QC page's "Open on NPD" card). Server-to-server
+    # calls stay on ``npd_base_url`` (Django API).
+    field :npd_frontend_url, :string
     field :npd_integration_token, Backend.Encrypted.Binary, redact: true
 
     # Superseded by the reserved ``rnd_consumption`` cell tag —
@@ -210,12 +215,40 @@ defmodule Backend.Companies.Company do
     |> cast(attrs, [
       :npd_integration_enabled,
       :npd_base_url,
+      :npd_frontend_url,
       :npd_integration_token
     ])
     |> validate_length(:npd_base_url, max: 500)
+    |> validate_length(:npd_frontend_url, max: 500)
     |> validate_length(:npd_integration_token, max: 1000)
     |> validate_base_url_when_enabled()
+    |> validate_frontend_url_shape()
     |> preserve_existing_token_when_blank()
+  end
+
+  defp validate_frontend_url_shape(changeset) do
+    case get_field(changeset, :npd_frontend_url) do
+      nil ->
+        changeset
+
+      url when is_binary(url) ->
+        trimmed = String.trim(url)
+
+        cond do
+          trimmed == "" ->
+            put_change(changeset, :npd_frontend_url, nil)
+
+          not String.starts_with?(trimmed, ["http://", "https://"]) ->
+            add_error(
+              changeset,
+              :npd_frontend_url,
+              "must start with http:// or https://"
+            )
+
+          true ->
+            put_change(changeset, :npd_frontend_url, trimmed)
+        end
+    end
   end
 
   defp validate_base_url_when_enabled(changeset) do

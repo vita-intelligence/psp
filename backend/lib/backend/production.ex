@@ -8405,20 +8405,29 @@ defmodule Backend.Production do
     #     it in a `finished_quarantine` cell; QA does Final Product
     #     Release (BRCGS Issue 9 § 5.6) before it becomes
     #     dispatchable.
-    kind =
-      case Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
-        %StockLot{id: lot_id, source_kind: "manufacturing_order"} ->
-          if lot_committed_to_downstream_mo?(actor.company_id, lot_id) do
+    #
+    # R&D gate applies before either path: trial/sample MOs must
+    # carry ``npd_validation_status == "passed"`` (pushed by NPD's
+    # ProductValidation webhook) before the operator's pass verdict
+    # is accepted. The FE already disables the button, but we
+    # enforce server-side so race conditions + direct API calls
+    # can't slip past.
+    with :ok <- guard_npd_validation_gate(actor, lot_uuid) do
+      kind =
+        case Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
+          %StockLot{id: lot_id, source_kind: "manufacturing_order"} ->
+            if lot_committed_to_downstream_mo?(actor.company_id, lot_id) do
+              "qc_passed"
+            else
+              "output_qc_passed"
+            end
+
+          _ ->
             "qc_passed"
-          else
-            "output_qc_passed"
-          end
+        end
 
-        _ ->
-          "qc_passed"
-      end
-
-    do_full_qc(actor, lot_uuid, kind, attrs)
+      do_full_qc(actor, lot_uuid, kind, attrs)
+    end
   end
 
   def sign_off_output_qc(%User{} = actor, lot_uuid, "fail", attrs)
@@ -8442,6 +8451,163 @@ defmodule Backend.Production do
   end
 
   def sign_off_output_qc(_actor, _uuid, _verdict, _attrs), do: {:error, :bad_verdict}
+
+  # Resolves the MO behind a lot uuid, then returns:
+  #   * :ok — non-R&D MO, or MO with npd_validation_status == "passed"
+  #   * {:error, {:npd_validation_not_passed, current_status_atom}} —
+  #     R&D MO whose NPD validation hasn't reached ``passed`` yet.
+  #     Bubbles up to a 422 with a specific code so the FE can render
+  #     a targeted message.
+  defp guard_npd_validation_gate(actor, lot_uuid) do
+    with %StockLot{source_kind: "manufacturing_order"} = lot <-
+           Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+         %ManufacturingOrder{} = mo <- source_mo_for_lot(actor.company_id, lot) do
+      cond do
+        mo.project_type not in ["trial", "sample"] ->
+          :ok
+
+        mo.npd_validation_status == "passed" ->
+          :ok
+
+        true ->
+          {:error, {:npd_validation_not_passed, mo.npd_validation_status}}
+      end
+    else
+      # Lot / MO not found — let downstream logic surface the actual
+      # not_found error. Our gate is only concerned with R&D MOs it
+      # can actually see.
+      _ -> :ok
+    end
+  end
+
+  defp source_mo_for_lot(company_id, %StockLot{source_ref: ref}) when is_binary(ref) do
+    Repo.one(
+      from mo in ManufacturingOrder,
+        where:
+          mo.company_id == ^company_id and
+            fragment("?::text", mo.uuid) == ^ref
+    )
+  end
+
+  defp source_mo_for_lot(_, _), do: nil
+
+  @doc """
+  Persist an NPD ProductValidation state snapshot on the MO whose
+  ``npd_trial_batch_uuid`` matches. Idempotent — a webhook that
+  reports the same status the MO already has is a no-op.
+
+  When the incoming status is ``"failed"`` and the MO's output lot is
+  still awaiting QC (lot at ``received``), the function also fires the
+  existing Output QC fail pipeline against that lot as the given
+  actor. Auto-fail is scoped: if the lot has already passed PSP QC
+  (available / awaiting_release), we log a divergence event via the
+  lot's audit trail but do NOT roll back — destructive on hindsight.
+
+  Returns:
+    * ``{:ok, %ManufacturingOrder{}}`` — new snapshot stored, no auto-fail
+    * ``{:ok, {:auto_failed, %ManufacturingOrder{}, %StockLot{}}}`` — stored + lot auto-failed
+    * ``{:error, :mo_not_found}`` — no matching trial batch on this tenant
+    * ``{:error, %Ecto.Changeset{}}`` — malformed payload
+  """
+  def sync_npd_validation(actor, %{
+        "npd_trial_batch_uuid" => trial_uuid,
+        "validation" => validation
+      })
+      when is_binary(trial_uuid) and is_map(validation) do
+    company_id = actor.company_id
+
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where:
+               mo.company_id == ^company_id and
+                 mo.npd_trial_batch_uuid == ^trial_uuid and
+                 mo.status != "cancelled"
+         ) do
+      nil ->
+        {:error, :mo_not_found}
+
+      %ManufacturingOrder{} = mo ->
+        do_sync_npd_validation(actor, mo, validation)
+    end
+  end
+
+  def sync_npd_validation(_actor, _payload), do: {:error, :bad_payload}
+
+  defp do_sync_npd_validation(actor, mo, validation) do
+    status = validation["status"]
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    attrs = %{
+      "npd_validation_uuid" => validation["uuid"],
+      "npd_validation_status" => status,
+      "npd_validation_synced_at" => now,
+      "npd_validation_failure_reason" => validation["failure_reason"]
+    }
+
+    idempotent? =
+      mo.npd_validation_status == status and
+        mo.npd_validation_uuid && to_string(mo.npd_validation_uuid) == validation["uuid"]
+
+    with {:ok, updated_mo} <-
+           mo
+           |> ManufacturingOrder.npd_validation_sync_changeset(attrs)
+           |> Repo.update() do
+      cond do
+        idempotent? ->
+          {:ok, updated_mo}
+
+        status == "failed" ->
+          maybe_auto_fail_output(actor, updated_mo, validation["failure_reason"])
+
+        true ->
+          {:ok, updated_mo}
+      end
+    end
+  end
+
+  # Look up the MO's output lot(s) still awaiting QC (status=received)
+  # and fire the existing sign_off_output_qc/4 fail pipeline for each.
+  # Skips already-passed lots (divergence — logged, not rolled back).
+  defp maybe_auto_fail_output(actor, %ManufacturingOrder{} = mo, reason) do
+    received_lots =
+      Repo.all(
+        from l in StockLot,
+          where:
+            l.company_id == ^mo.company_id and
+              l.source_kind == "manufacturing_order" and
+              fragment("?::text", ^mo.uuid) == l.source_ref and
+              l.status == "received"
+      )
+
+    case received_lots do
+      [] ->
+        # Nothing to auto-fail. Either the lot hasn't been produced
+        # yet (webhook arrived first) or it was already passed
+        # (divergence — Op passed on PSP before NPD flipped to
+        # failed). Either way the state snapshot is persisted; the
+        # gate will prevent future passes.
+        {:ok, mo}
+
+      lots ->
+        results =
+          Enum.map(lots, fn %StockLot{uuid: lot_uuid} = lot ->
+            {lot,
+             sign_off_output_qc(actor, lot_uuid, "fail", %{
+               "reject_qty" => Decimal.to_string(lot.qty_received),
+               "notes" => "NPD product validation failed: #{reason || "no reason supplied"}"
+             })}
+          end)
+
+        # Return the first successfully-failed lot alongside the MO
+        # so the webhook caller can render a meaningful response.
+        # Errors from individual sign-offs are logged and swallowed —
+        # the state snapshot is the authoritative record.
+        case Enum.find(results, fn {_lot, r} -> match?({:ok, _}, r) end) do
+          {lot, {:ok, _}} -> {:ok, {:auto_failed, mo, lot}}
+          _ -> {:ok, mo}
+        end
+    end
+  end
 
   # No reject_qty (or matching the full lot) → full pass / fail via
   # the existing lifecycle event. Anything in between → partial split.
@@ -8552,7 +8718,7 @@ defmodule Backend.Production do
 
     with {:ok, updated_lot} <-
            lot
-           |> Backend.Stock.Lot.changeset(
+           |> qc_patch_changeset(
              Map.put(cast_attrs, "updated_by_id", actor.id)
            )
            |> Repo.update(),
@@ -8583,6 +8749,65 @@ defmodule Backend.Production do
       )
 
       :ok
+    end
+  end
+
+  # Narrow "just patch what the operator changed" changeset for the
+  # QC-adjust flow.
+  #
+  # The wide `Stock.Lot.changeset/2` revalidates the WHOLE lot row on
+  # every update — including `validate_required` on packaging fields
+  # and `validate_number(:qty_received, greater_than: 0)`. That was
+  # blocking QC sign-off when a lot row already had a stale / null
+  # value elsewhere in packaging (which can happen on R&D output that
+  # the closeout scale wrote sparsely). QC review shouldn't be gated
+  # on data quality it didn't cause — it's a compliance verdict, not
+  # a lot-form save.
+  #
+  # This changeset:
+  #   * casts ONLY the columns the operator submitted,
+  #   * re-validates only THOSE columns (so a typed 0 still gets a
+  #     clean field-level error rather than silently landing),
+  #   * ignores every other field on the row.
+  #
+  # The wide changeset still runs on receive / edit paths where the
+  # lot is being fully re-authored; here we're just patching.
+  defp qc_patch_changeset(%StockLot{} = lot, attrs) do
+    allowed = ~w(
+      qty_received
+      package_length_mm
+      package_width_mm
+      package_height_mm
+      package_weight_kg
+      units_per_package
+      stack_factor
+      updated_by_id
+    )a
+
+    changeset =
+      lot
+      |> Ecto.Changeset.cast(attrs, allowed)
+
+    changeset
+    |> maybe_validate_number(:qty_received, greater_than: 0)
+    |> maybe_validate_number(:package_length_mm, greater_than: 0)
+    |> maybe_validate_number(:package_width_mm, greater_than: 0)
+    |> maybe_validate_number(:package_height_mm, greater_than: 0)
+    |> maybe_validate_number(:package_weight_kg, greater_than: 0)
+    |> maybe_validate_number(:units_per_package, greater_than: 0)
+    |> maybe_validate_number(:stack_factor,
+      greater_than: 0,
+      less_than_or_equal_to: 50
+    )
+  end
+
+  # Only run `validate_number` when the field was cast in this update.
+  # Untouched fields keep whatever's already on the row.
+  defp maybe_validate_number(changeset, field, opts) do
+    if Map.has_key?(changeset.changes, field) do
+      Ecto.Changeset.validate_number(changeset, field, opts)
+    else
+      changeset
     end
   end
 
@@ -9274,6 +9499,12 @@ defmodule Backend.Production do
       where:
         mo.company_id == ^company_id and
           mo.status == "completed" and
+          # Once the operator marks closeout done, the row leaves the
+          # queue regardless of physical stock state. Needed for the
+          # single-cell R&D case where the output stays put — the
+          # `output_at_feed` shape check keeps matching but the
+          # closeout genuinely has nothing left to do.
+          is_nil(mo.closeout_completed_at) and
           mo.id not in subquery(awaiting_qc_mos) and
           (mo.id in subquery(open_booking_mos) or mo.id in subquery(output_at_feed)),
       preload: [:item, :warehouse, :production_cell, steps: []],
@@ -9366,7 +9597,15 @@ defmodule Backend.Production do
   def output_lot_reservations(%StockLot{} = lot),
     do: output_lot_reservations_for_ids([lot.id]) |> Map.get(lot.id, [])
 
+  def output_lot_reservations_for_ids([]), do: %{}
+
   def output_lot_reservations_for_ids(lot_ids) when is_list(lot_ids) do
+    # NB: ManufacturingOrder has no `:code` column — the human
+    # "MO00047"-style label is rendered by `BackendWeb.Payloads.render_code/2`
+    # from the numbering sequence at serialisation time. We surface
+    # `mo_id` here and let the caller humanise. Selecting `mo.code`
+    # directly crashes the query (as it did in production before this
+    # fix); the callers now compute the label in the payload layer.
     from(b in ManufacturingOrderBooking,
       join: mo in ManufacturingOrder,
       on: mo.id == b.manufacturing_order_id,
@@ -9380,8 +9619,7 @@ defmodule Backend.Production do
         booking_uuid: b.uuid,
         qty: b.quantity,
         mo_id: mo.id,
-        mo_uuid: mo.uuid,
-        mo_code: mo.code
+        mo_uuid: mo.uuid
       }
     )
     |> Repo.all()
@@ -9552,6 +9790,12 @@ defmodule Backend.Production do
             "Closeout of MO booking " <>
               (booking.uuid || "") <> " consumed #{decimal_to_string(consumed)}"
           )
+
+          # If this was the last booking and there's nothing left on
+          # the output side either, this closeout is done — stamp the
+          # MO so the queue drops it. Idempotent + tolerant of MOs
+          # that still owe output work.
+          maybe_stamp_closeout_completed_by_id(actor, booking.manufacturing_order_id)
 
           ok
 
@@ -10084,15 +10328,126 @@ defmodule Backend.Production do
     with %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          reservations <- output_lot_reservations(lot) do
-      if reservations != [] do
-        {:ok, {:reserved, lot, reservations}}
-      else
-        closeout_output_lot_move(actor, lot, attrs)
+      result =
+        if reservations != [] do
+          {:ok, {:reserved, lot, reservations}}
+        else
+          closeout_output_lot_move(actor, lot, attrs)
+        end
+
+      # After every successful output resolution (moved, reserved-in-
+      # place, or single-cell no-op), check if the MO is fully done
+      # and stamp `closeout_completed_at`. Without this the R&D
+      # single-cell case leaves no trace on the DB and the closeout
+      # queue keeps matching the MO forever.
+      case result do
+        {:ok, _} ->
+          maybe_stamp_closeout_completed(actor, lot.source_ref)
+          result
+
+        _ ->
+          result
       end
     else
       nil -> {:error, :lot_not_found}
       %StockLot{status: status} -> {:error, {:wrong_status, status}}
     end
+  end
+
+  # Stamp `closeout_completed_at` on the MO if every last piece of
+  # closeout work is done. Called from both close_output (by lot
+  # source_ref uuid) and close_booking (by MO id) so whichever hits
+  # the "last one" wins the write. Idempotent — no-op if the MO
+  # already carries a stamp, or if any work remains.
+  defp maybe_stamp_closeout_completed(actor, mo_uuid) when is_binary(mo_uuid) do
+    case Repo.get_by(ManufacturingOrder, uuid: mo_uuid) do
+      %ManufacturingOrder{} = mo -> maybe_stamp_closeout_completed(actor, mo)
+      _ -> :ok
+    end
+  end
+
+  defp maybe_stamp_closeout_completed(_actor, _), do: :ok
+
+  defp maybe_stamp_closeout_completed_by_id(actor, mo_id) when is_integer(mo_id) do
+    case Repo.get(ManufacturingOrder, mo_id) do
+      %ManufacturingOrder{} = mo -> maybe_stamp_closeout_completed(actor, mo)
+      _ -> :ok
+    end
+  end
+
+  defp maybe_stamp_closeout_completed_by_id(_actor, _), do: :ok
+
+  defp maybe_stamp_closeout_completed(actor, %ManufacturingOrder{} = mo) do
+    cond do
+      mo.status != "completed" ->
+        :ok
+
+      not is_nil(mo.closeout_completed_at) ->
+        :ok
+
+      closeout_work_remaining?(mo) ->
+        :ok
+
+      true ->
+        mo
+        |> Ecto.Changeset.change(%{
+          closeout_completed_at: now(),
+          closeout_completed_by_id: actor.id,
+          updated_by_id: actor.id
+        })
+        |> Repo.update()
+
+        :ok
+    end
+  end
+
+  # "Work remaining" = any raw/packaging booking still open OR any
+  # output lot still sitting on the production feed cell in `available`
+  # status AND not reserved by a live downstream MO. Matches the same
+  # predicate `list_closeout_queue/1` uses so the auto-stamp fires
+  # exactly when the queue would otherwise still surface the row.
+  defp closeout_work_remaining?(%ManufacturingOrder{} = mo) do
+    open_bookings? =
+      Repo.exists?(
+        from(b in ManufacturingOrderBooking,
+          join: it in Backend.Items.Item,
+          on: it.id == b.item_id,
+          where:
+            b.manufacturing_order_id == ^mo.id and
+              b.status == "requested" and
+              it.item_type in ["raw_material", "packaging", "semi_finished", "consumable"] and
+              is_nil(b.consumed_at)
+        )
+      )
+
+    output_lot_at_feed? =
+      Repo.exists?(
+        from(l in StockLot,
+          join: p in Backend.Stock.Placement,
+          on: p.stock_lot_id == l.id,
+          where:
+            l.company_id == ^mo.company_id and
+              l.source_kind == "manufacturing_order" and
+              l.source_ref == ^mo.uuid and
+              l.status == "available" and
+              p.qty > 0 and
+              p.storage_cell_id == ^mo.production_cell_id and
+              l.id not in subquery(
+                from(bb in ManufacturingOrderBooking,
+                  join: dmo in ManufacturingOrder,
+                  on: dmo.id == bb.manufacturing_order_id,
+                  where:
+                    not is_nil(bb.stock_lot_id) and
+                      bb.status == "requested" and
+                      dmo.status != "cancelled",
+                  select: bb.stock_lot_id,
+                  distinct: true
+                )
+              )
+        )
+      )
+
+    open_bookings? or output_lot_at_feed?
   end
 
   defp closeout_output_lot_move(%User{} = actor, %StockLot{} = lot, attrs) do

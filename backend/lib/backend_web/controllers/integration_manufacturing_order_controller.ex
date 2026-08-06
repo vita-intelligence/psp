@@ -101,6 +101,11 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         "assigned_to_id" => actor.id,
         "project_type" => Map.get(params, "project_type", "trial"),
         "npd_trial_batch_uuid" => trial_uuid,
+        # Formulation UUID is optional; the schema tolerates nil so
+        # legacy payloads (before NPD started sending it) still create.
+        # A malformed value falls through to Ecto's UUID cast (422 with
+        # a per-field error) rather than a 500.
+        "npd_formulation_uuid" => Map.get(params, "npd_formulation_uuid"),
         "due_date" => params["due_date"],
         "notes" => Map.get(params, "notes", "")
       }

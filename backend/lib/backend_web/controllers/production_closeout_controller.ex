@@ -188,7 +188,11 @@ defmodule BackendWeb.ProductionCloseoutController do
             Enum.map(reservations, fn r ->
               %{
                 mo_uuid: r.mo_uuid,
-                mo_code: r.mo_code,
+                # `mo_code` is a rendered numbering label (e.g.
+                # "MO00047") — not a column. `render_code/2` resolves
+                # it from the MO's `id` via the tenant's numbering
+                # sequence at serialisation time.
+                mo_code: Payloads.render_code(%{id: r.mo_id}, "manufacturing_order"),
                 qty: to_string(r.qty)
               }
             end)

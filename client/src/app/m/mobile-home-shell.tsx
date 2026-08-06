@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Wordmark } from "@/components/brand/wordmark";
 import { disconnectDeviceSocket } from "@/lib/realtime/device-socket";
 import type { DeviceDisplay } from "@/lib/devices/server";
+import type { MobileHomeCounts } from "@/lib/mobile/server";
 import { useDeviceChannel } from "./mobile-device-channel-provider";
 
 interface Props {
@@ -29,10 +30,14 @@ interface Props {
   /** Admins bypass per-tile permission gates (mirrors the server-side
    *  `hasPermission` short-circuit). */
   isAdmin: boolean;
-  pendingPutawayCount: number;
-  incomingTodayCount: number;
-  submittedInspectionCount: number;
-  pendingThreePlDispatchCount: number;
+  /** All badge counts in one map. Server pre-caps at `countCap` and
+   *  zeroes buckets the caller lacks RBAC for — the shell just
+   *  displays what it's given. */
+  counts: MobileHomeCounts;
+  /** Server-configured display cap. Counts equal to this value render
+   *  as `{cap}+` on the badge — the DB stopped scanning at that
+   *  threshold so we can't show more precision honestly. */
+  countCap: number;
 }
 
 /**
@@ -42,8 +47,9 @@ interface Props {
  *   * `permission`: the RBAC key the viewer must hold (or admin). The
  *     null tile (Scan) is unconditional because scanning a QR just
  *     navigates — the downstream page enforces its own permission.
- *   * `badgeKey`: which prop on the home shell carries the count
- *     (drives the small chip in the corner; `null` ⇒ no badge).
+ *   * `badgeKey`: which key on `counts` carries the number to render
+ *     (drives the small chip in the corner; `null` ⇒ no badge, only
+ *     the Scan tile falls in this bucket since it isn't a queue).
  *
  * Exported so a smoke-test can assert the matrix without rendering
  * a single React tree.
@@ -56,7 +62,7 @@ export const MOBILE_HOME_TILES = [
     description: "Move incoming lots to a shelf",
     icon: Package,
     permission: "stock.move",
-    badgeKey: "pendingPutawayCount",
+    badgeKey: "putaway",
   },
   {
     key: "incoming",
@@ -65,7 +71,7 @@ export const MOBILE_HOME_TILES = [
     description: "Inspect today's deliveries",
     icon: Truck,
     permission: "goods_in.inspect",
-    badgeKey: "incomingTodayCount",
+    badgeKey: "incoming_today",
   },
   {
     key: "inspections",
@@ -78,7 +84,7 @@ export const MOBILE_HOME_TILES = [
     // viewers see "Mine" / "All recent" only — the list page enforces
     // the perm-aware chip set client-side.
     permission: "goods_in.view",
-    badgeKey: "submittedInspectionCount",
+    badgeKey: "submitted_inspections",
   },
   {
     key: "pickup",
@@ -87,7 +93,7 @@ export const MOBILE_HOME_TILES = [
     description: "Pick released MOs for production",
     icon: PackageOpen,
     permission: "warehouse.pick",
-    badgeKey: null,
+    badgeKey: "pickup",
   },
   {
     key: "preflight",
@@ -96,7 +102,7 @@ export const MOBILE_HOME_TILES = [
     description: "Verify ingredient qty + quality before start",
     icon: ClipboardCheck,
     permission: "production.preflight",
-    badgeKey: null,
+    badgeKey: "preflight",
   },
   {
     key: "closeout",
@@ -105,7 +111,7 @@ export const MOBILE_HOME_TILES = [
     description: "Hand off after production — scan, photo, qty",
     icon: PackageCheck,
     permission: "production.closeout",
-    badgeKey: null,
+    badgeKey: "closeout",
   },
   {
     key: "return_pickup",
@@ -114,7 +120,7 @@ export const MOBILE_HOME_TILES = [
     description: "Pull closed-out stock back to warehouse storage",
     icon: PackagePlus,
     permission: "warehouse.return_pickup",
-    badgeKey: null,
+    badgeKey: "return_pickup",
   },
   {
     key: "three_pl_dispatch",
@@ -123,7 +129,7 @@ export const MOBILE_HOME_TILES = [
     description: "Pick bailee stock → walk to shipping",
     icon: Truck,
     permission: "three_pl.dispatch_execute",
-    badgeKey: "pendingThreePlDispatchCount",
+    badgeKey: "three_pl_dispatch",
   },
   {
     key: "scan",
@@ -170,10 +176,8 @@ export function MobileHomeShell({
   display,
   viewerPermissions,
   isAdmin,
-  pendingPutawayCount,
-  incomingTodayCount,
-  submittedInspectionCount,
-  pendingThreePlDispatchCount,
+  counts,
+  countCap,
 }: Props) {
   const router = useRouter();
   const { connected } = useDeviceChannel();
@@ -181,13 +185,15 @@ export function MobileHomeShell({
   const badgeFor = (
     key: MobileHomeTile["badgeKey"],
   ): number | null => {
-    if (key === "pendingPutawayCount") return pendingPutawayCount;
-    if (key === "incomingTodayCount") return incomingTodayCount;
-    if (key === "submittedInspectionCount") return submittedInspectionCount;
-    if (key === "pendingThreePlDispatchCount")
-      return pendingThreePlDispatchCount;
-    return null;
+    if (key === null) return null;
+    return counts[key];
   };
+
+  // Format: raw number under the cap; `{cap}+` at or beyond it. The
+  // BE clamps counts to `countCap`, so seeing that exact value means
+  // "capped — could be more, we don't scan past it".
+  const formatBadge = (n: number): string =>
+    n >= countCap ? `${countCap}+` : String(n);
 
   const tiles = visibleMobileTiles(viewerPermissions, isAdmin);
 
@@ -243,9 +249,9 @@ export function MobileHomeShell({
                       {badge !== null && badge > 0 && (
                         <span
                           data-testid={`badge-${tile.key}`}
-                          className="inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground"
+                          className="inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-destructive-foreground"
                         >
-                          {badge}
+                          {formatBadge(badge)}
                         </span>
                       )}
                     </div>

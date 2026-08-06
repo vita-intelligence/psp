@@ -1118,6 +1118,21 @@ export interface ManufacturingOrder {
    *  R&D (created from NPD trial batches). Drives the R&D fast-path
    *  Run button on the detail page + the row chip on the ledger. */
   project_type: "production" | "trial" | "sample";
+  /** NPD linkage — populated only on trial/sample MOs that were
+   *  created through the NPD integration. Presence of
+   *  `npd_trial_batch_uuid` gates the validation-sheet embed on the
+   *  MO run page (mirrors the Output-QC gate). */
+  npd_formulation_uuid: string | null;
+  npd_trial_batch_uuid: string | null;
+  npd_validation_uuid: string | null;
+  npd_validation_status:
+    | "draft"
+    | "in_progress"
+    | "passed"
+    | "failed"
+    | null;
+  npd_validation_synced_at: string | null;
+  npd_validation_failure_reason: string | null;
   quantity: string;
   due_date: string | null;
   /** Derived from min(steps.planned_start) — null when unscheduled. */
@@ -1413,6 +1428,28 @@ export interface OutputQcEntry {
     quantity_produced: string | null;
     actual_finish: string | null;
     project_type: string | null;
+    /** NPD-side formulation UUID — set only on trial/sample MOs
+     *  created via the NPD integration. Powers the "Validate on NPD"
+     *  deep-link on the Output QC page. */
+    npd_formulation_uuid: string | null;
+    /** NPD-side trial batch UUID — the dedupe key. NPD uses it to
+     *  either open the existing validation for this batch or create
+     *  a new one. Set alongside `npd_formulation_uuid`. */
+    npd_trial_batch_uuid: string | null;
+    /** NPD ProductValidation snapshot pushed by the sync webhook.
+     *  For trial/sample MOs, the Output QC pass button is disabled
+     *  until `npd_validation_status === "passed"`. When
+     *  `npd_validation_status === "failed"`, the lot has already
+     *  been auto-rejected server-side. */
+    npd_validation_uuid: string | null;
+    npd_validation_status:
+      | "draft"
+      | "in_progress"
+      | "passed"
+      | "failed"
+      | null;
+    npd_validation_synced_at: string | null;
+    npd_validation_failure_reason: string | null;
     workstation_groups: Array<{ uuid: string; name: string }>;
     pickup_completed_by: AuditActor | null;
   } | null;
