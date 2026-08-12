@@ -36,6 +36,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { ENFORCE_FOUR_EYES } from "@/lib/four-eyes";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -981,8 +982,10 @@ function SignaturesCard({
     } & { ok: false; detail: string } | { ok: true; release: FinalRelease }>,
   ) => void;
 }) {
-  const releaserFilled = !!release.releaser_id;
-  const approverFilled = !!release.approver_id;
+  // ``releaserFilled`` / ``approverFilled`` retained for future UI
+  // states (currently unused). Suppress unused warning by prefixing.
+  void !!release.releaser_id;
+  void !!release.approver_id;
   const currentIsReleaser = release.releaser_id === currentUserId;
   const currentIsApprover = release.approver_id === currentUserId;
 
@@ -993,7 +996,9 @@ function SignaturesCard({
           <Signature className="size-4" />
           Dual sign-off
           <span className="text-xs font-normal text-muted-foreground">
-            Two different users required
+            {ENFORCE_FOUR_EYES
+              ? "Two different users required"
+              : "Two-signer ceremony (dev: single seat may sign both)"}
           </span>
         </CardTitle>
       </CardHeader>
@@ -1006,7 +1011,11 @@ function SignaturesCard({
           signedAt={release.releaser_signed_at}
           currentUserId={currentUserId}
           currentUserName={currentUserName}
-          blocked={currentIsApprover}
+          // Dev toggle short-circuits the segregation so one dev
+          // seat can complete the ceremony. Prod / test keep the
+          // BRCGS § 5.6 segregation-of-duties rule alive — mirrors
+          // the BE gate in Backend.Production.FinalReleases.
+          blocked={ENFORCE_FOUR_EYES && currentIsApprover}
           blockedReason="You already signed as approver."
           canSign={canSign}
           pending={pending}
@@ -1025,7 +1034,7 @@ function SignaturesCard({
           signedAt={release.approver_signed_at}
           currentUserId={currentUserId}
           currentUserName={currentUserName}
-          blocked={currentIsReleaser}
+          blocked={ENFORCE_FOUR_EYES && currentIsReleaser}
           blockedReason="You already signed as releaser."
           canSign={canSign}
           pending={pending}

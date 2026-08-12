@@ -598,31 +598,40 @@ defmodule Backend.Production.FinalReleases do
         {:error, :forbidden}
 
       release.approver_id == actor.id ->
-        {:error, :must_be_different_from_approver}
+        # Dev toggle short-circuits so a single seat can complete the
+        # dual-sig ceremony end-to-end. Prod / test still enforce the
+        # BRCGS § 5.6 segregation-of-duties rule.
+        if Backend.FourEyes.enforce?(),
+          do: {:error, :must_be_different_from_approver},
+          else: do_sign_as_releaser(actor, release, signature_image)
 
       true ->
-        release
-        |> FinalRelease.changeset(%{
-          releaser_id: actor.id,
-          releaser_signature_image: signature_image,
-          releaser_signed_at: now(),
-          updated_by_id: actor.id
-        })
-        |> Repo.update()
-        |> case do
-          {:ok, row} ->
-            Backend.Broadcasts.entity_changed(
-              "final-release",
-              row.uuid,
-              row.company_id,
-              "releaser_signed"
-            )
+        do_sign_as_releaser(actor, release, signature_image)
+    end
+  end
 
-            {:ok, preload(row)}
+  defp do_sign_as_releaser(actor, release, signature_image) do
+    release
+    |> FinalRelease.changeset(%{
+      releaser_id: actor.id,
+      releaser_signature_image: signature_image,
+      releaser_signed_at: now(),
+      updated_by_id: actor.id
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, row} ->
+        Backend.Broadcasts.entity_changed(
+          "final-release",
+          row.uuid,
+          row.company_id,
+          "releaser_signed"
+        )
 
-          err ->
-            err
-        end
+        {:ok, preload(row)}
+
+      err ->
+        err
     end
   end
 
@@ -639,31 +648,37 @@ defmodule Backend.Production.FinalReleases do
         {:error, :forbidden}
 
       release.releaser_id == actor.id ->
-        {:error, :must_be_different_from_releaser}
+        if Backend.FourEyes.enforce?(),
+          do: {:error, :must_be_different_from_releaser},
+          else: do_sign_as_approver(actor, release, signature_image)
 
       true ->
-        release
-        |> FinalRelease.changeset(%{
-          approver_id: actor.id,
-          approver_signature_image: signature_image,
-          approver_signed_at: now(),
-          updated_by_id: actor.id
-        })
-        |> Repo.update()
-        |> case do
-          {:ok, row} ->
-            Backend.Broadcasts.entity_changed(
-              "final-release",
-              row.uuid,
-              row.company_id,
-              "approver_signed"
-            )
+        do_sign_as_approver(actor, release, signature_image)
+    end
+  end
 
-            {:ok, preload(row)}
+  defp do_sign_as_approver(actor, release, signature_image) do
+    release
+    |> FinalRelease.changeset(%{
+      approver_id: actor.id,
+      approver_signature_image: signature_image,
+      approver_signed_at: now(),
+      updated_by_id: actor.id
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, row} ->
+        Backend.Broadcasts.entity_changed(
+          "final-release",
+          row.uuid,
+          row.company_id,
+          "approver_signed"
+        )
 
-          err ->
-            err
-        end
+        {:ok, preload(row)}
+
+      err ->
+        err
     end
   end
 
