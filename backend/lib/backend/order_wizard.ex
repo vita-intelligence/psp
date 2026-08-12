@@ -3269,6 +3269,15 @@ defmodule Backend.OrderWizard do
   # cleared QC but still owe Final Product Release (BRCGS 5.6). The
   # "Do this next" punch-list uses this to surface every step that
   # still needs an operator's attention.
+  # Cancelled MOs are tombstones — they never owe pending work. Must
+  # come before the catch-all clause below or every cancelled MO
+  # would land in the ``:in_production`` "Other steps" punch-list as
+  # a bogus "Open MO" row (which is what CO12 exhibited after we
+  # cancelled MO 55/56/57/58/69/70/73/74 — the wizard kept surfacing
+  # them because ``mo_has_pending_work?`` returned true for every
+  # non-completed status including cancelled).
+  defp mo_has_pending_work?(%{status: "cancelled"}), do: false
+
   defp mo_has_pending_work?(%{status: "completed"} = mo) do
     Map.get(mo, :output_qc_pending_count, 0) > 0 or
       Map.get(mo, :has_output_at_production_feed?) == true or
