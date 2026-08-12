@@ -172,7 +172,9 @@ defmodule Backend.Procurement.Shortages do
     # streams stay separate end-to-end. Row keys come from the
     # requirements map (there's no shortage without demand); the
     # other maps default to zero on missing keys.
-    {requirements, line_uoms_by_key} = compute_requirements(company_id)
+    {requirements, line_uoms_by_key, explicit_request_by_key} =
+      compute_requirements(company_id)
+
     bookings = compute_bookings(company_id)
     expecting = compute_expecting(company_id)
 
@@ -233,6 +235,7 @@ defmodule Backend.Procurement.Shortages do
       coverage = Decimal.add(hand, exp)
       shortage = Decimal.sub(required, coverage)
       shortage = if Decimal.compare(shortage, Decimal.new(0)) == :gt, do: shortage, else: Decimal.new(0)
+      explicit_request = Map.get(explicit_request_by_key, {item_id, is_rnd}, false)
 
       %{
         item: item_payload(Map.get(items, item_id)),
@@ -248,10 +251,36 @@ defmodule Backend.Procurement.Shortages do
         expecting_qty: Decimal.to_string(exp),
         shortage_qty: Decimal.to_string(shortage),
         on_hand_qty: Decimal.to_string(hand),
+        # ``explicit_request`` — an operator hit "Request purchases"
+        # on at least one MO in this bucket. FE badges these rows
+        # differently so procurement knows they're operator-flagged
+        # (vs auto-derived from raw shortage).
+        explicit_request: explicit_request,
         dependent_mos: Map.get(dependent_mos, {item_id, is_rnd}, [])
       }
     end)
-    |> Enum.reject(fn row -> Decimal.compare(Decimal.new(row.shortage_qty), Decimal.new(0)) != :gt end)
+    # Keep a row when there's genuine shortage (procurement MUST buy)
+    # OR when an operator explicitly requested purchases AND there's
+    # still an outstanding gap between required and booked (they want
+    # procurement's eyes on the unbooked portion even if on-hand
+    # stock nets the shortage). The FE decides "book from stock" vs
+    # "raise PO" from the per-row on_hand / expecting numbers.
+    #
+    # ``outstanding = required > booked`` — filters out lines already
+    # fully booked on the explicit-request MO, so a mix of booked +
+    # unbooked lines only surfaces the unbooked ones.
+    |> Enum.reject(fn row ->
+      shortage_positive =
+        Decimal.compare(Decimal.new(row.shortage_qty), Decimal.new(0)) == :gt
+
+      outstanding =
+        Decimal.compare(
+          Decimal.new(row.required_qty),
+          Decimal.new(row.booked_qty)
+        ) == :gt
+
+      not (shortage_positive or (row.explicit_request and outstanding))
+    end)
     |> Enum.sort_by(fn row -> Decimal.to_float(Decimal.new(row.shortage_qty)) end, :desc)
   end
 
@@ -282,11 +311,18 @@ defmodule Backend.Procurement.Shortages do
         line_uom_id: line.unit_of_measurement_id,
         is_fixed: line.is_fixed,
         mo_qty: mo.quantity,
-        mo_project_type: mo.project_type
+        mo_project_type: mo.project_type,
+        # Contributing MO's explicit-request flag. When any MO
+        # sharing this ``{part, is_rnd}`` bucket has ``Request
+        # purchases`` fired, ``list_for`` keeps the row on the
+        # shortages page even if on-hand stock would otherwise
+        # net the shortage to zero — the operator asked
+        # procurement to look at it, procurement should see it.
+        mo_purchasing_requested: not is_nil(mo.purchasing_requested_at)
       }
     )
     |> Repo.all()
-    |> Enum.reduce({%{}, %{}}, fn row, {qty_acc, uom_acc} ->
+    |> Enum.reduce({%{}, %{}, %{}}, fn row, {qty_acc, uom_acc, req_acc} ->
       qty =
         cond do
           row.is_fixed ->
@@ -307,7 +343,14 @@ defmodule Backend.Procurement.Shortages do
       uom_acc =
         if row.line_uom_id, do: Map.put(uom_acc, key, row.line_uom_id), else: uom_acc
 
-      {qty_acc, uom_acc}
+      # ``bool_or`` semantics — any contributing MO with an
+      # explicit request flips this bucket true and it stays true.
+      req_acc =
+        if row.mo_purchasing_requested,
+          do: Map.put(req_acc, key, true),
+          else: Map.put_new(req_acc, key, false)
+
+      {qty_acc, uom_acc, req_acc}
     end)
   end
 
