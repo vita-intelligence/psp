@@ -919,6 +919,23 @@ defmodule Backend.Production.FinalReleases do
        when is_integer(r) and is_integer(a) and r != a,
        do: :ok
 
+  # Same-user filled both slots. In prod / test this is the BRCGS
+  # § 5.6 segregation trap and MUST bounce. Dev seat with the
+  # 4-eyes toggle off collapses through — matches the same-signer
+  # relaxations on ``sign_as_releaser`` + ``sign_as_approver``, plus
+  # the CO / PO / vendor / customer / MO gates from PR #101. This
+  # is the guard that fires when the operator hits the final
+  # "Release for dispatch" button.
+  defp ensure_dual_signatures(%FinalRelease{
+         releaser_id: r,
+         approver_id: a
+       })
+       when is_integer(r) and is_integer(a) and r == a do
+    if Backend.FourEyes.enforce?(),
+      do: {:error, :dual_signatures_required},
+      else: :ok
+  end
+
   defp ensure_dual_signatures(_), do: {:error, :dual_signatures_required}
 
   defp ensure_all_files_present(%FinalRelease{} = release) do

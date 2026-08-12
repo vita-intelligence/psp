@@ -190,10 +190,16 @@ export function FinalReleaseForm({
   const missingFileKinds = FINAL_RELEASE_FILE_KINDS.filter(
     (kind) => !release.files.some((f) => f.kind === kind),
   );
+  // Dual-sig gate on the "Release for dispatch" button. Requires
+  // both slots filled AND (in prod / test) that they belong to
+  // different users. Dev toggle (``ENFORCE_FOUR_EYES = false``)
+  // drops the different-user constraint so a single seat can walk
+  // the ceremony end-to-end — mirrors the BE gate in
+  // ``Backend.Production.FinalReleases.ensure_dual_signatures``.
   const hasDualSigs =
     !!release.releaser_id &&
     !!release.approver_id &&
-    release.releaser_id !== release.approver_id;
+    (!ENFORCE_FOUR_EYES || release.releaser_id !== release.approver_id);
   // BRCGS Issue 9 § 5.6 + § 4.4 segregation: lot must physically sit
   // in a finished_quarantine cell during the release ceremony. When
   // it's not (legacy stock on general shelving, or the picker hasn't
@@ -1194,7 +1200,9 @@ function DecisionCard({
               ) : (
                 <XCircle className="size-3 text-muted-foreground" />
               )}
-              Two different signatures on file
+              {ENFORCE_FOUR_EYES
+                ? "Two different signatures on file"
+                : "Both signature slots filled (dev: single seat OK)"}
             </li>
             <li className="flex items-center gap-1.5">
               {lotInFinishedQuarantine ? (
