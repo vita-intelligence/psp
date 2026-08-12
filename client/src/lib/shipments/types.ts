@@ -61,7 +61,15 @@ export interface Shipment {
     legal_address: string | null;
     country_code: string | null;
   } | null;
-  customer_order: { id: number; uuid: string; status: string } | null;
+  customer_order: {
+    id: number;
+    uuid: string;
+    status: string;
+    /** Portal-profile delivery address the customer saved on
+     *  ``/portal/settings``, mirrored via NPD → PSP sync. Empty on
+     *  legacy COs synced before the sync started shipping it. */
+    delivery_address: string | null;
+  } | null;
   stock_lot: ShipmentLotSummary | null;
   /** Dispatch-cell dwell + estimated storage cost. `null` when the
    *  lot has never landed in a dispatch cell. Rate is the company's
