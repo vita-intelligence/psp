@@ -1381,16 +1381,31 @@ defmodule Backend.OrderWizard do
          }}
 
       "approved" ->
-        # Include the MO code in the button label so a planner scanning
-        # the primary CTA sees exactly WHICH MO the click will schedule
-        # — otherwise \"Open scheduler\" reads as a generic launcher and
-        # the planner has scheduled the wrong MO on a fast click.
-        {"Schedule MO #{mo.code} on the calendar.",
-         %{
-           label: "Open scheduler for MO #{mo.code}",
-           kind: "link",
-           href: "/production/schedule?mo=#{mo.uuid}"
-         }}
+        # R&D MOs (trial / sample) skip the calendar — an approved
+        # R&D MO can go straight to "Request pickup" per the
+        # ``ensure_calendar_or_rnd`` fast-path in Backend.Production.
+        # Sending scientists to /production/schedule for a sample MO
+        # was landing them on a screen that doesn't apply to their
+        # flow.
+        if Map.get(mo, :project_type) in ["trial", "sample"] do
+          {"Request pickup for MO #{mo.code} — R&D flow, no calendar step.",
+           %{
+             label: "Request pickup for MO #{mo.code}",
+             kind: "link",
+             href: "/production/manufacturing-orders/#{mo.uuid}"
+           }}
+        else
+          # Include the MO code in the button label so a planner scanning
+          # the primary CTA sees exactly WHICH MO the click will schedule
+          # — otherwise \"Open scheduler\" reads as a generic launcher and
+          # the planner has scheduled the wrong MO on a fast click.
+          {"Schedule MO #{mo.code} on the calendar.",
+           %{
+             label: "Open scheduler for MO #{mo.code}",
+             kind: "link",
+             href: "/production/schedule?mo=#{mo.uuid}"
+           }}
+        end
 
       "scheduled" ->
         scheduled_step_cta(mo)
@@ -2211,7 +2226,18 @@ defmodule Backend.OrderWizard do
     has_placeholders =
       placeholder_bookings != [] and mo.status not in ["completed", "cancelled"]
     past_approval = mo.status in ["approved", "scheduled", "in_progress", "completed"]
-    broken_booking_count = count_broken_bookings(mo.bookings)
+
+    # Broken vs awaiting-child-qc split. Descendant uuids come from
+    # the already-computed ``child_states`` so we don't re-query the
+    # tree. Empty for MOs with no children — the helper still returns
+    # the right shape.
+    descendant_uuids = collect_descendant_uuids(child_states)
+
+    %{
+      broken: broken_booking_count,
+      awaiting_child_qc: awaiting_child_qc_count,
+      awaiting_child_qc_lot_uuids: awaiting_child_qc_lot_uuids
+    } = broken_and_qc_split(mo.bookings, descendant_uuids)
 
     # Bookings on a completed MO that the operator hasn't run through
     # the per-booking closeout yet (status still "requested", no
@@ -2251,6 +2277,14 @@ defmodule Backend.OrderWizard do
       has_unsent_placeholder_po?: has_unsent_placeholder_po?,
       has_sent_placeholder_po?: has_sent_placeholder_po?,
       broken_booking_count: broken_booking_count,
+      # Bookings pointing at a child-MO output lot that's still
+      # awaiting Output QC. These used to inflate ``broken_booking_count``
+      # and produce the misleading "pull them back into planning"
+      # blocker — actually the operator's fix is to sign off Output
+      # QC on the child, not to re-book. Split them out so the wizard
+      # can render the right CTA.
+      awaiting_child_qc_count: awaiting_child_qc_count,
+      awaiting_child_qc_lot_uuids: awaiting_child_qc_lot_uuids,
       under_booked_count: under_booked,
       output_lots: Enum.map(output_lots, &lot_summary/1),
       output_lot_count: length(output_lots),
@@ -2300,6 +2334,15 @@ defmodule Backend.OrderWizard do
       # "ready to start run".
       preflight_complete?: Production.mo_preflight_complete?(mo),
       is_fully_sorted?: is_fully_sorted,
+      # Exposed so the wizard's per-status CTAs can branch on stream.
+      # R&D MOs (``trial`` / ``sample``) bypass the calendar-placement
+      # gate — an approved R&D MO goes straight to "Request pickup"
+      # instead of "Schedule on the calendar" (the BE's
+      # ``ensure_calendar_or_rnd`` accepts release-to-warehouse from
+      # ``approved`` for these). Without this, the wizard sent
+      # scientists to /production/schedule for every sample MO — a
+      # screen that doesn't apply to their flow.
+      project_type: mo.project_type,
       children: child_states,
       # Descendants (children + grandchildren, recursively) whose work
       # isn't finished yet. Drives the "Do this next" ranker so a
@@ -2486,16 +2529,28 @@ defmodule Backend.OrderWizard do
     |> Map.new()
   end
 
-  defp count_broken_bookings([]), do: 0
+  # Empty-bookings shortcut. Uses the same {} shape as the loaded
+  # path so callers don't have to null-check either variant.
+  defp broken_and_qc_split([], _descendant_uuids),
+    do: %{broken: 0, awaiting_child_qc: 0, awaiting_child_qc_lot_uuids: []}
 
-  defp count_broken_bookings(bookings) do
-    # A booking is "broken" when its lot is no longer `available` OR
-    # the lot's on-hand is now less than the sum of all requested
-    # bookings against it (over-allocated). Earlier this read a stub
-    # `:is_broken` field that nothing ever populated — so wizard
-    # never surfaced reality drift caused by closeout spillage.
-    # Mirrors `Backend.Production.list_broken_bookings_for/1` but
-    # inline per MO so the wizard's per-MO state stays self-contained.
+  defp broken_and_qc_split(bookings, descendant_uuids) do
+    # A booking used to be classified "broken" whenever its lot's
+    # status wasn't ``available``. That was too broad: a lot in
+    # ``received`` produced by a live descendant MO isn't broken,
+    # it's just waiting on the parent's compliance gate (Output QC)
+    # to sign off. The parent MO's picker WOULD fail today, but the
+    # fix isn't "pull the booking back into planning" — it's "go
+    # sign off Output QC on the child's output". Two different
+    # user actions; the old blanket message pointed operators to
+    # the wrong screen.
+    #
+    # New rule:
+    #   * lot in "received" + lot's source MO is a live descendant
+    #     of THIS MO → awaiting_child_qc (natural workflow gate).
+    #   * lot not "available" for any other reason → broken (real
+    #     data drift: closeout spillage, lot rejected, cancelled).
+    #   * on-hand < total demand → broken (over-allocated).
     lot_ids =
       bookings
       |> Enum.flat_map(fn b ->
@@ -2506,7 +2561,7 @@ defmodule Backend.OrderWizard do
       |> Enum.uniq()
 
     if lot_ids == [] do
-      0
+      %{broken: 0, awaiting_child_qc: 0, awaiting_child_qc_lot_uuids: []}
     else
       on_hand_by_lot =
         from(p in Backend.Stock.Placement,
@@ -2528,36 +2583,102 @@ defmodule Backend.OrderWizard do
         |> Repo.all()
         |> Map.new()
 
-      lot_status_by_id =
+      # Load status + source_ref + uuid together so we can tell (a) is
+      # the lot available, and (b) if not, did a descendant MO of THIS
+      # MO produce it (→ awaiting_child_qc). ``source_ref`` on
+      # manufacturing_order-sourced lots is the producing MO's uuid as
+      # a string.
+      lot_rows =
         from(l in Backend.Stock.Lot,
           where: l.id in ^lot_ids,
-          select: {l.id, l.status}
+          select: %{
+            id: l.id,
+            uuid: l.uuid,
+            status: l.status,
+            source_kind: l.source_kind,
+            source_ref: l.source_ref
+          }
         )
         |> Repo.all()
-        |> Map.new()
+        |> Map.new(fn r -> {r.id, r} end)
 
-      Enum.count(bookings, fn b ->
-        cond do
-          b.status != "requested" ->
-            false
+      Enum.reduce(
+        bookings,
+        %{broken: 0, awaiting_child_qc: 0, awaiting_child_qc_lot_uuids: []},
+        fn b, acc ->
+          cond do
+            b.status != "requested" ->
+              acc
 
-          is_nil(b.stock_lot_id) ->
-            false
+            is_nil(b.stock_lot_id) ->
+              acc
 
-          Map.get(lot_status_by_id, b.stock_lot_id) != "available" ->
-            true
-
-          true ->
-            on_hand =
-              Map.get(on_hand_by_lot, b.stock_lot_id) || Decimal.new(0)
-
-            total_demand =
-              Map.get(total_booked_by_lot, b.stock_lot_id) || Decimal.new(0)
-
-            Decimal.compare(total_demand, on_hand) == :gt
+            true ->
+              lot = Map.get(lot_rows, b.stock_lot_id)
+              classify_booking(b, lot, acc, descendant_uuids, on_hand_by_lot, total_booked_by_lot)
+          end
         end
-      end)
+      )
+      |> Map.update!(:awaiting_child_qc_lot_uuids, &Enum.uniq(Enum.reverse(&1)))
     end
+  end
+
+  # The natural QC gate — a live descendant produced this lot and
+  # it's still awaiting Output QC. Don't count as broken; add to the
+  # awaiting_child_qc bucket so the wizard can render a clean CTA
+  # pointing at the child's output-qc page.
+  defp classify_booking(_b, %{status: "received", source_kind: "manufacturing_order", source_ref: src_ref, uuid: lot_uuid}, acc, descendant_uuids, _on_hand, _demand)
+       when is_binary(src_ref) do
+    if MapSet.member?(descendant_uuids, src_ref) do
+      %{
+        acc
+        | awaiting_child_qc: acc.awaiting_child_qc + 1,
+          awaiting_child_qc_lot_uuids: [lot_uuid | acc.awaiting_child_qc_lot_uuids]
+      }
+    else
+      # Received but not from one of OUR descendants — treat as
+      # broken. Rare in practice (someone manually booked a
+      # not-yet-QC-ed lot from an unrelated MO) but the operator
+      # still needs to fix it, so flag it.
+      %{acc | broken: acc.broken + 1}
+    end
+  end
+
+  # Any other non-available status → broken (rejected / qc_failed /
+  # cancelled / moved). Real data drift; the operator has to re-book.
+  defp classify_booking(_b, %{status: status}, acc, _descendant_uuids, _on_hand, _demand)
+       when status != "available" do
+    %{acc | broken: acc.broken + 1}
+  end
+
+  # Lot is available — check for over-allocation. If total demand
+  # across all requested bookings exceeds current on-hand, this
+  # booking will fail at pick time.
+  defp classify_booking(b, _lot, acc, _descendant_uuids, on_hand_by_lot, total_booked_by_lot) do
+    on_hand = Map.get(on_hand_by_lot, b.stock_lot_id) || Decimal.new(0)
+    total_demand = Map.get(total_booked_by_lot, b.stock_lot_id) || Decimal.new(0)
+
+    if Decimal.compare(total_demand, on_hand) == :gt do
+      %{acc | broken: acc.broken + 1}
+    else
+      acc
+    end
+  end
+
+  # Missing lot row — shouldn't happen but defensively count as broken
+  # so a stale FK doesn't get silently classified as fine.
+  defp classify_booking(_b, nil, acc, _descendant_uuids, _on_hand, _demand) do
+    %{acc | broken: acc.broken + 1}
+  end
+
+  # Flatten every descendant MO's uuid (children, grandchildren, …)
+  # into a MapSet keyed by string uuid — matches how ``source_ref``
+  # is stored on the produced lot.
+  defp collect_descendant_uuids(child_states) when is_list(child_states) do
+    Enum.reduce(child_states, MapSet.new(), fn child, acc ->
+      acc = MapSet.put(acc, to_string(child.uuid))
+      MapSet.union(acc, collect_descendant_uuids(Map.get(child, :children, []) || []))
+    end)
   end
 
   defp output_lots_for_mo(%ManufacturingOrder{uuid: mo_uuid}) do
@@ -2842,6 +2963,36 @@ defmodule Backend.OrderWizard do
         }
       end)
 
+    # Natural QC gate — a child MO produced this MO's ingredient lot,
+    # it's sitting in ``received`` awaiting Output QC sign-off. The
+    # picker can't pick it yet but that's expected workflow, not
+    # data drift. Renders as a warning (not an error) with a link
+    # straight to the output-qc page for the specific lot so the
+    # operator can act on it in one click.
+    awaiting_child_qc =
+      mos
+      |> Enum.filter(&(Map.get(&1, :awaiting_child_qc_count, 0) > 0))
+      |> Enum.map(fn mo ->
+        n = mo.awaiting_child_qc_count
+        first_lot_uuid = List.first(mo.awaiting_child_qc_lot_uuids || [])
+
+        %{
+          code: "awaiting_child_output_qc",
+          severity: "info",
+          message:
+            "MO #{mo.code} is waiting on Output QC of #{n} lot(s) produced by its sub-MO(s). Sign off QC before this MO can pick.",
+          link:
+            if first_lot_uuid do
+              %{
+                label: "Open Output QC",
+                href: "/production/output-qc/#{first_lot_uuid}"
+              }
+            else
+              %{label: "Open Output QC", href: "/production/output-qc"}
+            end
+        }
+      end)
+
     placeholders =
       if Enum.any?(mos, & &1.has_placeholder_bookings?) and
            Enum.any?(mos, &(&1.status in ["scheduled", "in_progress"])) do
@@ -2858,7 +3009,7 @@ defmodule Backend.OrderWizard do
         []
       end
 
-    broken ++ placeholders
+    broken ++ awaiting_child_qc ++ placeholders
   end
 
   # ----- timeline ------------------------------------------------
