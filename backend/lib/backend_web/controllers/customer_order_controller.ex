@@ -181,6 +181,17 @@ defmodule BackendWeb.CustomerOrderController do
 
     case Backend.Production.create_manufacturing_order(actor, attrs) do
       {:ok, mo} ->
+        # NPD trial-batch pin-back. When this MO was created for a
+        # sample CO that came from an NPD payment, ping NPD so it
+        # can stamp ``psp_manufacturing_order_uuid`` on the
+        # corresponding TrialBatch — that's what makes NPD's
+        # trial-batch page show the stage chain instead of "MO
+        # connected but no chain yet". Silent-degrade contract: any
+        # transport / NPD failure is logged but doesn't fail the
+        # MO creation (the MO is already committed and PSP-side
+        # correct — only NPD's mirror lags, easy to backfill later).
+        maybe_pin_mo_on_npd_trial_batch(actor, co, mo)
+
         conn
         |> put_status(:created)
         |> json(%{manufacturing_order: Payloads.manufacturing_order(mo)})
@@ -188,6 +199,29 @@ defmodule BackendWeb.CustomerOrderController do
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
+  end
+
+  # Fires only for MOs on a sample CO born from an NPD payment. The
+  # ``npd_payment_id`` on the CO is the sample payment's uuid — same
+  # value NPD stores on the TrialBatch as ``source_payment_id``, so
+  # NPD can resolve the TrialBatch server-side and pin the MO uuid
+  # in one round-trip. Commercial COs skip the call (nothing to pin).
+  defp maybe_pin_mo_on_npd_trial_batch(_actor, %{npd_payment_id: nil}, _mo), do: :ok
+  defp maybe_pin_mo_on_npd_trial_batch(_actor, %{npd_payment_id: ""}, _mo), do: :ok
+
+  defp maybe_pin_mo_on_npd_trial_batch(_actor, co, mo) do
+    # Singleton Company row on this tenant. ``current/0`` also handles
+    # first-boot bootstrap, which is fine — the callback is a no-op
+    # when the company has no npd_base_url / npd_integration_token set.
+    company = Backend.Companies.current()
+
+    Backend.NpdCallbacks.pin_mo_on_trial_batch(
+      company,
+      to_string(co.npd_payment_id),
+      to_string(mo.uuid)
+    )
+
+    :ok
   end
 
   # Earliest non-cancelled MO on the line — the wizard's
