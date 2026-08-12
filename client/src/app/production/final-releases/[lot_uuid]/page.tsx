@@ -55,7 +55,7 @@ export default async function FinalReleasePage({ params }: Props) {
             <PlacementBlockScreen release={release} lotUuid={lotUuid} />
           </div>
         ) : (
-          <div className="mx-auto w-full max-w-4xl">
+          <div className="mx-auto w-full max-w-7xl">
             <FinalReleaseForm
               initialRelease={release}
               lotUuid={lotUuid}
