@@ -694,12 +694,60 @@ export function NewPOForm({
     });
   }, [state.lines, state.default_warehouse_id]);
 
-  const canSaveDraft = Boolean(state.vendorId);
-  const canSubmit =
-    canSaveDraft &&
-    Boolean(state.default_warehouse_id) &&
-    state.lines.length > 0 &&
+  // Save-draft + Submit both require every line to have a resolvable
+  // warehouse — the BE's ``PurchaseOrderLine.changeset`` validates
+  // ``:warehouse_id`` at line insert whether the row lands as draft
+  // or pending-approver. The line's warehouse falls back to the PO's
+  // ``default_warehouse_id`` when the per-line override is blank, so
+  // ``lineValidity`` already flags "warehouse" issues for both cases.
+  // Empty PO drafts (zero lines) don't need any warehouse — nothing
+  // to insert. Submit adds "at least one line" so an empty PO can't
+  // be pushed to approval.
+  const canSaveDraft =
+    Boolean(state.vendorId) &&
     lineValidity.every((v) => v.issues.length === 0);
+  const canSubmit = canSaveDraft && state.lines.length > 0;
+
+  // The header's Default delivery site is "required" the moment any
+  // line has no per-line warehouse override — that's what the BE's
+  // line-insert fallback resolves to. Highlighting the field only
+  // when it's actually blocking Save keeps the empty-draft UX quiet.
+  const defaultWarehouseRequired = useMemo(
+    () =>
+      !state.default_warehouse_id &&
+      state.lines.some((l) => !l.warehouse_id),
+    [state.default_warehouse_id, state.lines],
+  );
+
+  // Human-readable "why is Save disabled" so the operator doesn't
+  // just see a greyed-out button. The BE returns a generic 422 with
+  // "please correct the highlighted fields" when a line lacks a
+  // resolvable warehouse — but the header field is on a different
+  // card so nothing looks obviously red. The action bar surfaces
+  // this string next to the buttons.
+  const saveBlockedReason = useMemo<string | null>(() => {
+    if (canSaveDraft) return null;
+    if (!state.vendorId) return "Pick a vendor to enable Save.";
+    const anyLineMissingWarehouse = lineValidity.some((v) =>
+      v.issues.includes("warehouse"),
+    );
+    if (anyLineMissingWarehouse) {
+      return "Set a Default delivery site (or a per-line Site override) so each line has a destination warehouse.";
+    }
+    const anyLineMissingItem = lineValidity.some((v) =>
+      v.issues.includes("item"),
+    );
+    if (anyLineMissingItem) return "Every line needs an item picked.";
+    const anyLineMissingQty = lineValidity.some((v) =>
+      v.issues.includes("qty"),
+    );
+    if (anyLineMissingQty) return "Every line needs a quantity > 0.";
+    const anyLineMissingPrice = lineValidity.some((v) =>
+      v.issues.includes("price"),
+    );
+    if (anyLineMissingPrice) return "Every line needs a unit price > 0.";
+    return null;
+  }, [canSaveDraft, state.vendorId, lineValidity]);
 
   // ── Save flow ───────────────────────────────────────────────────────
   async function performSave(submitAfter: boolean) {
@@ -860,6 +908,7 @@ export function NewPOForm({
         position="top"
         canSaveDraft={canSaveDraft}
         canSubmit={canSubmit}
+        saveBlockedReason={saveBlockedReason}
         isCreator={isCreator}
         creator={creator?.name}
         pending={pending}
@@ -1001,8 +1050,17 @@ export function NewPOForm({
               className="text-[11px] uppercase tracking-wider text-muted-foreground"
             >
               Default delivery site
+              {defaultWarehouseRequired && (
+                <span className="ml-1 text-destructive">*</span>
+              )}
             </Label>
-            <div className="relative">
+            <div
+              className={cn(
+                "relative rounded-md",
+                defaultWarehouseRequired &&
+                  "ring-1 ring-destructive/50 ring-offset-0",
+              )}
+            >
               <SearchPicker<WarehouseOption>
                 id="default_warehouse_id"
                 fetcher={fetchWarehouseOptions}
@@ -1018,8 +1076,17 @@ export function NewPOForm({
               />
               <FieldEditingIndicator peer={fieldEditors.default_warehouse_id} />
             </div>
-            <p className="text-[10px] text-muted-foreground">
-              Lines without an override deliver here.
+            <p
+              className={cn(
+                "text-[10px]",
+                defaultWarehouseRequired
+                  ? "text-destructive"
+                  : "text-muted-foreground",
+              )}
+            >
+              {defaultWarehouseRequired
+                ? "Required — one or more lines has no per-line Site override, so this default is where they'll deliver."
+                : "Lines without an override deliver here."}
             </p>
           </div>
 
@@ -1465,6 +1532,7 @@ export function NewPOForm({
         position="bottom"
         canSaveDraft={canSaveDraft}
         canSubmit={canSubmit}
+        saveBlockedReason={saveBlockedReason}
         isCreator={isCreator}
         creator={creator?.name}
         pending={pending}
@@ -1486,6 +1554,7 @@ function ActionBar({
   position,
   canSaveDraft,
   canSubmit,
+  saveBlockedReason,
   isCreator,
   creator,
   pending,
@@ -1498,6 +1567,7 @@ function ActionBar({
   position: "top" | "bottom";
   canSaveDraft: boolean;
   canSubmit: boolean;
+  saveBlockedReason: string | null;
   isCreator: boolean;
   creator: string | null | undefined;
   pending: boolean;
@@ -1530,6 +1600,12 @@ function ActionBar({
             {uploadStatus}
           </span>
         )}
+        {isCreator && saveBlockedReason && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-500">
+            <AlertTriangle className="size-3.5" />
+            {saveBlockedReason}
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <Button
@@ -1550,7 +1626,7 @@ function ActionBar({
           title={
             !isCreator && creator
               ? `Only ${creator} can save from this room.`
-              : undefined
+              : (saveBlockedReason ?? undefined)
           }
         >
           {pending ? (
@@ -1567,7 +1643,8 @@ function ActionBar({
           disabled={!isCreator || !canSubmit || pending}
           title={
             !canSubmit
-              ? "Pick a vendor, a delivery warehouse, and at least one valid line (with item + qty + price + destination warehouse) first."
+              ? (saveBlockedReason ??
+                "Add at least one valid line before submitting for approval.")
               : undefined
           }
         >
