@@ -202,6 +202,20 @@ defmodule Backend.Warehouses.ReturnPickup do
     # closeout's partial-consume hand-off. The booking row gives us
     # the MO back-link even though the lot's own source_kind points
     # at the original PO / manual receive.
+    #
+    # Shared-lot deduplication: when the SAME physical lot has been
+    # consumed by multiple completed MOs (an ingredient lot with
+    # leftover that fed MO 48 in July + MO 72 in August, then still
+    # has 24 kg left at production), attribute the return-pickup
+    # trip to the MOST RECENT consuming MO only. Older MOs whose
+    # closeout also touched the lot drop off the queue. There's
+    # only ONE physical trip to make for the leftover, so one
+    # queue row — belonging to the latest closeout that decided
+    # "return the remainder". Without this dedup the queue lists
+    # both MOs and the picker sees 2x the trips they actually need.
+    # ``max(manufacturing_order_id)`` picks the latest — MO ids are
+    # a monotonic serial so higher = created later = closeout more
+    # recent for the shared-lot pattern.
     ingredient_mos =
       from(b in ManufacturingOrderBooking,
         join: p in Placement,
@@ -224,8 +238,8 @@ defmodule Backend.Warehouses.ReturnPickup do
             # committed lot out.
             l.id not in subquery(lots_committed_to_open_bookings) and
             b.manufacturing_order_id not in subquery(mos_with_pending_closeout),
-        distinct: true,
-        select: b.manufacturing_order_id
+        group_by: b.stock_lot_id,
+        select: max(b.manufacturing_order_id)
       )
 
     # CANCELLED MOs whose bookings still hold physical stock at a
