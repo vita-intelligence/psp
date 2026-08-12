@@ -1810,25 +1810,37 @@ defmodule Backend.OrderWizard do
           }
 
         [] ->
-          # Legacy-path edge case: order reached the terminal phase
-          # without any output lot ever landing in a dispatch cell
-          # (skipped routing, or lots were moved back out after
-          # routing). ``derive_dispatch_phase`` pins us at
-          # ``:ready_to_dispatch`` for those; without a shipment or a
-          # dispatchable lot the operator can't create paperwork
-          # normally — surface a diagnostic action instead of
-          # crashing the whole /projects page.
+          # The routing decision has been recorded (that's how we got
+          # past ``:awaiting_routing``), but the physical put-away
+          # from the release bay into a dispatch cell hasn't happened
+          # yet — nothing to fill in paperwork for until the lot is
+          # actually on the dispatch shelf. Send the put-away to the
+          # warehouse phone (same flow the ``final_release_move``
+          # action uses).
+          target = List.first(mos)
+          target_mo_uuid = target && Map.get(target, :uuid)
+
           %{
-            code: "review_dispatch_state",
-            title: "Review dispatch — no lot is in a dispatch cell.",
+            code: "move_released_lot_to_dispatch",
+            title:
+              "Move the released lot into a dispatch cell so the shipment can be prepared.",
             detail:
-              "Every released output lot has been moved out of the dispatch area or never routed there, so there's no shipment paperwork to fill in right now. Re-route a lot through the routing step to reopen the dispatch flow.",
+              "The routing decision is signed off but no output lot is on a dispatch shelf yet. Send the put-away to a paired phone — the warehouse picker scans the lot into the dispatch cell, and the shipment paperwork step unblocks automatically.",
             primary_cta: %{
-              label: "Open order",
-              kind: "link",
-              href: "/customer-orders/#{co.uuid}"
+              label: "Send put-away to phone",
+              kind: "send_to_device",
+              href: "/m/putaway",
+              mo_uuid: target_mo_uuid
             },
-            secondary_ctas: []
+            secondary_ctas: [
+              %{
+                label: "Open project",
+                kind: "link",
+                href: "/projects/#{co.uuid}",
+                description:
+                  "Review the released lots + routing decisions on the project control board."
+              }
+            ]
           }
       end
     end
