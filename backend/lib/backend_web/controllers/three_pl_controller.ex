@@ -72,6 +72,10 @@ defmodule BackendWeb.ThreePLController do
         unprocessable(conn, "already_routed",
           "This lot has already been routed. Rerouting requires an override action.")
 
+      {:error, :three_pl_not_allowed_for_sample} ->
+        unprocessable(conn, "three_pl_not_allowed_for_sample",
+          "Sample kits don't route via 3PL — they ship direct to the customer. Pick 'Direct shipment' instead.")
+
       {:error, :lot_not_placed} ->
         unprocessable(conn, "lot_not_placed",
           "The lot has no active placements — put-away must complete before routing.")

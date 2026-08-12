@@ -5542,7 +5542,11 @@ defmodule BackendWeb.Payloads do
               uuid: mo.uuid,
               code: render_code(mo, "manufacturing_order"),
               quantity: decimal_to_string(mo.quantity),
-              status: mo.status
+              status: mo.status,
+              # Exposed so the FE routing card can hide the 3PL
+              # option for sample kits — samples ship direct, never
+              # via a 3PL bailee arrangement.
+              project_type: mo.project_type
             }
 
           _ ->
