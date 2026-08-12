@@ -100,7 +100,12 @@ defmodule BackendWeb.CustomerOrderController do
   Create an MO pre-linked to the given CO line. Pre-fills:
     * item_id from the line's item
     * quantity from the line's qty_ordered
-    * warehouse from the CO's company default (first warehouse)
+    * project_type + warehouse derived from the CO's kind so the
+      wizard produces the SAME MO shape NPD's "Create MO on PSP"
+      button would (see ``derive_mo_defaults_for_co/2``). Sample
+      COs get ``project_type=sample`` + an R&D warehouse; every
+      other CO gets ``project_type=production`` + the first
+      production_facility.
     * customer_order_line_id so the wizard projection picks it up
 
   BOM + routing + dates are NOT auto-filled — the planner chooses
@@ -116,10 +121,14 @@ defmodule BackendWeb.CustomerOrderController do
     with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
          %{} = line <-
            Enum.find(co.lines, &(&1.uuid == line_uuid)) do
+      %{project_type: project_type, warehouse_id: warehouse_id} =
+        derive_mo_defaults_for_co(co, actor.company_id)
+
       attrs =
         %{
           "company_id" => actor.company_id,
-          "warehouse_id" => default_production_facility_id(actor.company_id),
+          "project_type" => project_type,
+          "warehouse_id" => warehouse_id,
           "item_id" => line.item_id,
           "quantity" => line.qty_ordered,
           "due_date" => line.expected_ship_date,
@@ -147,6 +156,35 @@ defmodule BackendWeb.CustomerOrderController do
     end
   end
 
+  # Same defaults NPD's ``IntegrationManufacturingOrderController.create/2``
+  # produces when the scientist clicks "Create MO on PSP". Keeps the
+  # two entry points behaviourally identical for a given CO so an
+  # operator never has to think about "which button did I click".
+  #
+  #   Sample CO  →  project_type: "sample"    + R&D warehouse
+  #                 (first warehouse with a ``rnd``-purpose cell,
+  #                  same rule as ``ensure_mo_site_has_rnd_cell``).
+  #   Anything   →  project_type: "production" + first
+  #                 production_facility (legacy commercial path).
+  #
+  # NPD's action lets the scientist PICK the R&D warehouse from a
+  # dropdown; the wizard path here auto-picks so the operator can
+  # click through in one shot. If the pick is wrong, they can edit
+  # the MO from its detail page (still draft at that point).
+  defp derive_mo_defaults_for_co(co, company_id) do
+    if co.sample_kind do
+      %{
+        project_type: "sample",
+        warehouse_id: default_rnd_warehouse_id(company_id)
+      }
+    else
+      %{
+        project_type: "production",
+        warehouse_id: default_production_facility_id(company_id)
+      }
+    end
+  end
+
   # MOs must live at a production-facility (not a regular storage
   # warehouse). Query directly — list_for_company defaults to kind
   # "warehouse" and returns a paginated tuple shape, so it's the
@@ -157,6 +195,28 @@ defmodule BackendWeb.CustomerOrderController do
     Backend.Repo.one(
       from w in Backend.Warehouses.Warehouse,
         where: w.company_id == ^company_id and w.kind == "production_facility",
+        order_by: [asc: w.id],
+        limit: 1,
+        select: w.id
+    )
+  end
+
+  # Sample / trial MOs must land on a warehouse that has at least
+  # one ``rnd``-purpose cell — matches the server-side check in
+  # ``Production.ensure_mo_site_has_rnd_cell``. Picks the first
+  # eligible one (mirrors NPD's dropdown when it has a single R&D
+  # site; on multi-site setups operator can edit the MO after
+  # create).
+  defp default_rnd_warehouse_id(company_id) do
+    import Ecto.Query
+
+    Backend.Repo.one(
+      from w in Backend.Warehouses.Warehouse,
+        join: sl in Backend.Warehouses.StorageLocation,
+        on: sl.warehouse_id == w.id,
+        join: c in Backend.Warehouses.StorageCell,
+        on: c.storage_location_id == sl.id,
+        where: w.company_id == ^company_id and c.purpose == "rnd",
         order_by: [asc: w.id],
         limit: 1,
         select: w.id
