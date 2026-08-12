@@ -93,6 +93,7 @@ defmodule Backend.ThreePL do
       with :ok <- ensure_permission_route(actor),
            :ok <- ensure_available(lot),
            :ok <- ensure_not_already_routed(lot),
+           :ok <- ensure_choice_allowed_for_lot(lot, choice),
            {:ok, warehouse_id} <- resolve_warehouse(lot),
            :ok <- ensure_capacity(warehouse_id, lot, choice),
            {:ok, customer_id} <- maybe_resolve_customer(lot, choice, override) do
@@ -817,6 +818,28 @@ defmodule Backend.ThreePL do
 
   defp ensure_available(%Lot{status: "available"}), do: :ok
   defp ensure_available(_), do: {:error, :not_available}
+
+  # Sample MOs produce customer sample kits — they follow the
+  # commercial finished-quarantine + Final Product Release ceremony,
+  # BUT they never route via a 3PL (we don't hold customer-owned
+  # sample stock at a bailee address; samples ship direct via
+  # regular courier). Enforce here so an operator can't fumble-click
+  # 3PL on a sample release and strand the lot in
+  # ``three_pl_storage`` cell instead of ``dispatch``. The FE
+  # disables the 3PL card for sample lots; this is belt-and-braces.
+  defp ensure_choice_allowed_for_lot(%Lot{id: lot_id}, "three_pl") do
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where: fragment("?::text", mo.uuid) == fragment("(SELECT source_ref FROM stock_lots WHERE id = ? LIMIT 1)", ^lot_id),
+             select: mo.project_type,
+             limit: 1
+         ) do
+      "sample" -> {:error, :three_pl_not_allowed_for_sample}
+      _ -> :ok
+    end
+  end
+
+  defp ensure_choice_allowed_for_lot(_lot, _choice), do: :ok
 
   # A lot is "already routed" when it has a routed_to_3pl or
   # routed_to_shipment event on its timeline. Guards against both

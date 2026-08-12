@@ -100,6 +100,10 @@ export interface FinalReleaseMoSummary {
   code: string | null;
   quantity: string;
   status: string;
+  /** Stream marker — the RoutingCard uses this to hide the 3PL
+   *  option for sample kits (samples ship direct, never via 3PL
+   *  bailee). Null on older responses / non-MO releases. */
+  project_type?: "production" | "trial" | "sample" | null;
 }
 
 export interface FinalRelease {

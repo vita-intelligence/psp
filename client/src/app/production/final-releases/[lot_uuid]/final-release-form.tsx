@@ -1441,7 +1441,17 @@ function RoutingCard({
   const [capacity, setCapacity] = useState<
     ThreePLCapacityResponse["free_m3"] | null
   >(null);
-  const [choice, setChoice] = useState<"three_pl" | "shipment" | null>(null);
+  // Sample kits ship direct — no 3PL bailee arrangement for customer
+  // samples (we don't hold sample stock at a bailee address, they
+  // move via regular courier). Pre-select "shipment" so the operator
+  // just confirms; the 3PL card is disabled below with an
+  // explanation. BE also rejects a three_pl choice on sample lots
+  // as belt-and-braces (see three_pl.ex ensure_choice_allowed_for_lot).
+  const isSample =
+    release.manufacturing_order?.project_type === "sample";
+  const [choice, setChoice] = useState<"three_pl" | "shipment" | null>(
+    isSample ? "shipment" : null,
+  );
   const [pending, setPending] = useState(false);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [noCustomer, setNoCustomer] = useState(false);
@@ -1565,16 +1575,24 @@ function RoutingCard({
           <RoutingChoiceCard
             label="3PL storage"
             icon={<Boxes className="size-4" />}
-            description="Customer takes ownership. We hold as bailee; storage rate accrues per m³ per day."
+            description={
+              isSample
+                ? "Not applicable for samples — customer sample kits ship direct via courier, we don't hold them at a bailee address."
+                : "Customer takes ownership. We hold as bailee; storage rate accrues per m³ per day."
+            }
             capacityM3={capacity?.three_pl_storage ?? null}
             selected={choice === "three_pl"}
-            disabled={!canRoute || pending || noCustomer}
+            disabled={!canRoute || pending || noCustomer || isSample}
             onClick={() => setChoice("three_pl")}
           />
           <RoutingChoiceCard
             label="Direct shipment"
             icon={<Truck className="size-4" />}
-            description="Whole lot moves to a dispatch cell for outgoing pickup. No storage charge."
+            description={
+              isSample
+                ? "Sample ships direct — moves to a dispatch cell for outgoing courier pickup."
+                : "Whole lot moves to a dispatch cell for outgoing pickup. No storage charge."
+            }
             capacityM3={capacity?.dispatch ?? null}
             selected={choice === "shipment"}
             disabled={!canRoute || pending}
@@ -1582,7 +1600,15 @@ function RoutingCard({
           />
         </div>
 
-        {noCustomer && (
+        {isSample && (
+          <p className="text-[11px] text-muted-foreground">
+            Sample flow: 3PL isn&rsquo;t offered. Direct shipment is pre-selected —
+            just confirm to route the sample to the dispatch cell for
+            courier pickup.
+          </p>
+        )}
+
+        {noCustomer && !isSample && (
           <p className="text-[11px] text-amber-700 dark:text-amber-300">
             No customer order linked to this lot — 3PL routing needs a
             customer to bill. Use direct shipment, or attach the lot to a
