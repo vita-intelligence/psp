@@ -11,6 +11,11 @@ defmodule Backend.Application do
     # first request already has a place to count against.
     :ok = Backend.HttpRateLimit.init()
 
+    # ETS-backed misclick-guard cache. Same lifecycle as the rate
+    # limiter — created up-front so the first mutating request in a
+    # freshly-booted node can register its response snapshot.
+    :ok = Backend.MisclickGuard.init()
+
     children = [
       BackendWeb.Telemetry,
       Backend.Repo,

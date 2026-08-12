@@ -14,6 +14,12 @@ defmodule BackendWeb.Router do
     plug :accepts, ["json", "html"]
     plug BackendWeb.Plugs.SecureHeaders
     plug BackendWeb.Plugs.RequireAuth
+    # Misclick guard — after auth so the fingerprint can include the
+    # user id. Catches double-clicks on any POST/PUT/PATCH by replaying
+    # the first response for 10s. Skipped automatically for
+    # multipart uploads + non-mutating methods. See
+    # ``BackendWeb.Plugs.MisclickGuard`` for the reasoning.
+    plug BackendWeb.Plugs.MisclickGuard
   end
 
   # Machine-to-machine integrations (vita-performance today, more
@@ -25,6 +31,11 @@ defmodule BackendWeb.Router do
     plug :accepts, ["json"]
     plug BackendWeb.Plugs.SecureHeaders
     plug BackendWeb.Plugs.RequireIntegrationAuth, scope: :any
+    # Same misclick guard as user-facing routes — integration retries
+    # (network blip, queue re-fire) are the automated equivalent of
+    # a double-click and deserve the same replay treatment. The
+    # integration token id becomes the actor for the fingerprint.
+    plug BackendWeb.Plugs.MisclickGuard
   end
 
   # One pipeline per polymorphic-comments mount. Stamps
