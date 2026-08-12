@@ -121,39 +121,81 @@ defmodule BackendWeb.CustomerOrderController do
     with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
          %{} = line <-
            Enum.find(co.lines, &(&1.uuid == line_uuid)) do
-      %{project_type: project_type, warehouse_id: warehouse_id} =
-        derive_mo_defaults_for_co(co, actor.company_id)
-
-      attrs =
-        %{
-          "company_id" => actor.company_id,
-          "project_type" => project_type,
-          "warehouse_id" => warehouse_id,
-          "item_id" => line.item_id,
-          "quantity" => line.qty_ordered,
-          "due_date" => line.expected_ship_date,
-          "customer_order_line_id" => line.id,
-          "assigned_to_id" => actor.id,
-          "created_by_id" => actor.id,
-          "updated_by_id" => actor.id
-        }
-        # Wizard's auto-pick path passes a bom_id when the line's item
-        # has exactly one active BOM; create_manufacturing_order/2 also
-        # falls back to the primary BOM when this is absent.
-        |> maybe_put("bom_id", params["bom_id"])
-
-      case Backend.Production.create_manufacturing_order(actor, attrs) do
-        {:ok, mo} ->
+      # Idempotency: if the line already has a live MO, return it
+      # instead of creating another tree. A stale wizard snapshot, a
+      # second browser tab, or a double-clicked button used to produce
+      # duplicate parallel MO trees (2 roots + 2 sub-MOs against the
+      # same CO line) which then dragged the CO backwards to
+      # ``:production_planning`` because the phantom draft MOs failed
+      # the ``all fully_sorted?`` gate in ``derive_phase``. Returning
+      # the existing MO with 200 lets the FE navigate to it — the
+      # user's intent ("I want this line's MO") is served either way.
+      case existing_live_mo_for_line(actor.company_id, line.id) do
+        %Backend.Production.ManufacturingOrder{} = existing ->
           conn
-          |> put_status(:created)
-          |> json(%{manufacturing_order: Payloads.manufacturing_order(mo)})
+          |> put_status(:ok)
+          |> json(%{
+            manufacturing_order: Payloads.manufacturing_order(existing),
+            already_exists: true
+          })
 
-        {:error, %Ecto.Changeset{} = cs} ->
-          changeset_error(conn, cs)
+        nil ->
+          create_mo_for_line_new(conn, actor, co, line, params)
       end
     else
       _ -> {:error, :not_found}
     end
+  end
+
+  defp create_mo_for_line_new(conn, actor, co, line, params) do
+    %{project_type: project_type, warehouse_id: warehouse_id} =
+      derive_mo_defaults_for_co(co, actor.company_id)
+
+    attrs =
+      %{
+        "company_id" => actor.company_id,
+        "project_type" => project_type,
+        "warehouse_id" => warehouse_id,
+        "item_id" => line.item_id,
+        "quantity" => line.qty_ordered,
+        "due_date" => line.expected_ship_date,
+        "customer_order_line_id" => line.id,
+        "assigned_to_id" => actor.id,
+        "created_by_id" => actor.id,
+        "updated_by_id" => actor.id
+      }
+      # Wizard's auto-pick path passes a bom_id when the line's item
+      # has exactly one active BOM; create_manufacturing_order/2 also
+      # falls back to the primary BOM when this is absent.
+      |> maybe_put("bom_id", params["bom_id"])
+
+    case Backend.Production.create_manufacturing_order(actor, attrs) do
+      {:ok, mo} ->
+        conn
+        |> put_status(:created)
+        |> json(%{manufacturing_order: Payloads.manufacturing_order(mo)})
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
+  # Earliest non-cancelled MO on the line — the wizard's
+  # ``primary_mo`` uses the same rule. Cancelled MOs are tombstones,
+  # not live production plans, so they don't block another MO being
+  # created on the same line.
+  defp existing_live_mo_for_line(company_id, line_id) do
+    import Ecto.Query
+
+    Backend.Repo.one(
+      from mo in Backend.Production.ManufacturingOrder,
+        where:
+          mo.company_id == ^company_id and
+            mo.customer_order_line_id == ^line_id and
+            mo.status != "cancelled",
+        order_by: [asc: mo.inserted_at, asc: mo.id],
+        limit: 1
+    )
   end
 
   # Same defaults NPD's ``IntegrationManufacturingOrderController.create/2``

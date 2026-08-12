@@ -110,7 +110,16 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
            resolve_sample_co_line_id(
              company_id,
              params["npd_sample_payment_uuid"]
-           ) do
+           ),
+         # Cross-endpoint idempotency: if the sample CO's line already
+         # has a live MO (typically created via the wizard's
+         # ``create_mo_for_line`` first), adopt it — stamp the trial
+         # uuid so subsequent NPD retries hit ``lookup_by_trial`` and
+         # short-circuit, then return it as an idempotent 200. Without
+         # this, wizard-first + NPD-second on the same sample produced
+         # two parallel MO trees on the same line (the exact bug that
+         # dragged CO12 back to :production_planning).
+         :continue <- maybe_adopt_wizard_mo(conn, company_id, co_line_id, trial_uuid) do
       attrs = %{
         "item_id" => item_id,
         "warehouse_id" => warehouse_id,
@@ -220,7 +229,77 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         conn
         |> put_status(:bad_request)
         |> json(%{error: "invalid_sample_payment_uuid"})
+
+      # Adopt path took the response early — nothing to do here. The
+      # ``with`` clause short-circuits on the ``{:halt, conn}`` return
+      # so control lands in this ``else`` and we hand the conn back.
+      {:halt, %Plug.Conn{} = adopted_conn} ->
+        adopted_conn
     end
+  end
+
+  # When a sample CO's line already carries a live MO (wizard fired
+  # first), we adopt it: stamp the incoming trial uuid onto the
+  # existing row so future NPD retries find it via
+  # ``lookup_by_trial``, then emit the same 200 payload the
+  # idempotent-retry branch does. Return ``:continue`` when there's
+  # nothing to adopt so the ``with`` chain proceeds to the normal
+  # insert path.
+  defp maybe_adopt_wizard_mo(_conn, _company_id, nil, _trial_uuid), do: :continue
+
+  defp maybe_adopt_wizard_mo(conn, company_id, co_line_id, trial_uuid) do
+    case existing_live_mo_for_line(company_id, co_line_id) do
+      nil ->
+        :continue
+
+      %ManufacturingOrder{} = existing ->
+        adopted = stamp_trial_uuid(existing, trial_uuid)
+
+        response =
+          conn
+          |> put_status(:ok)
+          |> json(%{
+            manufacturing_order: mo_summary(adopted),
+            already_exists: true,
+            adopted: true
+          })
+
+        {:halt, response}
+    end
+  end
+
+  # In-place update of ``npd_trial_batch_uuid`` on an existing MO.
+  # Only writes when the field is currently empty — if a different
+  # trial batch is already stamped on this MO (shouldn't happen; the
+  # wizard doesn't set it) we leave it alone so we don't overwrite a
+  # legitimate NPD link.
+  defp stamp_trial_uuid(
+         %ManufacturingOrder{npd_trial_batch_uuid: nil} = mo,
+         trial_uuid
+       ) do
+    mo
+    |> Ecto.Changeset.change(%{npd_trial_batch_uuid: trial_uuid})
+    |> Repo.update()
+    |> case do
+      {:ok, updated} -> updated
+      # Unique-index collision → another NPD retry raced us. Fall back
+      # to whatever's now in the DB rather than crashing the request.
+      {:error, _} -> Repo.reload!(mo)
+    end
+  end
+
+  defp stamp_trial_uuid(%ManufacturingOrder{} = mo, _trial_uuid), do: mo
+
+  defp existing_live_mo_for_line(company_id, line_id) do
+    Repo.one(
+      from mo in ManufacturingOrder,
+        where:
+          mo.company_id == ^company_id and
+            mo.customer_order_line_id == ^line_id and
+            mo.status != "cancelled",
+        order_by: [asc: mo.inserted_at, asc: mo.id],
+        limit: 1
+    )
   end
 
   # Resolve the CustomerOrderLine.id that this MO should attach to
