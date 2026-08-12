@@ -200,15 +200,30 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         sortField: "shortage_qty",
         sortLabels: { asc: "Smallest gap", desc: "Largest gap" },
         align: "right",
-        widthClassName: "w-32",
+        widthClassName: "w-40",
         group: "Amounts",
-        description: "Net gap = required − booked − expecting.",
-        cell: (r) => (
-          <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-red-700 dark:text-red-300">
-            <AlertTriangle className="size-3" />
-            {formatCompanyNumber(r.shortage_qty, companyDateFormat)} {uomOf(r)}
-          </span>
-        ),
+        description:
+          "Net gap = required − on_hand − expecting. Rows with 0 gap but flagged 'book from stock' surface here because an operator hit \"Request purchases\" — on-hand covers it, so book instead of raising a PO.",
+        cell: (r) => {
+          const isZero = Number(r.shortage_qty) === 0;
+          if (isZero && r.explicit_request) {
+            return (
+              <span
+                className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-amber-700 dark:text-amber-300"
+                title="Operator flagged for procurement, but on-hand stock covers it — book from stock rather than raising a PO."
+              >
+                <AlertTriangle className="size-3" />
+                Book from stock
+              </span>
+            );
+          }
+          return (
+            <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-red-700 dark:text-red-300">
+              <AlertTriangle className="size-3" />
+              {formatCompanyNumber(r.shortage_qty, companyDateFormat)} {uomOf(r)}
+            </span>
+          );
+        },
       },
       {
         id: "mos",

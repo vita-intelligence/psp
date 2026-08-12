@@ -38,6 +38,13 @@ export interface ShortageRow {
   expecting_qty: string;
   shortage_qty: string;
   on_hand_qty: string;
+  /** True when at least one contributing MO explicitly hit
+   *  "Request purchases". Rows with ``shortage_qty === "0"`` but
+   *  ``explicit_request === true`` are here because an operator
+   *  flagged them, not because the company is genuinely short —
+   *  the FE badges these differently so procurement knows to
+   *  "book from stock" rather than raise a fresh PO. */
+  explicit_request: boolean;
   dependent_mos: ShortageDependentMo[];
 }
 
