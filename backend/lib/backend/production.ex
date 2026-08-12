@@ -3290,19 +3290,26 @@ defmodule Backend.Production do
   end
 
   @doc """
-  Scientist sends the tree back to draft with a required reason.
-  Clears both signatures so the preparer fixes + re-signs from the
-  bottom of the workflow. Reason recorded on the root MO + audit
-  trail; shown as a banner until the next prepare cycle.
+  Scientist sends this MO (and everything below it) back to draft
+  with a required reason. Signatures cleared so the preparer fixes
+  + re-signs from the bottom of the workflow. Reason recorded on
+  the rejected node + audit trail; shown as a banner until the next
+  prepare cycle.
+
+  Works on any node in the tree (leaves, mid-nodes, or root) —
+  ``prepare_mo`` and ``approve_mo`` are per-MO so ``reject_mo`` is
+  too, matches the operator's mental model. Signed ancestors get
+  demoted upward on top of the downward cascade because a parent's
+  approval implicitly certified its child's plan; rejecting the
+  child invalidates that certification. Siblings are unaffected.
   """
   def reject_mo(%User{} = actor, %ManufacturingOrder{} = mo, reason)
       when is_binary(reason) do
     trimmed = String.trim(reason)
 
-    with :ok <- ensure_root(mo),
-         :ok <- ensure_status_in(mo, ["prepared"]),
+    with :ok <- ensure_status_in(mo, ["prepared"]),
          :ok <- ensure_non_empty_reason(trimmed) do
-      cascade_approval_transition(actor, mo, "draft", %{
+      reject_or_amend_txn(actor, mo, %{
         "approved_by_id" => nil,
         "approved_at" => nil,
         "prepared_by_id" => nil,
@@ -3315,18 +3322,76 @@ defmodule Backend.Production do
   def reject_mo(_actor, _mo, _), do: {:error, :reason_required}
 
   @doc """
-  Approver's amend — returns an approved tree to draft. Clears both
-  signatures so the next pass starts fresh.
+  Approver's amend — returns this MO (+ descendants) to draft. Same
+  scope semantics as ``reject_mo``: works on any node, cascades
+  descendants, demotes signed ancestors up the chain (siblings
+  untouched).
   """
   def amend_mo(%User{} = actor, %ManufacturingOrder{} = mo) do
-    with :ok <- ensure_root(mo),
-         :ok <- ensure_status_in(mo, ["approved"]) do
-      cascade_approval_transition(actor, mo, "draft", %{
+    with :ok <- ensure_status_in(mo, ["approved"]) do
+      reject_or_amend_txn(actor, mo, %{
         "approved_by_id" => nil,
         "approved_at" => nil,
         "prepared_by_id" => nil,
         "prepared_at" => nil
       })
+    end
+  end
+
+  # Shared wrapper for reject + amend: demote the rejected subtree
+  # (this node + descendants) then walk upward demoting each signed
+  # ancestor. Whole thing in one transaction so a mid-flight failure
+  # leaves the tree in its prior state.
+  defp reject_or_amend_txn(actor, mo, signature_attrs) do
+    Repo.transaction(fn ->
+      # ``cascade_approval_transition`` already opens its own
+      # Repo.transaction — Ecto nests via savepoints, so the outer
+      # transaction still rolls back atomically if anything fails.
+      with {:ok, updated} <-
+             cascade_approval_transition(actor, mo, "draft", signature_attrs),
+           :ok <-
+             demote_signed_ancestors(actor, updated, signature_attrs) do
+        updated
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # Walk up ``parent_mo_id`` from the rejected node. For each
+  # ancestor that's ``prepared`` or ``approved``, demote it to
+  # ``draft`` in-place (single-node transition, no downward cascade —
+  # sibling subtrees under that ancestor keep their own signatures
+  # untouched). Stops climbing at the first ``draft`` (already
+  # demoted, nothing more to do) or when we hit the root.
+  defp demote_signed_ancestors(_actor, %ManufacturingOrder{parent_mo_id: nil}, _attrs), do: :ok
+
+  defp demote_signed_ancestors(actor, %ManufacturingOrder{parent_mo_id: parent_id}, attrs) do
+    case Repo.get(ManufacturingOrder, parent_id) do
+      nil ->
+        :ok
+
+      %ManufacturingOrder{status: s} = parent when s in ["prepared", "approved"] ->
+        # Demote only THIS parent — no cascade. The rejected subtree
+        # was already handled by the caller's ``cascade_approval_
+        # transition``; sibling subtrees stay signed on their own
+        # merits.
+        case do_transition(actor, parent, "draft", attrs) do
+          {:ok, updated_parent} ->
+            demote_signed_ancestors(actor, updated_parent, attrs)
+
+          err ->
+            err
+        end
+
+      %ManufacturingOrder{} = parent ->
+        # Already draft / in_progress / completed / cancelled — no
+        # further demote needed, and we don't climb further because
+        # a signed grandparent would only have been signed if all
+        # of its children (including this now-unsigned parent) were
+        # in an acceptable state at the time. Grandparent still
+        # needs to be checked in case someone signed it out of order.
+        demote_signed_ancestors(actor, parent, attrs)
     end
   end
 
