@@ -221,16 +221,35 @@ export function ShipmentDetail({
 
   const autofillFromCustomer = () => {
     const c = shipment.customer;
-    if (!c) return;
-    // Auto-fill the empty fields only — never stomp a manual override.
-    if (!state.recipient_name) setField("recipient_name", c.name);
-    if (!state.ship_to_address && c.legal_address) {
-      setField("ship_to_address", c.legal_address);
+    const co = shipment.customer_order;
+    // Auto-fill empty fields only — never stomp a manual override.
+    // Address resolution: prefer the CO's ``delivery_address`` (that's
+    // what the customer typed into /portal/settings on the website
+    // and NPD mirrors to us via the sync), fall back to the customer's
+    // ``legal_address`` for accounts synced from a PSP-native flow.
+    let filled = 0;
+    if (!state.recipient_name && c?.name) {
+      setField("recipient_name", c.name);
+      filled++;
     }
-    if (!state.ship_to_country && c.country_code) {
+    if (!state.ship_to_address) {
+      const addr = co?.delivery_address || c?.legal_address || null;
+      if (addr) {
+        setField("ship_to_address", addr);
+        filled++;
+      }
+    }
+    if (!state.ship_to_country && c?.country_code) {
       setField("ship_to_country", c.country_code);
+      filled++;
     }
-    toast.success("Filled from the customer record.");
+    if (filled === 0) {
+      toast.info(
+        "Nothing to fill — either the fields are already set or the customer profile doesn't have an address on file yet.",
+      );
+      return;
+    }
+    toast.success("Filled from the customer profile.");
   };
 
   const save = () => {
@@ -509,18 +528,20 @@ export function ShipmentDetail({
               {canEdit && <CollabAvatars peers={presence} />}
               {editable && canEdit && (
                 <>
-                  {editing && shipment.customer && canDrive && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={autofillFromCustomer}
-                      title="Copy recipient + address + country from the customer record."
-                    >
-                      <Sparkles className="mr-1 size-3.5" />
-                      Fill from customer
-                    </Button>
-                  )}
+                  {editing &&
+                    canDrive &&
+                    (shipment.customer || shipment.customer_order) && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={autofillFromCustomer}
+                        title="Copy recipient + address + country from the customer profile."
+                      >
+                        <Sparkles className="mr-1 size-3.5" />
+                        Fill from customer
+                      </Button>
+                    )}
                   {editing ? (
                     <>
                       <Button

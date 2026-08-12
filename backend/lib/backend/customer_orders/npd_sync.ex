@@ -108,6 +108,7 @@ defmodule Backend.CustomerOrders.NpdSync do
     |> Ecto.Changeset.put_change(:npd_formulation_uuid, npd_uuid)
     |> Ecto.Changeset.put_change(:status, "draft")
     |> put_npd_team(params)
+    |> put_customer_delivery_address(params)
     |> Repo.insert()
   end
 
@@ -132,6 +133,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       existing
       |> CustomerOrder.changeset(attrs)
       |> put_npd_team(params)
+      |> put_customer_delivery_address(params, existing.status)
 
     changeset =
       if existing.status == "draft" and existing.customer_id != active_customer.id do
@@ -458,6 +460,37 @@ defmodule Backend.CustomerOrders.NpdSync do
   defp sanitize(v) when is_binary(v), do: String.trim(v)
   defp sanitize(_), do: nil
 
+  # Mirror the customer's saved delivery_address (portal profile
+  # settings on the website → NPD Customer row → PSP CO). Written on
+  # insert always; on update only when the CO is still ``draft`` so
+  # an approved commercial order's shipping party can't be silently
+  # rewritten by a later re-sync. Sample COs land as ``confirmed`` on
+  # first sync but we still allow the address to refresh — samples
+  # follow the customer's current portal profile, not a legally
+  # frozen contract.
+  defp put_customer_delivery_address(changeset, params) do
+    case sanitize(
+           params["customer_delivery_address"] ||
+             params[:customer_delivery_address]
+         ) do
+      nil -> changeset
+      addr -> Ecto.Changeset.put_change(changeset, :delivery_address, addr)
+    end
+  end
+
+  defp put_customer_delivery_address(changeset, params, "draft"),
+    do: put_customer_delivery_address(changeset, params)
+
+  defp put_customer_delivery_address(changeset, params, "confirmed"),
+    do: put_customer_delivery_address(changeset, params)
+
+  # Any status past ``confirmed`` → the CO is legally live; freeze
+  # the address to what it was when the operator signed off. A late
+  # profile edit on the website can't rewrite an approved order's
+  # ship-to.
+  defp put_customer_delivery_address(changeset, _params, _status),
+    do: changeset
+
   # ==================================================================
   # Sample-fulfilment sync
   # ==================================================================
@@ -580,6 +613,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> put_npd_formulation_uuid(params)
       |> put_npd_team(params)
       |> put_npd_payment(params)
+      |> put_customer_delivery_address(params)
 
     with {:ok, co} <- Repo.insert(changeset),
          {:ok, _line} <- insert_sample_line(co, item, params) do
@@ -606,6 +640,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> put_npd_formulation_uuid(params)
       |> put_npd_team(params)
       |> put_npd_payment(params)
+      |> put_customer_delivery_address(params, existing.status)
 
     changeset =
       if existing.status == "draft" and existing.customer_id != active_customer.id do

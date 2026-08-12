@@ -5733,7 +5733,16 @@ defmodule BackendWeb.Payloads do
   defp shipment_customer(_), do: nil
 
   defp shipment_customer_order(%Backend.CustomerOrders.CustomerOrder{} = co) do
-    %{id: co.id, uuid: co.uuid, status: co.status}
+    %{
+      id: co.id,
+      uuid: co.uuid,
+      status: co.status,
+      # Portal-profile delivery address, mirrored from NPD's Customer
+      # row via the sync. Feeds the shipment form's "Fill from order"
+      # autofill so the coordinator doesn't retype what the customer
+      # already saved on /portal/settings.
+      delivery_address: co.delivery_address
+    }
   end
 
   defp shipment_customer_order(_), do: nil
