@@ -18,9 +18,11 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
 
   alias Backend.CustomerInvoices.CustomerInvoice
   alias Backend.CustomerOrders.CustomerOrder
+  alias Backend.CustomerOrders.CustomerOrderLine
   alias Backend.CustomerOrders.NpdSync
   alias Backend.CustomerOrders.ProposalMerge
   alias Backend.OrderWizard
+  alias Backend.Production.{FinalRelease, FinalReleaseFile, ManufacturingOrder}
   alias Backend.Repo
 
   plug :require_integration_scope,
@@ -38,7 +40,12 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
   # customer where their sample is).
   plug :require_integration_scope,
        "customer_order:sync:npd"
-       when action in [:snapshot, :invoices]
+       when action in [
+              :snapshot,
+              :invoices,
+              :release_documents,
+              :serve_release_document
+            ]
 
   action_fallback BackendWeb.FallbackController
 
@@ -390,5 +397,193 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
             json(conn, %{invoices: invoices})
         end
     end
+  end
+
+  @doc """
+  GET /api/integration/customer-orders/:uuid/release-documents
+
+  Returns the Final Product Release files attached to this CO's
+  root-MO release ceremony. Powers the "Release documents" card on
+  the customer portal's sample detail page — each row carries
+  enough metadata to render + download.
+
+  Response shape:
+
+  .. code-block:: json
+
+      {
+        "documents": [
+          {
+            "uuid": "…file uuid…",
+            "kind": "coa" | "bmr" | "micro" | "label_proof" | "retain_sample",
+            "filename": "coa-batch-42.pdf",
+            "mime": "application/pdf",
+            "byte_size": 158234,
+            "uploaded_at": "2026-08-12T14:22:00Z"
+          }
+        ]
+      }
+
+  Empty ``documents`` array when the CO has no root-MO release yet
+  (release ceremony hasn't been completed on PSP) — the FE renders
+  nothing for that case rather than a "no docs" banner. File bytes
+  are served via ``serve_release_document`` below.
+  """
+  def release_documents(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    case resolve_release_for_co(company_id, uuid) do
+      {:error, :invalid_uuid} ->
+        conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+      {:error, :co_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+
+      {:error, :no_release} ->
+        # CO exists but no release ceremony on file yet — return
+        # empty list so the caller can render a placeholder without
+        # having to distinguish "not started" from "no data".
+        json(conn, %{documents: []})
+
+      {:ok, %FinalRelease{} = release} ->
+        files =
+          Repo.all(
+            from f in FinalReleaseFile,
+              where:
+                f.production_final_release_id == ^release.id and
+                  f.company_id == ^company_id,
+              order_by: [asc: f.inserted_at, asc: f.id],
+              select: %{
+                uuid: f.uuid,
+                kind: f.kind,
+                filename: f.filename,
+                mime: f.mime,
+                byte_size: f.byte_size,
+                uploaded_at: f.inserted_at
+              }
+          )
+
+        json(conn, %{documents: files})
+    end
+  end
+
+  @doc """
+  GET /api/integration/customer-orders/:uuid/release-documents/:file_uuid
+
+  Streams the file bytes for one Final Release document. Ownership
+  is enforced by the join — the file must belong to a release
+  whose MO belongs to the given CO, all inside the same company.
+  A file uuid from a different tenant / different CO gets 404.
+
+  Sets ``Content-Disposition: inline`` so PDFs preview in the
+  portal iframe; non-PDFs download normally.
+  """
+  def serve_release_document(conn, %{"uuid" => uuid, "file_uuid" => file_uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    with {:ok, %FinalRelease{} = release} <- resolve_release_for_co(company_id, uuid),
+         %FinalReleaseFile{} = file <-
+           Repo.get_by(FinalReleaseFile,
+             uuid: file_uuid,
+             company_id: company_id,
+             production_final_release_id: release.id
+           ),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_header("content-type", file.mime)
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
+      )
+      |> send_file(200, abs_path)
+    else
+      {:error, :invalid_uuid} ->
+        conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+      {:error, :co_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+
+      {:error, :no_release} ->
+        conn |> put_status(:not_found) |> json(%{error: "no_release"})
+
+      _ ->
+        conn |> put_status(:not_found) |> json(%{error: "file_not_found"})
+    end
+  end
+
+  # Walks CO → root MO (line's finished-product MO, parent_mo_id nil)
+  # → FinalRelease. Returns ``{:ok, release}`` or a tagged error the
+  # caller maps to the right HTTP status. The release is the ONE row
+  # per finished-product MO — no siblings to disambiguate.
+  defp resolve_release_for_co(company_id, uuid) do
+    with {:ok, cast_uuid} <- cast_uuid(uuid),
+         %CustomerOrder{id: co_id} <- fetch_co(company_id, cast_uuid),
+         %ManufacturingOrder{id: root_mo_id} <-
+           fetch_root_mo_for_co(company_id, co_id),
+         %FinalRelease{} = release <-
+           Repo.get_by(FinalRelease,
+             company_id: company_id,
+             manufacturing_order_id: root_mo_id
+           ) do
+      {:ok, release}
+    else
+      :error -> {:error, :invalid_uuid}
+      nil -> {:error, :co_not_found_or_no_release_route}
+      # ``fetch_co`` returns nil on miss; ``fetch_root_mo_for_co`` +
+      # ``Repo.get_by`` also return nil. Discriminate by re-checking
+      # the CO row so the caller can surface the right message.
+      other -> other
+    end
+    |> case do
+      {:error, :co_not_found_or_no_release_route} ->
+        case cast_uuid(uuid) do
+          :error ->
+            {:error, :invalid_uuid}
+
+          {:ok, cast_uuid} ->
+            case fetch_co(company_id, cast_uuid) do
+              nil -> {:error, :co_not_found}
+              _ -> {:error, :no_release}
+            end
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp cast_uuid(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} -> {:ok, cast}
+      :error -> :error
+    end
+  end
+
+  defp fetch_co(company_id, uuid) do
+    Repo.one(
+      from co in CustomerOrder,
+        where: co.company_id == ^company_id and co.uuid == ^uuid,
+        select: %CustomerOrder{id: co.id, uuid: co.uuid, company_id: co.company_id},
+        limit: 1
+    )
+  end
+
+  # The finished-product MO is the root of the tree (parent_mo_id
+  # nil) attached to one of this CO's lines. Filters cancelled MOs
+  # so a freshly re-created root supersedes an earlier tombstone.
+  defp fetch_root_mo_for_co(company_id, co_id) do
+    Repo.one(
+      from mo in ManufacturingOrder,
+        join: line in CustomerOrderLine,
+        on: line.id == mo.customer_order_line_id,
+        where:
+          mo.company_id == ^company_id and
+            line.customer_order_id == ^co_id and
+            is_nil(mo.parent_mo_id) and
+            mo.status != "cancelled",
+        order_by: [desc: mo.inserted_at],
+        limit: 1
+    )
   end
 end

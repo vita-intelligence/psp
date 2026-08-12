@@ -1981,6 +1981,18 @@ defmodule BackendWeb.Router do
         IntegrationCustomerOrderController,
         :invoices
 
+    # Final Product Release documents attached to a CO's root MO.
+    # Powers the "Release documents" card on the customer portal
+    # sample detail page (CoA, BMR, micro, label proof, retain
+    # sample). List returns metadata; serve streams file bytes.
+    get "/customer-orders/:uuid/release-documents",
+        IntegrationCustomerOrderController,
+        :release_documents
+
+    get "/customer-orders/:uuid/release-documents/:file_uuid",
+        IntegrationCustomerOrderController,
+        :serve_release_document
+
     # NPD proposal-created merge. Fired when a Proposal is drafted on
     # NPD spanning N spec sheets — consolidates the N R&D draft COs
     # into one primary + attaches proposal identity so the wizard
