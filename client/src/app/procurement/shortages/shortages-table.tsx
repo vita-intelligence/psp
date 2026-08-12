@@ -364,26 +364,44 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         header: "",
         widthClassName: "w-32",
         hideable: false,
-        cell: (r) => (
-          <Button
-            asChild
-            size="sm"
-            variant="default"
-            className="h-8 w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Link
-              href={`/procurement/purchase-orders/new?item_uuid=${encodeURIComponent(
-                r.item?.uuid ?? "",
-              )}&qty=${encodeURIComponent(r.shortage_qty)}${
-                r.is_rnd ? "&is_rnd=1" : ""
-              }`}
+        cell: (r) => {
+          // Pre-fill qty for the PO line:
+          // * genuine shortage → shortage_qty (the exact gap after
+          //   netting on-hand + expecting — matches what
+          //   procurement must buy).
+          // * explicit_request with no shortage → required − booked
+          //   (the outstanding unbooked qty the operator flagged
+          //   for procurement; on-hand is irrelevant because they
+          //   want a fresh PO regardless).
+          const shortage = Number(r.shortage_qty);
+          const outstanding = Number(r.required_qty) - Number(r.booked_qty);
+          const preFillQty =
+            shortage > 0
+              ? r.shortage_qty
+              : outstanding > 0
+                ? String(outstanding)
+                : r.required_qty;
+          return (
+            <Button
+              asChild
+              size="sm"
+              variant="default"
+              className="h-8 w-full"
+              onClick={(e) => e.stopPropagation()}
             >
-              <ShoppingCart className="mr-1.5 size-3.5" />
-              Create PO
-            </Link>
-          </Button>
-        ),
+              <Link
+                href={`/procurement/purchase-orders/new?item_uuid=${encodeURIComponent(
+                  r.item?.uuid ?? "",
+                )}&qty=${encodeURIComponent(preFillQty)}${
+                  r.is_rnd ? "&is_rnd=1" : ""
+                }`}
+              >
+                <ShoppingCart className="mr-1.5 size-3.5" />
+                Create PO
+              </Link>
+            </Button>
+          );
+        },
       },
     ];
   }, [companyDateFormat]);
