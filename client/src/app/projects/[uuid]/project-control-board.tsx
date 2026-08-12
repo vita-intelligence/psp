@@ -775,10 +775,12 @@ export function ProjectControlBoard({
             {/* Blockers */}
             {blockers.length > 0 && <BlockersCard blockers={blockers} />}
 
-            {/* Invoice reminder — advisory, never a blocker. */}
+            {/* Invoice reminder — advisory, never a blocker. Sample
+                COs render an NPD payment card instead of the default
+                "Generate invoice" prompt (the customer already paid
+                on NPD; no PSP-side invoice is needed). */}
             <InvoiceReminderCard
-              coUuid={co.uuid}
-              coStatus={co.status}
+              co={co}
               invoices={invoices ?? []}
               canCreateInvoice={permissions.canCreateInvoice}
             />
@@ -1571,13 +1573,11 @@ function PhaseExplainerCard({ phase }: { phase: OrderWizardPhase }) {
 // =============================================================================
 
 function InvoiceReminderCard({
-  coUuid,
-  coStatus,
+  co,
   invoices,
   canCreateInvoice,
 }: {
-  coUuid: string;
-  coStatus: string;
+  co: CustomerOrder;
   invoices: OrderWizardInvoice[];
   canCreateInvoice: boolean;
 }) {
@@ -1586,7 +1586,17 @@ function InvoiceReminderCard({
 
   // No reminder before the CO is confirmed — too early to invoice.
   // No reminder when terminal-cancelled — moot.
-  if (coStatus !== "confirmed") return null;
+  if (co.status !== "confirmed") return null;
+
+  // NPD sample flow — the customer already paid on NPD, finance
+  // recorded the payment there, and finance may have attached one
+  // or more invoice/receipt files. Render THAT record here so the
+  // PSP operator doesn't have to switch apps to see what got paid.
+  // Never falls through to the "Generate invoice" prompt because
+  // sample COs don't produce PSP-side invoices.
+  if (co.sample_kind && co.npd_payment_id) {
+    return <NpdPaymentCard co={co} />;
+  }
 
   if (invoices.length > 0) {
     const total = invoices.length;
@@ -1616,7 +1626,7 @@ function InvoiceReminderCard({
 
   function generate() {
     startGenerate(async () => {
-      const res = await createInvoiceFromCOAction(coUuid, {});
+      const res = await createInvoiceFromCOAction(co.uuid, {});
       if (res.ok) {
         toast.success("Invoice generated");
         router.push(`/sales/invoices/${res.customer_invoice.uuid}`);
@@ -1647,6 +1657,113 @@ function InvoiceReminderCard({
     </Card>
   );
 }
+
+/** NPD-payment card — replaces the "Generate invoice" prompt on
+ *  sample COs. The customer paid on NPD, finance approved on NPD,
+ *  and may have attached one or more invoice / receipt PDFs. This
+ *  card renders that record so the PSP operator sees the full
+ *  billing story without switching apps. File bytes stay on NPD;
+ *  filenames + sizes only for MVP (download proxy is a follow-up).
+ */
+function NpdPaymentCard({ co }: { co: CustomerOrder }) {
+  const amount = co.npd_payment_amount;
+  const currency = co.npd_payment_currency || "GBP";
+  const files = co.npd_payment_files ?? [];
+  const paidAt = co.npd_payment_paid_at
+    ? new Date(co.npd_payment_paid_at)
+    : null;
+  const statusTone = _NPD_PAYMENT_STATUS_TONE[co.npd_payment_status ?? ""] ??
+    "bg-muted text-muted-foreground";
+
+  return (
+    <Card className="border-emerald-300/50 bg-emerald-50/40 dark:border-emerald-800/40 dark:bg-emerald-950/20">
+      <CardContent className="flex flex-col gap-3 py-4 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-200">
+            <Receipt className="size-4 shrink-0" />
+            <span className="font-semibold">
+              Paid on NPD
+              {amount ? ` · ${_formatNpdMoney(amount, currency)}` : ""}
+            </span>
+          </div>
+          {co.npd_payment_status ? (
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                statusTone,
+              )}
+            >
+              {co.npd_payment_status}
+            </span>
+          ) : null}
+        </div>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {co.npd_payment_invoice_number ? (
+            <>
+              <dt>Invoice ref</dt>
+              <dd className="text-right font-medium text-foreground">
+                {co.npd_payment_invoice_number}
+              </dd>
+            </>
+          ) : null}
+          {paidAt ? (
+            <>
+              <dt>Paid</dt>
+              <dd className="text-right font-medium text-foreground">
+                {paidAt.toLocaleDateString("en-GB", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                })}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+        {files.length > 0 ? (
+          <ul className="border-border/60 divide-border/40 divide-y border-t pt-2 text-xs">
+            {files.map((f) => (
+              <li key={f.uuid} className="flex items-center gap-2 py-1.5">
+                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{f.filename}</span>
+                <span className="text-muted-foreground shrink-0 text-[10px]">
+                  {_formatBytes(f.byte_size)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-muted-foreground text-xs italic">
+            No invoice files attached on NPD yet.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+const _NPD_PAYMENT_STATUS_TONE: Record<string, string> = {
+  pending: "bg-amber-100 text-amber-900",
+  approved: "bg-emerald-100 text-emerald-900",
+  voided: "bg-rose-100 text-rose-900",
+};
+
+const _NPD_CURRENCY_SYMBOLS: Record<string, string> = {
+  GBP: "£",
+  EUR: "€",
+  USD: "$",
+};
+
+function _formatNpdMoney(amount: string, currency: string): string {
+  const sym = _NPD_CURRENCY_SYMBOLS[currency] || currency;
+  return `${sym} ${amount}`;
+}
+
+function _formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 
 function BlockerRow({ blocker }: { blocker: OrderWizardBlocker }) {
   const Icon = blocker.severity === "error" ? AlertCircle : AlertTriangle;
@@ -1756,7 +1873,17 @@ const LineCard = memo(function LineCard({
   onMoAction: (moUuid: string, action: MOActionString) => Promise<void>;
   onSendToDevice: (cta: OrderWizardCta) => void;
 }) {
-  const hasMo = line.mos.length > 0;
+  // Cancelled MOs are tombstones — every downstream check
+  // (``hasMo``, rollup, the rendered MO cards) sees only the
+  // live subset. When every MO on a line has been cancelled,
+  // ``liveMos`` is empty and the line reads as if no MOs were
+  // ever created — clean fallback to the Create-MO CTA below.
+  const liveMos = useMemo(
+    () => line.mos.filter((m) => m.status !== "cancelled"),
+    [line.mos],
+  );
+
+  const hasMo = liveMos.length > 0;
   const canSpawn = permissions.canManageMOs;
   // MO creation is gated on the CO being fully confirmed —
   // chronologically the production phase only starts after the
@@ -1764,10 +1891,11 @@ const LineCard = memo(function LineCard({
   // marked confirmed. Anything earlier and we hide the trigger.
   const coConfirmed = coStatus === "confirmed";
 
-  // Line-level roll-up. Overall phase = the slowest MO in the tree
-  // (the whole line can't be Done while any sub-MO is still Setup),
-  // aheadCount = MOs already past that phase and waiting.
-  const rollup = useMemo(() => lineOverallRollup(line.mos), [line.mos]);
+  // Line-level roll-up. Overall phase = the slowest LIVE MO in
+  // the tree; cancelled MOs are excluded entirely so a done-count
+  // doesn't include tombstones and the bar doesn't stall on a
+  // cancelled MO's phase.
+  const rollup = useMemo(() => lineOverallRollup(liveMos), [liveMos]);
   const overallPhase = MO_PHASES[rollup.minPhaseIdx];
   const isLineDone = rollup.totalCount > 0 && rollup.doneCount === rollup.totalCount;
   // Rail = slowest MO in the tree, not the done count. When the
@@ -1881,7 +2009,7 @@ const LineCard = memo(function LineCard({
 
       {hasMo && (
         <div className="space-y-2 px-4 py-3">
-          {line.mos.map((mo) => (
+          {liveMos.map((mo) => (
             <MiniMoCard
               key={mo.uuid}
               mo={mo}
@@ -2393,9 +2521,12 @@ function MiniMoCard({
           dots so the planner can scan the parent-and-all-its-
           dependencies at a glance. Click a chip to open the
           descendant's detail in the same modal onOpenMo uses for
-          the parent. */}
+          the parent. Cancelled descendants are excluded so the
+          chips only reflect live work. */}
       {(() => {
-        const descendants = flattenMoTree(mo.children ?? []);
+        const descendants = flattenMoTree(mo.children ?? []).filter(
+          (d) => d.status !== "cancelled",
+        );
         if (descendants.length === 0) return null;
         return (
           <div className="border-t border-border/40 bg-muted/10 px-4 py-2.5">

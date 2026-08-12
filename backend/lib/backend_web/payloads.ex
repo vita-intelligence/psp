@@ -753,6 +753,23 @@ defmodule BackendWeb.Payloads do
       delivery_address: co.delivery_address,
       customer_reference: co.customer_reference,
       notes: co.notes,
+      # Flags this CO as a sample-fulfilment (NPD sample workflow)
+      # rather than a commercial order. /projects renders a chip on
+      # the row and other surfaces can use it to hide samples from
+      # invoicing / dispatch reports.
+      sample_kind: co.sample_kind,
+      # NPD payment mirror — sample COs have their payment record
+      # populated at sync time. The CO detail invoice card renders
+      # this instead of the "Generate invoice" prompt because the
+      # customer already paid on NPD and no PSP-side invoice is
+      # needed. Files list is metadata only (bytes stay on NPD).
+      npd_payment_id: co.npd_payment_id,
+      npd_payment_amount: co.npd_payment_amount,
+      npd_payment_currency: co.npd_payment_currency,
+      npd_payment_invoice_number: co.npd_payment_invoice_number,
+      npd_payment_paid_at: co.npd_payment_paid_at,
+      npd_payment_status: co.npd_payment_status,
+      npd_payment_files: co.npd_payment_files || [],
       npd_formulation_uuid: co.npd_formulation_uuid,
       npd_lead_scientist_name: co.npd_lead_scientist_name,
       npd_sales_person_name: co.npd_sales_person_name,

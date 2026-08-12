@@ -211,14 +211,17 @@ function bucketSessionsByMo(
 
 // Flatten wizard MOs across lines + top-level `mos` (dedup by uuid) so the
 // routemap draws each MO exactly once regardless of whether the wizard
-// surfaces it via line.mos or the flat mos array.
+// surfaces it via line.mos or the flat mos array. Cancelled MOs are
+// excluded — the routemap shows the current production plan, not
+// history, so a cancelled MO shouldn't render as a red "blocked" node
+// (its lifecycle is already logged in the CO timeline).
 function collectMos(wizard: OrderWizardSnapshot): OrderWizardMo[] {
   const seen = new Set<string>();
   const out: OrderWizardMo[] = [];
   const visit = (mo: OrderWizardMo) => {
     if (seen.has(mo.uuid)) return;
     seen.add(mo.uuid);
-    out.push(mo);
+    if (mo.status !== "cancelled") out.push(mo);
     (mo.children ?? []).forEach(visit);
   };
   wizard.lines?.forEach((line) => {

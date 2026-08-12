@@ -20,7 +20,6 @@ import { Button } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
-import { PageHeader } from "@/components/layout/page-header";
 import { EmptyState } from "@/components/layout/empty-state";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { listProjects } from "@/lib/projects/server";
@@ -188,44 +187,48 @@ export default async function ProjectsPage() {
   const grouped = groupByPhase(rows);
   const canCreate = hasPermission(user, "customer_orders.create");
 
+  // Fullscreen kanban — same shell as /production/schedule. The
+  // outer flex column pins to viewport height; ``overflow-hidden``
+  // there prevents any page-level scroll. Kanban section takes
+  // ``flex-1 min-h-0`` and owns the horizontal scroll; each column
+  // gets its own vertical scroll so a phase overflowing with rows
+  // doesn't push the header off screen for the other columns.
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
       <TopBar user={user} />
       <PresenceMount />
 
-      <main className="flex-1 px-4 py-8 sm:px-8 sm:py-10">
-        <div className="mx-auto max-w-[1600px] space-y-6">
-          <PageHeader
-            icon={ClipboardList}
-            title="Production pipeline"
-            description={
-              <>
-                Every customer order in flight, by phase. Click a card to
-                open the project control board — it tells you what to do
-                next without leaving the page.
-                {total > 0 && (
-                  <>
-                    {" "}
-                    <span className="font-medium text-foreground">
-                      {total} project{total === 1 ? "" : "s"} live.
-                    </span>
-                  </>
-                )}
-              </>
-            }
-            actions={
-              canCreate && (
-                <Button asChild size="sm" className="shrink-0">
-                  <Link href="/sales/orders/new">
-                    <Plus className="mr-1.5 size-4" />
-                    Start new project
-                  </Link>
-                </Button>
-              )
-            }
-          />
+      <main className="flex min-h-0 flex-1 flex-col">
+        <header className="flex items-center gap-3 border-b border-border/60 bg-card px-4 py-2.5 sm:px-6">
+          <ClipboardList className="size-5 shrink-0 text-brand" />
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-base font-semibold tracking-tight">
+              Production pipeline
+            </h1>
+            <p className="truncate text-[11px] text-muted-foreground">
+              Every customer order in flight, by phase.
+              {total > 0 && (
+                <>
+                  {" "}
+                  <span className="font-medium text-foreground">
+                    {total} project{total === 1 ? "" : "s"} live.
+                  </span>
+                </>
+              )}
+            </p>
+          </div>
+          {canCreate && (
+            <Button asChild size="sm" className="shrink-0">
+              <Link href="/sales/orders/new">
+                <Plus className="mr-1.5 size-4" />
+                Start new project
+              </Link>
+            </Button>
+          )}
+        </header>
 
-          {total === 0 ? (
+        {total === 0 ? (
+          <div className="flex flex-1 items-center justify-center p-6">
             <EmptyState
               icon={ClipboardList}
               title="No active projects"
@@ -247,17 +250,22 @@ export default async function ProjectsPage() {
                 </Link>
               }
             />
-          ) : (
-            <KanbanBoard grouped={grouped} />
-          )}
-        </div>
+          </div>
+        ) : (
+          <KanbanBoard grouped={grouped} />
+        )}
       </main>
     </div>
   );
 }
 
 // ============================================================================
-// Kanban board — 7 columns, horizontal scroll on narrow viewports.
+// Kanban board — 19 phase columns. Fills remaining viewport height, owns
+// the ONLY horizontal scroll on the page (columns overflow right); each
+// column body owns its own vertical scroll so a phase with 40 rows
+// doesn't push its header off screen or force the sibling columns to
+// grow. Container uses ``min-h-0`` so ``flex-1`` inside a flex parent
+// actually shrinks instead of expanding to content height.
 // ============================================================================
 
 function KanbanBoard({
@@ -266,8 +274,8 @@ function KanbanBoard({
   grouped: Partial<Record<OrderWizardPhaseKey, ProjectSummary[]>>;
 }) {
   return (
-    <div className="-mx-2 overflow-x-auto pb-4 sm:-mx-4">
-      <div className="flex min-w-min gap-3 px-2 sm:gap-4 sm:px-4">
+    <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+      <div className="flex h-full min-w-min gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4">
         {PHASE_COLUMNS.map((phaseKey) => {
           const rows = grouped[phaseKey] ?? [];
           return (
@@ -293,10 +301,12 @@ function KanbanColumn({
   return (
     <section
       aria-label={PHASE_LABEL[phaseKey]}
-      className="flex w-[280px] shrink-0 flex-col rounded-xl border border-border/60 bg-muted/20 sm:w-[300px]"
+      className="flex h-full w-[280px] shrink-0 flex-col rounded-xl border border-border/60 bg-muted/20 sm:w-[300px]"
     >
-      {/* ---------- Column header ---------- */}
-      <header className="space-y-2 px-3 pt-3">
+      {/* ---------- Column header (sticky at the top of the column
+          because the header sits above the scrollable body, not
+          inside it — no ``sticky`` needed) ---------- */}
+      <header className="shrink-0 space-y-2 px-3 pt-3">
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <Icon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -311,8 +321,8 @@ function KanbanColumn({
         <div className={cn("h-1 rounded-full", accent)} />
       </header>
 
-      {/* ---------- Cards ---------- */}
-      <div className="flex-1 space-y-2 p-3">
+      {/* ---------- Cards — independently scrollable body ---------- */}
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
         {rows.length === 0 ? (
           <div className="flex h-16 items-center justify-center text-xs text-muted-foreground/50">
             —
@@ -360,10 +370,22 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
       data-collab-id={`project:${co.uuid}`}
       className="group block rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-brand/60 hover:shadow-md"
     >
-      {/* CO code — top, monospace, small */}
-      <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-        {co.code ?? `CO #${co.id}`}
-      </p>
+      {/* CO code + optional Sample chip. Sample sits inline with the
+          code (not in the phase-gated chips row below) because it's
+          an identity marker of the project, not a status. */}
+      <div className="flex items-center gap-1.5">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+          {co.code ?? `CO #${co.id}`}
+        </p>
+        {co.sample_kind ? (
+          <span
+            title="NPD sample fulfilment — customer-paid sample run, not a commercial order."
+            className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-700 ring-1 ring-violet-200/60 dark:bg-violet-950/30 dark:text-violet-300 dark:ring-violet-700/40"
+          >
+            Sample
+          </span>
+        ) : null}
+      </div>
 
       {/* Project title — NPD formulation name for R&D, customer name
           otherwise. */}

@@ -62,6 +62,31 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :customer_reference, :string
     field :notes, :string
 
+    # ``true`` when this CO was created from an NPD sample-fulfilment
+    # push (customer ordered a sample via the portal, R&D scientist
+    # spun a trial batch, clicked Create MO on PSP). The /projects
+    # kanban renders a "Sample" chip on these rows to distinguish
+    # them from real commercial orders. Populated exclusively by
+    # ``Backend.CustomerOrders.NpdSync.upsert_sample_from_npd/2``.
+    field :sample_kind, :boolean, default: false
+
+    # NPD payment mirror — populated by the sample-sync so the PSP
+    # invoice panel can render the customer payment record (amount,
+    # invoice number, paid date, attached files) instead of the
+    # default "No invoice attached. Generate invoice?" prompt. For
+    # sample COs the payment IS the invoice — no PSP-side invoice
+    # is generated because finance already processed it on NPD.
+    # ``npd_payment_files`` is a list of ``%{uuid, filename, mime,
+    # byte_size, uploaded_at}`` maps — bytes stay on NPD; the CO
+    # detail card renders filenames + metadata only.
+    field :npd_payment_id, Ecto.UUID
+    field :npd_payment_amount, :decimal
+    field :npd_payment_currency, :string
+    field :npd_payment_invoice_number, :string
+    field :npd_payment_paid_at, :utc_datetime
+    field :npd_payment_status, :string
+    field :npd_payment_files, {:array, :map}, default: []
+
     field :submitted_at, :utc_datetime
     field :confirmed_at, :utc_datetime
     field :cancelled_at, :utc_datetime

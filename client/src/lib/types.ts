@@ -2231,6 +2231,31 @@ export interface CustomerOrder {
   delivery_address: string | null;
   customer_reference: string | null;
   notes: string | null;
+  /** ``true`` when this CO was created by NPD's sample-fulfilment
+   *  push (customer ordered a sample via the portal, R&D scientist
+   *  spun a trial batch and clicked Create MO on PSP). Drives the
+   *  "Sample" chip on the /projects kanban. Populated exclusively
+   *  by NpdSync.upsert_sample_from_npd — every other CO is false. */
+  sample_kind: boolean;
+  /** NPD payment mirror — sample COs carry a payment record from
+   *  NPD's finance queue. Drives the CO detail invoice card which
+   *  renders the payment (amount, files, status) instead of the
+   *  default "Generate invoice" prompt (no PSP-side invoice needed
+   *  because the customer already paid on NPD). Null on every CO
+   *  that isn't a sample-fulfilment. */
+  npd_payment_id: string | null;
+  npd_payment_amount: string | null;
+  npd_payment_currency: string | null;
+  npd_payment_invoice_number: string | null;
+  npd_payment_paid_at: string | null;
+  npd_payment_status: string | null;
+  npd_payment_files: ReadonlyArray<{
+    readonly uuid: string;
+    readonly filename: string;
+    readonly mime: string;
+    readonly byte_size: number;
+    readonly uploaded_at: string;
+  }>;
   /** NPD (vita-cff) formulation identity when this CO came from R&D.
    *  Null on plain sales-authored orders. */
   npd_formulation_uuid: string | null;

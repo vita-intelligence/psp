@@ -391,6 +391,12 @@ defmodule Backend.OrderWizard do
        do: :approval
 
   defp derive_phase(%CustomerOrder{status: "confirmed"}, line_states, mos) do
+    # Cancelled MOs are tombstones. Every phase check below walks
+    # the LIVE subset so a fully-cancelled tree falls back through
+    # the "line waiting on an MO" branch to ``:production_planning``
+    # — clean fallback, as if the cancels never happened.
+    live_mos = Enum.reject(mos, &(&1.status == "cancelled"))
+
     cond do
       # A line is still waiting on an MO being created at all.
       Enum.any?(line_states, &(&1.needs_mo? and is_nil(&1.primary_mo))) ->
@@ -400,7 +406,7 @@ defmodule Backend.OrderWizard do
       # signed off (status ≥ approved) AND no broken bookings. Once
       # signed, planning is "done from the planner's side" — what's
       # missing is goods, not decisions.
-      not Enum.all?(mos, & &1.is_fully_sorted?) ->
+      not Enum.all?(live_mos, & &1.is_fully_sorted?) ->
         :production_planning
 
       # Awaiting ingredients = planner signed off but goods aren't on
@@ -408,20 +414,20 @@ defmodule Backend.OrderWizard do
       # in-flight PO (waiting for delivery), OR there's a BOM line not
       # yet booked at all (waiting for procurement to even create the
       # PO). Both keep the order from advancing to production.
-      Enum.any?(mos, &(&1.has_placeholder_bookings? or &1.under_booked_count > 0)) ->
+      Enum.any?(live_mos, &(&1.has_placeholder_bookings? or &1.under_booked_count > 0)) ->
         :awaiting_ingredients
 
-      not Enum.all?(mos, &(&1.status == "completed")) ->
+      not Enum.all?(live_mos, &(&1.status == "completed")) ->
         :in_production
 
-      Enum.any?(mos, & &1.has_output_at_production_feed?) ->
+      Enum.any?(live_mos, & &1.has_output_at_production_feed?) ->
         :closeout
 
       # Any awaiting-release output owes a Final Product Release
       # ceremony (BRCGS Issue 9 § 5.6) before the order can be
       # considered ready to dispatch. Distinct phase so operators see
       # it as its own pipeline block, not folded into closeout.
-      Enum.any?(mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0)) ->
+      Enum.any?(live_mos, &(Map.get(&1, :output_awaiting_release_count, 0) > 0)) ->
         :final_release
 
       # Released lots now sit in finished_quarantine waiting for the
@@ -431,11 +437,11 @@ defmodule Backend.OrderWizard do
       # takes ownership, we hold as bailee — BRCGS § 4.4 segregation +
       # § 5.6 handoff). Until every released lot has been routed the
       # order can't advance to ready-to-dispatch.
-      Enum.any?(mos, &(Map.get(&1, :output_needs_routing_count, 0) > 0)) ->
+      Enum.any?(live_mos, &(Map.get(&1, :output_needs_routing_count, 0) > 0)) ->
         :awaiting_routing
 
       true ->
-        derive_dispatch_phase(mos)
+        derive_dispatch_phase(live_mos)
     end
   end
 
@@ -889,8 +895,12 @@ defmodule Backend.OrderWizard do
         # keeps us in planning until every MO in the parent/child
         # chain is fully sorted (approved + no unresolved shortages).
         # Surface the first unfinished MO so the operator knows
-        # exactly where to click.
-        unfinished = Enum.filter(mos, &(not &1.is_fully_sorted?))
+        # exactly where to click. Cancelled MOs are excluded so we
+        # never point the operator at a tombstone.
+        unfinished =
+          mos
+          |> Enum.reject(&(&1.status == "cancelled"))
+          |> Enum.filter(&(not &1.is_fully_sorted?))
 
         case unfinished do
           [] ->
@@ -1984,7 +1994,18 @@ defmodule Backend.OrderWizard do
       |> Repo.all()
       |> Enum.map(&mo_state/1)
 
-    primary_mo = List.first(mos)
+    # ``primary_mo`` = earliest LIVE MO. A cancelled MO is a
+    # tombstone — it can't be "the MO for this line" any more than
+    # a deleted row could be. When every MO on a line is cancelled
+    # ``primary_mo`` becomes nil and the wizard's "line waiting on
+    # an MO" branch fires, so the operator sees the standard
+    # Create-MO CTA — clean fallback, as if the cancelled MOs
+    # were never created.
+    primary_mo =
+      mos
+      |> Enum.reject(&(&1.status == "cancelled"))
+      |> List.first()
+
     needs_mo? = needs_mo_for_line?(line)
 
     # Surface the active BOMs for this line's item so the FE can show
@@ -2966,6 +2987,7 @@ defmodule Backend.OrderWizard do
         :created_by,
         :prepared_by,
         :approved_by,
+        :cancelled_by,
         :purchasing_requested_by,
         :released_to_warehouse_by,
         :pickup_started_by,
@@ -3018,7 +3040,12 @@ defmodule Backend.OrderWizard do
       mo.actual_finish &&
         mo_event(mo.actual_finish, "production finished", mo, mo.updated_by),
       mo.needs_replan_at &&
-        mo_event(mo.needs_replan_at, "needs replan", mo, mo.updated_by)
+        mo_event(mo.needs_replan_at, "needs replan", mo, mo.updated_by),
+      # First-class cancellation row on the timeline. Before this the
+      # timeline had nothing to render when an MO flipped to cancelled
+      # — a dead MO looked identical to a drafted one.
+      mo.cancelled_at &&
+        mo_event(mo.cancelled_at, "cancelled", mo, mo.cancelled_by)
     ]
     |> Enum.reject(&is_nil/1)
   end

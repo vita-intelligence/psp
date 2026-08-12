@@ -17,7 +17,9 @@ defmodule Backend.CustomerOrders.NpdSync do
   import Ecto.Query
 
   alias Backend.CustomerOrders.CustomerOrder
+  alias Backend.CustomerOrders.CustomerOrderLine
   alias Backend.Customers.Customer
+  alias Backend.Items.Item
   alias Backend.Repo
 
   @placeholder_customer_name "NPD Placeholder"
@@ -455,4 +457,310 @@ defmodule Backend.CustomerOrders.NpdSync do
   defp sanitize(""), do: nil
   defp sanitize(v) when is_binary(v), do: String.trim(v)
   defp sanitize(_), do: nil
+
+  # ==================================================================
+  # Sample-fulfilment sync
+  # ==================================================================
+  #
+  # Sibling of ``upsert_from_npd/2``, keyed on ``npd_sample_payment_uuid``
+  # instead of ``npd_formulation_uuid``. Used for the sample flow where
+  # a customer orders a sample of a formulation (RTG or custom) via the
+  # portal, the R&D scientist creates a sample trial batch on NPD, and
+  # then clicks *Create MO on PSP*. NPD hits this path first so PSP
+  # knows the customer + sample identity, then creates the MO.
+  #
+  # Why a separate identity key from the formulation sync:
+  #
+  #   * A single RTG formulation is ordered by many customers. If we
+  #     re-used ``npd_formulation_uuid`` the second customer's sample
+  #     would overwrite the first one's CO. Keying on the sample
+  #     payment (unique per customer + order) gives us one CO per
+  #     sample fulfilment, all attached to the correct PSP customer.
+  #   * Custom-formulation samples also key on the payment for
+  #     symmetry — the commercial CO (formulation-keyed) is a
+  #     different project entirely and shouldn't get mixed with
+  #     sample runs.
+  #
+  # CO shape produced:
+  #
+  #   * ``uuid = npd_sample_payment_uuid`` — same URL on both sides.
+  #   * ``status = "confirmed"`` — samples skip the PSP approval
+  #     wizard; the customer already paid on NPD, PSP just runs it.
+  #   * ``sample_kind = true`` — /projects renders a chip on the row.
+  #   * ``customer_reference = sample_label`` — the scientist-typed
+  #     label from ``TrialBatch.label`` (e.g. "Sample · Alex Gummies").
+  #   * ``customer_id`` resolved via the shared ``resolve_customer``
+  #     helper — dedupes by ``npd_source_uuid`` fast path, name-match
+  #     soft dedupe, only creates fresh when nothing matches.
+  #   * One ``CustomerOrderLine`` for the sample item.
+
+  @doc """
+  Upsert a sample CO + line from an NPD sample-payment payload.
+
+  Payload shape:
+
+      %{
+        "npd_sample_payment_uuid" => "…uuid…",
+        "customer_uuid"           => "…npd customer uuid…",
+        "customer_display_name"   => "Alex Baker",
+        "sample_label"            => "Sample · Ultimate Fat Burner Drink",
+        "item_uuid"               => "…psp item uuid…",
+        "quantity"                => "1",
+        "formulation_name"        => "Ultimate Fat Burner Drink" (optional),
+        "formulation_code"        => "RTG00001"                  (optional),
+        "lead_scientist_name"     => "…"                         (optional),
+        "sales_person_name"       => "…"                         (optional),
+        "app_url"                 => "…deep link back to NPD…"   (optional),
+        "notes"                   => "…"                         (optional)
+      }
+
+  Returns ``{:ok, %CustomerOrder{}}`` on success. Runs the customer
+  upsert + CO upsert + line insert in one transaction so we never
+  land in a state with a CO but no line (or a line pointing at a
+  half-built CO).
+  """
+  def upsert_sample_from_npd(company_id, params) when is_integer(company_id) do
+    with {:ok, sample_uuid} <- extract_sample_uuid(params),
+         {:ok, item} <- resolve_item(company_id, params) do
+      Repo.transaction(fn ->
+        placeholder = ensure_placeholder_customer(company_id)
+        active_customer = resolve_customer(company_id, placeholder, params)
+
+        result =
+          case Repo.get_by(CustomerOrder,
+                 company_id: company_id,
+                 uuid: sample_uuid
+               ) do
+            nil ->
+              insert_sample_new(
+                company_id,
+                active_customer,
+                sample_uuid,
+                item,
+                params
+              )
+
+            existing ->
+              update_sample_existing(existing, active_customer, params)
+          end
+
+        case result do
+          {:ok, co} -> co
+          {:error, cs} -> Repo.rollback(cs)
+        end
+      end)
+    end
+  end
+
+  defp insert_sample_new(company_id, active_customer, sample_uuid, item, params) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    sample_label = sanitize(params["sample_label"] || params[:sample_label])
+    ref = sample_label || reference_for(params)
+
+    attrs = %{
+      company_id: company_id,
+      customer_id: active_customer.id,
+      currency_code: active_customer.currency_code || "GBP",
+      customer_reference: ref,
+      notes: sanitize(params["notes"] || params[:notes]),
+      inserted_at: now,
+      updated_at: now
+    }
+
+    # ``uuid`` planted from the sample payment so the same identifier
+    # opens the same entity on both apps. ``status`` + ``sample_kind``
+    # + the NPD mirror fields aren't in the base cast list, so
+    # ``put_change`` them here.
+    changeset =
+      %CustomerOrder{uuid: sample_uuid}
+      |> CustomerOrder.changeset(attrs)
+      |> Ecto.Changeset.put_change(:status, "confirmed")
+      |> Ecto.Changeset.put_change(:confirmed_at, now)
+      |> Ecto.Changeset.put_change(:sample_kind, true)
+      |> put_npd_team(params)
+      |> put_npd_payment(params)
+
+    with {:ok, co} <- Repo.insert(changeset),
+         {:ok, _line} <- insert_sample_line(co, item, params) do
+      {:ok, co}
+    end
+  end
+
+  defp update_sample_existing(%CustomerOrder{} = existing, active_customer, params) do
+    sample_label = sanitize(params["sample_label"] || params[:sample_label])
+
+    attrs = %{
+      customer_reference:
+        sample_label || reference_for(params) || existing.customer_reference,
+      notes: sanitize(params["notes"] || params[:notes]) || existing.notes
+    }
+
+    # Samples are already ``confirmed`` on first sync; still gate the
+    # customer swap on ``draft`` to match commercial semantics — once
+    # a sample is running on PSP, we don't want a stray re-sync to
+    # switch its billing party.
+    changeset =
+      existing
+      |> CustomerOrder.changeset(attrs)
+      |> put_npd_team(params)
+      |> put_npd_payment(params)
+
+    changeset =
+      if existing.status == "draft" and existing.customer_id != active_customer.id do
+        Ecto.Changeset.put_change(changeset, :customer_id, active_customer.id)
+      else
+        changeset
+      end
+
+    Repo.update(changeset)
+  end
+
+  # Idempotent line insert — a re-sync doesn't add another line. The
+  # only line on a sample CO is the sample itself; if it's already
+  # there we leave it alone (the scientist may have adjusted qty on
+  # PSP-side and we don't want to overwrite that).
+  defp insert_sample_line(%CustomerOrder{} = co, %Item{} = item, params) do
+    existing =
+      Repo.one(
+        from l in CustomerOrderLine,
+          where: l.customer_order_id == ^co.id,
+          limit: 1
+      )
+
+    case existing do
+      %CustomerOrderLine{} = line ->
+        {:ok, line}
+
+      nil ->
+        qty = parse_qty(params["quantity"] || params[:quantity])
+
+        %CustomerOrderLine{}
+        |> CustomerOrderLine.changeset(%{
+          customer_order_id: co.id,
+          company_id: co.company_id,
+          item_id: item.id,
+          qty_ordered: qty,
+          unit_price: Decimal.new(0)
+        })
+        |> Repo.insert()
+    end
+  end
+
+  defp extract_sample_uuid(params) do
+    raw = params["npd_sample_payment_uuid"] || params[:npd_sample_payment_uuid]
+
+    case raw do
+      s when is_binary(s) and s != "" ->
+        case Ecto.UUID.cast(s) do
+          {:ok, uuid} -> {:ok, uuid}
+          :error -> {:error, :invalid_sample_uuid}
+        end
+
+      _ ->
+        {:error, :missing_sample_uuid}
+    end
+  end
+
+  defp resolve_item(company_id, params) do
+    raw = params["item_uuid"] || params[:item_uuid]
+
+    with s when is_binary(s) and s != "" <- raw,
+         {:ok, uuid} <- Ecto.UUID.cast(s),
+         %Item{} = item <-
+           Repo.one(
+             from i in Item,
+               where: i.company_id == ^company_id and i.uuid == ^uuid,
+               limit: 1
+           ) do
+      {:ok, item}
+    else
+      _ -> {:error, :item_not_found}
+    end
+  end
+
+  defp parse_qty(nil), do: Decimal.new(1)
+  defp parse_qty(v) when is_integer(v), do: Decimal.new(v)
+  defp parse_qty(%Decimal{} = v), do: v
+
+  defp parse_qty(v) when is_binary(v) do
+    case Decimal.parse(v) do
+      {d, _} -> d
+      :error -> Decimal.new(1)
+    end
+  end
+
+  defp parse_qty(_), do: Decimal.new(1)
+
+  # Mirror NPD's Payment record onto the CO (metadata + files list).
+  # NPD sends the payload as ``payment: %{id, amount, currency,
+  # invoice_number, paid_at, status, files: [...]}`` on every
+  # sample sync so PSP's CO detail can render the payment card
+  # instead of "No invoice attached".
+  #
+  # ``files`` is a list of ``%{uuid, filename, mime, byte_size,
+  # uploaded_at}`` maps — bytes stay on NPD; the CO detail card
+  # renders filenames + metadata only. Falls back to ``[]`` on
+  # missing / malformed lists so a bad payload doesn't blow up
+  # the whole sync transaction.
+  defp put_npd_payment(changeset, params) do
+    payment = params["payment"] || params[:payment]
+
+    case payment do
+      %{} = pay ->
+        changeset
+        |> maybe_put_uuid(:npd_payment_id, pay["id"] || pay[:id])
+        |> maybe_put_decimal(:npd_payment_amount, pay["amount"] || pay[:amount])
+        |> maybe_put(:npd_payment_currency, sanitize(pay["currency"] || pay[:currency]))
+        |> maybe_put(:npd_payment_invoice_number, sanitize(pay["invoice_number"] || pay[:invoice_number]))
+        |> maybe_put_dt(:npd_payment_paid_at, pay["paid_at"] || pay[:paid_at])
+        |> maybe_put(:npd_payment_status, sanitize(pay["status"] || pay[:status]))
+        |> put_npd_payment_files(pay["files"] || pay[:files])
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp put_npd_payment_files(changeset, files) when is_list(files) do
+    # Normalise each row so the FE never has to defend against
+    # missing keys. Bad entries (non-map) are dropped.
+    normalised =
+      Enum.flat_map(files, fn
+        %{} = f ->
+          [
+            %{
+              "uuid" => to_string(f["uuid"] || f[:uuid] || ""),
+              "filename" => to_string(f["filename"] || f[:filename] || ""),
+              "mime" => to_string(f["mime"] || f[:mime] || ""),
+              "byte_size" => f["byte_size"] || f[:byte_size] || 0,
+              "uploaded_at" => to_string(f["uploaded_at"] || f[:uploaded_at] || "")
+            }
+          ]
+
+        _ ->
+          []
+      end)
+
+    Ecto.Changeset.put_change(changeset, :npd_payment_files, normalised)
+  end
+
+  defp put_npd_payment_files(changeset, _), do: changeset
+
+  defp maybe_put_decimal(changeset, _field, nil), do: changeset
+  defp maybe_put_decimal(changeset, _field, ""), do: changeset
+
+  defp maybe_put_decimal(changeset, field, %Decimal{} = d),
+    do: Ecto.Changeset.put_change(changeset, field, d)
+
+  defp maybe_put_decimal(changeset, field, v) when is_binary(v) do
+    case Decimal.parse(v) do
+      {d, _} -> Ecto.Changeset.put_change(changeset, field, d)
+      :error -> changeset
+    end
+  end
+
+  defp maybe_put_decimal(changeset, field, v) when is_integer(v),
+    do: Ecto.Changeset.put_change(changeset, field, Decimal.new(v))
+
+  defp maybe_put_decimal(changeset, _field, _), do: changeset
 end
