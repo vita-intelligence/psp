@@ -1176,7 +1176,20 @@ export function NewPOForm({
               code: null,
               externalSku: null,
             },
-            row.shortage_qty,
+            // Same fallback the shortages page's "Create PO" link
+            // uses: genuine shortage → shortage_qty; explicit-
+            // request-only ("Book from stock", shortage 0) →
+            // outstanding qty (required − booked). Anything else
+            // slots the required qty so the line lands with > 0
+            // and passes the ``qty > 0`` validation.
+            (() => {
+              const shortage = Number(row.shortage_qty);
+              const outstanding =
+                Number(row.required_qty) - Number(row.booked_qty);
+              if (shortage > 0) return row.shortage_qty;
+              if (outstanding > 0) return String(outstanding);
+              return row.required_qty;
+            })(),
           )
         }
         onRefresh={() => void loadShortages()}
@@ -2120,10 +2133,21 @@ function ShortageSuggestions({
                       {row.item?.name ?? "Unknown item"}
                     </p>
                     <p className="text-[11px] text-muted-foreground">
-                      Short by{" "}
-                      <span className="font-mono font-semibold text-red-700 dark:text-red-300">
-                        {row.shortage_qty} {uom}
-                      </span>
+                      {Number(row.shortage_qty) > 0 ? (
+                        <>
+                          Short by{" "}
+                          <span className="font-mono font-semibold text-red-700 dark:text-red-300">
+                            {row.shortage_qty} {uom}
+                          </span>
+                        </>
+                      ) : (
+                        <span
+                          className="font-semibold text-amber-700 dark:text-amber-300"
+                          title="Operator flagged for procurement, but on-hand stock covers. Book from stock or add a top-up PO line."
+                        >
+                          Book from stock
+                        </span>
+                      )}
                       {Number(row.expecting_qty) > 0 && (
                         <span className="ml-2">
                           ·{" "}
