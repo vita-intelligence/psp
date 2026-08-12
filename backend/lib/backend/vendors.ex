@@ -402,7 +402,11 @@ defmodule Backend.Vendors do
 
   defp enforce_segregation_of_duties(%User{id: actor_id}, %Vendor{qualified_by_id: qid})
        when not is_nil(qid) and actor_id == qid do
-    {:error, :same_signer_as_qualifier}
+    # Dev toggle lets one seat qualify + approve a vendor. Prod /
+    # test still require two distinct users.
+    if Backend.FourEyes.enforce?(),
+      do: {:error, :same_signer_as_qualifier},
+      else: :ok
   end
 
   defp enforce_segregation_of_duties(_actor, _vendor), do: :ok

@@ -502,25 +502,39 @@ defmodule Backend.MyTasks do
   end
 
   defp blocked_by_four_eyes?(actor, co, "sign_director") do
-    Repo.exists?(
-      from(a in CustomerOrderApproval,
-        where:
-          a.customer_order_id == ^co.id and
-            a.kind == "approver" and
-            a.signed_by_id == ^actor.id
+    # Mirror the runtime gate in `Backend.CustomerOrders`. When
+    # ``enforce_four_eyes`` is off (dev), the server would accept
+    # the same-signer director sign, so /my-tasks must not grey
+    # the CTA out.
+    if Backend.FourEyes.enforce?() do
+      Repo.exists?(
+        from(a in CustomerOrderApproval,
+          where:
+            a.customer_order_id == ^co.id and
+              a.kind == "approver" and
+              a.signed_by_id == ^actor.id
+        )
       )
-    )
+    else
+      false
+    end
   end
 
   defp blocked_by_four_eyes?(actor, co, "approve_mo") do
-    Repo.exists?(
-      from(m in ManufacturingOrder,
-        where:
-          m.customer_order_id == ^co.id and
-            m.status == "prepared" and
-            m.prepared_by_id == ^actor.id
+    # Mirror the runtime gate in `Backend.Production.approve_mo/2`
+    # so the CTA disable rule matches the server rule 1:1.
+    if Backend.FourEyes.enforce?() do
+      Repo.exists?(
+        from(m in ManufacturingOrder,
+          where:
+            m.customer_order_id == ^co.id and
+              m.status == "prepared" and
+              m.prepared_by_id == ^actor.id
+        )
       )
-    )
+    else
+      false
+    end
   end
 
   defp blocked_by_four_eyes?(_actor, _co, _action_code), do: false

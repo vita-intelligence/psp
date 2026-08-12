@@ -63,6 +63,7 @@ import {
   submitCOAction,
 } from "@/lib/customer-orders/actions";
 import { formatCompanyDate } from "@/lib/format/company";
+import { ENFORCE_FOUR_EYES } from "@/lib/four-eyes";
 
 const STATUS_LABEL: Record<CustomerOrderStatus, string> = {
   draft: "Draft",
@@ -127,7 +128,8 @@ export function COWorkflowCard({
   const approverSig = co.approvals.find((a) => a.kind === "approver");
   const directorSig = co.approvals.find((a) => a.kind === "director");
 
-  const actorIsApprover = approverSig?.signed_by?.id === currentUserId;
+  const actorIsApprover =
+    ENFORCE_FOUR_EYES && approverSig?.signed_by?.id === currentUserId;
 
   // Submission gates — mirror Backend.CustomerOrders.submit/2's checks
   // so the user sees what's missing BEFORE clicking and getting a 422.
