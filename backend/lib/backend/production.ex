@@ -8709,7 +8709,15 @@ defmodule Backend.Production do
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          %ManufacturingOrder{} = mo <- source_mo_for_lot(actor.company_id, lot) do
       cond do
-        mo.project_type not in ["trial", "sample"] ->
+        # Only ``trial`` MOs are subject to the gate. ``sample`` MOs
+        # run pre-validated RTG products (the formulation is already
+        # in the commercial catalogue, no new validation to run) —
+        # gating them behind a validation flow that has nothing to
+        # validate strands the lot in ``received`` forever. ``trial``
+        # MOs are the R&D case the gate was actually designed for
+        # (scientist validating a new / edited formulation before
+        # QA can accept the output).
+        mo.project_type != "trial" ->
           :ok
 
         mo.npd_validation_status == "passed" ->
