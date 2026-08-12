@@ -6867,6 +6867,145 @@ defmodule Backend.Production do
   def mo_pickup_in_progress?(_), do: false
 
   @doc """
+  Operator-facing macro stage for an MO. Returns one of:
+
+    * ``:mo_request``    — draft / prepare / approve ceremony
+    * ``:pickup``        — released to warehouse, awaiting picker
+    * ``:transfer``      — picker walking lots to production cell
+    * ``:preflight``     — pickup complete, awaiting pre-production check
+    * ``:production``    — run in progress
+    * ``:quality``       — production finished, awaiting Output QC
+    * ``:closeout``      — QC done, awaiting closeout paperwork
+    * ``:return_pickup`` — closeout done, ingredient leftovers still at
+                           production cell awaiting return to warehouse
+    * ``:done``          — every stage complete for this MO
+    * ``:cancelled``     — MO was cancelled at some point
+
+  Design intent: 8 canonical stages the operator moves through in
+  order. The wizard-facing status field carries the approval-ceremony
+  states (draft → prepared → approved → …) but the operator's
+  mental model is macroscopic — "what step am I on?". This helper is
+  the single source of truth for that projection so the stepper on
+  the MO detail page, the badge on MO cards, and the phase-based
+  wizard copy all agree.
+
+  Runs one small query (output-lot statuses) for ``completed`` MOs
+  to distinguish quality / closeout / return_pickup. Pure derivation
+  for every earlier state, so cheap to call on every MO in a list
+  render.
+  """
+  @spec mo_stage(ManufacturingOrder.t()) ::
+          :mo_request
+          | :pickup
+          | :transfer
+          | :preflight
+          | :production
+          | :quality
+          | :closeout
+          | :return_pickup
+          | :done
+          | :cancelled
+  def mo_stage(%ManufacturingOrder{status: "cancelled"}), do: :cancelled
+
+  def mo_stage(%ManufacturingOrder{status: s})
+      when s in ["draft", "prepared", "approved"],
+      do: :mo_request
+
+  def mo_stage(%ManufacturingOrder{status: "scheduled"} = mo) do
+    cond do
+      is_nil(mo.pickup_started_at) -> :pickup
+      is_nil(mo.pickup_completed_at) -> :transfer
+      # Pickup done, awaiting preflight sign-off + Start.
+      true -> :preflight
+    end
+  end
+
+  def mo_stage(%ManufacturingOrder{status: "in_progress"}), do: :production
+
+  def mo_stage(%ManufacturingOrder{status: "completed"} = mo) do
+    cond do
+      mo_stage_output_qc_pending?(mo) -> :quality
+      is_nil(mo.closeout_completed_at) -> :closeout
+      mo_stage_return_pickup_owed?(mo) -> :return_pickup
+      true -> :done
+    end
+  end
+
+  # Fallback — future status values or partially-migrated rows. Puts
+  # the MO in the first stage so the stepper doesn't render a blank.
+  def mo_stage(_), do: :mo_request
+
+  # Ordered list of the 8 canonical stages, used for progress bars
+  # and stepper rendering (``:done`` + ``:cancelled`` are terminal
+  # display states, not stepper cells).
+  @mo_stages_ordered [
+    :mo_request,
+    :pickup,
+    :transfer,
+    :preflight,
+    :production,
+    :quality,
+    :closeout,
+    :return_pickup
+  ]
+
+  @doc """
+  1-based position of this MO's stage in the 8-stage sequence. Returns
+  ``nil`` for ``:done`` (all 8 complete) and ``:cancelled`` (out of
+  band). The FE stepper uses this to pick which cell to highlight.
+  """
+  @spec mo_stage_index(atom()) :: pos_integer() | nil
+  def mo_stage_index(:done), do: 8
+  def mo_stage_index(:cancelled), do: nil
+  def mo_stage_index(stage), do: Enum.find_index(@mo_stages_ordered, &(&1 == stage)) |> then(&if &1, do: &1 + 1, else: nil)
+
+  @doc "Total number of macro stages (fixed at 8)."
+  def mo_stage_total, do: length(@mo_stages_ordered)
+
+  @doc "Ordered list of the 8 canonical stage atoms — for FE stepper enumeration."
+  def mo_stages_ordered, do: @mo_stages_ordered
+
+  # Any output lot from this MO still awaiting QC (status = received).
+  # One targeted query — no joins, indexed on source_ref.
+  defp mo_stage_output_qc_pending?(%ManufacturingOrder{uuid: mo_uuid}) do
+    Repo.exists?(
+      from l in StockLot,
+        where:
+          l.source_kind == "manufacturing_order" and
+            l.source_ref == ^mo_uuid and
+            l.status == "received"
+    )
+  end
+
+  # Return-pickup owed = any ingredient booking that was picked
+  # (physically moved to production cell) but never consumed by a
+  # closeout event, AND the lot still has qty at a production_facility
+  # cell. Semantically: "operator brought material to the floor,
+  # closeout ran, leftover material still needs to walk back to
+  # warehouse". Cheap keyset-style query, no joins beyond the
+  # placement→cell hop.
+  defp mo_stage_return_pickup_owed?(%ManufacturingOrder{id: mo_id}) do
+    Repo.exists?(
+      from b in ManufacturingOrderBooking,
+        join: p in Backend.Stock.Placement,
+        on: p.stock_lot_id == b.stock_lot_id,
+        join: c in Backend.Warehouses.StorageCell,
+        on: c.id == p.storage_cell_id,
+        join: sl in Backend.Warehouses.StorageLocation,
+        on: sl.id == c.storage_location_id,
+        join: w in Backend.Warehouses.Warehouse,
+        on: w.id == sl.warehouse_id,
+        where:
+          b.manufacturing_order_id == ^mo_id and
+            b.status == "requested" and
+            not is_nil(b.picked_at) and
+            is_nil(b.consumed_at) and
+            p.qty > 0 and
+            w.kind == "production_facility"
+    )
+  end
+
+  @doc """
   Planner action — release a scheduled MO to the warehouse.
 
   Release is the load-bearing physical gate: after this fires, the

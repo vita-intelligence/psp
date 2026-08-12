@@ -1108,6 +1108,23 @@ export interface ManufacturingOrderStepUpsertInput {
   worker_ids?: number[];
 }
 
+/** Operator-facing 8-stage macro projection over the MO's status +
+ *  timestamps + related state. Ordered pipeline the operator moves
+ *  through; the stepper on the MO detail page renders each stage as
+ *  a chip. `done` = all 8 complete; `cancelled` = MO was cancelled
+ *  at some point (out-of-band terminal). */
+export type ManufacturingOrderStage =
+  | "mo_request"
+  | "pickup"
+  | "transfer"
+  | "preflight"
+  | "production"
+  | "quality"
+  | "closeout"
+  | "return_pickup"
+  | "done"
+  | "cancelled";
+
 export interface ManufacturingOrder {
   id: number;
   uuid: string;
@@ -1118,6 +1135,17 @@ export interface ManufacturingOrder {
    *  R&D (created from NPD trial batches). Drives the R&D fast-path
    *  Run button on the detail page + the row chip on the ledger. */
   project_type: "production" | "trial" | "sample";
+  /** Macro stage the operator is currently on. Derived server-side
+   *  from status + pickup / production / QC / closeout timestamps.
+   *  Powers the horizontal stepper on the MO detail page. See
+   *  `Backend.Production.mo_stage/1` for the derivation. */
+  stage: ManufacturingOrderStage;
+  /** 1-based position of `stage` in the 8-stage sequence. `null`
+   *  for `cancelled` (out-of-band); `8` for `done`. */
+  stage_index: number | null;
+  /** Total number of macro stages (fixed at 8). Server-owned so the
+   *  FE never has to hard-code the number. */
+  stage_total: number;
   /** NPD linkage — populated only on trial/sample MOs that were
    *  created through the NPD integration. Presence of
    *  `npd_trial_batch_uuid` gates the validation-sheet embed on the
