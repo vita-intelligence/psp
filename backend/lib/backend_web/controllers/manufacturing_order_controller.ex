@@ -721,6 +721,23 @@ defmodule BackendWeb.ManufacturingOrderController do
               "Place the MO on the calendar before releasing it to the warehouse."
             )
 
+          {:error, :children_not_closed_out, list} ->
+            # Sub-MO(s) haven't finished closeout yet. Parent's pickup
+            # queue would run into an ingredient that isn't at
+            # production yet. Surface the offenders so the FE can
+            # deep-link the operator to each child's closeout page.
+            n = length(list)
+
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "children_not_closed_out",
+                "Waiting on closeout of #{n} sub-MO(s). Sign off closeout on each before requesting pickup — that's how the sub-output physically transitions to being pickable by this MO.",
+                %{pending_child_mo_uuids: Enum.map(list, & &1.uuid)}
+              )
+            )
+
           {:error, :stale_bookings, list} ->
             not_available =
               list
