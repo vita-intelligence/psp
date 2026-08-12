@@ -67,9 +67,9 @@ defmodule Backend.Shipments do
          :ok <- ensure_no_open_shipment(lot) do
       customer_id = derive_customer_id(lot)
       customer_order_id = derive_customer_order_id(lot)
+      prefill = derive_prefill_attrs(customer_id, customer_order_id)
 
-      %Shipment{}
-      |> Shipment.create_changeset(%{
+      base_attrs = %{
         company_id: actor.company_id,
         stock_lot_id: lot.id,
         customer_id: customer_id,
@@ -77,11 +77,91 @@ defmodule Backend.Shipments do
         qty: dispatch_qty,
         created_by_id: actor.id,
         status: "draft"
-      })
+      }
+
+      %Shipment{}
+      |> Shipment.create_changeset(Map.merge(base_attrs, prefill))
       |> Repo.insert()
       |> tap_audit_created(actor)
     end
   end
+
+  # Look up the customer + linked customer order and turn them into
+  # sensible defaults for the fresh draft. The operator can still
+  # overwrite any of these via the desktop form before marking Ready —
+  # this is purely a "don't retype the same address the sales team
+  # already captured on NPD" shortcut. Silently degrades to no
+  # prefill when the linked rows can't be resolved (nil ids, deleted
+  # rows) so an odd corner case doesn't block shipment creation.
+  defp derive_prefill_attrs(customer_id, customer_order_id) do
+    co =
+      case customer_order_id do
+        id when is_integer(id) ->
+          Repo.get(Backend.CustomerOrders.CustomerOrder, id)
+
+        _ ->
+          nil
+      end
+
+    customer =
+      case customer_id do
+        id when is_integer(id) -> Repo.get(Customer, id)
+        _ -> nil
+      end
+
+    # Address: prefer the CO's per-order ``delivery_address`` (that's
+    # what the customer typed into the website order form), fall back
+    # to the customer's legal address for accounts that skipped it.
+    address =
+      cond do
+        co && present?(co.delivery_address) -> co.delivery_address
+        customer && present?(customer.legal_address) -> customer.legal_address
+        true -> nil
+      end
+
+    recipient =
+      cond do
+        customer && present?(customer.contact_name) -> customer.contact_name
+        customer && present?(customer.name) -> customer.name
+        true -> nil
+      end
+
+    country =
+      cond do
+        customer && present?(customer.country_code) ->
+          String.upcase(customer.country_code)
+
+        true ->
+          nil
+      end
+
+    # CO's ``expected_ship_date`` is a plain Date; the shipment column
+    # is a UTC datetime. Anchor to noon UTC on that date so a UK
+    # user's local-time picker doesn't render "yesterday" in a
+    # tzinfo-aware calendar. Operator picks the exact departure time
+    # in the form.
+    planned_ship_at =
+      case co && co.expected_ship_date do
+        %Date{} = d ->
+          {:ok, dt} = DateTime.new(d, ~T[12:00:00], "Etc/UTC")
+          DateTime.truncate(dt, :second)
+
+        _ ->
+          nil
+      end
+
+    %{
+      recipient_name: recipient,
+      ship_to_address: address,
+      ship_to_country: country,
+      planned_ship_at: planned_ship_at
+    }
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new()
+  end
+
+  defp present?(v) when is_binary(v), do: byte_size(String.trim(v)) > 0
+  defp present?(_), do: false
 
   defp tap_audit_created({:ok, %Shipment{} = row}, actor) do
     Audit.record_created(actor, "shipment", row, shipment_snapshot(row))

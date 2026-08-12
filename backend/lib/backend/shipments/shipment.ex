@@ -122,11 +122,21 @@ defmodule Backend.Shipments.Shipment do
       :customer_order_id,
       :qty,
       :created_by_id,
-      :status
+      :status,
+      # Prefill columns populated server-side from the linked customer
+      # order + customer at draft-time (see
+      # ``Backend.Shipments.derive_prefill_attrs/2``). Operator can
+      # still overwrite any of these via the desktop form before
+      # marking Ready.
+      :recipient_name,
+      :ship_to_address,
+      :ship_to_country,
+      :planned_ship_at
     ])
     |> validate_required([:company_id, :stock_lot_id, :qty, :created_by_id])
     |> validate_number(:qty, greater_than: 0)
     |> validate_inclusion(:status, @statuses)
+    |> maybe_validate_upcase(:ship_to_country)
   end
 
   @doc """
