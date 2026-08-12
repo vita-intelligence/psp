@@ -6965,6 +6965,47 @@ defmodule Backend.Production do
   @doc "Ordered list of the 8 canonical stage atoms — for FE stepper enumeration."
   def mo_stages_ordered, do: @mo_stages_ordered
 
+  @doc """
+  Uniform stage-based guard for state-changing actions.
+
+  Every mutation that advances an MO through the operator's 8-stage
+  pipeline calls this first: ``with :ok <- ensure_stage(mo, :expected)``.
+  Replaces the earlier scattered pattern of ``ensure_status_in`` +
+  individual ``is_nil(pickup_completed_at)`` checks, which each guard
+  reasoned about a different slice of the truth and drifted over time.
+
+  Accepts either a single stage atom or a list of acceptable
+  stages (e.g. ``:closeout`` and ``:return_pickup`` both accept
+  the same closeout-booking action, since return-pickup work is a
+  natural continuation of closeout).
+
+  Failure returns ``{:error, :wrong_stage, %{current: :actual, expected: [:expected, ...]}}``.
+  The controller layer maps this to a 422 with a message like
+  "MO is on stage `pickup`; this action requires stage `preflight`"
+  so the operator sees exactly why the button didn't fire.
+
+  Note: this guard COEXISTS with ``ensure_status_in`` for the pure
+  approval ceremony (draft → prepared → approved → reject / amend).
+  Those are a status-machine, not a stage-machine — the operator
+  sees them collapsed into stage ``:mo_request`` — so keeping the
+  finer-grained status guard there is correct.
+  """
+  @spec ensure_stage(ManufacturingOrder.t(), atom() | [atom()]) ::
+          :ok | {:error, :wrong_stage, map()}
+  def ensure_stage(%ManufacturingOrder{} = mo, expected) when is_atom(expected) do
+    ensure_stage(mo, [expected])
+  end
+
+  def ensure_stage(%ManufacturingOrder{} = mo, expected) when is_list(expected) do
+    current = mo_stage(mo)
+
+    if current in expected do
+      :ok
+    else
+      {:error, :wrong_stage, %{current: current, expected: expected}}
+    end
+  end
+
   # Any output lot from this MO still awaiting QC (status = received).
   # One targeted query — no joins, indexed on source_ref.
   defp mo_stage_output_qc_pending?(%ManufacturingOrder{uuid: mo_uuid}) do
@@ -7048,6 +7089,15 @@ defmodule Backend.Production do
     with :ok <- ensure_status_in(mo, ["approved", "scheduled"]),
          :ok <- ensure_not_needing_replan(mo),
          :ok <- ensure_calendar_or_rnd(mo),
+         # Sequencing gate: every live sub-MO whose output this MO
+         # depends on must have finished its own closeout ceremony
+         # before the parent can enter pickup. Without this,
+         # the parent's pickup queue can start while a child is
+         # mid-tail (Output QC / closeout / return-pickup), landing
+         # the parent's picker in front of a lot that isn't
+         # available yet — the exact chaos the 8-stage stepper
+         # exists to prevent.
+         :ok <- ensure_children_closeout_done(mo),
          :ok <- ensure_all_lines_fully_booked(mo),
          :ok <- ensure_all_lines_have_real_bookings(mo),
          :ok <- ensure_all_booked_lots_available(mo),
@@ -7067,7 +7117,45 @@ defmodule Backend.Production do
           attrs
         end
 
-      apply_pickup_changeset(actor, mo, attrs)
+      case apply_pickup_changeset(actor, mo, attrs) do
+        {:ok, released_mo} ->
+          # If every ingredient booking is already delivered (child
+          # outputs auto-picked at closeout, or raw materials placed
+          # at a production_facility cell), collapse stages 2+3
+          # (pickup + transfer) into an instant no-op — stamp
+          # ``pickup_started_at + pickup_completed_at`` and the MO
+          # jumps to preflight without touching the warehouse queue.
+          # Silent when there's actual pickup work owed; the picker
+          # queue still runs for those.
+          _ = maybe_auto_complete_pickup(actor, released_mo)
+          {:ok, reload_manufacturing_order(released_mo)}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  # Child-closeout gate for parent's release. Walks direct children
+  # (parent_mo_id = mo.id) and refuses release if any LIVE child hasn't
+  # marked ``closeout_completed_at``. Cancelled children are ignored —
+  # they don't feed the parent, so their tail state doesn't matter.
+  # Returns the offending child MOs so the FE can render targeted
+  # "sign off closeout on MO XXXX first" copy.
+  defp ensure_children_closeout_done(%ManufacturingOrder{id: mo_id}) do
+    pending =
+      from(c in ManufacturingOrder,
+        where:
+          c.parent_mo_id == ^mo_id and
+            c.status != "cancelled" and
+            is_nil(c.closeout_completed_at),
+        select: %{uuid: c.uuid, id: c.id}
+      )
+      |> Repo.all()
+
+    case pending do
+      [] -> :ok
+      list -> {:error, :children_not_closed_out, list}
     end
   end
 
@@ -10807,7 +10895,71 @@ defmodule Backend.Production do
         })
         |> Repo.update()
 
+        # Self-heal the parent's auto-book stamps. Any booking on
+        # the parent MO that points at THIS MO's output lots (and
+        # is still lacking ``picked_at`` / ``received_at``) gets
+        # stamped now — this is when the child's output is
+        # genuinely "delivered" (closeout said so). Without this,
+        # historical bookings created before the auto-delivered
+        # stamp landed on `insert_auto_booking` stay half-populated
+        # and block ``maybe_auto_complete_pickup`` at parent's
+        # release time.
+        _ = heal_parent_auto_book_stamps(actor, mo)
+
         :ok
+    end
+  end
+
+  # Walk to the parent MO (if any) and stamp ``picked_at + received_at``
+  # on any booking that points at one of THIS MO's output lots but
+  # is still missing the stamps. Idempotent (no-op when the stamps
+  # are already set). Silent on errors — the closeout completion
+  # succeeded regardless, this is a courtesy heal.
+  defp heal_parent_auto_book_stamps(_actor, %ManufacturingOrder{parent_mo_id: nil}), do: :ok
+
+  defp heal_parent_auto_book_stamps(%User{} = actor, %ManufacturingOrder{} = mo) do
+    now = now()
+
+    # Every output lot from THIS MO becomes an ingredient candidate
+    # for the parent. Lots keyed by source_ref = mo.uuid.
+    output_lot_ids =
+      from(l in StockLot,
+        where:
+          l.source_kind == "manufacturing_order" and
+            l.source_ref == ^mo.uuid,
+        select: l.id
+      )
+      |> Repo.all()
+
+    if output_lot_ids == [] do
+      :ok
+    else
+      # Update every parent booking that points at one of those lots
+      # AND is missing picked_at (received_at follows the same
+      # missing pattern). Update_all bypasses audit — fine here
+      # because the closeout itself is the audited event (see the
+      # ``closeout_booking`` flow) and this heal is silent
+      # bookkeeping, not a distinct operator action.
+      {_, _} =
+        from(b in ManufacturingOrderBooking,
+          where:
+            b.manufacturing_order_id == ^mo.parent_mo_id and
+              b.stock_lot_id in ^output_lot_ids and
+              b.status == "requested" and
+              is_nil(b.picked_at)
+        )
+        |> Repo.update_all(
+          set: [
+            picked_at: now,
+            picked_by_id: actor.id,
+            received_at: now,
+            received_by_id: actor.id,
+            updated_by_id: actor.id,
+            updated_at: now
+          ]
+        )
+
+      :ok
     end
   end
 
