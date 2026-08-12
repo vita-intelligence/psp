@@ -1791,23 +1791,46 @@ defmodule Backend.OrderWizard do
             ]
       }
     else
-      # All lots covered; the paperwork owed is on the draft rows —
-      # finish + mark ready.
-      [first | _] = draft_shipments
+      case draft_shipments do
+        [first | _] ->
+          # All lots covered; the paperwork owed is on the draft rows —
+          # finish + mark ready.
+          %{
+            code: "finish_shipment_paperwork",
+            title:
+              "Finish the shipment paperwork so the truck can arrive.",
+            detail:
+              "The dispatch record is a draft — fill in recipient + carrier + vehicle + driver + waybill, then Mark ready so warehouse knows the load is signed off.",
+            primary_cta: %{
+              label: "Open draft shipment",
+              kind: "link",
+              href: "/shipments/#{first.uuid}"
+            },
+            secondary_ctas: []
+          }
 
-      %{
-        code: "finish_shipment_paperwork",
-        title:
-          "Finish the shipment paperwork so the truck can arrive.",
-        detail:
-          "The dispatch record is a draft — fill in recipient + carrier + vehicle + driver + waybill, then Mark ready so warehouse knows the load is signed off.",
-        primary_cta: %{
-          label: "Open draft shipment",
-          kind: "link",
-          href: "/shipments/#{first.uuid}"
-        },
-        secondary_ctas: []
-      }
+        [] ->
+          # Legacy-path edge case: order reached the terminal phase
+          # without any output lot ever landing in a dispatch cell
+          # (skipped routing, or lots were moved back out after
+          # routing). ``derive_dispatch_phase`` pins us at
+          # ``:ready_to_dispatch`` for those; without a shipment or a
+          # dispatchable lot the operator can't create paperwork
+          # normally — surface a diagnostic action instead of
+          # crashing the whole /projects page.
+          %{
+            code: "review_dispatch_state",
+            title: "Review dispatch — no lot is in a dispatch cell.",
+            detail:
+              "Every released output lot has been moved out of the dispatch area or never routed there, so there's no shipment paperwork to fill in right now. Re-route a lot through the routing step to reopen the dispatch flow.",
+            primary_cta: %{
+              label: "Open order",
+              kind: "link",
+              href: "/customer-orders/#{co.uuid}"
+            },
+            secondary_ctas: []
+          }
+      end
     end
   end
 
