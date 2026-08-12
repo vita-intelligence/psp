@@ -78,3 +78,24 @@ config :phoenix, :plug_init_mode, :runtime
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# All 4-eyes rules (MO approve, CO / PO director sign, vendor
+# approve, customer approve) are disabled in dev so a single
+# developer can walk each lifecycle end-to-end without seeding a
+# second user. Test / prod keep the gate on (default = true).
+config :backend, :enforce_four_eyes, false
+
+# Route dev mail through Mailpit (Docker) instead of Swoosh's local
+# in-memory preview. Base config sets ``Swoosh.Adapters.Local`` which
+# only surfaces mail at ``/dev/mailbox`` in the Phoenix app; overriding
+# to SMTP here means password-reset + activation flows show up in the
+# Mailpit web UI at http://localhost:8025 (SMTP relay on localhost:1025).
+# TLS/auth off because Mailpit accepts plaintext without creds by design.
+config :backend, Backend.Mailer,
+  adapter: Swoosh.Adapters.SMTP,
+  relay: "localhost",
+  port: 1025,
+  ssl: false,
+  tls: :never,
+  auth: :never,
+  retries: 0

@@ -87,6 +87,7 @@ import {
   uploadCustomerFileAction,
 } from "@/lib/customers/actions";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
+import { ENFORCE_FOUR_EYES } from "@/lib/four-eyes";
 
 interface Props {
   customer: Customer;
@@ -160,10 +161,15 @@ export function CustomerOnboardingCard({
   const effectiveDiffers = effectiveReason !== "none";
   const Icon = APPROVAL_ICON[effectiveStatus];
 
-  // Segregation of duties — pre-warn before submit.
-  const actorIsQualifier = customer.qualified_by?.id === currentUserId;
+  // Segregation of duties — pre-warn before submit. Dev toggle
+  // (NEXT_PUBLIC_ENFORCE_FOUR_EYES=false) collapses the check so a
+  // single dev seat can approve their own qualification.
+  const actorIsQualifier =
+    ENFORCE_FOUR_EYES && customer.qualified_by?.id === currentUserId;
   const actorIsCreatorFallback =
-    !customer.qualified_by && customer.created_by?.id === currentUserId;
+    ENFORCE_FOUR_EYES &&
+    !customer.qualified_by &&
+    customer.created_by?.id === currentUserId;
   const segregationConflict = actorIsQualifier || actorIsCreatorFallback;
 
   // Stored status (NOT effective) drives which action buttons appear —

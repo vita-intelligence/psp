@@ -627,7 +627,10 @@ defmodule Backend.Customers do
 
   defp enforce_segregation_of_duties(%User{id: actor_id}, %Customer{qualified_by_id: qid})
        when not is_nil(qid) and actor_id == qid do
-    {:error, :same_signer_as_qualifier}
+    # Dev toggle lets one seat qualify + approve a customer.
+    if Backend.FourEyes.enforce?(),
+      do: {:error, :same_signer_as_qualifier},
+      else: :ok
   end
 
   # When no one has touched the qualification record yet (qualified_by
@@ -641,7 +644,9 @@ defmodule Backend.Customers do
          created_by_id: creator_id
        })
        when not is_nil(creator_id) and actor_id == creator_id do
-    {:error, :same_signer_as_creator}
+    if Backend.FourEyes.enforce?(),
+      do: {:error, :same_signer_as_creator},
+      else: :ok
   end
 
   defp enforce_segregation_of_duties(_actor, _customer), do: :ok

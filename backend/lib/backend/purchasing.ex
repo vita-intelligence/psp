@@ -869,9 +869,18 @@ defmodule Backend.Purchasing do
     po = preload(po)
 
     case Enum.find(po.approvals, fn a -> a.kind == "approver" end) do
-      nil -> :ok
-      %{signed_by_id: id} when id == actor.id -> {:error, :same_signer}
-      _ -> :ok
+      nil ->
+        :ok
+
+      %{signed_by_id: id} when id == actor.id ->
+        # Dev toggle short-circuits so one dev seat can complete
+        # both director signatures on a PO. Prod / test enforce.
+        if Backend.FourEyes.enforce?(),
+          do: {:error, :same_signer},
+          else: :ok
+
+      _ ->
+        :ok
     end
   end
 

@@ -33,6 +33,7 @@ import {
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import { cn } from "@/lib/utils";
+import { ENFORCE_FOUR_EYES } from "@/lib/four-eyes";
 import { format as formatDateFns } from "date-fns";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import {
@@ -233,7 +234,8 @@ export function MOStatusActions({
   }
 
   const style = STATUS_STYLES[mo.status];
-  const isPreparer = mo.prepared_by_id === currentUserId;
+  const isPreparer =
+    ENFORCE_FOUR_EYES && mo.prepared_by_id === currentUserId;
 
   return (
     <div className="space-y-2">
