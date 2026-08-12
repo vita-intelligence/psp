@@ -2981,6 +2981,25 @@ defmodule Backend.Production do
 
   defp transition_extra_attrs(_, _), do: %{}
 
+  # Stamp first-class "when + who" on every path that lands an MO on
+  # ``cancelled`` (direct transition_mo, cascade_open_children,
+  # transactional_transition). Also unwinds the ``purchasing_requested_*``
+  # flags — cancellation IS the operator releasing procurement engagement,
+  # so leaving the flags set would keep the "Purchasing" chip lit on the
+  # MO detail page + inflate procurement queues. ``put_new`` lets an
+  # explicit caller override (e.g. tests with a fixed timestamp); the
+  # ``purchasing_requested_*`` clear is unconditional because cancelled
+  # is terminal.
+  defp stamp_cancellation(attrs, "cancelled", %User{} = actor) do
+    attrs
+    |> Map.put_new("cancelled_at", now())
+    |> Map.put_new("cancelled_by_id", actor.id)
+    |> Map.put("purchasing_requested_at", nil)
+    |> Map.put("purchasing_requested_by_id", nil)
+  end
+
+  defp stamp_cancellation(attrs, _to, _actor), do: attrs
+
   # Release every still-active booking on this MO. Used as a side
   # effect of cancelling so dead MOs don't keep stock reserved.
   defp release_mo_bookings(%User{} = actor, %ManufacturingOrder{} = mo) do
@@ -3029,6 +3048,7 @@ defmodule Backend.Production do
         "updated_by_id" => actor.id
       }
       |> Map.merge(extra_attrs)
+      |> stamp_cancellation(to, actor)
 
     mo
     |> ManufacturingOrder.transition_changeset(attrs)
@@ -3221,6 +3241,15 @@ defmodule Backend.Production do
 
   defp ensure_bookings_not_locked(%ManufacturingOrder{purchasing_requested_at: nil}), do: :ok
 
+  # Cancelled MOs are the escape hatch — cancellation IS the operator
+  # telling us "abandon everything downstream, including placeholder
+  # bookings that had already reserved against POs". Without this
+  # clause ``release_mo_bookings`` (called inside the cancel cascade)
+  # silently failed for any MO whose planner had already hit Request
+  # purchases, leaving the cancelled MO holding PO-line reservations
+  # forever.
+  defp ensure_bookings_not_locked(%ManufacturingOrder{status: "cancelled"}), do: :ok
+
   defp ensure_bookings_not_locked(_),
     do: {:error, :bookings_locked_for_purchasing}
 
@@ -3380,8 +3409,13 @@ defmodule Backend.Production do
   end
 
   defp ensure_different_signer(%ManufacturingOrder{prepared_by_id: pid}, %User{id: aid})
-       when not is_nil(pid) and pid == aid,
-       do: {:error, :same_signer}
+       when not is_nil(pid) and pid == aid do
+    # Dev toggle bypasses so a single developer can drive the full
+    # MO lifecycle from one seat. Test / prod keep the gate on.
+    if Backend.FourEyes.enforce?(),
+      do: {:error, :same_signer},
+      else: :ok
+  end
 
   defp ensure_different_signer(_mo, _actor), do: :ok
 

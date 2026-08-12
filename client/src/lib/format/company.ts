@@ -53,6 +53,13 @@ export function formatCompanyDate(
  *
  *     formatCompanyNumber("12345.6789", { decimal_separator: ",", thousands_separator: "." })
  *     // "12.345,6789"
+ *
+ * Sub-precision-preserving: when a non-zero input would round to
+ * exactly 0 at ``maxFractionDigits`` (e.g. ``0.00000005`` with
+ * ``maxFractionDigits: 6``), we fall back to ``toPrecision(2)`` so
+ * the value survives — dropping a genuine non-zero to "0" on a BOM
+ * cell is a data-integrity trap (a "0 kg" reading looks like an
+ * empty line but the recipe actually requires trace amounts).
  */
 export function formatCompanyNumber(
   value: string | number | null | undefined,
@@ -68,11 +75,46 @@ export function formatCompanyNumber(
   const maxFrac = opts.maxFractionDigits ?? 4;
 
   // Trim trailing zeros first so "5.0000" → "5".
-  const trimmed = Number(n.toFixed(maxFrac)).toString();
+  let trimmed = Number(n.toFixed(maxFrac)).toString();
+
+  // Rescue path: n is non-zero but rounded to "0" at requested
+  // precision. Expand until we can express the value — up to 20
+  // decimals (JS Number cap) via ``toPrecision`` on 2 significant
+  // digits. Preserves the sign for negatives and swaps scientific
+  // notation (``5e-8``) back to plain decimal (``0.00000005``) so
+  // the operator sees a normal number.
+  if (trimmed === "0" && n !== 0) {
+    const precise = n.toPrecision(2);
+    trimmed = Number(precise) === 0 ? String(n) : expandScientific(precise);
+  }
+
   const [intPart, fracPart] = trimmed.split(".");
 
   const intGrouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, thousands);
   return fracPart ? `${intGrouped}${decimal}${fracPart}` : intGrouped;
+}
+
+/** ``toPrecision(2)`` on ``0.00000005`` returns ``"5.0e-8"``; the BOM
+ *  cell needs plain decimal so an operator scanning "0.00000005 kg"
+ *  doesn't have to mentally parse exponents. Turns
+ *  ``"5.0e-8"`` → ``"0.00000005"``. Negative numbers keep their sign;
+ *  positive exponents (unlikely at this call-site) pass through
+ *  unchanged since the intPart already carries them. */
+function expandScientific(precise: string): string {
+  const num = Number(precise);
+  if (!Number.isFinite(num)) return precise;
+  if (Math.abs(num) >= 1e-6) return num.toString();
+  // For very small numbers, hand-format so JS doesn't reach for
+  // scientific notation. ``Number.EPSILON`` (2.22e-16) is the floor;
+  // anything below that is indistinguishable from 0 at Number
+  // precision anyway.
+  const sign = num < 0 ? "-" : "";
+  const abs = Math.abs(num);
+  const digits = abs.toExponential().replace(/e[+-]?\d+$/, "").replace(".", "");
+  const exp = Number(abs.toExponential().match(/e([+-]?\d+)$/)?.[1] ?? "0");
+  if (exp >= 0) return sign + digits;
+  const zeros = "0".repeat(Math.max(0, -exp - 1));
+  return `${sign}0.${zeros}${digits.replace(/0+$/, "")}`;
 }
 
 /**

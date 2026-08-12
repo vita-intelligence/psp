@@ -110,6 +110,13 @@ defmodule Backend.Production.ManufacturingOrder do
 
     field :approved_at, :utc_datetime
     field :prepared_at, :utc_datetime
+    # Cancellation stamps — set by ``Production.do_transition``
+    # whenever the MO's status flips to ``"cancelled"``. Same shape
+    # as ``prepared_at`` / ``approved_at`` so the CO timeline can
+    # render a first-class cancellation row without walking the
+    # audit log. Nullable — historic cancels pre-dating this field
+    # keep working (the timeline just skips them).
+    field :cancelled_at, :utc_datetime
     field :rejection_reason, :string
     field :notes, :string
 
@@ -187,6 +194,7 @@ defmodule Backend.Production.ManufacturingOrder do
     belongs_to :assigned_to, User
     belongs_to :approved_by, User
     belongs_to :prepared_by, User
+    belongs_to :cancelled_by, User
     belongs_to :released_to_warehouse_by, User
     belongs_to :pickup_started_by, User
     belongs_to :pickup_completed_by, User
@@ -327,6 +335,11 @@ defmodule Backend.Production.ManufacturingOrder do
       :approved_by_id,
       :prepared_at,
       :prepared_by_id,
+      # Stamped in ``Production.do_transition`` when the target
+      # status is ``"cancelled"`` — needs to be in the cast list
+      # so the changeset accepts the fields.
+      :cancelled_at,
+      :cancelled_by_id,
       :rejection_reason,
       :needs_replan,
       :needs_replan_reason,

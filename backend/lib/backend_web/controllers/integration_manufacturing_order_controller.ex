@@ -25,6 +25,8 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   import Ecto.Query
   import BackendWeb.IntegrationScopePlug
 
+  alias Backend.CustomerOrders.CustomerOrder
+  alias Backend.CustomerOrders.CustomerOrderLine
   alias Backend.Items.Item
   alias Backend.Production
   alias Backend.Production.{ManufacturingOrder, ManufacturingOrderBooking}
@@ -103,7 +105,12 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
     with {:ok, item_id} <- resolve_item_id(company_id, params["item_uuid"]),
          {:ok, warehouse_id} <- resolve_warehouse_id(company_id, params["warehouse_uuid"]),
          {:ok, combo_items} <-
-           resolve_packaging_combo_items(company_id, params["packaging_combo_items"]) do
+           resolve_packaging_combo_items(company_id, params["packaging_combo_items"]),
+         {:ok, co_line_id} <-
+           resolve_sample_co_line_id(
+             company_id,
+             params["npd_sample_payment_uuid"]
+           ) do
       attrs = %{
         "item_id" => item_id,
         "warehouse_id" => warehouse_id,
@@ -116,6 +123,11 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         # A malformed value falls through to Ecto's UUID cast (422 with
         # a per-field error) rather than a 500.
         "npd_formulation_uuid" => Map.get(params, "npd_formulation_uuid"),
+        # When NPD sends ``npd_sample_payment_uuid`` we resolve the
+        # sample CO's line and set it here — this is what lands the
+        # MO on the /projects kanban attached to the correct customer.
+        # Nil for trial-kind MOs and legacy payloads.
+        "customer_order_line_id" => co_line_id,
         "packaging_combo_items" => combo_items,
         "due_date" => params["due_date"],
         "notes" => Map.get(params, "notes", "")
@@ -181,8 +193,83 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
             "packaging_combo_items must be an array of " <>
               "%{item_uuid, quantity} objects."
         })
+
+      {:error, :sample_co_not_found} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{
+          error: "sample_co_not_found",
+          detail:
+            "npd_sample_payment_uuid was supplied but no CustomerOrder " <>
+              "with that uuid exists on PSP. Sync the sample CO first via " <>
+              "POST /api/integration/customer-orders/sync-sample, then retry."
+        })
+
+      {:error, :sample_co_missing_line} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "sample_co_missing_line",
+          detail:
+            "The sample CustomerOrder was found but has no line to " <>
+              "attach the MO to. This shouldn't happen — the sync path " <>
+              "always inserts one. Re-run the sync and retry."
+        })
+
+      {:error, :invalid_sample_payment_uuid} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_sample_payment_uuid"})
     end
   end
+
+  # Resolve the CustomerOrderLine.id that this MO should attach to
+  # when NPD sends ``npd_sample_payment_uuid``. That uuid IS the
+  # sample CO's uuid (planted by NpdSync.upsert_sample_from_npd), so
+  # we can look up the CO directly + take its first (and only) line.
+  #
+  # Return values:
+  #
+  #   * ``{:ok, nil}`` — no sample uuid on the payload. Trial-kind MO
+  #     or legacy sample flow. Nothing to link.
+  #   * ``{:ok, line_id}`` — sample CO + its line resolved.
+  #   * ``{:error, :sample_co_not_found}`` — uuid was sent but no CO
+  #     exists yet on PSP. Caller should sync first.
+  #   * ``{:error, :sample_co_missing_line}`` — CO exists but has no
+  #     line. Data inconsistency worth surfacing loudly.
+  defp resolve_sample_co_line_id(_company_id, nil), do: {:ok, nil}
+  defp resolve_sample_co_line_id(_company_id, ""), do: {:ok, nil}
+
+  defp resolve_sample_co_line_id(company_id, raw) when is_binary(raw) do
+    case Ecto.UUID.cast(raw) do
+      {:ok, uuid} ->
+        case Repo.one(
+               from co in CustomerOrder,
+                 where: co.company_id == ^company_id and co.uuid == ^uuid,
+                 limit: 1
+             ) do
+          nil ->
+            {:error, :sample_co_not_found}
+
+          %CustomerOrder{id: co_id} ->
+            case Repo.one(
+                   from l in CustomerOrderLine,
+                     where: l.customer_order_id == ^co_id,
+                     order_by: [asc: l.inserted_at],
+                     limit: 1
+                 ) do
+              nil -> {:error, :sample_co_missing_line}
+              %CustomerOrderLine{id: line_id} -> {:ok, line_id}
+            end
+        end
+
+      :error ->
+        {:error, :invalid_sample_payment_uuid}
+    end
+  end
+
+  defp resolve_sample_co_line_id(_company_id, _),
+    do: {:error, :invalid_sample_payment_uuid}
 
   # NPD posts an array like ``[%{"item_uuid" => "…", "quantity" => "1"}, …]``.
   # Resolve each uuid → local ``item_id`` up-front so the booking loop
@@ -309,6 +396,12 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   def list_warehouses(conn, _params) do
     company_id = conn.assigns.current_company_id
 
+    # Storage sites only. The ``warehouses`` table is dual-purpose:
+    # ``kind = "warehouse"`` holds raw + finished-goods stock;
+    # ``kind = "production_facility"`` hosts workstations + WIP.
+    # Trial batches route received stock to storage, so production
+    # facilities never belong in NPD's Create-MO warehouse picker —
+    # even if one carries a stray R&D-tagged cell for WIP staging.
     rnd_warehouse_ids =
       from(w in Warehouse,
         join: l in Backend.Warehouses.StorageLocation,
@@ -316,6 +409,7 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
         join: c in Backend.Warehouses.StorageCell,
         on: c.storage_location_id == l.id,
         where: w.company_id == ^company_id and w.is_active == true,
+        where: w.kind == "warehouse",
         where: c.purpose == "rnd",
         distinct: true,
         select: w.id

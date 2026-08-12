@@ -1942,6 +1942,34 @@ defmodule BackendWeb.Router do
          IntegrationCustomerOrderController,
          :sync
 
+    # NPD sample-fulfilment sync. Fired when a customer's sample
+    # payment turns into a trial batch on NPD and the scientist
+    # clicks *Create MO on PSP*. Keyed on ``npd_sample_payment_uuid``
+    # (not the formulation) so each customer-sample pair gets its
+    # own CO, all attached to the deduped PSP customer. Same
+    # ``customer_order:sync:npd`` scope.
+    post "/customer-orders/sync-sample",
+         IntegrationCustomerOrderController,
+         :sync_sample
+
+    # Read-only snapshot for the NPD portal's sample-detail page —
+    # returns the CO's live phase + next-action so the customer sees
+    # where their sample is (e.g. "Sourcing ingredients — waiting on
+    # 3 items") instead of just raw MO status. Called on every portal
+    # sample-detail fetch so the customer's view stays in step with
+    # the PSP operator's.
+    get "/customer-orders/:uuid/snapshot",
+        IntegrationCustomerOrderController,
+        :snapshot
+
+    # Invoice list for a CO — used by NPD's finance-payment detail
+    # page so the accountant sees "N invoices already raised on PSP
+    # for this order (total £X, status Y)" without opening PSP. Same
+    # scope as the sync/snapshot pair.
+    get "/customer-orders/:uuid/invoices",
+        IntegrationCustomerOrderController,
+        :invoices
+
     # NPD proposal-created merge. Fired when a Proposal is drafted on
     # NPD spanning N spec sheets — consolidates the N R&D draft COs
     # into one primary + attaches proposal identity so the wizard
