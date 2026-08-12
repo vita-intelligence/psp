@@ -2306,6 +2306,8 @@ defmodule BackendWeb.Payloads do
     operations = mo_operations_breakdown(mo)
     {start_at, finish_at} = mo_planned_bounds(mo)
 
+    stage = Backend.Production.mo_stage(mo)
+
     %{
       id: mo.id,
       uuid: mo.uuid,
@@ -2317,6 +2319,16 @@ defmodule BackendWeb.Payloads do
       # detail page (see mo-status-actions.tsx) + the row chip on
       # the ledger.
       project_type: mo.project_type,
+      # Operator-facing macro stage (one of 8 canonical stages plus
+      # ``:done`` / ``:cancelled``). Drives the horizontal stepper on
+      # the MO detail page + a compact chip on cards / lists. The
+      # 7-value ``status`` above is the approval-ceremony state
+      # machine; ``stage`` is the operator's mental model of "what
+      # step am I on right now". See ``Backend.Production.mo_stage/1``
+      # for the derivation.
+      stage: to_string(stage),
+      stage_index: Backend.Production.mo_stage_index(stage),
+      stage_total: Backend.Production.mo_stage_total(),
       # NPD linkage — populated only on trial/sample MOs created via
       # the NPD integration. `npd_trial_batch_uuid` is the dedupe key
       # NPD uses to open the matching validation; the FE reads it to

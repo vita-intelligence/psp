@@ -11,6 +11,7 @@ import { getCompanyDefaults } from "@/lib/company/server";
 import { getManufacturingOrder, listMOSessions } from "@/lib/production/server";
 import { getMOCostBreakdown } from "@/lib/production/mo-cost";
 import { MOSessionsCard } from "@/components/production/mo-sessions-card";
+import { MoStepperFromMo } from "@/components/production/mo-stage-stepper";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { AuditMetaSection } from "@/components/audit/audit-meta-section";
@@ -122,6 +123,16 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
             backHref="/production/manufacturing-orders"
             backLabel="Back to manufacturing orders"
           />
+
+          {/* 8-stage macro stepper — the operator's "where am I on
+              this MO right now?" surface. Sits above the status
+              actions card so the answer is visible before any
+              button. Server derives the stage from status +
+              pickup / production / QC / closeout timestamps in
+              ``Backend.Production.mo_stage/1``. */}
+          <div className="rounded-lg border bg-card p-3">
+            <MoStepperFromMo mo={mo} />
+          </div>
 
           <MOStatusActions
             mo={mo}
