@@ -168,6 +168,16 @@ defmodule BackendWeb.CustomerOrderController do
       # has exactly one active BOM; create_manufacturing_order/2 also
       # falls back to the primary BOM when this is absent.
       |> maybe_put("bom_id", params["bom_id"])
+      # Inherit the CO's NPD formulation linkage onto the MO. This
+      # matches what NPD's "Create MO on PSP" button stamps on the
+      # MO directly, so both entry points produce byte-for-byte
+      # identical MOs in terms of NPD linkage — the R&D validation
+      # flow, the NPD trial-batch reverse lookup, and any downstream
+      # code that keys on ``npd_formulation_uuid`` all work
+      # uniformly regardless of which button the operator clicked.
+      # Nil on commercial COs where the CO itself has no formulation
+      # link (which is fine — the MO field is nullable).
+      |> maybe_put("npd_formulation_uuid", co.npd_formulation_uuid)
 
     case Backend.Production.create_manufacturing_order(actor, attrs) do
       {:ok, mo} ->

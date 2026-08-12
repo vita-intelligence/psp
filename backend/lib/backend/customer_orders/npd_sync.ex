@@ -577,6 +577,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> Ecto.Changeset.put_change(:status, "confirmed")
       |> Ecto.Changeset.put_change(:confirmed_at, now)
       |> Ecto.Changeset.put_change(:sample_kind, true)
+      |> put_npd_formulation_uuid(params)
       |> put_npd_team(params)
       |> put_npd_payment(params)
 
@@ -602,6 +603,7 @@ defmodule Backend.CustomerOrders.NpdSync do
     changeset =
       existing
       |> CustomerOrder.changeset(attrs)
+      |> put_npd_formulation_uuid(params)
       |> put_npd_team(params)
       |> put_npd_payment(params)
 
@@ -702,6 +704,28 @@ defmodule Backend.CustomerOrders.NpdSync do
   # renders filenames + metadata only. Falls back to ``[]`` on
   # missing / malformed lists so a bad payload doesn't blow up
   # the whole sync transaction.
+  # Persist the NPD formulation uuid on a sample CO so downstream
+  # PSP flows (wizard "Create MO for line", R&D validation gate,
+  # NPD trial-batch reverse lookup) all know which formulation this
+  # sample maps to. Commercial COs get the same field via the
+  # ``upsert_from_npd`` path — this helper closes the sample-flow
+  # gap where the earlier code created the CO without the linkage,
+  # stranding wizard-created MOs from ever reaching NPD validation.
+  defp put_npd_formulation_uuid(changeset, params) do
+    raw = params["npd_formulation_uuid"] || params[:npd_formulation_uuid]
+
+    case raw do
+      s when is_binary(s) and s != "" ->
+        case Ecto.UUID.cast(s) do
+          {:ok, uuid} -> Ecto.Changeset.put_change(changeset, :npd_formulation_uuid, uuid)
+          :error -> changeset
+        end
+
+      _ ->
+        changeset
+    end
+  end
+
   defp put_npd_payment(changeset, params) do
     payment = params["payment"] || params[:payment]
 

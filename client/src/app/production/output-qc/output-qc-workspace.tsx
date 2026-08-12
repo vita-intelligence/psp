@@ -1167,10 +1167,16 @@ function EmptyState() {
  * Compute whether the Output QC pass button is blocked by NPD's
  * product validation. Server-side rule (mirrored here for UX):
  *
- *   * Non-R&D MO (production) → always open, no NPD gate applies.
- *   * Trial / sample MO → open only when
- *     `npd_validation_status === "passed"`. Anything else
- *     (null, draft, in_progress, failed) blocks.
+ *   * Production + sample MOs → always open, no NPD gate applies.
+ *   * Trial MO → open only when `npd_validation_status === "passed"`.
+ *     Anything else (null, draft, in_progress, failed) blocks.
+ *
+ * `sample` runs a pre-validated RTG formulation from the commercial
+ * catalogue — there's no new validation to trigger, so gating it
+ * behind NPD's validation flow strands the lot in `received`
+ * forever. `trial` MOs are the R&D case the gate was designed for
+ * (scientist validating an unreleased formulation before QA
+ * accepts the output).
  *
  * `failed` is a distinct case: the lot has already been auto-
  * rejected by the webhook, so the pass button being disabled is
@@ -1181,7 +1187,7 @@ function computeNpdGate(
   mo: OutputQcEntry["mo"],
 ): { blocked: boolean; reason?: string } {
   if (!mo) return { blocked: false };
-  if (mo.project_type !== "trial" && mo.project_type !== "sample") {
+  if (mo.project_type !== "trial") {
     return { blocked: false };
   }
   const status = mo.npd_validation_status;
