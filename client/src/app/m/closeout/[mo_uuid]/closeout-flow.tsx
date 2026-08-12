@@ -51,7 +51,11 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
-import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
+import {
+  formatCompanyDate,
+  formatCompanyNumber,
+  type FormatPrefs,
+} from "@/lib/format/company";
 import {
   closeoutBookingAction,
   closeoutOutputLotAction,
@@ -489,7 +493,12 @@ export function CloseoutFlow({
                                 // operator sanity-check against the
                                 // shelf before they walk to it — if
                                 // the lot also fed another MO this
-                                // number reflects that too.
+                                // number reflects that too. Formatted
+                                // via formatCompanyNumber (10 decimal
+                                // fraction cap) so trace-scale values
+                                // aren't rounded to "0" or "1" — same
+                                // fix applied on the Weigh screen's
+                                // "Ideal remaining" row.
                                 const booked = Number(item.bookedQty);
                                 const onHand =
                                   item.onHandQty != null
@@ -502,7 +511,11 @@ export function CloseoutFlow({
                                 const leftoverLabel = showLeftover
                                   ? ` · est. leftover ${
                                       leftoverNum < 0 ? "−" : ""
-                                    }${Math.abs(leftoverNum)}`
+                                    }${formatCompanyNumber(
+                                      Math.abs(leftoverNum),
+                                      companyDateFormat,
+                                      { maxFractionDigits: 10 },
+                                    )}`
                                   : "";
                                 return `Booked ${item.bookedQty}${
                                   item.onHandQty != null
@@ -620,7 +633,14 @@ export function CloseoutFlow({
                 {/* Ideal remaining if production consumed exactly the
                     booked qty (no spillage / overage). Lets the
                     operator compare their weighed value against the
-                    no-loss baseline — gap = variance. */}
+                    no-loss baseline — gap = variance.
+                    Formatted via formatCompanyNumber so trace-scale
+                    values (e.g. 1 - 0.00002 = 0.99998) don't get
+                    rounded to "1" by a 4-decimal toFixed — the BE
+                    stores BOM qty at 10 decimals precision and the
+                    FE now matches that. Sub-precision preservation
+                    inside the helper rescues genuine non-zeros that
+                    would otherwise collapse to "0". */}
                 {(() => {
                   if (activeItem.onHandQty == null) return null;
                   const onHand = Number(activeItem.onHandQty);
@@ -636,7 +656,9 @@ export function CloseoutFlow({
                         Ideal remaining (no spillage)
                       </span>
                       <span className="font-medium text-foreground">
-                        {ideal.toFixed(4).replace(/\.?0+$/, "") || "0"}{" "}
+                        {formatCompanyNumber(ideal, companyDateFormat, {
+                          maxFractionDigits: 10,
+                        })}{" "}
                         {activeItem.uomSymbol}
                       </span>
                     </div>
@@ -671,7 +693,9 @@ export function CloseoutFlow({
                         Will record as consumed
                       </span>
                       <span className={`font-medium ${tone}`}>
-                        {consumed.toFixed(4).replace(/\.?0+$/, "") || "0"}{" "}
+                        {formatCompanyNumber(consumed, companyDateFormat, {
+                          maxFractionDigits: 10,
+                        })}{" "}
                         {activeItem.uomSymbol}
                         {overage && (
                           <span className="ml-1 text-[10px] uppercase tracking-wider">
