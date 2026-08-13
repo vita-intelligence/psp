@@ -395,15 +395,75 @@ defmodule Backend.Warehouses.Plans do
 
   def update_cell(%User{} = actor, %StorageCell{} = cell, attrs) do
     before_state = cell_audit_snapshot(cell)
+    string_attrs = stringify_keys(attrs)
 
-    cell
-    |> StorageCell.changeset(
-      attrs
-      |> stringify_keys()
-      |> Map.put("updated_by_id", actor.id)
+    # Compliance guard (W9): the cell's dimensions, weight cap, and
+    # purpose are load-bearing for fit calculations + auto-routing
+    # decisions. If the operator has already placed lots in the
+    # cell, changing these mid-life silently invalidates the
+    # placement — the cell shrinks below what it holds, or its
+    # purpose flips so the router's next reroute picks a stale
+    # destination. Refuse the edit and force the operator to move
+    # the lots out first. Tags + name + notes + ordinal stay
+    # editable at any time (they don't affect physics).
+    with :ok <- ensure_no_structural_edit_while_occupied(cell, string_attrs) do
+      cell
+      |> StorageCell.changeset(
+        string_attrs
+        |> Map.put("updated_by_id", actor.id)
+      )
+      |> Repo.update()
+      |> after_cell_update(actor, before_state)
+    end
+  end
+
+  # Structural fields = the ones the fit / routing engines read.
+  # Editing these on a cell that already holds live placements is
+  # a silent-drift trap; refuse until the lots move out.
+  @cell_structural_fields ~w(width_m depth_m height_m max_weight_kg purpose)
+
+  defp ensure_no_structural_edit_while_occupied(%StorageCell{} = cell, %{} = attrs) do
+    changes_structural? =
+      Enum.any?(@cell_structural_fields, fn key ->
+        case Map.fetch(attrs, key) do
+          :error ->
+            false
+
+          {:ok, incoming} ->
+            current = Map.get(cell, String.to_existing_atom(key))
+            not equal_ignoring_nils?(current, incoming)
+        end
+      end)
+
+    if changes_structural? and cell_has_active_placement?(cell.id) do
+      {:error, :cell_has_active_placements}
+    else
+      :ok
+    end
+  end
+
+  defp cell_has_active_placement?(cell_id) when is_integer(cell_id) do
+    Repo.exists?(
+      from(p in Backend.Stock.Placement,
+        where: p.storage_cell_id == ^cell_id and p.qty > 0
+      )
     )
-    |> Repo.update()
-    |> after_cell_update(actor, before_state)
+  end
+
+  # Decimal vs string vs number comparison — the changeset accepts
+  # multiple input shapes, so compare after coercing to strings.
+  # ``nil`` on either side counts as "unchanged" for our purposes:
+  # blanking a required field would fail the changeset anyway.
+  defp equal_ignoring_nils?(current, incoming) do
+    to_compare = fn v ->
+      cond do
+        is_nil(v) -> nil
+        is_binary(v) -> String.trim(v)
+        true -> v |> to_string() |> String.trim()
+      end
+    end
+
+    to_compare.(current) == to_compare.(incoming)
   end
 
   def delete_cell(%User{} = actor, %StorageCell{} = cell) do

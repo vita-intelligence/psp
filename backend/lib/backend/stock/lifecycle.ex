@@ -203,7 +203,8 @@ defmodule Backend.Stock.Lifecycle do
              {:ok, _movements} <-
                Backend.Stock.AutoRouter.maybe_reroute(
                  actor_for_router(attrs),
-                 updated_lot
+                 updated_lot,
+                 event
                ) do
           {:ok, %{lot: updated_lot, event: event, status: next_status}}
         end

@@ -1222,6 +1222,7 @@ defmodule Backend.Stock do
          {:ok, to_cell} <-
            fetch_cell_by_uuid(actor.company_id, attrs["to_cell_uuid"]),
          :ok <- ensure_rnd_stream_match(lot, to_cell),
+         :ok <- ensure_lot_status_matches_cell_purpose(lot, to_cell),
          {:ok, from_placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
          {:ok, qty} <- resolve_move_qty(from_placement, attrs["qty"]),
          :ok <- ensure_distinct_cells(from_placement.storage_cell_id, to_cell.id),
@@ -1229,14 +1230,23 @@ defmodule Backend.Stock do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
       Repo.transaction(fn ->
-        with {:ok, new_from} <- decrement_placement(from_placement, qty),
+        # Re-fetch the source placement with a row-level lock so
+        # concurrent movers on the same placement serialize instead of
+        # both reading the same qty and both writing the same decrement
+        # (silently losing one operator's move). If a concurrent mover
+        # already drained the placement, the ``qty`` check refuses
+        # cleanly and the operator sees ``insufficient_qty`` instead
+        # of a phantom successful move.
+        with {:ok, locked_from} <- lock_placement(from_placement),
+             :ok <- ensure_qty_still_available(locked_from, qty),
+             {:ok, new_from} <- decrement_placement(locked_from, qty),
              {:ok, new_to} <- upsert_placement(lot, to_cell, qty),
-             {:ok, movement} <- insert_move_movement(actor, lot, from_placement, to_cell, qty, attrs, now) do
+             {:ok, movement} <- insert_move_movement(actor, lot, locked_from, to_cell, qty, attrs, now) do
           Audit.record_updated(
             actor,
             "stock_lot_placement",
             new_from,
-            %{qty: from_placement.qty, storage_cell_id: from_placement.storage_cell_id},
+            %{qty: locked_from.qty, storage_cell_id: locked_from.storage_cell_id},
             %{qty: new_from.qty, storage_cell_id: new_from.storage_cell_id}
           )
 
@@ -1786,6 +1796,80 @@ defmodule Backend.Stock do
 
   defp ensure_rnd_stream_match(_, _), do: :ok
 
+  # Compliance gate on manual moves (W6). Refuses obviously wrong
+  # destinations: a quarantined lot can only go to a compliance cell
+  # (quarantine / hold / rejected); an `available` lot can't be
+  # dropped into a compliance cell (that would misrepresent its
+  # status); a `rejected` lot can only sit in the rejected bin
+  # awaiting destruction. The auto-router enforces the same shape
+  # on status flips; this guard closes the "operator scans wrong
+  # cell" loophole.
+  #
+  # Permissive statuses (received / expected / requested / depleted /
+  # disposed / canceled) fall through — those are transient or
+  # terminal states where the placement layer isn't the source of
+  # truth anyway.
+  @compliance_purposes ~w(quarantine hold rejected)
+  @quarantine_ok_targets ~w(quarantine hold rejected)
+  @rejected_ok_targets ~w(rejected)
+  @on_hold_ok_targets ~w(hold quarantine rejected)
+  @awaiting_release_ok_targets ~w(finished_quarantine dispatch rejected)
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "quarantine"}, %StorageCell{purpose: p})
+       when p in @quarantine_ok_targets,
+       do: :ok
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "quarantine"}, %StorageCell{}),
+    do: {:error, :quarantine_lot_needs_compliance_cell}
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "on_hold"}, %StorageCell{purpose: p})
+       when p in @on_hold_ok_targets,
+       do: :ok
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "on_hold"}, %StorageCell{}),
+    do: {:error, :on_hold_lot_needs_compliance_cell}
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "rejected"}, %StorageCell{purpose: p})
+       when p in @rejected_ok_targets,
+       do: :ok
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "rejected"}, %StorageCell{}),
+    do: {:error, :rejected_lot_needs_rejected_cell}
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "awaiting_release"}, %StorageCell{purpose: p})
+       when p in @awaiting_release_ok_targets,
+       do: :ok
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "awaiting_release"}, %StorageCell{}),
+    do: {:error, :awaiting_release_lot_needs_finished_quarantine}
+
+  defp ensure_lot_status_matches_cell_purpose(%Lot{status: "available"}, %StorageCell{purpose: p})
+       when p in @compliance_purposes,
+       do: {:error, :available_lot_cannot_enter_compliance_cell}
+
+  defp ensure_lot_status_matches_cell_purpose(_lot, _cell), do: :ok
+
+  # Row-level lock helper for W2. Re-fetches the placement inside the
+  # current transaction with ``FOR UPDATE`` so concurrent movers on
+  # the same placement serialize on the row instead of both reading
+  # the same qty snapshot. Returns the fresh placement (with current
+  # qty) or ``{:error, :placement_gone}`` when the row was deleted
+  # by a concurrent write (rare — happens when a sibling move
+  # drained the placement to exactly zero and ``write_adjusted_placement``
+  # deleted the ghost row).
+  defp lock_placement(%Placement{id: id}) do
+    query = from(p in Placement, where: p.id == ^id, lock: "FOR UPDATE")
+
+    case Repo.one(query) do
+      nil -> {:error, :placement_gone}
+      %Placement{} = fresh -> {:ok, fresh}
+    end
+  end
+
+  defp ensure_qty_still_available(%Placement{qty: available}, qty) do
+    if Decimal.gte?(available, qty), do: :ok, else: {:error, :insufficient_qty}
+  end
+
   # Trolley guard — refuse physical placement mutations on a lot that
   # is currently booked to a pickup-in-progress MO. Matches the QC
   # event guard in Stock.Lifecycle so both lot-status and lot-quantity
@@ -1827,22 +1911,37 @@ defmodule Backend.Stock do
   end
 
   defp upsert_placement(%Lot{} = lot, %StorageCell{} = cell, qty) do
-    case Repo.get_by(Placement, stock_lot_id: lot.id, storage_cell_id: cell.id) do
-      %Placement{} = existing ->
-        existing
-        |> Placement.changeset(%{"qty" => Decimal.add(existing.qty, qty)})
-        |> Repo.update()
+    # Atomic on the unique constraint (stock_lot_id, storage_cell_id).
+    # The old ``Repo.get_by`` → conditional insert/update pattern had
+    # a race window where two concurrent movers on the same lot/cell
+    # both saw nil from ``get_by`` and both tried insert — the second
+    # blew up the outer transaction (fatal for the whole move).
+    # ``ON CONFLICT ... DO UPDATE`` collapses that into one atomic
+    # SQL statement Postgres serializes at the row level.
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      nil ->
-        %Placement{}
-        |> Placement.changeset(%{
-          "company_id" => lot.company_id,
-          "stock_lot_id" => lot.id,
-          "storage_cell_id" => cell.id,
-          "qty" => qty
-        })
-        |> Repo.insert()
-    end
+    attrs = %{
+      "company_id" => lot.company_id,
+      "stock_lot_id" => lot.id,
+      "storage_cell_id" => cell.id,
+      "qty" => qty
+    }
+
+    %Placement{}
+    |> Placement.changeset(attrs)
+    |> Repo.insert(
+      on_conflict:
+        from(p in Placement,
+          update: [
+            set: [
+              qty: fragment("? + ?", p.qty, ^qty),
+              updated_at: ^now
+            ]
+          ]
+        ),
+      conflict_target: [:stock_lot_id, :storage_cell_id],
+      returning: true
+    )
   end
 
   defp insert_move_movement(actor, lot, from_placement, to_cell, qty, attrs, now) do
@@ -2348,18 +2447,24 @@ defmodule Backend.Stock do
   # Total cell capacity minus already-committed footprints.
   def compute_cell_capacity(%StorageCell{} = cell, committed) do
     # Cell dims in metres → millimetres for the comparison. Missing
-    # dims = treat cell as "unbounded" (operator skipped dims, we
-    # don't want to block them).
-    length_mm = decimal_metres_to_mm(cell.width_m)
-    width_mm = decimal_metres_to_mm(cell.depth_m)
-    height_mm = decimal_metres_to_mm(cell.height_m)
+    # dims (nil) OR corrupted zero-dims from pre-validation legacy
+    # rows both collapse to ``nil`` here so the fit check falls
+    # through cleanly (rather than dividing by zero downstream — the
+    # ``area_percent`` guard also protects, but keeping the input
+    # sanitised means every consumer of the capacity map behaves
+    # sensibly). Post-validation writes cannot land 0 anyway
+    # (``StorageCell.changeset`` enforces ``greater_than: 0`` on
+    # every dim + ``max_weight_kg``).
+    length_mm = positive_mm_or_nil(cell.width_m)
+    width_mm = positive_mm_or_nil(cell.depth_m)
+    height_mm = positive_mm_or_nil(cell.height_m)
 
     total_area_mm2 =
       if length_mm && width_mm,
         do: Decimal.mult(Decimal.new(length_mm), Decimal.new(width_mm)),
         else: nil
 
-    max_weight_kg = cell.max_weight_kg
+    max_weight_kg = positive_or_nil(cell.max_weight_kg)
 
     %{
       total_area_mm2: total_area_mm2,
@@ -2370,6 +2475,39 @@ defmodule Backend.Stock do
       committed_weight_kg: committed.weight_kg
     }
   end
+
+  # Guards for legacy / corrupted cell dims: nil AND non-positive
+  # values both collapse to nil. Callers use nil as "unbounded" —
+  # the same fallback the code used to reach for missing dims. This
+  # keeps the fit check deterministic even against pre-validation
+  # cell rows where width / depth / height / max_weight might be 0.
+  defp positive_mm_or_nil(nil), do: nil
+
+  defp positive_mm_or_nil(%Decimal{} = m) do
+    if Decimal.compare(m, Decimal.new(0)) == :gt do
+      decimal_metres_to_mm(m)
+    else
+      nil
+    end
+  end
+
+  defp positive_mm_or_nil(n) when is_number(n) do
+    if n > 0, do: round(n * 1000), else: nil
+  end
+
+  defp positive_mm_or_nil(_), do: nil
+
+  defp positive_or_nil(nil), do: nil
+
+  defp positive_or_nil(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new(0)) == :gt, do: d, else: nil
+  end
+
+  defp positive_or_nil(n) when is_number(n) do
+    if n > 0, do: n, else: nil
+  end
+
+  defp positive_or_nil(_), do: nil
 
   defp decimal_metres_to_mm(nil), do: nil
 
@@ -2440,8 +2578,21 @@ defmodule Backend.Stock do
   def ensure_placement_fits(_, _, _), do: :ok
 
   def check_fit(:unknown, _capacity) do
-    # Legacy lot without packaging dims — don't block recommendations.
-    %{disqualified?: false, reason: nil, percent_used: 0, free_pct: 100}
+    # Legacy lot without packaging dims — don't block recommendations,
+    # but flag ``known?: false`` so the mobile UI can render an
+    # "unable to verify fit" chip instead of a green tick. Callers
+    # that want strict behaviour (auto-router, hard-guard endpoints)
+    # can inspect this or opt into ``ensure_placement_fits/4`` with
+    # ``strict: true``.
+    %{
+      disqualified?: false,
+      reason: "unknown_fit",
+      known?: false,
+      percent_used: 0,
+      free_pct: 100,
+      current_percent_used: 0,
+      projected_percent_used: 0
+    }
   end
 
   def check_fit(footprint, capacity) do
@@ -2470,6 +2621,7 @@ defmodule Backend.Stock do
         %{
           disqualified?: true,
           reason: "weight_exceeded",
+          known?: true,
           current_percent_used: current_percent_used,
           projected_percent_used: 100,
           # Legacy alias for older mobile clients (mirrors projected).
@@ -2481,6 +2633,7 @@ defmodule Backend.Stock do
         %{
           disqualified?: true,
           reason: "stack_too_tall",
+          known?: true,
           current_percent_used: current_percent_used,
           projected_percent_used: 100,
           percent_used: 100,
@@ -2491,6 +2644,7 @@ defmodule Backend.Stock do
         %{
           disqualified?: true,
           reason: "no_room",
+          known?: true,
           current_percent_used: current_percent_used,
           projected_percent_used: 100,
           percent_used: 100,
@@ -2512,6 +2666,7 @@ defmodule Backend.Stock do
         %{
           disqualified?: false,
           reason: nil,
+          known?: true,
           current_percent_used: current_percent_used,
           projected_percent_used: projected,
           # Legacy alias kept stable for the mobile client.
@@ -2523,11 +2678,19 @@ defmodule Backend.Stock do
 
   defp area_percent(_committed, nil), do: 0
 
-  defp area_percent(committed, total) do
-    Decimal.mult(committed, Decimal.new(100))
-    |> Decimal.div(total)
-    |> Decimal.round(0)
-    |> Decimal.to_integer()
+  defp area_percent(committed, %Decimal{} = total) do
+    # Divide-by-zero guard (W8). ``compute_cell_capacity`` should
+    # already collapse zero-dim cells to ``nil``, but keeping the
+    # runtime guard means a stray zero (raw SQL insert, migration
+    # gap) can't crash the fit endpoint mid-move.
+    if Decimal.compare(total, Decimal.new(0)) != :gt do
+      0
+    else
+      Decimal.mult(committed, Decimal.new(100))
+      |> Decimal.div(total)
+      |> Decimal.round(0)
+      |> Decimal.to_integer()
+    end
   end
 
   # ----- packaging suggestions ------------------------------------------
