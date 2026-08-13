@@ -29,7 +29,7 @@ interface Props {
 
 type ChecklistKey = Exclude<
   keyof ShipmentPickupChecklist,
-  "carrier" | "vehicle_registration"
+  "carrier" | "vehicle_registration" | "driver_name" | "consignment_note_ref"
 >;
 
 interface ChecklistItem {
@@ -71,6 +71,10 @@ export function MobileDispatchForm({ shipment }: Props) {
   const [carrier, setCarrier] = useState(shipment.carrier ?? "");
   const [vehicleReg, setVehicleReg] = useState(
     shipment.vehicle_registration ?? "",
+  );
+  const [driverName, setDriverName] = useState(shipment.driver_name ?? "");
+  const [consignmentNote, setConsignmentNote] = useState(
+    shipment.consignment_note_ref ?? "",
   );
   const [checks, setChecks] = useState<Record<ChecklistKey, boolean>>({
     packaging_intact: shipment.packaging_intact === true,
@@ -160,6 +164,14 @@ export function MobileDispatchForm({ shipment }: Props) {
       const payload: ShipmentPickupChecklist = {
         carrier: carrier.trim(),
         vehicle_registration: vehicleReg.trim(),
+        // Driver + waybill are optional server-side (small own-fleet
+        // dispatches often skip a formal CN). Send trimmed values or
+        // omit the key entirely so the BE can distinguish "cleared"
+        // from "not touched".
+        ...(driverName.trim() ? { driver_name: driverName.trim() } : {}),
+        ...(consignmentNote.trim()
+          ? { consignment_note_ref: consignmentNote.trim() }
+          : {}),
         packaging_intact: checks.packaging_intact,
         labels_verified: checks.labels_verified,
         vehicle_clean_suitable: checks.vehicle_clean_suitable,
@@ -226,6 +238,38 @@ export function MobileDispatchForm({ shipment }: Props) {
               placeholder="AB12 CDE"
               autoComplete="off"
               className="h-12 text-base font-mono uppercase tracking-wider"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="driver">
+              Driver{" "}
+              <span className="text-muted-foreground font-normal">
+                (optional)
+              </span>
+            </Label>
+            <Input
+              id="driver"
+              value={driverName}
+              onChange={(e) => setDriverName(e.target.value)}
+              placeholder="Name off the driver's badge"
+              autoComplete="off"
+              className="h-12 text-base"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="cn">
+              Consignment note / waybill{" "}
+              <span className="text-muted-foreground font-normal">
+                (optional)
+              </span>
+            </Label>
+            <Input
+              id="cn"
+              value={consignmentNote}
+              onChange={(e) => setConsignmentNote(e.target.value)}
+              placeholder="e.g. CN-92814"
+              autoComplete="off"
+              className="h-12 text-base font-mono"
             />
           </div>
         </section>
