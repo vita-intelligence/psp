@@ -139,6 +139,12 @@ export interface ShipmentPickupFile {
 export interface ShipmentPickupChecklist {
   carrier: string;
   vehicle_registration: string;
+  /** Driver + waybill are captured at truck arrival — the operator
+   *  meeting the driver reads them off the badge / consignment
+   *  paperwork. Optional on the payload (small ops without a formal
+   *  CN pass empty). */
+  driver_name?: string;
+  consignment_note_ref?: string;
   packaging_intact: boolean;
   labels_verified: boolean;
   vehicle_clean_suitable: boolean;

@@ -194,7 +194,14 @@ defmodule Backend.Shipments.Shipment do
     :picked_up_at,
     :picked_up_by_id,
     :carrier,
-    :vehicle_registration
+    :vehicle_registration,
+    # Driver + waybill are captured at truck arrival by the operator
+    # meeting the driver — the desk pre-fill can't know them. Not
+    # required on the changeset (small operations may run own-fleet
+    # transfers with no waybill), but shipped through so anything the
+    # operator types lands on the row.
+    :driver_name,
+    :consignment_note_ref
     | @pickup_checklist
   ]
   def pickup_changeset(shipment, attrs) do
@@ -209,6 +216,8 @@ defmodule Backend.Shipments.Shipment do
     ])
     |> validate_length(:carrier, min: 1, max: 200)
     |> validate_length(:vehicle_registration, min: 1, max: 40)
+    |> validate_length(:driver_name, max: 200)
+    |> validate_length(:consignment_note_ref, max: 80)
     |> validate_pickup_checklist()
   end
 
