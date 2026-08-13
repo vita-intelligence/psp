@@ -144,9 +144,65 @@ defmodule Backend.Audit do
       at: DateTime.utc_now()
     }
 
-    %AuditEvent{}
-    |> Ecto.Changeset.cast(attrs, Map.keys(attrs))
-    |> Repo.insert!()
+    async_insert_event(attrs)
+  end
+
+  # Move the audit ``Repo.insert!/1`` off the request path. Every
+  # mutation used to eat ~1-3 ms for a synchronous insert; at 100
+  # concurrent operators that stacked to 100-300 ms of cumulative
+  # latency per request and held a pool slot for the duration.
+  # ``Task.Supervisor.start_child/2`` fires-and-forgets on a
+  # supervised worker so the caller returns immediately. Failure
+  # only affects the audit row — the caller's mutation already
+  # committed; a lost audit row is annoying but not incorrect.
+  #
+  # ``restart: :temporary`` prevents an insert failure from
+  # rescheduling the task under the supervisor (audit failures are
+  # not idempotent — retrying would double-write).
+  #
+  # ``:transient`` failure logging surfaces the row in the console +
+  # the telemetry stream so a broken row is investigable, but never
+  # crashes the caller.
+  #
+  # Sync-path escape hatch: tests + the seed script set
+  # ``config :backend, Backend.Audit, mode: :sync`` so writes finish
+  # before the test asserts on them.
+  defp async_insert_event(attrs) do
+    if audit_sync?() do
+      do_insert_event(attrs)
+    else
+      Task.Supervisor.start_child(
+        Backend.AsyncSupervisor,
+        fn -> do_insert_event(attrs) end,
+        restart: :temporary
+      )
+
+      :ok
+    end
+  end
+
+  defp do_insert_event(attrs) do
+    try do
+      %AuditEvent{}
+      |> Ecto.Changeset.cast(attrs, Map.keys(attrs))
+      |> Repo.insert!()
+    rescue
+      error ->
+        require Logger
+
+        Logger.error(
+          "[Audit] insert failed — entity_type=#{inspect(attrs[:entity_type])} " <>
+            "entity_id=#{inspect(attrs[:entity_id])} " <>
+            "event=#{inspect(attrs[:event])} error=#{inspect(error)}"
+        )
+    end
+  end
+
+  # Default async; tests + seed scripts flip to :sync via
+  # config :backend, Backend.Audit, mode: :sync.
+  defp audit_sync? do
+    Application.get_env(:backend, __MODULE__, [])
+    |> Keyword.get(:mode, :async) == :sync
   end
 
   defp actor_id(%User{id: id}), do: id

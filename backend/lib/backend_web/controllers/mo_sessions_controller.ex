@@ -33,20 +33,40 @@ defmodule BackendWeb.MOSessionsController do
   def index(conn, %{"id" => id}) do
     actor = conn.assigns.current_user
 
-    with {mo_id, ""} <- Integer.parse(id),
-         %ManufacturingOrder{} <-
-           Repo.one(
-             from(m in ManufacturingOrder,
-               where: m.company_id == ^actor.company_id and m.id == ^mo_id,
-               select: m
-             )
-           ) do
-      sessions = Production.list_sessions_for_mo(actor.company_id, mo_id)
+    # Accepts either the numeric MO id (legacy) or the UUID. The FE
+    # page uses UUID everywhere else — accepting it here lets the
+    # detail page fetch sessions in the SAME Promise.all as the MO,
+    # instead of waiting on the MO fetch to resolve id first. Cuts
+    # one network round-trip off the page load.
+    with {:ok, mo} <- resolve_mo(actor.company_id, id) do
+      sessions = Production.list_sessions_for_mo(actor.company_id, mo.id)
       json(conn, %{sessions: Payloads.workstation_sessions(sessions)})
     else
       _ -> {:error, :not_found}
     end
   end
+
+  defp resolve_mo(company_id, id_or_uuid) when is_binary(id_or_uuid) do
+    query =
+      case Integer.parse(id_or_uuid) do
+        {mo_id, ""} ->
+          from(m in ManufacturingOrder,
+            where: m.company_id == ^company_id and m.id == ^mo_id
+          )
+
+        _ ->
+          from(m in ManufacturingOrder,
+            where: m.company_id == ^company_id and m.uuid == ^id_or_uuid
+          )
+      end
+
+    case Repo.one(query) do
+      %ManufacturingOrder{} = mo -> {:ok, mo}
+      _ -> :error
+    end
+  end
+
+  defp resolve_mo(_, _), do: :error
 
   def for_customer_order(conn, %{"customer_order_id" => uuid}) do
     actor = conn.assigns.current_user

@@ -22,6 +22,15 @@ defmodule Backend.Application do
       # Encryption vault must boot before anything that reads/writes
       # encrypted columns. See `Backend.Vault`.
       Backend.Vault,
+      # Background-work supervisor for fire-and-forget writes that
+      # don't need to block the request path. Currently used by
+      # ``Backend.Audit`` to move audit-log inserts off the request
+      # thread — every mutation used to pay a ~1-3 ms tax for a
+      # sync ``Repo.insert!/1``; at 100 concurrent operators that
+      # was 100-300 ms cumulative latency per request. Task loss
+      # on VM crash is acceptable for audit (best-effort write; the
+      # mutation itself succeeded regardless).
+      {Task.Supervisor, name: Backend.AsyncSupervisor},
       {DNSCluster, query: Application.get_env(:backend, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Backend.PubSub},
       BackendWeb.Presence,

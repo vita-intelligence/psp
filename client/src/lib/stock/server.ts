@@ -61,13 +61,48 @@ export async function listInventoryFirstPage(): Promise<{
 /** Fetch the first page of items (catalogue) for the receive-form
  *  item picker. The receive form filters by name/code client-side
  *  from this initial set; large catalogues fall through to the
- *  searchable items endpoint later. */
+ *  searchable items endpoint later.
+ *
+ *  ``limit=200`` is deliberately bounded — the PO-lines picker is a
+ *  simple dropdown, not a virtualised list. A 5000-item catalogue
+ *  would ship ~2 MB of payload on every PO detail page load, so we
+ *  cap the preload and add a search-endpoint fallback below for
+ *  catalogues that exceed the preload. Use ``searchItems(q)`` to
+ *  find items outside the first 200.
+ */
 export async function listItemsForReceive(): Promise<Item[]> {
   const token = await getSessionToken();
   if (!token) return [];
   try {
     const res = await api<{ items: Item[]; next_cursor: string | null }>(
       "/api/items?limit=200",
+      { token, cache: "no-store" },
+    );
+    return res.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Search the item catalogue when the operator's target isn't in the
+ *  preloaded first-200 page. Called by the PO-lines picker's search
+ *  input; returns up to ``limit`` (default 30) items ranked by name
+ *  match. */
+export async function searchItems(
+  q: string,
+  limit = 30,
+): Promise<Item[]> {
+  const trimmed = q.trim();
+  if (trimmed.length < 2) return [];
+  const token = await getSessionToken();
+  if (!token) return [];
+  try {
+    const params = new URLSearchParams({
+      search: trimmed,
+      limit: String(limit),
+    });
+    const res = await api<{ items: Item[]; next_cursor: string | null }>(
+      `/api/items?${params.toString()}`,
       { token, cache: "no-store" },
     );
     return res.items;

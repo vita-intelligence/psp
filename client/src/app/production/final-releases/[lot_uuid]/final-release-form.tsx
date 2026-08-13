@@ -42,6 +42,7 @@ import { FieldEditingIndicator } from "@/components/realtime/field-editing-indic
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { pushNavigateToMyDevicesAction } from "@/lib/devices/actions";
@@ -727,37 +728,76 @@ function FileRow({
 
   const attached = files.length > 0;
 
-  // The desktop form doesn't know when the mobile page uploads a
-  // photo — no collab channel between the two. After Send to device,
-  // poll the by-lot endpoint every 4 s for up to 60 s; the moment
-  // the file count on this kind bumps up, refetch + clear the flag.
+  // Realtime push: subscribe to the production_final_release entity
+  // channel while awaiting capture. When the mobile upload commits,
+  // the backend broadcasts a ``file_attached`` event on
+  // ``entity:production_final_release:<company>:<uuid>`` and we
+  // refetch + clear the flag — no polling required.
+  //
+  // The 3-retry fallback below covers the corner where the
+  // WebSocket dropped (bad wifi on the mobile picker's phone) or
+  // the peer's browser missed the join by a few ms. 12 s max
+  // (vs the previous 60 s of 4-s polling = 15 polls).
+  const refetchRelease = useCallback(async () => {
+    const stockLotUuid = release.stock_lot?.uuid;
+    if (!stockLotUuid) return null;
+    try {
+      const res = await fetch(
+        `/api/production/final-releases/by-lot/${encodeURIComponent(stockLotUuid)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as { release: FinalRelease };
+      return data.release;
+    } catch {
+      return null;
+    }
+  }, [release.stock_lot?.uuid]);
+
+  const kindRef = useRef(kind);
+  kindRef.current = kind;
+
+  useEntityChannel({
+    entity: "production_final_release",
+    uuid: release.uuid,
+    disabled: !awaitingCapture,
+    onEvent: (payload) => {
+      if (payload.action !== "file_attached") return;
+      void (async () => {
+        const fresh = await refetchRelease();
+        if (!fresh) return;
+        const nextCount = fresh.files.filter(
+          (f) => f.kind === kindRef.current,
+        ).length;
+        const startCount = files.filter((f) => f.kind === kindRef.current).length;
+        if (nextCount > startCount) {
+          onChanged(fresh);
+          setAwaitingCapture(false);
+          toast.success("Photo arrived from mobile.");
+        }
+      })();
+    },
+  });
+
+  // 3-retry fallback: kick a poll every 4 s for up to 12 s in case
+  // the broadcast never landed (WebSocket dropped, peer joined late).
   useEffect(() => {
     if (!awaitingCapture) return;
-    const startCount = files.length;
-    let elapsed = 0;
+    const startCount = files.filter((f) => f.kind === kind).length;
+    let retries = 0;
     pollRef.current = setInterval(async () => {
-      elapsed += 4;
-      try {
-        const res = await fetch(
-          `/api/production/final-releases/by-lot/${encodeURIComponent(release.stock_lot?.uuid ?? "")}`,
-          { cache: "no-store" },
-        );
-        if (res.ok) {
-          const data = (await res.json()) as { release: FinalRelease };
-          const nextCount = data.release.files.filter(
-            (f) => f.kind === kind,
-          ).length;
-          if (nextCount > startCount) {
-            onChanged(data.release);
-            setAwaitingCapture(false);
-            toast.success("Photo arrived from mobile.");
-            return;
-          }
+      retries += 1;
+      const fresh = await refetchRelease();
+      if (fresh) {
+        const nextCount = fresh.files.filter((f) => f.kind === kind).length;
+        if (nextCount > startCount) {
+          onChanged(fresh);
+          setAwaitingCapture(false);
+          toast.success("Photo arrived from mobile.");
+          return;
         }
-      } catch {
-        // ignore transient network blips
       }
-      if (elapsed >= 60) {
+      if (retries >= 3) {
         setAwaitingCapture(false);
       }
     }, 4000);
@@ -765,7 +805,7 @@ function FileRow({
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = null;
     };
-  }, [awaitingCapture, files.length, release.stock_lot?.uuid, kind, onChanged]);
+  }, [awaitingCapture, files, kind, onChanged, refetchRelease]);
 
   const sendToDevice = async () => {
     setPushingToDevice(true);
