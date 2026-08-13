@@ -2941,8 +2941,21 @@ defmodule Backend.Production do
   # material / packaging booking (`received_at IS NOT NULL`). Mirrors
   # the existing children-complete gate above — both block the same
   # transition for compliance reasons, neither touches cancel/amend.
+  #
+  # Also re-verifies that every booked lot is still `available` (H5):
+  # a QC-failure between release and start (concurrent operator, hold
+  # verdict on a lot booked hours earlier) would let the run start on
+  # rejected ingredients otherwise. `ensure_all_booked_lots_available/1`
+  # is the same helper the release gate uses — reused here so
+  # start-time and release-time invariants match.
   defp ensure_preflight_complete_for_transition(%ManufacturingOrder{} = mo, "in_progress") do
-    if mo_preflight_complete?(mo), do: :ok, else: {:error, :preflight_incomplete}
+    cond do
+      not mo_preflight_complete?(mo) ->
+        {:error, :preflight_incomplete}
+
+      true ->
+        ensure_all_booked_lots_available(mo)
+    end
   end
 
   defp ensure_preflight_complete_for_transition(_mo, _to), do: :ok
@@ -7657,10 +7670,13 @@ defmodule Backend.Production do
   photo URL (from /api/m/movement-photos). Per CLAUDE.md compliance
   rule #5 these are file refs, not user-typed URLs.
 
-  NB: the cell-fit calculation lives in the Phase 5 controller — by
-  the time this call lands, the FE has already confirmed (via the
-  same recommendation system used by the mobile move flow) that the
-  load fits. This function trusts the target_cell_uuid.
+  Fit is re-validated server-side inside the transaction —
+  ``transfer_booking_to_production/6`` → ``ensure_pickup_fits/4``
+  re-fetches the placement + cell state fresh so a concurrent
+  closeout that filled the target cell between the FE's fit
+  calculation and this call still rolls the transfer back. Cell
+  purpose is re-checked by ``fetch_pickup_target_cell/2`` for the
+  same reason.
   """
   def confirm_pickup_transfer(
         %User{} = actor,

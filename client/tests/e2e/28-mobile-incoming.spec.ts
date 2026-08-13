@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type PlaywrightWorkerArgs } from "@playwright/test";
 import fs from "node:fs";
 import { apiCtx } from "./helpers/fixtures";
 
@@ -44,7 +44,7 @@ function todayIso(): string {
  * filters off it.
  */
 async function buildOrderedPoExpected(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   qty: number,
   expectedDate: string,
 ): Promise<{

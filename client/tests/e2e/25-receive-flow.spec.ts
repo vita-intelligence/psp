@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type PlaywrightWorkerArgs } from "@playwright/test";
 import fs from "node:fs";
 import { apiCtx } from "./helpers/fixtures";
 
@@ -27,7 +27,7 @@ function altToken(): string {
  * to clear the same-signer guard. Returns the PO uuid + a working line.
  */
 async function buildOrderedPo(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   qtyOrdered: number,
 ): Promise<{ uuid: string; lineUuid: string; itemId: number; vendorId: number }> {
   const api = await apiCtx(playwright);
@@ -104,7 +104,7 @@ async function buildOrderedPo(
 }
 
 async function getWarehouseId(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
 ): Promise<number> {
   const api = await apiCtx(playwright);
   const res = await api.get("/api/warehouses?limit=1");
@@ -114,7 +114,7 @@ async function getWarehouseId(
 }
 
 async function getLotEvents(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   lotUuid: string,
 ): Promise<Array<{ kind: string }>> {
   const api = await apiCtx(playwright);

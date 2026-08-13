@@ -37,7 +37,7 @@ export async function createBOMAction(
   attrs: BOMUpsertInput,
 ): Promise<BOMResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("createBOMAction") };
+  if (!token) return unauthorizedResult("createBOMAction");
   try {
     const { bom } = await api<{ bom: BOM }>("/api/production/boms", {
       method: "POST",
@@ -47,13 +47,10 @@ export async function createBOMAction(
     revalidatePath("/production/boms");
     return { ok: true, bom };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createBOMAction",
         fallbackDetail: "Couldn't create the BOM.",
-      }),
-    };
+      });
   }
 }
 
@@ -62,7 +59,7 @@ export async function updateBOMAction(
   attrs: BOMUpsertInput,
 ): Promise<BOMResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("updateBOMAction") };
+  if (!token) return unauthorizedResult("updateBOMAction");
   try {
     const { bom } = await api<{ bom: BOM }>(
       `/api/production/boms/${encodeURIComponent(uuid)}`,
@@ -76,19 +73,16 @@ export async function updateBOMAction(
     revalidatePath(`/production/boms/${uuid}`);
     return { ok: true, bom };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateBOMAction",
         fallbackDetail: "Couldn't save the BOM.",
-      }),
-    };
+      });
   }
 }
 
 export async function setBOMPrimaryAction(uuid: string): Promise<BOMResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("setBOMPrimaryAction") };
+  if (!token) return unauthorizedResult("setBOMPrimaryAction");
   try {
     const { bom } = await api<{ bom: BOM }>(
       `/api/production/boms/${encodeURIComponent(uuid)}/set-primary`,
@@ -98,13 +92,10 @@ export async function setBOMPrimaryAction(uuid: string): Promise<BOMResult> {
     revalidatePath(`/production/boms/${uuid}`);
     return { ok: true, bom };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "setBOMPrimaryAction",
         fallbackDetail: "Couldn't set this BOM as primary.",
-      }),
-    };
+      });
   }
 }
 
@@ -113,7 +104,7 @@ export async function revertBOMAction(
   versionNo: number,
 ): Promise<BOMResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("revertBOMAction") };
+  if (!token) return unauthorizedResult("revertBOMAction");
   try {
     const { bom } = await api<{ bom: BOM }>(
       `/api/production/boms/${encodeURIComponent(uuid)}/revert`,
@@ -127,13 +118,10 @@ export async function revertBOMAction(
     revalidatePath(`/production/boms/${uuid}`);
     return { ok: true, bom };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "revertBOMAction",
         fallbackDetail: "Couldn't revert to that version.",
-      }),
-    };
+      });
   }
 }
 
@@ -141,7 +129,7 @@ export async function deleteBOMAction(
   uuid: string,
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("deleteBOMAction") };
+  if (!token) return unauthorizedResult("deleteBOMAction");
   try {
     await api<void>(`/api/production/boms/${encodeURIComponent(uuid)}`, {
       method: "DELETE",
@@ -150,13 +138,10 @@ export async function deleteBOMAction(
     revalidatePath("/production/boms");
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteBOMAction",
         fallbackDetail: "Couldn't delete the BOM.",
-      }),
-    };
+      });
   }
 }
 
@@ -173,7 +158,7 @@ export async function createWorkstationGroupAction(
 ): Promise<WorkstationGroupResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("createWorkstationGroupAction") };
+    return unauthorizedResult("createWorkstationGroupAction");
   try {
     const { group } = await api<{ group: WorkstationGroup }>(
       "/api/production/workstation-groups",
@@ -182,13 +167,10 @@ export async function createWorkstationGroupAction(
     revalidatePath("/production/workstation-groups");
     return { ok: true, group };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createWorkstationGroupAction",
         fallbackDetail: "Couldn't create the workstation group.",
-      }),
-    };
+      });
   }
 }
 
@@ -198,7 +180,7 @@ export async function updateWorkstationGroupAction(
 ): Promise<WorkstationGroupResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("updateWorkstationGroupAction") };
+    return unauthorizedResult("updateWorkstationGroupAction");
   try {
     const { group } = await api<{ group: WorkstationGroup }>(
       `/api/production/workstation-groups/${encodeURIComponent(uuid)}`,
@@ -208,13 +190,10 @@ export async function updateWorkstationGroupAction(
     revalidatePath(`/production/workstation-groups/${uuid}`);
     return { ok: true, group };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateWorkstationGroupAction",
         fallbackDetail: "Couldn't save the workstation group.",
-      }),
-    };
+      });
   }
 }
 
@@ -223,7 +202,7 @@ export async function deleteWorkstationGroupAction(
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("deleteWorkstationGroupAction") };
+    return unauthorizedResult("deleteWorkstationGroupAction");
   try {
     await api<void>(
       `/api/production/workstation-groups/${encodeURIComponent(uuid)}`,
@@ -232,13 +211,10 @@ export async function deleteWorkstationGroupAction(
     revalidatePath("/production/workstation-groups");
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteWorkstationGroupAction",
         fallbackDetail: "Couldn't delete the workstation group.",
-      }),
-    };
+      });
   }
 }
 
@@ -255,7 +231,7 @@ export async function createWorkstationAction(
 ): Promise<WorkstationResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("createWorkstationAction") };
+    return unauthorizedResult("createWorkstationAction");
   try {
     const { workstation } = await api<{ workstation: Workstation }>(
       "/api/production/workstations",
@@ -264,13 +240,10 @@ export async function createWorkstationAction(
     revalidatePath("/production/workstations");
     return { ok: true, workstation };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createWorkstationAction",
         fallbackDetail: "Couldn't create the workstation.",
-      }),
-    };
+      });
   }
 }
 
@@ -280,7 +253,7 @@ export async function updateWorkstationAction(
 ): Promise<WorkstationResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("updateWorkstationAction") };
+    return unauthorizedResult("updateWorkstationAction");
   try {
     const { workstation } = await api<{ workstation: Workstation }>(
       `/api/production/workstations/${encodeURIComponent(uuid)}`,
@@ -290,13 +263,10 @@ export async function updateWorkstationAction(
     revalidatePath(`/production/workstations/${uuid}`);
     return { ok: true, workstation };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateWorkstationAction",
         fallbackDetail: "Couldn't save the workstation.",
-      }),
-    };
+      });
   }
 }
 
@@ -305,7 +275,7 @@ export async function deleteWorkstationAction(
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("deleteWorkstationAction") };
+    return unauthorizedResult("deleteWorkstationAction");
   try {
     await api<void>(
       `/api/production/workstations/${encodeURIComponent(uuid)}`,
@@ -314,13 +284,10 @@ export async function deleteWorkstationAction(
     revalidatePath("/production/workstations");
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteWorkstationAction",
         fallbackDetail: "Couldn't delete the workstation.",
-      }),
-    };
+      });
   }
 }
 
@@ -337,7 +304,7 @@ export async function createMachineAction(
 ): Promise<MachineResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("createMachineAction") };
+    return unauthorizedResult("createMachineAction");
   try {
     const { machine } = await api<{ machine: Machine }>(
       "/api/production/machines",
@@ -349,13 +316,10 @@ export async function createMachineAction(
     }
     return { ok: true, machine };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createMachineAction",
         fallbackDetail: "Couldn't create the machine.",
-      }),
-    };
+      });
   }
 }
 
@@ -365,7 +329,7 @@ export async function updateMachineAction(
 ): Promise<MachineResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("updateMachineAction") };
+    return unauthorizedResult("updateMachineAction");
   try {
     const { machine } = await api<{ machine: Machine }>(
       `/api/production/machines/${encodeURIComponent(uuid)}`,
@@ -376,13 +340,10 @@ export async function updateMachineAction(
     revalidatePath("/production/workstations");
     return { ok: true, machine };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateMachineAction",
         fallbackDetail: "Couldn't save the machine.",
-      }),
-    };
+      });
   }
 }
 
@@ -391,7 +352,7 @@ export async function deleteMachineAction(
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("deleteMachineAction") };
+    return unauthorizedResult("deleteMachineAction");
   try {
     await api<void>(`/api/production/machines/${encodeURIComponent(uuid)}`, {
       method: "DELETE",
@@ -401,13 +362,10 @@ export async function deleteMachineAction(
     revalidatePath("/production/workstations");
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteMachineAction",
         fallbackDetail: "Couldn't delete the machine.",
-      }),
-    };
+      });
   }
 }
 
@@ -417,7 +375,7 @@ export async function recalibrateMachineAction(
 ): Promise<MachineResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("recalibrateMachineAction") };
+    return unauthorizedResult("recalibrateMachineAction");
   try {
     const body: Record<string, unknown> = {};
     if (attrs.calibrated_at) body.calibrated_at = attrs.calibrated_at;
@@ -432,13 +390,10 @@ export async function recalibrateMachineAction(
     revalidatePath(`/production/machines/${uuid}`);
     return { ok: true, machine };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "recalibrateMachineAction",
         fallbackDetail: "Couldn't record the recalibration.",
-      }),
-    };
+      });
   }
 }
 
@@ -454,7 +409,7 @@ export async function createRoutingAction(
   attrs: RoutingUpsertInput,
 ): Promise<RoutingResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("createRoutingAction") };
+  if (!token) return unauthorizedResult("createRoutingAction");
   try {
     const { routing } = await api<{ routing: Routing }>(
       "/api/production/routings",
@@ -463,13 +418,10 @@ export async function createRoutingAction(
     revalidatePath("/production/routings");
     return { ok: true, routing };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createRoutingAction",
         fallbackDetail: "Couldn't create the routing.",
-      }),
-    };
+      });
   }
 }
 
@@ -478,7 +430,7 @@ export async function updateRoutingAction(
   attrs: RoutingUpsertInput,
 ): Promise<RoutingResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("updateRoutingAction") };
+  if (!token) return unauthorizedResult("updateRoutingAction");
   try {
     const { routing } = await api<{ routing: Routing }>(
       `/api/production/routings/${encodeURIComponent(uuid)}`,
@@ -488,13 +440,10 @@ export async function updateRoutingAction(
     revalidatePath(`/production/routings/${uuid}`);
     return { ok: true, routing };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateRoutingAction",
         fallbackDetail: "Couldn't save the routing.",
-      }),
-    };
+      });
   }
 }
 
@@ -502,7 +451,7 @@ export async function deleteRoutingAction(
   uuid: string,
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("deleteRoutingAction") };
+  if (!token) return unauthorizedResult("deleteRoutingAction");
   try {
     await api<void>(`/api/production/routings/${encodeURIComponent(uuid)}`, {
       method: "DELETE",
@@ -511,13 +460,10 @@ export async function deleteRoutingAction(
     revalidatePath("/production/routings");
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteRoutingAction",
         fallbackDetail: "Couldn't delete the routing.",
-      }),
-    };
+      });
   }
 }
 
@@ -534,7 +480,7 @@ export async function createManufacturingOrderAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("createManufacturingOrderAction") };
+    return unauthorizedResult("createManufacturingOrderAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       "/api/production/manufacturing-orders",
@@ -543,13 +489,10 @@ export async function createManufacturingOrderAction(
     revalidatePath("/production/manufacturing-orders");
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createManufacturingOrderAction",
         fallbackDetail: "Couldn't create the manufacturing order.",
-      }),
-    };
+      });
   }
 }
 
@@ -559,7 +502,7 @@ export async function updateManufacturingOrderAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("updateManufacturingOrderAction") };
+    return unauthorizedResult("updateManufacturingOrderAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}`,
@@ -569,13 +512,10 @@ export async function updateManufacturingOrderAction(
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateManufacturingOrderAction",
         fallbackDetail: "Couldn't save the manufacturing order.",
-      }),
-    };
+      });
   }
 }
 
@@ -585,10 +525,7 @@ export async function transitionManufacturingOrderAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("transitionManufacturingOrderAction"),
-    };
+    return unauthorizedResult("transitionManufacturingOrderAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/transition`,
@@ -598,13 +535,10 @@ export async function transitionManufacturingOrderAction(
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "transitionManufacturingOrderAction",
         fallbackDetail: "Couldn't change the manufacturing order's status.",
-      }),
-    };
+      });
   }
 }
 
@@ -620,7 +554,7 @@ export async function mergeMOIntoBatchAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("mergeMOIntoBatchAction") };
+    return unauthorizedResult("mergeMOIntoBatchAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(sourceUuid)}/merge-into`,
@@ -635,13 +569,10 @@ export async function mergeMOIntoBatchAction(
     revalidatePath(`/production/manufacturing-orders/${targetUuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "mergeMOIntoBatchAction",
         fallbackDetail: "Couldn't merge MO into the target batch.",
-      }),
-    };
+      });
   }
 }
 
@@ -656,7 +587,7 @@ export async function shiftProjectAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("shiftProjectAction") };
+    return unauthorizedResult("shiftProjectAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(rootUuid)}/shift-chain`,
@@ -671,13 +602,10 @@ export async function shiftProjectAction(
     revalidatePath("/production/schedule");
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "shiftProjectAction",
         fallbackDetail: "Couldn't reschedule the project.",
-      }),
-    };
+      });
   }
 }
 
@@ -692,10 +620,7 @@ export async function shiftManufacturingOrderAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("shiftManufacturingOrderAction"),
-    };
+    return unauthorizedResult("shiftManufacturingOrderAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/shift`,
@@ -710,13 +635,10 @@ export async function shiftManufacturingOrderAction(
     revalidatePath("/production/schedule");
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "shiftManufacturingOrderAction",
         fallbackDetail: "Couldn't reschedule the MO.",
-      }),
-    };
+      });
   }
 }
 
@@ -732,10 +654,7 @@ export async function scheduleManufacturingOrderAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("scheduleManufacturingOrderAction"),
-    };
+    return unauthorizedResult("scheduleManufacturingOrderAction");
   try {
     const body: Record<string, unknown> = { start_at: startAt };
     if (opts?.workstationGroupId !== undefined) {
@@ -758,13 +677,10 @@ export async function scheduleManufacturingOrderAction(
     revalidatePath("/production/schedule");
     return { ok: true, mo, outsideHoursSeconds: outside_hours_seconds ?? 0 };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "scheduleManufacturingOrderAction",
         fallbackDetail: "Couldn't schedule the MO.",
-      }),
-    };
+      });
   }
 }
 
@@ -780,10 +696,7 @@ export async function scheduleProjectAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("scheduleProjectAction"),
-    };
+    return unauthorizedResult("scheduleProjectAction");
   try {
     const { mo, outside_hours_seconds } = await api<{
       mo: ManufacturingOrder;
@@ -801,13 +714,10 @@ export async function scheduleProjectAction(
     revalidatePath("/production/schedule");
     return { ok: true, mo, outsideHoursSeconds: outside_hours_seconds ?? 0 };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "scheduleProjectAction",
         fallbackDetail: "Couldn't schedule the project.",
-      }),
-    };
+      });
   }
 }
 
@@ -821,10 +731,7 @@ export async function unscheduleProjectAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("unscheduleProjectAction"),
-    };
+    return unauthorizedResult("unscheduleProjectAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(rootUuid)}/unschedule-chain`,
@@ -835,13 +742,10 @@ export async function unscheduleProjectAction(
     revalidatePath("/production/schedule");
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "unscheduleProjectAction",
         fallbackDetail: "Couldn't unschedule the project.",
-      }),
-    };
+      });
   }
 }
 
@@ -854,10 +758,7 @@ export async function unscheduleManufacturingOrderAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("unscheduleManufacturingOrderAction"),
-    };
+    return unauthorizedResult("unscheduleManufacturingOrderAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/unschedule`,
@@ -868,13 +769,10 @@ export async function unscheduleManufacturingOrderAction(
     revalidatePath("/production/schedule");
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "unscheduleManufacturingOrderAction",
         fallbackDetail: "Couldn't unschedule the MO.",
-      }),
-    };
+      });
   }
 }
 
@@ -889,7 +787,7 @@ export async function signMOAction(
   reason?: string,
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("signMOAction") };
+  if (!token) return unauthorizedResult("signMOAction");
 
   const body: Record<string, unknown> = { action };
   if (action === "reject" && reason) body.reason = reason;
@@ -903,13 +801,10 @@ export async function signMOAction(
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "signMOAction",
         fallbackDetail: "Couldn't record the signature.",
-      }),
-    };
+      });
   }
 }
 
@@ -918,7 +813,7 @@ export async function deleteManufacturingOrderAction(
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("deleteManufacturingOrderAction") };
+    return unauthorizedResult("deleteManufacturingOrderAction");
   try {
     await api<void>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}`,
@@ -927,13 +822,10 @@ export async function deleteManufacturingOrderAction(
     revalidatePath("/production/manufacturing-orders");
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteManufacturingOrderAction",
         fallbackDetail: "Couldn't delete the manufacturing order.",
-      }),
-    };
+      });
   }
 }
 
@@ -958,10 +850,7 @@ export async function moveManufacturingOrderStepAction(
 ): Promise<ManufacturingOrderStepResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("moveManufacturingOrderStepAction"),
-    };
+    return unauthorizedResult("moveManufacturingOrderStepAction");
   try {
     const body: Record<string, unknown> = { new_start_at: newStartAt };
     if (opts?.workstationGroupId !== undefined) {
@@ -978,13 +867,10 @@ export async function moveManufacturingOrderStepAction(
     revalidatePath("/production/schedule");
     return { ok: true, step, outsideHoursSeconds: outside_hours_seconds ?? 0 };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "moveManufacturingOrderStepAction",
         fallbackDetail: "Couldn't move the operation.",
-      }),
-    };
+      });
   }
 }
 
@@ -995,10 +881,7 @@ export async function setManufacturingOrderStepSegmentsAction(
 ): Promise<ManufacturingOrderStepResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("setManufacturingOrderStepSegmentsAction"),
-    };
+    return unauthorizedResult("setManufacturingOrderStepSegmentsAction");
   try {
     const { step } = await api<{ step: ManufacturingOrderStep }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/steps/${encodeURIComponent(stepUuid)}/set-segments`,
@@ -1012,13 +895,10 @@ export async function setManufacturingOrderStepSegmentsAction(
     revalidatePath("/production/schedule");
     return { ok: true, step };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "setManufacturingOrderStepSegmentsAction",
         fallbackDetail: "Couldn't save the pinned segments.",
-      }),
-    };
+      });
   }
 }
 
@@ -1029,10 +909,7 @@ export async function updateManufacturingOrderStepAction(
 ): Promise<ManufacturingOrderStepResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("updateManufacturingOrderStepAction"),
-    };
+    return unauthorizedResult("updateManufacturingOrderStepAction");
   try {
     const { step } = await api<{ step: ManufacturingOrderStep }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/steps/${encodeURIComponent(stepUuid)}`,
@@ -1044,13 +921,10 @@ export async function updateManufacturingOrderStepAction(
     );
     return { ok: true, step };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateManufacturingOrderStepAction",
         fallbackDetail: "Couldn't save the operation.",
-      }),
-    };
+      });
   }
 }
 
@@ -1067,7 +941,7 @@ export async function createBookingAction(
   attrs: ManufacturingOrderBookingUpsertInput,
 ): Promise<ManufacturingOrderBookingResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("createBookingAction") };
+  if (!token) return unauthorizedResult("createBookingAction");
   try {
     const { booking } = await api<{ booking: ManufacturingOrderBooking }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings`,
@@ -1076,13 +950,10 @@ export async function createBookingAction(
     revalidatePath(`/production/manufacturing-orders/${moUuid}`);
     return { ok: true, booking };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "createBookingAction",
         fallbackDetail: "Couldn't book that lot.",
-      }),
-    };
+      });
   }
 }
 
@@ -1092,7 +963,7 @@ export async function updateBookingAction(
   attrs: ManufacturingOrderBookingUpsertInput,
 ): Promise<ManufacturingOrderBookingResult> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("updateBookingAction") };
+  if (!token) return unauthorizedResult("updateBookingAction");
   try {
     const { booking } = await api<{ booking: ManufacturingOrderBooking }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/${encodeURIComponent(bookingUuid)}`,
@@ -1101,13 +972,10 @@ export async function updateBookingAction(
     revalidatePath(`/production/manufacturing-orders/${moUuid}`);
     return { ok: true, booking };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "updateBookingAction",
         fallbackDetail: "Couldn't update the booking.",
-      }),
-    };
+      });
   }
 }
 
@@ -1116,7 +984,7 @@ export async function deleteBookingAction(
   bookingUuid: string,
 ): Promise<{ ok: true } | (ErrorResult & { ok: false })> {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("deleteBookingAction") };
+  if (!token) return unauthorizedResult("deleteBookingAction");
   try {
     await api<void>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/${encodeURIComponent(bookingUuid)}`,
@@ -1125,13 +993,10 @@ export async function deleteBookingAction(
     revalidatePath(`/production/manufacturing-orders/${moUuid}`);
     return { ok: true };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "deleteBookingAction",
         fallbackDetail: "Couldn't release the booking.",
-      }),
-    };
+      });
   }
 }
 
@@ -1150,7 +1015,7 @@ export async function bookAllPartsAction(
   | (ErrorResult & { ok: false })
 > {
   const token = await getSessionToken();
-  if (!token) return { ok: false, ...unauthorizedResult("bookAllPartsAction") };
+  if (!token) return unauthorizedResult("bookAllPartsAction");
   try {
     const data = await api<{
       created: number;
@@ -1163,13 +1028,10 @@ export async function bookAllPartsAction(
     revalidatePath(`/production/manufacturing-orders/${moUuid}`);
     return { ok: true, ...data };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "bookAllPartsAction",
         fallbackDetail: "Couldn't auto-book parts.",
-      }),
-    };
+      });
   }
 }
 
@@ -1181,7 +1043,7 @@ export async function releaseAllPartsAction(
 > {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("releaseAllPartsAction") };
+    return unauthorizedResult("releaseAllPartsAction");
   try {
     const data = await api<{ released: number; cancelled_sub_mos: number }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(moUuid)}/bookings/release-all`,
@@ -1190,13 +1052,10 @@ export async function releaseAllPartsAction(
     revalidatePath(`/production/manufacturing-orders/${moUuid}`);
     return { ok: true, ...data };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "releaseAllPartsAction",
         fallbackDetail: "Couldn't release the bookings.",
-      }),
-    };
+      });
   }
 }
 
@@ -1211,10 +1070,7 @@ export async function releaseManufacturingOrderToWarehouseAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("releaseManufacturingOrderToWarehouseAction"),
-    };
+    return unauthorizedResult("releaseManufacturingOrderToWarehouseAction");
   try {
     const body: Record<string, unknown> = {};
     if (typeof pickupWindowHours === "number" && pickupWindowHours > 0) {
@@ -1228,13 +1084,10 @@ export async function releaseManufacturingOrderToWarehouseAction(
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "releaseManufacturingOrderToWarehouseAction",
         fallbackDetail: "Couldn't release this MO to the warehouse.",
-      }),
-    };
+      });
   }
 }
 
@@ -1254,10 +1107,7 @@ export async function unreleaseManufacturingOrderFromWarehouseAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return {
-      ok: false,
-      ...unauthorizedResult("unreleaseManufacturingOrderFromWarehouseAction"),
-    };
+    return unauthorizedResult("unreleaseManufacturingOrderFromWarehouseAction");
   try {
     const body =
       typeof replanReason === "string" && replanReason.trim().length > 0
@@ -1271,13 +1121,10 @@ export async function unreleaseManufacturingOrderFromWarehouseAction(
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "unreleaseManufacturingOrderFromWarehouseAction",
         fallbackDetail: "Couldn't unrelease this MO.",
-      }),
-    };
+      });
   }
 }
 
@@ -1290,7 +1137,7 @@ export async function clearReplanAction(
 ): Promise<ManufacturingOrderResult> {
   const token = await getSessionToken();
   if (!token)
-    return { ok: false, ...unauthorizedResult("clearReplanAction") };
+    return unauthorizedResult("clearReplanAction");
   try {
     const { mo } = await api<{ mo: ManufacturingOrder }>(
       `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/clear-replan`,
@@ -1300,12 +1147,9 @@ export async function clearReplanAction(
     revalidatePath(`/production/manufacturing-orders/${uuid}`);
     return { ok: true, mo };
   } catch (err) {
-    return {
-      ok: false,
-      ...toErrorResult(err, {
+    return toErrorResult(err, {
         source: "clearReplanAction",
         fallbackDetail: "Couldn't clear the replan flag.",
-      }),
-    };
+      });
   }
 }

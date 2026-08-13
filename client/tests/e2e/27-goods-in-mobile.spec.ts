@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type PlaywrightWorkerArgs } from "@playwright/test";
 import fs from "node:fs";
 import { apiCtx } from "./helpers/fixtures";
 
@@ -30,7 +30,7 @@ interface BuiltPo {
 }
 
 async function buildOrderedPoWithLine(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   qty: number,
 ): Promise<BuiltPo> {
   const api = await apiCtx(playwright);
@@ -98,7 +98,7 @@ interface BuiltInspection {
 }
 
 async function createDraftInspection(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   poUuid: string,
 ): Promise<BuiltInspection> {
   const api = await apiCtx(playwright);
@@ -120,7 +120,7 @@ async function createDraftInspection(
 }
 
 async function receiveAgainstPo(
-  playwright: Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   poUuid: string,
   lineUuid: string,
   inspectionId: number,

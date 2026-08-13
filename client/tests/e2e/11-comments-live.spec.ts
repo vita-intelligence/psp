@@ -1,4 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Page,
+  type PlaywrightWorkerArgs,
+} from "@playwright/test";
 import fs from "node:fs";
 
 /**
@@ -15,9 +20,7 @@ import fs from "node:fs";
  */
 
 async function fetchFirstVendorUuid(
-  playwright: typeof import("@playwright/test").request extends never
-    ? never
-    : Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
 ): Promise<string | null> {
   const state = JSON.parse(fs.readFileSync(".auth/laptop.json", "utf-8")) as {
     cookies: Array<{ name: string; value: string }>;

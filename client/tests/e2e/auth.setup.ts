@@ -1,4 +1,10 @@
-import { test as setup, expect } from "@playwright/test";
+import {
+  test as setup,
+  expect,
+  type BrowserContext,
+  type Page,
+  type PlaywrightWorkerArgs,
+} from "@playwright/test";
 
 /**
  * Logs in the seeded E2E admin users (created via
@@ -11,11 +17,9 @@ import { test as setup, expect } from "@playwright/test";
  * gate short-circuits.
  */
 async function login(
-  playwright: typeof import("@playwright/test").request extends never
-    ? never
-    : Parameters<Parameters<typeof setup>[1]>[0]["playwright"],
-  context: Parameters<Parameters<typeof setup>[1]>[0]["context"],
-  page: Parameters<Parameters<typeof setup>[1]>[0]["page"],
+  playwright: PlaywrightWorkerArgs["playwright"],
+  context: BrowserContext,
+  page: Page,
   email: string,
   password: string,
   storageStatePath: string,
