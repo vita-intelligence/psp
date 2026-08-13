@@ -46,3 +46,11 @@ config :backend, Backend.Workers.CurrencyRatesPull, start: false
 # we don't want that in unit tests. Document-renderer tests that need
 # real PDFs can flip this back on at the test level.
 config :backend, :chromic_pdf, start: false
+
+# Audit writes are async in prod (fire-and-forget under
+# ``Backend.AsyncSupervisor``) so the request path isn't blocked by
+# an ``AuditEvent`` insert. Tests need them synchronous — otherwise
+# an assertion like ``assert length(Audit.list_for_entity(...)) == 1``
+# races the background task. Flip to ``:sync`` here so the write
+# finishes before the test moves on.
+config :backend, Backend.Audit, mode: :sync

@@ -43,21 +43,19 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
   }
 
   const { uuid } = await params;
-  const [mo, company, initialComments] = await Promise.all([
-    getManufacturingOrder(uuid),
-    getCompanyDefaults(),
-    listCommentsForEntity("manufacturing_order", uuid),
-  ]);
+  // Sessions endpoint now accepts either mo.id OR mo.uuid — all four
+  // fetches run in one Promise.all instead of the previous two-hop
+  // waterfall (mo → then sessions/cost using mo.id). Trims one
+  // round-trip off every MO detail page load.
+  const [mo, company, initialComments, initialSessions, initialCost] =
+    await Promise.all([
+      getManufacturingOrder(uuid),
+      getCompanyDefaults(),
+      listCommentsForEntity("manufacturing_order", uuid),
+      listMOSessions(uuid),
+      getMOCostBreakdown(uuid),
+    ]);
   if (!mo || !company) notFound();
-
-  // Sessions are attributed via mo.id (integer FK), not the uuid,
-  // so this fetch has to run after the MO resolves rather than in
-  // parallel with it. Cost breakdown does its own MO lookup on the
-  // backend so it can go in parallel with the sessions fetch.
-  const [initialSessions, initialCost] = await Promise.all([
-    listMOSessions(mo.id),
-    getMOCostBreakdown(uuid),
-  ]);
 
   const canEdit = hasPermission(user, "production.mo_edit");
   const canDelete = hasPermission(user, "production.mo_delete");

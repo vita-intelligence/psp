@@ -231,10 +231,13 @@ defmodule Backend.Statistics do
     period_start = List.first(series_starts)
     period_end = List.last(series_starts) |> end_of_month()
 
-    # Pull each invoice line + its parent invoice's date / status /
-    # currency. Aggregating in SQL would require currency conversion
-    # inline; for V1 we pull rows and aggregate in Elixir using the
-    # same FX helper as cash-flow.
+    # SQL-side aggregation: SUM(line_subtotal) + SUM(qty) grouped by
+    # (item_id, currency_code). Previously loaded every invoice line
+    # into memory (500k+ rows on a busy tenant) then Enum.group_by'd
+    # in Elixir. Now the DB does the reduction and we ship one row
+    # per (item, currency) tuple — typically < 50 rows even for large
+    # multi-currency shops. FX conversion still runs in Elixir since
+    # the company's rate map lives outside the DB.
     query =
       from(l in CustomerInvoiceLine,
         join: i in CustomerInvoice,
@@ -243,22 +246,34 @@ defmodule Backend.Statistics do
         where: i.status in ["sent", "partially_paid", "paid"],
         where: i.invoice_date >= ^period_start and i.invoice_date <= ^period_end,
         where: not is_nil(l.item_id),
+        group_by: [l.item_id, i.currency_code],
         select: %{
           item_id: l.item_id,
-          qty: l.qty,
-          line_subtotal: l.line_subtotal,
-          currency_code: i.currency_code
+          currency_code: i.currency_code,
+          revenue_local: sum(l.line_subtotal),
+          qty_total: sum(l.qty)
         }
       )
 
     rows = Repo.all(query)
     rates = company.currency_rates || %{}
 
+    # FX-convert the aggregated per-(item, currency) rows.
     {rows_in_base, excluded} =
       Enum.reduce(rows, {[], []}, fn r, {acc, excl} ->
-        case convert_to_base(r.line_subtotal, r.currency_code, base, rates) do
-          {:ok, amount} -> {[Map.put(r, :amount, amount) | acc], excl}
-          {:error, :no_rate} -> {acc, [r.currency_code | excl]}
+        case convert_to_base(r.revenue_local, r.currency_code, base, rates) do
+          {:ok, amount} ->
+            {[
+               %{
+                 item_id: r.item_id,
+                 amount: amount,
+                 qty: ensure_decimal(r.qty_total)
+               }
+               | acc
+             ], excl}
+
+          {:error, :no_rate} ->
+            {acc, [r.currency_code | excl]}
         end
       end)
 
@@ -297,13 +312,72 @@ defmodule Backend.Statistics do
 
   # ----- lifecycle funnel ----------------------------------------
 
+  # SQL projection of ``Backend.Customers.status_projection/1``:
+  #
+  #   inactive     — is_active = false
+  #   lead         — is_active = true, last_contact_at IS NULL
+  #   active       — is_active = true, last_contact_at NOT NULL,
+  #                  total_orders_count > 0,
+  #                  last_contact_at >= now() - interval '180 days'
+  #   dormant      — is_active = true, last_contact_at NOT NULL,
+  #                  total_orders_count > 0, last_contact_at older
+  #   prospect     — is_active = true, last_contact_at NOT NULL,
+  #                  total_orders_count = 0
+  #
+  # Previously loaded every Customer row into memory then projected
+  # in Elixir — O(N) rows through the app, 500k+ at scale. Rewritten
+  # to a single ``GROUP BY (CASE ...)`` query so the DB does the
+  # bucketing and only ships 5 rows back.
   defp lifecycle_funnel(%Company{id: cid}) do
-    customers = Repo.all(from(c in Customer, where: c.company_id == ^cid))
+    six_months_ago = DateTime.add(DateTime.utc_now(), -180, :day)
 
-    Enum.reduce(customers, %{lead: 0, prospect: 0, active: 0, dormant: 0, inactive: 0}, fn c,
-                                                                                          acc ->
-      status = Backend.Customers.status_projection(c)
-      Map.update(acc, status, 1, &(&1 + 1))
+    query =
+      from(c in Customer,
+        where: c.company_id == ^cid,
+        group_by: fragment(
+          """
+          CASE
+            WHEN ? = false THEN 'inactive'
+            WHEN ? IS NULL THEN 'lead'
+            WHEN COALESCE(?, 0) > 0 AND ? >= ? THEN 'active'
+            WHEN COALESCE(?, 0) > 0 THEN 'dormant'
+            ELSE 'prospect'
+          END
+          """,
+          c.is_active,
+          c.last_contact_at,
+          c.total_orders_count,
+          c.last_contact_at,
+          ^six_months_ago,
+          c.total_orders_count
+        ),
+        select: %{
+          status: fragment(
+            """
+            CASE
+              WHEN ? = false THEN 'inactive'
+              WHEN ? IS NULL THEN 'lead'
+              WHEN COALESCE(?, 0) > 0 AND ? >= ? THEN 'active'
+              WHEN COALESCE(?, 0) > 0 THEN 'dormant'
+              ELSE 'prospect'
+            END
+            """,
+            c.is_active,
+            c.last_contact_at,
+            c.total_orders_count,
+            c.last_contact_at,
+            ^six_months_ago,
+            c.total_orders_count
+          ),
+          count: count(c.id)
+        }
+      )
+
+    base = %{lead: 0, prospect: 0, active: 0, dormant: 0, inactive: 0}
+
+    Repo.all(query)
+    |> Enum.reduce(base, fn %{status: status, count: n}, acc ->
+      Map.put(acc, String.to_atom(status), n)
     end)
   end
 

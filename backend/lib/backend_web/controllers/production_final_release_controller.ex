@@ -103,6 +103,20 @@ defmodule BackendWeb.ProductionFinalReleaseController do
 
     with %FinalRelease{} = release <- get_release(actor, uuid),
          {:ok, file} <- FinalReleases.upload_file(actor, release, kind, upload) do
+      # Broadcast the file-attached event so any desktop tab watching
+      # this final release (typically the QA sign-off form that just
+      # sent the operator to a mobile device to capture the photo)
+      # sees the arrival immediately instead of waiting on its 4s
+      # poll loop. Payload is intentionally minimal — the desktop
+      # side re-fetches via its own show endpoint on receipt, keeping
+      # this event a broadcast trigger only.
+      Backend.Broadcasts.entity_changed(
+        "production_final_release",
+        release.uuid,
+        release.company_id,
+        "file_attached"
+      )
+
       conn
       |> put_status(:created)
       |> json(%{file: Payloads.production_final_release_file(file)})

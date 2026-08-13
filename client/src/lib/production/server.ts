@@ -276,15 +276,20 @@ export async function getManufacturingOrder(
 }
 
 export async function listMOSessions(
-  moId: number,
+  moIdOrUuid: number | string,
 ): Promise<import("./sessions").WorkstationSessionRow[]> {
   const token = await getSessionToken();
   if (!token) return [];
   try {
+    // Accepts either the integer id (legacy) or the UUID. The MO
+    // detail page passes the uuid so all three fetches (mo, sessions,
+    // cost) can run in one Promise.all instead of the two-hop
+    // waterfall the id-only variant forced.
+    const key = encodeURIComponent(String(moIdOrUuid));
     const { sessions } = await api<{
       sessions: import("./sessions").WorkstationSessionRow[];
     }>(
-      `/api/production/manufacturing-orders/${moId}/sessions`,
+      `/api/production/manufacturing-orders/${key}/sessions`,
       { token, cache: "no-store" },
     );
     return sessions ?? [];

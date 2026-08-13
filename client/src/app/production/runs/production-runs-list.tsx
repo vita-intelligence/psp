@@ -136,17 +136,60 @@ export function ProductionRunsList({
       {visibleQueue.length === 0 ? (
         <EmptyState stream={stream} />
       ) : (
-        <ul className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card">
-          {visibleQueue.map((entry) => (
-            <RunRow
-              key={entry.mo.uuid}
-              entry={entry}
-              companyDateFormat={companyDateFormat}
-            />
-          ))}
-        </ul>
+        <RunRowsWithPaging
+          entries={visibleQueue}
+          companyDateFormat={companyDateFormat}
+        />
       )}
     </section>
+  );
+}
+
+// Progressive-disclosure paging on the run list. Warehouses with
+// 200+ live MOs would otherwise paint 200 row components on every
+// filter change / refresh, dragging the mobile browser into jank
+// under the 5s polling loop. First 50 rows render immediately + a
+// "Load more" reveals the next 50. Keeps the DOM small without
+// pulling in a virtualisation dependency for a simple linear layout.
+const RUNS_PAGE_SIZE = 50;
+
+function RunRowsWithPaging({
+  entries,
+  companyDateFormat,
+}: {
+  entries: ProductionRunEntry[];
+  companyDateFormat: FormatPrefs | null;
+}) {
+  const [visibleCount, setVisibleCount] = useState(RUNS_PAGE_SIZE);
+  const visible = entries.slice(0, visibleCount);
+  const hidden = entries.length - visible.length;
+
+  return (
+    <>
+      <ul className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card">
+        {visible.map((entry) => (
+          <RunRow
+            key={entry.mo.uuid}
+            entry={entry}
+            companyDateFormat={companyDateFormat}
+          />
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <div className="mt-3 flex justify-center">
+          <button
+            type="button"
+            onClick={() =>
+              setVisibleCount((n) => Math.min(n + RUNS_PAGE_SIZE, entries.length))
+            }
+            className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+          >
+            Load {Math.min(RUNS_PAGE_SIZE, hidden)} more
+            {hidden > RUNS_PAGE_SIZE ? ` (${hidden} remaining)` : ""}
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 

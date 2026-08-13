@@ -38,12 +38,22 @@ interface Props {
  * time on the right, and the photo as a clickable thumb that opens a
  * lightbox.
  */
+// Progressive-disclosure paging: render the newest 50 movements
+// immediately (covers 99% of what an operator wants to see on a
+// lot's history) and reveal the rest 50 rows at a time via a
+// "Load older" button. Prevents a 1000-movement lot from painting
+// 1000 DOM nodes on page load — the exact anti-pattern that stalls
+// re-renders and blows out memory on the mobile browser. Cheaper +
+// simpler than a virtualised list for this fixed-height row layout.
+const MOVEMENT_PAGE_SIZE = 50;
+
 export function LotMovementTimeline({
   movements,
   uomSymbol,
   holdingName,
 }: Props) {
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(MOVEMENT_PAGE_SIZE);
 
   if (movements.length === 0) {
     return (
@@ -59,18 +69,23 @@ export function LotMovementTimeline({
     );
   }
 
+  const visible = movements.slice(0, visibleCount);
+  const hidden = movements.length - visible.length;
+
   return (
     <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
       <header className="mb-4 flex items-center gap-2">
         <RefreshCcw className="size-4 text-muted-foreground" />
         <h2 className="text-sm font-semibold tracking-tight">Movement history</h2>
         <span className="ml-auto text-[11px] text-muted-foreground">
-          {movements.length}
+          {hidden > 0
+            ? `${visible.length} of ${movements.length}`
+            : movements.length}
         </span>
       </header>
 
       <ol className="relative space-y-4 border-l border-border/60 pl-5">
-        {movements.map((m) => (
+        {visible.map((m) => (
           <Row
             key={m.uuid}
             movement={m}
@@ -80,6 +95,23 @@ export function LotMovementTimeline({
           />
         ))}
       </ol>
+
+      {hidden > 0 && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={() =>
+              setVisibleCount((n) =>
+                Math.min(n + MOVEMENT_PAGE_SIZE, movements.length),
+              )
+            }
+            className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+          >
+            Load {Math.min(MOVEMENT_PAGE_SIZE, hidden)} older
+            {hidden > MOVEMENT_PAGE_SIZE ? ` (${hidden} remaining)` : ""}
+          </button>
+        </div>
+      )}
 
       <Lightbox url={lightbox} onClose={() => setLightbox(null)} />
     </section>
