@@ -73,6 +73,7 @@ const PHASE_BUCKETS: PhaseBucket[] = [
     key: "production",
     label: "Production",
     phases: [
+      "picking_ingredients",
       "in_production",
       "closeout",
       "final_release",

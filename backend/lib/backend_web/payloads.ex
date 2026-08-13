@@ -2440,6 +2440,22 @@ defmodule BackendWeb.Payloads do
         Backend.Production.broken_booking_counts_for([mo.id]) |> Map.get(mo.id, 0),
       under_booked_count:
         Backend.Production.under_booked_line_counts_for([mo.id]) |> Map.get(mo.id, 0),
+      # Placeholder-booking projection — mirrors ``OrderWizard``'s
+      # per-MO ``has_placeholder_bookings?``. A booking with a
+      # ``purchase_order_line_id`` is bound to an in-flight PO whose
+      # lot isn't ``available`` yet, so the ``ensure_all_booked_lots_available``
+      # release gate would refuse pickup. Surfaced on the detail
+      # payload so ``mo-status-actions.tsx`` can disable "Request
+      # pickup" until real lots land — no more hopeful click →
+      # 4xx bounce cycle.
+      has_placeholder_bookings:
+        case Map.get(mo, :bookings) do
+          list when is_list(list) ->
+            Enum.any?(list, &(not is_nil(Map.get(&1, :purchase_order_line_id))))
+
+          _ ->
+            false
+        end,
       created_by: actor(mo, :created_by),
       updated_by: actor(mo, :updated_by),
       inserted_at: mo.inserted_at,
@@ -2680,8 +2696,24 @@ defmodule BackendWeb.Payloads do
   defp mo_parts_breakdown(%Backend.Production.ManufacturingOrder{
          bom: %Backend.Production.BOM{} = bom,
          quantity: mo_qty,
-         company_id: company_id
+         company_id: company_id,
+         packaging_combo_items: overlay_items
        } = mo) do
+    # ``packaging_combo_items`` non-nil = the NPD trial batch (or a
+    # future PSP-native combo picker) chose an explicit packaging
+    # combo for this MO. Overlay-active behaviour matches
+    # ``book_all_for_mo_txn``:
+    #
+    #   1. Default packaging-typed BOM lines are hidden — the combo
+    #      takes their place.
+    #   2. The combo items are appended below as synthetic parts so
+    #      the operator picks / pre-checks / books them through the
+    #      same UX as any real BOM line.
+    #
+    # ``nil`` = no overlay picked → default packaging BOM lines
+    # render as before.
+    overlay_active? = is_list(overlay_items)
+
     lines =
       case bom.lines do
         %Ecto.Association.NotLoaded{} ->
@@ -2691,6 +2723,9 @@ defmodule BackendWeb.Payloads do
           list
       end
       |> Enum.sort_by(& &1.sort_order)
+      |> then(fn ls ->
+        if overlay_active?, do: Enum.reject(ls, &packaging_bom_line?/1), else: ls
+      end)
 
     bookings =
       case Map.get(mo, :bookings) do
@@ -2866,13 +2901,248 @@ defmodule BackendWeb.Payloads do
 
     parts = Enum.reverse(parts)
 
-    materials_total =
-      if Decimal.equal?(total, Decimal.new("0")), do: nil, else: total
+    overlay_parts =
+      if overlay_active? do
+        build_overlay_parts(
+          overlay_items,
+          mo,
+          mo_qty,
+          bookings_by_item,
+          last_photo_urls,
+          company_id
+        )
+      else
+        []
+      end
 
-    {parts, materials_total}
+    overlay_total =
+      Enum.reduce(overlay_parts, Decimal.new("0"), fn part, acc ->
+        case Map.get(part, :total_cost) do
+          nil -> acc
+          str -> Decimal.add(acc, Decimal.new(str))
+        end
+      end)
+
+    combined_total = Decimal.add(total, overlay_total)
+
+    materials_total =
+      if Decimal.equal?(combined_total, Decimal.new("0")),
+        do: nil,
+        else: combined_total
+
+    {parts ++ overlay_parts, materials_total}
   end
 
   defp mo_parts_breakdown(_), do: {[], nil}
+
+  # Overlay counterpart of the BOM parts loop. Same row shape as the
+  # real BOM lines so ``mo-parts-table.tsx`` renders them side-by-side
+  # without a special branch: booking sub-rows expand the same way,
+  # coverage badges compute from the same helper, and the pick /
+  # pre-check / book buttons wire straight through.
+  #
+  # ``id`` is a negative synthetic integer keyed off the overlay
+  # position so React keys stay unique alongside real ``bom_line.id``
+  # (always positive). ``source: "packaging_combo"`` marks the row so
+  # a future FE badge can distinguish combo-derived parts from BOM
+  # ones at a glance.
+  defp build_overlay_parts(
+         overlay_items,
+         mo,
+         mo_qty,
+         bookings_by_item,
+         last_photo_urls,
+         company_id
+       ) do
+    item_ids =
+      overlay_items
+      |> Enum.map(&overlay_item_id/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    items_by_id =
+      if item_ids == [] do
+        %{}
+      else
+        import Ecto.Query, only: [from: 2]
+
+        Backend.Repo.all(
+          from i in Backend.Items.Item,
+            where: i.company_id == ^company_id and i.id in ^item_ids,
+            preload: :stock_uom
+        )
+        |> Map.new(fn i -> {i.id, i} end)
+      end
+
+    costs = Backend.Production.average_unit_costs(company_id, item_ids)
+    open_po_items = items_with_open_purchase_orders(company_id, item_ids)
+
+    overlay_items
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {row, idx} ->
+      item_id = overlay_item_id(row)
+      item = item_id && Map.get(items_by_id, item_id)
+
+      case item do
+        %Backend.Items.Item{} = item ->
+          [
+            build_overlay_part_row(
+              row,
+              idx,
+              item,
+              mo,
+              mo_qty,
+              bookings_by_item,
+              last_photo_urls,
+              costs,
+              open_po_items
+            )
+          ]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp build_overlay_part_row(
+         row,
+         idx,
+         %Backend.Items.Item{} = item,
+         mo,
+         _mo_qty,
+         bookings_by_item,
+         last_photo_urls,
+         costs,
+         open_po_items
+       ) do
+    # Overlay ``quantity`` is the ABSOLUTE TOTAL — NPD already
+    # multiplied ``per_pack × total_packs`` (with ceil rounding for
+    # count items) — so ``required_qty`` reads straight off the row.
+    # Do not scale by mo.quantity again; the old per-unit contract
+    # forced repeating-decimal drift for count items.
+    required_qty = overlay_decimal(row, "quantity", Decimal.new("1"))
+    per_unit_qty = required_qty
+
+    unit_cost = Map.get(costs, item.id)
+
+    line_total =
+      cond do
+        is_nil(required_qty) -> nil
+        is_nil(unit_cost) -> nil
+        true -> Decimal.mult(required_qty, unit_cost)
+      end
+
+    line_bookings =
+      case mo.status do
+        "completed" ->
+          Map.get(bookings_by_item, item.id, [])
+          |> Enum.filter(&(&1.status in ["requested", "consumed"]))
+
+        _ ->
+          Map.get(bookings_by_item, item.id, [])
+          |> Enum.filter(&(&1.status == "requested"))
+      end
+
+    booked_sum =
+      Enum.reduce(line_bookings, Decimal.new(0), fn b, acc ->
+        Decimal.add(acc, b.quantity || Decimal.new(0))
+      end)
+
+    consumed_sum =
+      Enum.reduce(line_bookings, Decimal.new(0), fn b, acc ->
+        Decimal.add(acc, b.consumed_quantity || Decimal.new(0))
+      end)
+
+    coverage = booked_sum
+    has_open_po = MapSet.member?(open_po_items, item.id)
+
+    coverage_status =
+      coverage_state_for(
+        mo.status,
+        required_qty,
+        booked_sum,
+        consumed_sum,
+        Decimal.new(0),
+        coverage,
+        has_open_po,
+        mo.purchasing_requested_at != nil
+      )
+
+    unbooked_qty =
+      cond do
+        mo.status == "completed" ->
+          nil
+
+        is_nil(required_qty) ->
+          nil
+
+        true ->
+          gap = Decimal.sub(required_qty, coverage)
+          if Decimal.compare(gap, Decimal.new("0")) == :gt, do: gap, else: nil
+      end
+
+    %{
+      # Negative synthetic id so React keys stay unique against real
+      # bom_line ids (always positive). ``uuid`` is a stable string
+      # the FE can use when it needs a URL-safe handle.
+      id: -1 - idx,
+      uuid: "packaging_combo:#{item.id}",
+      sort_order: 9_000 + idx,
+      is_fixed: false,
+      source: "packaging_combo",
+      part: maybe_item_summary(item),
+      unit_of_measurement: maybe_unit_compact(item.stock_uom),
+      line_qty: decimal_to_string(per_unit_qty),
+      required_qty: decimal_to_string(required_qty),
+      unit_cost: decimal_to_string(unit_cost),
+      total_cost: decimal_to_string(line_total),
+      booked_qty: decimal_to_string(booked_sum),
+      consumed_qty: decimal_to_string(consumed_sum),
+      pending_from_sub_mos_qty: decimal_to_string(Decimal.new(0)),
+      unbooked_qty: decimal_to_string(unbooked_qty),
+      coverage_status: coverage_status,
+      bookings: Enum.map(line_bookings, &mo_booking(&1, last_photo_urls)),
+      pending_from_sub_mos: [],
+      lot: nil,
+      status: nil,
+      storage_location: nil,
+      available_from: nil
+    }
+  end
+
+  defp overlay_item_id(row) do
+    case Map.get(row, "item_id") do
+      i when is_integer(i) -> i
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {i, ""} -> i
+          _ -> nil
+        end
+
+      _ -> nil
+    end
+  end
+
+  defp overlay_decimal(row, key, default) do
+    case Map.get(row, key) do
+      %Decimal{} = d -> d
+      n when is_integer(n) -> Decimal.new(n)
+      n when is_float(n) -> Decimal.from_float(n)
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} -> d
+          _ -> default
+        end
+
+      _ -> default
+    end
+  end
+
+  defp packaging_bom_line?(%{part: %Backend.Items.Item{item_type: "packaging"}}),
+    do: true
+
+  defp packaging_bom_line?(_), do: false
 
   # Derive the master-row badge state from booked + sub-MO pending vs
   # required. `nil` required (no qty on the line) leaves it `unknown`.

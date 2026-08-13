@@ -136,7 +136,16 @@ defmodule BackendWeb.WarehousePickupController do
         not_found(conn)
 
       %ManufacturingOrder{} = mo ->
-        bookings = Production.list_pickup_bookings(mo)
+        # Only surface bookings the picker actually needs to walk.
+        # Lots that are already at a production_facility cell
+        # (child-MO outputs auto-delivered at closeout, prior
+        # keep-in-place leftovers) had their ``picked_at`` +
+        # ``received_at`` stamped by ``heal_delivered_bookings``
+        # during release — no physical trolley trip is required.
+        # Showing them on the picker's trolley view caused the
+        # "system says it's on the trolley but it's already on
+        # production, and now the fit check refuses" bug.
+        bookings = Production.list_pickup_bookings_needing_transfer(mo)
 
         lot_ids =
           bookings

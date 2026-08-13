@@ -547,7 +547,10 @@ export function NewPOForm({
           if (!body?.item) return;
           if (prefillAppliedRef.current) return;
           prefillAppliedRef.current = true;
-          addLineWithItem(itemRowToOption(body.item), prefillQty ?? "");
+          addLineWithItem(
+            itemRowToOption(body.item),
+            trimDecimalZeros(prefillQty ?? ""),
+          );
         },
       )
       .catch(() => {
@@ -1290,18 +1293,38 @@ export function NewPOForm({
           )}
           {state.lines.length > 0 && (
             <div className="overflow-x-auto rounded-md border border-border/60">
-              <table className="min-w-[1000px] text-sm">
+              {/* Full-width table with explicit column widths via
+                  <colgroup>. Under table-fixed layout each <col>
+                  width is enforced, so the item column gets to eat
+                  any leftover space while the numeric + control
+                  columns stay wide enough for real-world values
+                  (decimals up to ~12 digits, currency-prefixed
+                  prices, ISO date strings). min-w keeps the row
+                  from cramping on wider viewports; overflow-x-auto
+                  on the wrapper handles narrow ones. */}
+              <table className="w-full min-w-[1360px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-10" />
+                  <col />
+                  <col className="w-40" />
+                  <col className="w-40" />
+                  <col className="w-40" />
+                  <col className="w-32" />
+                  <col className="w-44" />
+                  <col className="w-44" />
+                  <col className="w-10" />
+                </colgroup>
                 <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
                   <tr>
-                    <th className="w-8 px-2 py-2 text-left">#</th>
+                    <th className="px-2 py-2 text-left">#</th>
                     <th className="px-2 py-2 text-left">Item *</th>
                     <th className="px-2 py-2 text-left">Vendor part no.</th>
-                    <th className="w-24 px-2 py-2 text-right">Qty *</th>
-                    <th className="w-32 px-2 py-2 text-right">Unit price *</th>
-                    <th className="w-32 px-2 py-2 text-right">Subtotal</th>
-                    <th className="w-44 px-2 py-2 text-left">Site (override)</th>
-                    <th className="w-40 px-2 py-2 text-left">Expected (override)</th>
-                    <th className="w-8 px-2 py-2" />
+                    <th className="px-2 py-2 text-right">Qty *</th>
+                    <th className="px-2 py-2 text-right">Unit price *</th>
+                    <th className="px-2 py-2 text-right">Subtotal</th>
+                    <th className="px-2 py-2 text-left">Site (override)</th>
+                    <th className="px-2 py-2 text-left">Expected (override)</th>
+                    <th className="px-2 py-2" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -1802,6 +1825,21 @@ function JoinErrorCard({
 
 function fmtMoney(n: number): string {
   return n.toFixed(2);
+}
+
+/**
+ * Drop trailing decimal zeros for prefill display. Shortages surface
+ * BOM-line quantities with the DB's full ``numeric(20,14)`` precision
+ * (e.g. ``15.00000003000000``), which is technically accurate but
+ * visually noisy in the qty input. Trimming to the significant
+ * portion (``15.00000003``) keeps the number identical for
+ * arithmetic while dropping the trailing filler. Non-decimal inputs
+ * (empty string, plain integers) pass through unchanged.
+ */
+function trimDecimalZeros(raw: string): string {
+  if (!raw || !raw.includes(".")) return raw;
+  const trimmed = raw.replace(/0+$/, "").replace(/\.$/, "");
+  return trimmed === "" ? "0" : trimmed;
 }
 
 function priceDeviation(

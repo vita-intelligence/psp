@@ -638,6 +638,17 @@ defmodule Backend.CustomerOrders.NpdSync do
     with {:ok, sample_uuid} <- extract_sample_uuid(params),
          {:ok, item} <- resolve_item(company_id, params) do
       Repo.transaction(fn ->
+        # Serialize concurrent syncs on the same (company, sample_uuid)
+        # pair. Two threads racing this path (NPD retry + wizard-adjacent
+        # call, or two NPD workers with slightly-differing delivery)
+        # both saw ``nil`` from the CO lookup below and both proceeded
+        # to insert — the second insert crashed on the sample_uuid
+        # unique constraint, rolling the whole transaction back and
+        # leaving the CO in a broken state. Advisory xact locks are
+        # released automatically at transaction end (commit or rollback),
+        # so no manual cleanup is needed.
+        _ = acquire_sample_sync_lock(company_id, sample_uuid)
+
         placeholder = ensure_placeholder_customer(company_id)
         active_customer = resolve_customer(company_id, placeholder, params)
 
@@ -665,6 +676,22 @@ defmodule Backend.CustomerOrders.NpdSync do
         end
       end)
     end
+  end
+
+  # Postgres advisory xact lock keyed by ``(company_id, phash(sample_uuid))``.
+  # Two-arg form takes two 32-bit ints; both are folded into a single
+  # 64-bit lock key by Postgres so callers on the same pair block
+  # each other but not callers on different pairs. Released on the
+  # enclosing transaction's commit/rollback — no explicit unlock
+  # needed. Errors here (theoretically impossible for pg_advisory_xact_lock)
+  # would bubble as a Postgrex.Error and take the transaction with them,
+  # which is the correct outcome.
+  defp acquire_sample_sync_lock(company_id, sample_uuid) do
+    uuid_key = :erlang.phash2(sample_uuid, 2_147_483_647)
+    Ecto.Adapters.SQL.query!(Repo, "SELECT pg_advisory_xact_lock($1, $2)", [
+      company_id,
+      uuid_key
+    ])
   end
 
   defp insert_sample_new(company_id, active_customer, sample_uuid, item, params) do

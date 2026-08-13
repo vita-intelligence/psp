@@ -78,12 +78,19 @@ defmodule Backend.Mobile do
   # `visible_from` (window_hours math); the badge shows the upper
   # bound, which is fine — a picker sees the same count as the queue.
   defp count_pickup_queue(company_id) do
+    # Mirror the two-shape predicate on ``list_pickup_queue/1`` so the
+    # badge count matches the list rows:
+    #   1. scheduled + released + pickup not complete (normal path)
+    #   2. pickup_started_at set + pickup_completed_at nil (hung-
+    #      pickup safety net for MOs that drifted past ``scheduled``
+    #      mid-pickup)
     from(m in ManufacturingOrder,
       where:
         m.company_id == ^company_id and
-          m.status == "scheduled" and
-          not is_nil(m.released_to_warehouse_at) and
-          is_nil(m.pickup_completed_at),
+          is_nil(m.pickup_completed_at) and
+          ((m.status == "scheduled" and
+              not is_nil(m.released_to_warehouse_at)) or
+             not is_nil(m.pickup_started_at)),
       select: %{one: 1}
     )
     |> capped_count()

@@ -4295,6 +4295,12 @@ defmodule Backend.Production do
   def upgrade_placeholder_bookings_for_lot(%User{} = actor, %StockLot{} = lot) do
     case lot_po_line_id(lot) do
       nil ->
+        # Overlay-only fallback — even with no PO line to upgrade
+        # against, a fresh available lot for a packaging item can
+        # cover an outstanding overlay-only "Request purchases" on
+        # a sample MO. Fire the overlay sweep so those MOs' badges
+        # clear on the same trigger as the BOM path.
+        sweep_overlay_purchasing_requested(actor, lot)
         {:ok, %{upgraded: 0, lot_qty_used: Decimal.new(0)}}
 
       po_line_id ->
@@ -4323,9 +4329,44 @@ defmodule Backend.Production do
           # automatically.
           Enum.each(affected_mo_ids, &maybe_clear_purchasing_requested(actor, &1))
 
+          # Overlay counterpart. Packaging combo items (from the NPD
+          # trial-batch overlay) never create placeholder bookings —
+          # they're booked at pickup time via ``book_packaging_overlay``.
+          # So an MO that hit ``Request purchases`` purely for an
+          # overlay item's shortage never appears in ``affected_mo_ids``
+          # above, and its ``purchasing_requested_at`` flag stayed set
+          # forever even after the packaging lot arrived + passed QC.
+          # Sweep those MOs on the same trigger so the "Sent to
+          # procurement" badge clears automatically.
+          sweep_overlay_purchasing_requested(actor, lot)
+
           {:ok, summary}
         end
     end
+  end
+
+  # For any MO with ``purchasing_requested_at`` set whose
+  # ``packaging_combo_items`` overlay references the received lot's
+  # item, re-evaluate whether procurement is still owed anything and
+  # clear the flag if not. The lot is at ``available`` status when
+  # we're called (post-QC-approve) so it counts toward coverage
+  # immediately — no wait for a downstream booking step.
+  defp sweep_overlay_purchasing_requested(%User{} = actor, %StockLot{item_id: item_id}) do
+    mo_ids =
+      from(mo in ManufacturingOrder,
+        where:
+          not is_nil(mo.purchasing_requested_at) and
+            not is_nil(mo.packaging_combo_items) and
+            fragment(
+              "EXISTS (SELECT 1 FROM jsonb_array_elements(?::jsonb) elem WHERE (elem->>'item_id')::int = ?)",
+              mo.packaging_combo_items,
+              ^item_id
+            ),
+        select: mo.id
+      )
+      |> Repo.all()
+
+    Enum.each(mo_ids, &maybe_clear_purchasing_requested(actor, &1))
   end
 
   # If the MO has no open placeholder bookings left (everything
@@ -5019,9 +5060,14 @@ defmodule Backend.Production do
   end
 
   # Book each item from the packaging combo overlay against the R&D
-  # stock pool. Quantities are per-finished-unit (same convention as
-  # a BOM line's ``qty``), so we scale by ``mo.quantity`` to reach
-  # the total run requirement.
+  # stock pool. Overlay ``quantity`` is the ABSOLUTE TOTAL for the
+  # whole MO (NPD pre-computes ``per_pack × total_packs`` with ceil
+  # rounding for count items) — do NOT scale by ``mo.quantity``. The
+  # earlier per-unit multiplication forced repeating-decimal drift
+  # (a "1 pouch per pack" combo on 900 caps stored as 0.0166666667
+  # became 15.00000003 pouches on read — an unbookable phantom
+  # shortage). Sending totals directly keeps count items on integer
+  # boundaries.
   #
   # A malformed row (missing ``item_id``, un-parseable ``quantity``)
   # is silently skipped — the caller's contract with the integration
@@ -5030,13 +5076,9 @@ defmodule Backend.Production do
   # produce a partial MO than crash the booking transaction. The
   # unbooked shortage will surface on the picker screen anyway.
   defp book_packaging_overlay(actor, mo, strategy) do
-    mo_qty = mo.quantity || Decimal.new(0)
-
     Enum.flat_map(mo.packaging_combo_items || [], fn row ->
       with {:ok, item_id} <- extract_int(row, "item_id"),
-           {:ok, per_unit} <- extract_decimal(row, "quantity") do
-        needed = Decimal.mult(per_unit, mo_qty)
-
+           {:ok, needed} <- extract_decimal(row, "quantity") do
         if Decimal.compare(needed, Decimal.new("0")) == :gt do
           allocate_for_item(actor, mo, item_id, needed, strategy)
         else
@@ -5314,7 +5356,9 @@ defmodule Backend.Production do
   defp decimal_or_zero(nil), do: Decimal.new(0)
   defp decimal_or_zero(%Decimal{} = d), do: d
   defp decimal_or_zero(n) when is_integer(n), do: Decimal.new(n)
-  defp decimal_or_zero(n) when is_float(n), do: Decimal.from_float(n)
+  # Float path routes through Backend.Numerics.from_float/1 to strip
+  # IEEE-754 noise before it lands in stored booking sums.
+  defp decimal_or_zero(n) when is_float(n), do: Backend.Numerics.from_float(n)
 
   defp decimal_or_zero(s) when is_binary(s) do
     case Decimal.parse(s) do
@@ -7076,6 +7120,24 @@ defmodule Backend.Production do
   def release_mo_to_warehouse(%User{} = actor, %ManufacturingOrder{} = mo, opts \\ []) do
     window = Keyword.get(opts, :pickup_window_hours)
 
+    # Idempotency short-circuit. When ``released_to_warehouse_at`` is
+    # already stamped, the release has physically happened — every
+    # side-effect (state stamp, auto-complete-pickup, broadcast,
+    # audit) fired against a fresh MO row on the winning call.
+    # Retries (network blip, double-click, background job re-fire)
+    # would otherwise re-run the same cascade against a now-stale
+    # MO state, possibly overwriting pickup metadata set by the
+    # picker in the intervening moments (``pickup_started_at``,
+    # ``production_cell_id``, etc.). Return the current MO unchanged
+    # so the caller sees a clean success without side-effect churn.
+    if not is_nil(mo.released_to_warehouse_at) do
+      {:ok, reload_manufacturing_order(mo)}
+    else
+      release_mo_to_warehouse_fresh(actor, mo, window)
+    end
+  end
+
+  defp release_mo_to_warehouse_fresh(%User{} = actor, %ManufacturingOrder{} = mo, window) do
     # Release is the ONLY path from "approved" → "scheduled". Calendar
     # placement no longer auto-flips status. We also accept "scheduled"
     # as a no-op re-release (e.g. legacy MOs already in "scheduled"
@@ -7540,14 +7602,28 @@ defmodule Backend.Production do
 
       true ->
         Repo.transaction(fn ->
-          # Clear picked_at on every booking. Plain Repo.update_all
-          # bypasses audit — fine here because the abort is itself
-          # the audited event (via apply_pickup_changeset below).
+          # Only clear picked_at on bookings the picker PHYSICALLY
+          # walked. Bookings whose ``picked_at`` was stamped by
+          # ``heal_delivered_bookings`` at release-time (lot already
+          # sitting on a production_facility cell — child MO output
+          # or keep-in-place leftover) must retain their stamps: the
+          # lot never left production, so there's nothing to unwind.
+          # Unstamping them would resurface these lots on the pickup
+          # queue as if they were in the warehouse — the exact bug
+          # the operator hit after tapping "remove from trolley".
+          #
+          # The picker-walked shape is "picked but NOT received"
+          # (physical pickup stamps ``picked_at`` while the operator
+          # is walking; ``received_at`` fires only after they land
+          # on the production cell + confirm). Auto-heal stamps BOTH
+          # together at release-time. So ``received_at IS NULL`` is
+          # a clean proxy for "was actually on the trolley."
           {_, _} =
             from(b in ManufacturingOrderBooking,
               where:
                 b.manufacturing_order_id == ^mo.id and
-                  not is_nil(b.picked_at)
+                  not is_nil(b.picked_at) and
+                  is_nil(b.received_at)
             )
             |> Repo.update_all(
               set: [
@@ -8244,6 +8320,30 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Subset of ``list_pickup_bookings/1`` — only the bookings the picker
+  physically needs to walk. Excludes any booking whose lot is already
+  at a production-facility cell (``picked_at + received_at`` stamped
+  by ``heal_delivered_bookings`` during ``release_mo_to_warehouse``).
+  These are child-MO outputs staged for the parent, or leftovers a
+  prior MO's closeout kept at the feed cell — nothing to move.
+
+  Callers:
+  * mobile pickup detail — hides the "already there" rows from the
+    trolley so the picker doesn't try to scan a lot that isn't on
+    the warehouse shelf.
+  * pre-flight cell-fit check — footprint sum only counts lots
+    genuinely incoming, so "no space" doesn't fire for capacity a
+    lot already occupies.
+
+  ``maybe_auto_complete_pickup`` deliberately reads the FULL list
+  (``list_pickup_bookings``) because its collapse decision needs to
+  know both delivered + not-yet-delivered.
+  """
+  def list_pickup_bookings_needing_transfer(%ManufacturingOrder{} = mo) do
+    mo |> list_pickup_bookings() |> Enum.reject(&booking_delivered?/1)
+  end
+
+  @doc """
   Picker-page queue for a company. Returns released MOs whose
   visibility window has opened and whose pickup isn't yet complete.
   Sorted by `pickup_by` (earliest first).
@@ -8264,13 +8364,27 @@ defmodule Backend.Production do
     # Pull released + scheduled MOs first; compute visibility in
     # Elixir so the per-MO window override + the company default fall
     # through cleanly without a CASE expression on every row.
+    #
+    # Predicate is a UNION of two shapes:
+    #
+    #   1. Normal path — MO is ``scheduled`` (release stamped, pickup
+    #      not yet complete). This is the everyday queue row.
+    #   2. Hung-pickup safety net — MO has ``pickup_started_at`` set
+    #      but ``pickup_completed_at`` is still null, regardless of
+    #      status. Catches the drift case where an MO somehow moved
+    #      past ``scheduled`` mid-pickup (data-drift bug, manual
+    #      Repo.update, legacy path). Without this branch the picker
+    #      loses visibility on their in-flight walk and the wizard
+    #      keeps saying "pickup in progress" while the mobile queue
+    #      shows nothing — the CO17 mismatch the operator hit.
     mos =
       from(m in ManufacturingOrder,
         where:
           m.company_id == ^company_id and
-            m.status == "scheduled" and
-            not is_nil(m.released_to_warehouse_at) and
-            is_nil(m.pickup_completed_at),
+            is_nil(m.pickup_completed_at) and
+            ((m.status == "scheduled" and
+                not is_nil(m.released_to_warehouse_at)) or
+               not is_nil(m.pickup_started_at)),
         preload: [:item, :warehouse, :pickup_started_by, steps: []]
       )
       |> Repo.all()
@@ -8380,6 +8494,36 @@ defmodule Backend.Production do
 
   defp pickup_target_purpose(%ManufacturingOrder{}), do: "production_feed"
 
+  # Cells of the right purpose that ALREADY hold this MO's own
+  # picked+received bookings. Used to expand the pickup candidate
+  # list beyond truly-empty cells so the picker can land the
+  # remaining ingredients on the same cell that already carries
+  # the MO's auto-delivered output (child MO output pulled forward,
+  # or a keep-in-place leftover from a prior closeout).
+  #
+  # Only bookings marked delivered (both stamps set) count — a
+  # random lot on the cell that isn't tied to this MO would make
+  # the cell an operator's stray, not the MO's home cell.
+  defp list_mo_owned_pickup_cells(company_id, %ManufacturingOrder{id: mo_id}, purpose) do
+    from(c in Backend.Warehouses.StorageCell,
+      join: p in Backend.Stock.Placement,
+      on: p.storage_cell_id == c.id,
+      join: b in ManufacturingOrderBooking,
+      on:
+        b.stock_lot_id == p.stock_lot_id and
+          b.manufacturing_order_id == ^mo_id and
+          not is_nil(b.picked_at) and
+          not is_nil(b.received_at),
+      where:
+        c.company_id == ^company_id and
+          c.purpose == ^purpose and
+          p.qty > 0,
+      distinct: c.id,
+      preload: [storage_location: [floor: [:warehouse]]]
+    )
+    |> Repo.all()
+  end
+
   @doc """
   Pre-flight fit check per production-feed cell for an MO's pickup.
   Returns each empty production-feed cell decorated with `fit` info
@@ -8394,8 +8538,34 @@ defmodule Backend.Production do
   policy).
   """
   def list_empty_production_feed_cells_with_fit(company_id, %ManufacturingOrder{} = mo) do
-    cells = list_empty_production_feed_cells(company_id, pickup_target_purpose(mo))
-    bookings = list_pickup_bookings(mo)
+    # Candidate cells = truly-empty cells + cells that already carry
+    # THIS MO's own auto-delivered load. The second bucket exists
+    # because ``release_mo_to_warehouse`` auto-heals child-output
+    # bookings whose lot is on a production_facility cell — that
+    # cell is now "occupied" by the MO but from the picker's
+    # perspective it's the natural place to land the rest of the
+    # ingredients (keeps the MO's whole load together, avoids the
+    # "no empty cell" false-negative when the only remaining cell
+    # of the right purpose is the one that already holds THIS MO's
+    # own output).
+    empty_cells = list_empty_production_feed_cells(company_id, pickup_target_purpose(mo))
+    own_cells = list_mo_owned_pickup_cells(company_id, mo, pickup_target_purpose(mo))
+
+    # Dedup on cell id — a cell might appear only in ``own_cells``
+    # (it's occupied by this MO's own load) or only in ``empty_cells``
+    # (nothing on it yet); never both.
+    seen_ids = MapSet.new(empty_cells, & &1.id)
+
+    cells =
+      empty_cells ++ Enum.reject(own_cells, &MapSet.member?(seen_ids, &1.id))
+
+    # Only count footprints for lots the picker actually walks. Lots
+    # already at a production_facility cell (auto-delivered outputs
+    # from a child MO's closeout, keep-in-place leftovers) don't need
+    # to move — including them in the total would trigger phantom
+    # "no space" errors when the picker tries to place the real
+    # incoming lots on a fresh cell.
+    bookings = list_pickup_bookings_needing_transfer(mo)
 
     # Whole-lot footprint sum — mirrors the picker's whole-lot
     # transfer semantics. For each booking's lot we take the lot's
@@ -10254,6 +10424,14 @@ defmodule Backend.Production do
         "skip_photo_reason" => attrs["skip_photo_reason"]
       }
 
+      # Transaction now wraps: consume + move + closeout-completed
+      # stamp. Previously the stamp fired AFTER the transaction
+      # committed, so a transient failure between the movement commit
+      # and the stamp write left the booking consumed but the MO
+      # un-stamped (half-closed state — invisible to the closeout
+      # queue on next refresh, invisible to completion). Bundling
+      # them means a stamp failure rolls back the movement too; the
+      # operator retries the whole closeout cleanly.
       result =
         Repo.transaction(fn ->
           with {:ok, updated_booking} <-
@@ -10266,6 +10444,11 @@ defmodule Backend.Production do
                    remaining,
                    dest_cell,
                    photo_meta
+                 ),
+               :ok <-
+                 stamp_closeout_completed_or_rollback(
+                   actor,
+                   booking.manufacturing_order_id
                  ) do
             updated_booking
           else
@@ -10291,17 +10474,29 @@ defmodule Backend.Production do
               (booking.uuid || "") <> " consumed #{decimal_to_string(consumed)}"
           )
 
-          # If this was the last booking and there's nothing left on
-          # the output side either, this closeout is done — stamp the
-          # MO so the queue drops it. Idempotent + tolerant of MOs
-          # that still owe output work.
-          maybe_stamp_closeout_completed_by_id(actor, booking.manufacturing_order_id)
-
           ok
 
         err ->
           err
       end
+    end
+  end
+
+  # Wraps ``maybe_stamp_closeout_completed_by_id`` in an ``:ok`` /
+  # ``{:error, _}`` shape so it composes inside a ``with`` chain
+  # under ``Repo.transaction``. The underlying helper is idempotent
+  # and only writes when every closeout step is done — so a "not
+  # ready yet" outcome is still ``:ok`` (nothing to write, no
+  # failure). Real DB failures on the stamp update propagate as
+  # ``{:error, {:closeout_stamp_failed, changeset}}`` and roll the
+  # movement back with the operator.
+  defp stamp_closeout_completed_or_rollback(actor, mo_id_or_uuid) do
+    case maybe_stamp_closeout_completed_by_id(actor, mo_id_or_uuid) do
+      {:error, %Ecto.Changeset{} = cs} ->
+        {:error, {:closeout_stamp_failed, cs}}
+
+      _ ->
+        :ok
     end
   end
 
@@ -10899,41 +11094,54 @@ defmodule Backend.Production do
          reservations <- output_lot_reservations(lot) do
       choice = normalise_route_choice(attrs)
 
-      result =
-        cond do
-          # Explicit override — always move to dispatch, whether or not
-          # a reservation exists. Operator has looked at the ban­ner and
-          # decided this lot needs to leave production anyway.
-          choice == :send_to_warehouse ->
-            closeout_output_lot_move(actor, lot, attrs)
+      # Wrap resolution + stamp in a single transaction. Previously
+      # the stamp fired AFTER the movement (or reserved-in-place
+      # decision) committed, so a transient failure on the stamp
+      # write left the movement done but the MO un-stamped
+      # (half-closed state — invisible to the closeout queue on
+      # next refresh). Bundling them means a stamp failure rolls
+      # the placement move back too and the operator retries the
+      # whole closeout cleanly.
+      Repo.transaction(fn ->
+        result =
+          cond do
+            # Explicit override — always move to dispatch, whether or not
+            # a reservation exists. Operator has looked at the ban­ner and
+            # decided this lot needs to leave production anyway.
+            choice == :send_to_warehouse ->
+              closeout_output_lot_move(actor, lot, attrs)
 
-          # Explicit keep — only legal when reservations exist. Guard
-          # against a misconfigured caller trying to short-circuit an
-          # unreserved lot (that would leave the lot at the feed cell
-          # with no downstream pickup coming).
-          choice == :keep_in_place and reservations == [] ->
-            {:error, :not_reserved}
+            # Explicit keep — only legal when reservations exist. Guard
+            # against a misconfigured caller trying to short-circuit an
+            # unreserved lot (that would leave the lot at the feed cell
+            # with no downstream pickup coming).
+            choice == :keep_in_place and reservations == [] ->
+              {:error, :not_reserved}
 
-          reservations != [] ->
-            {:ok, {:reserved, lot, reservations}}
+            reservations != [] ->
+              {:ok, {:reserved, lot, reservations}}
 
-          true ->
-            closeout_output_lot_move(actor, lot, attrs)
+            true ->
+              closeout_output_lot_move(actor, lot, attrs)
+          end
+
+        case result do
+          {:ok, payload} ->
+            # After successful output resolution (moved, reserved-
+            # in-place, or single-cell no-op), stamp closeout when
+            # every last piece of work is done. Idempotent + tolerant
+            # of MOs that still owe raw-material closeout. Failure
+            # here rolls the placement move back with us so the
+            # operator retries cleanly.
+            case stamp_closeout_completed_or_rollback(actor, lot.source_ref) do
+              :ok -> payload
+              {:error, reason} -> Repo.rollback(reason)
+            end
+
+          {:error, reason} ->
+            Repo.rollback(reason)
         end
-
-      # After every successful output resolution (moved, reserved-in-
-      # place, or single-cell no-op), check if the MO is fully done
-      # and stamp `closeout_completed_at`. Without this the R&D
-      # single-cell case leaves no trace on the DB and the closeout
-      # queue keeps matching the MO forever.
-      case result do
-        {:ok, _} ->
-          maybe_stamp_closeout_completed(actor, lot.source_ref)
-          result
-
-        _ ->
-          result
-      end
+      end)
     else
       nil -> {:error, :lot_not_found}
       %StockLot{status: status} -> {:error, {:wrong_status, status}}
@@ -10988,26 +11196,37 @@ defmodule Backend.Production do
         :ok
 
       true ->
-        mo
-        |> Ecto.Changeset.change(%{
-          closeout_completed_at: now(),
-          closeout_completed_by_id: actor.id,
-          updated_by_id: actor.id
-        })
-        |> Repo.update()
+        # Propagate the DB update result up. The caller wraps the
+        # closeout flow in ``Repo.transaction`` and needs a real
+        # ``{:error, %Ecto.Changeset{}}`` back so the movement can
+        # roll back together with the failed stamp. Silent-degrade
+        # was the previous behaviour and is what allowed half-closed
+        # MOs (booking consumed, MO never stamped) after a transient
+        # DB failure on the stamp write.
+        case mo
+             |> Ecto.Changeset.change(%{
+               closeout_completed_at: now(),
+               closeout_completed_by_id: actor.id,
+               updated_by_id: actor.id
+             })
+             |> Repo.update() do
+          {:ok, _updated} ->
+            # Self-heal the parent's auto-book stamps. Any booking on
+            # the parent MO that points at THIS MO's output lots (and
+            # is still lacking ``picked_at`` / ``received_at``) gets
+            # stamped now — this is when the child's output is
+            # genuinely "delivered" (closeout said so). Without this,
+            # historical bookings created before the auto-delivered
+            # stamp landed on `insert_auto_booking` stay half-populated
+            # and block ``maybe_auto_complete_pickup`` at parent's
+            # release time.
+            _ = heal_parent_auto_book_stamps(actor, mo)
 
-        # Self-heal the parent's auto-book stamps. Any booking on
-        # the parent MO that points at THIS MO's output lots (and
-        # is still lacking ``picked_at`` / ``received_at``) gets
-        # stamped now — this is when the child's output is
-        # genuinely "delivered" (closeout said so). Without this,
-        # historical bookings created before the auto-delivered
-        # stamp landed on `insert_auto_booking` stay half-populated
-        # and block ``maybe_auto_complete_pickup`` at parent's
-        # release time.
-        _ = heal_parent_auto_book_stamps(actor, mo)
+            :ok
 
-        :ok
+          {:error, %Ecto.Changeset{}} = err ->
+            err
+        end
     end
   end
 
@@ -12531,13 +12750,30 @@ defmodule Backend.Production do
   # was silently absent from picking). Refuse instead, with the list
   # of short lines so the planner knows exactly what to fix.
   defp ensure_all_lines_fully_booked(%ManufacturingOrder{} = mo) do
-    mo = Repo.preload(mo, [:bookings, :children, bom: [lines: :part]])
+    # Reload MO from the DB before reading ``packaging_combo_items``.
+    # A caller's in-memory struct could be stale — a concurrent NPD
+    # sync may have written a fresh overlay onto this row after the
+    # struct was loaded. If ``overlay_active?`` returns the stale
+    # answer, the gate and the booking loop end up disagreeing on
+    # which BOM lines to skip. ``Repo.get!`` refetches the base row
+    # so ``packaging_combo_items`` is always what the DB says now.
+    mo =
+      Repo.get!(ManufacturingOrder, mo.id)
+      |> Repo.preload([:bookings, :children, bom: [lines: :part]])
+
+    overlay_active? = packaging_overlay_active?(mo)
 
     lines =
       case mo.bom do
         %BOM{lines: lines} when is_list(lines) -> lines
         _ -> []
       end
+      # Mirror the booking loop's substitution: when a packaging combo
+      # overlay is active, default packaging BOM lines are replaced by
+      # the overlay items and the two must not be double-counted.
+      |> then(fn ls ->
+        if overlay_active?, do: Enum.reject(ls, &is_packaging_line?/1), else: ls
+      end)
 
     mo_qty = mo.quantity || Decimal.new(0)
 
@@ -12605,9 +12841,108 @@ defmodule Backend.Production do
         end
       end)
 
-    case shortages do
+    overlay_shortages =
+      if overlay_active? do
+        overlay_shortage_rows(mo, mo_qty, bookings_by_item)
+      else
+        []
+      end
+
+    case shortages ++ overlay_shortages do
       [] -> :ok
       list -> {:error, :lines_under_booked, list}
+    end
+  end
+
+  # Packaging combo overlay counterpart of the BOM shortage check.
+  # Each combo row asks for ``qty × mo.quantity`` of the mirrored PSP
+  # item (same math as ``book_packaging_overlay``); we compare against
+  # the same ``requested`` bookings the BOM check uses. Pending output
+  # from child MOs isn't in play here — packaging is always sourced
+  # from stock, never produced by a child stage.
+  # Overlay ``quantity`` is the ABSOLUTE TOTAL — NPD pre-computes
+  # ``per_pack × total_packs`` with ceil rounding for count items —
+  # so coverage math is a straight ``required - booked`` compare, no
+  # ``× mo_qty`` scaling that used to leak repeating-decimal drift.
+  defp overlay_shortage_rows(%ManufacturingOrder{} = mo, _mo_qty, bookings_by_item) do
+    Enum.flat_map(mo.packaging_combo_items || [], fn row ->
+      with {:ok, item_id} <- overlay_extract_int(row, "item_id"),
+           {:ok, required} <- overlay_extract_decimal(row, "quantity") do
+        booked =
+          bookings_by_item
+          |> Map.get(item_id, [])
+          |> Enum.reduce(Decimal.new(0), fn b, acc ->
+            Decimal.add(acc, b.quantity || Decimal.new(0))
+          end)
+
+        if Decimal.compare(required, booked) == :gt do
+          [
+            %{
+              item_id: item_id,
+              item_name: overlay_item_name(mo, item_id),
+              required: Decimal.to_string(required),
+              booked: Decimal.to_string(booked),
+              short: Decimal.to_string(Decimal.sub(required, booked))
+            }
+          ]
+        else
+          []
+        end
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  defp overlay_extract_int(row, key) do
+    case Map.get(row, key) do
+      i when is_integer(i) -> {:ok, i}
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {i, ""} -> {:ok, i}
+          _ -> :error
+        end
+      _ -> :error
+    end
+  end
+
+  defp overlay_extract_decimal(row, key) do
+    case Map.get(row, key) do
+      %Decimal{} = d -> {:ok, d}
+      n when is_integer(n) -> {:ok, Decimal.new(n)}
+      n when is_float(n) -> {:ok, Decimal.from_float(n)}
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} -> {:ok, d}
+          _ -> :error
+        end
+      _ -> :error
+    end
+  end
+
+  # Best-effort name lookup for the shortage payload. Falls back to
+  # a generic label when the item isn't preloaded (the coverage guard
+  # itself doesn't need the name — it's for the error banner only).
+  defp overlay_item_name(%ManufacturingOrder{} = mo, item_id) do
+    match =
+      Enum.find_value(mo.bookings || [], fn b ->
+        if b.item_id == item_id do
+          case b do
+            %{item: %Item{name: n}} when is_binary(n) -> n
+            _ -> nil
+          end
+        end
+      end)
+
+    case match do
+      nil ->
+        case Repo.get(Item, item_id) do
+          %Item{name: n} when is_binary(n) -> n
+          _ -> "Item ##{item_id}"
+        end
+
+      n ->
+        n
     end
   end
 
@@ -12619,13 +12954,22 @@ defmodule Backend.Production do
   # the FE can render "Vitamin C blend — short by 2 kg, waiting on
   # MO00018 to finish + pass QC."
   defp ensure_all_lines_have_real_bookings(%ManufacturingOrder{} = mo) do
-    mo = Repo.preload(mo, [:bookings, :children, bom: [lines: :part]])
+    # Same reload-first discipline as ``ensure_all_lines_fully_booked``
+    # — never trust an in-memory MO struct for the overlay decision.
+    mo =
+      Repo.get!(ManufacturingOrder, mo.id)
+      |> Repo.preload([:bookings, :children, bom: [lines: :part]])
+
+    overlay_active? = packaging_overlay_active?(mo)
 
     lines =
       case mo.bom do
         %BOM{lines: lines} when is_list(lines) -> lines
         _ -> []
       end
+      |> then(fn ls ->
+        if overlay_active?, do: Enum.reject(ls, &is_packaging_line?/1), else: ls
+      end)
 
     mo_qty = mo.quantity || Decimal.new(0)
 
@@ -12691,7 +13035,20 @@ defmodule Backend.Production do
         end
       end)
 
-    case shortages do
+    overlay_shortages =
+      if overlay_active? do
+        bookings_by_item =
+          mo.bookings
+          |> Enum.filter(&(&1.status == "requested"))
+          |> Enum.group_by(& &1.item_id)
+
+        overlay_shortage_rows(mo, mo_qty, bookings_by_item)
+        |> Enum.map(&Map.put(&1, :waiting_on_children, []))
+      else
+        []
+      end
+
+    case shortages ++ overlay_shortages do
       [] -> :ok
       list -> {:error, :lines_not_lot_booked, list}
     end

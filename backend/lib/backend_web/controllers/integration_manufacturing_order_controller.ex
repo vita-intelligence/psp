@@ -149,12 +149,50 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
           |> json(%{manufacturing_order: mo_summary(mo)})
 
         {:error, %Ecto.Changeset{} = cs} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{
-            error: "validation_failed",
-            fields: BackendWeb.Errors.changeset_fields(cs)
-          })
+          # Race-loss adoption fallback. If the DB refused the
+          # insert because another live MO already claimed this
+          # customer_order_line_id (the wizard fired
+          # ``create_mo_for_line`` on the same line a few hundred
+          # ms before this integration retry landed), fall through
+          # to the same adoption path an idempotent-lookup hit
+          # would take. The winner's row is now definitely
+          # committed — re-query, stamp our trial uuid, return 200
+          # with ``adopted: true``. Without this the caller sees a
+          # 422 and treats it as a hard failure even though PSP
+          # has a perfectly good MO for them.
+          if live_co_line_constraint_violation?(cs) do
+            case existing_live_mo_for_line(company_id, co_line_id) do
+              %ManufacturingOrder{} = existing ->
+                adopted = stamp_trial_uuid(existing, trial_uuid)
+
+                conn
+                |> put_status(:ok)
+                |> json(%{
+                  manufacturing_order: mo_summary(adopted),
+                  already_exists: true,
+                  adopted: true
+                })
+
+              nil ->
+                # Extremely unlikely: constraint fired but winner
+                # then got cancelled between the fail and the
+                # re-query. Fall through to the normal 422 path
+                # so NPD retries can proceed cleanly.
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{
+                  error: "validation_failed",
+                  fields: BackendWeb.Errors.changeset_fields(cs)
+                })
+            end
+          else
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{
+              error: "validation_failed",
+              fields: BackendWeb.Errors.changeset_fields(cs)
+            })
+          end
 
         {:error, {:rd_stream_mismatch, offender_item_ids}} ->
           conn
@@ -289,6 +327,23 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
   end
 
   defp stamp_trial_uuid(%ManufacturingOrder{} = mo, _trial_uuid), do: mo
+
+  # True when the changeset carries the race-loss error stamped by
+  # the ``manufacturing_orders_live_co_line_unique`` partial index
+  # via the ``unique_constraint(:customer_order_line_id, ...)`` on
+  # ``Backend.Production.ManufacturingOrder``. The message string is
+  # the ``message:`` we set on the constraint — kept in sync here
+  # so a rename of the constraint copy doesn't silently break the
+  # adoption fallback.
+  defp live_co_line_constraint_violation?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {:customer_order_line_id, {msg, _opts}} ->
+        String.contains?(msg, "another live MO already exists")
+
+      _ ->
+        false
+    end)
+  end
 
   defp existing_live_mo_for_line(company_id, line_id) do
     Repo.one(

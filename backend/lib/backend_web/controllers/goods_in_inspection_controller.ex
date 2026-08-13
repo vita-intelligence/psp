@@ -301,6 +301,64 @@ defmodule BackendWeb.GoodsInInspectionController do
           }
         )
 
+      # Sign-off also runs the receive against the PO in the same
+      # transaction (see `Backend.GoodsIn.maybe_auto_receive_po/2`),
+      # so any tuple `Backend.Purchasing.receive_delivery/3` can raise
+      # bubbles up here. Without explicit clauses, the `with` blows
+      # up with `WithClauseError` → generic 500 on the FE. Mirror the
+      # PurchaseOrderController receive branches so operators see
+      # what to fix on the pack they entered.
+      {:error, {:over_receipt, line_uuid}} ->
+        item_label = po_line_item_label(line_uuid)
+
+        unprocessable(
+          conn,
+          "over_receipt",
+          "Sum of pack qtys for #{item_label} exceeds the PO line's remaining qty. Trim the pack qty or amend the PO.",
+          %{"line_uuid" => [line_uuid], "item_label" => [item_label]}
+        )
+
+      {:error, {:line_locked, line_uuid}} ->
+        item_label = po_line_item_label(line_uuid)
+
+        unprocessable(
+          conn,
+          "line_locked",
+          "#{item_label} is already fully received or cancelled — remove its packs from this inspection.",
+          %{"line_uuid" => [line_uuid], "item_label" => [item_label]}
+        )
+
+      {:error, {:bad_line_uuid, line_uuid}} ->
+        unprocessable(
+          conn,
+          "bad_line_uuid",
+          "PO line #{line_uuid || "(unknown)"} doesn't belong to this inspection's PO.",
+          %{"line_uuid" => [line_uuid || ""]}
+        )
+
+      {:error, {:non_positive_qty, idx}} ->
+        unprocessable(
+          conn,
+          "non_positive_qty",
+          "Pack ##{idx + 1} has a non-positive qty — qty must be > 0.",
+          %{"pack_index" => [Integer.to_string(idx)]}
+        )
+
+      {:error, {:non_positive_dim, idx}} ->
+        unprocessable(
+          conn,
+          "non_positive_dim",
+          "Pack ##{idx + 1} has a non-positive packaging dimension — length, width, height, weight, units_per_package, stack_factor must all be > 0.",
+          %{"pack_index" => [Integer.to_string(idx)]}
+        )
+
+      {:error, {:storage_failed, reason}} ->
+        unprocessable(
+          conn,
+          "storage_failed",
+          "Storage backend rejected a file / lot payload: #{inspect(reason)}."
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end

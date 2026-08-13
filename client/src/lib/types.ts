@@ -2886,6 +2886,7 @@ export type OrderWizardPhaseKey =
   | "approval"
   | "production_planning"
   | "awaiting_ingredients"
+  | "picking_ingredients"
   | "in_production"
   | "closeout"
   | "final_release"

@@ -605,7 +605,12 @@ defmodule Backend.GoodsIn do
   defp coerce_numeric(nil), do: nil
 
   defp coerce_numeric(n) when is_integer(n) and n > 0, do: n
-  defp coerce_numeric(n) when is_float(n) and n > 0, do: Decimal.from_float(n)
+  # Float path routes through Backend.Numerics.from_float/1 rather
+  # than Decimal.from_float/1 — the latter preserves the float's
+  # binary noise (0.0004 → 0.00040000000000000002) which then
+  # accumulates over booking sums into fake sub-precision shortages.
+  defp coerce_numeric(n) when is_float(n) and n > 0,
+    do: Backend.Numerics.from_float(n)
 
   defp coerce_numeric(%Decimal{} = d) do
     case Decimal.compare(d, Decimal.new(0)) do

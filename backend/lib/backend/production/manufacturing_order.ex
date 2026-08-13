@@ -287,6 +287,17 @@ defmodule Backend.Production.ManufacturingOrder do
       name: :manufacturing_orders_npd_trial_batch_uuid_unique,
       message: "an MO already exists for this trial batch"
     )
+    # Race-safe "one live MO per customer-order line" invariant. The
+    # partial index ``manufacturing_orders_live_co_line_unique``
+    # covers ``customer_order_line_id IS NOT NULL AND status <>
+    # 'cancelled'`` so two concurrent create paths (wizard + NPD
+    # integration) can't both land an MO on the same line — the
+    # second insert fails with this changeset error and the caller
+    # falls back to adopting the winner via ``maybe_adopt_wizard_mo``.
+    |> unique_constraint(:customer_order_line_id,
+      name: :manufacturing_orders_live_co_line_unique,
+      message: "another live MO already exists for this customer order line"
+    )
     |> assoc_constraint(:company)
     |> assoc_constraint(:warehouse)
     |> assoc_constraint(:item)

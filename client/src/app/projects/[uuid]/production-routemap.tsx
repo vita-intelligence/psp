@@ -113,6 +113,7 @@ function statusToState(status: OrderWizardMoStatus): NodeState {
 const PRODUCTION_PHASES: OrderWizardPhaseKey[] = [
   "production_planning",
   "awaiting_ingredients",
+  "picking_ingredients",
   "in_production",
 ];
 const DISPATCH_PHASES: OrderWizardPhaseKey[] = [
