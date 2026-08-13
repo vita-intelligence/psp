@@ -2464,11 +2464,27 @@ defmodule Backend.OrderWizard do
   # is still less than required. Mirrors the rule in
   # Backend.Production.ensure_all_lines_fully_booked but inline so
   # the wizard avoids an extra round-trip per MO.
+  #
+  # Overlay awareness (H3): when the MO carries a
+  # ``packaging_combo_items`` overlay (sample-flow shape from NPD),
+  # the formulation-stage packaging BOM lines are covered by the
+  # overlay booking flow (``book_packaging_overlay``), not the BOM
+  # booking flow. Counting them here would keep the order parked
+  # forever on ``:awaiting_ingredients`` because the packaging line
+  # never resolves — mirror ``mo_parts_breakdown``'s filter so the
+  # wizard sees the same coverage the parts card shows.
   defp count_under_booked_lines(%ManufacturingOrder{} = mo) do
+    overlay_active? = is_list(Map.get(mo, :packaging_combo_items))
+
     lines =
       case mo.bom do
-        %{lines: lines} when is_list(lines) -> lines
-        _ -> []
+        %{lines: lines} when is_list(lines) ->
+          if overlay_active?,
+            do: Enum.reject(lines, &packaging_bom_line?/1),
+            else: lines
+
+        _ ->
+          []
       end
 
     mo_qty = mo.quantity || Decimal.new(0)
@@ -3601,4 +3617,13 @@ defmodule Backend.OrderWizard do
   defp format_decimal(n) when is_integer(n) or is_float(n), do: to_string(n)
 
   defp format_decimal(_), do: "—"
+
+  # Packaging BOM lines from formulation stages when a packaging
+  # combo overlay is active — mirrors ``payloads.packaging_bom_line?/1``
+  # so ``count_under_booked_lines`` doesn't double-count the packaging
+  # rows the overlay flow separately books.
+  defp packaging_bom_line?(%{part: %Backend.Items.Item{item_type: "packaging"}}),
+    do: true
+
+  defp packaging_bom_line?(_), do: false
 end

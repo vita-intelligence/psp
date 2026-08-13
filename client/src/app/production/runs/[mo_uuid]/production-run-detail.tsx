@@ -125,7 +125,10 @@ export function ProductionRunDetail({ initialMo, company }: Props) {
           learning a second layout. canEdit=false because the Run tab
           is read-only from a structural-edit perspective. */}
       <MOChainRoadmap mo={mo} company={company} />
-      <MOCostSummary mo={mo} company={company} />
+      {/* Cost breakdown intentionally falls back to the MO's static
+          approximate cost on the run page — the live session-based
+          breakdown is fetched by the canonical MO detail route. */}
+      <MOCostSummary mo={mo} company={company} initialCost={null} />
       <MOPartsTable mo={mo} company={company} canEdit={false} />
       <MOOperationsTable mo={mo} company={company} canEdit={false} />
 

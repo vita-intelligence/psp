@@ -663,45 +663,65 @@ defmodule Backend.GoodsIn do
       "updated_by_id" => actor.id
     }
 
-    Repo.transaction(fn ->
-      with {:ok, updated} <-
-             i
-             |> Inspection.approver_sign_changeset(attrs_to_cast)
-             |> Repo.update(),
-           :ok <- fan_out_lot_events(actor, updated) do
-        Audit.record_updated(
-          actor,
-          "goods_in_inspection",
-          updated,
-          %{status: "submitted"},
-          %{
-            status: updated.status,
-            quality_decision: updated.quality_decision,
-            quality_approver_signed_at: updated.quality_approver_signed_at
-          }
-        )
+    with :ok <- ensure_approver_not_operator(i, actor) do
+      Repo.transaction(fn ->
+        with {:ok, updated} <-
+               i
+               |> Inspection.approver_sign_changeset(attrs_to_cast)
+               |> Repo.update(),
+             :ok <- fan_out_lot_events(actor, updated) do
+          Audit.record_updated(
+            actor,
+            "goods_in_inspection",
+            updated,
+            %{status: "submitted"},
+            %{
+              status: updated.status,
+              quality_decision: updated.quality_decision,
+              quality_approver_signed_at: updated.quality_approver_signed_at
+            }
+          )
 
-        reload(updated)
-      else
-        {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> tap(fn
-      {:ok, %Inspection{} = insp} ->
-        Backend.Broadcasts.entity_changed(
-          "goods-in-inspection",
-          insp.uuid,
-          insp.company_id,
-          "approver_signed"
-        )
+          reload(updated)
+        else
+          {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> tap(fn
+        {:ok, %Inspection{} = insp} ->
+          Backend.Broadcasts.entity_changed(
+            "goods-in-inspection",
+            insp.uuid,
+            insp.company_id,
+            "approver_signed"
+          )
 
-      _ ->
-        :ok
-    end)
+        _ ->
+          :ok
+      end)
+    end
   end
 
   def sign_quality_approver(_, %Inspection{}, _), do: {:error, :not_submitted}
+
+  # 4-eyes gate on QC sign-off (BRCGS 3.5.1 / FSSC 22000 / GFSI). The
+  # quality approver must be a different person from the goods-in
+  # operator who signed the inspection into ``submitted``. Dev bypass
+  # via ``Backend.FourEyes.enforce?/0`` matches the MO-approval gate
+  # in production.ex (``ensure_different_signer/2``) so a single
+  # developer can drive the full receive → QC flow from one seat.
+  defp ensure_approver_not_operator(
+         %Inspection{goods_in_operator_id: pid},
+         %User{id: aid}
+       )
+       when not is_nil(pid) and pid == aid do
+    if Backend.FourEyes.enforce?(),
+      do: {:error, :approver_is_operator},
+      else: :ok
+  end
+
+  defp ensure_approver_not_operator(_i, _actor), do: :ok
 
   # ----- helpers --------------------------------------------------
 

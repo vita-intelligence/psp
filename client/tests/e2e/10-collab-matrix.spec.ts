@@ -1,4 +1,4 @@
-import { test } from "@playwright/test";
+import { test, type PlaywrightWorkerArgs } from "@playwright/test";
 import fs from "node:fs";
 import { assertCollab } from "./helpers/collab";
 
@@ -6,9 +6,7 @@ import { assertCollab } from "./helpers/collab";
 // edit-form tests that need an existing entity. Returns null if the
 // endpoint is empty — caller should `test.skip()` in that case.
 async function fetchFirstUuid(
-  playwright: typeof import("@playwright/test").request extends never
-    ? never
-    : Parameters<Parameters<typeof test>[1]>[0]["playwright"],
+  playwright: PlaywrightWorkerArgs["playwright"],
   apiPath: string,
 ): Promise<string | null> {
   const state = JSON.parse(fs.readFileSync(".auth/laptop.json", "utf-8")) as {

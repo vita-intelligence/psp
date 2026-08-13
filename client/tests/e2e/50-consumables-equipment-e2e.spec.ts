@@ -39,6 +39,20 @@ import { apiCtx } from "./helpers/fixtures";
 
 const BACKEND_URL = process.env.E2E_BACKEND_URL || "http://localhost:4000";
 
+// Widened shape of `/api/equipment/:uuid` — matches the backend
+// `Payloads.equipment/1` response (see backend/lib/backend_web/payloads.ex).
+// One re-usable type keeps successive test-step reassignments assignment-
+// compatible without re-typing per step.
+type EquipmentShowResponse = {
+  equipment: {
+    status: string;
+    last_calibrated_at: string | null;
+    next_calibration_at: string | null;
+    retired_at: string | null;
+    disposed_at: string | null;
+  };
+};
+
 function altToken(): string {
   const state = JSON.parse(fs.readFileSync(".auth/alt.json", "utf-8")) as {
     cookies: Array<{ name: string; value: string }>;
@@ -573,7 +587,7 @@ test.describe.serial(
       expect(inServiceRes.status(), await inServiceRes.text()).toBe(200);
       let show = (await (
         await api.get(`/api/equipment/${state.equipment!.uuid}`)
-      ).json()) as { equipment: { status: string } };
+      ).json()) as EquipmentShowResponse;
       expect(show.equipment.status).toBe("in_service");
       console.log("  ✓ Put in service → status=in_service");
 
@@ -586,13 +600,7 @@ test.describe.serial(
       expect(calRes.status(), await calRes.text()).toBe(200);
       show = (await (
         await api.get(`/api/equipment/${state.equipment!.uuid}`)
-      ).json()) as {
-        equipment: {
-          status: string;
-          last_calibrated_at: string | null;
-          next_calibration_at: string | null;
-        };
-      };
+      ).json()) as EquipmentShowResponse;
       expect(show.equipment.last_calibrated_at).toBeTruthy();
       expect(show.equipment.next_calibration_at).toBeTruthy();
       console.log(
@@ -613,9 +621,7 @@ test.describe.serial(
       });
       let show = (await (
         await api.get(`/api/equipment/${state.equipment!.uuid}`)
-      ).json()) as {
-        equipment: { status: string; retired_at: string | null };
-      };
+      ).json()) as EquipmentShowResponse;
       expect(show.equipment.status).toBe("retired");
       expect(show.equipment.retired_at).toBeTruthy();
       console.log(
@@ -627,9 +633,7 @@ test.describe.serial(
       });
       show = (await (
         await api.get(`/api/equipment/${state.equipment!.uuid}`)
-      ).json()) as {
-        equipment: { status: string; disposed_at: string | null };
-      };
+      ).json()) as EquipmentShowResponse;
       expect(show.equipment.status).toBe("disposed");
       expect(show.equipment.disposed_at).toBeTruthy();
       console.log(

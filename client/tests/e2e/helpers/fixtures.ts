@@ -1,5 +1,8 @@
 import fs from "node:fs";
-import type { APIRequestContext } from "@playwright/test";
+import type {
+  APIRequestContext,
+  PlaywrightWorkerArgs,
+} from "@playwright/test";
 
 /**
  * Shared fixtures helper for the end-to-end form suite. Most form tests
@@ -22,7 +25,7 @@ function bearer(): string {
 }
 
 export async function apiCtx(
-  playwright: { request: { newContext: (...args: unknown[]) => Promise<APIRequestContext> } },
+  playwright: PlaywrightWorkerArgs["playwright"],
 ): Promise<APIRequestContext> {
   return await playwright.request.newContext({
     baseURL: BACKEND_URL,
