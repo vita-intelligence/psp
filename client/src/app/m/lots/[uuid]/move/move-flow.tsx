@@ -633,8 +633,26 @@ function FitBadge({
     percent_used: number;
     current_percent_used?: number;
     projected_percent_used?: number;
+    known?: boolean;
+    reason?: string;
   };
 }) {
+  // Distinct chip when the backend couldn't verify the fit — either
+  // the lot has no packaging dims or the destination cell doesn't
+  // have dimensions recorded. Showing the default "% free" here
+  // would give a distracted operator a false green tick; the
+  // uncertain-tone chip nudges them to double-check physically.
+  if (fit.known === false) {
+    return (
+      <span
+        className="inline-flex items-center rounded-full bg-slate-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:text-slate-300"
+        title="Missing packaging or cell dimensions — verify the fit visually before scanning."
+      >
+        Fit unverified
+      </span>
+    );
+  }
+
   const tone =
     fit.free_pct >= 50
       ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"

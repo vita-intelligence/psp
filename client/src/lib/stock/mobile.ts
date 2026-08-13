@@ -55,6 +55,20 @@ export interface MoveRecommendation {
     current_percent_used: number;
     /** What the cell would hold AFTER this lot lands. */
     projected_percent_used: number;
+    /** `false` when the fit couldn't be verified (lot is missing
+     *  packaging dims OR the destination cell has no dimensions
+     *  recorded). Callers should render an "unable to verify fit"
+     *  chip in that case instead of the default green "% free"
+     *  badge — a distracted worker who sees "100% free" for a
+     *  legacy lot without dims might otherwise trust the wrong
+     *  signal. Optional for backward compat with pre-hardening
+     *  API versions that never emit the key. */
+    known?: boolean;
+    /** When `known` is false, the reason string surfaces the
+     *  ``"unknown_fit"`` marker so UIs can localise the copy.
+     *  Populated on both success and disqualified paths from the
+     *  backend `check_fit/2`. */
+    reason?: string;
   };
   cell: ScannedCell;
 }
