@@ -49,6 +49,10 @@ import { CountryPicker } from "@/components/forms/country-picker";
 import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { SignaturePad } from "@/components/forms/signature-pad";
+import { CollabAvatars } from "@/components/realtime/collab-avatars";
+import { useLiveForm } from "@/lib/realtime/use-live-form";
+import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
+import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
 import { cn } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac";
 import {
@@ -320,6 +324,72 @@ export function MobileInspectionWizard({
     inspection.status === "submitted" && canApprove;
 
   const editing = inspection.status === "draft";
+
+  // Realtime collab (CLAUDE.md rule 1). Any user with either the
+  // inspect or approve capability legitimately joins the room — a
+  // supervisor watching the receiver work through the wizard is a
+  // real workflow. Head-of-room (``isCreator``) gates the sign
+  // buttons so two operators can't fire ``sign_operator`` /
+  // ``sign_quality_approver`` at the same time — mirrors the BE
+  // 4-eyes / status guard with immediate FE feedback.
+  //
+  // We deliberately keep useLiveForm's ``state`` minimal (just the
+  // inspection uuid + status) — the wizard's real state lives in
+  // the per-section local buckets above (``delivery`` / ``vehicle``
+  // / ``items`` / ...), which are edited fast and would fight a
+  // channel replication contract. This gives us the ROOM LOCK +
+  // presence + commit broadcast without re-plumbing every input.
+  const canJoinCollab =
+    hasPermission(viewer, "goods_in.inspect") ||
+    hasPermission(viewer, "goods_in.approve");
+  const collabResource = `goods-in-inspection:${inspection.uuid}`;
+  useFormPresenceBeacon(collabResource);
+
+  type InspectionCommitPayload =
+    | { kind: "operator_signed"; uuid: string }
+    | { kind: "quality_signed"; uuid: string; decision: QualityDecision };
+
+  const {
+    presence,
+    joinError,
+    creator,
+    isCreator,
+    broadcastCommit,
+  } = useLiveForm<{ uuid: string; status: string }>({
+    resource: collabResource,
+    disabled: !canJoinCollab,
+    initialState: useMemo(
+      () => ({ uuid: inspection.uuid, status: inspection.status }),
+      [inspection.uuid, inspection.status],
+    ),
+    onCommit: (raw) => {
+      const msg = raw as InspectionCommitPayload | null;
+      if (!msg) return;
+      if (msg.kind === "operator_signed") {
+        toast.success("Operator signed — inspection is now submitted.", {
+          description: creator?.name
+            ? `${creator.name} completed the operator sign-off.`
+            : undefined,
+        });
+        // Peers on the same page auto-refresh — the inspection is
+        // now in ``submitted`` state and the FE branches to the
+        // approver panel or the read-only summary.
+        router.refresh();
+      } else if (msg.kind === "quality_signed") {
+        toast.success(
+          msg.decision === "approved"
+            ? "Approver signed — inspection approved."
+            : `Approver signed — decision: ${msg.decision}.`,
+          {
+            description: creator?.name
+              ? `${creator.name} recorded the QC verdict.`
+              : undefined,
+          },
+        );
+        router.refresh();
+      }
+    },
+  });
 
   const step = STEPS[stepIdx]!;
 
@@ -708,6 +778,21 @@ export function MobileInspectionWizard({
 
   function runSignOperator() {
     if (!operatorSignature) return;
+    // Head-of-room lock — only the earliest joiner may finalise
+    // the operator signature. A second peer trying to sign at the
+    // same time sees the button disabled + the lock banner naming
+    // the creator, and even a curl bypass hits the BE's
+    // ``sign_operator`` gate which refuses when status != draft
+    // (once the first sign commits). Both belts + braces.
+    if (canJoinCollab && !isCreator) {
+      setError({
+        detail: creator?.name
+          ? `${creator.name} is finalising this inspection — wait for them to finish, or refresh to take over if they left.`
+          : "Another operator is finalising this inspection.",
+        code: "not_head_of_room",
+      });
+      return;
+    }
     setOverReceiptConfirm(null);
     startSave(async () => {
       const res = await signOperatorAction(inspection.uuid, operatorSignature);
@@ -715,6 +800,9 @@ export function MobileInspectionWizard({
         setError(res);
         return;
       }
+      // Broadcast to any peer in the room so their FE refreshes
+      // without waiting on the next poll / router.refresh.
+      broadcastCommit({ kind: "operator_signed", uuid: inspection.uuid });
       // Inspection is now submitted — the operator's job is done.
       // Drop them on the mobile home screen instead of leaving them
       // on the locked, read-only form they can't edit any more.
@@ -738,6 +826,20 @@ export function MobileInspectionWizard({
       });
       return;
     }
+    // Head-of-room lock on the approver sign too. The BE's 4-eyes
+    // check (approver != operator) still applies; this just stops
+    // two approvers from both firing the verdict at the same
+    // moment (the second would get a status-conflict error, this
+    // gives them clean feedback pre-submit).
+    if (canJoinCollab && !isCreator) {
+      setError({
+        detail: creator?.name
+          ? `${creator.name} is finalising this decision — wait for them to finish, or refresh to take over if they left.`
+          : "Another approver is finalising this decision.",
+        code: "not_head_of_room",
+      });
+      return;
+    }
     setError(null);
     startSave(async () => {
       const res = await signQualityAction(
@@ -750,6 +852,11 @@ export function MobileInspectionWizard({
         setError(res);
         return;
       }
+      broadcastCommit({
+        kind: "quality_signed",
+        uuid: inspection.uuid,
+        decision: approverDecision,
+      });
       applyResultInspection(res.inspection);
       router.refresh();
     });
@@ -789,6 +896,7 @@ export function MobileInspectionWizard({
               : `Step ${stepIdx + 1}/${STEPS.length} · ${step.title}`}
           </p>
         </div>
+        {canJoinCollab && <CollabAvatars peers={presence} />}
         <span
           className={cn(
             "rounded-full px-2 py-0.5 text-[10px] font-medium",
@@ -798,6 +906,20 @@ export function MobileInspectionWizard({
           {inspection.status}
         </span>
       </header>
+
+      {canJoinCollab && joinError && (
+        <InspectionJoinErrorBanner error={joinError} />
+      )}
+
+      {canJoinCollab && !joinError && !isCreator && creator && (
+        <div
+          className="mx-3 mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200"
+          role="status"
+        >
+          <span className="font-semibold">{creator.name}</span> is the head of
+          this inspection — you can watch + review, but only they can hit sign.
+        </div>
+      )}
 
       {/* scrollable body */}
       <main className="flex-1 space-y-4 px-4 py-4">
@@ -893,7 +1015,12 @@ export function MobileInspectionWizard({
               size="lg"
               className="flex-1 gap-1"
               onClick={onSignApprover}
-              disabled={saving}
+              disabled={saving || (canJoinCollab && !isCreator)}
+              title={
+                canJoinCollab && !isCreator && creator
+                  ? `Only ${creator.name} can sign — head-of-room lock`
+                  : undefined
+              }
             >
               {saving ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -907,8 +1034,13 @@ export function MobileInspectionWizard({
               size="lg"
               className="flex-1 gap-1"
               onClick={onSignOperator}
-              disabled={saving}
+              disabled={saving || (canJoinCollab && !isCreator)}
               data-testid="sign-operator"
+              title={
+                canJoinCollab && !isCreator && creator
+                  ? `Only ${creator.name} can sign — head-of-room lock`
+                  : undefined
+              }
             >
               {saving ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -2837,3 +2969,45 @@ function statusToneClass(status: Inspection["status"]): string {
       return "bg-muted text-muted-foreground";
   }
 }
+
+/**
+ * Renders when the goods-in inspection form channel refuses the join
+ * (``form_full`` — 10 peers already, ``forbidden`` — RBAC leak,
+ * ``bad_topic`` — request shape wrong, ``unknown``). Kept inline
+ * because the wizard already lives on its own mobile screen — a
+ * separate card would fight the sticky header for space. Warehouse
+ * form's ``JoinErrorCard`` is the reference; this variant is mobile-
+ * first and uses the same copy shape.
+ */
+function InspectionJoinErrorBanner({ error }: { error: JoinError }) {
+  const copy = (() => {
+    switch (error.reason) {
+      case "form_full":
+        return `Ten operators are already on this inspection${
+          error.limit ? ` (${error.limit} max)` : ""
+        } — wait for one to leave or refresh in a moment.`;
+      case "forbidden":
+        return "You don't have permission to co-edit this inspection. Ask an admin for goods_in.inspect or goods_in.approve.";
+      case "bad_topic":
+        return "This inspection room address looks wrong. Refresh the page to try again.";
+      default:
+        return "Couldn't join the live-collab room. You can still complete the wizard — realtime updates from peers just won't stream in until you refresh.";
+    }
+  })();
+
+  return (
+    <div
+      className="mx-3 mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      role="alert"
+    >
+      {copy}
+    </div>
+  );
+}
+
+// Suppress unused-import warning: CollabPeer is re-exported by
+// use-live-form for downstream consumers; we don't reference it
+// directly but keeping the import ensures the module load order is
+// stable across the collab surface (matching every other collab
+// form in the repo).
+export type _CollabPeerAlias = CollabPeer;

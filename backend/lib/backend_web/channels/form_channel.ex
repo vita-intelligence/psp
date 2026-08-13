@@ -358,6 +358,23 @@ defmodule BackendWeb.FormChannel do
   defp can_edit_resource?(user, "storage-tag"),
     do: RBAC.has_permission?(user, "storage_tags.manage")
 
+  # Goods-in inspection wizard — the mobile receive-form flow. Two
+  # roles both need to co-edit / observe:
+  #   * ``goods_in.inspect`` — the receiver filling the checklist
+  #     + signing as operator.
+  #   * ``goods_in.approve`` — the QC approver reviewing the operator's
+  #     work + signing off the verdict.
+  # Both roles legitimately share the same inspection room (the
+  # approver often watches the receiver work through the wizard),
+  # so either grant lets you join. The head-of-room save gate is
+  # what stops two people from firing ``sign_operator`` /
+  # ``sign_quality_approver`` at the same time — mirrors the
+  # existing BE 4-eyes check with realtime UX.
+  defp can_edit_resource?(user, "goods-in-inspection"),
+    do:
+      RBAC.has_permission?(user, "goods_in.inspect") or
+        RBAC.has_permission?(user, "goods_in.approve")
+
   # Workstation group form — clusters of identical workstations
   # (oven banks, packaging lines). Create or edit both qualify;
   # the head-of-room gate prevents collision on save.
