@@ -1358,6 +1358,12 @@ defmodule BackendWeb.Router do
 
       # Put-away queue + scanner lookups (mobile /m flow).
       get "/lots/pending-putaway", StockLotController, :pending_putaway
+
+      # Stranded / expired lots at production_feed cells. Powers the
+      # warehouse-home "Parked at production" card so a manager sees
+      # inventory sitting idle at production and can decide whether
+      # to walk it back to warehouse storage.
+      get "/lots/parked-at-production", StockLotController, :parked_at_production
       get "/lots/scan/:uuid", StockLotController, :scan_lot
       get "/cells/scan/:uuid", StockLotController, :scan_cell
       get "/floors/:uuid/plan", StockLotController, :floor_plan

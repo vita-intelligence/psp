@@ -59,6 +59,22 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     # warehouse storage — that's a separate step, not this one.
     field :consumed_at, :utc_datetime
 
+    # Operator's explicit routing decision at closeout time for the
+    # leftover ingredient. Values:
+    #   * ``"keep_in_place"`` — leftover parked at production_feed
+    #     cell, intended for a downstream sibling MO. Paired with
+    #     ``Placement.kept_at`` timestamp on the leftover placement.
+    #   * ``"send_to_warehouse"`` — leftover moved to a dispatch
+    #     cell for return-pickup back to warehouse storage.
+    #   * ``nil`` — fully consumed (no leftover to route), or
+    #     legacy booking closed pre-hardening.
+    #
+    # Powers the stranded-lots dashboard: a placement at production_feed
+    # with ``kept_at`` set + its booking with ``route_choice =
+    # "keep_in_place"`` is an intentional keep; anything else at
+    # production_feed is accidental / orphaned.
+    field :route_choice, :string
+
     belongs_to :company, Company
     belongs_to :manufacturing_order, ManufacturingOrder
     belongs_to :item, Item
@@ -88,7 +104,7 @@ defmodule Backend.Production.ManufacturingOrderBooking do
     quantity consumed_quantity status note
     picked_at picked_by_id
     received_at received_by_id received_qty received_notes
-    consumed_at consumed_by_id
+    consumed_at consumed_by_id route_choice
     created_by_id updated_by_id
   )a
 

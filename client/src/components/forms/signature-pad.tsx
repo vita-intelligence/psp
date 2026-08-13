@@ -139,8 +139,33 @@ export function SignaturePad({
     }
     setEmpty(false);
     if (canvas && onChange) {
-      onChange(canvas.toDataURL("image/png"));
+      onChange(exportCompactPng(canvas));
     }
+  }
+
+  // Downscale + re-encode the high-DPR canvas to a compact PNG data
+  // URL. Uncompressed PNG at ``devicePixelRatio * width * height``
+  // pixels for a dense signature can push past 100 KB, which the
+  // backend rejects (Inspection.validate_signature_size caps at 50
+  // KB). Redrawing onto a fixed-size CSS-pixel canvas keeps the
+  // stroke shape sharp while cutting the byte count 4-10×.
+  function exportCompactPng(source: HTMLCanvasElement): string {
+    // Bound the export to CSS pixels — signatures don't need DPR-
+    // scaled precision for eSign purposes. 640×256 is well above
+    // the display size anywhere the signature is rendered back.
+    const targetWidth = Math.min(640, source.width);
+    const targetHeight = Math.min(256, source.height);
+    const off = document.createElement("canvas");
+    off.width = targetWidth;
+    off.height = targetHeight;
+    const ctx = off.getContext("2d");
+    if (!ctx) return source.toDataURL("image/png");
+    // White background so the PNG is small (indexed / low-color)
+    // and prints correctly on paper.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, targetWidth, targetHeight);
+    ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+    return off.toDataURL("image/png");
   }
 
   function clear() {

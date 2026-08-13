@@ -16,7 +16,9 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { StockSubnav } from "./stock-subnav";
+import { ParkedAtProductionCard } from "./parked-at-production-card";
 
 export const metadata = { title: "Stock · PSP" };
 
@@ -96,6 +98,8 @@ export default async function StockPage() {
     redirect("/settings/profile");
   }
 
+  const company = await getCompanyDefaults();
+
   return (
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />
@@ -109,6 +113,8 @@ export default async function StockPage() {
             title="Stock"
             description="Lots, placements, and movements across every warehouse. The first slice (Lots + Receive) is in progress — the rest of the subtabs follow."
           />
+
+          {company && <ParkedAtProductionCard company={company} />}
 
           <section className="rounded-lg border border-dashed border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
             <div className="flex items-center gap-2">

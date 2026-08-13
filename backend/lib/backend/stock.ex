@@ -2375,6 +2375,113 @@ defmodule Backend.Stock do
     %{row: row, score: base + fit_bonus, base_score: base}
   end
 
+  # ----- stranded-at-production audit -----------------------------------
+
+  @doc """
+  Lots the operator explicitly kept at a production_feed cell whose
+  waiting time has exceeded ``max_age_hours`` (default 24). Powers
+  the "stranded at production" dashboard card so the warehouse
+  manager sees inventory that's sitting idle and can walk it back.
+
+  Query shape:
+    * placement at a production_feed cell with qty > 0
+    * ``kept_at`` timestamp is not null (set by closeout's keep_in_place)
+    * ``kept_at`` older than the threshold
+    * source MO has ``closeout_completed_at`` set (the reason to keep is
+      spent; the MO is done)
+    * NO live non-cancelled non-draft MO booking currently references
+      this lot (nobody is planning to pick it up)
+
+  Preloads the essentials the dashboard row needs: lot, item, cell,
+  location, warehouse. Ordered oldest-first so the most-stuck items
+  bubble to the top.
+  """
+  def list_stranded_at_production(company_id, opts \\ [])
+      when is_integer(company_id) do
+    max_age_hours = Keyword.get(opts, :max_age_hours, 24)
+    cutoff = DateTime.add(DateTime.utc_now(), -max_age_hours * 3600, :second)
+
+    # LEFT JOIN vs. NOT EXISTS: use NOT EXISTS via a sub-query below so
+    # the "no live claim" gate never inflates row counts (a lot with 3
+    # cancelled bookings shouldn't appear 3 times).
+    from(p in Placement,
+      as: :placement,
+      join: l in Lot,
+      on: l.id == p.stock_lot_id,
+      join: c in StorageCell,
+      on: c.id == p.storage_cell_id,
+      join: sl in StorageLocation,
+      on: sl.id == c.storage_location_id,
+      join: f in Floor,
+      on: f.id == sl.floor_id,
+      join: w in Warehouse,
+      on: w.id == f.warehouse_id,
+      # Source MO closeout done — the reason to keep is spent.
+      # ``source_kind`` on lots is not always "manufacturing_order",
+      # so join defensively via the MO uuid on source_ref.
+      left_join: source_mo in Backend.Production.ManufacturingOrder,
+      on: l.source_kind == "manufacturing_order" and source_mo.uuid == l.source_ref,
+      where:
+        p.company_id == ^company_id and
+          p.qty > 0 and
+          not is_nil(p.kept_at) and
+          p.kept_at < ^cutoff and
+          c.purpose == "production_feed" and
+          # Either the lot isn't MO-sourced (edge — rare) OR its source
+          # MO has closeout stamped (the "reason for keeping" is spent).
+          (l.source_kind != "manufacturing_order" or
+             (not is_nil(source_mo.id) and not is_nil(source_mo.closeout_completed_at))) and
+          not exists(
+            from(b in Backend.Production.ManufacturingOrderBooking,
+              join: bmo in Backend.Production.ManufacturingOrder,
+              on: bmo.id == b.manufacturing_order_id,
+              where:
+                b.stock_lot_id == parent_as(:placement).stock_lot_id and
+                  b.status == "requested" and
+                  is_nil(b.consumed_at) and
+                  bmo.status not in ["cancelled", "draft"]
+            )
+          ),
+      order_by: [asc: p.kept_at, asc: p.id],
+      preload: [stock_lot: :item, storage_cell: {c, storage_location: {sl, floor: {f, warehouse: w}}}]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Lots physically at a production_feed cell whose ``expiry_at`` has
+  passed. Includes lots that were kept AND lots that arrived by any
+  other path (still-uncompleted MO, orphaned pickup, etc.) so an
+  expired lot never hides regardless of how it got there.
+
+  Ordered by expiry_at ascending (most-expired first).
+  """
+  def list_expired_at_production(company_id) when is_integer(company_id) do
+    now = DateTime.utc_now()
+
+    from(p in Placement,
+      join: l in Lot,
+      on: l.id == p.stock_lot_id,
+      join: c in StorageCell,
+      on: c.id == p.storage_cell_id,
+      join: sl in StorageLocation,
+      on: sl.id == c.storage_location_id,
+      join: f in Floor,
+      on: f.id == sl.floor_id,
+      join: w in Warehouse,
+      on: w.id == f.warehouse_id,
+      where:
+        p.company_id == ^company_id and
+          p.qty > 0 and
+          c.purpose == "production_feed" and
+          not is_nil(l.expiry_at) and
+          l.expiry_at < ^now,
+      order_by: [asc: l.expiry_at, asc: p.id],
+      preload: [:stock_lot, storage_cell: {c, storage_location: {sl, floor: {f, warehouse: w}}}]
+    )
+    |> Repo.all()
+  end
+
   # ----- fit math -------------------------------------------------------
 
   def empty_footprint do

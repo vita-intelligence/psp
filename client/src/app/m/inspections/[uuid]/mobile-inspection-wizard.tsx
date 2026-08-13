@@ -1050,6 +1050,7 @@ export function MobileInspectionWizard({
                         transport_company: e.target.value,
                       })
                     }
+                    maxLength={120}
                     placeholder="Acme Logistics"
                   />
                 }
@@ -1066,6 +1067,7 @@ export function MobileInspectionWizard({
                         vehicle_registration: e.target.value.toUpperCase(),
                       })
                     }
+                    maxLength={20}
                     className="uppercase"
                     autoCapitalize="characters"
                     autoCorrect="off"
@@ -1086,6 +1088,7 @@ export function MobileInspectionWizard({
                         seal_number: e.target.value,
                       })
                     }
+                    maxLength={40}
                     placeholder="e.g. 8472193"
                   />
                 }

@@ -169,6 +169,7 @@ defmodule Backend.GoodsIn.Inspection do
       :goods_in_operator_id,
       :goods_in_operator_signed_at
     ])
+    |> validate_signature_size(:goods_in_operator_signature_image)
   end
 
   @doc """
@@ -198,6 +199,37 @@ defmodule Backend.GoodsIn.Inspection do
     |> validate_inclusion(:quality_decision, @quality_decisions)
     |> validate_decision_reason()
     |> validate_length(:quality_decision_reason, max: 2000)
+    |> validate_signature_size(:quality_approver_signature_image)
+  end
+
+  # Guard against pathologically large signature blobs. Base64 for a
+  # tightly-drawn SignaturePad canvas at typical mobile resolutions
+  # (~500x200px) fits well under 50 KB; anything larger is either an
+  # uncompressed high-DPI canvas or a client bypass. Refusing here
+  # is safer than a silent request-size error at the reverse proxy
+  # / phoenix endpoint layer (which would give the operator a
+  # cryptic 413 instead of a clear "signature too large").
+  @signature_max_bytes 50_000
+
+  defp validate_signature_size(changeset, field) do
+    case get_change(changeset, field) do
+      nil ->
+        changeset
+
+      value when is_binary(value) ->
+        if byte_size(value) > @signature_max_bytes do
+          add_error(
+            changeset,
+            field,
+            "signature is too large — please clear + re-sign with a smaller / less dense stroke"
+          )
+        else
+          changeset
+        end
+
+      _ ->
+        add_error(changeset, field, "signature must be a data URL string")
+    end
   end
 
   defp validate_decision_reason(changeset) do
