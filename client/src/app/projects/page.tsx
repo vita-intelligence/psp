@@ -52,6 +52,7 @@ const PHASE_COLUMNS: ReadonlyArray<OrderWizardPhaseKey> = [
   "approval",
   "production_planning",
   "awaiting_ingredients",
+  "picking_ingredients",
   "in_production",
   "closeout",
   "final_release",
@@ -74,6 +75,7 @@ const PHASE_ICON: Record<OrderWizardPhaseKey, typeof ClipboardList> = {
   approval: ShieldCheck,
   production_planning: Factory,
   awaiting_ingredients: Truck,
+  picking_ingredients: Truck,
   in_production: Cog,
   closeout: PackageOpen,
   final_release: ShieldCheck,
@@ -97,6 +99,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   approval: "Awaiting approval",
   production_planning: "Need MO created",
   awaiting_ingredients: "Awaiting ingredients",
+  picking_ingredients: "Picking ingredients",
   in_production: "In production",
   closeout: "Awaiting closeout",
   final_release: "Awaiting release",
@@ -133,6 +136,7 @@ const PHASE_ACCENT: Record<OrderWizardPhaseKey, string> = {
   approval: "bg-sky-500/80 dark:bg-sky-400/80",
   production_planning: "bg-sky-500/80 dark:bg-sky-400/80",
   awaiting_ingredients: "bg-amber-500/80 dark:bg-amber-400/80",
+  picking_ingredients: "bg-amber-500/80 dark:bg-amber-400/80",
   in_production: "bg-amber-500/80 dark:bg-amber-400/80",
   closeout: "bg-amber-500/80 dark:bg-amber-400/80",
   final_release: "bg-sky-500/80 dark:bg-sky-400/80",
@@ -159,6 +163,7 @@ const PHASE_COUNT_TONE: Record<
   approval: "sky",
   production_planning: "sky",
   awaiting_ingredients: "amber",
+  picking_ingredients: "amber",
   in_production: "amber",
   closeout: "amber",
   final_release: "sky",
@@ -438,6 +443,7 @@ function CardChips({ project }: { project: ProjectSummary }) {
     project.lines_awaiting_mo > 0 &&
     (phase === "production_planning" ||
       phase === "awaiting_ingredients" ||
+      phase === "picking_ingredients" ||
       phase === "in_production")
   ) {
     chips.push(
@@ -462,6 +468,7 @@ function CardChips({ project }: { project: ProjectSummary }) {
   //     its job, just wait for the vendor).
   if (
     phase === "awaiting_ingredients" ||
+    phase === "picking_ingredients" ||
     phase === "in_production"
   ) {
     if (project.mos_awaiting_po_send > 0) {

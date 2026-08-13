@@ -600,14 +600,32 @@ function ActionStrip(props: ActionStripProps) {
     // (or start) until every sub-MO has completed / been cancelled.
     if (canExecute && isRnd) {
       const chainBlocked = mo.blocking_children_count > 0;
+      // Mirror the backend release gates so the button never enables
+      // a click that would 4xx bounce. Two failure modes:
+      //   * ``under_booked_count > 0`` — some line has no coverage at
+      //     all (``ensure_all_lines_fully_booked``).
+      //   * ``has_placeholder_bookings`` — coverage exists but the
+      //     lot is bound to an in-flight PO / non-``available``
+      //     state (``ensure_all_booked_lots_available``).
+      // Either way, "Request pickup" would fail — disable + tooltip
+      // the actionable next step so the operator finishes procurement
+      // (or unlocks QC) before trying.
+      const shortagesBlock = mo.under_booked_count > 0;
+      const placeholdersBlock = mo.has_placeholder_bookings;
+      const pickupBlocked = chainBlocked || shortagesBlock || placeholdersBlock;
+      const blockReason = chainBlocked
+        ? `Waiting on ${mo.blocking_children_count} sub-MO${mo.blocking_children_count === 1 ? "" : "s"}. Finish or cancel every child before requesting pickup.`
+        : shortagesBlock
+          ? `${mo.under_booked_count} BOM line${mo.under_booked_count === 1 ? "" : "s"} not fully booked. Cover them from stock (or send to procurement + wait for delivery) before requesting pickup.`
+          : placeholdersBlock
+            ? "Some bookings still point at incoming PO stock. Wait for goods-in to receive + QC-pass the delivery, then retry."
+            : "R&D MO — hand over to the warehouse. They pick the materials, then the run page unlocks.";
       actionButton({
         label: "Request pickup",
         icon: ShoppingCart,
         onClick: props.onRequestPickup,
-        disabled: chainBlocked,
-        title: chainBlocked
-          ? `Waiting on ${mo.blocking_children_count} sub-MO${mo.blocking_children_count === 1 ? "" : "s"}. Finish or cancel every child before requesting pickup.`
-          : "R&D MO — hand over to the warehouse. They pick the materials, then the run page unlocks.",
+        disabled: pickupBlocked,
+        title: blockReason,
       });
     }
 

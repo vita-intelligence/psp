@@ -12,6 +12,7 @@ import {
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   Camera,
   Check,
   ChevronLeft,
@@ -23,6 +24,16 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -61,6 +72,7 @@ import type {
   SectionCheck,
 } from "@/lib/goods-in/types";
 import type { ErrorDebug } from "@/lib/errors/types";
+import { formatCompanyNumber } from "@/lib/format/company";
 import type { PurchaseOrder, PurchaseOrderLine, User } from "@/lib/types";
 
 /* ============ check-key registries ============ */
@@ -277,6 +289,14 @@ export function MobileInspectionWizard({
   const [operatorSignature, setOperatorSignature] = useState<string | null>(
     null,
   );
+
+  // Populated when the operator's entered packs exceed a PO line's
+  // remaining ordered qty — used to open a "confirm over-receipt"
+  // dialog before hitting sign. See `onSignOperator` for the
+  // gathering logic. Null = no over-receipt / no confirmation pending.
+  const [overReceiptConfirm, setOverReceiptConfirm] = useState<
+    OverReceiptLine[] | null
+  >(null);
 
   // approver state (only used when status == submitted and viewer
   // has goods_in.approve).
@@ -670,6 +690,25 @@ export function MobileInspectionWizard({
       return;
     }
     setError(null);
+
+    // Over-receipts are a real workflow — vendors ship more than the
+    // PO says. The backend accepts it (see `Backend.Purchasing`); the
+    // wizard's job is to surface the variance so a typo (100 vs 10)
+    // doesn't sail through unnoticed. Gather any lines where the
+    // operator's packs sum > (qty_ordered − qty_received) and open a
+    // confirm dialog; on empty list, fire straight through.
+    const overReceipts = computeOverReceipts(lines, items);
+    if (overReceipts.length > 0) {
+      setOverReceiptConfirm(overReceipts);
+      return;
+    }
+
+    runSignOperator();
+  }
+
+  function runSignOperator() {
+    if (!operatorSignature) return;
+    setOverReceiptConfirm(null);
     startSave(async () => {
       const res = await signOperatorAction(inspection.uuid, operatorSignature);
       if (!res.ok) {
@@ -900,6 +939,60 @@ export function MobileInspectionWizard({
           )}
         </footer>
       )}
+
+      {/* Over-receipt confirm — see `computeOverReceipts` above. The
+          server accepts over-receipts (physical count trumps PO), but
+          we ask the operator to confirm here so a mistyped qty
+          doesn't sail through with no brake. */}
+      <AlertDialog
+        open={overReceiptConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setOverReceiptConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="size-5 text-amber-600" />
+              Confirm over-receipt
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              You&apos;re about to record more than the PO ordered.
+              That&apos;s allowed — vendors over-ship all the time —
+              but double-check the physical count is right before
+              signing.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {overReceiptConfirm && (
+            <ul className="space-y-2 text-sm">
+              {overReceiptConfirm.map((row) => (
+                <li
+                  key={row.lineUuid}
+                  className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+                >
+                  <p className="font-medium">{row.itemName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Ordered {formatCompanyNumber(row.ordered, null)} ·
+                    already received{" "}
+                    {formatCompanyNumber(row.alreadyReceived, null)} ·
+                    this delivery{" "}
+                    {formatCompanyNumber(row.receivingNow, null)}
+                  </p>
+                  <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                    Over by {formatCompanyNumber(row.overBy, null)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Go back and fix</AlertDialogCancel>
+            <AlertDialogAction onClick={runSignOperator}>
+              Confirm and sign off
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 
@@ -1424,6 +1517,46 @@ function isPackComplete(p: PackDraft): boolean {
   );
 }
 
+interface OverReceiptLine {
+  lineUuid: string;
+  itemName: string;
+  ordered: number;
+  alreadyReceived: number;
+  receivingNow: number;
+  overBy: number;
+}
+
+// Detect PO lines where the operator's entered packs would push the
+// line above its ordered qty. Only complete packs count — half-typed
+// rows are ignored so a draft doesn't spuriously trip the warning.
+// The dialog uses this list to show a per-line breakdown; empty list
+// = no confirmation needed.
+function computeOverReceipts(
+  lines: PurchaseOrderLine[],
+  items: Record<string, ItemDraft>,
+): OverReceiptLine[] {
+  const out: OverReceiptLine[] = [];
+  for (const line of lines) {
+    const draft = items[line.uuid];
+    if (!draft) continue;
+    const receiving = sumCompletePackQty(draft.packs);
+    if (receiving <= 0) continue;
+    const ordered = Number(line.qty_ordered) || 0;
+    const alreadyReceived = Number(line.qty_received) || 0;
+    const remaining = ordered - alreadyReceived;
+    if (receiving <= remaining) continue;
+    out.push({
+      lineUuid: line.uuid,
+      itemName: line.item?.name ?? "(item)",
+      ordered,
+      alreadyReceived,
+      receivingNow: receiving,
+      overBy: receiving - remaining,
+    });
+  }
+  return out;
+}
+
 /**
  * Parse a decimal the operator may have typed with either dot or
  * comma as the separator (EU keyboards default to comma). Returns
@@ -1657,7 +1790,7 @@ const LineCard = memo(function LineCard({
               Ordered
             </p>
             <p className="text-xl font-bold tabular-nums leading-tight">
-              {qtyOrdered}
+              {formatCompanyNumber(qtyOrdered, null)}
               {uomSymbol ? (
                 <span className="ml-1 text-xs font-medium text-muted-foreground">
                   {uomSymbol}
@@ -1679,7 +1812,7 @@ const LineCard = memo(function LineCard({
                     : "text-foreground",
               )}
             >
-              {totalReceived}
+              {formatCompanyNumber(totalReceived, null)}
               {uomSymbol ? (
                 <span className="ml-1 text-xs font-medium text-muted-foreground">
                   {uomSymbol}

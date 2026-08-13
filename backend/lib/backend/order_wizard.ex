@@ -48,7 +48,8 @@ defmodule Backend.OrderWizard do
   @phases [:r_and_d, :awaiting_proposal, :awaiting_proposal_approval,
            :proposal_in_review, :proposal_ready_to_send, :awaiting_customer_signature,
            :proposal_accepted, :setup, :approval,
-           :production_planning, :awaiting_ingredients, :in_production, :closeout,
+           :production_planning, :awaiting_ingredients, :picking_ingredients,
+           :in_production, :closeout,
            :final_release, :awaiting_routing, :ready_to_dispatch, :awaiting_pickup,
            :dispatched, :delivered]
   @total_phases length(@phases)
@@ -417,6 +418,16 @@ defmodule Backend.OrderWizard do
       Enum.any?(live_mos, &(&1.has_placeholder_bookings? or &1.under_booked_count > 0)) ->
         :awaiting_ingredients
 
+      # Warehouse pickup is in flight — any live MO has been released
+      # to the warehouse (status=scheduled + released_to_warehouse_at)
+      # OR has ``pickup_started_at`` stamped but not yet completed.
+      # Distinct from the running-production phase below so both the
+      # ops wizard AND the customer portal can distinguish "your
+      # sample is being picked from the shelf" from "your sample is
+      # on the line right now."
+      Enum.any?(live_mos, &mo_in_pickup_phase?/1) ->
+        :picking_ingredients
+
       not Enum.all?(live_mos, &(&1.status == "completed")) ->
         :in_production
 
@@ -578,6 +589,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:approval), do: "Approval"
   defp phase_label(:production_planning), do: "Production planning"
   defp phase_label(:awaiting_ingredients), do: "Awaiting ingredients"
+  defp phase_label(:picking_ingredients), do: "Picking ingredients"
   defp phase_label(:in_production), do: "In production"
   defp phase_label(:closeout), do: "Closeout"
   defp phase_label(:final_release), do: "Release"
@@ -1312,6 +1324,16 @@ defmodule Backend.OrderWizard do
   defp po_status_label("cancelled"), do: "cancelled"
   defp po_status_label(other), do: other
 
+  # ``:picking_ingredients`` shares the exact per-MO CTA fan-out as
+  # ``:in_production`` — ``production_step_cta`` already special-cases
+  # the hung-pickup shape (see the ``cond`` at the top of the function).
+  # We forward to the same builder so a warehouse worker sees the same
+  # actionable "Open pickup on device" primary CTA whether the ops
+  # phase reads "Picking ingredients" or "In production".
+  defp next_action_for(:picking_ingredients, co, line_states, mos, signers) do
+    next_action_for(:in_production, co, line_states, mos, signers)
+  end
+
   defp next_action_for(:in_production, _co, _line_states, mos, _signers) do
     # Pending work = anything not yet completed PLUS completed MOs
     # that still owe output-QC sign-off or whose outputs / leftovers
@@ -1361,6 +1383,40 @@ defmodule Backend.OrderWizard do
   # for all three (the old behaviour) mislabeled the work and sent
   # operators to the wrong screen.
   defp production_step_cta(mo) do
+    cond do
+      # Hung-pickup override — takes priority over the status branch
+      # below. If ``pickup_started_at`` is set but ``pickup_completed_at``
+      # is still nil, the picker walked out with a trolley and never
+      # confirmed transfer. That's the ONLY correct next action
+      # regardless of what status the MO has since drifted to
+      # (data-drift, manual Repo.update, legacy path). Without this
+      # override the wizard silently switched to "Open run" / "Send
+      # preflight to device" for an MO whose ingredients were still
+      # on a trolley somewhere — the exact CO17 mismatch operators
+      # hit. Mobile ``list_pickup_queue`` has the mirror safety net
+      # so the picker sees the same row when they click through.
+      not is_nil(Map.get(mo, :pickup_started_at)) and
+          is_nil(Map.get(mo, :pickup_completed_at)) ->
+        actor =
+          case Map.get(mo, :pickup_started_by_name) do
+            name when is_binary(name) and name != "" -> " (#{name} on the floor)"
+            _ -> ""
+          end
+
+        {"Picking in progress for MO #{mo.code}#{actor}.",
+         %{
+           label: "Open pickup on device",
+           kind: "send_to_device",
+           href: "/m/pickup/#{mo.uuid}",
+           mo_uuid: mo.uuid
+         }}
+
+      true ->
+        production_step_cta_by_status(mo)
+    end
+  end
+
+  defp production_step_cta_by_status(mo) do
     case mo.status do
       "draft" ->
         {"Prepare MO #{mo.code}.",
@@ -2354,6 +2410,7 @@ defmodule Backend.OrderWizard do
           0
         end,
       purchasing_requested_at: mo.purchasing_requested_at,
+      released_to_warehouse_at: mo.released_to_warehouse_at,
       pickup_started_at: mo.pickup_started_at,
       pickup_started_by_name:
         case mo.pickup_started_by do
@@ -3462,6 +3519,23 @@ defmodule Backend.OrderWizard do
   # cancelled MO 55/56/57/58/69/70/73/74 — the wizard kept surfacing
   # them because ``mo_has_pending_work?`` returned true for every
   # non-completed status including cancelled).
+  # True when an MO is in the warehouse-pickup bracket: released to
+  # warehouse but pickup not yet complete, OR pickup physically
+  # started (trolley scan) but not yet confirmed. Covers both the
+  # normal ``status="scheduled"`` path AND the safety-net case where
+  # an MO drifted past ``scheduled`` mid-pickup (matches the mobile
+  # queue's post-P1-#6/#7 predicate — the two must agree).
+  defp mo_in_pickup_phase?(mo) do
+    completed_at = Map.get(mo, :pickup_completed_at)
+    started_at = Map.get(mo, :pickup_started_at)
+    released_at = Map.get(mo, :released_to_warehouse_at)
+    status = Map.get(mo, :status)
+
+    is_nil(completed_at) and
+      ((status == "scheduled" and not is_nil(released_at)) or
+         not is_nil(started_at))
+  end
+
   defp mo_has_pending_work?(%{status: "cancelled"}), do: false
 
   defp mo_has_pending_work?(%{status: "completed"} = mo) do

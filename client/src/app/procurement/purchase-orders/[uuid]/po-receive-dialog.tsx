@@ -51,6 +51,7 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
+import { formatCompanyNumber } from "@/lib/format/company";
 import type { PurchaseOrder, Warehouse } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import {
@@ -695,8 +696,14 @@ function LineSection({
           )}
         </div>
         <div className="flex items-baseline gap-3 text-xs">
+          {/* Route both figures through ``formatCompanyNumber`` — it
+              carries the sub-precision rescue path that keeps a real
+              non-zero value from collapsing to "0" on display (a
+              0.00004 kg receipt still needs to look like 0.00004 kg,
+              not "0"). ``.toFixed(2)`` on ``validity.sum`` was the
+              exact regression the operator hit on the goods-in form. */}
           <span className="text-muted-foreground">Remaining</span>
-          <span className="font-mono">{Number(remaining)}</span>
+          <span className="font-mono">{formatCompanyNumber(remaining, null)}</span>
           <span className="text-muted-foreground">Sum</span>
           <span
             className={cn(
@@ -704,7 +711,7 @@ function LineSection({
               overReceipt && "text-destructive",
             )}
           >
-            {validity.sum.toFixed(2).replace(/\.?0+$/, "")}
+            {formatCompanyNumber(validity.sum, null)}
           </span>
         </div>
       </header>

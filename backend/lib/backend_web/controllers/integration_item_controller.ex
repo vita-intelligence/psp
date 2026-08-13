@@ -1,10 +1,19 @@
 defmodule BackendWeb.IntegrationItemController do
   @moduledoc """
   Write-side endpoint for creating catalog Items from an upstream
-  R&D system (NPD today). Only `semi_finished` and `finished_product`
-  types are creatable through this surface — raw materials, packaging,
-  consumables, and equipment stay operator-managed on PSP where the
-  compliance sub-tables live.
+  R&D system (NPD today). Accepts `semi_finished`, `finished_product`,
+  `raw_material`, `packaging`, and `consumable` types.
+
+  History: this surface was originally locked to `semi_finished` +
+  `finished_product` on the theory that raw materials + packaging
+  belong to operators (compliance sub-tables — allergens, certificates,
+  storage tags — live on PSP). In practice orgs onboard onto PSP with
+  a pre-existing NPD catalog that already carries every ingredient +
+  packaging item they use. Forcing operators to re-key those rows on
+  PSP before the first PSP-driven MO can run is a hard block, so NPD
+  is now allowed to seed those rows. Operators still own the
+  compliance sub-tables — they hydrate allergens / certificates /
+  storage tags on PSP after the reverse-mirror lands.
 
   Semi-finished items are the anchor for a multi-stage BOM push: a
   capsule product = "Powder Blend" (semi_finished, its own BOM +
@@ -45,14 +54,15 @@ defmodule BackendWeb.IntegrationItemController do
   alias Backend.Accounts.User
   alias Backend.Items
   alias Backend.Items.Item
-  alias Backend.Production.BomLine
+  alias Backend.Production.BOMLine
   alias Backend.Repo
 
-  # The write surface is intentionally narrow: NPD pushes stage
-  # outputs (the semi-finished items each production stage produces)
-  # and, optionally, the finished-product SKU when it wasn't
-  # pre-created by an operator. Everything else stays out.
-  @allowed_types ~w(semi_finished finished_product)
+  # NPD is allowed to reverse-mirror any catalog type it holds
+  # locally: stage outputs (semi-finished), the finished-product SKU
+  # (finished_product), and the raw materials + packaging + consumables
+  # that ingredient / packaging combo picks reference. Equipment stays
+  # out — it never appears on an NPD picker.
+  @allowed_types ~w(semi_finished finished_product raw_material packaging consumable)
 
   # NPD-owned external_sku pattern. Semi-finished stage items are
   # keyed on ``NPD-STAGE-<formulation_uuid>-<sort_order>``; a
@@ -223,7 +233,7 @@ defmodule BackendWeb.IntegrationItemController do
   defp gate_npd_owned(_), do: {:refuse, "sku_not_npd_owned"}
 
   defp gate_not_referenced_in_bom(%Item{id: id}) do
-    query = from bl in BomLine, where: bl.part_id == ^id, limit: 1
+    query = from bl in BOMLine, where: bl.part_id == ^id, limit: 1
     if Repo.exists?(query), do: {:refuse, "referenced_by_bom"}, else: :ok
   end
 

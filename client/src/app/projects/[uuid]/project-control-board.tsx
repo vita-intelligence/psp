@@ -153,6 +153,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "approval",
   "production_planning",
   "awaiting_ingredients",
+  "picking_ingredients",
   "in_production",
   "closeout",
   "final_release",
@@ -175,6 +176,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   approval: "Approval",
   production_planning: "Planning",
   awaiting_ingredients: "Ingredients",
+  picking_ingredients: "Picking",
   in_production: "Production",
   closeout: "Closeout",
   final_release: "Release",
@@ -203,6 +205,7 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
   awaiting_ingredients: "Waiting on POs covering placeholder bookings.",
+  picking_ingredients: "Warehouse is picking booked lots off the shelf and moving them to the production cell.",
   in_production: "Lines are being made on the floor.",
   closeout: "QC the outputs and move them to the warehouse.",
   final_release:
@@ -234,6 +237,7 @@ const PHASE_ICON: Record<
   approval: ShieldCheck,
   production_planning: Factory,
   awaiting_ingredients: Truck,
+  picking_ingredients: Truck,
   in_production: Cog,
   closeout: PackageOpen,
   final_release: ShieldCheck,
@@ -1526,6 +1530,10 @@ const PHASE_EXPLAINER: Record<
   awaiting_ingredients: {
     title: "Waiting on POs to land.",
     body: "Procurement is engaged. As each PO arrives and clears QC, its lot replaces the placeholder booking on the MO automatically. When all bookings are real, you can schedule the runs.",
+  },
+  picking_ingredients: {
+    title: "Warehouse is picking the ingredients.",
+    body: "Bookings are real and the MO has been released to the warehouse. A picker is scanning lots off the shelf and moving them onto a production-feed cell. Once every ingredient is on the line, the MO advances to preflight and then to the run.",
   },
   in_production: {
     title: "On the floor.",
@@ -4337,6 +4345,7 @@ function phaseBadgeTone(
     case "production_planning":
       return "sky";
     case "awaiting_ingredients":
+    case "picking_ingredients":
     case "in_production":
     case "closeout":
       return "amber";

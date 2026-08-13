@@ -234,7 +234,10 @@ defmodule Backend.Procurement.Shortages do
       # genuine outstanding gap procurement still owes.
       coverage = Decimal.add(hand, exp)
       shortage = Decimal.sub(required, coverage)
-      shortage = if Decimal.compare(shortage, Decimal.new(0)) == :gt, do: shortage, else: Decimal.new(0)
+      shortage =
+        if Decimal.compare(shortage, Decimal.new(0)) == :gt,
+          do: shortage,
+          else: Decimal.new(0)
       explicit_request = Map.get(explicit_request_by_key, {item_id, is_rnd}, false)
 
       %{
@@ -293,65 +296,191 @@ defmodule Backend.Procurement.Shortages do
   # items don't pollute the procurement queue (those are child-MO
   # concerns).
   defp compute_requirements(company_id) do
-    from(line in BOMLine,
-      join: bom in BOM,
-      on: bom.id == line.bom_id,
-      join: mo in ManufacturingOrder,
-      on: mo.bom_id == bom.id,
-      join: part in Item,
-      on: part.id == line.part_id,
-      where:
-        mo.company_id == ^company_id and
-          mo.status in ^@open_mo_statuses and
-          (mo.status != "draft" or not is_nil(mo.purchasing_requested_at)) and
-          part.item_type in ^@procurable_item_types,
-      select: %{
-        part_id: line.part_id,
-        line_qty: line.qty,
-        line_uom_id: line.unit_of_measurement_id,
-        is_fixed: line.is_fixed,
-        mo_qty: mo.quantity,
-        mo_project_type: mo.project_type,
-        # Contributing MO's explicit-request flag. When any MO
-        # sharing this ``{part, is_rnd}`` bucket has ``Request
-        # purchases`` fired, ``list_for`` keeps the row on the
-        # shortages page even if on-hand stock would otherwise
-        # net the shortage to zero — the operator asked
-        # procurement to look at it, procurement should see it.
-        mo_purchasing_requested: not is_nil(mo.purchasing_requested_at)
-      }
-    )
-    |> Repo.all()
-    |> Enum.reduce({%{}, %{}, %{}}, fn row, {qty_acc, uom_acc, req_acc} ->
-      qty =
-        cond do
-          row.is_fixed ->
-            row.line_qty || Decimal.new(0)
+    # BOM-line requirements. When a packaging combo overlay is active
+    # on the MO (``packaging_combo_items IS NOT NULL``) the booking
+    # loop skips packaging BOM lines and substitutes the overlay
+    # items instead — mirror that here so packaging demand isn't
+    # double-counted. The overlay contribution is collected below
+    # from ``compute_overlay_requirements``.
+    bom_acc =
+      from(line in BOMLine,
+        join: bom in BOM,
+        on: bom.id == line.bom_id,
+        join: mo in ManufacturingOrder,
+        on: mo.bom_id == bom.id,
+        join: part in Item,
+        on: part.id == line.part_id,
+        where:
+          mo.company_id == ^company_id and
+            mo.status in ^@open_mo_statuses and
+            (mo.status != "draft" or not is_nil(mo.purchasing_requested_at)) and
+            part.item_type in ^@procurable_item_types and
+            (part.item_type != "packaging" or is_nil(mo.packaging_combo_items)),
+        select: %{
+          part_id: line.part_id,
+          line_qty: line.qty,
+          line_uom_id: line.unit_of_measurement_id,
+          is_fixed: line.is_fixed,
+          mo_qty: mo.quantity,
+          mo_project_type: mo.project_type,
+          # Contributing MO's explicit-request flag. When any MO
+          # sharing this ``{part, is_rnd}`` bucket has ``Request
+          # purchases`` fired, ``list_for`` keeps the row on the
+          # shortages page even if on-hand stock would otherwise
+          # net the shortage to zero — the operator asked
+          # procurement to look at it, procurement should see it.
+          mo_purchasing_requested: not is_nil(mo.purchasing_requested_at)
+        }
+      )
+      |> Repo.all()
+      |> Enum.reduce({%{}, %{}, %{}}, fn row, {qty_acc, uom_acc, req_acc} ->
+        qty =
+          cond do
+            row.is_fixed ->
+              row.line_qty || Decimal.new(0)
 
-          true ->
-            Decimal.mult(row.line_qty || Decimal.new(0), row.mo_qty || Decimal.new(0))
+            true ->
+              Decimal.mult(row.line_qty || Decimal.new(0), row.mo_qty || Decimal.new(0))
+          end
+
+        is_rnd = row.mo_project_type in @rnd_project_types
+        key = {row.part_id, is_rnd}
+        qty_acc = Map.update(qty_acc, key, qty, &Decimal.add(&1, qty))
+        # Remember the last non-nil line UoM per (part, stream). After
+        # the NPD-side base-unit normalisation lands, every line for a
+        # given part will use the same UoM (kg / L) so "last" is stable;
+        # for legacy data we pick something reasonable rather than
+        # crashing.
+        uom_acc =
+          if row.line_uom_id, do: Map.put(uom_acc, key, row.line_uom_id), else: uom_acc
+
+        # ``bool_or`` semantics — any contributing MO with an
+        # explicit request flips this bucket true and it stays true.
+        req_acc =
+          if row.mo_purchasing_requested,
+            do: Map.put(req_acc, key, true),
+            else: Map.put_new(req_acc, key, false)
+
+        {qty_acc, uom_acc, req_acc}
+      end)
+
+    # Fold in packaging-combo overlay requirements. The overlay stores
+    # ``[%{"item_id" => id, "quantity" => "per-stock-unit"}]`` on the
+    # MO — the buyer needs to see these on the shortages page too
+    # or a sample MO that requested purchases for its Pouch overlay
+    # would show zero packaging demand and procurement wouldn't act.
+    fold_overlay_requirements(bom_acc, company_id)
+  end
+
+  # Second pass — walk every open MO with a non-nil ``packaging_combo_items``
+  # and fold each overlay row into the same {qty, uom, req} accumulator.
+  # UoM defaults to the item's stock_uom (overlay rows don't carry
+  # a per-line UoM the way BOM lines do). Non-procurable item types
+  # are skipped so an overlay pointing at a semi-finished output
+  # doesn't pollute the queue.
+  defp fold_overlay_requirements({qty_acc, uom_acc, req_acc}, company_id) do
+    mos =
+      from(mo in ManufacturingOrder,
+        where:
+          mo.company_id == ^company_id and
+            mo.status in ^@open_mo_statuses and
+            (mo.status != "draft" or not is_nil(mo.purchasing_requested_at)) and
+            not is_nil(mo.packaging_combo_items),
+        select: %{
+          quantity: mo.quantity,
+          project_type: mo.project_type,
+          purchasing_requested: not is_nil(mo.purchasing_requested_at),
+          overlay: mo.packaging_combo_items
+        }
+      )
+      |> Repo.all()
+
+    overlay_item_ids =
+      mos
+      |> Enum.flat_map(fn m ->
+        for row <- m.overlay || [], id = overlay_extract_int(row, "item_id"), do: id
+      end)
+      |> Enum.uniq()
+
+    procurable_items =
+      if overlay_item_ids == [] do
+        %{}
+      else
+        from(i in Item,
+          where: i.id in ^overlay_item_ids and i.item_type in ^@procurable_item_types,
+          select: {i.id, i.stock_uom_id}
+        )
+        |> Repo.all()
+        |> Map.new()
+      end
+
+    Enum.reduce(mos, {qty_acc, uom_acc, req_acc}, fn m, {qa, ua, ra} ->
+      is_rnd = m.project_type in @rnd_project_types
+
+      Enum.reduce(m.overlay || [], {qa, ua, ra}, fn row, {qa2, ua2, ra2} ->
+        with {:ok, item_id} <- overlay_extract_int_ok(row, "item_id"),
+             true <- Map.has_key?(procurable_items, item_id),
+             {:ok, required} <- overlay_extract_decimal_ok(row, "quantity") do
+          # Overlay ``quantity`` is the ABSOLUTE TOTAL — NPD already
+          # rolled ``per_pack × total_packs`` (with ceil for count
+          # items) — so we don't multiply by mo.quantity here.
+          key = {item_id, is_rnd}
+          qa2 = Map.update(qa2, key, required, &Decimal.add(&1, required))
+
+          ua2 =
+            case Map.get(procurable_items, item_id) do
+              nil -> ua2
+              uom_id -> Map.put_new(ua2, key, uom_id)
+            end
+
+          ra2 =
+            if m.purchasing_requested,
+              do: Map.put(ra2, key, true),
+              else: Map.put_new(ra2, key, false)
+
+          {qa2, ua2, ra2}
+        else
+          _ -> {qa2, ua2, ra2}
+        end
+      end)
+    end)
+  end
+
+  defp overlay_extract_int(row, key) do
+    case Map.get(row, key) do
+      i when is_integer(i) ->
+        i
+
+      s when is_binary(s) ->
+        case Integer.parse(s) do
+          {i, ""} -> i
+          _ -> nil
         end
 
-      is_rnd = row.mo_project_type in @rnd_project_types
-      key = {row.part_id, is_rnd}
-      qty_acc = Map.update(qty_acc, key, qty, &Decimal.add(&1, qty))
-      # Remember the last non-nil line UoM per (part, stream). After
-      # the NPD-side base-unit normalisation lands, every line for a
-      # given part will use the same UoM (kg / L) so "last" is stable;
-      # for legacy data we pick something reasonable rather than
-      # crashing.
-      uom_acc =
-        if row.line_uom_id, do: Map.put(uom_acc, key, row.line_uom_id), else: uom_acc
+      _ ->
+        nil
+    end
+  end
 
-      # ``bool_or`` semantics — any contributing MO with an
-      # explicit request flips this bucket true and it stays true.
-      req_acc =
-        if row.mo_purchasing_requested,
-          do: Map.put(req_acc, key, true),
-          else: Map.put_new(req_acc, key, false)
+  defp overlay_extract_int_ok(row, key) do
+    case overlay_extract_int(row, key) do
+      nil -> :error
+      i -> {:ok, i}
+    end
+  end
 
-      {qty_acc, uom_acc, req_acc}
-    end)
+  defp overlay_extract_decimal_ok(row, key) do
+    case Map.get(row, key) do
+      %Decimal{} = d -> {:ok, d}
+      n when is_integer(n) -> {:ok, Decimal.new(n)}
+      n when is_float(n) -> {:ok, Decimal.from_float(n)}
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} -> {:ok, d}
+          _ -> :error
+        end
+      _ -> :error
+    end
   end
 
   defp compute_bookings(company_id) do
@@ -438,12 +567,17 @@ defmodule Backend.Procurement.Shortages do
   defp compute_dependent_mos(_company_id, []), do: %{}
 
   defp compute_dependent_mos(company_id, item_ids) do
-    rows =
+    # BOM-line dependents. Skip packaging lines when the MO carries
+    # an active overlay — same substitution the booker + requirements
+    # aggregator apply.
+    bom_rows =
       from(line in BOMLine,
         join: bom in BOM,
         on: bom.id == line.bom_id,
         join: mo in ManufacturingOrder,
         on: mo.bom_id == bom.id,
+        join: part in Item,
+        on: part.id == line.part_id,
         join: mo_item in Item,
         on: mo_item.id == mo.item_id,
         left_join: s in Backend.Production.ManufacturingOrderStep,
@@ -451,7 +585,8 @@ defmodule Backend.Procurement.Shortages do
         where:
           mo.company_id == ^company_id and
             mo.status in ^@open_mo_statuses and
-            line.part_id in ^item_ids,
+            line.part_id in ^item_ids and
+            (part.item_type != "packaging" or is_nil(mo.packaging_combo_items)),
         select: %{
           part_id: line.part_id,
           mo_id: mo.id,
@@ -465,6 +600,52 @@ defmodule Backend.Procurement.Shortages do
         }
       )
       |> Repo.all()
+
+    # Overlay-derived dependents. Any MO with a non-nil
+    # ``packaging_combo_items`` referencing one of ``item_ids`` in an
+    # overlay row is a dependent for that item's shortage bucket.
+    overlay_rows =
+      from(mo in ManufacturingOrder,
+        join: mo_item in Item,
+        on: mo_item.id == mo.item_id,
+        left_join: s in Backend.Production.ManufacturingOrderStep,
+        on: s.manufacturing_order_id == mo.id,
+        where:
+          mo.company_id == ^company_id and
+            mo.status in ^@open_mo_statuses and
+            not is_nil(mo.packaging_combo_items),
+        select: %{
+          mo_id: mo.id,
+          mo_uuid: mo.uuid,
+          status: mo.status,
+          quantity: mo.quantity,
+          mo_item_id: mo.item_id,
+          mo_item_name: mo_item.name,
+          mo_project_type: mo.project_type,
+          planned_start: s.planned_start,
+          overlay: mo.packaging_combo_items
+        }
+      )
+      |> Repo.all()
+      |> Enum.flat_map(fn m ->
+        for row <- m.overlay || [],
+            id = overlay_extract_int(row, "item_id"),
+            id in item_ids do
+          %{
+            part_id: id,
+            mo_id: m.mo_id,
+            mo_uuid: m.mo_uuid,
+            status: m.status,
+            quantity: m.quantity,
+            mo_item_id: m.mo_item_id,
+            mo_item_name: m.mo_item_name,
+            mo_project_type: m.mo_project_type,
+            planned_start: m.planned_start
+          }
+        end
+      end)
+
+    rows = bom_rows ++ overlay_rows
 
     # Grouped by ``{part_id, is_rnd}`` so a row can list only the MOs
     # from its own stream — production row for Acai lists production

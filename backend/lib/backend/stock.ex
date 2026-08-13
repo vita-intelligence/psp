@@ -2713,7 +2713,10 @@ defmodule Backend.Stock do
 
   defp parse_decimal(%Decimal{} = d), do: {:ok, d}
   defp parse_decimal(n) when is_integer(n), do: {:ok, Decimal.new(n)}
-  defp parse_decimal(n) when is_float(n), do: {:ok, Decimal.from_float(n)}
+  # Float → decimal via Backend.Numerics.from_float/1 avoids the
+  # IEEE-754 noise leak that Decimal.from_float/1 preserves verbatim.
+  defp parse_decimal(n) when is_float(n),
+    do: {:ok, Backend.Numerics.from_float(n)}
 
   defp parse_decimal(s) when is_binary(s) do
     case Decimal.parse(s) do

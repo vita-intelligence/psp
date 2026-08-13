@@ -33,7 +33,11 @@ import {
   deleteLineAction,
   suggestLinePriceAction,
 } from "@/lib/purchase-orders/actions";
-import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
+import {
+  formatCompanyDate,
+  formatCompanyMoney,
+  formatCompanyNumber,
+} from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 
 // Mirrors the server-side `Backend.Purchasing.VendorPrices` threshold.
@@ -510,12 +514,11 @@ function formatPctChange(pct: number): string {
  * input for non-numeric values.
  */
 function fmtQty(value: string | null | undefined): string {
-  if (!value) return "0";
-  const n = Number(value);
-  if (!Number.isFinite(n)) return value;
-  // toFixed-then-parseFloat trims trailing zeros while keeping the
-  // significant decimals (10.0000 → "10", 10.5000 → "10.5").
-  return parseFloat(n.toFixed(4)).toString();
+  // Delegate to the company-wide number formatter. It trims trailing
+  // zeros the same way but ALSO carries the sub-precision rescue
+  // path — a real 0.00004 kg stays visible instead of rounding to
+  // "0" and looking like an empty line to the operator.
+  return formatCompanyNumber(value, null);
 }
 
 /** Small chip under the item name showing the day-one LOT number

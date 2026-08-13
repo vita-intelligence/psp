@@ -1267,6 +1267,12 @@ export interface ManufacturingOrder {
    *  Release button without an extra query. */
   broken_bookings_count: number;
   under_booked_count: number;
+  /** True when at least one booking on this MO points at an
+   *  in-flight PO line (its lot isn't ``available`` yet). The
+   *  release-to-warehouse gate refuses pickup in this state, so
+   *  the UI disables ``Request pickup`` when this is set. Mirrors
+   *  ``OrderWizard`` ``has_placeholder_bookings?``. */
+  has_placeholder_bookings: boolean;
   /** Replan regression — set when the MO bounced back from
    *  scheduled/in-progress because something broke its plan. UI
    *  shows a banner with the reason + a "Mark replanned" CTA. */

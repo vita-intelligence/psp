@@ -1757,10 +1757,17 @@ defmodule Backend.Purchasing do
       line_uuid = input["line_uuid"]
       packs_raw = input["packs"] || []
 
+      # Over-receipt is a real workflow: vendors ship more than the PO
+      # (short over-runs, cases padded with an extra sample, restocks
+      # rolled into an open delivery). We accept the physical count and
+      # let `qty_received` legitimately exceed `qty_ordered` — the PO
+      # detail highlights the variance so procurement / finance can
+      # reconcile with the vendor's invoice. The FE (mobile goods-in
+      # wizard, `mobile-inspection-wizard.tsx`) shows an explicit
+      # confirm dialog before firing so a typo doesn't sail through.
       with %PurchaseOrderLine{} = line <- find_open_line(po, line_uuid),
            :ok <- ensure_line_open(line),
-           {:ok, packs} <- validate_packs(packs_raw),
-           :ok <- ensure_sum_within_remaining(line, packs) do
+           {:ok, packs} <- validate_packs(packs_raw) do
         {:cont, {:ok, [{line, packs} | acc]}}
       else
         :line_not_found -> {:halt, {:error, {:bad_line_uuid, line_uuid}}}
@@ -1901,25 +1908,6 @@ defmodule Backend.Purchasing do
   end
 
   defp trim_or_nil(v), do: v
-
-  defp ensure_sum_within_remaining(%PurchaseOrderLine{} = line, packs) do
-    total =
-      Enum.reduce(packs, Decimal.new(0), fn pack, acc ->
-        Decimal.add(acc, pack[:qty])
-      end)
-
-    remaining =
-      Decimal.sub(
-        line.qty_ordered || Decimal.new(0),
-        line.qty_received || Decimal.new(0)
-      )
-
-    if Decimal.gt?(total, remaining) do
-      {:error, {:over_receipt, line.uuid}}
-    else
-      :ok
-    end
-  end
 
   defp build_lot_attrs(
          %PurchaseOrder{} = po,
