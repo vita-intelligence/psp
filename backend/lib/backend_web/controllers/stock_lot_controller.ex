@@ -471,6 +471,95 @@ defmodule BackendWeb.StockLotController do
     json(conn, %{items: items})
   end
 
+  @doc """
+  Two lists in one call for the warehouse-home "Parked at production"
+  card:
+
+    * ``stranded`` — placements at a production_feed cell that were
+      explicitly kept there by a closeout (Placement.kept_at set)
+      more than 24 h ago, with no live non-cancelled MO booking
+      currently referencing the lot. The reason to keep is spent
+      and nobody is planning to consume it — a warehouse walker
+      should return it to storage.
+
+    * ``expired`` — placements at production_feed where the lot's
+      ``expiry_at`` has passed. Regardless of how the lot got there
+      (intentional keep, aborted pickup, orphan) an expired lot
+      must not be usable.
+
+  Response shape:
+  ```
+  %{
+    stranded: [%{
+      lot_uuid, item_name, cell_name, warehouse_name, qty,
+      kept_at, kept_hours_ago, expiry_at
+    }, ...],
+    expired: [%{ (same shape) }, ...]
+  }
+  ```
+  """
+  def parked_at_production(conn, params) do
+    actor = conn.assigns.current_user
+
+    max_age_hours =
+      case params["max_age_hours"] do
+        h when is_integer(h) and h > 0 ->
+          h
+
+        h when is_binary(h) ->
+          case Integer.parse(h) do
+            {n, ""} when n > 0 -> n
+            _ -> 24
+          end
+
+        _ ->
+          24
+      end
+
+    stranded_rows =
+      Stock.list_stranded_at_production(actor.company_id, max_age_hours: max_age_hours)
+
+    expired_rows = Stock.list_expired_at_production(actor.company_id)
+
+    json(conn, %{
+      stranded: Enum.map(stranded_rows, &parked_row/1),
+      expired: Enum.map(expired_rows, &parked_row/1),
+      max_age_hours: max_age_hours
+    })
+  end
+
+  defp parked_row(%Backend.Stock.Placement{} = p) do
+    hours_kept =
+      case p.kept_at do
+        %DateTime{} = kept ->
+          div(DateTime.diff(DateTime.utc_now(), kept, :second), 3600)
+
+        _ ->
+          nil
+      end
+
+    lot = p.stock_lot
+    cell = p.storage_cell
+    location = cell && cell.storage_location
+    floor = location && location.floor
+    warehouse = floor && floor.warehouse
+
+    %{
+      lot_uuid: lot && lot.uuid,
+      lot_code: lot && (lot.code || lot.uuid),
+      supplier_batch_no: lot && lot.supplier_batch_no,
+      item_name: lot && lot.item && lot.item.name,
+      qty: p.qty,
+      kept_at: p.kept_at,
+      kept_hours_ago: hours_kept,
+      expiry_at: lot && lot.expiry_at,
+      cell_name: cell && cell.name,
+      location_name: location && location.name,
+      warehouse_name: warehouse && warehouse.name,
+      warehouse_uuid: warehouse && warehouse.uuid
+    }
+  end
+
   defp needs_release_move?(%Backend.Stock.Lot{} = lot) do
     cond do
       lot.source_kind != "manufacturing_order" ->

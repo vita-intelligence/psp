@@ -16,6 +16,15 @@ defmodule Backend.Stock.Placement do
     field :uuid, Ecto.UUID, autogenerate: true
     field :qty, :decimal, default: Decimal.new(0)
 
+    # Stamped when a closeout decides to leave the leftover at the
+    # production_feed cell (``keep_in_place`` route choice). Nil for
+    # every other placement — placements at regular / quarantine /
+    # dispatch cells never carry this. Cleared to nil when the
+    # placement is drained (fully consumed) or moved out via
+    # return-pickup. Powers the "stranded at production" dashboard
+    # query: ``kept_at IS NOT NULL AND kept_at < now() - N hours``.
+    field :kept_at, :utc_datetime
+
     belongs_to :company, Company
     belongs_to :stock_lot, Lot
     belongs_to :storage_cell, StorageCell
@@ -30,7 +39,8 @@ defmodule Backend.Stock.Placement do
       :company_id,
       :stock_lot_id,
       :storage_cell_id,
-      :qty
+      :qty,
+      :kept_at
     ])
     |> validate_required([:company_id, :stock_lot_id, :storage_cell_id, :qty])
     |> validate_number(:qty, greater_than_or_equal_to: 0)

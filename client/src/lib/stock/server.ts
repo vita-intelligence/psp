@@ -112,3 +112,49 @@ export async function listWarehousesForReceive(): Promise<Warehouse[]> {
     return [];
   }
 }
+
+/**
+ * Warehouse-home "Parked at production" card fetch. Returns two lists:
+ * stranded (ingredients kept at production_feed > N hours, no live claim)
+ * and expired (any placement at production_feed whose lot has passed
+ * its expiry date). Empty arrays on auth failure or network drop so
+ * the card renders "all clear" instead of a red error banner — no
+ * stranding is a real signal too.
+ */
+export interface ParkedAtProductionRow {
+  lot_uuid: string | null;
+  lot_code: string | null;
+  supplier_batch_no: string | null;
+  item_name: string | null;
+  qty: string | number | null;
+  kept_at: string | null;
+  kept_hours_ago: number | null;
+  expiry_at: string | null;
+  cell_name: string | null;
+  location_name: string | null;
+  warehouse_name: string | null;
+  warehouse_uuid: string | null;
+}
+
+export async function fetchParkedAtProduction(
+  maxAgeHours = 24,
+): Promise<{
+  stranded: ParkedAtProductionRow[];
+  expired: ParkedAtProductionRow[];
+  max_age_hours: number;
+}> {
+  const token = await getSessionToken();
+  if (!token) return { stranded: [], expired: [], max_age_hours: maxAgeHours };
+  try {
+    return await api<{
+      stranded: ParkedAtProductionRow[];
+      expired: ParkedAtProductionRow[];
+      max_age_hours: number;
+    }>(`/api/stock/lots/parked-at-production?max_age_hours=${maxAgeHours}`, {
+      token,
+      cache: "no-store",
+    });
+  } catch {
+    return { stranded: [], expired: [], max_age_hours: maxAgeHours };
+  }
+}

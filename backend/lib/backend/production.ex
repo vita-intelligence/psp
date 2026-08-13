@@ -7489,30 +7489,62 @@ defmodule Backend.Production do
   longer reschedule the steps.
   """
   def start_mo_pickup(%User{} = actor, %ManufacturingOrder{} = mo) do
-    cond do
-      is_nil(mo.released_to_warehouse_at) ->
-        {:error, :not_released}
+    # Wrap the head-of-picker claim in a serialized transaction so
+    # two pickers who tap Start Pickup on the same MO at the same
+    # time can't both stamp `pickup_started_at` (last-writer-wins
+    # was the pre-fix behaviour; the second picker thought they'd
+    # won the lock but had actually overwritten the first). SELECT
+    # FOR UPDATE on the MO row serialises the second start until the
+    # first commits; the second then reads the updated
+    # `pickup_started_at` and returns `pickup_already_started`
+    # cleanly.
+    Repo.transaction(fn ->
+      case Repo.one(
+             from(m in ManufacturingOrder,
+               where: m.id == ^mo.id,
+               lock: "FOR UPDATE"
+             )
+           ) do
+        nil ->
+          Repo.rollback(:mo_not_found)
 
-      not is_nil(mo.pickup_started_at) and is_nil(mo.pickup_completed_at) ->
-        {:error, :pickup_already_started}
+        %ManufacturingOrder{} = fresh ->
+          cond do
+            is_nil(fresh.released_to_warehouse_at) ->
+              Repo.rollback(:not_released)
 
-      not is_nil(mo.pickup_completed_at) ->
-        {:error, :pickup_already_completed}
+            not is_nil(fresh.pickup_started_at) and
+                is_nil(fresh.pickup_completed_at) ->
+              Repo.rollback(:pickup_already_started)
 
-      true ->
-        # Cross-MO trolley guard at start time too — another picker
-        # may have grabbed a shared lot AFTER this MO was released.
-        case ensure_no_booked_lots_on_trolley(mo) do
-          :ok ->
-            apply_pickup_changeset(actor, mo, %{
-              "pickup_started_at" => now(),
-              "pickup_started_by_id" => actor.id,
-              "updated_by_id" => actor.id
-            })
+            not is_nil(fresh.pickup_completed_at) ->
+              Repo.rollback(:pickup_already_completed)
 
-          {:error, :lots_on_trolley, list} ->
-            {:error, :lots_on_trolley, list}
-        end
+            true ->
+              # Cross-MO trolley guard at start time too — another
+              # picker may have grabbed a shared lot AFTER this MO
+              # was released.
+              case ensure_no_booked_lots_on_trolley(fresh) do
+                :ok ->
+                  case apply_pickup_changeset(actor, fresh, %{
+                         "pickup_started_at" => now(),
+                         "pickup_started_by_id" => actor.id,
+                         "updated_by_id" => actor.id
+                       }) do
+                    {:ok, updated} -> updated
+                    {:error, reason} -> Repo.rollback(reason)
+                  end
+
+                {:error, :lots_on_trolley, list} ->
+                  Repo.rollback({:lots_on_trolley, list})
+              end
+          end
+      end
+    end)
+    |> case do
+      {:ok, updated} -> {:ok, updated}
+      {:error, {:lots_on_trolley, list}} -> {:error, :lots_on_trolley, list}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -10415,6 +10447,7 @@ defmodule Backend.Production do
 
     with :ok <- ensure_booking_not_closed(booking),
          :ok <- ensure_output_qc_done(booking),
+         :ok <- ensure_source_inspection_not_held(booking),
          {:ok, remaining} <- parse_remaining_qty(attrs, on_hand),
          consumed = Decimal.sub(on_hand, remaining),
          :ok <- ensure_photo_or_skip(attrs),
@@ -10451,7 +10484,7 @@ defmodule Backend.Production do
       result =
         Repo.transaction(fn ->
           with {:ok, updated_booking} <-
-                 stamp_booking_consumed(actor, booking, consumed),
+                 stamp_booking_consumed(actor, booking, consumed, route_choice),
                :ok <-
                  apply_booking_movement(
                    actor,
@@ -10460,6 +10493,13 @@ defmodule Backend.Production do
                    remaining,
                    dest_cell,
                    photo_meta
+                 ),
+               :ok <-
+                 maybe_stamp_placement_kept_at(
+                   booking.stock_lot_id,
+                   remaining,
+                   route_choice,
+                   booking_mo
                  ),
                :ok <-
                  stamp_closeout_completed_or_rollback(
@@ -10542,6 +10582,34 @@ defmodule Backend.Production do
 
   defp ensure_booking_not_closed(%ManufacturingOrderBooking{consumed_at: nil}), do: :ok
   defp ensure_booking_not_closed(_), do: {:error, :already_closed}
+
+  # Compliance defence (BRCGS 3.5.1 / FSSC 22000 / GFSI): a lot whose
+  # source goods-in inspection was signed off with
+  # ``quality_decision = "hold"`` should never be consumed downstream.
+  # In principle the ingredient booking picker + release gates
+  # already exclude non-``available`` lots (a lot from a held
+  # inspection stays in ``quarantine`` status). This is the belt-and-
+  # suspenders check at closeout — if the ingredient somehow got
+  # consumed through a hole in an upstream gate, refuse the closeout
+  # so the operator has to escalate + investigate rather than the
+  # consumption silently being recorded.
+  defp ensure_source_inspection_not_held(%ManufacturingOrderBooking{stock_lot_id: nil}), do: :ok
+
+  defp ensure_source_inspection_not_held(%ManufacturingOrderBooking{stock_lot_id: lot_id}) do
+    query =
+      from(l in Backend.Stock.Lot,
+        join: i in Backend.GoodsIn.Inspection,
+        on: i.id == l.goods_in_inspection_id,
+        where: l.id == ^lot_id and i.quality_decision == "hold",
+        select: i.id,
+        limit: 1
+      )
+
+    case Repo.one(query) do
+      nil -> :ok
+      _held_inspection_id -> {:error, :source_inspection_on_hold}
+    end
+  end
 
   # Compliance gate (BRCGS 3.5.1 / FSSC 22000): booking-level closeout
   # records what was consumed AND routes leftover ingredients to a
@@ -10703,17 +10771,39 @@ defmodule Backend.Production do
     end
   end
 
-  defp stamp_booking_consumed(%User{} = actor, %ManufacturingOrderBooking{} = booking, consumed) do
+  defp stamp_booking_consumed(
+         %User{} = actor,
+         %ManufacturingOrderBooking{} = booking,
+         consumed,
+         route_choice \\ nil
+       ) do
     before = booking_snapshot(booking)
 
-    booking
-    |> ManufacturingOrderBooking.changeset(%{
+    # ``route_choice`` is the operator's explicit intent from the
+    # closeout screen — ``:keep_in_place`` when they parked the
+    # leftover at production_feed for a downstream MO, or
+    # ``:send_to_warehouse`` / ``:auto`` when they returned it. Nil
+    # means the caller isn't a closeout path (legacy callers,
+    # internal auto-consumes) and we don't stamp anything.
+    base_attrs = %{
       "consumed_quantity" => consumed,
       "consumed_at" => now(),
       "consumed_by_id" => actor.id,
       "status" => "consumed",
       "updated_by_id" => actor.id
-    })
+    }
+
+    attrs =
+      case route_choice do
+        rc when rc in [:keep_in_place, :send_to_warehouse, :auto] ->
+          Map.put(base_attrs, "route_choice", Atom.to_string(rc))
+
+        _ ->
+          base_attrs
+      end
+
+    booking
+    |> ManufacturingOrderBooking.changeset(attrs)
     |> Repo.update()
     |> case do
       {:ok, updated} ->
@@ -10731,6 +10821,48 @@ defmodule Backend.Production do
         err
     end
   end
+
+  # After a closeout stamps the leftover at production_feed via the
+  # ``:keep_in_place`` route choice, stamp the leftover placement's
+  # ``kept_at`` so the "stranded lots at production" dashboard can
+  # find it later (query: kept_at IS NOT NULL AND kept_at < now() -
+  # N hours AND no live booking on this lot). No-ops when:
+  #   * route_choice != :keep_in_place — nothing kept, nothing to stamp.
+  #   * remaining <= 0 — the operator consumed everything, no leftover.
+  #   * mo.production_cell_id is nil — the MO has no production cell
+  #     bound (edge case, should not happen at closeout time but
+  #     guarded so a bad state can't fail the transaction).
+  #   * no placement exists at that cell for this lot — the movement
+  #     path drained everything or a race removed it; nothing to mark.
+  defp maybe_stamp_placement_kept_at(_lot_id, _remaining, route_choice, _mo)
+       when route_choice != :keep_in_place,
+       do: :ok
+
+  defp maybe_stamp_placement_kept_at(lot_id, remaining, :keep_in_place, %ManufacturingOrder{production_cell_id: cell_id})
+       when is_integer(cell_id) do
+    if Decimal.compare(remaining, Decimal.new(0)) == :gt do
+      case Repo.get_by(Backend.Stock.Placement,
+             stock_lot_id: lot_id,
+             storage_cell_id: cell_id
+           ) do
+        %Backend.Stock.Placement{} = placement ->
+          placement
+          |> Ecto.Changeset.change(%{kept_at: now()})
+          |> Repo.update()
+          |> case do
+            {:ok, _} -> :ok
+            {:error, cs} -> {:error, {:kept_at_stamp_failed, cs}}
+          end
+
+        nil ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_stamp_placement_kept_at(_lot_id, _remaining, _route_choice, _mo), do: :ok
 
   # Closeout model — the operator types "remaining" (post-run lot
   # weight); the system back-computes `consumed = on_hand - remaining`
