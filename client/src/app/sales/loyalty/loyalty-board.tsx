@@ -25,7 +25,9 @@ import {
   Trophy,
   Users,
 } from "lucide-react";
-import { formatDistanceToNowStrict } from "date-fns";
+// (formatDistanceToNowStrict from date-fns removed — pulled the whole
+// library into the client bundle for a single string helper. Inline
+// replacement below is ~10 lines + zero dependency cost.)
 import { Badge } from "@/components/ui/badge-mini";
 import { Button } from "@/components/ui/button";
 import type {
@@ -515,9 +517,7 @@ function LedgerRow({
             </span>
           )}
           {" · "}
-          {formatDistanceToNowStrict(new Date(occurredAt), {
-            addSuffix: true,
-          })}
+          {formatRelativeTime(occurredAt)}
         </p>
       </div>
       <div className={`text-right font-mono text-sm font-semibold ${colorClass}`}>
@@ -532,4 +532,48 @@ function LedgerRow({
       </div>
     </li>
   );
+}
+
+/**
+ * Tiny relative-time helper — replaces `date-fns`'s
+ * `formatDistanceToNowStrict({ addSuffix: true })` for the ledger
+ * row's "N minutes ago" line without pulling ~28 KB of date-fns into
+ * the client bundle for a single call site. Bucketed on the same
+ * boundaries date-fns uses (minute / hour / day / month / year).
+ */
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const diffMs = Date.now() - then;
+  const past = diffMs >= 0;
+  const abs = Math.abs(diffMs);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const month = 30 * day;
+  const year = 365 * day;
+
+  let value: number;
+  let unit: string;
+  if (abs < minute) {
+    value = Math.max(1, Math.round(abs / 1000));
+    unit = value === 1 ? "second" : "seconds";
+  } else if (abs < hour) {
+    value = Math.round(abs / minute);
+    unit = value === 1 ? "minute" : "minutes";
+  } else if (abs < day) {
+    value = Math.round(abs / hour);
+    unit = value === 1 ? "hour" : "hours";
+  } else if (abs < month) {
+    value = Math.round(abs / day);
+    unit = value === 1 ? "day" : "days";
+  } else if (abs < year) {
+    value = Math.round(abs / month);
+    unit = value === 1 ? "month" : "months";
+  } else {
+    value = Math.round(abs / year);
+    unit = value === 1 ? "year" : "years";
+  }
+
+  return past ? `${value} ${unit} ago` : `in ${value} ${unit}`;
 }

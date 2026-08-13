@@ -75,6 +75,18 @@ defmodule BackendWeb.Plugs.RateLimit do
 
   defp identifier_for(conn, :ip), do: client_ip(conn)
 
+  # ``:user`` — key on the authenticated actor's id. Only valid after
+  # the RequireAuth plug has run (i.e. inside authenticated pipelines).
+  # Falls back to the client IP when ``current_user`` isn't set so a
+  # misapplied plug doesn't crash mid-request; still keeps a floor of
+  # protection.
+  defp identifier_for(conn, :user) do
+    case conn.assigns[:current_user] do
+      %{id: id} -> "user:#{id}"
+      _ -> "user_ip:#{client_ip(conn)}"
+    end
+  end
+
   defp identifier_for(conn, {:param, param}) do
     value =
       conn.body_params
