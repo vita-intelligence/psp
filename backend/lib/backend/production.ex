@@ -11858,33 +11858,101 @@ defmodule Backend.Production do
           bookings == [] ->
             :ok
 
-          Enum.any?(bookings, fn b ->
-            is_nil(b.picked_at) or is_nil(b.received_at)
-          end) ->
-            :ok
+          # Self-heal: any booking whose lot is ALREADY inside a
+          # production_facility warehouse (child MO's output lot on
+          # a rnd / production_feed / dispatch cell) doesn't need a
+          # physical pickup ceremony. Stamp its ``picked_at`` +
+          # ``received_at`` right here so the "all bookings
+          # delivered?" check below passes and the pickup step
+          # collapses to a no-op.
+          #
+          # Was previously assumed to be pre-stamped by
+          # ``insert_auto_booking`` at child-finish time — but any
+          # code path that clears those stamps (manual DB revert,
+          # historical bookings created before that logic landed,
+          # ...) would fall through into the "physical pickup
+          # needed" branch and force the operator to walk the
+          # pickup queue for a lot already sitting in production.
+          not Enum.all?(bookings, &booking_delivered?/1) ->
+            :ok = heal_delivered_bookings(actor, bookings)
+
+            case list_pickup_bookings(parent) do
+              [] ->
+                :ok
+
+              refreshed ->
+                if Enum.all?(refreshed, &booking_delivered?/1) do
+                  finalise_auto_pickup(actor, parent, refreshed)
+                else
+                  :ok
+                end
+            end
 
           true ->
-            derived_cell_id = derive_pickup_cell_id(bookings)
-
-            if derived_cell_id do
-              now = now()
-
-              apply_run_changeset(actor, parent, %{
-                "pickup_started_at" => now,
-                "pickup_completed_at" => now,
-                "pickup_started_by_id" => actor.id,
-                "pickup_completed_by_id" => actor.id,
-                "production_cell_id" => derived_cell_id,
-                "updated_by_id" => actor.id
-              })
-              |> case do
-                {:ok, _} -> :ok
-                _ -> :ok
-              end
-            else
-              :ok
-            end
+            finalise_auto_pickup(actor, parent, bookings)
         end
+    end
+  end
+
+  defp booking_delivered?(%ManufacturingOrderBooking{picked_at: p, received_at: r}) do
+    not is_nil(p) and not is_nil(r)
+  end
+
+  # Stamp ``picked_at`` + ``received_at`` on any booking whose lot is
+  # already inside a production_facility warehouse (any cell). Mirrors
+  # the auto-delivered branch in ``insert_auto_booking`` so a booking
+  # whose lot skipped that path (or had its stamps cleared) still
+  # gets the "no physical pickup needed" treatment when the parent
+  # is released. Silent on individual failures — best-effort heal.
+  defp heal_delivered_bookings(%User{} = actor, bookings) when is_list(bookings) do
+    now = now()
+
+    Enum.each(bookings, fn b ->
+      if not booking_delivered?(b) and b.stock_lot_id &&
+           lot_at_production_facility?(b.stock_lot_id) do
+        b
+        |> Ecto.Changeset.change(%{
+          picked_at: now,
+          picked_by_id: actor.id,
+          received_at: now,
+          received_by_id: actor.id,
+          updated_by_id: actor.id
+        })
+        |> Repo.update()
+      end
+    end)
+
+    :ok
+  end
+
+  defp finalise_auto_pickup(%User{} = actor, %ManufacturingOrder{} = parent, bookings) do
+    derived_cell_id = derive_pickup_cell_id(bookings)
+
+    if derived_cell_id do
+      now = now()
+
+      # MUST use ``apply_pickup_changeset`` (not ``run_changeset``).
+      # ``run_changeset`` only casts status / actual_start /
+      # actual_finish / quantity_produced / produced_lot_id, so the
+      # pickup + production_cell fields we pass here would be
+      # silently dropped by Ecto's cast filter — the update would
+      # "succeed" with zero changes and pickup_completed_at would
+      # stay nil, forcing the operator into the pickup queue for an
+      # ingredient already sitting on their production cell.
+      apply_pickup_changeset(actor, parent, %{
+        "pickup_started_at" => now,
+        "pickup_completed_at" => now,
+        "pickup_started_by_id" => actor.id,
+        "pickup_completed_by_id" => actor.id,
+        "production_cell_id" => derived_cell_id,
+        "updated_by_id" => actor.id
+      })
+      |> case do
+        {:ok, _} -> :ok
+        _ -> :ok
+      end
+    else
+      :ok
     end
   end
 
