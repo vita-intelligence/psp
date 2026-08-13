@@ -167,7 +167,7 @@ export function CloseoutFlow({
   // overrides so the lot moves to a dispatch cell as if it weren't
   // reserved — e.g. QC hold, external inspection, or the operator
   // just wants it off production for logistics.
-  const [outputRouteChoice, setOutputRouteChoice] = useState<
+  const [routeChoice, setRouteChoice] = useState<
     "keep" | "ship"
   >("keep");
   const [pending, startTransition] = useTransition();
@@ -239,7 +239,13 @@ export function CloseoutFlow({
     setCellPhase("directions");
     setPhotoUrl(null);
     setSkipPhotoReason("");
-    setOutputRouteChoice("keep");
+    // Default the route choice per item kind:
+    //   * outputs default to Keep — reserved outputs almost always
+    //     stay in place for the downstream MO.
+    //   * bookings default to Ship — leftover typically goes back to
+    //     warehouse; Keep is the operator-driven exception when
+    //     another MO is queued up to use the same ingredient.
+    setRouteChoice(item.kind === "output" ? "keep" : "ship");
     setErrorDetail(null);
     setStep({ kind: "scan_lot", itemKey: item.key });
   }
@@ -251,7 +257,7 @@ export function CloseoutFlow({
     setCellPhase("directions");
     setPhotoUrl(null);
     setSkipPhotoReason("");
-    setOutputRouteChoice("keep");
+    setRouteChoice("keep");
     setErrorDetail(null);
   }
 
@@ -302,13 +308,16 @@ export function CloseoutFlow({
         return;
       }
     }
-    const hasReservation =
-      activeItem.kind === "output" &&
-      (activeItem.reservedBy ?? []).length > 0;
-    // "Reserved & operator picked Keep" is the only branch that skips
-    // the dispatch scan. If the operator chose Ship-to-warehouse, we
-    // walk the same scan-a-dispatch-cell path as an unreserved lot.
-    const keepInPlace = hasReservation && outputRouteChoice === "keep";
+    // Whether the operator sees the Keep/Move radio:
+    //   * Output lots — when downstream MOs have booked this lot.
+    //   * Input bookings — when there IS leftover to route. BE gates
+    //     the actual keep-in-place decision on whether a live claim
+    //     exists (returns :not_reserved if not).
+    const showsRouteChoice =
+      (activeItem.kind === "output" &&
+        (activeItem.reservedBy ?? []).length > 0) ||
+      (activeItem.kind === "booking" && remaining > 0);
+    const keepInPlace = showsRouteChoice && routeChoice === "keep";
     if (
       !keepInPlace &&
       (activeItem.kind === "output" || remaining > 0) &&
@@ -328,16 +337,23 @@ export function CloseoutFlow({
           activeItem.bookingUuid!,
           {
             remaining_qty: remainingQty,
-            scanned_cell_uuid: targetCell?.uuid ?? null,
+            scanned_cell_uuid: keepInPlace ? null : targetCell?.uuid ?? null,
             photo_url: photoUrl,
             skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
+            route_choice: showsRouteChoice
+              ? routeChoice === "keep"
+                ? "keep_in_place"
+                : "send_to_warehouse"
+              : "auto",
           },
         );
         if (res.ok) {
           toast.success(
-            remaining > 0
-              ? "Consumed + remainder handed off"
-              : "Fully consumed",
+            remaining === 0
+              ? "Fully consumed"
+              : keepInPlace
+                ? "Consumed — leftover kept at production feed"
+                : "Consumed + remainder handed off",
           );
           setBookings((prev) => prev.filter((b) => b.uuid !== res.booking.uuid));
           backToOverview();
@@ -353,8 +369,8 @@ export function CloseoutFlow({
           scanned_cell_uuid: targetCell?.uuid ?? null,
           photo_url: photoUrl,
           skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
-          route_choice: hasReservation
-            ? outputRouteChoice === "keep"
+          route_choice: showsRouteChoice
+            ? routeChoice === "keep"
               ? "keep_in_place"
               : "send_to_warehouse"
             : "auto",
@@ -363,7 +379,7 @@ export function CloseoutFlow({
           toast.success(
             keepInPlace
               ? "Left in place — reserved for downstream MO"
-              : hasReservation
+              : showsRouteChoice
                 ? "Sent to warehouse (reservation overridden)"
                 : "Output handed off to dispatch",
           );
@@ -727,6 +743,70 @@ export function CloseoutFlow({
                   );
                 })()}
               </div>
+
+              {/* Route choice for the LEFTOVER after partial consume.
+                  Mirrors the output-lot Keep/Move radio so bookings
+                  with a reserved-elsewhere lot don't force the
+                  operator on a wasted move-then-return trip. Shown
+                  only when the operator's typed a non-zero remaining;
+                  BE gates the actual keep-in-place decision on
+                  whether a live claim exists (returns :not_reserved
+                  otherwise). */}
+              {(() => {
+                const remaining = Number(remainingQty);
+                if (!Number.isFinite(remaining) || remaining <= 0) return null;
+                return (
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Route the {formatCompanyNumber(remaining, companyDateFormat, { maxFractionDigits: 10 })} {activeItem.uomSymbol} leftover
+                    </p>
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => setRouteChoice("ship")}
+                        className={cn(
+                          "w-full rounded-md border px-3 py-2.5 text-left text-xs transition",
+                          routeChoice === "ship"
+                            ? "border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/40"
+                            : "border-border/60 bg-background hover:bg-muted/40",
+                        )}
+                      >
+                        <p className="font-semibold text-foreground">
+                          Send back to warehouse{" "}
+                          <span className="text-[10px] font-normal text-muted-foreground uppercase tracking-wider">
+                            · default
+                          </span>
+                        </p>
+                        <p className="mt-0.5 text-muted-foreground">
+                          Scan a dispatch cell next. Warehouse
+                          worker walks it back to storage via
+                          return-pickup.
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRouteChoice("keep")}
+                        className={cn(
+                          "w-full rounded-md border px-3 py-2.5 text-left text-xs transition",
+                          routeChoice === "keep"
+                            ? "border-sky-500 bg-sky-500/10 ring-2 ring-sky-500/40"
+                            : "border-border/60 bg-background hover:bg-muted/40",
+                        )}
+                      >
+                        <p className="font-semibold text-foreground">
+                          Keep at production feed
+                        </p>
+                        <p className="mt-0.5 text-muted-foreground">
+                          Leftover stays here for the next MO that
+                          needs the same ingredient. Only works when
+                          another live MO has this lot booked —
+                          otherwise pick Send back instead.
+                        </p>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           ) : (activeItem.reservedBy ?? []).length > 0 ? (
             <div className="space-y-2">
@@ -745,10 +825,10 @@ export function CloseoutFlow({
               <div className="space-y-2">
                 <button
                   type="button"
-                  onClick={() => setOutputRouteChoice("keep")}
+                  onClick={() => setRouteChoice("keep")}
                   className={cn(
                     "w-full rounded-md border px-3 py-2.5 text-left text-xs transition",
-                    outputRouteChoice === "keep"
+                    routeChoice === "keep"
                       ? "border-sky-500 bg-sky-500/10 ring-2 ring-sky-500/40"
                       : "border-border/60 bg-background hover:bg-muted/40",
                   )}
@@ -767,10 +847,10 @@ export function CloseoutFlow({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setOutputRouteChoice("ship")}
+                  onClick={() => setRouteChoice("ship")}
                   className={cn(
                     "w-full rounded-md border px-3 py-2.5 text-left text-xs transition",
-                    outputRouteChoice === "ship"
+                    routeChoice === "ship"
                       ? "border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/40"
                       : "border-border/60 bg-background hover:bg-muted/40",
                   )}
@@ -881,14 +961,19 @@ export function CloseoutFlow({
               type="button"
               onClick={() => {
                 const remaining = Number(remainingQty);
-                const hasReservation =
-                  activeItem.kind === "output" &&
-                  (activeItem.reservedBy ?? []).length > 0;
+                const showsRouteChoice =
+                  (activeItem.kind === "output" &&
+                    (activeItem.reservedBy ?? []).length > 0) ||
+                  (activeItem.kind === "booking" &&
+                    !Number.isNaN(remaining) &&
+                    remaining > 0);
                 const keepInPlace =
-                  hasReservation && outputRouteChoice === "keep";
+                  showsRouteChoice && routeChoice === "keep";
                 if (keepInPlace) {
-                  // Operator picked Keep for a reserved lot — no
-                  // dispatch scan needed, BE short-circuits.
+                  // Operator picked Keep — no dispatch scan needed,
+                  // BE short-circuits. Same path for output OR booking
+                  // leftover (a live claim keeps the leftover at feed
+                  // for the next MO to consume).
                   submit();
                 } else if (
                   activeItem.kind === "output" ||
@@ -913,26 +998,33 @@ export function CloseoutFlow({
               disabled={
                 pending ||
                 photoUploading ||
-                // Keep-in-place (reserved lot, operator chose Keep)
-                // skips the photo-or-reason requirement since no
-                // movement is being recorded. BE mirrors this by
-                // short-circuiting ``ensure_photo_or_skip``.
+                // Keep-in-place (operator chose Keep for a reserved
+                // output OR a booking-with-leftover) skips the
+                // photo-or-reason requirement since no movement is
+                // being recorded. BE mirrors this by short-circuiting
+                // ``ensure_photo_or_skip``.
                 (!(
-                  activeItem.kind === "output" &&
-                  (activeItem.reservedBy ?? []).length > 0 &&
-                  outputRouteChoice === "keep"
+                  ((activeItem.kind === "output" &&
+                    (activeItem.reservedBy ?? []).length > 0) ||
+                    (activeItem.kind === "booking" &&
+                      Number(remainingQty) > 0)) &&
+                  routeChoice === "keep"
                 ) &&
                   !photoUrl &&
                   !skipPhotoReason)
               }
             >
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
-              {activeItem.kind === "output" &&
-              (activeItem.reservedBy ?? []).length > 0 &&
-              outputRouteChoice === "keep" ? (
+              {((activeItem.kind === "output" &&
+                (activeItem.reservedBy ?? []).length > 0) ||
+                (activeItem.kind === "booking" &&
+                  Number(remainingQty) > 0)) &&
+              routeChoice === "keep" ? (
                 <>
                   <Check className="mr-1.5 size-4" />
-                  Leave in place — reserved
+                  {activeItem.kind === "output"
+                    ? "Leave in place — reserved"
+                    : "Consume + keep leftover here"}
                 </>
               ) : activeItem.kind === "output" ||
                 Number(remainingQty) > 0 ? (

@@ -17,7 +17,8 @@ export interface CloseBookingInput {
   /** Decimal string. Default = "0" (fully consumed). */
   remaining_qty: string;
   /** Dispatch cell uuid the operator scanned. Required when
-   *  remaining_qty > 0; null otherwise. */
+   *  remaining_qty > 0 AND route_choice ≠ "keep_in_place"; null
+   *  otherwise (fully consumed OR keep-in-place chosen). */
   scanned_cell_uuid: string | null;
   /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
    *  must be set — the closeout panel gates the submit CTA on it. */
@@ -26,6 +27,18 @@ export interface CloseBookingInput {
    *  packaging hides the labels, etc.). Required when `photo_url` is
    *  null. Mirrors return-pickup's photo-or-skip pattern. */
   skip_photo_reason: string | null;
+  /** Operator-supplied routing decision for the LEFTOVER after
+   *  partial consume. Only meaningful when ``remaining_qty > 0``:
+   *  - `"auto"` / omitted — default. Move leftover to a scanned
+   *    dispatch cell (current behaviour, warehouse eventually picks
+   *    it back).
+   *  - `"keep_in_place"` — leftover stays at the production feed
+   *    cell. BE rejects with ``:not_reserved`` when no live
+   *    downstream MO has the lot booked (would otherwise strand
+   *    the ingredient at production with nothing coming to consume
+   *    it).
+   *  - `"send_to_warehouse"` — same as ``"auto"``, explicit form. */
+  route_choice?: "auto" | "keep_in_place" | "send_to_warehouse";
 }
 
 export type CloseoutBookingResult =
@@ -64,6 +77,8 @@ export async function closeoutBookingAction(
   if (input.scanned_cell_uuid) body.scanned_cell_uuid = input.scanned_cell_uuid;
   if (input.photo_url) body.photo_url = input.photo_url;
   if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
+  if (input.route_choice && input.route_choice !== "auto")
+    body.route_choice = input.route_choice;
 
   try {
     const { booking } = await api<{ booking: ManufacturingOrderBooking }>(

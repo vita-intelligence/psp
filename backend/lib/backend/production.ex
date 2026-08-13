@@ -10225,18 +10225,29 @@ defmodule Backend.Production do
 
     booking_mo = Repo.get(ManufacturingOrder, booking.manufacturing_order_id)
     accepted_purposes = closeout_dest_purposes(booking_mo)
+    route_choice = normalise_route_choice(attrs)
 
     with :ok <- ensure_booking_not_closed(booking),
          :ok <- ensure_output_qc_done(booking),
          {:ok, remaining} <- parse_remaining_qty(attrs, on_hand),
          consumed = Decimal.sub(on_hand, remaining),
          :ok <- ensure_photo_or_skip(attrs),
+         # Route decision for the leftover, mirroring the output-lot
+         # ``route_choice`` shape:
+         #   * ``:keep_in_place`` — leftover stays at the production
+         #     feed cell (skip the dispatch-cell scan). Useful when the
+         #     operator knows another live MO booked against the same
+         #     lot is about to consume it.
+         #   * ``:send_to_warehouse`` / ``:auto`` / default — normal
+         #     move-to-dispatch flow, requires a scanned dispatch cell.
          {:ok, dest_cell} <-
-           maybe_resolve_dispatch_cell(
+           resolve_booking_dest_cell(
              actor.company_id,
              attrs,
              remaining,
-             accepted_purposes
+             accepted_purposes,
+             route_choice,
+             booking.stock_lot_id
            ) do
       photo_meta = %{
         "photo_url" => attrs["photo_url"],
@@ -10394,6 +10405,66 @@ defmodule Backend.Production do
   end
 
   defp parse_non_negative_decimal(_), do: :error
+
+  # Booking closeout dispatch resolver. Wraps ``maybe_resolve_dispatch_cell``
+  # with the operator's ``route_choice`` override:
+  #
+  #   * ``:keep_in_place`` — leftover stays at the production feed
+  #     cell. Skip dispatch cell resolution; ``move_feed_leftover_to_dispatch``
+  #     will short-circuit on ``dest_cell == nil`` and leave the
+  #     placement in place. Only legal when a live claim exists on
+  #     the lot (non-cancelled, non-draft MO with a requested
+  #     booking) — otherwise the ingredient would sit at production
+  #     with nothing coming to consume it.
+  #   * anything else — normal dispatch move.
+  defp resolve_booking_dest_cell(
+         company_id,
+         _attrs,
+         remaining,
+         _accepted_purposes,
+         :keep_in_place,
+         lot_id
+       ) do
+    # Keep-in-place is meaningless when nothing's left OR when no
+    # live claim exists. When nothing's left we fall through to the
+    # zero-case (no dest needed); when no claim exists we return
+    # ``:not_reserved`` so the operator sees a clear error rather
+    # than silently stranding the ingredient at production.
+    cond do
+      Decimal.compare(remaining, Decimal.new(0)) == :eq ->
+        {:ok, nil}
+
+      is_integer(lot_id) and not lot_has_live_downstream_claim?(company_id, lot_id) ->
+        {:error, :not_reserved}
+
+      true ->
+        {:ok, nil}
+    end
+  end
+
+  defp resolve_booking_dest_cell(company_id, attrs, remaining, accepted_purposes, _route, _lot_id) do
+    maybe_resolve_dispatch_cell(company_id, attrs, remaining, accepted_purposes)
+  end
+
+  # Does any live (non-cancelled, non-draft) MO have a requested +
+  # not-consumed booking on this lot? Mirrors return-pickup's
+  # ``lots_committed_to_open_bookings`` filter so the "keep in place"
+  # gate lines up with what return-pickup would honor as a live
+  # claim.
+  defp lot_has_live_downstream_claim?(company_id, lot_id) do
+    Repo.exists?(
+      from(b in ManufacturingOrderBooking,
+        join: mo in ManufacturingOrder,
+        on: mo.id == b.manufacturing_order_id,
+        where:
+          b.company_id == ^company_id and
+            b.stock_lot_id == ^lot_id and
+            b.status == "requested" and
+            is_nil(b.consumed_at) and
+            mo.status not in ["cancelled", "draft"]
+      )
+    )
+  end
 
   # When the operator's leaving 0 behind, no destination is needed —
   # the placement just drops to 0. Anything > 0 must land in a real,
