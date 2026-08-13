@@ -53,7 +53,11 @@ import { FieldEditingIndicator } from "@/components/realtime/field-editing-indic
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import type { JoinError } from "@/lib/realtime/use-live-form";
-import { formatCompanyDate, formatCompanyMoney } from "@/lib/format/company";
+import {
+  formatCompanyDate,
+  formatCompanyMoney,
+  formatCompanyNumber,
+} from "@/lib/format/company";
 import { findCountry } from "@/lib/iso/countries";
 import { cn } from "@/lib/utils";
 import {
@@ -722,59 +726,10 @@ export function ShipmentDetail({
               </Field>
             </div>
           ) : (
-            <div className="grid gap-3 text-sm sm:grid-cols-2">
-              <DetailRow
-                label="Recipient"
-                value={shipment.recipient_name ?? "—"}
-              />
-              <DetailRow
-                label="Country"
-                value={countryLabel(shipment.ship_to_country)}
-              />
-              <DetailRow
-                label="Delivery address"
-                value={
-                  shipment.ship_to_address ? (
-                    <span className="whitespace-pre-line">
-                      {shipment.ship_to_address}
-                    </span>
-                  ) : (
-                    "—"
-                  )
-                }
-                span={2}
-              />
-              <DetailRow
-                label="Planned ship time"
-                value={
-                  shipment.planned_ship_at
-                    ? new Date(shipment.planned_ship_at).toLocaleString()
-                    : "—"
-                }
-              />
-              <DetailRow
-                label="Qty"
-                value={
-                  <span className="font-mono">
-                    {shipment.qty}
-                    {shipment.stock_lot?.unit_symbol
-                      ? ` ${shipment.stock_lot.unit_symbol}`
-                      : ""}
-                  </span>
-                }
-              />
-              <DetailRow
-                label="Notes"
-                value={
-                  shipment.notes ? (
-                    <span className="whitespace-pre-line">{shipment.notes}</span>
-                  ) : (
-                    "—"
-                  )
-                }
-                span={2}
-              />
-            </div>
+            <DeliveryReadView
+              shipment={shipment}
+              companyDefaults={companyDefaults}
+            />
           )}
         </CardContent>
       </Card>
@@ -1110,6 +1065,130 @@ function Field({
         {label}
       </Label>
       {children}
+    </div>
+  );
+}
+
+/**
+ * Read-mode of the Delivery card. Splits the paperwork into three
+ * visual blocks the way the shipping coordinator actually reads it:
+ *
+ *   1. Ship-to slab — recipient / address / country stacked like a
+ *      shipping label. The address is the star of the card, so it
+ *      gets its own generous slab with the country underneath.
+ *   2. Schedule row — planned ship time + qty, two compact tiles.
+ *      Small numbers, no muted-heavy chrome.
+ *   3. Notes — full width, only rendered when non-empty (an empty
+ *      row was the loudest "nothing here" signal in the old grid).
+ *
+ * Uses company formatters for date + qty so the values match the
+ * rest of PSP instead of the browser's US-defaults ``toLocaleString``.
+ */
+function DeliveryReadView({
+  shipment,
+  companyDefaults,
+}: {
+  shipment: Shipment;
+  companyDefaults: CompanyDefaults | null;
+}) {
+  const country = shipment.ship_to_country
+    ? countryLabel(shipment.ship_to_country)
+    : null;
+  const recipient = shipment.recipient_name?.trim();
+  const address = shipment.ship_to_address?.trim();
+
+  // Company-formatted date + explicit HH:mm — planned_ship_at is a
+  // datetime, formatCompanyDate only renders the date half.
+  let plannedLabel: string | null = null;
+  if (shipment.planned_ship_at) {
+    const d = new Date(shipment.planned_ship_at);
+    if (!Number.isNaN(d.getTime())) {
+      const time = `${String(d.getHours()).padStart(2, "0")}:${String(
+        d.getMinutes(),
+      ).padStart(2, "0")}`;
+      plannedLabel = `${formatCompanyDate(shipment.planned_ship_at, companyDefaults)} · ${time}`;
+    }
+  }
+
+  const qtyLabel = shipment.qty
+    ? `${formatCompanyNumber(shipment.qty, companyDefaults)}${
+        shipment.stock_lot?.unit_symbol
+          ? ` ${shipment.stock_lot.unit_symbol}`
+          : ""
+      }`
+    : null;
+
+  const notes = shipment.notes?.trim();
+
+  return (
+    <div className="space-y-4">
+      {/* -------- Ship-to slab (address is the hero) -------- */}
+      <div className="rounded-lg border border-border/60 bg-muted/20 p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Ship to
+        </p>
+        {recipient || address || country ? (
+          <div className="mt-2 space-y-0.5 text-sm leading-relaxed">
+            {recipient && (
+              <p className="font-medium text-foreground">{recipient}</p>
+            )}
+            {address && (
+              <p className="whitespace-pre-line text-foreground/85">
+                {address}
+              </p>
+            )}
+            {country && (
+              <p className="text-foreground/85">{country}</p>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm italic text-muted-foreground">
+            No recipient set yet — hit Edit to fill in the paperwork.
+          </p>
+        )}
+      </div>
+
+      {/* -------- Schedule row -------- */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-border/60 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Planned ship time
+          </p>
+          <p
+            className={cn(
+              "mt-1 text-sm tabular-nums",
+              !plannedLabel && "italic text-muted-foreground",
+            )}
+          >
+            {plannedLabel ?? "Not set"}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border/60 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Quantity
+          </p>
+          <p
+            className={cn(
+              "mt-1 text-sm tabular-nums",
+              !qtyLabel && "italic text-muted-foreground",
+            )}
+          >
+            {qtyLabel ?? "Not set"}
+          </p>
+        </div>
+      </div>
+
+      {/* -------- Notes (only when present) -------- */}
+      {notes && (
+        <div className="rounded-lg border border-border/60 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Notes for the truck arrival team
+          </p>
+          <p className="mt-1 whitespace-pre-line text-sm text-foreground/85">
+            {notes}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
