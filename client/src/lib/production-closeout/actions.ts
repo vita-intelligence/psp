@@ -82,15 +82,27 @@ export async function closeoutBookingAction(
 }
 
 export interface CloseOutputInput {
-  /** Null when the output lot has a live downstream reservation —
-   *  the BE short-circuits and leaves the lot in place, so no
-   *  dispatch cell is needed. Required otherwise. */
+  /** Null when the output lot has a live downstream reservation AND
+   *  the operator chose to keep it in place — the BE short-circuits
+   *  and leaves the lot at the production-feed cell. Required
+   *  otherwise (normal dispatch move). */
   scanned_cell_uuid: string | null;
   /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
    *  must be set — gated by the closeout panel. Ignored (and can be
-   *  null) for reserved-in-place outputs since nothing moves. */
+   *  null) for the keep-in-place path since nothing moves. */
   photo_url: string | null;
   skip_photo_reason: string | null;
+  /** Operator-supplied routing decision. Only meaningful for output
+   *  lots that carry a live downstream reservation:
+   *  - `"auto"` / omitted — default. Reserved → keep in place;
+   *    otherwise dispatch move.
+   *  - `"keep_in_place"` — explicit keep (rejected by BE if the lot
+   *    isn't reserved).
+   *  - `"send_to_warehouse"` — force the dispatch move even when
+   *    reservations exist. Used when the operator wants the lot to
+   *    leave production for QC hold / external inspection / any
+   *    other reason not modelled here. */
+  route_choice?: "auto" | "keep_in_place" | "send_to_warehouse";
 }
 
 /** Move a produced output lot off the production-feed cell to the
@@ -108,6 +120,8 @@ export async function closeoutOutputLotAction(
     body.scanned_cell_uuid = input.scanned_cell_uuid;
   if (input.photo_url) body.photo_url = input.photo_url;
   if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
+  if (input.route_choice && input.route_choice !== "auto")
+    body.route_choice = input.route_choice;
 
   try {
     const { lot } = await api<{ lot: { status: string } }>(

@@ -211,6 +211,13 @@ defmodule BackendWeb.ProductionCloseoutController do
           "Output lot is in #{status} — can't dispatch until QC passes it to `available`."
         )
 
+      {:error, :not_reserved} ->
+        unprocessable(
+          conn,
+          "not_reserved",
+          "\"Keep in place\" only applies when the lot is reserved for a downstream MO. This one isn't — scan a dispatch cell instead."
+        )
+
       {:error, :missing_dispatch_cell} ->
         unprocessable(
           conn,
