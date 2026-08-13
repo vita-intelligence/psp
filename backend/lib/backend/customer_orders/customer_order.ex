@@ -226,6 +226,15 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     |> validate_number(:tax_rate, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
     |> validate_number(:shipping_fees, greater_than_or_equal_to: 0)
     |> validate_number(:additional_fees, greater_than_or_equal_to: 0)
+    # Commercial COs are 1-per-formulation-per-company (the partial
+    # unique index scopes it to ``sample_kind = false`` — samples can
+    # share the same formulation across many customer orders). Adding
+    # the constraint here so a race turns into a changeset error the
+    # caller can handle, not a raised ``Ecto.ConstraintError``.
+    |> unique_constraint([:company_id, :npd_formulation_uuid],
+      name: :customer_orders_npd_formulation_uuid_index,
+      message: "already has a customer order for this formulation"
+    )
   end
 
   @doc """
