@@ -58,7 +58,8 @@ defmodule Backend.Mobile do
       incoming_today: count_incoming_today(company_id),
       submitted_inspections: count_submitted_inspections(company_id),
       return_pickup: count_return_pickup_queue(company_id),
-      three_pl_dispatch: count_three_pl_dispatches(company_id)
+      three_pl_dispatch: count_three_pl_dispatches(company_id),
+      dispatch_pickup: count_dispatch_pickup_queue(company_id)
     }
   end
 
@@ -288,6 +289,19 @@ defmodule Backend.Mobile do
   defp count_three_pl_dispatches(company_id) do
     from(d in Backend.ThreePL.Dispatch,
       where: d.company_id == ^company_id and d.status == "pending",
+      select: %{one: 1}
+    )
+    |> capped_count()
+  end
+
+  # Dispatch pickup queue — shipments the coordinator has marked
+  # ``ready``, waiting for the truck to arrive. Uses the same partial
+  # ``shipments_ready_queue_idx`` index the mobile list endpoint uses,
+  # so capped_count answers in a bounded number of index touches even
+  # when the shipments table has millions of historical rows.
+  defp count_dispatch_pickup_queue(company_id) do
+    from(s in Backend.Shipments.Shipment,
+      where: s.company_id == ^company_id and s.status == "ready",
       select: %{one: 1}
     )
     |> capped_count()

@@ -540,6 +540,127 @@ defmodule Backend.Shipments do
     {items, next_cursor}
   end
 
+  @doc """
+  Mobile pickup queue — shipments marked ``ready`` for this tenant,
+  earliest planned-ship first. Keyset paginated on
+  ``(planned_ship_at ASC NULLS LAST, id ASC)`` so a table with
+  millions of rows costs the same per page as an empty one, given
+  the partial ``shipments_ready_queue_idx`` migration.
+
+  Args:
+
+    * ``company_id`` (required) — tenant scope.
+    * ``opts``:
+      * ``:limit`` — page size (default 25, hard cap 100).
+      * ``:cursor`` — opaque encoded cursor from the previous page,
+        or ``nil`` for the first page. Shape: ``"<epoch>|<id>"`` or
+        ``"|<id>"`` when the previous last row had no
+        ``planned_ship_at``.
+      * ``:search`` — free-text filter over recipient / consignment
+        note ref / vehicle registration / lot batch / customer
+        name / ship-to address. Same fields as ``list_shipments``'s
+        needle, so operators build one mental model.
+
+  Returns ``{items, next_cursor_string_or_nil}``. Each item is a
+  fully-preloaded ``%Shipment{}`` — cheap enough at page size 25
+  because the query walks only ``ready`` rows.
+  """
+  def list_ready_for_pickup(company_id, opts \\ []) when is_integer(company_id) do
+    limit = Keyword.get(opts, :limit, 25) |> min(100) |> max(1)
+    cursor = Keyword.get(opts, :cursor)
+    search = Keyword.get(opts, :search)
+
+    q =
+      from(s in Shipment,
+        where: s.company_id == ^company_id and s.status == "ready",
+        preload: [
+          :customer,
+          :customer_order,
+          stock_lot: [:item, :unit_of_measurement, :bailee_customer]
+        ],
+        order_by: [
+          asc_nulls_last: s.planned_ship_at,
+          asc: s.id
+        ]
+      )
+
+    q = apply_ready_cursor(q, cursor)
+
+    q =
+      case search do
+        s when is_binary(s) and s != "" ->
+          like = "%" <> Backend.ListQueries.escape_like(s) <> "%"
+
+          from s in q,
+            left_join: l in assoc(s, :stock_lot),
+            left_join: c in assoc(s, :customer),
+            where:
+              ilike(s.recipient_name, ^like) or
+                ilike(s.consignment_note_ref, ^like) or
+                ilike(s.vehicle_registration, ^like) or
+                ilike(s.ship_to_address, ^like) or
+                ilike(l.supplier_batch_no, ^like) or
+                ilike(c.name, ^like)
+
+        _ ->
+          q
+      end
+
+    rows = Repo.all(from x in q, limit: ^(limit + 1))
+
+    {items, next_cursor} =
+      case Enum.split(rows, limit) do
+        {items, [next | _]} -> {items, encode_ready_cursor(next)}
+        {items, []} -> {items, nil}
+      end
+
+    {items, next_cursor}
+  end
+
+  # Cursor shape: "<unix_epoch_seconds>|<id>" for rows with a
+  # ``planned_ship_at`` (the common case — ``mark_ready`` validates
+  # the field is present, so every ``ready`` row we land ships one),
+  # or "|<id>" for the tail of NULL-planned rows so pagination still
+  # makes forward progress. Callers treat the whole string as opaque.
+  defp encode_ready_cursor(%Shipment{planned_ship_at: %DateTime{} = dt, id: id}) do
+    "#{DateTime.to_unix(dt)}|#{id}"
+  end
+
+  defp encode_ready_cursor(%Shipment{id: id}), do: "|#{id}"
+
+  defp apply_ready_cursor(q, cursor) when is_binary(cursor) and cursor != "" do
+    case String.split(cursor, "|", parts: 2) do
+      ["", id_str] ->
+        case Integer.parse(id_str) do
+          {id, ""} ->
+            # Continuing inside the NULL-planned tail: only rows with
+            # NULL planned_ship_at and a larger id are after us.
+            from s in q, where: is_nil(s.planned_ship_at) and s.id > ^id
+
+          _ ->
+            q
+        end
+
+      [epoch_str, id_str] ->
+        with {epoch, ""} <- Integer.parse(epoch_str),
+             {id, ""} <- Integer.parse(id_str),
+             {:ok, dt} <- DateTime.from_unix(epoch) do
+          from s in q,
+            where:
+              s.planned_ship_at > ^dt or
+                (s.planned_ship_at == ^dt and s.id > ^id) or
+                is_nil(s.planned_ship_at)
+        else
+          _ -> q
+        end
+
+      _ ->
+        q
+    end
+  end
+
+  defp apply_ready_cursor(q, _), do: q
+
   @doc "Fetch by uuid, scoped to company. Preloads everything the FE " <>
          "detail page needs."
   def get_shipment(company_id, uuid) when is_integer(company_id) and is_binary(uuid) do

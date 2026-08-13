@@ -5645,6 +5645,61 @@ defmodule BackendWeb.Payloads do
 
   def shipment(_), do: nil
 
+  @doc """
+  Slim row for the mobile pickup queue (``/m/dispatch``). Skips the
+  heavy dwell / files / actor preloads that the detail page needs —
+  the operator only sees code / recipient / planned time / lot code
+  / quantity / a customer name before tapping through.
+
+  Keep the payload flat + primitive-only so page fetches stay small
+  even on a warehouse with hundreds of ready shipments queued up
+  ahead of a busy dispatch shift.
+  """
+  def shipment_pickup_row(%Backend.Shipments.Shipment{} = s) do
+    lot = if is_map(s.stock_lot), do: s.stock_lot, else: nil
+    item = if lot && is_map(lot.item), do: lot.item, else: nil
+    unit = if lot && is_map(lot.unit_of_measurement), do: lot.unit_of_measurement, else: nil
+    customer = if is_map(s.customer), do: s.customer, else: nil
+
+    %{
+      uuid: s.uuid,
+      code: render_code(s, "shipment"),
+      recipient_name: s.recipient_name,
+      ship_to_city: extract_city(s.ship_to_address),
+      ship_to_country: s.ship_to_country,
+      planned_ship_at: s.planned_ship_at,
+      qty: decimal_to_string(s.qty),
+      unit_symbol: unit && Map.get(unit, :symbol),
+      lot_code: lot && render_code(lot, "stock_lot"),
+      item_name: item && item.name,
+      customer_name: customer && customer.name
+    }
+  end
+
+  def shipment_pickup_row(_), do: nil
+
+  # Ship-to address is a freeform textarea. For the mobile row we
+  # want the last non-postcode line — usually the city — so the
+  # operator scans "London" not the full three-line block. Falls
+  # back to the whole string when we can't identify a city cleanly.
+  defp extract_city(nil), do: nil
+
+  defp extract_city(addr) when is_binary(addr) do
+    lines =
+      addr
+      |> String.split(~r/[\r\n,]/, trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    case lines do
+      [] -> nil
+      [only] -> only
+      _ -> Enum.at(lines, -2) || List.last(lines)
+    end
+  end
+
+  defp extract_city(_), do: nil
+
   @doc "Row shape for a truck-arrival photo."
   def shipment_pickup_file(%Backend.Shipments.ShipmentPickupFile{} = f, %Backend.Shipments.Shipment{} = shipment) do
     %{

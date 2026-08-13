@@ -1290,6 +1290,13 @@ defmodule BackendWeb.Router do
            WarehouseReturnPickupController,
            :abort
 
+      # Dispatch pickup queue — shipments marked ``ready`` by the
+      # coordinator, waiting for the truck to arrive. Keyset-paginated
+      # against the partial ``shipments_ready_queue_idx`` so page cost
+      # stays bounded regardless of table size. Gated by
+      # ``shipments.pickup`` in the controller.
+      get "/dispatch-pickups", MobileDispatchPickupController, :queue
+
     end
 
     # Linked devices — phones/tablets/extra browsers a user has paired

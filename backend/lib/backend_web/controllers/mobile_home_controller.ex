@@ -62,5 +62,6 @@ defmodule BackendWeb.MobileHomeController do
   defp permission_for(:submitted_inspections), do: "goods_in.view"
   defp permission_for(:return_pickup), do: "warehouse.return_pickup"
   defp permission_for(:three_pl_dispatch), do: "three_pl.dispatch_execute"
+  defp permission_for(:dispatch_pickup), do: "shipments.pickup"
   defp permission_for(_), do: nil
 end

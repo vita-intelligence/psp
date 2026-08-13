@@ -26,6 +26,9 @@ export interface MobileHomeCounts {
   submitted_inspections: number;
   return_pickup: number;
   three_pl_dispatch: number;
+  /** Shipments the coordinator has marked ``ready`` — dispatch team's
+   *  pickup queue on ``/m/dispatch``. */
+  dispatch_pickup: number;
 }
 
 export interface MobileHomeCountsPayload {
@@ -46,6 +49,7 @@ const EMPTY: MobileHomeCountsPayload = {
     submitted_inspections: 0,
     return_pickup: 0,
     three_pl_dispatch: 0,
+    dispatch_pickup: 0,
   },
 };
 
