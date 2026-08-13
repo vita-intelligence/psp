@@ -10898,17 +10898,13 @@ defmodule Backend.Production do
     end
   end
 
-  defp maybe_stamp_closeout_completed(_actor, _), do: :ok
-
-  defp maybe_stamp_closeout_completed_by_id(actor, mo_id) when is_integer(mo_id) do
-    case Repo.get(ManufacturingOrder, mo_id) do
-      %ManufacturingOrder{} = mo -> maybe_stamp_closeout_completed(actor, mo)
-      _ -> :ok
-    end
-  end
-
-  defp maybe_stamp_closeout_completed_by_id(_actor, _), do: :ok
-
+  # NB — clause order matters. The ``%ManufacturingOrder{}`` clause
+  # must come BEFORE the ``(_actor, _)`` catch-all. Elixir matches
+  # clauses top-to-bottom, so a catch-all defined first shadows every
+  # later, more-specific clause of the same arity. The bug this fixes:
+  # the whole stamp logic was silently dead code — every call from
+  # ``close_output`` / ``close_booking`` fell into ``:ok`` before ever
+  # checking ``closeout_work_remaining?``.
   defp maybe_stamp_closeout_completed(actor, %ManufacturingOrder{} = mo) do
     cond do
       mo.status != "completed" ->
@@ -10943,6 +10939,20 @@ defmodule Backend.Production do
         :ok
     end
   end
+
+  # Catch-all for nil / other second-arg types (e.g. stale reference,
+  # non-uuid non-struct). Must sit AFTER the ``%ManufacturingOrder{}``
+  # clause above so it doesn't shadow it.
+  defp maybe_stamp_closeout_completed(_actor, _), do: :ok
+
+  defp maybe_stamp_closeout_completed_by_id(actor, mo_id) when is_integer(mo_id) do
+    case Repo.get(ManufacturingOrder, mo_id) do
+      %ManufacturingOrder{} = mo -> maybe_stamp_closeout_completed(actor, mo)
+      _ -> :ok
+    end
+  end
+
+  defp maybe_stamp_closeout_completed_by_id(_actor, _), do: :ok
 
   # Walk to the parent MO (if any) and stamp ``picked_at + received_at``
   # on any booking that points at one of THIS MO's output lots but
