@@ -2000,6 +2000,20 @@ defmodule BackendWeb.Router do
         IntegrationCustomerOrderController,
         :serve_release_document
 
+    # Dispatch snapshot — what the coordinator filled on the shipment
+    # paperwork step + what the operator captured at truck arrival
+    # (carrier, vehicle, driver, checklist, photos). Powers the
+    # "Dispatch" card on the customer portal's sample detail page.
+    # Returns ``dispatch: null`` when no picked_up / delivered
+    # shipment exists yet.
+    get "/customer-orders/:uuid/dispatch",
+        IntegrationCustomerOrderController,
+        :dispatch
+
+    get "/customer-orders/:uuid/dispatch/photos/:file_uuid",
+        IntegrationCustomerOrderController,
+        :serve_dispatch_photo
+
     # NPD proposal-created merge. Fired when a Proposal is drafted on
     # NPD spanning N spec sheets — consolidates the N R&D draft COs
     # into one primary + attaches proposal identity so the wizard

@@ -24,6 +24,7 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
   alias Backend.OrderWizard
   alias Backend.Production.{FinalRelease, FinalReleaseFile, ManufacturingOrder}
   alias Backend.Repo
+  alias Backend.Shipments.{Shipment, ShipmentPickupFile}
 
   plug :require_integration_scope,
        "customer_order:sync:npd"
@@ -44,7 +45,9 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
               :snapshot,
               :invoices,
               :release_documents,
-              :serve_release_document
+              :serve_release_document,
+              :dispatch,
+              :serve_dispatch_photo
             ]
 
   action_fallback BackendWeb.FallbackController
@@ -509,6 +512,197 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
 
       _ ->
         conn |> put_status(:not_found) |> json(%{error: "file_not_found"})
+    end
+  end
+
+  @doc """
+  GET /api/integration/customer-orders/:uuid/dispatch
+
+  Returns the dispatch-confirmation snapshot for this CO's root-MO
+  produced lot — what the coordinator filled on the paperwork step
+  and the operator captured at truck arrival. Powers the "Dispatch"
+  card on the customer portal's sample detail page.
+
+  Response shape:
+
+  .. code-block:: json
+
+      {
+        "dispatch": {
+          "status": "picked_up" | "delivered",
+          "ready_at": "2026-08-13T09:00:00Z",
+          "picked_up_at": "2026-08-13T10:30:00Z",
+          "delivered_at": null,
+          "carrier": "DHL Express",
+          "vehicle_registration": "AB12 CDE",
+          "driver_name": "Alex Baker",
+          "consignment_note_ref": "CN-92814",
+          "seal_number": null,
+          "temperature_c": null,
+          "checklist": {
+            "packaging_intact": true,
+            "labels_verified": true,
+            "vehicle_clean_suitable": true,
+            "transport_condition_acceptable": true,
+            "dispatch_approved": true
+          },
+          "photos": [
+            {
+              "uuid": "…file uuid…",
+              "filename": "loading-bay.jpg",
+              "mime": "image/jpeg",
+              "byte_size": 812345,
+              "uploaded_at": "2026-08-13T10:29:00Z"
+            }
+          ]
+        }
+      }
+
+  ``dispatch`` is ``null`` when no ``picked_up`` / ``delivered``
+  shipment exists yet — the FE hides the section for that case
+  rather than showing a placeholder. Photo bytes are served via
+  ``serve_dispatch_photo`` below.
+  """
+  def dispatch(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    case resolve_shipment_for_co(company_id, uuid) do
+      {:error, :invalid_uuid} ->
+        conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+      {:error, :co_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+
+      {:error, :no_dispatch} ->
+        # CO exists but no picked_up / delivered shipment yet — the
+        # truck hasn't left. Return null so the FE hides the card.
+        json(conn, %{dispatch: nil})
+
+      {:ok, %Shipment{} = ship} ->
+        photos =
+          Repo.all(
+            from f in ShipmentPickupFile,
+              where:
+                f.shipment_id == ^ship.id and
+                  f.company_id == ^company_id,
+              order_by: [asc: f.inserted_at, asc: f.id],
+              select: %{
+                uuid: f.uuid,
+                filename: f.filename,
+                mime: f.mime,
+                byte_size: f.byte_size,
+                uploaded_at: f.inserted_at
+              }
+          )
+
+        json(conn, %{
+          dispatch: %{
+            status: ship.status,
+            ready_at: ship.ready_at,
+            picked_up_at: ship.picked_up_at,
+            delivered_at: ship.delivered_at,
+            carrier: ship.carrier,
+            vehicle_registration: ship.vehicle_registration,
+            driver_name: ship.driver_name,
+            consignment_note_ref: ship.consignment_note_ref,
+            seal_number: ship.seal_number,
+            temperature_c: ship.temperature_c,
+            checklist: %{
+              packaging_intact: ship.packaging_intact,
+              labels_verified: ship.labels_verified,
+              vehicle_clean_suitable: ship.vehicle_clean_suitable,
+              transport_condition_acceptable: ship.transport_condition_acceptable,
+              dispatch_approved: ship.dispatch_approved
+            },
+            photos: photos
+          }
+        })
+    end
+  end
+
+  @doc """
+  GET /api/integration/customer-orders/:uuid/dispatch/photos/:file_uuid
+
+  Streams the bytes of one truck-arrival photo. Ownership guarded
+  by the join — the file must belong to a shipment whose produced
+  lot belongs to the given CO, all inside the same company.
+
+  Sets ``Content-Disposition: inline`` so browsers render the image
+  in the portal's dispatch card lightbox / thumbnail.
+  """
+  def serve_dispatch_photo(conn, %{"uuid" => uuid, "file_uuid" => file_uuid}) do
+    company_id = conn.assigns.current_company_id
+
+    with {:ok, %Shipment{} = ship} <- resolve_shipment_for_co(company_id, uuid),
+         %ShipmentPickupFile{} = file <-
+           Repo.get_by(ShipmentPickupFile,
+             uuid: file_uuid,
+             company_id: company_id,
+             shipment_id: ship.id
+           ),
+         abs_path = Backend.Storage.Local.absolute_path(file.blob_path),
+         true <- File.exists?(abs_path) do
+      conn
+      |> put_resp_header("content-type", file.mime)
+      |> put_resp_header(
+        "content-disposition",
+        Backend.Http.ContentDisposition.header(:inline, file.filename)
+      )
+      |> send_file(200, abs_path)
+    else
+      {:error, :invalid_uuid} ->
+        conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+      {:error, :co_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+
+      {:error, :no_dispatch} ->
+        conn |> put_status(:not_found) |> json(%{error: "no_dispatch"})
+
+      _ ->
+        conn |> put_status(:not_found) |> json(%{error: "file_not_found"})
+    end
+  end
+
+  # Walks CO → root MO → produced lot → live shipment (picked_up or
+  # delivered — draft/ready aren't customer-visible; the goods are
+  # still on our floor). One shipment per output lot is the model
+  # today so ``limit: 1`` is deterministic.
+  defp resolve_shipment_for_co(company_id, uuid) do
+    with {:ok, cast_uuid} <- cast_uuid(uuid),
+         %CustomerOrder{id: co_id} <- fetch_co(company_id, cast_uuid),
+         %ManufacturingOrder{produced_lot_id: lot_id} when is_integer(lot_id) <-
+           fetch_root_mo_for_co(company_id, co_id),
+         %Shipment{} = ship <-
+           Repo.one(
+             from s in Shipment,
+               where:
+                 s.company_id == ^company_id and
+                   s.stock_lot_id == ^lot_id and
+                   s.status in ["picked_up", "delivered"],
+               order_by: [desc: s.picked_up_at, desc: s.id],
+               limit: 1
+           ) do
+      {:ok, ship}
+    else
+      :error -> {:error, :invalid_uuid}
+      nil -> {:error, :co_not_found_or_no_dispatch}
+      other -> other
+    end
+    |> case do
+      {:error, :co_not_found_or_no_dispatch} ->
+        case cast_uuid(uuid) do
+          :error ->
+            {:error, :invalid_uuid}
+
+          {:ok, cast} ->
+            case fetch_co(company_id, cast) do
+              nil -> {:error, :co_not_found}
+              _ -> {:error, :no_dispatch}
+            end
+        end
+
+      pass -> pass
     end
   end
 
