@@ -9928,25 +9928,6 @@ defmodule Backend.Production do
         distinct: true
       )
 
-    # Output lots already reserved as ingredients by a live downstream
-    # MO — the parent MO's closeout will consume them from the feed
-    # cell directly, so the sub-MO doesn't owe closeout work for those
-    # outputs. Without this filter, every finished sub-MO whose parent
-    # is still running lingers on the mobile queue as a phantom row.
-    # Mirrors the wizard's `committed?` filter in
-    # `Backend.OrderWizard.lot_with_placement/2`.
-    committed_lot_ids =
-      from(b in ManufacturingOrderBooking,
-        join: dmo in ManufacturingOrder,
-        on: dmo.id == b.manufacturing_order_id,
-        where:
-          not is_nil(b.stock_lot_id) and
-            b.status == "requested" and
-            dmo.status != "cancelled",
-        select: b.stock_lot_id,
-        distinct: true
-      )
-
     # source_ref is varchar; m.uuid is uuid — cast to text on the
     # MO side so PG accepts the equality without an implicit
     # cross-type comparison error.
@@ -9957,6 +9938,17 @@ defmodule Backend.Production do
     # matching this shape would double-list the MO in BOTH closeout
     # + return-pickup. Production / sample MOs still owe the
     # explicit move (dispatch / finished-quarantine respectively).
+    #
+    # Reserved-lot note: we intentionally DO NOT filter out lots
+    # already booked by a downstream MO. Historically that exclusion
+    # ("parent will consume in-place, no decision needed") shipped as
+    # an auto-keep — but the operator now owns the routing decision
+    # (Keep-in-place vs Move-to-warehouse, per closeout_output_lot's
+    # ``route_choice``). Excluding reserved lots hides the MO from
+    # the queue and the operator never gets to make the call. Once
+    # they visit + pick Keep, ``maybe_stamp_closeout_completed`` fires
+    # and the MO drops out of the next query via the
+    # ``closeout_completed_at`` gate — no phantom rows.
     output_at_feed =
       from(p in Backend.Stock.Placement,
         join: l in StockLot,
@@ -9969,8 +9961,7 @@ defmodule Backend.Production do
             l.status == "available" and
             p.qty > 0 and
             p.storage_cell_id == m.production_cell_id and
-            m.project_type != "trial" and
-            l.id not in subquery(committed_lot_ids),
+            m.project_type != "trial",
         select: m.id,
         distinct: true
       )
