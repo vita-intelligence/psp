@@ -81,6 +81,11 @@ export default async function ProjectBoardPage({
   const canManageMOs = hasPermission(user, "production.mo_create");
   const canCreateInvoice = hasPermission(user, "customer_invoices.create");
   const canPick = hasPermission(user, "warehouse.pick");
+  // Gates the "customer name → open customer page" deep-links on the
+  // board. Without this, clicking into a customer bounced viewers
+  // who lack ``customers.view`` off to /settings/profile via the
+  // target page's own permission fallback.
+  const canViewCustomers = hasPermission(user, "customers.view");
 
   return (
     <div className="flex flex-1 flex-col">
@@ -105,6 +110,7 @@ export default async function ProjectBoardPage({
           canManageMOs,
           canCreateInvoice,
           canPick,
+          canViewCustomers,
         }}
       />
     </div>

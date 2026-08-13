@@ -516,6 +516,12 @@ export interface ProjectBoardPermissions {
   /** `warehouse.pick` — gates the "Send pickup to phone" CTA on MOs
    *  waiting for the warehouse picker to fetch + drop bookings. */
   canPick: boolean;
+  /** `customers.view` — gates the customer-name deep-links on the
+   *  board (hero title + "Open customer page" button in the customer
+   *  modal). Without the perm we render plain text so the viewer
+   *  doesn't click through and get bounced to /settings/profile by
+   *  the customer detail page's own permission fallback. */
+  canViewCustomers: boolean;
 }
 
 interface Props {
@@ -939,6 +945,7 @@ export function ProjectControlBoard({
         co={co}
         open={customerModalOpen}
         onClose={() => setCustomerModalOpen(false)}
+        canView={permissions.canViewCustomers}
       />
       <BomPickerModal
         line={bomPickerLine}
@@ -1023,7 +1030,9 @@ function StickyHeader({
                   <h1 className="mt-0.5 truncate text-lg font-semibold tracking-tight sm:text-xl">
                     {showFormulationTitle ? (
                       co.customer_reference
-                    ) : co.customer?.uuid && !isPlaceholderCustomer ? (
+                    ) : co.customer?.uuid &&
+                      !isPlaceholderCustomer &&
+                      permissions.canViewCustomers ? (
                       <Link
                         href={`/sales/customers/${co.customer.uuid}`}
                         className="underline-offset-2 hover:underline"
@@ -3809,10 +3818,15 @@ function CustomerModal({
   co,
   open,
   onClose,
+  canView,
 }: {
   co: CustomerOrder;
   open: boolean;
   onClose: () => void;
+  /** ``customers.view`` — hides the "Open customer page" CTA for
+   *  viewers who lack it. Without this gate the button would land
+   *  them on /settings/profile via the target page's own fallback. */
+  canView: boolean;
 }) {
   const c = co.customer;
   return (
@@ -3856,7 +3870,7 @@ function CustomerModal({
           </p>
         )}
         <DialogFooter>
-          {c && (
+          {c && canView && (
             <Button asChild>
               <Link href={`/sales/customers/${c.uuid}`}>
                 Open customer page
