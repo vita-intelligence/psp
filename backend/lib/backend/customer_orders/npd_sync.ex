@@ -460,6 +460,88 @@ defmodule Backend.CustomerOrders.NpdSync do
   defp sanitize(v) when is_binary(v), do: String.trim(v)
   defp sanitize(_), do: nil
 
+  # Sample CO title: ``"<Formulation name> · Sample #<N>"`` where N is
+  # a per-formulation sequential counter (the 47th customer to order
+  # RTG00001 gets ``"Ultimate Fat Burner Drink · Sample #47"``).
+  # ``#1`` for the first order — that customer sees no confusing "#0".
+  #
+  # Formulation-name preference:
+  #   1. explicit ``formulation_name`` from the payload
+  #   2. stripped ``sample_label`` — often already "Sample · <name>",
+  #      trim the leading "Sample · " so we don't double it
+  #   3. ``formulation_code`` as a last resort ("RTG00001")
+  #
+  # Falls back to a generic ``"Sample #<N>"`` when nothing resolves.
+  defp build_sample_reference(company_id, params) do
+    formulation_name =
+      formulation_display_name(params) || fallback_reference(params)
+
+    sequence = next_sample_sequence(company_id, params)
+
+    case {formulation_name, sequence} do
+      {nil, nil} -> nil
+      {nil, n} -> "Sample ##{n}"
+      {name, nil} -> name
+      {name, n} -> "#{name} · Sample ##{n}"
+    end
+  end
+
+  defp formulation_display_name(params) do
+    raw_name = sanitize(params["formulation_name"] || params[:formulation_name])
+    raw_code = sanitize(params["formulation_code"] || params[:formulation_code])
+
+    cond do
+      # NPD sometimes ships the code as the name when the scientist
+      # hasn't renamed the RTG. In that case fall through to the
+      # sample_label parse — it's usually more human.
+      raw_name && raw_name != raw_code ->
+        raw_name
+
+      true ->
+        parse_sample_label(params) || raw_name || raw_code
+    end
+  end
+
+  defp parse_sample_label(params) do
+    case sanitize(params["sample_label"] || params[:sample_label]) do
+      nil ->
+        nil
+
+      label ->
+        # Strip the leading "Sample · " / "Sample - " / "Sample: " so
+        # we don't produce "<Sample · Ultimate Fat Burner Drink> ·
+        # Sample #47".
+        String.replace(label, ~r/^\s*Sample\s*[·:\-–—]\s*/iu, "")
+    end
+  end
+
+  defp fallback_reference(params), do: reference_for(params)
+
+  # Per-formulation counter: count of existing sample COs with the
+  # same ``npd_formulation_uuid`` + 1. Returns ``nil`` when we can't
+  # resolve a formulation uuid so the label falls back to plain
+  # formulation name (adding "#1" without any anchor reads weirdly).
+  defp next_sample_sequence(company_id, params) do
+    case extract_uuid(params) do
+      {:ok, formulation_uuid} ->
+        existing =
+          Repo.aggregate(
+            from(co in CustomerOrder,
+              where:
+                co.company_id == ^company_id and
+                  co.npd_formulation_uuid == ^formulation_uuid and
+                  co.sample_kind == true
+            ),
+            :count
+          )
+
+        existing + 1
+
+      _ ->
+        nil
+    end
+  end
+
   # Mirror the customer's saved delivery_address (portal profile
   # settings on the website → NPD Customer row → PSP CO). Written on
   # insert always; on update only when the CO is still ``draft`` so
@@ -587,8 +669,8 @@ defmodule Backend.CustomerOrders.NpdSync do
 
   defp insert_sample_new(company_id, active_customer, sample_uuid, item, params) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
-    sample_label = sanitize(params["sample_label"] || params[:sample_label])
-    ref = sample_label || reference_for(params)
+
+    ref = build_sample_reference(company_id, params)
 
     attrs = %{
       company_id: company_id,
