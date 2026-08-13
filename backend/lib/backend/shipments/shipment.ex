@@ -252,6 +252,30 @@ defmodule Backend.Shipments.Shipment do
     |> validate_length(:delivery_notes, max: 2000)
   end
 
+  @doc """
+  Portal-side variant of :func:`delivery_changeset`. Same shape but
+  ``delivered_by_id`` is optional because the customer confirming
+  from the portal isn't a PSP :class:`User` — the identity we keep
+  is the free-text ``recipient_signatory`` (customer's name off
+  their profile) plus the audit trail's ``updated_by`` bookkeeping.
+
+  Kept as a distinct changeset (rather than one with a "via_portal"
+  flag) so a stray staff-side caller can't accidentally slip past
+  the user-attribution requirement.
+  """
+  def portal_delivery_changeset(shipment, attrs) do
+    shipment
+    |> cast(attrs, [
+      :delivered_at,
+      :recipient_signatory,
+      :delivery_notes
+    ])
+    |> put_change(:status, "delivered")
+    |> validate_required([:delivered_at, :recipient_signatory])
+    |> validate_length(:recipient_signatory, min: 1, max: 200)
+    |> validate_length(:delivery_notes, max: 2000)
+  end
+
   @doc "Draft | Ready → cancelled."
   def cancel_changeset(shipment, attrs) do
     shipment

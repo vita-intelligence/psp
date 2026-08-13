@@ -426,6 +426,37 @@ defmodule Backend.Shipments do
     end
   end
 
+  @doc """
+  Portal-side variant of :func:`confirm_delivery`. Fired when the
+  customer confirms receipt on the sample detail page. The integration
+  scope on the endpoint gates who can hit this; there's no PSP
+  :class:`User` to attribute (customers don't exist in the users
+  table), so ``delivered_by_id`` stays nil and the identity we keep
+  is ``recipient_signatory`` (the customer's own name off their
+  portal profile) plus the audit row's "portal_confirmed" action tag.
+
+  Same lifecycle guard as the staff path — must currently be
+  ``picked_up`` and no perm check because the integration token
+  already proved authorisation upstream.
+  """
+  def confirm_delivery_from_portal(%Shipment{} = shipment, attrs \\ %{}) do
+    with :ok <- ensure_status(shipment, "picked_up") do
+      before_state = shipment_snapshot(shipment)
+
+      delivery_attrs =
+        attrs
+        |> stringify_top_keys()
+        |> Map.put_new_lazy("delivered_at", fn ->
+          DateTime.utc_now() |> DateTime.truncate(:second)
+        end)
+
+      shipment
+      |> Shipment.portal_delivery_changeset(delivery_attrs)
+      |> Repo.update()
+      |> tap_audit_updated(nil, before_state, "portal_confirmed_delivery")
+    end
+  end
+
   # Map may arrive with atom or string keys (server-side controller vs
   # test); normalise so the changeset cast sees a consistent shape.
   defp stringify_top_keys(attrs) when is_map(attrs) do

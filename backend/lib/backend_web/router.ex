@@ -2014,6 +2014,14 @@ defmodule BackendWeb.Router do
         IntegrationCustomerOrderController,
         :serve_dispatch_photo
 
+    # Customer-driven POD from the portal. Flips a ``picked_up``
+    # shipment to ``delivered`` with the customer's own signatory
+    # + notes. Fallback: staff can still confirm on the shipment
+    # detail page via the existing ``DeliveryConfirmationCard``.
+    post "/customer-orders/:uuid/dispatch/confirm-delivery",
+         IntegrationCustomerOrderController,
+         :confirm_delivery
+
     # NPD proposal-created merge. Fired when a Proposal is drafted on
     # NPD spanning N spec sheets — consolidates the N R&D draft COs
     # into one primary + attaches proposal identity so the wizard
