@@ -10814,23 +10814,49 @@ defmodule Backend.Production do
   """
   def closeout_output_lot(%User{} = actor, lot_uuid, attrs)
       when is_binary(lot_uuid) and is_map(attrs) do
-    # Reservation short-circuit. When the produced lot is already
-    # booked to a live downstream MO (child-into-parent semi-finished
-    # feed being the canonical case), moving it to a dispatch cell
-    # just to have the downstream picker walk it back is a wasted
-    # trip. Leave the lot at the production feed cell and mark
-    # closeout done — the downstream MO's pickup will grab it in
-    # place. Excess above the reserved qty falls through to normal
+    # Reservation branch. When the produced lot is booked to a live
+    # downstream MO (child-into-parent semi-finished feed being the
+    # canonical case), the default is to leave it at the production
+    # feed cell so the downstream MO's pickup grabs it in place —
+    # walking it to a dispatch cell just to have the picker walk it
+    # back is a wasted trip.
+    #
+    # The operator can override that default by passing
+    # ``route_choice = "send_to_warehouse"`` (or ``"auto"`` /
+    # ``"keep_in_place"`` for the explicit cases). ``send_to_warehouse``
+    # forces the normal dispatch-cell move even when reservations
+    # exist — useful when the operator wants the lot to leave
+    # production for external QC, temporary hold, or any other
+    # reason the model doesn't know about.
+    #
+    # Excess above the reserved qty always falls through to normal
     # return-pickup after the downstream MO closes out (already
     # handled by the ``ingredient_mos`` bucket).
     with %StockLot{status: "available", source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          reservations <- output_lot_reservations(lot) do
+      choice = normalise_route_choice(attrs)
+
       result =
-        if reservations != [] do
-          {:ok, {:reserved, lot, reservations}}
-        else
-          closeout_output_lot_move(actor, lot, attrs)
+        cond do
+          # Explicit override — always move to dispatch, whether or not
+          # a reservation exists. Operator has looked at the ban­ner and
+          # decided this lot needs to leave production anyway.
+          choice == :send_to_warehouse ->
+            closeout_output_lot_move(actor, lot, attrs)
+
+          # Explicit keep — only legal when reservations exist. Guard
+          # against a misconfigured caller trying to short-circuit an
+          # unreserved lot (that would leave the lot at the feed cell
+          # with no downstream pickup coming).
+          choice == :keep_in_place and reservations == [] ->
+            {:error, :not_reserved}
+
+          reservations != [] ->
+            {:ok, {:reserved, lot, reservations}}
+
+          true ->
+            closeout_output_lot_move(actor, lot, attrs)
         end
 
       # After every successful output resolution (moved, reserved-in-
@@ -10851,6 +10877,23 @@ defmodule Backend.Production do
       %StockLot{status: status} -> {:error, {:wrong_status, status}}
     end
   end
+
+  # Parse the operator-supplied ``route_choice`` on closeout output.
+  # Accepts ``"auto"`` (default — reserved → keep-in-place, else
+  # dispatch), ``"keep_in_place"``, or ``"send_to_warehouse"``.
+  # Anything else silently falls back to ``:auto`` so a bad string
+  # can't wedge the flow.
+  defp normalise_route_choice(attrs) when is_map(attrs) do
+    raw = Map.get(attrs, "route_choice") || Map.get(attrs, :route_choice)
+
+    case raw do
+      "keep_in_place" -> :keep_in_place
+      "send_to_warehouse" -> :send_to_warehouse
+      _ -> :auto
+    end
+  end
+
+  defp normalise_route_choice(_), do: :auto
 
   # Stamp `closeout_completed_at` on the MO if every last piece of
   # closeout work is done. Called from both close_output (by lot

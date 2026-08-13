@@ -161,6 +161,15 @@ export function CloseoutFlow({
   // (:photo_or_skip_required) so a curl can't bypass the gate.
   // Mirrors return-pickup's photo-or-skip pattern.
   const [skipPhotoReason, setSkipPhotoReason] = useState("");
+  // Operator's routing decision when the output lot is reserved for
+  // a downstream MO. Default `keep` matches the historical
+  // behaviour (system auto-keeps at production feed). ``ship``
+  // overrides so the lot moves to a dispatch cell as if it weren't
+  // reserved — e.g. QC hold, external inspection, or the operator
+  // just wants it off production for logistics.
+  const [outputRouteChoice, setOutputRouteChoice] = useState<
+    "keep" | "ship"
+  >("keep");
   const [pending, startTransition] = useTransition();
 
   const items: CloseoutItem[] = useMemo(() => {
@@ -230,6 +239,7 @@ export function CloseoutFlow({
     setCellPhase("directions");
     setPhotoUrl(null);
     setSkipPhotoReason("");
+    setOutputRouteChoice("keep");
     setErrorDetail(null);
     setStep({ kind: "scan_lot", itemKey: item.key });
   }
@@ -241,6 +251,7 @@ export function CloseoutFlow({
     setCellPhase("directions");
     setPhotoUrl(null);
     setSkipPhotoReason("");
+    setOutputRouteChoice("keep");
     setErrorDetail(null);
   }
 
@@ -291,13 +302,15 @@ export function CloseoutFlow({
         return;
       }
     }
-    const isReservedOutput =
+    const hasReservation =
       activeItem.kind === "output" &&
       (activeItem.reservedBy ?? []).length > 0;
-    // Reserved output stays in place — the BE short-circuits and no
-    // dispatch cell is used. Skip the guard for that path.
+    // "Reserved & operator picked Keep" is the only branch that skips
+    // the dispatch scan. If the operator chose Ship-to-warehouse, we
+    // walk the same scan-a-dispatch-cell path as an unreserved lot.
+    const keepInPlace = hasReservation && outputRouteChoice === "keep";
     if (
-      !isReservedOutput &&
+      !keepInPlace &&
       (activeItem.kind === "output" || remaining > 0) &&
       !targetCell
     ) {
@@ -340,12 +353,19 @@ export function CloseoutFlow({
           scanned_cell_uuid: targetCell?.uuid ?? null,
           photo_url: photoUrl,
           skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
+          route_choice: hasReservation
+            ? outputRouteChoice === "keep"
+              ? "keep_in_place"
+              : "send_to_warehouse"
+            : "auto",
         });
         if (res.ok) {
           toast.success(
-            isReservedOutput
+            keepInPlace
               ? "Left in place — reserved for downstream MO"
-              : "Output handed off to dispatch",
+              : hasReservation
+                ? "Sent to warehouse (reservation overridden)"
+                : "Output handed off to dispatch",
           );
           setOutputLots((prev) =>
             prev.filter((l) => l.uuid !== activeItem.lotUuid),
@@ -709,18 +729,62 @@ export function CloseoutFlow({
               </div>
             </div>
           ) : (activeItem.reservedBy ?? []).length > 0 ? (
-            <div className="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-900 dark:text-sky-200">
-              <p className="font-medium">
-                Reserved for{" "}
-                {(activeItem.reservedBy ?? [])
-                  .map((r) => r.mo_code ?? r.mo_uuid.slice(0, 8))
-                  .join(", ")}
-              </p>
-              <p className="opacity-80">
-                {activeItem.bookedQty} {activeItem.uomSymbol} stays in
-                place — a downstream MO will pick it up from here. No
-                dispatch scan needed.
-              </p>
+            <div className="space-y-2">
+              <div className="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-900 dark:text-sky-200">
+                <p className="font-medium">
+                  Reserved for{" "}
+                  {(activeItem.reservedBy ?? [])
+                    .map((r) => r.mo_code ?? r.mo_uuid.slice(0, 8))
+                    .join(", ")}
+                </p>
+                <p className="opacity-80">
+                  {activeItem.bookedQty} {activeItem.uomSymbol} of
+                  produced output. Choose where to leave it.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setOutputRouteChoice("keep")}
+                  className={cn(
+                    "w-full rounded-md border px-3 py-2.5 text-left text-xs transition",
+                    outputRouteChoice === "keep"
+                      ? "border-sky-500 bg-sky-500/10 ring-2 ring-sky-500/40"
+                      : "border-border/60 bg-background hover:bg-muted/40",
+                  )}
+                >
+                  <p className="font-semibold text-foreground">
+                    Keep at production feed{" "}
+                    <span className="text-[10px] font-normal text-muted-foreground uppercase tracking-wider">
+                      · recommended
+                    </span>
+                  </p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    Downstream MO picks it up in place — no
+                    dispatch scan needed. Fastest path when the next
+                    MO is already waiting.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOutputRouteChoice("ship")}
+                  className={cn(
+                    "w-full rounded-md border px-3 py-2.5 text-left text-xs transition",
+                    outputRouteChoice === "ship"
+                      ? "border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/40"
+                      : "border-border/60 bg-background hover:bg-muted/40",
+                  )}
+                >
+                  <p className="font-semibold text-foreground">
+                    Move to warehouse anyway
+                  </p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    Scan a dispatch cell next. Use for QC hold,
+                    external inspection, or when the downstream MO
+                    isn&apos;t ready to consume yet.
+                  </p>
+                </button>
+              </div>
             </div>
           ) : (
             <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-900 dark:text-emerald-200">
@@ -817,14 +881,14 @@ export function CloseoutFlow({
               type="button"
               onClick={() => {
                 const remaining = Number(remainingQty);
-                const isReservedOutput =
+                const hasReservation =
                   activeItem.kind === "output" &&
                   (activeItem.reservedBy ?? []).length > 0;
-                if (isReservedOutput) {
-                  // Reserved output stays in place — no scan needed.
-                  // BE also short-circuits, but bypassing the scan
-                  // step keeps the UI honest instead of walking the
-                  // operator to a cell they won't actually move to.
+                const keepInPlace =
+                  hasReservation && outputRouteChoice === "keep";
+                if (keepInPlace) {
+                  // Operator picked Keep for a reserved lot — no
+                  // dispatch scan needed, BE short-circuits.
                   submit();
                 } else if (
                   activeItem.kind === "output" ||
@@ -849,13 +913,14 @@ export function CloseoutFlow({
               disabled={
                 pending ||
                 photoUploading ||
-                // Reserved output stays in place — skip the
-                // photo-or-reason requirement since no movement is
-                // being recorded. BE mirrors this by short-circuiting
-                // ``ensure_photo_or_skip`` for reserved lots.
+                // Keep-in-place (reserved lot, operator chose Keep)
+                // skips the photo-or-reason requirement since no
+                // movement is being recorded. BE mirrors this by
+                // short-circuiting ``ensure_photo_or_skip``.
                 (!(
                   activeItem.kind === "output" &&
-                  (activeItem.reservedBy ?? []).length > 0
+                  (activeItem.reservedBy ?? []).length > 0 &&
+                  outputRouteChoice === "keep"
                 ) &&
                   !photoUrl &&
                   !skipPhotoReason)
@@ -863,7 +928,8 @@ export function CloseoutFlow({
             >
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
               {activeItem.kind === "output" &&
-              (activeItem.reservedBy ?? []).length > 0 ? (
+              (activeItem.reservedBy ?? []).length > 0 &&
+              outputRouteChoice === "keep" ? (
                 <>
                   <Check className="mr-1.5 size-4" />
                   Leave in place — reserved
