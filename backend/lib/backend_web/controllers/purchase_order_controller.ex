@@ -72,6 +72,24 @@ defmodule BackendWeb.PurchaseOrderController do
        when action in [:sign_director, :mark_ordered]
   plug RequirePermission, "procurement.po_receive" when action in [:receive]
 
+  # Rate-limit the PDF / CSV / delivery-note render endpoints per
+  # authenticated user. Each render pulls the full PO + lines + vendor
+  # + files, chromic-pdf-renders the template (which spawns a headless
+  # Chromium under the hood), and holds a DB connection the whole
+  # time. Without the limit, a user (or a misbehaving client polling
+  # for a doc) could kick off dozens of concurrent renders and starve
+  # the DB pool. 15/min/user is well above manual-open cadence but
+  # blocks obvious hot loops.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :po_document, limit: 15, window: 60, key: :user]
+       when action in [
+              :document_internal_pdf,
+              :document_vendor_pdf,
+              :document_delivery_note,
+              :document_rfq,
+              :document_csv
+            ]
+
   action_fallback BackendWeb.FallbackController
 
   # ----- list / get ------------------------------------------------

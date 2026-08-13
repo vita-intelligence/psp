@@ -38,6 +38,15 @@ defmodule BackendWeb.CustomerInvoiceController do
   plug RequirePermission, "customer_invoices.record_payment"
        when action in [:record_payment]
 
+  # Rate-limit invoice PDF renders per-user. Same rationale as the PO
+  # controller: each render pulls the full invoice + lines + customer
+  # and spawns a headless Chromium instance for the PDF; a client
+  # polling loop or a browser retry storm would starve the DB pool.
+  # 15/min/user is well above manual open-invoice cadence.
+  plug BackendWeb.Plugs.RateLimit,
+       [scope: :customer_invoice_document, limit: 15, window: 60, key: :user]
+       when action in [:document_pdf]
+
   plug RequirePermission, "customer_invoices.delete" when action in [:delete]
 
   action_fallback BackendWeb.FallbackController

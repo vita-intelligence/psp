@@ -99,7 +99,16 @@ if config_env() == :prod do
     ssl: db_ssl_enabled,
     ssl_opts: db_ssl_opts,
     url: database_url,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+    # ``pool_size`` default bumped 10 → 30 for the ~100 concurrent
+    # operator target. At the old default, a moderate spike (~20
+    # concurrent operators × 2-3 queries per request) saturated the
+    # pool within seconds, causing requests to queue and eventually
+    # ``DBConnection.ConnectionError`` (checkout timeout). 30 slots
+    # gives ~100 operators × ~0.3 queries in flight average with
+    # headroom for the occasional slow query. Prod ops can still
+    # override via ``POOL_SIZE`` env — bump higher on a bigger
+    # Postgres instance or lower on a shared dev DB.
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "30"),
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,
     socket_options: maybe_ipv6
