@@ -24,6 +24,7 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
   alias Backend.OrderWizard
   alias Backend.Production.{FinalRelease, FinalReleaseFile, ManufacturingOrder}
   alias Backend.Repo
+  alias Backend.Shipments
   alias Backend.Shipments.{Shipment, ShipmentPickupFile}
 
   plug :require_integration_scope,
@@ -47,7 +48,8 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
               :release_documents,
               :serve_release_document,
               :dispatch,
-              :serve_dispatch_photo
+              :serve_dispatch_photo,
+              :confirm_delivery
             ]
 
   action_fallback BackendWeb.FallbackController
@@ -662,6 +664,102 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
       _ ->
         conn |> put_status(:not_found) |> json(%{error: "file_not_found"})
     end
+  end
+
+  @doc """
+  POST /api/integration/customer-orders/:uuid/dispatch/confirm-delivery
+
+  Customer-driven POD. Called from the portal's "I received it"
+  button on the sample detail page. Flips the CO's live shipment
+  from ``picked_up`` to ``delivered`` and stamps the confirmation
+  metadata:
+
+    * ``recipient_signatory`` (required) — the customer's name off
+      their portal profile (or a typed override in the modal).
+    * ``delivery_notes`` (optional) — anything the customer wants
+      to record ("box was dented", "arrived on time", …).
+
+  ``delivered_by_id`` stays nil — portal customers aren't PSP
+  :class:`User` rows. The audit event carries ``action:
+  "portal_confirmed_delivery"`` so a staff review can distinguish
+  customer-confirmed from staff-confirmed POD.
+
+  Idempotent shape: hitting this on an already-``delivered`` shipment
+  returns 409 rather than double-stamping. Draft / ready / cancelled
+  shipments return 422 — the customer can't confirm what hasn't
+  physically left the warehouse.
+  """
+  def confirm_delivery(conn, %{"uuid" => uuid} = params) do
+    company_id = conn.assigns.current_company_id
+
+    signatory = sanitise(params["recipient_signatory"])
+    notes = sanitise(params["delivery_notes"])
+
+    if signatory in [nil, ""] do
+      conn
+      |> put_status(:unprocessable_entity)
+      |> json(%{error: "recipient_signatory_required"})
+    else
+      attrs = %{"recipient_signatory" => signatory}
+      attrs = if notes, do: Map.put(attrs, "delivery_notes", notes), else: attrs
+
+      case resolve_shipment_for_co(company_id, uuid) do
+        {:error, :invalid_uuid} ->
+          conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+        {:error, :co_not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+
+        {:error, :no_dispatch} ->
+          conn |> put_status(:not_found) |> json(%{error: "no_dispatch"})
+
+        {:ok, %Shipment{status: "delivered"}} ->
+          conn |> put_status(:conflict) |> json(%{error: "already_delivered"})
+
+        {:ok, %Shipment{status: "picked_up"} = ship} ->
+          case Shipments.confirm_delivery_from_portal(ship, attrs) do
+            {:ok, %Shipment{} = updated} ->
+              json(conn, %{
+                dispatch: %{
+                  status: updated.status,
+                  delivered_at: updated.delivered_at,
+                  recipient_signatory: updated.recipient_signatory,
+                  delivery_notes: updated.delivery_notes
+                }
+              })
+
+            {:error, :invalid_status} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "invalid_status"})
+
+            {:error, changeset} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "invalid", changeset: to_changeset_errors(changeset)})
+          end
+
+        {:ok, %Shipment{status: other}} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "invalid_status", status: other})
+      end
+    end
+  end
+
+  defp sanitise(v) when is_binary(v) do
+    trimmed = String.trim(v)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp sanitise(_), do: nil
+
+  defp to_changeset_errors(%Ecto.Changeset{} = cs) do
+    Ecto.Changeset.traverse_errors(cs, fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {k, v}, acc ->
+        String.replace(acc, "%{#{k}}", to_string(v))
+      end)
+    end)
   end
 
   # Walks CO → root MO → produced lot → live shipment (picked_up or
