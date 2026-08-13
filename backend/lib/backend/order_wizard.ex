@@ -3466,6 +3466,7 @@ defmodule Backend.OrderWizard do
 
   defp mo_has_pending_work?(%{status: "completed"} = mo) do
     Map.get(mo, :output_qc_pending_count, 0) > 0 or
+      Map.get(mo, :bookings_closeout_pending_count, 0) > 0 or
       Map.get(mo, :has_output_at_production_feed?) == true or
       Map.get(mo, :output_awaiting_release_count, 0) > 0
   end
