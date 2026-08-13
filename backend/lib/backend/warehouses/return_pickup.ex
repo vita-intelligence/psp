@@ -95,6 +95,15 @@ defmodule Backend.Warehouses.ReturnPickup do
     #     spoken for; return-pickup must respect the claim or the
     #     child output ends up back in warehouse just to be re-picked
     #     for the parent's next run.
+    #
+    # ``draft`` MOs are explicitly EXCLUDED from this claim set. A
+    # draft is a speculative plan (hasn't been approved / prepared /
+    # scheduled) — its auto-bookings shouldn't hold physical stock
+    # hostage on the production floor. If the draft is approved
+    # later, the pickup flow re-fetches from wherever the lot lives
+    # then. If it's cancelled or never approved, the ingredient
+    # would otherwise sit at the feed cell forever waiting for a
+    # phantom claim.
     lots_committed_to_open_bookings =
       from(b in ManufacturingOrderBooking,
         join: mo in ManufacturingOrder,
@@ -103,7 +112,7 @@ defmodule Backend.Warehouses.ReturnPickup do
           b.company_id == ^company_id and
             b.status == "requested" and
             is_nil(b.consumed_at) and
-            mo.status != "cancelled",
+            mo.status not in ["cancelled", "draft"],
         distinct: true,
         select: b.stock_lot_id
       )
@@ -321,7 +330,8 @@ defmodule Backend.Warehouses.ReturnPickup do
     # child MO's output ends up walked back to warehouse just to be
     # re-picked for the parent's next run. Matches the outer queue
     # so the two views agree on which lots are still owed to a
-    # consumer MO.
+    # consumer MO. ``draft`` MOs are also excluded here (see the
+    # matching comment on ``list_queue/1``).
     lots_committed_to_open_bookings =
       from(b in ManufacturingOrderBooking,
         join: mo in ManufacturingOrder,
@@ -330,7 +340,7 @@ defmodule Backend.Warehouses.ReturnPickup do
           b.company_id == ^company_id and
             b.status == "requested" and
             is_nil(b.consumed_at) and
-            mo.status != "cancelled",
+            mo.status not in ["cancelled", "draft"],
         distinct: true,
         select: b.stock_lot_id
       )
@@ -397,7 +407,9 @@ defmodule Backend.Warehouses.ReturnPickup do
         # parent at ``finish_mo_production`` time — from appearing on
         # the child's return-pickup detail card, where the warehouse
         # worker would walk it back to warehouse only to have the
-        # parent's picker fetch it right back the next day.
+        # parent's picker fetch it right back the next day. ``draft``
+        # parents don't hold physical stock hostage (see the matching
+        # comment on ``list_queue/1``).
         committed_lot_ids_subq =
           from(b in ManufacturingOrderBooking,
             join: parent in ManufacturingOrder,
@@ -406,7 +418,7 @@ defmodule Backend.Warehouses.ReturnPickup do
               b.company_id == ^actor.company_id and
                 b.status == "requested" and
                 is_nil(b.consumed_at) and
-                parent.status != "cancelled",
+                parent.status not in ["cancelled", "draft"],
             distinct: true,
             select: b.stock_lot_id
           )
