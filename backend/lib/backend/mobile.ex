@@ -132,18 +132,10 @@ defmodule Backend.Mobile do
         distinct: true
       )
 
-    committed_lot_ids =
-      from(b in ManufacturingOrderBooking,
-        join: dmo in ManufacturingOrder,
-        on: dmo.id == b.manufacturing_order_id,
-        where:
-          not is_nil(b.stock_lot_id) and
-            b.status == "requested" and
-            dmo.status != "cancelled",
-        select: b.stock_lot_id,
-        distinct: true
-      )
-
+    # Reserved-lot inclusion — matches ``list_closeout_queue/1``.
+    # Operator owns the routing decision (keep-in-place vs move-to-
+    # warehouse) so we surface the MO in the badge even when the
+    # downstream booking is live.
     output_at_feed =
       from(p in Placement,
         join: l in Lot,
@@ -156,7 +148,7 @@ defmodule Backend.Mobile do
             l.status == "available" and
             p.qty > 0 and
             p.storage_cell_id == m.production_cell_id and
-            l.id not in subquery(committed_lot_ids),
+            m.project_type != "trial",
         select: m.id,
         distinct: true
       )
