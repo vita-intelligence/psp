@@ -132,6 +132,15 @@ export const MOBILE_HOME_TILES = [
     badgeKey: "three_pl_dispatch",
   },
   {
+    key: "dispatch_pickup",
+    href: "/m/dispatch",
+    label: "Dispatch pickup",
+    description: "Ready shipments awaiting the truck",
+    icon: Truck,
+    permission: "shipments.pickup",
+    badgeKey: "dispatch_pickup",
+  },
+  {
     key: "scan",
     href: "/m/scan",
     label: "Scan QR",
