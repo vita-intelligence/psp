@@ -154,6 +154,13 @@ defmodule BackendWeb.ProductionCloseoutController do
           "Destination cell must have purpose=dispatch."
         )
 
+      {:error, :not_reserved} ->
+        unprocessable(
+          conn,
+          "not_reserved",
+          "\"Keep at production feed\" only applies when another live MO has booked this lot. This one isn't reserved — send it back to warehouse instead."
+        )
+
       {:error, :cell_not_found} ->
         unprocessable(conn, "cell_not_found", "Scanned cell wasn't found.")
 
