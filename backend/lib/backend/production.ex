@@ -4797,6 +4797,22 @@ defmodule Backend.Production do
   # Per-item shortage on a single MO: required_qty - booked_qty (incl.
   # any existing placeholders). Mirrors the shortages calc but at the
   # per-MO grain.
+  #
+  # Two sources of "required": the BOM line for this part AND the
+  # packaging-combo overlay (NPD sample MOs that carry
+  # ``packaging_combo_items`` — pouches, bottles, etc. picked at trial-
+  # batch time). Both feed the same shortage number because the
+  # allocator + PO auto-book pipeline downstream doesn't distinguish
+  # between the two: whatever we say is short, the incoming PO line
+  # gets a placeholder booking for. Without the overlay branch,
+  # ``allocate_po_line_to_requested_mos`` never creates a placeholder
+  # for injected packaging items → the received lot arrives at
+  # ``available`` with no booking to promote → the MO's part-table
+  # renders "Not booked", the operator has to manually attach the lot
+  # which demotes the MO's approval, and re-approve. Regular BOM
+  # ingredients don't hit this because they DO have a BOM line, so the
+  # shortage was computed correctly. Extending the calc here keeps the
+  # rest of the auto-book pipeline (upgrade on QC-pass etc.) unchanged.
   defp mo_item_shortage(%ManufacturingOrder{} = mo, item_id) do
     line =
       case mo.bom do
@@ -4807,7 +4823,7 @@ defmodule Backend.Production do
           nil
       end
 
-    required =
+    bom_required =
       case line do
         nil ->
           Decimal.new(0)
@@ -4819,12 +4835,34 @@ defmodule Backend.Production do
           Decimal.mult(q || Decimal.new(0), mo.quantity || Decimal.new(0))
       end
 
+    overlay_required = overlay_required_for_item(mo, item_id)
+    required = Decimal.add(bom_required, overlay_required)
+
     booked =
       mo.bookings
       |> Enum.filter(fn b -> b.item_id == item_id and b.status == "requested" end)
       |> Enum.reduce(Decimal.new(0), fn b, acc -> Decimal.add(acc, b.quantity || Decimal.new(0)) end)
 
     Decimal.sub(required, booked)
+  end
+
+  # Sum of ``quantity`` across every ``packaging_combo_items`` row
+  # whose ``item_id`` matches. Values are ABSOLUTE TOTALS for the
+  # whole MO (NPD pre-computes ``per_pack × total_packs`` with ceil
+  # rounding — see the comment on :func:`book_packaging_overlay`),
+  # so no scaling by ``mo.quantity``. Robust to malformed rows: a
+  # missing / unparsable value contributes zero rather than raising.
+  defp overlay_required_for_item(%ManufacturingOrder{} = mo, item_id) do
+    (mo.packaging_combo_items || [])
+    |> Enum.reduce(Decimal.new(0), fn row, acc ->
+      with {:ok, rid} <- extract_int(row, "item_id"),
+           true <- rid == item_id,
+           {:ok, qty} <- extract_decimal(row, "quantity") do
+        Decimal.add(acc, qty)
+      else
+        _ -> acc
+      end
+    end)
   end
 
   defp primary_storage_cell_id(%StockLot{} = lot) do
