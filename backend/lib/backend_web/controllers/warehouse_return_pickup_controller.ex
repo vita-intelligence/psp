@@ -127,6 +127,13 @@ defmodule BackendWeb.WarehouseReturnPickupController do
       {:ok, pick} ->
         json(conn, %{pick: Payloads.return_pick_row(pick)})
 
+      {:error, :photo_required} ->
+        unprocessable(
+          conn,
+          "photo_required",
+          "Attach a photo — every pick needs one (BRCGS 3.5.1 / FSSC 22000 traceability)."
+        )
+
       {:error, :lot_not_found} ->
         not_found(conn, "Lot not found.")
 
@@ -201,6 +208,13 @@ defmodule BackendWeb.WarehouseReturnPickupController do
     case ReturnPickup.place_from_trolley(actor, pick_uuid, params) do
       {:ok, pick} ->
         json(conn, %{pick: Payloads.return_pick_row(pick)})
+
+      {:error, :photo_required} ->
+        unprocessable(
+          conn,
+          "photo_required",
+          "Attach a photo — every placement needs one (BRCGS 3.5.1 / FSSC 22000 traceability)."
+        )
 
       {:error, :pick_not_found} ->
         not_found(conn, "Trolley row not found.")

@@ -20,13 +20,13 @@ export interface CloseBookingInput {
    *  remaining_qty > 0 AND route_choice ≠ "keep_in_place"; null
    *  otherwise (fully consumed OR keep-in-place chosen). */
   scanned_cell_uuid: string | null;
-  /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
-   *  must be set — the closeout panel gates the submit CTA on it. */
+  /** Stock-movement photo — REQUIRED (BRCGS 3.5.1 / FSSC 22000
+   *  traceability). The closeout panel gates the submit CTA on
+   *  ``photoUrl`` being set; the backend ``ensure_photo`` gate
+   *  refuses the request otherwise. The former "or skip with a
+   *  reason" escape hatch was retired — see the FE comment at the
+   *  top of ``closeout-flow.tsx``. */
   photo_url: string | null;
-  /** Reason the operator couldn't take a photo (camera offline, lot
-   *  packaging hides the labels, etc.). Required when `photo_url` is
-   *  null. Mirrors return-pickup's photo-or-skip pattern. */
-  skip_photo_reason: string | null;
   /** Operator-supplied routing decision for the LEFTOVER after
    *  partial consume. Only meaningful when ``remaining_qty > 0``:
    *  - `"auto"` / omitted — default. Move leftover to a scanned
@@ -76,7 +76,6 @@ export async function closeoutBookingAction(
   };
   if (input.scanned_cell_uuid) body.scanned_cell_uuid = input.scanned_cell_uuid;
   if (input.photo_url) body.photo_url = input.photo_url;
-  if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
   if (input.route_choice && input.route_choice !== "auto")
     body.route_choice = input.route_choice;
 
@@ -102,11 +101,11 @@ export interface CloseOutputInput {
    *  and leaves the lot at the production-feed cell. Required
    *  otherwise (normal dispatch move). */
   scanned_cell_uuid: string | null;
-  /** Stock-movement photo. One of `photo_url` or `skip_photo_reason`
-   *  must be set — gated by the closeout panel. Ignored (and can be
-   *  null) for the keep-in-place path since nothing moves. */
+  /** Stock-movement photo — REQUIRED (BRCGS 3.5.1 / FSSC 22000
+   *  traceability). Gated by the closeout panel and by the BE
+   *  ``ensure_photo`` check. Ignored (and may be null) on the
+   *  keep-in-place path since nothing moves. */
   photo_url: string | null;
-  skip_photo_reason: string | null;
   /** Operator-supplied routing decision. Only meaningful for output
    *  lots that carry a live downstream reservation:
    *  - `"auto"` / omitted — default. Reserved → keep in place;
@@ -134,7 +133,6 @@ export async function closeoutOutputLotAction(
   if (input.scanned_cell_uuid)
     body.scanned_cell_uuid = input.scanned_cell_uuid;
   if (input.photo_url) body.photo_url = input.photo_url;
-  if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
   if (input.route_choice && input.route_choice !== "auto")
     body.route_choice = input.route_choice;
 

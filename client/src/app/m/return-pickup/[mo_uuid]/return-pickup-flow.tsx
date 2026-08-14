@@ -46,13 +46,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import type { FormatPrefs } from "@/lib/format/company";
@@ -116,12 +109,11 @@ export function ReturnPickupFlow({
   const [step, setStep] = useState<Step>({ kind: "overview" });
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
-  // When the operator can't take a photo (camera offline, lot
-  // packaging hides the labels, etc.) they pick a skip-reason instead.
-  // Tracked here so the directions step can collect it BEFORE the
-  // cell scan auto-submits — matches the closeout pattern where
-  // photo + skip-reason live in the pre-scan details panel.
-  const [placeSkipReason, setPlaceSkipReason] = useState("");
+  // Photo capture is now mandatory on every pick + place movement
+  // (BRCGS 3.5.1 / FSSC 22000 traceability). Skip-with-reason
+  // retired — see the ``SKIP_PHOTO_REASONS`` comment at the bottom
+  // of the file. BE ``ensure_photo`` gate mirrors this so a curl
+  // can't bypass.
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -183,7 +175,6 @@ export function ReturnPickupFlow({
 
   function resetPhoto() {
     setPhotoUrl(null);
-    setPlaceSkipReason("");
     setErrorDetail(null);
   }
 
@@ -255,13 +246,11 @@ export function ReturnPickupFlow({
   function submitPlace(
     pickUuid: string,
     scannedCellUuid: string,
-    skipPhotoReason: string | null,
   ) {
     startTransition(async () => {
       const res = await placeReturnLotAction(pickUuid, {
         scanned_cell_uuid: scannedCellUuid,
         photo_url: photoUrl,
-        skip_photo_reason: skipPhotoReason,
       });
       if (res.ok) {
         toast.success("Placed back into storage");
@@ -485,10 +474,8 @@ export function ReturnPickupFlow({
           pick={pickByKey[step.pickKey]}
           photoUrl={photoUrl}
           uploading={photoUploading}
-          skipReason={placeSkipReason}
           onPhotoChange={onPhotoChange}
           onClearPhoto={() => setPhotoUrl(null)}
-          onSkipReasonChange={setPlaceSkipReason}
           onContinue={() =>
             setStep({
               kind: "place_scan_cell",
@@ -530,11 +517,7 @@ export function ReturnPickupFlow({
               `Cell ${step.target.cell.id}`
             }
             onConfirmed={() =>
-              submitPlace(
-                step.pickKey,
-                step.target.uuid,
-                photoUrl ? null : placeSkipReason || null,
-              )
+              submitPlace(step.pickKey, step.target.uuid)
             }
             onCancel={() =>
               setStep({
@@ -945,10 +928,8 @@ function PlaceDirectionsStep({
   pick,
   photoUrl,
   uploading,
-  skipReason,
   onPhotoChange,
   onClearPhoto,
-  onSkipReasonChange,
   onContinue,
   onChooseDifferent,
 }: {
@@ -956,10 +937,8 @@ function PlaceDirectionsStep({
   pick: ReturnPickRow;
   photoUrl: string | null;
   uploading: boolean;
-  skipReason: string;
   onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClearPhoto: () => void;
-  onSkipReasonChange: (value: string) => void;
   onContinue: () => void;
   onChooseDifferent: () => void;
 }) {
@@ -972,7 +951,7 @@ function PlaceDirectionsStep({
     (cell.ordinal !== undefined && cell.ordinal !== null
       ? `Level ${cell.ordinal + 1}`
       : `Cell ${cell.id}`);
-  const canContinue = Boolean(photoUrl) || skipReason.length > 0;
+  const canContinue = Boolean(photoUrl);
 
   return (
     <main className="flex-1 px-4 py-4 space-y-3 overflow-y-auto">
@@ -987,8 +966,8 @@ function PlaceDirectionsStep({
         )}
         <p className="mt-1 text-[11px] text-muted-foreground">
           The highlighted rack on the floor plan is where the lot
-          goes. Walk there, snap a photo (or pick a skip reason), then
-          scan the rack QR — the drop happens automatically on match.
+          goes. Walk there, snap a photo, then scan the rack QR —
+          the drop happens automatically on match.
         </p>
       </div>
 
@@ -1064,23 +1043,10 @@ function PlaceDirectionsStep({
                 disabled={uploading}
               />
             </label>
-            <div className="space-y-1.5">
-              <p className="text-[11px] text-muted-foreground">
-                Or skip with a reason:
-              </p>
-              <Select value={skipReason} onValueChange={onSkipReasonChange}>
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="Pick a reason…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {SKIP_PHOTO_REASONS.map((r) => (
-                    <SelectItem key={r.value} value={r.value}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <p className="text-[11px] text-muted-foreground">
+              A photo is required — BRCGS 3.5.1 / FSSC 22000
+              traceability.
+            </p>
           </>
         )}
       </section>
@@ -1088,7 +1054,7 @@ function PlaceDirectionsStep({
       <div className="flex flex-col gap-2 pt-1">
         {!canContinue && (
           <p className="text-center text-[11px] text-muted-foreground">
-            Add a photo or pick a skip reason to continue.
+            Take a photo to continue.
           </p>
         )}
         <Button
@@ -1328,12 +1294,12 @@ function PickScanLotStep({
   );
 }
 
-const SKIP_PHOTO_REASONS = [
-  { value: "blurry_capture", label: "Couldn't get a clear photo" },
-  { value: "camera_unavailable", label: "Camera not working" },
-  { value: "tight_quarters", label: "Couldn't reach the angle" },
-  { value: "other", label: "Other" },
-];
+// SKIP_PHOTO_REASONS retired — photo capture is now mandatory on
+// every pick + place movement (BRCGS 3.5.1 / FSSC 22000
+// traceability). The backend ``ensure_photo`` gate in
+// ``Backend.Warehouses.ReturnPickup`` refuses moves without a
+// real photo. Historical rows with ``skip_photo_reason`` set are
+// preserved on ``stock_movements`` for the audit trail.
 
 function PhotoStep({
   title,

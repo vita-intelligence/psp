@@ -42,13 +42,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
@@ -70,14 +63,14 @@ import type {
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 
-// Same shape as return-pickup's SKIP_PHOTO_REASONS — keep both lists in
-// sync so the auditor sees a consistent vocabulary across move flows.
-const CLOSEOUT_SKIP_PHOTO_REASONS = [
-  { value: "lot_already_packaged", label: "Lot already sealed in packaging" },
-  { value: "camera_unavailable", label: "Camera not working" },
-  { value: "tight_quarters", label: "Couldn't reach the angle" },
-  { value: "other", label: "Other" },
-];
+// CLOSEOUT_SKIP_PHOTO_REASONS retired — photo capture is now
+// mandatory on every closeout movement (BRCGS 3.5.1 / FSSC 22000
+// traceability). The backend ``ensure_photo`` gate in
+// ``Backend.Production`` refuses closeouts without a real photo,
+// and ``preparePhotoForUpload`` compresses the JPEG so marginal-
+// wifi bays still complete the flow fast enough for the skip
+// escape hatch to be unnecessary. Historical rows with
+// ``skip_photo_reason`` set are preserved on ``stock_movements``.
 
 type Step =
   | { kind: "overview" }
@@ -157,11 +150,11 @@ export function CloseoutFlow({
   >("directions");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
-  // Closeout requires evidence — operator either uploads a photo OR
-  // picks a skip-reason. BE enforces the same invariant
-  // (:photo_or_skip_required) so a curl can't bypass the gate.
-  // Mirrors return-pickup's photo-or-skip pattern.
-  const [skipPhotoReason, setSkipPhotoReason] = useState("");
+  // Closeout requires a photo (BRCGS 3.5.1 / FSSC 22000
+  // traceability). BE enforces the same invariant (``:photo_required``)
+  // so a curl can't bypass the gate. Skip-with-reason retired — see
+  // the ``CLOSEOUT_SKIP_PHOTO_REASONS`` comment at the top of the
+  // file.
   // Operator's routing decision when the output lot is reserved for
   // a downstream MO. Default `keep` matches the historical
   // behaviour (system auto-keeps at production feed). ``ship``
@@ -239,7 +232,6 @@ export function CloseoutFlow({
     setScannedCell(null);
     setCellPhase("directions");
     setPhotoUrl(null);
-    setSkipPhotoReason("");
     // Default the route choice per item kind:
     //   * outputs default to Keep — reserved outputs almost always
     //     stay in place for the downstream MO.
@@ -257,7 +249,6 @@ export function CloseoutFlow({
     setScannedCell(null);
     setCellPhase("directions");
     setPhotoUrl(null);
-    setSkipPhotoReason("");
     setRouteChoice("keep");
     setErrorDetail(null);
   }
@@ -341,7 +332,6 @@ export function CloseoutFlow({
             remaining_qty: remainingQty,
             scanned_cell_uuid: keepInPlace ? null : targetCell?.uuid ?? null,
             photo_url: photoUrl,
-            skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
             route_choice: showsRouteChoice
               ? routeChoice === "keep"
                 ? "keep_in_place"
@@ -370,7 +360,6 @@ export function CloseoutFlow({
         const res = await closeoutOutputLotAction(mo.uuid, activeItem.lotUuid, {
           scanned_cell_uuid: targetCell?.uuid ?? null,
           photo_url: photoUrl,
-          skip_photo_reason: photoUrl ? null : skipPhotoReason || null,
           route_choice: showsRouteChoice
             ? routeChoice === "keep"
               ? "keep_in_place"
@@ -917,35 +906,19 @@ export function CloseoutFlow({
                     disabled={photoUploading}
                   />
                 </label>
-                <div className="space-y-1">
-                  <p className="text-[11px] text-muted-foreground">
-                    Or skip with a reason:
-                  </p>
-                  <Select
-                    value={skipPhotoReason}
-                    onValueChange={setSkipPhotoReason}
-                  >
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Pick a reason…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CLOSEOUT_SKIP_PHOTO_REASONS.map((r) => (
-                        <SelectItem key={r.value} value={r.value}>
-                          {r.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  A photo is required for every closeout movement —
+                  BRCGS 3.5.1 / FSSC 22000 traceability.
+                </p>
               </>
             )}
           </div>
 
           {errorDetail && <ErrorBanner detail={errorDetail} />}
 
-          {!photoUrl && !skipPhotoReason && (
+          {!photoUrl && (
             <p className="text-center text-[11px] text-muted-foreground">
-              Add a photo or pick a skip reason to continue.
+              Take a photo to continue.
             </p>
           )}
 
@@ -1004,7 +977,7 @@ export function CloseoutFlow({
                 // output OR a booking-with-leftover) skips the
                 // photo-or-reason requirement since no movement is
                 // being recorded. BE mirrors this by short-circuiting
-                // ``ensure_photo_or_skip``.
+                // ``ensure_photo``.
                 (!(
                   ((activeItem.kind === "output" &&
                     (activeItem.reservedBy ?? []).length > 0) ||
@@ -1012,8 +985,7 @@ export function CloseoutFlow({
                       Number(remainingQty) > 0)) &&
                   routeChoice === "keep"
                 ) &&
-                  !photoUrl &&
-                  !skipPhotoReason)
+                  !photoUrl)
               }
             >
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
