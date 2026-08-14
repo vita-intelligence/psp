@@ -134,11 +134,14 @@ export function ProductionRunDetail({ initialMo, company }: Props) {
 
       <MOSpecSheet moUuid={mo.uuid} />
 
-      {/* NPD product validation sheet — only for R&D MOs whose
-          trial batch has a passed/failed validation on NPD. Same
-          card treatment as MOSpecSheet: collapsed by default, lazy
-          iframe, kept mounted after first open. */}
-      {mo.npd_trial_batch_uuid && (
+      {/* NPD product validation sheet — for R&D MOs. Renders when
+          the MO has EITHER its own trial batch OR just an
+          npd_formulation_uuid (sample-of-approved-RTG case, where
+          the formulation's canonical validation is the compliance
+          artefact — the sample MO itself has no trial batch of its
+          own). Backend resolves the fallback via NPD's
+          ``latest.html?formulation=`` when trial batch is absent. */}
+      {(mo.npd_trial_batch_uuid || mo.npd_formulation_uuid) && (
         <NpdValidationEmbed
           src={`/api/production/manufacturing-orders/${encodeURIComponent(mo.uuid)}/npd-validation.html`}
         />

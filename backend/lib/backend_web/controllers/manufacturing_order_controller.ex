@@ -1126,11 +1126,11 @@ defmodule BackendWeb.ManufacturingOrderController do
     actor = conn.assigns.current_user
 
     with :ok <- require_permission(actor, "production.qc_output"),
-         {:ok, trial_batch_uuid} <-
-           trial_batch_for_output_qc_lot(actor.company_id, uuid),
+         {:ok, ref} <-
+           validation_ref_for_output_qc_lot(actor.company_id, uuid),
          company <- Backend.Companies.current(),
          :ok <- ensure_npd_live(company),
-         {:ok, html} <- fetch_npd_validation_html(company, trial_batch_uuid) do
+         {:ok, html} <- fetch_npd_validation_html(company, ref) do
       conn
       |> put_resp_content_type("text/html")
       |> put_resp_header("cache-control", "no-store")
@@ -1147,7 +1147,7 @@ defmodule BackendWeb.ManufacturingOrderController do
         html_stub(
           conn,
           404,
-          "This lot's MO isn't linked to an NPD trial batch — no validation to show."
+          "This lot's MO isn't linked to an NPD trial batch and its formulation has no canonical validation — no validation to show."
         )
 
       {:error, :npd_not_configured} ->
@@ -1157,7 +1157,7 @@ defmodule BackendWeb.ManufacturingOrderController do
         html_stub(
           conn,
           404,
-          "NPD hasn't recorded a passed/failed validation for this trial batch yet."
+          "NPD hasn't recorded a passed validation for this formulation yet."
         )
 
       {:error, {:npd_error, status}} ->
@@ -1174,11 +1174,11 @@ defmodule BackendWeb.ManufacturingOrderController do
     actor = conn.assigns.current_user
 
     with :ok <- require_permission(actor, "production.mo_view"),
-         {:ok, trial_batch_uuid} <-
-           trial_batch_for_mo(actor.company_id, uuid),
+         {:ok, ref} <-
+           validation_ref_for_mo(actor.company_id, uuid),
          company <- Backend.Companies.current(),
          :ok <- ensure_npd_live(company),
-         {:ok, html} <- fetch_npd_validation_html(company, trial_batch_uuid) do
+         {:ok, html} <- fetch_npd_validation_html(company, ref) do
       conn
       |> put_resp_content_type("text/html")
       |> put_resp_header("cache-control", "no-store")
@@ -1195,7 +1195,7 @@ defmodule BackendWeb.ManufacturingOrderController do
         html_stub(
           conn,
           404,
-          "This MO isn't linked to an NPD trial batch — no validation to show."
+          "This MO isn't linked to an NPD trial batch and its formulation has no canonical validation — no validation to show."
         )
 
       {:error, :npd_not_configured} ->
@@ -1205,7 +1205,7 @@ defmodule BackendWeb.ManufacturingOrderController do
         html_stub(
           conn,
           404,
-          "NPD hasn't recorded a passed/failed validation for this trial batch yet."
+          "NPD hasn't recorded a passed validation for this formulation yet."
         )
 
       {:error, {:npd_error, status}} ->
@@ -1216,11 +1216,24 @@ defmodule BackendWeb.ManufacturingOrderController do
     end
   end
 
-  # Resolve the trial batch uuid for a lot at Output QC. Walks lot →
-  # source MO → npd_trial_batch_uuid. When the lot is a semi-finished
-  # intermediate, walks up the parent chain to find the root R&D MO
-  # (its trial batch drives QA sign-off).
-  defp trial_batch_for_output_qc_lot(company_id, lot_uuid) do
+  # Resolve the NPD lookup reference for a lot at Output QC.
+  #
+  # Returns one of:
+  #
+  #   * ``{:ok, {:trial_batch, uuid}}`` — this MO (or a parent MO)
+  #     owns its own npd_trial_batch_uuid, use it.
+  #
+  #   * ``{:ok, {:formulation, uuid}}`` — no trial batch on the chain,
+  #     but the MO carries an ``npd_formulation_uuid``. NPD's
+  #     ``latest.html`` endpoint accepts ``?formulation=`` and
+  #     resolves the canonical passed validation for that formulation
+  #     — the compliance artefact that let the formulation ship as a
+  #     sample in the first place. This is the sample-of-approved-RTG
+  #     path: the sample MO is a production run of an already-
+  #     approved recipe, so its OWN validation doesn't exist yet, but
+  #     the RTG's canonical trial-batch validation is what QA needs
+  #     to see on the QC page.
+  defp validation_ref_for_output_qc_lot(company_id, lot_uuid) do
     import Ecto.Query
 
     with %Backend.Stock.Lot{source_kind: "manufacturing_order", source_ref: mo_uuid} <-
@@ -1232,21 +1245,14 @@ defmodule BackendWeb.ManufacturingOrderController do
                  m.company_id == ^company_id and
                    fragment("?::text", m.uuid) == ^mo_uuid
            ) do
-      case mo do
-        %{npd_trial_batch_uuid: uuid} when is_binary(uuid) and byte_size(uuid) > 0 ->
-          {:ok, uuid}
-
-        _ ->
-          # Walk up to the root MO in case this is a semi-finished lot.
-          trial_batch_from_ancestors(company_id, mo)
-      end
+      resolve_validation_ref(company_id, mo)
     else
       nil -> {:error, :lot_not_found}
       %Backend.Stock.Lot{} -> {:error, :lot_not_found}
     end
   end
 
-  defp trial_batch_for_mo(company_id, mo_uuid) do
+  defp validation_ref_for_mo(company_id, mo_uuid) do
     import Ecto.Query
 
     case Backend.Repo.one(
@@ -1256,13 +1262,32 @@ defmodule BackendWeb.ManufacturingOrderController do
       nil ->
         {:error, :mo_not_found}
 
-      %{npd_trial_batch_uuid: uuid} when is_binary(uuid) and byte_size(uuid) > 0 ->
-        {:ok, uuid}
-
       mo ->
-        trial_batch_from_ancestors(company_id, mo)
+        resolve_validation_ref(company_id, mo)
     end
   end
+
+  # Preference order: (1) MO's own trial batch → (2) any ancestor's
+  # trial batch → (3) MO's formulation (canonical-validation
+  # fallback). Sample MOs typically bottom out on (3).
+  defp resolve_validation_ref(company_id, mo) do
+    case mo do
+      %{npd_trial_batch_uuid: uuid} when is_binary(uuid) and byte_size(uuid) > 0 ->
+        {:ok, {:trial_batch, uuid}}
+
+      _ ->
+        case trial_batch_from_ancestors(company_id, mo) do
+          {:ok, uuid} -> {:ok, {:trial_batch, uuid}}
+          {:error, :no_trial_batch} -> formulation_ref(mo)
+        end
+    end
+  end
+
+  defp formulation_ref(%{npd_formulation_uuid: uuid})
+       when is_binary(uuid) and byte_size(uuid) > 0,
+       do: {:ok, {:formulation, uuid}}
+
+  defp formulation_ref(_), do: {:error, :no_trial_batch}
 
   defp trial_batch_from_ancestors(company_id, mo) do
     case mo.parent_mo_id do
@@ -1286,14 +1311,20 @@ defmodule BackendWeb.ManufacturingOrderController do
     end
   end
 
-  defp fetch_npd_validation_html(company, trial_batch_uuid) do
+  defp fetch_npd_validation_html(company, ref) do
     base = String.trim_trailing(company.npd_base_url, "/")
     url = base <> "/api/psp-integration/validations/latest.html"
+
+    params =
+      case ref do
+        {:trial_batch, uuid} -> [trial_batch: uuid]
+        {:formulation, uuid} -> [formulation: uuid]
+      end
 
     req =
       Req.new(
         url: url,
-        params: [trial_batch: trial_batch_uuid],
+        params: params,
         headers: [{"authorization", "Bearer " <> company.npd_integration_token}],
         receive_timeout: 15_000
       )
