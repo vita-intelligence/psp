@@ -39,10 +39,12 @@ defmodule BackendWeb.AuditController do
     "product_family" => "items.view",
     "attribute_definition" => "items.view",
     # Sub-table audit borrows the parent's view perm. Risk
-    # assessment uses its own perm because not everyone with item
-    # read should see risk scores.
+    # assessment previously used ``risk_assessments.view`` but that
+    # code was retired — the risk payload is already read-gated via
+    # ``items.view`` (it rides on the item show response) so the
+    # audit trail follows the same rule.
     "raw_material_compliance" => "items.view",
-    "raw_material_risk_assessment" => "risk_assessments.view",
+    "raw_material_risk_assessment" => "items.view",
     "finished_product_spec" => "items.view",
     "packaging_compliance" => "items.view",
     "certificate" => "certificates.view",
