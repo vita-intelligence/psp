@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Channel, Presence } from "phoenix";
+import { getDeviceSocket } from "./device-socket";
 import { getSocket } from "./socket";
 
 /**
@@ -273,7 +274,17 @@ export function useLiveForm<T extends object>({
     let cleanup: (() => void) | null = null;
 
     (async () => {
-      const socket = await getSocket();
+      // Session socket first (web/staff — the common path). If the
+      // tab is a paired dock tablet on the /m/* routes, ``/api/session/
+      // token`` returns 401 and ``getSocket`` returns null; fall back
+      // to the device socket so mobile form-collab surfaces (e.g. the
+      // goods-in inspection wizard) actually join their form:* channel
+      // instead of silently returning early and leaving every peer
+      // permanently non-``isCreator`` — which manifests as a locked
+      // "Sign as operator" button with no error banner (the banner
+      // only shows when ``creator`` is set, and ``creator`` never
+      // gets set if the channel never joined).
+      const socket = (await getSocket()) ?? (await getDeviceSocket());
       if (!socket || !alive) return;
 
       const channel = socket.channel(`form:${resource}`, {});
