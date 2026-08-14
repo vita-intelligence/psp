@@ -27,6 +27,7 @@ import type {
   MobileIncomingOpenInspection,
 } from "@/lib/goods-in/server";
 import { INCOMING_WINDOW_DAYS } from "@/lib/goods-in/constants";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 
 interface WarehouseOption {
   id: number;
@@ -41,7 +42,6 @@ interface Props {
 
 type DayFilter = "today" | "tomorrow" | "this_week" | "all";
 
-const POLL_INTERVAL_MS = 30_000;
 
 /**
  * Mobile "Expected today" board.
@@ -134,15 +134,15 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
     void refresh(true);
   }, [refresh, warehouseId]);
 
-  // Lightweight polling. Keeps the list honest if a teammate starts
-  // an inspection from the laptop while the operator is staring at
-  // the tablet. 30s is well under any "is this fresh?" expectation.
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void refresh(true);
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  // Live push — any PO write (receipt confirmed, inspection started,
+  // rows split into lots) fans out through
+  // ``Backend.Broadcasts.entity_changed("purchase-order", …)`` and
+  // the hook re-runs the silent refresh. Debounced ~250 ms inside
+  // the hook so a burst of writes collapses.
+  useEntityChannel({
+    entity: "purchase-order",
+    onEvent: () => void refresh(true),
+  });
 
   const todayIso = useMemo(() => isoToday(), []);
   const tomorrowIso = useMemo(

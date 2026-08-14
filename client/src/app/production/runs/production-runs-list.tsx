@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   CheckCheck,
@@ -20,8 +20,7 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type { ProductionRunEntry } from "@/lib/production/types";
-
-const POLL_INTERVAL_MS = 30_000;
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 
 // Stream tab. Mirrors the MOs ledger pattern (see mos-ledger.tsx):
 // URL is the source of truth so refresh + share + back/forward all
@@ -98,12 +97,13 @@ export function ProductionRunsList({
     }
   }, []);
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void refresh(true);
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  // Live push — any MO write (started, completed, released) fans out
+  // through ``entity_changed("manufacturing-order", …)`` and the hook
+  // re-runs the silent refresh. Debounced ~250 ms.
+  useEntityChannel({
+    entity: "manufacturing-order",
+    onEvent: () => void refresh(true),
+  });
 
   return (
     <section className="space-y-3">

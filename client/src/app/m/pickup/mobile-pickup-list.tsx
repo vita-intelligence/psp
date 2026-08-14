@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -21,6 +21,7 @@ import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type {
   PickupQueueEntry,
 } from "@/lib/production/types";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type { PickupQueueResponse } from "@/lib/warehouse-pickup/server";
 
 interface Props {
@@ -28,14 +29,18 @@ interface Props {
   companyDateFormat: FormatPrefs | null;
 }
 
-const POLL_INTERVAL_MS = 30_000;
-
 /**
  * Mobile pickup queue. Chronological by pickup_by; cards show urgency
  * via a colored badge (overdue = red, due now = amber, scheduled = neutral).
  * Cards lock when another picker has already started (head-of-picker).
  *
  * Tap a card → routes to /m/pickup/<mo_uuid> for the scan flow.
+ *
+ * Freshness is driven by the ``manufacturing-order`` entity channel —
+ * any MO write (pickup_started_at, completed, released) fans out
+ * through ``Backend.Broadcasts.entity_changed/4`` and the hook re-runs
+ * the refresh. No polling interval, no client-side timer — the queue
+ * updates within ~250ms of any cross-picker action.
  */
 export function MobilePickupList({ initialResponse, companyDateFormat }: Props) {
   const router = useRouter();
@@ -82,12 +87,14 @@ export function MobilePickupList({ initialResponse, companyDateFormat }: Props) 
     [],
   );
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void refresh(true);
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  // Live push — refresh whenever the MO ledger changes for this
+  // tenant. Covers cross-picker starts, closeouts, released lots,
+  // and manual overrides via the desktop app. Debounced ~250 ms
+  // inside the hook so a burst of writes collapses.
+  useEntityChannel({
+    entity: "manufacturing-order",
+    onEvent: () => void refresh(true),
+  });
 
   const counts = useMemo(() => {
     let inProgress = 0;
