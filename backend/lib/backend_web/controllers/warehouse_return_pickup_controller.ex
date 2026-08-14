@@ -44,16 +44,30 @@ defmodule BackendWeb.WarehouseReturnPickupController do
     actor = conn.assigns.current_user
     mos = ReturnPickup.list_queue(actor.company_id)
 
-    # Per-MO lot count drives the badge on each card.
+    # Per-MO lot count drives the badge on each card. Also used to
+    # drop zero-lot MOs from the queue below — see the ``reject``
+    # comment.
     counts =
       Enum.map(mos, fn mo ->
         detail = ReturnPickup.get_detail(actor, mo.uuid)
         {mo, length(detail.lots_at_dispatch)}
       end)
 
+    # ``list_queue`` and ``get_detail`` don't share every exclusion
+    # subquery (cancelled-MO orphan-lot bucket in the outer query
+    # doesn't apply the ``committed_lot_ids_subq`` guard; ingredient
+    # bucket picks the MOST-RECENT consuming MO per shared lot even
+    # when that MO no longer has lots to return after a placement
+    # cycle). The mismatch surfaces as "MO with 0 lots" ghost rows —
+    # the operator taps in and sees an empty card, then wonders what
+    # they're missing. Hide zero-lot rows here so the queue only
+    # lists MOs with actual work; the ``length(detail.lots_at_dispatch)``
+    # call above is authoritative for that.
+    populated = Enum.reject(counts, fn {_mo, n} -> n == 0 end)
+
     json(conn, %{
       items:
-        Enum.map(counts, fn {mo, n} ->
+        Enum.map(populated, fn {mo, n} ->
           Payloads.return_pickup_queue_entry(mo, n)
         end)
     })
