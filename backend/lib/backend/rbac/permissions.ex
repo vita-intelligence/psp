@@ -18,10 +18,16 @@ defmodule Backend.RBAC.Permissions do
     {"company.edit", "Edit company settings"}
   ]
 
+  # NB: ``users.invite`` and ``users.deactivate`` were previously in
+  # this list but no code ever gated on them — there is no
+  # invite/deactivate endpoint yet (see ``UserController``: only
+  # ``:index`` / ``:show`` / ``:update_access`` / ``:matrix`` exist).
+  # Registering ungated codes here misleads admins into thinking the
+  # matrix toggle does something. Reintroduce them together with the
+  # corresponding controller actions + ``RequirePermission`` plug so
+  # the toggle actually enforces access.
   @users [
-    {"users.view", "View team members"},
-    {"users.invite", "Invite new users"},
-    {"users.deactivate", "Deactivate users"}
+    {"users.view", "View team members"}
   ]
 
   # "roles" is the DB term — kept stable because changing perm codes is
@@ -84,8 +90,17 @@ defmodule Backend.RBAC.Permissions do
   # Risk assessment is intentionally separate from items.edit so a
   # senior QA can hold the override gate even when ops can edit
   # item identity.
+  #
+  # ``risk_assessments.view`` was previously in this list but the
+  # risk data is emitted as part of the item show payload
+  # (``Payloads.item/1`` → ``:raw_material_risk``), which is already
+  # gated by ``items.view``. Splitting read out again would require
+  # threading the actor through the payload builder, and today the
+  # cost outweighs the value (nobody with items.view but without risk
+  # read exists as a role today). Reintroduce this code together with
+  # the payload-filter plumbing when a role like "operator without QC
+  # visibility" actually needs to be modelled.
   @risk_assessments [
-    {"risk_assessments.view", "View raw-material risk assessments"},
     {"risk_assessments.create", "Create / update risk assessments"},
     {"risk_assessments.approve", "Override the computed risk level (with justification)"}
   ]
@@ -512,11 +527,12 @@ defmodule Backend.RBAC.Permissions do
           %{
             key: "users",
             label: "Users",
-            description: "Team members — invites, access, deactivation.",
+            description:
+              "Team members. Access + role changes are governed by ``roles.edit`` (see the Permission templates row). Invite / deactivate flows aren't wired to endpoints yet — codes will be reintroduced together with the controller actions.",
             read: "users.view",
-            create: "users.invite",
+            create: nil,
             update: nil,
-            delete: "users.deactivate"
+            delete: nil
           },
           %{
             key: "hr_employees",
@@ -596,8 +612,8 @@ defmodule Backend.RBAC.Permissions do
             key: "risk_assessments",
             label: "Risk assessments",
             description:
-              "TACCP / VACCP / HACCP scorecards on raw materials. `Approve` gates the override on the computed level.",
-            read: "risk_assessments.view",
+              "TACCP / VACCP / HACCP scorecards on raw materials. `Approve` gates the override on the computed level. Read visibility is bundled into `items.view` — the risk payload rides on the item show response.",
+            read: nil,
             create: "risk_assessments.create",
             update: "risk_assessments.create",
             delete: nil

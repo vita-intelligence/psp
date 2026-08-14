@@ -47,7 +47,7 @@ defmodule Backend.MyTasks do
     "submit" => "customer_orders.submit",
     "sign_approver" => "customer_orders.approve",
     "sign_director" => "customer_orders.approve",
-    "confirm" => "customer_orders.edit",
+    "confirm" => "customer_orders.create",
 
     # Production planning
     "create_mo_for_line" => "production.mo_create",
@@ -113,8 +113,8 @@ defmodule Backend.MyTasks do
 
     # Customer-order editing
     "open customer" => "customers.view",
-    "go to lines" => "customer_orders.edit",
-    "add lines" => "customer_orders.edit",
+    "go to lines" => "customer_orders.create",
+    "add lines" => "customer_orders.create",
     "build a bom" => "production.bom_edit",
     "pick a bom and create mo" => "production.mo_create",
 
@@ -139,7 +139,7 @@ defmodule Backend.MyTasks do
     "customer_orders.view" => @all_co_phases,
     "customer_orders.submit" => [:setup],
     "customer_orders.approve" => [:approval],
-    "customer_orders.edit" => [:setup, :approval],
+    "customer_orders.create" => [:setup, :approval],
     "production.mo_create" => [:production_planning],
     "production.mo_prepare" => [:production_planning, :in_production],
     "production.mo_approve" => [:production_planning, :in_production],
