@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -19,18 +19,21 @@ import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type { PreflightQueueEntry } from "@/lib/production/types";
 import type { PreflightQueueResponse } from "@/lib/production-preflight/server";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 
 interface Props {
   initialResponse: PreflightQueueResponse | null;
   companyDateFormat: FormatPrefs | null;
 }
 
-const POLL_INTERVAL_MS = 30_000;
-
 /**
  * Production-operator landing. Lists MOs whose pickup has landed at
  * production-feed but still need the per-booking receipt sign-off.
  * Tap a row → /m/preflight/<mo_uuid>.
+ *
+ * Freshness is driven by the ``manufacturing-order`` entity channel
+ * — any MO write (pickup landed, receipt signed, per-booking flip)
+ * fans out and the hook re-runs the silent refresh.
  */
 export function MobilePreflightList({
   initialResponse,
@@ -77,12 +80,10 @@ export function MobilePreflightList({
     }
   }, []);
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void refresh(true);
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  useEntityChannel({
+    entity: "manufacturing-order",
+    onEvent: () => void refresh(true),
+  });
 
   return (
     <div className="flex min-h-dvh flex-col bg-muted/30">

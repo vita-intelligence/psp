@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -22,6 +22,7 @@ import type {
   ReturnPickupLot,
   ReturnPickupQueueEntry,
 } from "@/lib/production/types";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 import type {
   LooseDispatchResponse,
   ReturnPickupQueueResponse,
@@ -35,7 +36,6 @@ interface Props {
   companyDateFormat: FormatPrefs | null;
 }
 
-const POLL_INTERVAL_MS = 30_000;
 const LOOSE_KEY = "__loose__";
 
 export function MobileReturnPickupList({
@@ -75,10 +75,14 @@ export function MobileReturnPickupList({
     }
   }, []);
 
-  useEffect(() => {
-    const id = window.setInterval(() => void refresh(true), POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  // Live push — any customer-return state transition (RMA raised,
+  // lots split back, dispatch staged) fans out through
+  // ``entity_changed("customer-return", …)`` and re-runs the silent
+  // refresh. Debounced ~250 ms inside the hook.
+  useEntityChannel({
+    entity: "customer-return",
+    onEvent: () => void refresh(true),
+  });
 
   const queueItems = queue?.items ?? [];
   const looseItems = loose?.items ?? [];

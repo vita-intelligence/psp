@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -18,13 +18,12 @@ import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type { CloseoutQueueEntry } from "@/lib/production/types";
 import type { CloseoutQueueResponse } from "@/lib/production-closeout/server";
+import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 
 interface Props {
   initialResponse: CloseoutQueueResponse | null;
   companyDateFormat: FormatPrefs | null;
 }
-
-const POLL_INTERVAL_MS = 30_000;
 
 export function MobileCloseoutList({
   initialResponse,
@@ -58,10 +57,13 @@ export function MobileCloseoutList({
     }
   }, []);
 
-  useEffect(() => {
-    const id = window.setInterval(() => void refresh(true), POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  // Live push — any MO state transition (actual_finish, released,
+  // put-away) fans out through ``entity_changed("manufacturing-order",
+  // …)`` and the hook re-runs the silent refresh. Debounced ~250 ms.
+  useEntityChannel({
+    entity: "manufacturing-order",
+    onEvent: () => void refresh(true),
+  });
 
   return (
     <div className="flex min-h-dvh flex-col bg-muted/30">
