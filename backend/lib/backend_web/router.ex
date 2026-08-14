@@ -1080,6 +1080,10 @@ defmodule BackendWeb.Router do
       get "/", ShipmentController, :index
       get "/:uuid", ShipmentController, :show
       patch "/:uuid", ShipmentController, :update
+      # Post-pickup tracking-number edit — carrier issues the
+      # tracking reference AFTER the truck departs, so this endpoint
+      # bypasses the ``draft|ready`` gate that ``:update`` enforces.
+      patch "/:uuid/tracking-number", ShipmentController, :update_tracking_number
       post "/:uuid/mark-ready", ShipmentController, :mark_ready
       post "/:uuid/mark-draft", ShipmentController, :mark_draft
       post "/:uuid/pickup", ShipmentController, :pickup

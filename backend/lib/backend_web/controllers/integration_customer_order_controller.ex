@@ -539,6 +539,7 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
           "vehicle_registration": "AB12 CDE",
           "driver_name": "Alex Baker",
           "consignment_note_ref": "CN-92814",
+          "tracking_number": "1Z999AA10123456784",
           "seal_number": null,
           "temperature_c": null,
           "checklist": {
@@ -607,6 +608,7 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
             vehicle_registration: ship.vehicle_registration,
             driver_name: ship.driver_name,
             consignment_note_ref: ship.consignment_note_ref,
+            tracking_number: ship.tracking_number,
             seal_number: ship.seal_number,
             temperature_c: ship.temperature_c,
             checklist: %{
