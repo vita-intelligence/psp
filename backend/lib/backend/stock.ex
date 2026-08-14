@@ -2100,6 +2100,19 @@ defmodule Backend.Stock do
   def list_move_recommendations(company_id, lot_uuid, opts \\ [])
       when is_integer(company_id) and is_binary(lot_uuid) do
     limit = Keyword.get(opts, :limit, 6)
+    # ``exclude_production_facility?`` — used by the return-pickup
+    # flow. The lot is by definition sitting at a production-facility
+    # source cell (dispatch / production_feed / rnd) that the
+    # warehouse worker is walking BACK to warehouse storage; the
+    # source-warehouse-only filter below would then return the same
+    # production facility's own put-away cells (e.g. Unit 11 rnd →
+    # Unit 11 rnd) which defeats the whole "return to warehouse"
+    # semantic. Callers pass ``true`` to force candidates to
+    # warehouse-kind sites. Default off so every existing caller
+    # (regular put-away, post-QC move, post-release relocation) sees
+    # unchanged behaviour.
+    exclude_production_facility? =
+      Keyword.get(opts, :exclude_production_facility, false)
 
     with %Lot{} = lot <-
            Repo.get_by(Lot, uuid: lot_uuid, company_id: company_id) do
@@ -2218,6 +2231,16 @@ defmodule Backend.Stock do
               c.id not in ^source_cell_ids,
           select: %{cell: c, location: l, floor: f, warehouse: w}
 
+      # Return-pickup flow: strip production-facility warehouses out
+      # of the candidate set — see the ``exclude_production_facility?``
+      # comment at the top of this function.
+      base_query =
+        if exclude_production_facility? do
+          from [c, l, f, w] in base_query, where: w.kind != "production_facility"
+        else
+          base_query
+        end
+
       # Restrict to the warehouse(s) the lot is currently in — put-away
       # is a physical walk, so a cell in another site (e.g. unit 11
       # when the lot sits in unit 12) is never a legitimate suggestion.
@@ -2237,12 +2260,22 @@ defmodule Backend.Stock do
       # and fall back to unscoped only if the result is empty — same
       # number of queries in every real path, no `exists?` warm-up.
       rows =
-        case source_warehouse_ids do
-          [] ->
+        cond do
+          # Return-pickup: the source-warehouse filter would defeat
+          # the whole point (we've EXCLUDED production_facility above
+          # precisely because that's where the source is). Skip the
+          # same-warehouse restriction and let the operator see every
+          # legitimate warehouse-kind destination in the tenant.
+          exclude_production_facility? ->
             Repo.all(base_query)
 
-          ids ->
-            scoped = from [c, l, f, w] in base_query, where: l.warehouse_id in ^ids
+          source_warehouse_ids == [] ->
+            Repo.all(base_query)
+
+          true ->
+            scoped =
+              from [c, l, f, w] in base_query,
+                where: l.warehouse_id in ^source_warehouse_ids
 
             case Repo.all(scoped) do
               [] -> Repo.all(base_query)
