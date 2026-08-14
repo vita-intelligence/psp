@@ -114,10 +114,17 @@ export default async function OutputQcDetailPage({
 
           <SpecSheet entry={entry} />
 
-          {/* NPD product validation sheet — only for R&D lots whose
-              MO carries a trial batch. Collapsed by default so the
-              iframe request only fires on operator expand. */}
-          {mo?.npd_trial_batch_uuid && (
+          {/* NPD product validation sheet — for R&D lots. Renders
+              when the MO has EITHER its own trial batch OR just an
+              npd_formulation_uuid (sample-of-approved-RTG case: the
+              sample MO has no trial batch of its own, but the
+              underlying formulation carries a canonical passed
+              validation from the trial batch that got the FINAL
+              spec approved). Backend resolves the fallback and hits
+              NPD's ``latest.html?formulation=`` when the MO has no
+              trial batch. Collapsed by default so the iframe request
+              only fires on operator expand. */}
+          {(mo?.npd_trial_batch_uuid || mo?.npd_formulation_uuid) && (
             <NpdValidationEmbed
               src={`/api/production/output-qc/${encodeURIComponent(lot_uuid)}/npd-validation.html`}
             />

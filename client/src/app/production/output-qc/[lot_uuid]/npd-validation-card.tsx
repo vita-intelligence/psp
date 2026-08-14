@@ -26,6 +26,16 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
   const mo = entry.mo;
   if (!mo || !mo.npd_formulation_uuid || !mo.npd_trial_batch_uuid) return null;
 
+  // Sample MOs are production runs of already-approved RTG
+  // formulations — their trial batch is a fulfilment placeholder,
+  // NOT something QA needs to validate again. The pill would render
+  // "Not started" against the placeholder batch, which reads as a
+  // gap when in fact the compliance evidence is the RTG's canonical
+  // passed validation (surfaced via the embedded validation sheet
+  // below the card). Hide the card entirely for sample MOs so
+  // operators aren't chasing a phantom NPD action.
+  if (mo.project_type === "sample") return null;
+
   const base = npdBaseUrl.replace(/\/+$/, "");
   const href =
     `${base}/formulations/${encodeURIComponent(mo.npd_formulation_uuid)}` +
