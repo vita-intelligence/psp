@@ -55,6 +55,7 @@ import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
 import { cn } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac";
+import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import {
   deleteInspectionFileAction,
   signOperatorAction,
@@ -2838,9 +2839,12 @@ function FileGallery({
     if (!file) return;
     setLocalError(null);
     setUploading(true);
+    // Route through the shared prep helper — compresses images
+    // (JPEG/PNG/WebP), passes PDFs (CoA scans) through untouched.
+    const prepared = await preparePhotoForUpload(file);
     const fd = new FormData();
-    fd.append("file", file);
-    fd.append("kind", file.type === "application/pdf" ? "coa" : "photo");
+    fd.append("file", prepared);
+    fd.append("kind", prepared.type === "application/pdf" ? "coa" : "photo");
     const res = await uploadInspectionFileAction(inspection.uuid, fd);
     setUploading(false);
     if (e.target) e.target.value = "";

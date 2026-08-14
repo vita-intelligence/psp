@@ -67,6 +67,7 @@ import type {
   ReturnPickupLot,
 } from "@/lib/production/types";
 import type { MoveRecommendation } from "@/lib/stock/mobile";
+import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 import { LastSeenPhotoCard } from "../../lots/[uuid]/move/last-seen-photo";
@@ -192,8 +193,9 @@ export function ReturnPickupFlow({
     setErrorDetail(null);
     setPhotoUploading(true);
     try {
+      const prepared = await preparePhotoForUpload(f);
       const fd = new FormData();
-      fd.append("file", f);
+      fd.append("file", prepared);
       const res = await fetch("/api/m/movement-photos", {
         method: "POST",
         body: fd,

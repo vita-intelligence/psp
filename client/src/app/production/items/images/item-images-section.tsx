@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/card";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { invalidateAudit } from "@/lib/audit/invalidator";
+import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import {
   deleteImageAction,
   setPrimaryImageAction,
@@ -99,8 +100,9 @@ export function ItemImagesSection({ item, canEdit }: Props) {
           break;
         }
 
+        const prepared = await preparePhotoForUpload(file);
         const fd = new FormData();
-        fd.append("file", file);
+        fd.append("file", prepared);
         const res = await uploadImageAction(item.uuid, fd);
         if (!res.ok) {
           setActionError(res);

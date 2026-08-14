@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { cn } from "@/lib/utils";
+import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import {
   formatCompanyDate,
   formatCompanyNumber,
@@ -267,8 +268,9 @@ export function CloseoutFlow({
     setErrorDetail(null);
     setPhotoUploading(true);
     try {
+      const prepared = await preparePhotoForUpload(f);
       const fd = new FormData();
-      fd.append("file", f);
+      fd.append("file", prepared);
       const res = await fetch("/api/m/movement-photos", {
         method: "POST",
         body: fd,
