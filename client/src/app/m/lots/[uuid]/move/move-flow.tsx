@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { moveLotAction } from "@/lib/stock/mobile-actions";
+import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import type { MoveRecommendation } from "@/lib/stock/mobile";
 import type { ScannedCell, StockLot } from "@/lib/types";
 import { CellScanStep } from "./cell-scan-step";
@@ -147,8 +148,9 @@ export function MoveFlow({
     setError(null);
     setPhotoUploading(true);
     try {
+      const prepared = await preparePhotoForUpload(f);
       const fd = new FormData();
-      fd.append("file", f);
+      fd.append("file", prepared);
       const res = await fetch("/api/m/movement-photos", {
         method: "POST",
         body: fd,
@@ -159,7 +161,6 @@ export function MoveFlow({
         return;
       }
       setPhotoUrl(data.photo_url);
-      setSkipReason("");
     } finally {
       setPhotoUploading(false);
       e.target.value = "";

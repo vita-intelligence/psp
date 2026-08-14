@@ -31,6 +31,7 @@ import type {
 } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { moveLotAction } from "@/lib/stock/actions";
+import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 
 interface Props {
   lot: StockLot;
@@ -110,8 +111,9 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
     setError(null);
     setPhotoUploading(true);
     try {
+      const prepared = await preparePhotoForUpload(f);
       const fd = new FormData();
-      fd.append("file", f);
+      fd.append("file", prepared);
       const res = await fetch("/api/stock/movement-photos", {
         method: "POST",
         body: fd,
@@ -125,7 +127,6 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
         return;
       }
       setPhotoUrl(data.photo_url);
-      setSkipReason("");
     } finally {
       setPhotoUploading(false);
       e.target.value = "";

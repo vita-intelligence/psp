@@ -62,6 +62,94 @@ export async function compressImage(
   return dataUrl;
 }
 
+/**
+ * Photo capture on the operator's phone / camera easily produces
+ * 3-6 MB JPEG originals. Uploading those straight up wastes both the
+ * operator's uplink (mobile receiving bays are often on marginal
+ * wifi) and our storage bill — evidence photos live forever for
+ * audit. This helper produces a Blob-backed :class:`File` sized for
+ * operational evidence: 1600px longest side, ~600 KB budget,
+ * starting at quality 0.85. Filename + timestamp preserved so audit
+ * trails still tie back to the original capture.
+ *
+ * Runs entirely in the browser. Non-image inputs (PDFs, docs) are
+ * NOT handled here — see :func:`preparePhotoForUpload` for the
+ * "compress if image, pass through otherwise" wrapper the upload
+ * sites use.
+ */
+const OPERATIONAL_PHOTO_DEFAULTS: Required<CompressOptions> = {
+  maxDimension: 1600,
+  maxBytes: 600 * 1024,
+  startQuality: 0.85,
+  minQuality: 0.5,
+};
+
+export async function compressImageToFile(
+  file: File,
+  options: CompressOptions = {},
+): Promise<File> {
+  const opts = { ...OPERATIONAL_PHOTO_DEFAULTS, ...options };
+  const sourceDataUrl = await readAsDataURL(file);
+  const img = await loadImage(sourceDataUrl);
+  const { width, height } = fitWithin(img.width, img.height, opts.maxDimension);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+  // White backdrop — JPEG has no alpha; transparency would go black
+  // otherwise on the "photo captured through a portrait-mode viewport"
+  // edge case.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(img, 0, 0, width, height);
+
+  let quality = opts.startQuality;
+  let blob = await canvasToBlob(canvas, quality);
+
+  while (
+    blob.size > opts.maxBytes &&
+    quality > opts.minQuality
+  ) {
+    quality = Math.max(opts.minQuality, quality - 0.1);
+    blob = await canvasToBlob(canvas, quality);
+  }
+
+  // Preserve the original filename stem — auditors correlate on the
+  // filename in evidence packs. Swap the extension to ``.jpg`` since
+  // we've always re-encoded to JPEG.
+  const stem = stripExtension(file.name || "photo");
+  const compressedName = `${stem}.jpg`;
+  return new File([blob], compressedName, {
+    type: "image/jpeg",
+    lastModified: file.lastModified || Date.now(),
+  });
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  quality: number,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("Canvas.toBlob returned null"));
+      },
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+function stripExtension(name: string): string {
+  const idx = name.lastIndexOf(".");
+  return idx <= 0 ? name : name.slice(0, idx);
+}
+
+
 /** Same idea but operates on an existing data URL (e.g. from FileReader). */
 export async function compressDataUrl(
   source: string,
