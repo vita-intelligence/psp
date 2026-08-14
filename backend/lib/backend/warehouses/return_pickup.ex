@@ -533,7 +533,27 @@ defmodule Backend.Warehouses.ReturnPickup do
          :ok <- ensure_actor_owns_pick(actor, pick),
          :ok <- ensure_not_placed(pick) do
       lot = Repo.get!(Lot, pick.stock_lot_id)
-      {:ok, Backend.Stock.list_move_recommendations(actor.company_id, lot.uuid, opts)}
+
+      # Force warehouse-kind destinations only. The lot is currently
+      # at a ``production_facility`` source cell (dispatch /
+      # production_feed / rnd — see ``@return_pickup_purposes``); the
+      # general recommender's same-warehouse filter would then hand
+      # back that same production facility's own put-away cells (e.g.
+      # Unit 11 rnd → Unit 11 rnd), which defeats the whole "walk it
+      # back to warehouse storage" semantic of the return-pickup
+      # flow. The ``:exclude_production_facility`` option in
+      # ``Backend.Stock.list_move_recommendations/3`` strips those
+      # sites AND drops the same-warehouse restriction so warehouse-
+      # kind sites in the tenant become the candidate set.
+      recommender_opts =
+        Keyword.put(opts, :exclude_production_facility, true)
+
+      {:ok,
+       Backend.Stock.list_move_recommendations(
+         actor.company_id,
+         lot.uuid,
+         recommender_opts
+       )}
     end
   end
 
