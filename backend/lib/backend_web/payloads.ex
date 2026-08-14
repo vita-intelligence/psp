@@ -5870,6 +5870,7 @@ defmodule BackendWeb.Payloads do
       vehicle_registration: s.vehicle_registration,
       driver_name: s.driver_name,
       consignment_note_ref: s.consignment_note_ref,
+      tracking_number: s.tracking_number,
       seal_number: s.seal_number,
       temperature_c: decimal_to_string(s.temperature_c),
       planned_ship_at: s.planned_ship_at,

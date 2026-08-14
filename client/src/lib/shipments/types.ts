@@ -47,6 +47,13 @@ export interface Shipment {
   vehicle_registration: string | null;
   driver_name: string | null;
   consignment_note_ref: string | null;
+  /** Carrier's parcel-tracking reference (DHL waybill / DPD parcel
+   *  id / etc). Distinct from ``consignment_note_ref`` (the trader's
+   *  own CN paperwork). Editable at any lifecycle stage via the
+   *  dedicated ``PATCH /:uuid/tracking-number`` endpoint — carriers
+   *  frequently issue the reference AFTER the truck departs. Flows
+   *  to the portal Dispatch card so the customer can self-serve. */
+  tracking_number: string | null;
   seal_number: string | null;
   temperature_c: string | null;
   planned_ship_at: string | null;
@@ -166,6 +173,7 @@ export interface ShipmentEditableFields {
   vehicle_registration?: string | null;
   driver_name?: string | null;
   consignment_note_ref?: string | null;
+  tracking_number?: string | null;
   seal_number?: string | null;
   temperature_c?: string | null;
   qty?: string;

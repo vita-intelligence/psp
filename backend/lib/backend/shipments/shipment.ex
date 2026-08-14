@@ -41,6 +41,7 @@ defmodule Backend.Shipments.Shipment do
     vehicle_registration
     driver_name
     consignment_note_ref
+    tracking_number
     seal_number
     temperature_c
     qty
@@ -61,6 +62,14 @@ defmodule Backend.Shipments.Shipment do
     field :vehicle_registration, :string
     field :driver_name, :string
     field :consignment_note_ref, :string
+    # Carrier's own tracking reference (DHL waybill / DPD parcel id /
+    # etc.). Distinct from ``consignment_note_ref`` (the trader's own
+    # CN paperwork): tracking numbers are frequently issued AFTER the
+    # truck leaves — the desk enters this via ``update_changeset``
+    # whenever the carrier provides it, and it flows through to the
+    # customer portal Dispatch card so the customer can track the
+    # parcel themselves.
+    field :tracking_number, :string
     field :seal_number, :string
     field :temperature_c, :decimal
 
@@ -156,6 +165,7 @@ defmodule Backend.Shipments.Shipment do
     |> validate_length(:vehicle_registration, max: 40)
     |> validate_length(:driver_name, max: 200)
     |> validate_length(:consignment_note_ref, max: 80)
+    |> validate_length(:tracking_number, max: 120)
     |> validate_length(:seal_number, max: 60)
     |> validate_length(:notes, max: 2000)
     |> validate_length(:loading_photo_url, max: 500)

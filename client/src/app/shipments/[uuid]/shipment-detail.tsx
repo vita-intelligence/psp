@@ -66,6 +66,7 @@ import {
   markShipmentDraftAction,
   markShipmentReadyAction,
   updateShipmentAction,
+  updateShipmentTrackingNumberAction,
 } from "@/lib/shipments/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import type {
@@ -95,6 +96,19 @@ interface FormState {
   planned_ship_at: string;
   notes: string;
   qty: string;
+  // Carrier paperwork the desk can pre-fill (or leave for the
+  // operator to complete at truck arrival). Kept here so a single
+  // save on the Delivery card covers both address + paperwork
+  // rather than forcing the desk to open the truck-arrival card
+  // separately when they know the carrier upfront.
+  driver_name: string;
+  consignment_note_ref: string;
+  // tracking_number stays out of the form here because it's
+  // typically issued POST-pickup — the TruckArrivalCard hosts a
+  // dedicated inline editor that talks to
+  // ``updateShipmentTrackingNumberAction`` (the post-pickup-safe
+  // endpoint). Adding it to this state would tempt an operator to
+  // enter it before it exists.
 }
 
 function initialFrom(s: Shipment): FormState {
@@ -105,6 +119,8 @@ function initialFrom(s: Shipment): FormState {
     planned_ship_at: s.planned_ship_at ? s.planned_ship_at.slice(0, 16) : "",
     notes: s.notes ?? "",
     qty: s.qty ?? "",
+    driver_name: s.driver_name ?? "",
+    consignment_note_ref: s.consignment_note_ref ?? "",
   };
 }
 
@@ -118,6 +134,8 @@ function toEditable(state: FormState): ShipmentEditableFields {
       : null,
     notes: state.notes || null,
     qty: state.qty,
+    driver_name: state.driver_name || null,
+    consignment_note_ref: state.consignment_note_ref || null,
   };
 }
 
@@ -706,6 +724,36 @@ export function ShipmentDetail({
                   </p>
                 )}
               </Field>
+              <Field label="Driver name" htmlFor="driver_name">
+                <div className="relative">
+                  <Input
+                    id="driver_name"
+                    value={state.driver_name}
+                    onChange={(e) => setField("driver_name", e.target.value)}
+                    onFocus={() => focusField("driver_name")}
+                    onBlur={() => blurField("driver_name")}
+                    placeholder="e.g. Alex Baker (optional pre-fill)"
+                  />
+                  <FieldEditingIndicator peer={fieldEditors.driver_name} />
+                </div>
+              </Field>
+              <Field label="Waybill / CN ref" htmlFor="consignment_note_ref">
+                <div className="relative">
+                  <Input
+                    id="consignment_note_ref"
+                    value={state.consignment_note_ref}
+                    onChange={(e) =>
+                      setField("consignment_note_ref", e.target.value)
+                    }
+                    onFocus={() => focusField("consignment_note_ref")}
+                    onBlur={() => blurField("consignment_note_ref")}
+                    placeholder="e.g. CN-92814 (optional pre-fill)"
+                  />
+                  <FieldEditingIndicator
+                    peer={fieldEditors.consignment_note_ref}
+                  />
+                </div>
+              </Field>
               <Field
                 label="Notes"
                 htmlFor="notes"
@@ -1290,7 +1338,21 @@ function TruckArrivalCard({
             value={shipment.vehicle_registration ?? "—"}
             mono
           />
+          <DetailRow label="Driver name" value={shipment.driver_name ?? "—"} />
+          <DetailRow
+            label="Waybill / CN ref"
+            value={shipment.consignment_note_ref ?? "—"}
+            mono
+          />
         </div>
+
+        {/* Inline tracking-number editor — carrier's parcel-tracking
+            reference is usually issued POST-pickup so the general
+            edit gate has already closed on the Delivery card by the
+            time it's available. Talks to the dedicated
+            ``updateShipmentTrackingNumberAction`` endpoint that
+            accepts edits in any status. */}
+        <TrackingNumberEditor shipment={shipment} />
 
         <div className="space-y-2">
           <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1353,6 +1415,123 @@ function TruckArrivalCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Inline tracking-number editor. Lives on the TruckArrivalCard so
+ * the desk can attach the carrier's parcel-tracking reference at
+ * any point in the shipment lifecycle — carriers frequently issue
+ * it AFTER the truck departs, when the general edit gate on the
+ * Delivery card has already closed. Talks to the dedicated
+ * post-pickup-safe endpoint.
+ *
+ * View mode: shows the current value (or "Not set yet · Add"). Edit
+ * mode: text input + Save / Cancel. On success the parent gets
+ * fresh shipment data via ``router.refresh``.
+ */
+function TrackingNumberEditor({ shipment }: { shipment: Shipment }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(shipment.tracking_number ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current = shipment.tracking_number?.trim();
+
+  // Cancelled shipments can't accept edits — the backend refuses
+  // the endpoint with ``:not_editable``.
+  const locked = shipment.status === "cancelled";
+
+  const cancel = () => {
+    setValue(shipment.tracking_number ?? "");
+    setError(null);
+    setEditing(false);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    const res = await updateShipmentTrackingNumberAction(shipment.uuid, value);
+    setSaving(false);
+    if (res.ok) {
+      toast.success(
+        value.trim()
+          ? "Tracking number saved."
+          : "Tracking number cleared.",
+      );
+      setEditing(false);
+      router.refresh();
+    } else {
+      setError(res.detail);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/10 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Tracking number
+          </p>
+          {!editing && (
+            <p
+              className={cn(
+                "mt-1 truncate text-sm",
+                current ? "font-mono" : "italic text-muted-foreground",
+              )}
+            >
+              {current || "Not set yet"}
+            </p>
+          )}
+        </div>
+        {!editing && !locked && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setEditing(true)}
+          >
+            {current ? "Edit" : "Add"}
+          </Button>
+        )}
+      </div>
+      {editing && (
+        <div className="mt-2 space-y-2">
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="e.g. 1Z999AA10123456784"
+            autoFocus
+            maxLength={120}
+          />
+          {error && (
+            <p className="text-xs text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={cancel}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={save}
+              disabled={saving || value === (shipment.tracking_number ?? "")}
+            >
+              {saving && <Loader2 className="mr-1 size-3.5 animate-spin" />}
+              Save
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

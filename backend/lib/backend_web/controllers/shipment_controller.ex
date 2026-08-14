@@ -132,6 +132,30 @@ defmodule BackendWeb.ShipmentController do
   end
 
   # -----------------------------------------------------------------
+  # Post-pickup tracking-number edit
+  # -----------------------------------------------------------------
+  # Distinct from ``update/2`` because a carrier's parcel-tracking
+  # reference is frequently issued AFTER the truck leaves — the
+  # general edit gate closes at ``picked_up`` and would otherwise
+  # 422 the desk when they try to attach the tracking number later.
+  # Body: ``%{"tracking_number" => "AB123456"}`` (empty string
+  # clears). Works in draft / ready / picked_up / delivered.
+  def update_tracking_number(conn, %{"uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+    tracking_number = params["tracking_number"]
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         {:ok, updated} <-
+           Shipments.update_tracking_number(actor, shipment, tracking_number) do
+      preloaded = Shipments.get_shipment(actor.company_id, updated.uuid)
+      json(conn, %{shipment: Payloads.shipment(preloaded)})
+    else
+      nil -> not_found(conn, "Shipment not found.")
+      {:error, reason} -> shipment_error(conn, reason)
+    end
+  end
+
+  # -----------------------------------------------------------------
   # Lifecycle actions
   # -----------------------------------------------------------------
   def mark_ready(conn, %{"uuid" => uuid}) do

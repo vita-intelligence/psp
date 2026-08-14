@@ -247,6 +247,41 @@ defmodule Backend.Shipments do
     end
   end
 
+  @doc """
+  Post-pickup tracking-number edit. Distinct from :func:`update/3`
+  because a carrier's parcel-tracking reference is frequently issued
+  AFTER the truck departs, and the desk needs to be able to attach
+  it once it lands — long after :func:`ensure_editable/1` has closed
+  the general edit gate at ``picked_up``. Cancelled shipments stay
+  locked (no point tracking a shipment that never left).
+
+  Body: ``%{"tracking_number" => "AB123456"}`` (or empty string to
+  clear). Length capped at 120 chars via ``update_changeset``.
+
+  Broadcasts + audits like a regular edit so the shipment card + the
+  portal Dispatch card both refresh live.
+  """
+  def update_tracking_number(%User{} = actor, %Shipment{} = shipment, tracking_number)
+      when is_binary(tracking_number) or is_nil(tracking_number) do
+    with :ok <- ensure_edit(actor),
+         :ok <- ensure_tracking_editable(shipment) do
+      before_state = shipment_snapshot(shipment)
+      cleaned = tracking_number |> to_string() |> String.trim()
+      value = if cleaned == "", do: nil, else: cleaned
+
+      shipment
+      |> Shipment.update_changeset(%{"tracking_number" => value})
+      |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
+    end
+  end
+
+  defp ensure_tracking_editable(%Shipment{status: s})
+       when s in ~w(draft ready picked_up delivered),
+       do: :ok
+
+  defp ensure_tracking_editable(_), do: {:error, :not_editable}
+
   # For own-stock lots, replace whatever qty the caller sent with the
   # full quantity currently sitting in the dispatch cell. Bailee (3PL)
   # lots pass through untouched — partial dispatches are the whole
