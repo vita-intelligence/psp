@@ -13,17 +13,18 @@ import type { ReturnPickRow } from "../production/types";
 
 export interface PickToTrolleyInput {
   scanned_cell_uuid: string;
-  /** Optional courtesy photo — the actual BRCGS / FSSC movement
-   *  happens at PLACE (which DOES require photo-or-skip). Pick just
-   *  creates the trolley row, so no skip-reason needed here. */
+  /** Pick photo — REQUIRED by the BE ``ensure_photo`` gate on
+   *  ``Backend.Warehouses.ReturnPickup.pick_to_trolley``. Skip-with-
+   *  reason retired (see the FE comment at the bottom of
+   *  ``return-pickup-flow.tsx``). */
   photo_url: string | null;
 }
 
 export interface PlaceFromTrolleyInput {
   scanned_cell_uuid: string;
+  /** Place photo — REQUIRED. Same rationale as ``PickToTrolleyInput``
+   *  above. */
   photo_url: string | null;
-  /** Required when no `photo_url` — mirrors the PO put-away contract. */
-  skip_photo_reason: string | null;
 }
 
 export type PickResult =
@@ -82,7 +83,6 @@ export async function placeReturnLotAction(
     scanned_cell_uuid: input.scanned_cell_uuid,
   };
   if (input.photo_url) body.photo_url = input.photo_url;
-  if (input.skip_photo_reason) body.skip_photo_reason = input.skip_photo_reason;
 
   try {
     const { pick } = await api<{ pick: ReturnPickRow }>(

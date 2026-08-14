@@ -39,14 +39,11 @@ interface Props {
   onOpenChange: (open: boolean) => void;
 }
 
-// Same set the mobile flow uses — keeps the audit reasons consistent
-// across surfaces.
-const SKIP_REASONS = [
-  { value: "blurry_capture", label: "Couldn't get a clear photo" },
-  { value: "camera_unavailable", label: "No camera on this device" },
-  { value: "tight_quarters", label: "Couldn't reach the angle" },
-  { value: "other", label: "Other" },
-];
+// SKIP_REASONS retired — photo capture is now mandatory (BRCGS
+// 3.5.1 / FSSC 22000 traceability). Historical rows with
+// ``skip_photo_reason`` set are preserved on ``stock_movements``
+// for the audit trail. See the mobile counterpart at
+// ``m/lots/[uuid]/move/move-flow.tsx`` for the matching change.
 
 /**
  * Laptop-side equivalent of the mobile move flow. The operator picks
@@ -80,7 +77,6 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
   const [qty, setQty] = useState<string>("");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
-  const [skipReason, setSkipReason] = useState<string>("");
 
   const fromPlacement = useMemo(
     () =>
@@ -102,7 +98,6 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
     setToCellId("");
     setToCellRow(null);
     setPhotoUrl(null);
-    setSkipReason("");
   }, [open, nonZeroPlacements]);
 
   async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
@@ -138,7 +133,7 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
     !!fromPlacementId &&
     !!qty.trim() &&
     Number(qty) > 0 &&
-    (!!photoUrl || !!skipReason) &&
+    !!photoUrl &&
     !pending;
 
   function submit() {
@@ -151,7 +146,6 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
         from_cell_uuid: fromPlacement?.storage_cell?.uuid,
         qty: qty.trim(),
         photo_url: photoUrl ?? undefined,
-        skip_photo_reason: skipReason || undefined,
       });
       if (res.ok) {
         toast.success(`Moved ${lot.code ?? `lot #${lot.id}`}`);
@@ -275,23 +269,10 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
             )}
 
             {!photoUrl && (
-              <div className="space-y-1.5 pt-1">
-                <p className="text-[11px] text-muted-foreground">
-                  Or skip with a reason:
-                </p>
-                <Select value={skipReason} onValueChange={setSkipReason}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder="Pick a reason…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SKIP_REASONS.map((r) => (
-                      <SelectItem key={r.value} value={r.value}>
-                        {r.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <p className="pt-1 text-[11px] text-muted-foreground">
+                A photo is required for every move — BRCGS 3.5.1 /
+                FSSC 22000 traceability.
+              </p>
             )}
           </div>
 

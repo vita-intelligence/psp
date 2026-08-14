@@ -574,7 +574,7 @@ defmodule Backend.Warehouses.ReturnPickup do
   """
   def pick_to_trolley(%User{} = actor, lot_uuid, attrs)
       when is_binary(lot_uuid) and is_map(attrs) do
-    with :ok <- ensure_photo_or_skip(attrs),
+    with :ok <- ensure_photo(attrs),
          {:ok, lot} <- fetch_lot(actor.company_id, lot_uuid),
          :ok <- ensure_status_available(lot),
          {:ok, cell} <- fetch_cell(actor.company_id, attrs["scanned_cell_uuid"]),
@@ -624,7 +624,7 @@ defmodule Backend.Warehouses.ReturnPickup do
   """
   def place_from_trolley(%User{} = actor, pick_uuid, attrs)
       when is_binary(pick_uuid) and is_map(attrs) do
-    with :ok <- ensure_photo_or_skip(attrs),
+    with :ok <- ensure_photo(attrs),
          {:ok, pick} <- fetch_pick(pick_uuid),
          :ok <- ensure_actor_owns_pick(actor, pick),
          :ok <- ensure_not_placed(pick),
@@ -907,25 +907,25 @@ defmodule Backend.Warehouses.ReturnPickup do
 
   defp ensure_placeable_cell(_, _), do: {:error, :destination_invalid}
 
-  # Mirror closeout's photo-or-skip gate (BRCGS 3.5.1 / FSSC 22000
-  # traceability): every movement audit row carries either a photo
-  # OR an attributable skip-reason. UI gates the submit CTA, but the
-  # BE keeps the same invariant so a curl / direct API call can't
-  # slip a blank movement through. Applies to both pick_to_trolley
-  # (dispatch-cell scan) and place_from_trolley (warehouse-cell
-  # scan) so the whole return round-trip is evidenced.
-  defp ensure_photo_or_skip(attrs) when is_map(attrs) do
+  # Every movement audit row MUST carry a photo (BRCGS 3.5.1 / FSSC
+  # 22000 traceability). Mirror of closeout's gate — see
+  # ``Backend.Production.ensure_photo`` for the full rationale on
+  # why the "photo OR skip-reason" path was retired. Applies to
+  # both pick_to_trolley (dispatch-cell scan) and place_from_trolley
+  # (warehouse-cell scan) so the whole return round-trip is
+  # evidenced. UI gates the submit CTA; this BE check backstops a
+  # curl / direct-API bypass.
+  defp ensure_photo(attrs) when is_map(attrs) do
     photo = attrs["photo_url"] || attrs[:photo_url]
-    reason = attrs["skip_photo_reason"] || attrs[:skip_photo_reason]
 
-    cond do
-      is_binary(photo) and photo != "" -> :ok
-      is_binary(reason) and reason != "" -> :ok
-      true -> {:error, :photo_or_skip_required}
+    if is_binary(photo) and photo != "" do
+      :ok
+    else
+      {:error, :photo_required}
     end
   end
 
-  defp ensure_photo_or_skip(_), do: {:error, :photo_or_skip_required}
+  defp ensure_photo(_), do: {:error, :photo_required}
 
   defp ensure_not_same_cell(from_id, to_id) when from_id == to_id,
     do: {:error, :same_cell}

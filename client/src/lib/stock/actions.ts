@@ -300,10 +300,11 @@ export interface MoveLotInput {
   /** Decimal string. Defaults backend-side to the source placement's
    *  on-hand. */
   qty?: string;
-  /** URL returned by the movement-photos upload. */
+  /** URL returned by the movement-photos upload — REQUIRED. The BE
+   *  ``ensure_photo`` gate refuses moves without one. Skip-with-
+   *  reason retired; historical rows with ``skip_photo_reason`` set
+   *  are preserved on ``stock_movements``. */
   photo_url?: string | null;
-  /** Reason recorded when no photo is attached. */
-  skip_photo_reason?: string | null;
 }
 
 export type MoveLotResult =

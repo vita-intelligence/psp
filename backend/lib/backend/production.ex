@@ -10488,7 +10488,7 @@ defmodule Backend.Production do
          :ok <- ensure_source_inspection_not_held(booking),
          {:ok, remaining} <- parse_remaining_qty(attrs, on_hand),
          consumed = Decimal.sub(on_hand, remaining),
-         :ok <- ensure_photo_or_skip(attrs),
+         :ok <- ensure_photo(attrs),
          # Route decision for the leftover, mirroring the output-lot
          # ``route_choice`` shape:
          #   * ``:keep_in_place`` — leftover stays at the production
@@ -10506,9 +10506,12 @@ defmodule Backend.Production do
              route_choice,
              booking.stock_lot_id
            ) do
+      # ``skip_photo_reason`` intentionally NOT threaded through —
+      # the ``ensure_photo`` gate above already refused any request
+      # without a real photo, so pinning ``nil`` here is redundant
+      # and keeps the movement audit row clean.
       photo_meta = %{
-        "photo_url" => attrs["photo_url"],
-        "skip_photo_reason" => attrs["skip_photo_reason"]
+        "photo_url" => attrs["photo_url"]
       }
 
       # Transaction now wraps: consume + move + closeout-completed
@@ -10594,18 +10597,24 @@ defmodule Backend.Production do
     end
   end
 
-  # Mirror return-pickup's photo gate (BRCGS / FSSC traceability):
-  # every closeout movement carries either a photo OR an attributable
-  # skip-reason. UI gates the submit CTA, but the BE keeps the same
-  # invariant so a curl can't slip a blank movement through.
-  defp ensure_photo_or_skip(attrs) do
+  # Every closeout movement MUST carry a photo (BRCGS 3.5.1 / FSSC
+  # 22000 traceability). The earlier "photo OR skip-reason" gate
+  # was retired at the operator's request — the skip path was too
+  # often used as a shortcut and left the audit trail with rows the
+  # regulator couldn't verify. Photo capture is now mandatory
+  # end-to-end (mobile UI compresses the JPEG before upload — see
+  # ``client/src/lib/upload/prepare-photo.ts`` — so marginal-wifi
+  # bays still complete the flow fast). The ``skip_photo_reason``
+  # column on ``stock_movements`` is preserved for historical rows
+  # but no new values are accepted from the API. UI gates the
+  # submit CTA; this BE check backstops a curl / direct-API bypass.
+  defp ensure_photo(attrs) do
     photo = attrs["photo_url"]
-    reason = attrs["skip_photo_reason"]
 
-    cond do
-      is_binary(photo) and photo != "" -> :ok
-      is_binary(reason) and reason != "" -> :ok
-      true -> {:error, :photo_or_skip_required}
+    if is_binary(photo) and photo != "" do
+      :ok
+    else
+      {:error, :photo_required}
     end
   end
 
@@ -11545,7 +11554,7 @@ defmodule Backend.Production do
   end
 
   defp closeout_output_lot_move(%User{} = actor, %StockLot{} = lot, attrs) do
-    with :ok <- ensure_photo_or_skip(attrs),
+    with :ok <- ensure_photo(attrs),
          # Output lot's source MO determines whether we accept `rnd`
          # or `dispatch` destinations — an R&D output stays on the R&D
          # floor, a production output stages in the shipping bay.
@@ -11573,7 +11582,10 @@ defmodule Backend.Production do
                "to_cell_uuid" => dest_cell.uuid,
                "qty" => Decimal.to_string(placement.qty),
                "photo_url" => attrs["photo_url"],
-               "skip_photo_reason" => attrs["skip_photo_reason"],
+               # ``skip_photo_reason`` deliberately dropped — the
+               # ``ensure_photo`` gate above refuses any request
+               # without a real photo, so we never have a reason
+               # to pass through.
                "reference_kind" => "manufacturing_order",
                "reference_uuid" => lot.source_ref
              }) do

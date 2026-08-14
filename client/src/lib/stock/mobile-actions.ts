@@ -14,8 +14,10 @@ export interface MoveLotInput {
   lotUuid: string;
   toCellUuid: string;
   qty?: string;
+  /** URL returned by the movement-photos upload — REQUIRED. The BE
+   *  ``ensure_photo`` gate refuses moves without one. Skip-with-
+   *  reason retired. */
   photoUrl?: string | null;
-  skipPhotoReason?: string | null;
   reason?: string | null;
 }
 
@@ -44,7 +46,6 @@ export async function moveLotAction(
           to_cell_uuid: input.toCellUuid,
           qty: input.qty,
           photo_url: input.photoUrl ?? null,
-          skip_photo_reason: input.skipPhotoReason ?? null,
           reason: input.reason ?? null,
         }),
       },

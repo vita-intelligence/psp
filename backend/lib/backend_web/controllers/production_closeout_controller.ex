@@ -133,11 +133,11 @@ defmodule BackendWeb.ProductionCloseoutController do
           "Remaining qty can't exceed the lot's on-hand quantity."
         )
 
-      {:error, :photo_or_skip_required} ->
+      {:error, :photo_required} ->
         unprocessable(
           conn,
-          "photo_or_skip_required",
-          "Add a photo or pick a skip-reason — every closeout movement needs one or the other (BRCGS / FSSC traceability)."
+          "photo_required",
+          "Attach a photo — every closeout movement needs one (BRCGS 3.5.1 / FSSC 22000 traceability)."
         )
 
       {:error, :missing_dispatch_cell} ->

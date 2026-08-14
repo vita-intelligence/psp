@@ -18,13 +18,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { moveLotAction } from "@/lib/stock/mobile-actions";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import type { MoveRecommendation } from "@/lib/stock/mobile";
@@ -56,12 +49,13 @@ interface Props {
   preSetDestination?: ScannedCell | null;
 }
 
-const SKIP_REASONS = [
-  { value: "blurry_capture", label: "Couldn't get a clear photo" },
-  { value: "camera_unavailable", label: "Camera not working" },
-  { value: "tight_quarters", label: "Couldn't reach the angle" },
-  { value: "other", label: "Other" },
-];
+// SKIP_REASONS retired — photo capture is now mandatory end-to-end
+// (BRCGS 3.5.1 / FSSC 22000 traceability). The backend
+// ``ensure_photo`` gate refuses any move without a real photo, and
+// ``preparePhotoForUpload`` compresses the JPEG so marginal-wifi
+// bays still complete the flow fast enough to remove the skip
+// escape hatch. Historical rows with ``skip_photo_reason`` set are
+// preserved for the audit trail.
 
 /**
  * Put-away flow with verification baked in:
@@ -113,7 +107,6 @@ export function MoveFlow({
   const [scanned, setScanned] = useState<ScannedCell | null>(null);
   const [lotVerified, setLotVerified] = useState(arrivedFromCellScan);
   const [qty, setQty] = useState<string>(String(lot.qty_on_hand ?? ""));
-  const [skipReason, setSkipReason] = useState<string>("");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -136,8 +129,8 @@ export function MoveFlow({
     // in viewfinder), so anything reaching this callback has already
     // been verified to match the expected cell (or the operator
     // explicitly overrode to scan-anything mode). Auto-submit with the
-    // scanned cell — the qty / photo / skip-reason were captured in
-    // the directions step, no extra confirm screen needed.
+    // scanned cell — the qty + photo were captured in the directions
+    // step, no extra confirm screen needed.
     setScanned(cell);
     onSubmit(cell);
   }
@@ -174,8 +167,8 @@ export function MoveFlow({
     // fall back to the rendered scanned state otherwise.
     const targetCell = cellOverride ?? scanned;
     if (!targetCell) return;
-    if (!photoUrl && !skipReason) {
-      setError("Take a photo or pick a skip reason.");
+    if (!photoUrl) {
+      setError("Take a photo to continue — required for the audit trail.");
       return;
     }
     startSubmit(async () => {
@@ -200,8 +193,7 @@ export function MoveFlow({
           lotUuid: lot.uuid,
           toCellUuid: targetCell.uuid,
           qty: qty || undefined,
-          photoUrl: photoUrl || null,
-          skipPhotoReason: photoUrl ? null : skipReason || null,
+          photoUrl: photoUrl,
         }),
         timeout,
       ]);
@@ -304,10 +296,8 @@ export function MoveFlow({
           onQtyChange={setQty}
           photoUrl={photoUrl}
           photoUploading={photoUploading}
-          skipReason={skipReason}
           onPhotoChange={onPhotoChange}
           onClearPhoto={() => setPhotoUrl(null)}
-          onSkipReasonChange={setSkipReason}
           error={error}
           onContinue={() => setStep("verify-scan")}
         />
@@ -434,10 +424,8 @@ function DirectionsStep({
   onQtyChange,
   photoUrl,
   photoUploading,
-  skipReason,
   onPhotoChange,
   onClearPhoto,
-  onSkipReasonChange,
   error,
   onContinue,
 }: {
@@ -447,10 +435,8 @@ function DirectionsStep({
   onQtyChange: (value: string) => void;
   photoUrl: string | null;
   photoUploading: boolean;
-  skipReason: string;
   onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClearPhoto: () => void;
-  onSkipReasonChange: (value: string) => void;
   error: string | null;
   onContinue: () => void;
 }) {
@@ -468,7 +454,7 @@ function DirectionsStep({
   const rackSuffix = rackCode && rackName ? rackName : null;
   const cellPrimary = cellCode ?? shelfLabel;
   const cellSuffix = cellCode ? shelfLabel : null;
-  const canContinue = Boolean(photoUrl) || skipReason.length > 0;
+  const canContinue = Boolean(photoUrl);
 
   return (
     <>
@@ -479,9 +465,8 @@ function DirectionsStep({
           </p>
           <p className="text-sm text-muted-foreground">
             Find the highlighted rack on the floor plan, then capture
-            a photo (or pick a skip reason). Tap Scan now when you&apos;re
-            at the shelf — the move fires automatically when the QR
-            matches.
+            a photo. Tap Scan now when you&apos;re at the shelf — the
+            move fires automatically when the QR matches.
           </p>
         </div>
 
@@ -577,24 +562,10 @@ function DirectionsStep({
                   disabled={photoUploading}
                 />
               </label>
-
-              <div className="space-y-1.5">
-                <p className="text-[11px] text-muted-foreground">
-                  Or skip with a reason:
-                </p>
-                <Select value={skipReason} onValueChange={onSkipReasonChange}>
-                  <SelectTrigger className="h-10">
-                    <SelectValue placeholder="Pick a reason…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SKIP_REASONS.map((r) => (
-                      <SelectItem key={r.value} value={r.value}>
-                        {r.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <p className="text-[11px] text-muted-foreground">
+                A photo is required for every move — BRCGS 3.5.1 / FSSC
+                22000 traceability.
+              </p>
             </>
           )}
         </section>
@@ -609,7 +580,7 @@ function DirectionsStep({
       <footer className="space-y-2 border-t border-border/60 px-4 py-3">
         {!canContinue && (
           <p className="text-center text-[11px] text-muted-foreground">
-            Add a photo or pick a skip reason to continue.
+            Take a photo to continue.
           </p>
         )}
         <Button
