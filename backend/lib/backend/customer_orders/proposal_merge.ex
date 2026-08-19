@@ -426,7 +426,15 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       npd_proposal_accepted_at:
         parse_datetime(params["npd_proposal_accepted_at"]),
       npd_proposal_accepted_by_name:
-        sanitize(params["npd_proposal_accepted_by_name"])
+        sanitize(params["npd_proposal_accepted_by_name"]),
+      # Customer-side sign timestamp. Distinct from
+      # ``npd_proposal_accepted_at`` — the FSM keeps status at
+      # ``sent`` after the customer signs; finance runs a
+      # separate finalize step. Presence + ``npd_proposal_status
+      # = sent`` is the phase-gate signal for the new
+      # ``:awaiting_sample_selection`` kanban column.
+      npd_customer_signed_at:
+        parse_datetime(params["npd_customer_signed_at"])
     }
 
     # Full audit event log — NPD is authoritative and replaces the
@@ -436,6 +444,32 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       case normalise_timeline(params["timeline"] || params[:timeline]) do
         nil -> %{}
         list -> %{npd_timeline: list}
+      end
+
+    # Sample-allocation status is a per-line field on the vita-cff
+    # payload (each line = one formulation = one allocation). The
+    # primary CO corresponds to the first line, so we take THAT
+    # line's status. Nil / empty string clears the mirror so a
+    # customer who somehow reset their allocation upstream doesn't
+    # leave the kanban stuck on ``:awaiting_sample_selection`` /
+    # ``:proposal_accepted``.
+    first_line =
+      case params["lines"] || params[:lines] do
+        [head | _] when is_map(head) -> head
+        _ -> %{}
+      end
+
+    allocation_status_raw =
+      first_line["npd_sample_allocation_status"] ||
+        first_line[:npd_sample_allocation_status]
+
+    allocation_attr =
+      case allocation_status_raw do
+        nil -> %{npd_sample_allocation_status: nil}
+        "" -> %{npd_sample_allocation_status: nil}
+        s when is_binary(s) ->
+          %{npd_sample_allocation_status: String.trim(s)}
+        _ -> %{}
       end
 
     attrs =
@@ -449,6 +483,7 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       |> Map.merge(status_attr)
       |> Map.merge(transition_attrs)
       |> Map.merge(timeline_attr)
+      |> Map.merge(allocation_attr)
 
     Ecto.Changeset.change(primary, attrs)
   end

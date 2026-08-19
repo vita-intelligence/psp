@@ -151,6 +151,20 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :npd_proposal_sent_by_name, :string
     field :npd_proposal_accepted_at, :utc_datetime
     field :npd_proposal_accepted_by_name, :string
+    # Customer-side sign timestamp. Distinct from
+    # ``npd_proposal_accepted_at`` — signing captures the
+    # signature but the FSM stays at ``sent``; finance runs a
+    # separate finalize step to flip status to ``accepted``.
+    # Presence here (with npd_proposal_status = "sent") is what
+    # unlocks the ``:awaiting_sample_selection`` kanban column.
+    field :npd_customer_signed_at, :utc_datetime
+    # Mirrored ``SampleAllocation.status`` — ``"draft"`` while the
+    # customer is still poking at the picker, ``"confirmed"`` once
+    # they've committed. Nil when the allocation row doesn't
+    # exist yet OR (legacy) when the vita-cff sync predates the
+    # sample-selection feature. Drives the kanban split between
+    # ``:awaiting_sample_selection`` and ``:proposal_accepted``.
+    field :npd_sample_allocation_status, :string
     # Full audit-preserving event log — one entry per NPD-side event
     # (formulation created, spec transitioned, proposal transitioned).
     # NPD is authoritative and replaces the array on every sync so a
