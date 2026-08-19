@@ -47,6 +47,7 @@ defmodule Backend.OrderWizard do
 
   @phases [:r_and_d, :awaiting_proposal, :awaiting_proposal_approval,
            :proposal_in_review, :proposal_ready_to_send, :awaiting_customer_signature,
+           :awaiting_sample_selection,
            :proposal_accepted, :setup, :approval,
            :production_planning, :awaiting_ingredients, :picking_ingredients,
            :in_production, :closeout,
@@ -324,7 +325,9 @@ defmodule Backend.OrderWizard do
          %CustomerOrder{
            status: "draft",
            npd_proposal_uuid: proposal_uuid,
-           npd_proposal_status: proposal_status
+           npd_proposal_status: proposal_status,
+           npd_customer_signed_at: customer_signed_at,
+           npd_sample_allocation_status: allocation_status
          },
          _line_states,
          _mos
@@ -334,7 +337,31 @@ defmodule Backend.OrderWizard do
       s when s in ["draft", nil] -> :awaiting_proposal_approval
       "in_review" -> :proposal_in_review
       "approved" -> :proposal_ready_to_send
-      "sent" -> :awaiting_customer_signature
+      "sent" ->
+        # ``sent`` splits into three columns based on customer
+        # commitment state (mirrored from vita-cff):
+        #
+        #   * signed_at nil                       → :awaiting_customer_signature
+        #     ("Sent to client" — proposal in inbox, no action)
+        #   * signed_at set + allocation != "confirmed"
+        #                                        → :awaiting_sample_selection
+        #     ("Choose samples" — customer signed the deal but
+        #      hasn't picked their trial-sample quantity yet)
+        #   * signed_at set + allocation "confirmed"
+        #                                        → :proposal_accepted
+        #     ("Awaiting R&D payment" — bundled deposit+samples
+        #      invoice has been auto-generated and is now on
+        #      finance's queue awaiting customer payment)
+        cond do
+          is_nil(customer_signed_at) ->
+            :awaiting_customer_signature
+
+          allocation_status == "confirmed" ->
+            :proposal_accepted
+
+          true ->
+            :awaiting_sample_selection
+        end
       # Rejected (customer said no on the kiosk, or staff closed on
       # their behalf). The spec is still director-signed so a new
       # proposal can be drafted — bounce the CO back to
@@ -583,6 +610,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:proposal_in_review), do: "Proposal in review"
   defp phase_label(:proposal_ready_to_send), do: "Ready to send proposal"
   defp phase_label(:awaiting_customer_signature), do: "Sent to client"
+  defp phase_label(:awaiting_sample_selection), do: "Choose samples"
   defp phase_label(:proposal_accepted), do: "Awaiting R&D payment"
   defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
@@ -689,11 +717,28 @@ defmodule Backend.OrderWizard do
 
     %{
       code: "awaiting_customer_signature",
-      title: "Proposal sent to client — awaiting kiosk signature.",
+      title: "Proposal sent to client — awaiting portal signature.",
       detail:
-        "The proposal is with the customer on the kiosk. When they sign, this order advances to Awaiting R&D payment — trial batches unlock once finance confirms the deposit.",
+        "The proposal is with the customer on their portal. When they sign, the order moves to Choose samples so they can pick their trial-sample quantity, then Awaiting R&D payment for the bundled deposit invoice.",
       primary_cta: %{
         label: "Open proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:awaiting_sample_selection, co, _line_states, _mos, _signers) do
+    href = co.npd_proposal_url || co.npd_app_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "awaiting_sample_selection",
+      title: "Customer signed — picking their trial-sample quantity.",
+      detail:
+        "The customer has signed the proposal on the portal. They're on the sample-selection step now, choosing how many trial samples they want. When they confirm, a bundled deposit + samples invoice auto-generates on the finance queue and this order advances to Awaiting R&D payment.",
+      primary_cta: %{
+        label: "Open on NPD",
         kind: "link",
         href: href
       },

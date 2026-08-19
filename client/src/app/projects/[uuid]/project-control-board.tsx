@@ -50,6 +50,7 @@ import {
   ExternalLink,
   Factory,
   FileText,
+  FlaskConical,
   Hourglass,
   Layers,
   Loader2,
@@ -148,6 +149,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "proposal_in_review",
   "proposal_ready_to_send",
   "awaiting_customer_signature",
+  "awaiting_sample_selection",
   "proposal_accepted",
   "setup",
   "approval",
@@ -171,6 +173,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   proposal_in_review: "Proposal in review",
   proposal_ready_to_send: "Ready to send",
   awaiting_customer_signature: "Sent to client",
+  awaiting_sample_selection: "Choose samples",
   proposal_accepted: "Awaiting R&D payment",
   setup: "Setup",
   approval: "Approval",
@@ -198,9 +201,11 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
   proposal_ready_to_send:
     "Director signed. Waiting for the proposal to be sent to the customer.",
   awaiting_customer_signature:
-    "Proposal is with the client. Waiting for the customer's kiosk signature.",
+    "Proposal is with the client. Waiting for the customer's portal signature.",
+  awaiting_sample_selection:
+    "Customer signed the proposal — now picking their trial-sample quantity on the portal. A bundled deposit + samples invoice lands on the finance queue the moment they confirm.",
   proposal_accepted:
-    "Customer signed. Awaiting the R&D deposit — trial batches unlock once finance approves the payment.",
+    "Customer signed + confirmed sample quantity. Awaiting the R&D deposit — trial batches unlock once finance approves the payment.",
   setup: "Add lines and price the order.",
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
@@ -232,6 +237,7 @@ const PHASE_ICON: Record<
   proposal_in_review: ShieldCheck,
   proposal_ready_to_send: Send,
   awaiting_customer_signature: FileText,
+  awaiting_sample_selection: FlaskConical,
   proposal_accepted: CheckCircle2,
   setup: FileText,
   approval: ShieldCheck,
@@ -1508,12 +1514,16 @@ const PHASE_EXPLAINER: Record<
     body: "Director signed off. The next step is sending the proposal to the customer from NPD. Once sent, the order moves to Awaiting customer signature.",
   },
   awaiting_customer_signature: {
-    title: "Proposal sent to client — waiting on kiosk signature.",
-    body: "The proposal is with the customer on the kiosk. When they sign, the order advances to Awaiting R&D payment.",
+    title: "Proposal sent to client — waiting on portal signature.",
+    body: "The proposal is with the customer on their portal. When they sign, the order advances to Choose samples so they can pick their trial-sample quantity, then Awaiting R&D payment for the bundled deposit invoice.",
+  },
+  awaiting_sample_selection: {
+    title: "Customer signed — picking their trial-sample quantity.",
+    body: "The customer has signed the proposal on the portal. They're on the sample-selection step now, choosing how many trial samples they want (free allowance + priced extras with any bulk discount tiers). The moment they confirm, a bundled deposit + samples invoice auto-generates on the finance queue and this order advances to Awaiting R&D payment.",
   },
   proposal_accepted: {
-    title: "Customer signed — awaiting R&D deposit.",
-    body: "The customer has signed the proposal (legally binding contract), but finance hasn't confirmed the deposit yet. Trial batches on NPD are locked until the deposit lands. Once finance approves the payment, the order can be submitted for approval and continue through the standard production flow.",
+    title: "Customer signed + confirmed samples — awaiting R&D deposit.",
+    body: "The customer has signed the proposal and confirmed their sample quantity. A bundled deposit + samples invoice is on the finance queue, waiting for the customer to pay. Trial batches on NPD are locked until the deposit lands. Once finance approves the payment, the order can be submitted for approval and continue through the standard production flow.",
   },
   setup: {
     title: "You're building the order.",
@@ -4336,6 +4346,8 @@ function phaseBadgeTone(
       return "sky";
     case "awaiting_customer_signature":
       return "sky";
+    case "awaiting_sample_selection":
+      return "amber";
     case "proposal_accepted":
       return "emerald";
     case "setup":

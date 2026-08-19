@@ -2881,6 +2881,7 @@ export type OrderWizardPhaseKey =
   | "proposal_in_review"
   | "proposal_ready_to_send"
   | "awaiting_customer_signature"
+  | "awaiting_sample_selection"
   | "proposal_accepted"
   | "setup"
   | "approval"
