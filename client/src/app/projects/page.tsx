@@ -383,7 +383,10 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
     >
       {/* CO code + optional Sample chip. Sample sits inline with the
           code (not in the phase-gated chips row below) because it's
-          an identity marker of the project, not a status. */}
+          an identity marker of the project, not a status. Trial-slot
+          badge stacks below on cycle-child sample MOs so scientists
+          can eyeball which sample cards are siblings of the same
+          custom-formulation CO. */}
       <div className="flex items-center gap-1.5">
         <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           {co.code ?? `CO #${co.id}`}
@@ -397,6 +400,25 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
           </span>
         ) : null}
       </div>
+
+      {/* Trial-slot badge — only on cycle-child sample MOs. Links
+          to the parent custom-formulation CO so scientists can jump
+          between siblings. */}
+      {co.parent_customer_order_uuid ? (
+        <p className="mt-0.5">
+          <span
+            title="Sample slot in a custom-formulation trial-batch cycle. Open the parent project from its own kanban card."
+            className="inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-700 ring-1 ring-amber-200/60 dark:bg-amber-950/30 dark:text-amber-300 dark:ring-amber-700/40"
+          >
+            {co.npd_trial_slot_sequence_no != null && co.npd_trial_slot_total != null
+              ? `↳ Trial ${co.npd_trial_slot_sequence_no}/${co.npd_trial_slot_total}`
+              : "↳ Trial"}
+            {co.parent_customer_order_reference
+              ? ` · ${co.parent_customer_order_reference}`
+              : ""}
+          </span>
+        </p>
+      ) : null}
 
       {/* Project title — NPD formulation name for R&D, customer name
           otherwise. */}
