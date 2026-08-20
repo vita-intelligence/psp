@@ -48,7 +48,7 @@ defmodule Backend.OrderWizard do
   @phases [:r_and_d, :awaiting_proposal, :awaiting_proposal_approval,
            :proposal_in_review, :proposal_ready_to_send, :awaiting_customer_signature,
            :awaiting_sample_selection,
-           :proposal_accepted, :setup, :approval,
+           :proposal_accepted, :trial_batches_in_flight, :setup, :approval,
            :production_planning, :awaiting_ingredients, :picking_ingredients,
            :in_production, :closeout,
            :final_release, :awaiting_routing, :ready_to_dispatch, :awaiting_pickup,
@@ -327,7 +327,8 @@ defmodule Backend.OrderWizard do
            npd_proposal_uuid: proposal_uuid,
            npd_proposal_status: proposal_status,
            npd_customer_signed_at: customer_signed_at,
-           npd_sample_allocation_status: allocation_status
+           npd_sample_allocation_status: allocation_status,
+           npd_deposit_paid_at: deposit_paid_at
          },
          _line_states,
          _mos
@@ -338,7 +339,7 @@ defmodule Backend.OrderWizard do
       "in_review" -> :proposal_in_review
       "approved" -> :proposal_ready_to_send
       "sent" ->
-        # ``sent`` splits into three columns based on customer
+        # ``sent`` splits into four columns based on customer
         # commitment state (mirrored from vita-cff):
         #
         #   * signed_at nil                       → :awaiting_customer_signature
@@ -347,14 +348,22 @@ defmodule Backend.OrderWizard do
         #                                        → :awaiting_sample_selection
         #     ("Choose samples" — customer signed the deal but
         #      hasn't picked their trial-sample quantity yet)
-        #   * signed_at set + allocation "confirmed"
+        #   * signed_at set + allocation "confirmed" + deposit not paid
         #                                        → :proposal_accepted
         #     ("Awaiting R&D payment" — bundled deposit+samples
         #      invoice has been auto-generated and is now on
         #      finance's queue awaiting customer payment)
+        #   * everything above AND deposit paid  → :trial_batches_in_flight
+        #     ("Trial batches" — finance approved the deposit; the
+        #      vita-cff TrialBatchCycle is spinning up sample MOs
+        #      one-at-a-time. Card sits here until the customer
+        #      signs the final spec + the CO leaves status="draft".)
         cond do
           is_nil(customer_signed_at) ->
             :awaiting_customer_signature
+
+          allocation_status == "confirmed" and not is_nil(deposit_paid_at) ->
+            :trial_batches_in_flight
 
           allocation_status == "confirmed" ->
             :proposal_accepted
@@ -612,6 +621,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:awaiting_customer_signature), do: "Sent to client"
   defp phase_label(:awaiting_sample_selection), do: "Choose samples"
   defp phase_label(:proposal_accepted), do: "Awaiting R&D payment"
+  defp phase_label(:trial_batches_in_flight), do: "Trial batches"
   defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
   defp phase_label(:approval), do: "Approval"
@@ -756,6 +766,23 @@ defmodule Backend.OrderWizard do
         "The customer has signed the proposal (contract), but finance hasn't confirmed the deposit yet. Trial batches on NPD are locked until the deposit lands. Once finance approves it, this order can be submitted for approval and continue through the standard production flow.",
       primary_cta: %{
         label: "Open signed proposal on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:trial_batches_in_flight, co, _line_states, _mos, _signers) do
+    href = co.npd_app_url || co.npd_proposal_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "trial_batches_in_flight",
+      title: "Trial-batch cycle in progress on NPD.",
+      detail:
+        "The customer's deposit has landed and the R&D team is producing trial samples one at a time on NPD. Each sample MO for this project shows here on the /projects kanban with a \"↳ Trial N/M\" badge. The card leaves this column once the customer signs the final specification.",
+      primary_cta: %{
+        label: "Open cycle on NPD",
         kind: "link",
         href: href
       },
