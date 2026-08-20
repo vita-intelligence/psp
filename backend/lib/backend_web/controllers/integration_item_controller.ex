@@ -566,14 +566,106 @@ defmodule BackendWeb.IntegrationItemController do
         end)
 
       case Backend.Items.update(actor, item, update_params) do
-        {:ok, updated} -> updated
-        # Silent-degrade: if the update fails (e.g. a name collision
-        # on a company's unique constraint), keep the stale row so
-        # the push cascade can still finish. The scientist can rename
-        # by hand in PSP if it matters.
-        _ -> item
+        {:ok, updated} ->
+          updated
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          # Name collision on the ``items_company_id_name_index``
+          # unique constraint — another item in the company already
+          # claims this name. Previous behaviour was silent-degrade
+          # (kept the stale row, scientist saw the old name on PSP
+          # + on every downstream MO forever). We now retry ONCE
+          # with a sku-suffixed name so the item still updates AND
+          # the operator can tell WHY the disambiguation happened.
+          #
+          # ``update_params`` still carries the caller's incoming
+          # name; we only swap that field for the retry so the other
+          # updates (description, attributes, barcode, uom, family)
+          # still land in the same write.
+          if name_collision?(cs) do
+            disambiguated =
+              disambiguate_name(incoming_name, item.external_sku)
+
+            case Backend.Items.update(
+                   actor,
+                   item,
+                   Map.put(update_params, "name", disambiguated)
+                 ) do
+              {:ok, updated} ->
+                updated
+
+              _ ->
+                # Retry also failed — fall back to the old silent-
+                # degrade behaviour so a downstream unrelated error
+                # doesn't sink the whole push cascade. Should be
+                # unreachable in practice (sku fragments are unique).
+                item
+            end
+          else
+            item
+          end
+
+        _ ->
+          item
       end
     end
+  end
+
+  # ``true`` when the Ecto changeset error came from the
+  # ``items_company_id_name_index`` unique constraint. Guards the
+  # rename-retry so a validation error on some other field (name
+  # length, item_type inclusion, etc.) doesn't accidentally trigger
+  # an unrelated retry.
+  defp name_collision?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {_field, {_msg, opts}} ->
+        Keyword.get(opts, :constraint) == :unique and
+          Keyword.get(opts, :constraint_name) == "items_company_id_name_index"
+
+      _ ->
+        false
+    end)
+  end
+
+  # Suffix the incoming name with a short, human-readable token
+  # derived from the item's ``external_sku`` so the resulting name
+  # is guaranteed unique in the company scope AND still tells the
+  # operator which SKU this row is.
+  #
+  # NPD-owned skus follow one of these shapes:
+  #
+  #   * ``NPD-FINISHED-<uuid>``            → suffix = first 8 uuid chars
+  #   * ``NPD-STAGE-<uuid>-<sort_order>``  → suffix = ``<uuid8>·<sort>``
+  #   * ``NPD-FP-<random>`` (legacy)       → suffix = the ``<random>``
+  #   * everything else                    → suffix = last 8 sku chars
+  #
+  # Result: "Kyrgyz Capsules · 591675ea" — readable, unique, and
+  # the operator can grep the sku fragment to find the row.
+  defp disambiguate_name(name, external_sku) when is_binary(external_sku) do
+    fragment = sku_fragment(external_sku)
+    "#{name} · #{fragment}"
+  end
+
+  defp disambiguate_name(name, _), do: name <> " · dup"
+
+  defp sku_fragment("NPD-FINISHED-" <> rest), do: String.slice(rest, 0, 8)
+
+  defp sku_fragment("NPD-STAGE-" <> rest) do
+    case String.split(rest, "-") do
+      [seg0 | tail] ->
+        stage = List.last(tail) || ""
+        String.slice(seg0, 0, 8) <> "·" <> stage
+
+      _ ->
+        String.slice(rest, 0, 8)
+    end
+  end
+
+  defp sku_fragment("NPD-FP-" <> rest), do: rest
+
+  defp sku_fragment(sku) do
+    len = String.length(sku)
+    String.slice(sku, max(len - 8, 0), 8)
   end
 
   defp payload(%Item{} = item, created: created?) do
