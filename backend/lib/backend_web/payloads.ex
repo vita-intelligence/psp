@@ -800,6 +800,9 @@ defmodule BackendWeb.Payloads do
       parent_customer_order_reference: co.parent_customer_order_reference,
       npd_trial_slot_sequence_no: co.npd_trial_slot_sequence_no,
       npd_trial_slot_total: co.npd_trial_slot_total,
+      # Bundled deposit+samples Payment approval timestamp. Drives
+      # the wizard's :trial_batches_in_flight phase.
+      npd_deposit_paid_at: co.npd_deposit_paid_at,
       default_warehouse_id: co.default_warehouse_id,
       default_warehouse: maybe_warehouse_compact(co.default_warehouse),
       submitted_at: co.submitted_at,

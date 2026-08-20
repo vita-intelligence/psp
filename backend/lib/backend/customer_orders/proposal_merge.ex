@@ -434,7 +434,14 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       # = sent`` is the phase-gate signal for the new
       # ``:awaiting_sample_selection`` kanban column.
       npd_customer_signed_at:
-        parse_datetime(params["npd_customer_signed_at"])
+        parse_datetime(params["npd_customer_signed_at"]),
+      # Bundled deposit+samples Payment approval timestamp. Presence
+      # flips the wizard phase from ``:proposal_accepted`` to
+      # ``:trial_batches_in_flight`` so the /projects kanban shows
+      # the cycle is running (vs. still waiting on the customer to
+      # pay). Nil clears the mirror if a payment is voided upstream.
+      npd_deposit_paid_at:
+        parse_datetime(params["npd_deposit_paid_at"])
     }
 
     # Full audit event log — NPD is authoritative and replaces the

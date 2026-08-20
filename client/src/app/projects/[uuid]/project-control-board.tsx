@@ -151,6 +151,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "awaiting_customer_signature",
   "awaiting_sample_selection",
   "proposal_accepted",
+  "trial_batches_in_flight",
   "setup",
   "approval",
   "production_planning",
@@ -175,6 +176,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   awaiting_customer_signature: "Sent to client",
   awaiting_sample_selection: "Choose samples",
   proposal_accepted: "Awaiting R&D payment",
+  trial_batches_in_flight: "Trial batches",
   setup: "Setup",
   approval: "Approval",
   production_planning: "Planning",
@@ -206,6 +208,8 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
     "Customer signed the proposal — now picking their trial-sample quantity on the portal. A bundled deposit + samples invoice lands on the finance queue the moment they confirm.",
   proposal_accepted:
     "Customer signed + confirmed sample quantity. Awaiting the R&D deposit — trial batches unlock once finance approves the payment.",
+  trial_batches_in_flight:
+    "Deposit landed. R&D is producing trial samples one at a time. Each sample MO shows on the kanban with a \"↳ Trial N/M\" badge. Card leaves this column once the customer signs the final spec.",
   setup: "Add lines and price the order.",
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
@@ -239,6 +243,7 @@ const PHASE_ICON: Record<
   awaiting_customer_signature: FileText,
   awaiting_sample_selection: FlaskConical,
   proposal_accepted: CheckCircle2,
+  trial_batches_in_flight: FlaskConical,
   setup: FileText,
   approval: ShieldCheck,
   production_planning: Factory,
@@ -1524,6 +1529,10 @@ const PHASE_EXPLAINER: Record<
   proposal_accepted: {
     title: "Customer signed + confirmed samples — awaiting R&D deposit.",
     body: "The customer has signed the proposal and confirmed their sample quantity. A bundled deposit + samples invoice is on the finance queue, waiting for the customer to pay. Trial batches on NPD are locked until the deposit lands. Once finance approves the payment, the order can be submitted for approval and continue through the standard production flow.",
+  },
+  trial_batches_in_flight: {
+    title: "Trial-batch cycle in flight on NPD.",
+    body: "The customer's deposit has landed and R&D is producing the trial samples one at a time. Each sample MO for this project shows on the /projects kanban with a \"↳ Trial N/M\" badge, so scientists can spot siblings at a glance. The card leaves this column once the customer signs the final specification and the order transitions into standard production.",
   },
   setup: {
     title: "You're building the order.",
@@ -4350,6 +4359,8 @@ function phaseBadgeTone(
       return "amber";
     case "proposal_accepted":
       return "emerald";
+    case "trial_batches_in_flight":
+      return "amber";
     case "setup":
       return "muted";
     case "approval":

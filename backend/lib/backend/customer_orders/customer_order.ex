@@ -165,6 +165,12 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     # sample-selection feature. Drives the kanban split between
     # ``:awaiting_sample_selection`` and ``:proposal_accepted``.
     field :npd_sample_allocation_status, :string
+    # Bundled deposit+samples Payment approval timestamp mirrored
+    # from vita-cff. Presence flips the wizard phase from
+    # ``:proposal_accepted`` ("Awaiting R&D payment") to
+    # ``:trial_batches_in_flight`` ("Trial batches") so operators
+    # can see the cycle has started without opening the CO detail.
+    field :npd_deposit_paid_at, :utc_datetime
 
     # ---- Trial-batch cycle mirror --------------------------------
     # Populated by NpdSync.upsert_sample_from_npd when a sample CO

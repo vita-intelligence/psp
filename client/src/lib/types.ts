@@ -2893,6 +2893,7 @@ export type OrderWizardPhaseKey =
   | "awaiting_customer_signature"
   | "awaiting_sample_selection"
   | "proposal_accepted"
+  | "trial_batches_in_flight"
   | "setup"
   | "approval"
   | "production_planning"
