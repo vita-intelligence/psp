@@ -165,6 +165,18 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     # sample-selection feature. Drives the kanban split between
     # ``:awaiting_sample_selection`` and ``:proposal_accepted``.
     field :npd_sample_allocation_status, :string
+
+    # ---- Trial-batch cycle mirror --------------------------------
+    # Populated by NpdSync.upsert_sample_from_npd when a sample CO
+    # is created for a slot in a vita-cff TrialBatchCycle. Drives
+    # the "↳ Trial N/M · <ref>" badge on the /projects kanban so
+    # scientists can eyeball which sample MO cards belong to the
+    # same custom-formulation project. All four stay nil on
+    # storefront sample-kit orders (no cycle involved).
+    field :parent_customer_order_uuid, Ecto.UUID
+    field :parent_customer_order_reference, :string
+    field :npd_trial_slot_sequence_no, :integer
+    field :npd_trial_slot_total, :integer
     # Full audit-preserving event log — one entry per NPD-side event
     # (formulation created, spec transitioned, proposal transitioned).
     # NPD is authoritative and replaces the array on every sync so a

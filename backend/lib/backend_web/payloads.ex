@@ -793,6 +793,13 @@ defmodule BackendWeb.Payloads do
       npd_proposal_status: co.npd_proposal_status,
       npd_proposal_accepted_at: co.npd_proposal_accepted_at,
       npd_proposal_accepted_by_name: co.npd_proposal_accepted_by_name,
+      # Trial-batch cycle mirror — non-nil only when this CO is a
+      # sample-slot child of a custom-formulation cycle. Drives the
+      # "↳ Trial N/M · <ref>" badge on the /projects kanban.
+      parent_customer_order_uuid: co.parent_customer_order_uuid,
+      parent_customer_order_reference: co.parent_customer_order_reference,
+      npd_trial_slot_sequence_no: co.npd_trial_slot_sequence_no,
+      npd_trial_slot_total: co.npd_trial_slot_total,
       default_warehouse_id: co.default_warehouse_id,
       default_warehouse: maybe_warehouse_compact(co.default_warehouse),
       submitted_at: co.submitted_at,

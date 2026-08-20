@@ -723,6 +723,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> put_npd_team(params)
       |> put_npd_payment(params)
       |> put_customer_delivery_address(params)
+      |> put_trial_batch_cycle_mirror(company_id, params)
 
     with {:ok, co} <- Repo.insert(changeset),
          {:ok, _line} <- insert_sample_line(co, item, params) do
@@ -750,6 +751,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> put_npd_team(params)
       |> put_npd_payment(params)
       |> put_customer_delivery_address(params, existing.status)
+      |> put_trial_batch_cycle_mirror(existing.company_id, params)
 
     changeset =
       if existing.status == "draft" and existing.customer_id != active_customer.id do
@@ -869,6 +871,73 @@ defmodule Backend.CustomerOrders.NpdSync do
         changeset
     end
   end
+
+  # Trial-batch cycle mirror. Populated when the incoming sample sync
+  # carries cycle context — the vita-cff scientist workflow that
+  # creates a sample MO for a slot in a ``TrialBatchCycle`` sends
+  # ``npd_trial_slot_sequence_no`` / ``npd_trial_slot_total`` /
+  # ``parent_customer_order_reference`` (denormalised formulation
+  # code) in the payload. The parent CO uuid is looked up on the PSP
+  # side: find another customer_orders row with the same
+  # ``npd_formulation_uuid`` where ``sample_kind = false`` (the
+  # custom-formulation CO created from the merged proposal).
+  # Silent-no-op when no cycle context is present — storefront
+  # sample-kit orders keep the columns at nil.
+  defp put_trial_batch_cycle_mirror(changeset, company_id, params) do
+    seq = params["npd_trial_slot_sequence_no"] || params[:npd_trial_slot_sequence_no]
+    total = params["npd_trial_slot_total"] || params[:npd_trial_slot_total]
+    ref =
+      params["parent_customer_order_reference"] ||
+        params[:parent_customer_order_reference]
+
+    if is_nil(seq) and is_nil(total) and (is_nil(ref) or ref == "") do
+      changeset
+    else
+      parent_uuid = lookup_parent_customer_order_uuid(changeset, company_id, params)
+
+      changeset
+      |> maybe_put(:npd_trial_slot_sequence_no, seq)
+      |> maybe_put(:npd_trial_slot_total, total)
+      |> maybe_put(:parent_customer_order_reference, sanitize(ref))
+      |> maybe_put(:parent_customer_order_uuid, parent_uuid)
+    end
+  end
+
+  defp lookup_parent_customer_order_uuid(changeset, company_id, params) do
+    formulation_uuid =
+      Ecto.Changeset.get_field(changeset, :npd_formulation_uuid) ||
+        parse_uuid(params["npd_formulation_uuid"] || params[:npd_formulation_uuid])
+
+    case formulation_uuid do
+      nil ->
+        nil
+
+      uuid ->
+        import Ecto.Query
+
+        from(co in CustomerOrder,
+          where: co.company_id == ^company_id,
+          where: co.npd_formulation_uuid == ^uuid,
+          where: co.sample_kind == false,
+          where: is_nil(co.merged_into_id),
+          select: co.uuid,
+          limit: 1
+        )
+        |> Repo.one()
+    end
+  end
+
+  defp parse_uuid(nil), do: nil
+  defp parse_uuid(""), do: nil
+
+  defp parse_uuid(s) when is_binary(s) do
+    case Ecto.UUID.cast(s) do
+      {:ok, uuid} -> uuid
+      :error -> nil
+    end
+  end
+
+  defp parse_uuid(_), do: nil
 
   defp put_npd_payment(changeset, params) do
     payment = params["payment"] || params[:payment]

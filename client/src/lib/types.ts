@@ -2237,6 +2237,16 @@ export interface CustomerOrder {
    *  "Sample" chip on the /projects kanban. Populated exclusively
    *  by NpdSync.upsert_sample_from_npd — every other CO is false. */
   sample_kind: boolean;
+  /** Trial-batch cycle mirror. Non-null only when this sample CO is
+   *  a slot in a vita-cff ``TrialBatchCycle``. Points at the
+   *  custom-formulation CO the cycle is producing samples against.
+   *  Drives the "↳ Trial N/M · <ref>" badge on the /projects
+   *  kanban so scientists can eyeball which sample MO cards are
+   *  siblings of the same custom-formulation project. */
+  parent_customer_order_uuid: string | null;
+  parent_customer_order_reference: string | null;
+  npd_trial_slot_sequence_no: number | null;
+  npd_trial_slot_total: number | null;
   /** NPD payment mirror — sample COs carry a payment record from
    *  NPD's finance queue. Drives the CO detail invoice card which
    *  renders the payment (amount, files, status) instead of the
