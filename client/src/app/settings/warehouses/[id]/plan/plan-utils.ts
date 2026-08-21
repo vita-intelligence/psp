@@ -24,12 +24,31 @@ export const SNAP_THRESHOLD_PX = 12;  // screen-pixel radius for endpoint snap
  *  always feels "snappy" to the half-metre grid. */
 export const SNAP_GRID_CM = 50;
 
-/** Snap a centimetre value to the visible 50 cm grid. */
+// Module-level toggle so every snap function (snapCm, snapPoint,
+// gridSnapDragBound) picks up the operator's preference without
+// having to drill a `snapEnabled` prop through every Konva shape
+// component. Editor writes it on mount + on toggle. Safe as a
+// single global because the app only ever mounts one plan editor
+// at a time.
+let snapEnabled = true;
+
+export function setSnapEnabled(next: boolean): void {
+  snapEnabled = next;
+}
+
+export function isSnapEnabled(): boolean {
+  return snapEnabled;
+}
+
+/** Snap a centimetre value to the visible 50 cm grid, unless the
+ *  operator has toggled snap off — then it's the identity. */
 export function snapCm(value: number): number {
+  if (!snapEnabled) return value;
   return Math.round(value / SNAP_GRID_CM) * SNAP_GRID_CM;
 }
 
 export function snapPoint(p: Point): Point {
+  if (!snapEnabled) return p;
   return { x: snapCm(p.x), y: snapCm(p.y) };
 }
 
