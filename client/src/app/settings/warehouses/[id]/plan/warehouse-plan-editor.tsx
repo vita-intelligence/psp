@@ -2048,6 +2048,11 @@ export function WarehousePlanEditor({
                 if (selection.length === 0) return;
                 setContextMenu({ x, y });
               }}
+              onLocationLabelEdit={(id, name) => {
+                if (readOnly) return;
+                if (name === "") return;
+                onLocationUpdate(id, { name });
+              }}
             />
           ) : (
             <div className="flex h-full items-center justify-center bg-muted/30 text-sm text-muted-foreground">

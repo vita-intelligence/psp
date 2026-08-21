@@ -104,6 +104,10 @@ interface PlanCanvasProps {
    *  fires when the inline editor (double-click on a text box) is
    *  blurred / Enter-without-Shift / Esc. */
   onTextEdit: (id: string, text: string) => void;
+  /** Rename a location's `name` field via the inline label editor
+   *  that opens on a double-click. Called with the location's uuid
+   *  (or tempId for unsaved rows) and the new name. */
+  onLocationLabelEdit?: (id: string | number, name: string) => void;
   onArrowAdded: (arrow: ArrowAnnotation) => void;
   onPathAdded: (path: PathAnnotation) => void;
   /** Translate every selected item by (dx, dy) cm in one snapshot.
@@ -237,6 +241,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onCursorLeave,
       remoteCursors,
       onContextMenuAt,
+      onLocationLabelEdit,
     },
     ref,
   ) {
@@ -254,6 +259,13 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     // TextShape so the user can edit the label in place. Cleared on
     // blur / Enter without Shift / Esc.
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
+
+    // Same pattern for locations — dbl-click a location's rectangle
+    // to edit its `name` in place. Keyed by uuid (or tempId for
+    // unsaved rows).
+    const [editingLocationId, setEditingLocationId] = useState<
+      string | number | null
+    >(null);
 
     // Snap targets recomputed when geometry changes. Cheap (handful
     // of points), but useMemo means event handlers don't rebuild.
@@ -1029,6 +1041,11 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   readOnly={readOnly}
                   onSelect={(e) => selectItem({ kind: "location", id }, e)}
                   onGroupMove={onSelectionMove}
+                  onEditLabel={
+                    onLocationLabelEdit
+                      ? () => setEditingLocationId(id ?? null)
+                      : undefined
+                  }
                 />
               );
             })}
@@ -1229,6 +1246,60 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   fontSize: Math.max(10, fontSizePx),
                   fontWeight: 500,
                   color: isHexColor(t.color) ? t.color : "rgb(15,23,42)",
+                  zIndex: 50,
+                }}
+              />
+            );
+          })()}
+
+        {/* Inline location label editor — same overlay pattern as
+            the text editor, but wired to the location's `name` field
+            instead of the text annotation's content. */}
+        {editingLocationId != null &&
+          onLocationLabelEdit &&
+          (() => {
+            const loc = visibleLocations.find(
+              (l) => (l.tempId ?? l.uuid) === editingLocationId,
+            );
+            if (!loc) return null;
+            const screenX = loc.x * viewport.scale + viewport.x;
+            const screenY = loc.y * viewport.scale + viewport.y;
+            const screenW = loc.width * viewport.scale;
+            const fontSizePx = 14 * viewport.scale;
+            return (
+              <input
+                autoFocus
+                defaultValue={loc.name}
+                placeholder="Location name"
+                onBlur={(e) => {
+                  onLocationLabelEdit(
+                    editingLocationId,
+                    e.target.value.trim(),
+                  );
+                  setEditingLocationId(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setEditingLocationId(null);
+                    e.preventDefault();
+                  } else if (e.key === "Enter") {
+                    onLocationLabelEdit(
+                      editingLocationId,
+                      (e.target as HTMLInputElement).value.trim(),
+                    );
+                    setEditingLocationId(null);
+                    e.preventDefault();
+                  }
+                }}
+                spellCheck={false}
+                className="absolute rounded-md border-2 border-primary bg-white/95 px-2 py-1 leading-tight shadow-lg outline-none"
+                style={{
+                  left: screenX + 8,
+                  top: screenY + 8,
+                  width: Math.max(80, screenW - 16),
+                  fontSize: Math.max(10, fontSizePx),
+                  fontWeight: 700,
+                  color: "rgb(15,23,42)",
                   zIndex: 50,
                 }}
               />
@@ -1826,6 +1897,7 @@ const LocationShape = memo(function LocationShape({
   readOnly,
   onSelect,
   onGroupMove,
+  onEditLabel,
 }: {
   location: LocalLocation;
   labelMode: LocationLabelMode;
@@ -1837,6 +1909,10 @@ const LocationShape = memo(function LocationShape({
    *  moves are a single undo step. The dragged location is always
    *  selected so it moves too. */
   onGroupMove: (dx: number, dy: number) => void;
+  /** Fire when the user double-clicks the location. The parent
+   *  opens an inline input overlay over this location so the
+   *  operator can rename without opening the properties drawer. */
+  onEditLabel?: () => void;
 }) {
   // Custom location colour beats the kind default. Stroke = full
   // opacity; fill = same colour at 18% alpha so the label text stays
@@ -1857,6 +1933,8 @@ const LocationShape = memo(function LocationShape({
       }
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
+      onDblClick={readOnly ? undefined : onEditLabel}
+      onDblTap={readOnly ? undefined : onEditLabel}
       onDragEnd={(e) => {
         const node = e.target;
         const nx = snapCm(node.x());
