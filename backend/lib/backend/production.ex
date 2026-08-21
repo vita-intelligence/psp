@@ -4914,7 +4914,16 @@ defmodule Backend.Production do
       |> Enum.filter(fn b -> b.item_id == item_id and b.status == "requested" end)
       |> Enum.reduce(Decimal.new(0), fn b, acc -> Decimal.add(acc, b.quantity || Decimal.new(0)) end)
 
+    # Storage-precision residue guard. ``required`` is computed at
+    # (BOM.qty × MO.quantity) → up to 20 decimals; booking rows land
+    # at Decimal(20,10) so their sum truncates at 10 decimals. The
+    # subtraction leaves picoscale residues like 2.5e-11 that make the
+    # /projects wizard think "we need to order more" even though a
+    # received lot fully covers the requirement — the residue is
+    # sub-storage-precision noise, not a real shortage. Round the
+    # delta to storage precision so ~0 lands as exactly 0.
     Decimal.sub(required, booked)
+    |> Decimal.round(10, :half_up)
   end
 
   # Sum of ``quantity`` across every ``packaging_combo_items`` row

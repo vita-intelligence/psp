@@ -233,7 +233,14 @@ defmodule Backend.Procurement.Shortages do
       # So `required - on_hand - expecting` cleanly captures the
       # genuine outstanding gap procurement still owes.
       coverage = Decimal.add(hand, exp)
-      shortage = Decimal.sub(required, coverage)
+      # Storage-precision residue guard. ``required`` is BOM.qty × MO.quantity
+      # at up to 20 decimals; ``hand`` / ``exp`` come from Decimal(20,10)
+      # storage. Subtracting can leave picoscale residues (e.g. 2.5e-11)
+      # that light up the /projects wizard as "still need to order" even
+      # though on-hand fully covers. Round the delta to storage precision
+      # so sub-precision noise collapses to exactly 0.
+      shortage =
+        Decimal.sub(required, coverage) |> Decimal.round(10, :half_up)
       shortage =
         if Decimal.compare(shortage, Decimal.new(0)) == :gt,
           do: shortage,
