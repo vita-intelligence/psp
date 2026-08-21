@@ -62,8 +62,10 @@ import type {
   Wall,
 } from "./plan-types";
 import type { PlanCanvasHandle } from "./plan-canvas";
+import { setSnapEnabled } from "./plan-utils";
 import {
   AlertTriangle,
+  Grid3x3,
   History,
   Keyboard,
   Loader2,
@@ -226,6 +228,32 @@ export function WarehousePlanEditor({
   // listing every shortcut the editor honours. Discoverability for
   // tools + zoom + delete without cluttering the toolbar.
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // Grid snap toggle. Default on — most edits benefit from landing
+  // on the 50 cm grid. Off gives the operator pixel-precise placement
+  // for fitting around an odd wall. Persisted per-user in localStorage
+  // and pushed to plan-utils so every snap site (snapCm, snapPoint,
+  // gridSnapDragBound on every Konva shape) picks it up without prop
+  // drilling.
+  const [snapEnabled, setSnapEnabledState] = useState(true);
+  useEffect(() => {
+    const stored = window.localStorage.getItem("psp.warehouse-plan.snap-grid");
+    if (stored === "off") {
+      setSnapEnabledState(false);
+      setSnapEnabled(false);
+    }
+  }, []);
+  const onToggleSnap = useCallback(() => {
+    setSnapEnabledState((prev) => {
+      const next = !prev;
+      setSnapEnabled(next);
+      window.localStorage.setItem(
+        "psp.warehouse-plan.snap-grid",
+        next ? "on" : "off",
+      );
+      return next;
+    });
+  }, []);
 
   // What text to put on each location rectangle on the canvas. `code`
   // (the auto-numbered identifier) is the default because it's stable
@@ -1809,6 +1837,23 @@ export function WarehousePlanEditor({
             value={labelMode}
             onChange={onLabelModeChange}
           />
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onToggleSnap}
+            title={
+              snapEnabled
+                ? "Snap to 50 cm grid: on (click to allow pixel-precise placement)"
+                : "Snap to 50 cm grid: off (click to re-enable)"
+            }
+            aria-label={
+              snapEnabled ? "Disable grid snap" : "Enable grid snap"
+            }
+            className={cn(!snapEnabled && "text-muted-foreground/60")}
+          >
+            <Grid3x3 className="size-4" />
+          </Button>
           <Button
             type="button"
             size="sm"
