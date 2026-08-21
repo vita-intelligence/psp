@@ -100,6 +100,23 @@ defmodule BackendWeb.StorageCellController do
 
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)
+
+        {:error, :cell_has_active_placements} ->
+          # Compliance guard (W9): dimensions / weight cap / purpose
+          # feed the fit + auto-routing engines. Changing them while
+          # the cell still holds lots silently invalidates the
+          # placement decisions. Bounce with a 422 the FE can render
+          # verbatim — same shape as changeset_error so the modal's
+          # error banner picks it up automatically.
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(
+            Errors.payload(
+              "cell_has_active_placements",
+              "This cell still holds stock. Move the lots to another cell first, then edit the dimensions / weight cap / purpose.",
+              %{}
+            )
+          )
       end
     end
   end
