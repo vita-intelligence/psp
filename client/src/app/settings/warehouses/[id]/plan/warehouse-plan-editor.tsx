@@ -8,6 +8,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import {
   useLivePlan,
@@ -1530,6 +1531,32 @@ export function WarehousePlanEditor({
     };
   }, []);
 
+  // Roll every local edit back to the last-known-good server state
+  // for a floor. Fires on any autosave failure so the canvas stops
+  // showing changes that never actually landed. Viewport is
+  // preserved from the current local state — the user's camera
+  // isn't a "change" and shouldn't snap back to the last-saved
+  // position just because a write failed.
+  const rollbackFloorToServer = useCallback(
+    (floorId: number) => {
+      setFloorStates((prev) => {
+        const current = prev[floorId];
+        if (!current) return prev;
+        const fresh = buildFloorState(current.meta);
+        return {
+          ...prev,
+          [floorId]: { ...fresh, viewport: current.viewport },
+        };
+      });
+      // Clear undo / redo — those stacks are relative to the
+      // rolled-back state and would replay non-existent edits.
+      setHistory((prev) => ({ ...prev, [floorId]: [] }));
+      setRedoStack((prev) => ({ ...prev, [floorId]: [] }));
+      setSelection([]);
+    },
+    [],
+  );
+
   const onSave = useCallback(() => {
     if (!activeFloor) return;
     // Only the room owner persists — non-creators' edits stay local
@@ -1573,6 +1600,10 @@ export function WarehousePlanEditor({
         setActionError(floorRes);
         setSaveStatus("error");
         autosaveInFlightRef.current = false;
+        rollbackFloorToServer(state.meta.id);
+        toast.error("Save failed — reverted changes", {
+          description: floorRes.detail,
+        });
         return;
       }
 
@@ -1604,6 +1635,10 @@ export function WarehousePlanEditor({
           setActionError(res);
           setSaveStatus("error");
           autosaveInFlightRef.current = false;
+          rollbackFloorToServer(state.meta.id);
+          toast.error("Save failed — reverted changes", {
+            description: res.detail,
+          });
           return;
         }
         if (loc.tempId) {
@@ -1642,6 +1677,10 @@ export function WarehousePlanEditor({
         setActionError(firstFailure);
         setSaveStatus("error");
         autosaveInFlightRef.current = false;
+        rollbackFloorToServer(state.meta.id);
+        toast.error("Save failed — reverted changes", {
+          description: firstFailure.detail,
+        });
         return;
       }
 
@@ -1699,7 +1738,14 @@ export function WarehousePlanEditor({
       setLastSavedAt(new Date());
       autosaveInFlightRef.current = false;
     });
-  }, [activeFloor, canvasJsonFor, liveIsCreator, warehouseId, warehouseUuid]);
+  }, [
+    activeFloor,
+    canvasJsonFor,
+    liveIsCreator,
+    rollbackFloorToServer,
+    warehouseId,
+    warehouseUuid,
+  ]);
 
   // Debounced autosave. Any dirty state (floor canvas OR any
   // location row) resets an 800ms timer; when it fires, onSave
