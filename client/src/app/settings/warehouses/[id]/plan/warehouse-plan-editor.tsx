@@ -19,6 +19,7 @@ import {
   type SnapshotFloor,
 } from "@/lib/realtime/use-live-plan";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
+import { cn } from "@/lib/utils";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 import dynamic from "next/dynamic";
@@ -1598,23 +1599,36 @@ export function WarehousePlanEditor({
       )
     : 600;
 
+  // Desktop uses a full-bleed frame — canvas fills the space and the
+  // toolbar / properties / floor switcher float over it (Miro style).
+  // Mobile keeps the current stacked layout because a floating drawer
+  // on a phone is a UX trap.
+  const desktopFrameClass = isMobile
+    ? isFullscreen
+      ? "fixed inset-0 z-50 flex flex-col gap-3 overflow-auto bg-background p-4"
+      : "space-y-3"
+    : isFullscreen
+      ? "fixed inset-0 z-50 flex flex-col overflow-hidden bg-background"
+      : "flex flex-col overflow-hidden rounded-xl border border-border/60 bg-background h-[calc(100dvh-11rem)] min-h-[560px]";
+
   return (
-    <div
-      className={
-        isFullscreen
-          ? "fixed inset-0 z-50 flex flex-col gap-3 overflow-auto bg-background p-4"
-          : "space-y-3"
-      }
-    >
+    <div className={desktopFrameClass}>
 
-      <ReadinessBanner
-        readiness={readiness}
-        warehouseName={warehouseName}
-        canEdit={canEdit}
-      />
+      <div className={cn(!isMobile && "px-3 pt-3")}>
+        <ReadinessBanner
+          readiness={readiness}
+          warehouseName={warehouseName}
+          canEdit={canEdit}
+        />
+      </div>
 
-      {/* Header row */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Header row — slim border-bounded strip on desktop, stacked on mobile */}
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-2",
+          !isMobile && "border-b border-border/60 px-3 py-2",
+        )}
+      >
         <Badge tone={activeFloor?.dirty ? "amber" : "muted"}>
           {activeFloor?.dirty ? "Unsaved changes" : "Saved"}
         </Badge>
@@ -1746,11 +1760,13 @@ export function WarehousePlanEditor({
       </div>
 
       {actionError && (
-        <ErrorBanner
-          detail={actionError.detail}
-          code={actionError.code}
-          debug={actionError.debug}
-        />
+        <div className={cn(!isMobile && "border-b border-border/60 px-3 py-2")}>
+          <ErrorBanner
+            detail={actionError.detail}
+            code={actionError.code}
+            debug={actionError.debug}
+          />
+        </div>
       )}
 
       {/* Editor body — layout swaps at md */}
@@ -1801,113 +1817,159 @@ export function WarehousePlanEditor({
           onDeleteSelected={onDeleteSelected}
         />
       ) : (
-        <div className="flex gap-3">
-          <PlanToolbar
-            tool={tool}
-            onToolChange={setTool}
-            onZoomIn={() => canvasRef.current?.zoomIn()}
-            onZoomOut={() => canvasRef.current?.zoomOut()}
-            onResetView={() => canvasRef.current?.resetView()}
-            hasOutline={!!activeFloor?.outline}
-            disabled={!activeFloor || readOnly}
-            layout="vertical"
-          />
+        // Desktop — Miro-style floating layout. Canvas fills the
+        // frame; toolbar / properties drawer / floor switcher float
+        // on top with backdrop-blur so the operator sees as much of
+        // the plan as possible.
+        <div className="relative flex-1 min-h-0">
+          {activeFloor ? (
+            <PlanCanvas
+              ref={canvasRef}
+              outline={activeFloor.outline}
+              walls={activeFloor.walls}
+              texts={activeFloor.texts}
+              arrows={activeFloor.arrows}
+              paths={activeFloor.paths}
+              locations={activeFloor.locations}
+              selection={selection}
+              tool={tool}
+              viewport={activeFloor.viewport}
+              labelMode={labelMode}
+              readOnly={readOnly}
+              onSelectionChange={setSelection}
+              onViewportChange={onViewportChange}
+              onWallAdded={onWallAdded}
+              onWallBowChange={onWallBowChange}
+              onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+              onHoleEdgeBowChange={onHoleEdgeBowChange}
+              onLocationAdded={onLocationAdded}
+              onTextAdded={onTextAdded}
+              onTextEdit={(id, content) => onTextUpdate(id, { text: content })}
+              onArrowAdded={onArrowAdded}
+              onPathAdded={onPathAdded}
+              onSelectionMove={onSelectionMove}
+              onCursorMove={onCanvasCursorMove}
+              onCursorLeave={liveHideCursor}
+              remoteCursors={liveCursors}
+              onOutlineCommitted={onOutlineCommitted}
+              onHoleCommitted={onHoleCommitted}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center bg-muted/30 text-sm text-muted-foreground">
+              Select a floor below to start editing.
+            </div>
+          )}
 
-          <div className="min-w-0 flex-1">
-            {activeFloor ? (
-              <PlanCanvas
-                ref={canvasRef}
-                outline={activeFloor.outline}
-                walls={activeFloor.walls}
-                texts={activeFloor.texts}
-                arrows={activeFloor.arrows}
-                paths={activeFloor.paths}
-                locations={activeFloor.locations}
-                selection={selection}
+          {/* Floating toolbar rail — full height along the left edge
+              so the mt-auto zoom cluster still pins to the bottom. */}
+          <div className="pointer-events-none absolute inset-y-3 left-3 z-20">
+            <div className="pointer-events-auto h-full">
+              <PlanToolbar
                 tool={tool}
-                viewport={activeFloor.viewport}
-                labelMode={labelMode}
-                readOnly={readOnly}
-                heightPx={canvasHeight}
-                onSelectionChange={setSelection}
-                onViewportChange={onViewportChange}
-                onWallAdded={onWallAdded}
-                onWallBowChange={onWallBowChange}
-                onOutlineEdgeBowChange={onOutlineEdgeBowChange}
-                onHoleEdgeBowChange={onHoleEdgeBowChange}
-                onLocationAdded={onLocationAdded}
-                onTextAdded={onTextAdded}
-                onTextEdit={(id, content) => onTextUpdate(id, { text: content })}
-                onArrowAdded={onArrowAdded}
-                onPathAdded={onPathAdded}
-                onSelectionMove={onSelectionMove}
-                onCursorMove={onCanvasCursorMove}
-                onCursorLeave={liveHideCursor}
-                remoteCursors={liveCursors}
-                onOutlineCommitted={onOutlineCommitted}
-                onHoleCommitted={onHoleCommitted}
+                onToolChange={setTool}
+                onZoomIn={() => canvasRef.current?.zoomIn()}
+                onZoomOut={() => canvasRef.current?.zoomOut()}
+                onResetView={() => canvasRef.current?.resetView()}
+                hasOutline={!!activeFloor?.outline}
+                disabled={!activeFloor || readOnly}
+                layout="vertical"
               />
-            ) : (
-              <div className="flex h-[600px] items-center justify-center rounded-md border border-border/60 bg-muted/30 text-sm text-muted-foreground">
-                Select a floor below to start editing.
-              </div>
-            )}
+            </div>
           </div>
 
-          <PlanProperties
-            selection={selection}
-            outline={activeFloor?.outline}
-            walls={activeFloor?.walls ?? []}
-            texts={activeFloor?.texts ?? []}
-            arrows={activeFloor?.arrows ?? []}
-            paths={activeFloor?.paths ?? []}
-            locations={activeFloor?.locations ?? []}
-            warehouseUuid={warehouseUuid}
-            storageTags={storageTags}
-            readOnly={readOnly}
-            layout="side"
-            onWallUpdate={onWallUpdate}
-            onWallDelete={onWallDelete}
-            onOutlineUpdate={onOutlineUpdate}
-            onOutlineDelete={onOutlineDelete}
-            onHoleUpdate={onHoleUpdate}
-            onHoleDelete={onHoleDelete}
-            onOutlineEdgeBowChange={onOutlineEdgeBowChange}
-            onHoleEdgeBowChange={onHoleEdgeBowChange}
-            onTextUpdate={onTextUpdate}
-            onTextDelete={onTextDelete}
-            onArrowUpdate={onArrowUpdate}
-            onArrowDelete={onArrowDelete}
-            onPathUpdate={onPathUpdate}
-            onPathDelete={onPathDelete}
-            onLocationUpdate={onLocationUpdate}
-            onLocationDelete={onLocationDelete}
-            onSelectionColor={onSelectionColor}
-            onDeleteSelected={onDeleteSelected}
-          />
+          {/* Floating properties drawer — right edge, slides in when
+              a selection exists so the canvas stays uncovered when
+              the operator is just navigating. */}
+          <div
+            className={cn(
+              "pointer-events-none absolute right-3 top-3 bottom-16 z-30 transition-transform duration-200",
+              selection.length === 0 && "translate-x-[calc(100%+1rem)]",
+            )}
+            aria-hidden={selection.length === 0}
+          >
+            <div className="pointer-events-auto h-full shadow-xl">
+              <PlanProperties
+                selection={selection}
+                outline={activeFloor?.outline}
+                walls={activeFloor?.walls ?? []}
+                texts={activeFloor?.texts ?? []}
+                arrows={activeFloor?.arrows ?? []}
+                paths={activeFloor?.paths ?? []}
+                locations={activeFloor?.locations ?? []}
+                warehouseUuid={warehouseUuid}
+                storageTags={storageTags}
+                readOnly={readOnly}
+                layout="side"
+                onWallUpdate={onWallUpdate}
+                onWallDelete={onWallDelete}
+                onOutlineUpdate={onOutlineUpdate}
+                onOutlineDelete={onOutlineDelete}
+                onHoleUpdate={onHoleUpdate}
+                onHoleDelete={onHoleDelete}
+                onOutlineEdgeBowChange={onOutlineEdgeBowChange}
+                onHoleEdgeBowChange={onHoleEdgeBowChange}
+                onTextUpdate={onTextUpdate}
+                onTextDelete={onTextDelete}
+                onArrowUpdate={onArrowUpdate}
+                onArrowDelete={onArrowDelete}
+                onPathUpdate={onPathUpdate}
+                onPathDelete={onPathDelete}
+                onLocationUpdate={onLocationUpdate}
+                onLocationDelete={onLocationDelete}
+                onSelectionColor={onSelectionColor}
+                onDeleteSelected={onDeleteSelected}
+              />
+            </div>
+          </div>
+
+          {/* Floating floor switcher — bottom-centre, always visible. */}
+          <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2">
+            <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-border/60 bg-background/95 px-2 py-1.5 shadow-lg backdrop-blur">
+              <PlanFloorSwitcher
+                floors={floors}
+                activeFloorId={activeFloorId}
+                onSelect={(id) => {
+                  setActiveFloorId(id);
+                  setSelection([]);
+                }}
+                onAddFloor={() => undefined}
+                canAdd={false}
+                hasUnsavedChanges={activeFloor?.dirty}
+              />
+              {canEdit && (
+                <NewFloorButton
+                  warehouseUuid={warehouseUuid}
+                  suggestedName={`Floor ${floors.length + 1}`}
+                />
+              )}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Floor switcher */}
-      <div className="flex flex-wrap items-center gap-2">
-        <PlanFloorSwitcher
-          floors={floors}
-          activeFloorId={activeFloorId}
-          onSelect={(id) => {
-            setActiveFloorId(id);
-            setSelection([]);
-          }}
-          onAddFloor={() => undefined}
-          canAdd={false}
-          hasUnsavedChanges={activeFloor?.dirty}
-        />
-        {canEdit && (
-          <NewFloorButton
-            warehouseUuid={warehouseUuid}
-            suggestedName={`Floor ${floors.length + 1}`}
+      {/* Mobile floor switcher — sits below the canvas since a
+          floating bottom overlay would fight the on-screen keyboard. */}
+      {isMobile && (
+        <div className="flex flex-wrap items-center gap-2">
+          <PlanFloorSwitcher
+            floors={floors}
+            activeFloorId={activeFloorId}
+            onSelect={(id) => {
+              setActiveFloorId(id);
+              setSelection([]);
+            }}
+            onAddFloor={() => undefined}
+            canAdd={false}
+            hasUnsavedChanges={activeFloor?.dirty}
           />
-        )}
-      </div>
+          {canEdit && (
+            <NewFloorButton
+              warehouseUuid={warehouseUuid}
+              suggestedName={`Floor ${floors.length + 1}`}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2047,7 +2109,10 @@ const MobileLayout = memo(function MobileLayout({
   }, [lastSelectionKey]);
   return (
     <div className="relative">
-      <div>
+      <div
+        style={{ height: canvasHeight }}
+        className="overflow-hidden rounded-md border border-border/60"
+      >
         {activeFloor ? (
           <PlanCanvas
             ref={canvasRef}
@@ -2062,7 +2127,6 @@ const MobileLayout = memo(function MobileLayout({
             viewport={activeFloor.viewport}
             labelMode={labelMode}
             readOnly={readOnly}
-            heightPx={canvasHeight}
             onSelectionChange={setSelection}
             onViewportChange={onViewportChange}
             onWallAdded={onWallAdded}
@@ -2082,10 +2146,7 @@ const MobileLayout = memo(function MobileLayout({
             onHoleCommitted={onHoleCommitted}
           />
         ) : (
-          <div
-            style={{ height: canvasHeight }}
-            className="flex items-center justify-center rounded-md border border-border/60 bg-muted/30 text-sm text-muted-foreground"
-          >
+          <div className="flex h-full items-center justify-center bg-muted/30 text-sm text-muted-foreground">
             Pick a floor below to start.
           </div>
         )}

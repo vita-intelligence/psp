@@ -79,10 +79,6 @@ interface PlanCanvasProps {
   labelMode: LocationLabelMode;
   /** Whether the canvas is in read-only mode (viewer permissions). */
   readOnly: boolean;
-  /** Canvas height in CSS pixels — the parent picks this so the
-   *  mobile layout can use most of the viewport while desktop stays
-   *  at a fixed height. */
-  heightPx: number;
   onSelectionChange: (next: SelectionSet) => void;
   onViewportChange: (next: Viewport) => void;
   onWallAdded: (wall: Wall) => void;
@@ -219,7 +215,6 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       viewport,
       labelMode,
       readOnly,
-      heightPx,
       onSelectionChange,
       onViewportChange,
       onWallAdded,
@@ -242,7 +237,11 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
   ) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const stageRef = useRef<Konva.Stage | null>(null);
-    const [size, setSize] = useState({ width: 800, height: heightPx });
+    // Container-driven size. Parent is responsible for giving us a
+    // real height (fixed on mobile, calc(vh) on desktop, flex-1 in
+    // fullscreen). The ResizeObserver below keeps size in sync when
+    // the browser window resizes or the fullscreen toggle flips.
+    const [size, setSize] = useState({ width: 800, height: 600 });
 
     const [draft, setDraft] = useState<Draft | null>(null);
     const [snapIndicator, setSnapIndicator] = useState<Point | null>(null);
@@ -304,14 +303,14 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         const rect = el.getBoundingClientRect();
         setSize({
           width: Math.max(280, rect.width),
-          height: Math.max(320, heightPx),
+          height: Math.max(320, rect.height),
         });
       };
       update();
       const observer = new ResizeObserver(update);
       observer.observe(el);
       return () => observer.disconnect();
-    }, [heightPx]);
+    }, []);
 
     /** Translate the pointer's screen position into world (cm)
      *  coordinates, accounting for pan + zoom. */
@@ -829,10 +828,10 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       <div
         ref={containerRef}
         className={cn(
-          "relative w-full overflow-hidden rounded-md border border-border/60 bg-muted/30",
+          "relative h-full w-full overflow-hidden bg-muted/30",
           cursorClass,
         )}
-        style={{ height: heightPx, touchAction: "none" }}
+        style={{ touchAction: "none" }}
       >
         <Stage
           ref={stageRef}
