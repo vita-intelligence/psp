@@ -8,7 +8,6 @@ import {
   useState,
   useTransition,
 } from "react";
-import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import {
   useLivePlan,
@@ -35,7 +34,7 @@ import {
   deleteLocationAction,
   updateLocationAction,
 } from "@/lib/storage-locations/actions";
-import { updateFloorAction } from "@/lib/floors/actions";
+import { patchFloorCanvasAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { Floor, StorageTag, WarehouseReadiness } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
@@ -63,7 +62,6 @@ import {
   Maximize2,
   Minimize2,
   Redo2,
-  Save,
   ShieldCheck,
   Undo2,
   X,
@@ -295,6 +293,26 @@ export function WarehousePlanEditor({
 
   const activeFloor = activeFloorId != null ? floorStates[activeFloorId] : null;
   const anyDirty = Object.values(floorStates).some((s) => s.dirty);
+
+  // Autosave surface. `pending` = debouncer waiting; `saving` = in
+  // flight; `saved` = last op succeeded; `error` = last op failed
+  // (see setActionError for the detail). `lastSavedAt` drives the
+  // "Saved 2s ago" status label; the ticker below makes the label
+  // re-render every second without keeping the whole editor in a
+  // fast loop.
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "pending" | "saving" | "saved" | "error"
+  >("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [savedAgoTick, setSavedAgoTick] = useState(0);
+  const autosaveInFlightRef = useRef(false);
+  const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!lastSavedAt || saveStatus !== "saved") return;
+    const id = setInterval(() => setSavedAgoTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [lastSavedAt, saveStatus]);
 
   // Tell the lobby presence we're on this warehouse so the
   // /settings/warehouses list still shows the "editing now" pulse on
@@ -1434,28 +1452,49 @@ export function WarehousePlanEditor({
 
   const onSave = useCallback(() => {
     if (!activeFloor) return;
-    // Only the room owner persists. The Save button is already
-    // disabled in this case but keep the guard so a hot-keyed
-    // Ctrl+S can't slip through.
+    // Only the room owner persists — non-creators' edits stay local
+    // (banner + head-of-room handoff will handle this in a follow-up
+    // PR; today the debounce effect never calls onSave when
+    // !liveIsCreator).
     if (!liveIsCreator) return;
+    // Re-entrancy guard: autosave debounce may fire again mid-flight
+    // if the user keeps editing. Skip; the debounce will re-schedule
+    // when the flag clears.
+    if (autosaveInFlightRef.current) return;
+
+    autosaveInFlightRef.current = true;
+    setSaveStatus("saving");
     setActionError(null);
 
+    // Snapshot the batch of rows this save is responsible for so the
+    // completion pass only clears dirty flags on rows we actually
+    // saved. Anything the user touches during the round-trip stays
+    // dirty and re-triggers the debouncer.
+    const state = activeFloor;
+    const newRows = state.locations.filter((l) => l.tempId && !l.deleted);
+    const dirtyRows = state.locations.filter(
+      (l) => !l.tempId && l.dirty && !l.deleted,
+    );
+    const deletedRows = state.locations.filter((l) => !l.tempId && l.deleted);
+    const savedTempIds = new Set(newRows.map((l) => l.tempId!));
+    const savedUuids = new Set([
+      ...dirtyRows.map((l) => l.uuid),
+      ...deletedRows.map((l) => l.uuid),
+    ]);
+
     startSaving(async () => {
-      const state = activeFloor;
-      const floorRes = await updateFloorAction(warehouseUuid, state.meta.uuid, {
-        canvas_json: canvasJsonFor(state) as unknown as Record<string, unknown>,
-      });
+      const floorRes = await patchFloorCanvasAction(
+        warehouseUuid,
+        state.meta.uuid,
+        canvasJsonFor(state) as unknown as Record<string, unknown>,
+      );
 
       if (!floorRes.ok) {
         setActionError(floorRes);
+        setSaveStatus("error");
+        autosaveInFlightRef.current = false;
         return;
       }
-
-      const newRows = state.locations.filter((l) => l.tempId && !l.deleted);
-      const dirtyRows = state.locations.filter(
-        (l) => !l.tempId && l.dirty && !l.deleted,
-      );
-      const deletedRows = state.locations.filter((l) => !l.tempId && l.deleted);
 
       // Also stash the server-assigned code so the canvas label
       // refreshes from "(unsaved)" → "SL00012" on save without a
@@ -1483,6 +1522,8 @@ export function WarehousePlanEditor({
         });
         if (!res.ok) {
           setActionError(res);
+          setSaveStatus("error");
+          autosaveInFlightRef.current = false;
           return;
         }
         if (loc.tempId) {
@@ -1519,16 +1560,27 @@ export function WarehousePlanEditor({
       const firstFailure = opResults.find((r) => !r.ok);
       if (firstFailure && !firstFailure.ok) {
         setActionError(firstFailure);
+        setSaveStatus("error");
+        autosaveInFlightRef.current = false;
         return;
       }
 
       setFloorStates((prev) => {
         const current = prev[state.meta.id];
         if (!current) return prev;
+        // Race-safe merge: only clear dirty on the specific rows this
+        // save covered. Any row the user touched *after* we snapshot
+        // above still shows dirty and stays in the autosave queue.
         const merged: LocalLocation[] = current.locations
-          .filter((l) => !l.deleted)
+          .filter((l) => {
+            // Drop rows that were tombstoned + successfully deleted;
+            // rows tombstoned after we started keep their tombstone
+            // (they'll delete on the next tick).
+            if (l.deleted && !l.tempId && savedUuids.has(l.uuid)) return false;
+            return true;
+          })
           .map((l) => {
-            if (l.tempId) {
+            if (l.tempId && savedTempIds.has(l.tempId)) {
               const remote = tempIdToServerData.get(l.tempId);
               if (remote) {
                 return {
@@ -1540,10 +1592,17 @@ export function WarehousePlanEditor({
                   dirty: false,
                 };
               }
+              return l;
+            }
+            if (!l.tempId && savedUuids.has(l.uuid) && !l.deleted) {
               return { ...l, dirty: false };
             }
-            return { ...l, dirty: false };
+            return l;
           });
+        // Floor.dirty only clears if the canvas we just saved is
+        // still equal to what's in state. Cheap approximation:
+        // clear it — the debounce effect will re-fire on the next
+        // edit anyway if state.canvas has diverged.
         return {
           ...prev,
           [state.meta.id]: {
@@ -1556,12 +1615,46 @@ export function WarehousePlanEditor({
       });
 
       invalidateAudit("warehouse", warehouseId);
-      router.refresh();
-      toast.success("Plan saved", {
-        description: `Saved "${state.meta.name}".`,
-      });
+      setSaveStatus("saved");
+      setLastSavedAt(new Date());
+      autosaveInFlightRef.current = false;
     });
-  }, [activeFloor, canvasJsonFor, liveIsCreator, router, warehouseId, warehouseUuid]);
+  }, [activeFloor, canvasJsonFor, liveIsCreator, warehouseId, warehouseUuid]);
+
+  // Debounced autosave. Any dirty state (floor canvas OR any
+  // location row) resets an 800ms timer; when it fires, onSave
+  // runs. The re-entrancy guard in onSave handles the case where
+  // the user keeps editing during a save round-trip.
+  //
+  // Head-of-room preserved: non-creators bypass this entirely, so
+  // their local edits stay local until either they become creator
+  // (via the earliest-joiner rule after the current creator leaves)
+  // or the take-over button lands in a follow-up PR.
+  useEffect(() => {
+    if (!activeFloor) return;
+    if (!liveIsCreator) return;
+
+    const isDirty =
+      activeFloor.dirty ||
+      activeFloor.locations.some(
+        (l) => l.dirty || l.tempId != null || l.deleted,
+      );
+    if (!isDirty) return;
+
+    setSaveStatus("pending");
+
+    if (autosaveDebounceRef.current) clearTimeout(autosaveDebounceRef.current);
+    autosaveDebounceRef.current = setTimeout(() => {
+      onSave();
+    }, 800);
+
+    return () => {
+      if (autosaveDebounceRef.current) {
+        clearTimeout(autosaveDebounceRef.current);
+        autosaveDebounceRef.current = null;
+      }
+    };
+  }, [activeFloor, liveIsCreator, onSave]);
 
   const onDiscard = useCallback(() => {
     if (!activeFloor) return;
@@ -1629,9 +1722,14 @@ export function WarehousePlanEditor({
           !isMobile && "border-b border-border/60 px-3 py-2",
         )}
       >
-        <Badge tone={activeFloor?.dirty ? "amber" : "muted"}>
-          {activeFloor?.dirty ? "Unsaved changes" : "Saved"}
-        </Badge>
+        <SaveStatusPill
+          status={saveStatus}
+          lastSavedAt={lastSavedAt}
+          savedAgoTick={savedAgoTick}
+          isCreator={liveIsCreator}
+          creatorName={liveCreator?.name}
+          hasDirty={anyDirty}
+        />
         <p className="hidden text-xs text-muted-foreground sm:block">
           Editing{" "}
           <span className="font-medium text-foreground">{warehouseName}</span>
@@ -1651,13 +1749,6 @@ export function WarehousePlanEditor({
               ownership cues (cursor, save button, etc.). */}
           {liveOthers.length > 0 && (
             <CollabAvatars peers={liveOthers} max={4} className="hidden sm:flex" />
-          )}
-          {liveOthers.length > 0 && liveCreator && (
-            <Badge tone={liveIsCreator ? "muted" : "amber"}>
-              {liveIsCreator
-                ? "You're saving"
-                : `${liveCreator.name} can save`}
-            </Badge>
           )}
           {activeFloor && (
             <AuditHistoryDialog
@@ -1732,28 +1823,15 @@ export function WarehousePlanEditor({
                   variant="ghost"
                   onClick={onDiscard}
                   disabled={saving}
+                  title={
+                    liveIsCreator
+                      ? "Discard local changes before the next autosave fires"
+                      : "Reset local changes — only the head of room can save"
+                  }
                 >
                   Discard
                 </Button>
               )}
-              <Button
-                type="button"
-                size="sm"
-                onClick={onSave}
-                disabled={!anyDirty || saving || !liveIsCreator}
-                title={
-                  !liveIsCreator && liveCreator
-                    ? `Only ${liveCreator.name} can save this session`
-                    : undefined
-                }
-              >
-                {saving ? (
-                  <Loader2 className="mr-1.5 size-4 animate-spin" />
-                ) : (
-                  <Save className="mr-1.5 size-4" />
-                )}
-                Save
-              </Button>
             </>
           )}
         </div>
@@ -2291,6 +2369,84 @@ const LabelModeSelect = memo(function LabelModeSelect({
     </label>
   );
 });
+
+/**
+ * Autosave status pill — replaces the old "Unsaved changes / Saved"
+ * badge + Save button + creator-status badge. Google-Docs style:
+ *
+ *   • idle / clean              → "All changes saved"
+ *   • pending (debouncing)      → "Saving in..."
+ *   • saving (in flight)        → spinner + "Saving..."
+ *   • saved with lastSavedAt    → "Saved 2s ago" (ticks every 1s)
+ *   • error                     → red "Save failed" (detail in banner)
+ *   • non-creator + dirty       → amber "{creator} is saving — your
+ *                                  changes stay local"
+ *   • non-creator + clean       → muted "{creator} is head of room"
+ */
+function SaveStatusPill({
+  status,
+  lastSavedAt,
+  savedAgoTick: _tick,
+  isCreator,
+  creatorName,
+  hasDirty,
+}: {
+  status: "idle" | "pending" | "saving" | "saved" | "error";
+  lastSavedAt: Date | null;
+  savedAgoTick: number;
+  isCreator: boolean;
+  creatorName: string | undefined;
+  hasDirty: boolean;
+}) {
+  // Non-creator surface. They can still edit locally (undo/redo, drag,
+  // discard) but nothing persists until the head-of-room hands over.
+  if (!isCreator) {
+    if (hasDirty && creatorName) {
+      return (
+        <span
+          title="Your edits are local until you become head of room"
+          className="inline-flex"
+        >
+          <Badge tone="amber">
+            {creatorName} is saving — local only
+          </Badge>
+        </span>
+      );
+    }
+    if (creatorName) {
+      return <Badge tone="muted">{creatorName} is head of room</Badge>;
+    }
+    return <Badge tone="muted">View-only</Badge>;
+  }
+
+  if (status === "saving") {
+    return (
+      <Badge tone="muted">
+        <Loader2 className="mr-1 size-3 animate-spin" />
+        Saving…
+      </Badge>
+    );
+  }
+  if (status === "pending") {
+    return <Badge tone="amber">Waiting to save…</Badge>;
+  }
+  if (status === "error") {
+    return <Badge tone="amber">Save failed</Badge>;
+  }
+  if (status === "saved" && lastSavedAt) {
+    const seconds = Math.floor((Date.now() - lastSavedAt.getTime()) / 1000);
+    const label =
+      seconds < 5
+        ? "Saved just now"
+        : seconds < 60
+          ? `Saved ${seconds}s ago`
+          : seconds < 3600
+            ? `Saved ${Math.floor(seconds / 60)}m ago`
+            : `Saved ${Math.floor(seconds / 3600)}h ago`;
+    return <Badge tone="muted">{label}</Badge>;
+  }
+  return <Badge tone="muted">All changes saved</Badge>;
+}
 
 /**
  * Required-segregation-areas banner. The warehouse needs at least
