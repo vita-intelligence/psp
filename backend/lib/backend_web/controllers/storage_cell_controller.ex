@@ -30,7 +30,7 @@ defmodule BackendWeb.StorageCellController do
 
   plug RequireWarehouseKindPermission,
        [warehouse: "warehouses.edit", production_facility: "production.facility_edit"]
-       when action in [:create, :update, :delete, :split, :sync_tags]
+       when action in [:create, :update, :patch_tags, :delete, :split, :sync_tags]
 
   action_fallback BackendWeb.FallbackController
 
@@ -115,6 +115,57 @@ defmodule BackendWeb.StorageCellController do
               "cell_has_active_placements",
               "This cell still holds stock. Move the lots to another cell first, then edit the dimensions / weight cap / purpose.",
               %{}
+            )
+          )
+      end
+    end
+  end
+
+  @doc """
+  Narrow PATCH for tag-only edits. The existing PUT already
+  short-circuits `ensure_no_structural_edit_while_occupied` when the
+  attrs don't touch structural fields, but this endpoint makes the
+  intent explicit in the URL so the FE can fire it during autosave
+  without any concern about accidentally including a dimension.
+
+  Body shape: `{ "tags": ["cold_zone", "sample"] }`. Anything else
+  is dropped.
+  """
+  def patch_tags(conn, %{
+        "warehouse_id" => warehouse_uuid,
+        "storage_location_id" => location_uuid,
+        "id" => cell_uuid
+      } = params) do
+    actor = conn.assigns.current_user
+
+    with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid),
+         %{} = location <- Plans.get_location(warehouse, location_uuid),
+         %{} = cell <- Plans.get_cell(location, cell_uuid) do
+      case params do
+        %{"tags" => tags} when is_list(tags) ->
+          case Plans.update_cell(actor, cell, %{"tags" => tags}) do
+            {:ok, updated} ->
+              floor_uuid = floor_uuid_for_location(warehouse, location)
+
+              WarehousePlanBroadcast.invalidate(warehouse, floor_uuid,
+                actor: actor,
+                kind: "cell_updated"
+              )
+
+              json(conn, %{cell: Payloads.storage_cell(updated)})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+
+        _ ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(
+            Errors.payload(
+              "tags_required",
+              "PATCH /cells/:id/tags requires a `tags` array in the body.",
+              %{tags: ["Required."]}
             )
           )
       end

@@ -25,22 +25,35 @@ defmodule BackendWeb.FloorController do
 
   plug RequireWarehouseKindPermission,
        [warehouse: "warehouses.edit", production_facility: "production.facility_edit"]
-       when action in [:create, :update, :delete]
+       when action in [:create, :update, :patch_canvas, :delete]
 
   action_fallback BackendWeb.FallbackController
 
-  def index(conn, %{"warehouse_id" => warehouse_uuid}) do
+  def index(conn, %{"warehouse_id" => warehouse_uuid} = params) do
     with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid) do
+      opts = read_opts(params)
+
       json(conn, %{
-        items: warehouse |> Plans.list_floors() |> Enum.map(&Payloads.floor/1)
+        items: warehouse |> Plans.list_floors(opts) |> Enum.map(&Payloads.floor/1)
       })
     end
   end
 
-  def show(conn, %{"warehouse_id" => warehouse_uuid, "id" => floor_uuid}) do
+  def show(conn, %{"warehouse_id" => warehouse_uuid, "id" => floor_uuid} = params) do
     with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid),
-         %{} = floor <- Plans.get_floor(warehouse, floor_uuid) do
+         %{} = floor <- Plans.get_floor(warehouse, floor_uuid, read_opts(params)) do
       json(conn, %{floor: Payloads.floor(floor)})
+    end
+  end
+
+  # `?preload=minimal` skips actor preloads on locations + cells.
+  # The canvas needs geometry, not actors — History drawer lazy
+  # loads actors on demand. Any other value falls through to the
+  # default full preload so old clients don't regress.
+  defp read_opts(params) do
+    case params["preload"] do
+      "minimal" -> [preload: :minimal]
+      _ -> []
     end
   end
 
@@ -81,6 +94,50 @@ defmodule BackendWeb.FloorController do
 
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)
+      end
+    end
+  end
+
+  @doc """
+  Autosave-friendly narrow PATCH. Accepts only `canvas_json`; the FE
+  fires it repeatedly during a live drag so we shave the full-object
+  PUT payload down to just the changing bytes and skip the name /
+  ordinal changeset paths that don't apply here.
+
+  Body shape: `{ "canvas_json": { ... } }`. Anything else in the body
+  is ignored — this endpoint intentionally can't rename or reorder a
+  floor.
+  """
+  def patch_canvas(conn, %{"warehouse_id" => warehouse_uuid, "id" => floor_uuid} = params) do
+    actor = conn.assigns.current_user
+
+    with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid),
+         %{} = floor <- Plans.get_floor(warehouse, floor_uuid) do
+      case params do
+        %{"canvas_json" => canvas} when is_map(canvas) ->
+          case Plans.update_floor(actor, floor, %{"canvas_json" => canvas}) do
+            {:ok, updated} ->
+              WarehousePlanBroadcast.invalidate(warehouse, updated.uuid,
+                actor: actor,
+                kind: "floor_saved"
+              )
+
+              json(conn, %{floor: Payloads.floor(updated)})
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              changeset_error(conn, cs)
+          end
+
+        _ ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(
+            Errors.payload(
+              "canvas_json_required",
+              "PATCH /floors/:id/canvas requires a `canvas_json` object in the body.",
+              %{canvas_json: ["Required."]}
+            )
+          )
       end
     end
   end

@@ -38,8 +38,14 @@ defmodule Backend.Warehouses.Plans do
   All floors of a warehouse, ordered by ordinal. Storage locations
   are preloaded so the UI can render a complete plan with a single
   fetch. Audit meta is preloaded too.
+
+  Pass `preload: :minimal` to skip actor preloads on floors,
+  locations, and cells. The canvas render only needs geometry — the
+  Ownership strip stays behind the History drawer, which lazy-loads
+  actors on open. Cuts ~2 rows/cell from the response on a 500-cell
+  warehouse.
   """
-  def list_floors(%Warehouse{} = warehouse) do
+  def list_floors(%Warehouse{} = warehouse, opts \\ []) do
     Floor
     |> where([f], f.warehouse_id == ^warehouse.id)
     # Hide system slots — the auto-managed Unregistered hierarchy
@@ -48,16 +54,18 @@ defmodule Backend.Warehouses.Plans do
     # it in the plan editor or floor list.
     |> where([f], is_nil(f.system_kind))
     |> order_by([f], asc: f.ordinal, asc: f.id)
-    |> preload([:created_by, :updated_by, storage_locations: ^location_query()])
+    |> preload(^floor_preload(opts))
     |> Repo.all()
   end
 
-  def get_floor(%Warehouse{} = warehouse, uuid) when is_binary(uuid) do
+  def get_floor(warehouse, uuid, opts \\ [])
+
+  def get_floor(%Warehouse{} = warehouse, uuid, opts) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
       {:ok, cast} ->
         Floor
         |> where([f], f.warehouse_id == ^warehouse.id and f.uuid == ^cast)
-        |> preload([:created_by, :updated_by, storage_locations: ^location_query()])
+        |> preload(^floor_preload(opts))
         |> Repo.one()
 
       :error ->
@@ -65,7 +73,17 @@ defmodule Backend.Warehouses.Plans do
     end
   end
 
-  def get_floor(_warehouse, _), do: nil
+  def get_floor(_warehouse, _, _opts), do: nil
+
+  defp floor_preload(opts) do
+    case Keyword.get(opts, :preload) do
+      :minimal ->
+        [storage_locations: location_query_minimal()]
+
+      _ ->
+        [:created_by, :updated_by, storage_locations: location_query()]
+    end
+  end
 
   @doc """
   Lookup variant by integer primary key. Used when an associated
@@ -625,6 +643,26 @@ defmodule Backend.Warehouses.Plans do
     from(c in StorageCell,
       where: is_nil(c.system_kind),
       preload: [:created_by, :updated_by],
+      order_by: [asc: c.ordinal, asc: c.id]
+    )
+  end
+
+  # Same shape as `location_query/0` but skips actor preloads. The
+  # Payloads.storage_location renders `created_by: nil` when the
+  # association is not loaded — the FE canvas doesn't need actors
+  # to draw shapes, so we skip the join and let the History drawer
+  # fetch actors on demand when the user opens it.
+  defp location_query_minimal do
+    from(l in StorageLocation,
+      where: is_nil(l.system_kind),
+      preload: [cells: ^cell_query_minimal()],
+      order_by: [asc: l.name]
+    )
+  end
+
+  defp cell_query_minimal do
+    from(c in StorageCell,
+      where: is_nil(c.system_kind),
       order_by: [asc: c.ordinal, asc: c.id]
     )
   end
