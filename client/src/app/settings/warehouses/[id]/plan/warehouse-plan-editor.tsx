@@ -633,15 +633,19 @@ export function WarehousePlanEditor({
   const updateActiveFloor = useCallback(
     (
       mutator: (prev: FloorState) => FloorState,
-      options?: { snapshot?: boolean },
+      options?: { snapshot?: boolean; markDirty?: boolean },
     ) => {
       if (activeFloorId == null) return;
+      const markDirty = options?.markDirty ?? true;
       setFloorStates((prev) => {
         const current = prev[activeFloorId];
         if (!current) return prev;
         if (options?.snapshot) pushHistory(activeFloorId, current);
         const next = mutator(current);
-        return { ...prev, [activeFloorId]: { ...next, dirty: true } };
+        return {
+          ...prev,
+          [activeFloorId]: markDirty ? { ...next, dirty: true } : next,
+        };
       });
     },
     [activeFloorId, pushHistory],
@@ -1060,9 +1064,18 @@ export function WarehousePlanEditor({
 
   const onViewportChange = useCallback(
     (next: Viewport) => {
-      // Viewport changes mark dirty (so they save) but don't snapshot
-      // for undo — camera moves shouldn't fill the history.
-      updateActiveFloor((s) => ({ ...s, viewport: next }));
+      // Viewport update WITHOUT marking dirty. Panning / zooming
+      // shouldn't fire autosave — otherwise every scroll ships a
+      // full canvas_json PATCH just because the camera moved. The
+      // new camera position piggybacks on the next real content
+      // autosave (dirty state includes the whole canvas_json), so
+      // when you actually edit something, the current zoom persists
+      // too. Trade-off: if you only pan / zoom and never edit, the
+      // viewport won't persist across reloads. Acceptable — a mild
+      // ergonomic loss to avoid save-on-scroll spam.
+      updateActiveFloor((s) => ({ ...s, viewport: next }), {
+        markDirty: false,
+      });
     },
     [updateActiveFloor],
   );
