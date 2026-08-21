@@ -181,3 +181,20 @@ export interface ShipmentEditableFields {
   notes?: string | null;
   loading_photo_url?: string | null;
 }
+
+/**
+ * Post-pickup-safe carrier-paperwork field subset. Mirrors
+ * ``@carrier_details_fields`` on ``Backend.Shipments.Shipment`` — the
+ * only fields the desk can amend after the truck has left.
+ * Never carries recipient / address / qty (those must not drift
+ * once the goods are in transit).
+ */
+export interface ShipmentCarrierEditableFields {
+  carrier?: string | null;
+  vehicle_registration?: string | null;
+  driver_name?: string | null;
+  consignment_note_ref?: string | null;
+  tracking_number?: string | null;
+  seal_number?: string | null;
+  temperature_c?: string | null;
+}

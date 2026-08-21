@@ -172,6 +172,38 @@ defmodule Backend.Shipments.Shipment do
     |> maybe_validate_upcase(:ship_to_country)
   end
 
+  # Post-pickup safe field set — carrier paperwork the desk can
+  # still amend after the truck has left (typos on the plate, driver
+  # swap, tracking number issued late). Deliberately excludes
+  # recipient / address / qty — those must not drift once the goods
+  # are in transit.
+  @carrier_details_fields ~w(
+    carrier
+    vehicle_registration
+    driver_name
+    consignment_note_ref
+    tracking_number
+    seal_number
+    temperature_c
+  )a
+
+  @doc """
+  Post-pickup-safe carrier paperwork edits. Casts + validates only
+  the fields on ``@carrier_details_fields`` so a caller can't slip a
+  recipient / address / qty change in through this changeset. Reuses
+  the same length validators as :func:`update_changeset/2`.
+  """
+  def carrier_details_changeset(shipment, attrs) do
+    shipment
+    |> cast(attrs, @carrier_details_fields)
+    |> validate_length(:carrier, max: 200)
+    |> validate_length(:vehicle_registration, max: 40)
+    |> validate_length(:driver_name, max: 200)
+    |> validate_length(:consignment_note_ref, max: 80)
+    |> validate_length(:tracking_number, max: 120)
+    |> validate_length(:seal_number, max: 60)
+  end
+
   @doc "Draft → ready. Requires the mandatory paperwork fields."
   def ready_changeset(shipment, attrs) do
     shipment

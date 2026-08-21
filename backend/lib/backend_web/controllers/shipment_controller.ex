@@ -132,6 +132,32 @@ defmodule BackendWeb.ShipmentController do
   end
 
   # -----------------------------------------------------------------
+  # Post-pickup carrier-paperwork edit
+  # -----------------------------------------------------------------
+  # Distinct from ``update/2`` because carrier paperwork (delivery
+  # company, vehicle plate, driver, waybill, tracking, seal, temp)
+  # routinely needs corrections AFTER the truck departs — typos on
+  # the plate, driver swap, tracking number issued late by the
+  # carrier. The general ``update/2`` gate closes at ``picked_up`` to
+  # protect recipient / address / qty integrity; this endpoint stays
+  # open through ``picked_up``. Perm gate is state-dependent (checked
+  # in the context): ``shipments.edit`` when draft/ready,
+  # ``shipments.pickup`` when picked_up.
+  def update_carrier_details(conn, %{"uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.drop(params, ["uuid"])
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         {:ok, updated} <- Shipments.update_carrier_details(actor, shipment, attrs) do
+      preloaded = Shipments.get_shipment(actor.company_id, updated.uuid)
+      json(conn, %{shipment: Payloads.shipment(preloaded)})
+    else
+      nil -> not_found(conn, "Shipment not found.")
+      {:error, reason} -> shipment_error(conn, reason)
+    end
+  end
+
+  # -----------------------------------------------------------------
   # Post-pickup tracking-number edit
   # -----------------------------------------------------------------
   # Distinct from ``update/2`` because a carrier's parcel-tracking

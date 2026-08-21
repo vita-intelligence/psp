@@ -31,6 +31,16 @@ import {
   Upload,
   XCircle,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -210,11 +220,15 @@ export function FinalReleaseForm({
   const lotInFinishedQuarantine = cellPurpose === "finished_quarantine";
   const lotHasPlacement = !!release.stock_lot?.placement;
 
+  // Evidence files are recommended, not blocking. The Release button
+  // is enabled once dual sign-off + placement pass; if any evidence
+  // kind is unattached the DecisionCard opens a confirmation modal
+  // before the release action fires. Missing kinds are surfaced in
+  // the modal so the operator explicitly acknowledges what wasn't
+  // uploaded — the release row's file associations preserve the
+  // audit trail either way.
   const canFinalizeRelease =
-    !finalized &&
-    hasDualSigs &&
-    missingFileKinds.length === 0 &&
-    lotInFinishedQuarantine;
+    !finalized && hasDualSigs && lotInFinishedQuarantine;
 
   const currentUserIsReleaser = release.releaser_id === currentUserId;
   const currentUserIsApprover = release.approver_id === currentUserId;
@@ -622,7 +636,7 @@ function FilesCard({
           <Paperclip className="size-4" />
           Evidence files
           <span className="text-xs font-normal text-muted-foreground">
-            All {FINAL_RELEASE_FILE_KINDS.length} kinds required
+            All {FINAL_RELEASE_FILE_KINDS.length} kinds recommended
           </span>
         </CardTitle>
       </CardHeader>
@@ -1217,10 +1231,22 @@ function DecisionCard({
 }) {
   const [holdReason, setHoldReason] = useState("");
   const [rejectReason, setRejectReason] = useState("");
+  const [confirmMissingOpen, setConfirmMissingOpen] = useState(false);
   const canHoldOrReject =
     canRelease &&
     lotInFinishedQuarantine &&
     (currentUserIsReleaser || currentUserIsApprover);
+  const hasMissingFiles = missingFileKinds.length > 0;
+  // If files are missing, the button opens the confirmation modal
+  // instead of firing the release straight away. If everything is
+  // attached, keep the current one-click flow — no unnecessary modal.
+  const handleReleaseClick = () => {
+    if (hasMissingFiles) {
+      setConfirmMissingOpen(true);
+    } else {
+      onRelease();
+    }
+  };
 
   return (
     <Card>
@@ -1252,33 +1278,76 @@ function DecisionCard({
               )}
               Lot in a finished-quarantine cell
             </li>
-            <li className="flex items-center gap-1.5">
+            <li className="flex items-start gap-1.5">
               {missingFileKinds.length === 0 ? (
-                <CheckCircle2 className="size-3 text-emerald-600" />
+                <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-emerald-600" />
               ) : (
-                <XCircle className="size-3 text-muted-foreground" />
+                <AlertTriangle className="mt-0.5 size-3 shrink-0 text-amber-600" />
               )}
-              All four required files attached
-              {missingFileKinds.length > 0 && (
-                <span className="text-[10px]">
-                  {" "}
-                  (missing:{" "}
-                  {missingFileKinds
-                    .map((k) => FILE_KIND_LABEL[k])
-                    .join(", ")}
-                  )
-                </span>
-              )}
+              <span>
+                {missingFileKinds.length === 0
+                  ? "All recommended evidence files attached"
+                  : "Some evidence files aren't attached (recommended, not blocking)"}
+                {missingFileKinds.length > 0 && (
+                  <span className="text-[10px]">
+                    {" "}
+                    — missing:{" "}
+                    {missingFileKinds
+                      .map((k) => FILE_KIND_LABEL[k])
+                      .join(", ")}
+                  </span>
+                )}
+              </span>
             </li>
           </ul>
           <Button
             type="button"
             disabled={!canFinalizeRelease || !canRelease || pending}
-            onClick={onRelease}
+            onClick={handleReleaseClick}
           >
             <CheckCircle2 className="mr-1 size-4" />
             Release {release.stock_lot?.code ?? "lot"}
           </Button>
+          <AlertDialog open={confirmMissingOpen} onOpenChange={setConfirmMissingOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle className="flex items-center gap-2">
+                  <AlertTriangle className="size-5 text-amber-600" />
+                  Release without full evidence?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  These recommended evidence files aren&rsquo;t attached to the release:
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <ul className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+                {missingFileKinds.map((kind) => (
+                  <li key={kind} className="flex items-start gap-2">
+                    <XCircle className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                    <span className="font-medium">{FILE_KIND_LABEL[kind]}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted-foreground">
+                The release will still be recorded with your signatures and the
+                lot will be marked available for dispatch. The missing files
+                stay listed on this release row so QA can attach them later.
+              </p>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={pending}>
+                  Attach files first
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={pending}
+                  onClick={() => {
+                    setConfirmMissingOpen(false);
+                    onRelease();
+                  }}
+                >
+                  Release anyway
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
 
         {/* Hold */}

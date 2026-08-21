@@ -282,6 +282,52 @@ defmodule Backend.Shipments do
 
   defp ensure_tracking_editable(_), do: {:error, :not_editable}
 
+  @doc """
+  Post-pickup-safe carrier paperwork edits. Accepts the field subset
+  on :func:`Backend.Shipments.Shipment.carrier_details_changeset/2`
+  (carrier / vehicle_registration / driver_name /
+  consignment_note_ref / tracking_number / seal_number /
+  temperature_c). Kept distinct from :func:`update/3` because carrier
+  paperwork routinely needs corrections after the truck has left
+  (typos on the plate, driver swap, tracking number issued late) —
+  the general edit gate stops accepting edits at ``picked_up`` to
+  protect ship-to + qty integrity, but the paperwork subset stays
+  editable through ``picked_up``.
+
+  Permission gate depends on lifecycle stage:
+
+    * ``draft`` / ``ready`` → requires ``shipments.edit``
+    * ``picked_up`` → requires ``shipments.pickup`` (only operators
+      who work the dispatch flow should be correcting a truck-
+      arrival record)
+    * ``delivered`` / ``cancelled`` → refused (:not_editable)
+  """
+  def update_carrier_details(%User{} = actor, %Shipment{} = shipment, attrs) do
+    with :ok <- ensure_carrier_perm(actor, shipment),
+         :ok <- ensure_carrier_editable(shipment) do
+      before_state = shipment_snapshot(shipment)
+
+      shipment
+      |> Shipment.carrier_details_changeset(attrs)
+      |> Repo.update()
+      |> tap_audit_updated(actor, before_state)
+    end
+  end
+
+  defp ensure_carrier_perm(actor, %Shipment{status: s}) when s in ~w(draft ready),
+    do: ensure_edit(actor)
+
+  defp ensure_carrier_perm(actor, %Shipment{status: "picked_up"}),
+    do: ensure_pickup(actor)
+
+  defp ensure_carrier_perm(_actor, _shipment), do: {:error, :forbidden}
+
+  defp ensure_carrier_editable(%Shipment{status: s})
+       when s in ~w(draft ready picked_up),
+       do: :ok
+
+  defp ensure_carrier_editable(_), do: {:error, :not_editable}
+
   # For own-stock lots, replace whatever qty the caller sent with the
   # full quantity currently sitting in the dispatch cell. Bailee (3PL)
   # lots pass through untouched — partial dispatches are the whole

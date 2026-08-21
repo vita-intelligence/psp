@@ -730,7 +730,15 @@ defmodule Backend.Production.FinalReleases do
   # ============================================================
 
   @doc """
-  Finalise as Release. Requires dual sign-off + all four file kinds.
+  Finalise as Release. Requires dual sign-off.
+
+  Evidence files (CoA / BMR / Micro / Label proof / Retain sample) are
+  RECOMMENDED but not blocking — the FE surfaces a confirmation modal
+  listing anything unattached before the operator confirms. This keeps
+  the ceremony recordable when a file is momentarily unavailable
+  (e.g. lab report emailed but not yet saved) while still ensuring the
+  operator explicitly acknowledged the gap. The release row's file
+  associations preserve the evidence trail for audit reconstruction.
 
   Two paths:
 
@@ -746,7 +754,6 @@ defmodule Backend.Production.FinalReleases do
     with :ok <- ensure_pending(release),
          :ok <- ensure_permission(actor),
          :ok <- ensure_dual_signatures(release),
-         :ok <- ensure_all_files_present(release),
          {:ok, lot} <- fetch_lot(release),
          :ok <- ensure_lot_releasable(lot),
          :ok <- ensure_lot_in_finished_quarantine(lot) do
@@ -937,18 +944,6 @@ defmodule Backend.Production.FinalReleases do
   end
 
   defp ensure_dual_signatures(_), do: {:error, :dual_signatures_required}
-
-  defp ensure_all_files_present(%FinalRelease{} = release) do
-    files = Repo.all(from f in FinalReleaseFile, where: f.production_final_release_id == ^release.id)
-    kinds = MapSet.new(files, & &1.kind)
-    missing = Enum.reject(@required_file_kinds, &MapSet.member?(kinds, &1))
-
-    if missing == [] do
-      :ok
-    else
-      {:error, {:missing_files, missing}}
-    end
-  end
 
   defp ensure_actor_signed(%FinalRelease{releaser_id: id}, %User{id: id}), do: :ok
   defp ensure_actor_signed(%FinalRelease{approver_id: id}, %User{id: id}), do: :ok
