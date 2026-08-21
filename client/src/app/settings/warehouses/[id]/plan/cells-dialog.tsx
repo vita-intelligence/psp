@@ -22,13 +22,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/components/forms/error-banner";
@@ -324,23 +324,25 @@ export function CellsDialog({
   const inputsDisabled = !canEdit || !isCreator || pending;
 
   if (canEdit && joinError) {
-    // Render the join error as the dialog body so the operator sees a
+    // Render the join error as the sheet body so the operator sees a
     // hard reason instead of a broken empty form.
     return (
-      <Dialog open={open} onOpenChange={(o) => setOpen(o)}>
-        <DialogTrigger asChild>{trigger}</DialogTrigger>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Levels · {location.name}</DialogTitle>
-          </DialogHeader>
-          <JoinErrorCard error={joinError} />
-        </DialogContent>
-      </Dialog>
+      <Sheet open={open} onOpenChange={(o) => setOpen(o)}>
+        <SheetTrigger asChild>{trigger}</SheetTrigger>
+        <SheetContent side="right" className="w-full sm:max-w-md">
+          <SheetHeader className="border-b border-border/60 p-4">
+            <SheetTitle>Levels · {location.name}</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto p-4">
+            <JoinErrorCard error={joinError} />
+          </div>
+        </SheetContent>
+      </Sheet>
     );
   }
 
   return (
-    <Dialog
+    <Sheet
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
@@ -350,16 +352,19 @@ export function CellsDialog({
         }
       }}
     >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+      <SheetTrigger asChild>{trigger}</SheetTrigger>
+      <SheetContent
+        side="right"
+        className="w-full gap-0 p-0 sm:max-w-lg"
+      >
         <div
           ref={cursorAnchorRef}
           onMouseMove={onCursorMove}
           onMouseLeave={hideCursor}
-          className="relative"
+          className="relative flex h-full flex-col"
         >
-          {/* Remote cursors layer — anchored to the dialog body. */}
-          <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
+          {/* Remote cursors layer — anchored to the sheet body. */}
+          <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
             {Object.entries(cursors).map(([id, cursor]) => (
               <RemoteCursor
                 key={id}
@@ -370,23 +375,23 @@ export function CellsDialog({
             ))}
           </div>
 
-          <DialogHeader>
+          <SheetHeader className="border-b border-border/60 px-4 py-3 pr-12">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="space-y-1.5">
-                <DialogTitle>Levels · {location.name}</DialogTitle>
-                <DialogDescription>
+                <SheetTitle>Levels · {location.name}</SheetTitle>
+                <SheetDescription>
                   Stack this rack into levels — each with its own
                   width × depth × height, weight limit, and tags. Levels
                   inherit the rack&apos;s footprint and tags at creation;
                   edit either to make a level more specific. Allocation
                   reads each level&apos;s own tag set.
-                </DialogDescription>
+                </SheetDescription>
               </div>
               <CollabAvatars peers={presence} />
             </div>
-          </DialogHeader>
+          </SheetHeader>
 
-          <div className="space-y-3 pt-2">
+          <div className="flex-1 space-y-3 overflow-y-auto p-4">
             {canEdit && !isCreator && creator && (
               <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
                 <Lock className="mt-0.5 size-3.5 shrink-0" />
@@ -528,8 +533,8 @@ export function CellsDialog({
             </div>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }
 
