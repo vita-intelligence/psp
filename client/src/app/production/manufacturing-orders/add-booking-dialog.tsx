@@ -19,6 +19,7 @@ import {
   formatCompanyDate,
   formatCompanyMoney,
   formatCompanyNumber,
+  formatQtyHumanized,
 } from "@/lib/format/company";
 import { createBookingAction } from "@/lib/production/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
@@ -36,6 +37,20 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
+
+// Short-lived in-memory cache for the ``bookable-lots`` endpoint. The
+// dialog previously re-fetched on every open — even if the same
+// operator immediately reopened it for a different lot they got the
+// full round-trip again. Cache is keyed on ``(mo.uuid, itemId)`` and
+// TTL'd at 15 s so a quick close-and-reopen returns instantly while
+// still catching real availability changes (concurrent bookings from
+// other operators) within a coffee-break window. Cleared implicitly
+// on hard reload or after 15 s.
+const BOOKABLE_LOTS_CACHE: Map<
+  string,
+  { at: number; lots: BookableLot[] }
+> = new Map();
+const BOOKABLE_LOTS_TTL_MS = 15_000;
 
 /**
  * MRPEasy "Add a booking" dialog. Lists the eligible lots for the
@@ -64,6 +79,22 @@ export function AddBookingDialog({
   useEffect(() => {
     if (!open || !itemId) return;
     let alive = true;
+
+    // Serve from the short-lived cache if the previous fetch is still
+    // fresh — avoids a full round-trip on close-then-reopen (which is
+    // frequent when the operator is scanning through multiple parts
+    // on the same MO). Real availability changes catch up on the next
+    // TTL expiry.
+    const cacheKey = `${mo.uuid}:${itemId}`;
+    const cached = BOOKABLE_LOTS_CACHE.get(cacheKey);
+    if (cached && Date.now() - cached.at < BOOKABLE_LOTS_TTL_MS) {
+      setLots(cached.lots);
+      setLoading(false);
+      return () => {
+        alive = false;
+      };
+    }
+
     setLoading(true);
     fetch(
       `/api/production/manufacturing-orders/${encodeURIComponent(mo.uuid)}/bookable-lots?item_id=${itemId}`,
@@ -72,7 +103,9 @@ export function AddBookingDialog({
       .then((r) => (r.ok ? r.json() : { items: [] }))
       .then((body: { items?: BookableLot[] }) => {
         if (!alive) return;
-        setLots(body.items ?? []);
+        const lots = body.items ?? [];
+        BOOKABLE_LOTS_CACHE.set(cacheKey, { at: Date.now(), lots });
+        setLots(lots);
       })
       .catch(() => alive && setLots([]))
       .finally(() => alive && setLoading(false));
@@ -90,11 +123,25 @@ export function AddBookingDialog({
     setError(null);
     const required = part.required_qty ? Number(part.required_qty) : 0;
     const booked = part.booked_qty ? Number(part.booked_qty) : 0;
-    const stillNeeded = Math.max(required - booked, 0);
+    // Storage-precision residue guard. required is often computed at
+    // up to 20 decimals (BOM.qty × MO.quantity) while booked comes
+    // from Decimal(20,10) storage, so the raw subtraction leaks
+    // picoscale residues like 2.5e-11. Toggling into
+    // `Number(x.toFixed(10))` collapses anything below the storage
+    // epsilon to 0 — which then trips the `suggested > 0` gate below
+    // and leaves the input empty instead of autofilling scientific-
+    // notation noise ("2.475999e-11") that the operator can't act on.
+    const rawStillNeeded = Math.max(required - booked, 0);
+    const stillNeeded = Number(rawStillNeeded.toFixed(10));
     const available = Number(lot.available_qty);
-    const suggested = Math.min(stillNeeded, available);
+    const rawSuggested = Math.min(stillNeeded, available);
+    const suggested = Number(rawSuggested.toFixed(10));
+    // Format as a plain decimal string (never scientific notation)
+    // and trim trailing zeros so a clean number lands in the input.
     setQty(
-      Number.isFinite(suggested) && suggested > 0 ? String(suggested) : "",
+      Number.isFinite(suggested) && suggested > 0
+        ? String(Number(suggested.toFixed(10)))
+        : "",
     );
   }
 
@@ -119,9 +166,13 @@ export function AddBookingDialog({
         quantity: String(n),
       });
       if (res.ok) {
+        const toastQty = formatQtyHumanized(String(n), uom, company);
         toast.success(
-          `Booked ${formatCompanyNumber(String(n), company)} ${uom} of ${picked.code ?? "lot"}.`,
+          `Booked ${toastQty.value} ${toastQty.unit} of ${picked.code ?? "lot"}.`,
         );
+        // Cache is stale — the lot we just picked has less availability
+        // now. Drop the cached entry so the next open re-fetches.
+        BOOKABLE_LOTS_CACHE.delete(`${mo.uuid}:${itemId}`);
         invalidateAudit("manufacturing_order", mo.id);
         onOpenChange(false);
         router.refresh();
@@ -214,7 +265,10 @@ export function AddBookingDialog({
                             : "—"}
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono">
-                          {formatCompanyNumber(lot.available_qty, company)} {uom}
+                          {(() => {
+                            const q = formatQtyHumanized(lot.available_qty, uom, company);
+                            return `${q.value} ${q.unit}`;
+                          })()}
                         </td>
                       </tr>
                     ))}
@@ -243,7 +297,10 @@ export function AddBookingDialog({
                 <span className="text-[11px] text-muted-foreground">
                   · max{" "}
                   <span className="font-medium text-foreground">
-                    {formatCompanyNumber(picked.available_qty, company)} {uom}
+                    {(() => {
+                      const q = formatQtyHumanized(picked.available_qty, uom, company);
+                      return `${q.value} ${q.unit}`;
+                    })()}
                   </span>
                 </span>
               )}
