@@ -2727,7 +2727,9 @@ defmodule BackendWeb.Payloads do
     lines =
       case bom.lines do
         %Ecto.Association.NotLoaded{} ->
-          Backend.Repo.preload(bom, lines: [:part, :unit_of_measurement]).lines
+          Backend.Repo.preload(bom,
+            lines: [:unit_of_measurement, part: :stock_uom]
+          ).lines
 
         list when is_list(list) ->
           list
@@ -2801,6 +2803,7 @@ defmodule BackendWeb.Payloads do
             is_nil(mo_qty) -> nil
             true -> Decimal.mult(line.qty, mo_qty)
           end
+          |> Backend.Production.normalise_count_qty(line)
 
         line_total =
           cond do
