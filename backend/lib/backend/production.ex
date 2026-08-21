@@ -2134,6 +2134,7 @@ defmodule Backend.Production do
             raw = Decimal.mult(per_output, mo.quantity || Decimal.new(0))
             normalise_count_qty(raw, line)
           end
+          |> normalise_qty_to_storage_precision()
 
         booked =
           mo.bookings
@@ -2144,7 +2145,7 @@ defmodule Backend.Production do
             Decimal.add(acc, b.quantity || Decimal.new(0))
           end)
 
-        gap = Decimal.sub(required, booked)
+        gap = Decimal.sub(required, booked) |> Decimal.round(10, :half_up)
 
         if Decimal.compare(gap, Decimal.new("0")) == :gt do
           spawn_child_mo(actor, mo, part, gap, depth)
@@ -9807,6 +9808,7 @@ defmodule Backend.Production do
           else
             Decimal.mult(l.qty || Decimal.new(0), mo_qty)
           end
+          |> normalise_qty_to_storage_precision()
 
         booked =
           parent_mo.bookings
@@ -9818,7 +9820,7 @@ defmodule Backend.Production do
             Decimal.add(acc, b.quantity || Decimal.new(0))
           end)
 
-        Decimal.sub(required, booked)
+        Decimal.sub(required, booked) |> Decimal.round(10, :half_up)
     end
   end
 

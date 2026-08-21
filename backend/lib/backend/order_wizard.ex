@@ -2592,6 +2592,7 @@ defmodule Backend.OrderWizard do
             else
               Decimal.mult(line.qty || Decimal.new(0), mo_qty)
             end
+            |> normalise_qty_to_storage_precision()
 
           booked =
             bookings_by_item
@@ -3689,6 +3690,19 @@ defmodule Backend.OrderWizard do
   defp format_decimal(n) when is_integer(n) or is_float(n), do: to_string(n)
 
   defp format_decimal(_), do: "—"
+
+  # Round a qty Decimal to Decimal(20,10) storage precision.
+  # Mirrors Backend.Production.normalise_qty_to_storage_precision/1 —
+  # the wizard's under-booked classifier compares
+  # ``Decimal.mult(bom.qty, mo.quantity)`` (up to 20 dec of math)
+  # against bookings that live at Decimal(20,10). Without this a
+  # 2.5e-11 kg picoscale residue flips the row to under-booked,
+  # rolling the whole order back into "Awaiting ingredients" on the
+  # /projects wizard even though every real lot is fully booked.
+  defp normalise_qty_to_storage_precision(%Decimal{} = d),
+    do: Decimal.round(d, 10, :half_up)
+
+  defp normalise_qty_to_storage_precision(other), do: other
 
   # Packaging BOM lines from formulation stages when a packaging
   # combo overlay is active — mirrors ``payloads.packaging_bom_line?/1``
