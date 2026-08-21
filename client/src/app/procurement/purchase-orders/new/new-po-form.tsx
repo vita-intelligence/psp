@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { formatQtyHumanized } from "@/lib/format/company";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -2238,6 +2239,12 @@ function ShortageSuggestions({
             {visible.map((row) => {
               const onPO = row.item ? itemIdsOnLines.has(row.item.id) : false;
               const uom = row.item?.stock_uom?.symbol ?? "";
+              // Pharma display convention — 5 decimals for mass/volume,
+              // whole units for count. Routes through the shared
+              // formatQtyHumanized so the popup reads the same way as
+              // the shortages table.
+              const shortageDisplay = formatQtyHumanized(row.shortage_qty, uom, null);
+              const expectingDisplay = formatQtyHumanized(row.expecting_qty, uom, null);
               return (
                 <li
                   key={row.item?.id ?? row.item?.uuid ?? row.shortage_qty}
@@ -2252,7 +2259,7 @@ function ShortageSuggestions({
                         <>
                           Short by{" "}
                           <span className="font-mono font-semibold text-red-700 dark:text-red-300">
-                            {row.shortage_qty} {uom}
+                            {shortageDisplay.value} {shortageDisplay.unit}
                           </span>
                         </>
                       ) : (
@@ -2267,7 +2274,7 @@ function ShortageSuggestions({
                         <span className="ml-2">
                           ·{" "}
                           <span className="text-sky-700 dark:text-sky-300">
-                            {row.expecting_qty} {uom} on open PO
+                            {expectingDisplay.value} {expectingDisplay.unit} on open PO
                           </span>
                         </span>
                       )}

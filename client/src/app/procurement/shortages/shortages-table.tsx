@@ -15,7 +15,7 @@ import { serializeColumnFilters } from "@/lib/data-table/serialize";
 import { Button } from "@/components/ui/button";
 import {
   formatCompanyDate,
-  formatCompanyNumber,
+  formatQtyHumanized,
   type FormatPrefs,
 } from "@/lib/format/company";
 import type { ShortageRow } from "@/lib/procurement-shortages/server";
@@ -131,11 +131,14 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         widthClassName: "w-32",
         group: "Amounts",
         description: "Total qty every open MO needs of this item.",
-        cell: (r) => (
-          <span className="font-mono text-xs">
-            {formatCompanyNumber(r.required_qty, companyDateFormat)} {uomOf(r)}
-          </span>
-        ),
+        cell: (r) => {
+          const q = formatQtyHumanized(r.required_qty, uomOf(r), companyDateFormat);
+          return (
+            <span className="font-mono text-xs">
+              {q.value} {q.unit}
+            </span>
+          );
+        },
       },
       {
         id: "booked",
@@ -146,11 +149,14 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         widthClassName: "w-32",
         group: "Amounts",
         description: "Qty already reserved from existing stock via MO bookings.",
-        cell: (r) => (
-          <span className="font-mono text-xs text-muted-foreground">
-            {formatCompanyNumber(r.booked_qty, companyDateFormat)} {uomOf(r)}
-          </span>
-        ),
+        cell: (r) => {
+          const q = formatQtyHumanized(r.booked_qty, uomOf(r), companyDateFormat);
+          return (
+            <span className="font-mono text-xs text-muted-foreground">
+              {q.value} {q.unit}
+            </span>
+          );
+        },
       },
       {
         id: "expecting",
@@ -163,6 +169,7 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         description: "Qty already on open POs (ordered / partially received).",
         cell: (r) => {
           const v = Number(r.expecting_qty);
+          const q = formatQtyHumanized(r.expecting_qty, uomOf(r), companyDateFormat);
           return (
             <span
               className={
@@ -172,8 +179,7 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
               }
               title={v > 0 ? "Already on an open PO" : "Nothing ordered yet"}
             >
-              {formatCompanyNumber(r.expecting_qty, companyDateFormat)}{" "}
-              {uomOf(r)}
+              {q.value} {q.unit}
             </span>
           );
         },
@@ -188,11 +194,14 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         defaultHidden: true,
         group: "Amounts",
         description: "Currently on-hand qty in `available` cells (unreserved).",
-        cell: (r) => (
-          <span className="font-mono text-xs text-muted-foreground">
-            {formatCompanyNumber(r.on_hand_qty, companyDateFormat)} {uomOf(r)}
-          </span>
-        ),
+        cell: (r) => {
+          const q = formatQtyHumanized(r.on_hand_qty, uomOf(r), companyDateFormat);
+          return (
+            <span className="font-mono text-xs text-muted-foreground">
+              {q.value} {q.unit}
+            </span>
+          );
+        },
       },
       {
         id: "shortage",
@@ -217,10 +226,11 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
               </span>
             );
           }
+          const q = formatQtyHumanized(r.shortage_qty, uomOf(r), companyDateFormat);
           return (
             <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-red-700 dark:text-red-300">
               <AlertTriangle className="size-3" />
-              {formatCompanyNumber(r.shortage_qty, companyDateFormat)} {uomOf(r)}
+              {q.value} {q.unit}
             </span>
           );
         },
