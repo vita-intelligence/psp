@@ -102,6 +102,34 @@ defmodule BackendWeb.WarehousePlanChannel do
     {:noreply, socket}
   end
 
+  # Head-of-room handoff. Any peer can request to take over; the
+  # current creator's client is expected to respond by pushing
+  # `handoff:step-down` on itself, which sets `stepped_down: true`
+  # on their presence meta. Since the "who's creator" computation
+  # (earliest joiner among non-stepped-down peers) lives on the
+  # client, the server just fans this out and lets peers coordinate.
+  # No auth on the request — the collab pattern already caps the
+  # room at 10 people and only warehouses.view is required to join.
+  @impl true
+  def handle_in("handoff:take-over", _payload, socket) do
+    broadcast_from!(socket, "handoff:take-over", %{
+      by: socket.assigns.current_user.id
+    })
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_in("handoff:step-down", _payload, socket) do
+    user = socket.assigns.current_user
+
+    Presence.update(socket, "#{user.id}", fn meta ->
+      Map.put(meta, :stepped_down, true)
+    end)
+
+    {:noreply, socket}
+  end
+
   # Live cursor — `x` and `y` are world centimetres on the floor
   # the cursor is hovering. Sender + receiver both render in world
   # coords so different zoom levels and screen sizes still line up.

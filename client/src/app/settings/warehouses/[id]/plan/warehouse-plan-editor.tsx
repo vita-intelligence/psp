@@ -523,6 +523,7 @@ export function WarehousePlanEditor({
     setCursor: liveSetCursor,
     hideCursor: liveHideCursor,
     broadcastCanvas,
+    requestHandoff: liveRequestHandoff,
   } = useLivePlan({
     warehouseUuid,
     activeFloorUuid: activeFloor?.meta.uuid ?? null,
@@ -1802,6 +1803,17 @@ export function WarehousePlanEditor({
           creatorName={liveCreator?.name}
           hasDirty={anyDirty}
         />
+        {!liveIsCreator && liveCreator && !readOnly && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={liveRequestHandoff}
+            title={`Take over head-of-room from ${liveCreator.name}`}
+          >
+            Take over
+          </Button>
+        )}
         <p className="hidden text-xs text-muted-foreground sm:block">
           Editing{" "}
           <span className="font-medium text-foreground">{warehouseName}</span>
