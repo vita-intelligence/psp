@@ -248,12 +248,27 @@ defmodule BackendWeb.Router do
       # Floors are nested — /warehouses/:warehouse_id/floors. Phoenix
       # passes the parent uuid as `warehouse_id` (URL param naming is
       # by resource, not by column name).
+      #
+      # `patch /floors/:id/canvas` is a narrow autosave endpoint that
+      # accepts only `canvas_json` — kept above `resources "/floors"`
+      # because it's a more specific path than the generic `/:id`
+      # PATCH the resources block would otherwise cover.
+      patch "/floors/:id/canvas", FloorController, :patch_canvas
       resources "/floors", FloorController, except: [:new, :edit]
 
       # Locations are nested under the warehouse rather than the
       # floor because the body may carry a new `floor_uuid` to move
       # them between floors on update. Lookup is by warehouse +
       # location uuid.
+      #
+      # `patch /storage-locations/:id/position` is the drag/resize
+      # autosave endpoint — accepts only x, y, width, height so the
+      # FE can fire it on mouseup without shipping the full location
+      # payload.
+      patch "/storage-locations/:id/position",
+            StorageLocationController,
+            :patch_position
+
       resources "/storage-locations", StorageLocationController,
         except: [:new, :edit, :index] do
         # One-shot helper: split a rack into N levels with the
@@ -266,6 +281,10 @@ defmodule BackendWeb.Router do
         # operator edits rack tags — inheritance is otherwise
         # creation-time only.
         post "/cells/sync-tags", StorageCellController, :sync_tags
+
+        # Narrow tag-only PATCH. Sits above the `resources "/cells"`
+        # so the `:id/tags` path wins over the generic `:id` PATCH.
+        patch "/cells/:id/tags", StorageCellController, :patch_tags
 
         # Cells nest directly under their location — they have no
         # meaning otherwise so :index is omitted (cells come along
@@ -292,6 +311,10 @@ defmodule BackendWeb.Router do
       get "/floors", FloorController, :index, as: :production_facility_floor
       post "/floors", FloorController, :create
       get "/floors/:id", FloorController, :show
+      # Narrow canvas autosave — mirror of the warehouse route so the
+      # production-floor planner uses the same FE code path.
+      patch "/floors/:id/canvas", FloorController, :patch_canvas,
+        as: :production_facility_floor_canvas
       patch "/floors/:id", FloorController, :update
       put "/floors/:id", FloorController, :update
       delete "/floors/:id", FloorController, :delete
@@ -300,6 +323,11 @@ defmodule BackendWeb.Router do
         as: :production_facility_storage_location
 
       get "/storage-locations/:id", StorageLocationController, :show
+      # Narrow drag/resize autosave — same shape as the warehouse route.
+      patch "/storage-locations/:id/position",
+            StorageLocationController,
+            :patch_position,
+            as: :production_facility_storage_location_position
       patch "/storage-locations/:id", StorageLocationController, :update
       put "/storage-locations/:id", StorageLocationController, :update
       delete "/storage-locations/:id", StorageLocationController, :delete
@@ -310,6 +338,10 @@ defmodule BackendWeb.Router do
 
         post "/cells/sync-tags", StorageCellController, :sync_tags,
           as: :production_facility_cell_sync_tags
+
+        # Narrow tag-only autosave.
+        patch "/cells/:id/tags", StorageCellController, :patch_tags,
+          as: :production_facility_cell_tags
 
         post "/cells", StorageCellController, :create,
           as: :production_facility_cell

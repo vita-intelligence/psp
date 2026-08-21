@@ -28,7 +28,7 @@ defmodule BackendWeb.WarehousePlanChannel do
 
   use Phoenix.Channel
 
-  alias Backend.{Accounts, RBAC, Warehouses}
+  alias Backend.{RBAC, Warehouses}
   alias Backend.Realtime.RateLimit
   alias BackendWeb.Presence
 
@@ -39,8 +39,12 @@ defmodule BackendWeb.WarehousePlanChannel do
 
   @impl true
   def join("plan:warehouse:" <> warehouse_uuid, _params, socket) do
-    cached = socket.assigns.current_user
-    user = Accounts.get_user(cached.id) || cached
+    # The user (with permissions[] preloaded) is already on the
+    # socket from UserSocket.connect — no reason to re-fetch here.
+    # A just-revoked permission takes effect on the next reconnect,
+    # which for a Miro-style planner is a fair tradeoff to save a
+    # query on every tab switch.
+    user = socket.assigns.current_user
 
     cond do
       not RBAC.has_permission?(user, "warehouses.view") ->
@@ -54,10 +58,15 @@ defmodule BackendWeb.WarehousePlanChannel do
 
         socket =
           socket
-          |> assign(:current_user, user)
           |> assign(:warehouse_uuid, warehouse_uuid)
+          # Cache edit capability on assigns so future message
+          # handlers can gate without another permission lookup.
+          # The plan channel is broadcast-only today (mutations
+          # go through HTTP), but the flag is here for the
+          # autosave-take-over handoff message that lands next.
+          |> assign(:can_edit, RBAC.has_permission?(user, "warehouses.edit"))
 
-        {:ok, %{user_id: user.id}, socket}
+        {:ok, %{user_id: user.id, can_edit: socket.assigns.can_edit}, socket}
     end
   end
 

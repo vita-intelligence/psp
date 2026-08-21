@@ -27,7 +27,7 @@ defmodule BackendWeb.StorageLocationController do
 
   plug RequireWarehouseKindPermission,
        [warehouse: "warehouses.edit", production_facility: "production.facility_edit"]
-       when action in [:create, :update, :delete]
+       when action in [:create, :update, :patch_position, :delete]
 
   action_fallback BackendWeb.FallbackController
 
@@ -111,6 +111,52 @@ defmodule BackendWeb.StorageLocationController do
             %{floor_uuid: ["Unknown."]}
           )
         )
+    end
+  end
+
+  @doc """
+  Autosave-friendly narrow PATCH for drag / resize. Accepts only the
+  four geometry fields — `x`, `y`, `width`, `height` — so the FE can
+  fire it on mouseup without shipping name, tags, notes, or the full
+  cells payload. Any other keys in the body are dropped.
+
+  Same broadcast + audit shape as `update/2`; the difference is what
+  ends up in the audit revision diff (just the moved coordinates,
+  not a noisy no-op on unchanged fields).
+  """
+  def patch_position(conn, %{"warehouse_id" => warehouse_uuid, "id" => location_uuid} = params) do
+    actor = conn.assigns.current_user
+
+    with %{} = warehouse <- fetch_warehouse(conn, warehouse_uuid),
+         %{} = location <- Plans.get_location(warehouse, location_uuid) do
+      attrs = Map.take(params, ~w(x y width height))
+
+      if map_size(attrs) == 0 do
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "position_fields_required",
+            "PATCH /storage-locations/:id/position needs at least one of x, y, width, height.",
+            %{position: ["Required."]}
+          )
+        )
+      else
+        case Plans.update_location(actor, location, attrs) do
+          {:ok, updated} ->
+            WarehousePlanBroadcast.invalidate(
+              warehouse,
+              floor_uuid_for(warehouse, updated.floor_id),
+              actor: actor,
+              kind: "location_updated"
+            )
+
+            json(conn, %{storage_location: Payloads.storage_location(updated)})
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
+        end
+      end
     end
   end
 
