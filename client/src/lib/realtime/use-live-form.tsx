@@ -41,6 +41,13 @@ export interface CollabPeer {
   /** Unix epoch seconds when the peer joined the form channel. Used to
    *  derive the room "creator" — the earliest joiner across the room. */
   joinedAt: number;
+  /** True when this peer has been asked to hand off head-of-room
+   *  (via the warehouse-plan handoff:take-over event) and has
+   *  responded by updating their own presence. Non-stepped-down
+   *  peers are the candidates for the creator role. Optional —
+   *  only the plan channel uses this today; form channels leave it
+   *  unset. */
+  steppedDown?: boolean;
 }
 
 interface UseLiveFormOptions<T> {

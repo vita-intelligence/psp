@@ -117,6 +117,11 @@ interface UseLivePlanResult {
     floorUuid: string,
     canvas: Record<string, unknown>,
   ) => void;
+  /** Ask the current head-of-room to hand off to us. Fires a
+   *  channel broadcast; the creator's own client answers by
+   *  stepping itself down (updates their presence meta with
+   *  `stepped_down: true`). No-op if the channel isn't connected. */
+  requestHandoff: () => void;
 }
 
 /** Realtime presence + invalidation listener for the warehouse plan
@@ -175,6 +180,12 @@ export function useLivePlan({
   useEffect(() => {
     onSnapshotRef.current = onSnapshot;
   }, [onSnapshot]);
+  // Pending handoff signal — the channel handler for
+  // "handoff:take-over" flips this; a reactive effect below reads it
+  // against the live creator computation and, if we ARE the current
+  // creator, pushes handoff:step-down on ourselves.
+  const [pendingHandoff, setPendingHandoff] = useState(0);
+
   // Active floor mirror so the cursor handler can label incoming
   // cursors with "wrong floor" — we drop them rather than render a
   // ghost on the wrong plan.
@@ -313,6 +324,20 @@ export function useLivePlan({
         onSnapshotRef.current?.(event);
       });
 
+      // Head-of-room handoff. Any peer can broadcast this; the
+      // current creator's client is expected to answer by pushing
+      // handoff:step-down on itself. We can't check "am I the
+      // creator?" reliably from inside this static handler
+      // (peers state is captured stale), so we defer to a
+      // dedicated effect below that reads live state.
+      channel.on("handoff:take-over", (_event: { by: number }) => {
+        if (cancelled) return;
+        // Bump the counter so the reactive effect below re-runs
+        // even if a second take-over lands while we're still the
+        // creator (rare, but safe to be idempotent).
+        setPendingHandoff((n) => n + 1);
+      });
+
       channelRef.current = channel;
     })();
 
@@ -338,12 +363,12 @@ export function useLivePlan({
     [peers, selfId],
   );
 
-  // Earliest joinedAt across everyone in the room. Promotes
-  // automatically when the previous owner leaves (peers is kept in
-  // sort order by joinedAt in peersFromPresence / applyPresenceDiff).
+  // Earliest joinedAt across everyone in the room, EXCLUDING any peer
+  // that has stepped down via the handoff:step-down flow. Promotes
+  // automatically when the previous owner leaves OR steps down.
   const creator = useMemo<CollabPeer | null>(() => {
-    if (peers.length === 0) return null;
-    return peers[0]!;
+    const candidate = peers.find((p) => p.steppedDown !== true);
+    return candidate ?? null;
   }, [peers]);
 
   const isCreator = useMemo(() => {
@@ -429,6 +454,28 @@ export function useLivePlan({
     setCursors({});
   }, [activeFloorUuid]);
 
+  // Handoff responder — fires when a peer broadcasts
+  // handoff:take-over. If we are the current creator, push
+  // handoff:step-down on ourselves so the server updates our
+  // presence meta with `stepped_down: true`. Everyone else no-ops;
+  // the presence diff then re-elects the next earliest-joined peer.
+  useEffect(() => {
+    if (pendingHandoff === 0) return;
+    if (!isCreator) return;
+    const channel = channelRef.current;
+    if (!channel || !connected) return;
+    channel.push("handoff:step-down", {});
+  }, [pendingHandoff, isCreator, connected]);
+
+  // Public trigger — a non-creator peer calls this to claim
+  // head-of-room. Fires the take-over broadcast; the current
+  // creator's client is expected to answer via the effect above.
+  const requestHandoff = useCallback(() => {
+    const channel = channelRef.current;
+    if (!channel || !connected) return;
+    channel.push("handoff:take-over", {});
+  }, [connected]);
+
   return {
     connected,
     peers,
@@ -439,6 +486,7 @@ export function useLivePlan({
     setCursor,
     hideCursor,
     broadcastCanvas,
+    requestHandoff,
   };
 }
 
@@ -455,6 +503,10 @@ interface PresenceMeta {
   avatar?: string | null;
   active_floor_uuid: string | null;
   joined_at: number;
+  /** Set by a peer's own client after it acknowledges a
+   *  handoff:take-over broadcast. Excluded from the creator
+   *  candidate list on every client that reads this presence. */
+  stepped_down?: boolean;
 }
 
 function peersFromPresence(state: unknown): CollabPeer[] {
@@ -472,6 +524,7 @@ function peersFromPresence(state: unknown): CollabPeer[] {
       // for the plan hook so always null.
       focusField: null,
       joinedAt: meta.joined_at ?? 0,
+      steppedDown: meta.stepped_down === true,
     });
   }
   return out.sort((a, b) => a.joinedAt - b.joinedAt);
@@ -499,6 +552,7 @@ function applyPresenceDiff(
       avatar: meta.avatar ?? null,
       focusField: null,
       joinedAt: meta.joined_at ?? 0,
+      steppedDown: meta.stepped_down === true,
     });
   }
   return Array.from(map.values()).sort((a, b) => a.joinedAt - b.joinedAt);
