@@ -1822,6 +1822,21 @@ defmodule BackendWeb.Router do
          IntegrationReadController,
          :manufacturing_orders_for_workstations
     get "/manufacturing-orders/:uuid", IntegrationReadController, :get_manufacturing_order
+    # Slim BOM breakdown for a single MO — parts + qty scaled to the
+    # MO's output quantity. Powers vita-performance's Jobs modal and
+    # its Running-session BOM card so the operator sees exactly what
+    # PSP shows on the MO detail page without pulling the full
+    # bookings / shortages payload the internal UI needs.
+    get "/manufacturing-orders/:uuid/parts",
+        IntegrationReadController,
+        :get_manufacturing_order_parts
+    # Serve a movement-photo binary to the integration caller. The
+    # BOM parts payload above returns `last_photo_uuid` per part; the
+    # kiosk backend proxies THIS endpoint so the tablet browser can
+    # render the thumbnail without holding a PSP session.
+    get "/movement-photos/:uuid/file",
+        IntegrationMovementPhotoController,
+        :serve_file
     get "/workstations", IntegrationReadController, :list_workstations
     get "/workstation-groups", IntegrationReadController, :list_workstation_groups
     # Bulk cost + historical throughput estimate for a set of

@@ -73,3 +73,5 @@ Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/control
 XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_order_controller.ex:681,lib/backend_web/controllers/customer_order_controller.ex:681,160968A
 Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_order_controller.ex:747,lib/backend_web/controllers/customer_order_controller.ex:747,5063E97
 Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/purchase_order_controller.ex:596,lib/backend_web/controllers/purchase_order_controller.ex:596,6ED7E3A
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/integration_movement_photo_controller.ex:34,lib/backend_web/controllers/integration_movement_photo_controller.ex:34,6CBFDEE
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/integration_movement_photo_controller.ex:35,lib/backend_web/controllers/integration_movement_photo_controller.ex:35,C0B387

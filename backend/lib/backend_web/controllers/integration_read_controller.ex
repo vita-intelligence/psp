@@ -34,6 +34,8 @@ defmodule BackendWeb.IntegrationReadController do
     WorkstationSession
   }
   alias Backend.Repo
+  alias Backend.Stock.Lot, as: StockLot
+  alias Backend.Stock.Movement, as: StockMovement
   alias Backend.Units.UnitOfMeasurement
   alias Backend.Warehouses.StorageTag
   alias Backend.Certificates.Certificate
@@ -42,6 +44,7 @@ defmodule BackendWeb.IntegrationReadController do
        when action in [
               :list_manufacturing_orders,
               :get_manufacturing_order,
+              :get_manufacturing_order_parts,
               :manufacturing_orders_for_workstations
             ]
 
@@ -239,6 +242,157 @@ defmodule BackendWeb.IntegrationReadController do
         step_produced = load_step_produced(step_ids_of([mo]))
         json(conn, %{manufacturing_order: mo_payload(mo, nil, step_produced)})
     end
+  end
+
+  @doc """
+  Slim BOM breakdown for a single MO — parts with qty scaled to
+  `mo.quantity` so the caller displays exactly what the PSP MO
+  detail page shows (minus bookings / shortages / sub-MO plumbing
+  that the internal UI needs).
+
+  Response:
+      {
+        "mo": {"uuid": "...", "quantity": "3", "item_name": "...", "item_code": "..."},
+        "parts": [
+          {
+            "uuid": "bom-line-uuid",
+            "sort_order": 0,
+            "is_fixed": false,
+            "line_qty": "0.216",       # per output unit
+            "required_qty": "0.648",   # line.qty × mo.quantity (or line.qty when is_fixed)
+            "uom_symbol": "mg",
+            "uom_name": "milligram",
+            "notes": "...",
+            "part": {"uuid": "...", "code": "RM-001", "name": "Vitamin C"}
+          }
+        ]
+      }
+  """
+  def get_manufacturing_order_parts(conn, %{"uuid" => uuid}) do
+    company_id = conn.assigns.current_company_id
+    company = Repo.get!(Company, company_id)
+
+    query =
+      from mo in ManufacturingOrder,
+        where: mo.company_id == ^company_id and mo.uuid == ^uuid,
+        preload: [
+          :item,
+          bom: [
+            lines: [:unit_of_measurement, part: :stock_uom]
+          ]
+        ]
+
+    case Repo.one(query) do
+      nil ->
+        {:error, :not_found}
+
+      %ManufacturingOrder{bom: nil} = mo ->
+        json(conn, %{mo: mo_parts_header(mo, company), parts: []})
+
+      %ManufacturingOrder{bom: %BOM{lines: lines}} = mo ->
+        sorted = Enum.sort_by(lines, & &1.sort_order)
+        part_ids = sorted |> Enum.map(& &1.part_id) |> Enum.reject(&is_nil/1)
+        photos_by_item = last_photo_uuid_by_item_ids(company_id, part_ids)
+
+        parts =
+          Enum.map(sorted, fn line ->
+            mo_part_row(line, mo.quantity, company, photos_by_item)
+          end)
+
+        json(conn, %{mo: mo_parts_header(mo, company), parts: parts})
+    end
+  end
+
+  # Latest movement-photo UUID per item — bulk one-query lookup so the
+  # BOM payload doesn't spawn N round-trips when the MO has many
+  # parts. Joins stock_movements → stock_lots → item so we can pick
+  # the newest photo per item regardless of which lot it was snapped
+  # on. Filters out `dev-skip:*` marker strings (psp #158 dev bypass)
+  # which aren't real image paths.
+  defp last_photo_uuid_by_item_ids(_company_id, []), do: %{}
+
+  defp last_photo_uuid_by_item_ids(company_id, item_ids) do
+    from(m in StockMovement,
+      join: l in StockLot,
+      on: l.id == m.stock_lot_id,
+      where:
+        m.company_id == ^company_id and
+          l.item_id in ^item_ids and
+          not is_nil(m.photo_url) and
+          not like(m.photo_url, "dev-skip:%"),
+      distinct: l.item_id,
+      order_by: [asc: l.item_id, desc: m.occurred_at, desc: m.id],
+      select: {l.item_id, m.photo_url}
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {item_id, url}, acc ->
+      case extract_movement_photo_uuid(url) do
+        nil -> acc
+        uuid -> Map.put(acc, item_id, uuid)
+      end
+    end)
+  end
+
+  # movement.photo_url is stored as `/api/stock/movement-photos/<uuid>/file`.
+  # We only ever expose the raw uuid on the wire — the integration
+  # caller builds its own proxy URL.
+  defp extract_movement_photo_uuid(url) when is_binary(url) do
+    case Regex.run(~r"movement-photos/([0-9a-fA-F-]{36})", url) do
+      [_, uuid] -> uuid
+      _ -> nil
+    end
+  end
+
+  defp extract_movement_photo_uuid(_), do: nil
+
+  # Item code is a computed field — the "MA00123" numbering string
+  # rendered from item.id + company numbering config, NOT a schema
+  # column. Mirror what `integration_item_shape` does so the
+  # integration caller sees the same code the internal MO detail page
+  # shows.
+  defp mo_parts_header(%ManufacturingOrder{} = mo, %Company{} = company) do
+    %{
+      uuid: mo.uuid,
+      quantity: mo.quantity && to_string(mo.quantity),
+      item_name: mo.item && mo.item.name,
+      item_code: mo.item && Numbering.render(mo.item.id, company, "item")
+    }
+  end
+
+  defp mo_part_row(%BOMLine{} = line, mo_qty, %Company{} = company, photos_by_item) do
+    required_qty =
+      cond do
+        line.is_fixed -> line.qty
+        is_nil(line.qty) -> nil
+        is_nil(mo_qty) -> nil
+        true -> Decimal.mult(line.qty, mo_qty)
+      end
+
+    uom = line.unit_of_measurement || (line.part && line.part.stock_uom)
+    photo_uuid = line.part_id && Map.get(photos_by_item, line.part_id)
+
+    %{
+      uuid: line.uuid,
+      sort_order: line.sort_order,
+      is_fixed: line.is_fixed,
+      line_qty: line.qty && to_string(line.qty),
+      required_qty: required_qty && to_string(required_qty),
+      uom_symbol: uom && uom.symbol,
+      uom_name: uom && uom.name,
+      notes: line.notes,
+      # Latest movement-photo uuid across every lot of this item — the
+      # kiosk shows it as a thumbnail so the operator can recognise the
+      # ingredient before Start. The caller builds its own proxy URL
+      # since the raw /api/stock/movement-photos endpoint is UI-authed.
+      last_photo_uuid: photo_uuid,
+      part:
+        line.part &&
+          %{
+            uuid: line.part.uuid,
+            code: Numbering.render(line.part.id, company, "item"),
+            name: line.part.name
+          }
+    }
   end
 
   defp step_ids_of(mos) do
