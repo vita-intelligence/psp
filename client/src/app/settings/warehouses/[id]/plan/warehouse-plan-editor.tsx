@@ -229,6 +229,15 @@ export function WarehousePlanEditor({
   // tools + zoom + delete without cluttering the toolbar.
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // Right-click context menu. Anchored to screen coords so it can
+  // portal above every canvas overlay (toolbar, drawer, floor
+  // switcher, remote cursors). Cleared on outside click / Esc / any
+  // item click. Only rendered when a selection exists — right-click
+  // on empty canvas is a no-op.
+  const [contextMenu, setContextMenu] = useState<
+    { x: number; y: number } | null
+  >(null);
+
   // Grid snap toggle. Default on — most edits benefit from landing
   // on the 50 cm grid. Off gives the operator pixel-precise placement
   // for fitting around an odd wall. Persisted per-user in localStorage
@@ -2021,11 +2030,35 @@ export function WarehousePlanEditor({
               remoteCursors={liveCursors}
               onOutlineCommitted={onOutlineCommitted}
               onHoleCommitted={onHoleCommitted}
+              onContextMenuAt={(x, y) => {
+                // No menu when nothing's selected — right-click on
+                // empty canvas is a no-op instead of showing a stub.
+                if (selection.length === 0) return;
+                setContextMenu({ x, y });
+              }}
             />
           ) : (
             <div className="flex h-full items-center justify-center bg-muted/30 text-sm text-muted-foreground">
               Select a floor below to start editing.
             </div>
+          )}
+
+          {contextMenu && (
+            <PlanContextMenu
+              x={contextMenu.x}
+              y={contextMenu.y}
+              selectionCount={selection.length}
+              disabled={readOnly || !liveIsCreator}
+              onClose={() => setContextMenu(null)}
+              onDelete={() => {
+                setContextMenu(null);
+                onDeleteSelected();
+              }}
+              onDeselect={() => {
+                setContextMenu(null);
+                setSelection([]);
+              }}
+            />
           )}
 
           {/* Floating toolbar rail — full height along the left edge
@@ -2459,6 +2492,103 @@ const LabelModeSelect = memo(function LabelModeSelect({
     </label>
   );
 });
+
+/**
+ * Right-click context menu on the canvas. Portal-rendered at screen
+ * coords so it can sit above every planner overlay (toolbar, drawer,
+ * floor switcher, remote cursors). Closes on Esc, outside click, or
+ * any item click.
+ *
+ * MVP items: Delete + Deselect. Duplicate / bring-forward / send-back
+ * land in a follow-up once we plumb per-shape z-order state.
+ */
+function PlanContextMenu({
+  x,
+  y,
+  selectionCount,
+  disabled,
+  onClose,
+  onDelete,
+  onDeselect,
+}: {
+  x: number;
+  y: number;
+  selectionCount: number;
+  disabled: boolean;
+  onClose: () => void;
+  onDelete: () => void;
+  onDeselect: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (!ref.current) return;
+      if (ref.current.contains(e.target as Node)) return;
+      onClose();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    // `mousedown` (not `click`) so the outside close fires before any
+    // buried Konva shape gets a chance to reselect / open its drawer.
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  // Clamp to viewport so a right-click near the bottom-right edge
+  // doesn't drop the menu off-screen.
+  const width = 200;
+  const height = 90;
+  const left = Math.min(x, window.innerWidth - width - 8);
+  const top = Math.min(y, window.innerHeight - height - 8);
+
+  const label =
+    selectionCount === 1
+      ? "1 item selected"
+      : `${selectionCount} items selected`;
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-[60] min-w-[200px] rounded-md border border-border/60 bg-background p-1 text-xs shadow-xl"
+      style={{ left, top }}
+      role="menu"
+      aria-label="Canvas actions"
+    >
+      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onDelete}
+        disabled={disabled}
+        className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span>Delete</span>
+        <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          Del
+        </kbd>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onDeselect}
+        className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted"
+      >
+        <span>Deselect</span>
+        <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          Esc
+        </kbd>
+      </button>
+    </div>
+  );
+}
 
 /**
  * Keyboard cheatsheet — toggled with `?` (or the Keyboard icon in
