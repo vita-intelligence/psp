@@ -9,7 +9,11 @@ import {
   toErrorResult,
   type ErrorResult,
 } from "../errors/server";
-import type { Shipment, ShipmentEditableFields } from "./types";
+import type {
+  Shipment,
+  ShipmentCarrierEditableFields,
+  ShipmentEditableFields,
+} from "./types";
 
 export type ShipmentResult =
   | { ok: true; shipment: Shipment }
@@ -79,6 +83,35 @@ export async function updateShipmentAction(
     return toErrorResult(err, {
       source: "updateShipmentAction",
       fallbackDetail: "Couldn't save the shipment.",
+    });
+  }
+}
+
+/**
+ * Post-pickup-safe carrier-paperwork edit. Talks to
+ * ``PATCH /shipments/:uuid/carrier-details``. Perm gate is
+ * state-dependent server-side: ``shipments.edit`` when draft/ready,
+ * ``shipments.pickup`` when picked_up. Rejected in delivered /
+ * cancelled.
+ */
+export async function updateShipmentCarrierDetailsAction(
+  uuid: string,
+  fields: ShipmentCarrierEditableFields,
+): Promise<ShipmentResult> {
+  const t = await token();
+  if (!t) return unauthorized("updateShipmentCarrierDetailsAction");
+
+  try {
+    const { shipment } = await api<{ shipment: Shipment }>(
+      `/api/shipments/${encodeURIComponent(uuid)}/carrier-details`,
+      { method: "PATCH", token: t, body: JSON.stringify(fields) },
+    );
+    invalidate(shipment.uuid);
+    return { ok: true, shipment };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "updateShipmentCarrierDetailsAction",
+      fallbackDetail: "Couldn't save the carrier details.",
     });
   }
 }

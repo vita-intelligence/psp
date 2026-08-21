@@ -1116,6 +1116,11 @@ defmodule BackendWeb.Router do
       # tracking reference AFTER the truck departs, so this endpoint
       # bypasses the ``draft|ready`` gate that ``:update`` enforces.
       patch "/:uuid/tracking-number", ShipmentController, :update_tracking_number
+      # Post-pickup carrier-paperwork edit — carrier / vehicle /
+      # driver / waybill / tracking / seal / temperature all editable
+      # through ``picked_up``. State-dependent perm: shipments.edit
+      # pre-pickup, shipments.pickup post-pickup.
+      patch "/:uuid/carrier-details", ShipmentController, :update_carrier_details
       post "/:uuid/mark-ready", ShipmentController, :mark_ready
       post "/:uuid/mark-draft", ShipmentController, :mark_draft
       post "/:uuid/pickup", ShipmentController, :pickup
