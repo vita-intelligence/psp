@@ -75,6 +75,45 @@ export async function updateFloorAction(
   }
 }
 
+/**
+ * Narrow autosave-friendly PATCH for the floor's canvas_json alone.
+ * Backend accepts only `canvas_json` on this route so we can fire it
+ * repeatedly during a live-edit session without shipping name /
+ * ordinal on every keystroke.
+ *
+ * Prefer this over `updateFloorAction` inside the plan-editor
+ * autosave loop; keep `updateFloorAction` for the metadata edits
+ * (rename, reorder) that come from the floor switcher.
+ */
+export async function patchFloorCanvasAction(
+  warehouseUuid: string,
+  floorUuid: string,
+  canvasJson: Record<string, unknown>,
+): Promise<FloorResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("patchFloorCanvasAction");
+
+  try {
+    const res = await api<{ floor: Floor }>(
+      `/api/warehouses/${warehouseUuid}/floors/${floorUuid}/canvas`,
+      {
+        method: "PATCH",
+        token,
+        body: JSON.stringify({ canvas_json: canvasJson }),
+      },
+    );
+    // No revalidatePath — autosave fires often, and the plan editor
+    // holds live state locally. Skipping the revalidate keeps the
+    // save latency to one round-trip.
+    return { ok: true, floor: res.floor };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "patchFloorCanvasAction",
+      fallbackDetail: "Couldn't save the floor.",
+    });
+  }
+}
+
 export async function deleteFloorAction(
   warehouseUuid: string,
   floorUuid: string,
