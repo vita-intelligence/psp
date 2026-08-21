@@ -7,6 +7,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
@@ -269,6 +270,18 @@ export function CellsDialog({
       );
       if (!res.ok) {
         setActionError(res);
+        // Revert per-field drafts for every key we tried to patch.
+        // Without this, the input keeps showing the rejected value
+        // (liveDraft entry) until the user closes + reopens the
+        // sheet; the persisted cell field never changed. Setting
+        // the draft to `null` makes CellRow's `draftFor` fall back
+        // to the server value on next render.
+        for (const field of Object.keys(patch)) {
+          setField(`cell:${cellUuid}:${field}`, null);
+        }
+        toast.error("Couldn't save this level — reverted", {
+          description: res.detail,
+        });
         return;
       }
       refreshAndClearError();
