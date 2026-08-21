@@ -1380,6 +1380,16 @@ defmodule BackendWeb.Payloads do
   defp decimal_to_string(nil), do: nil
   defp decimal_to_string(v), do: to_string(v)
 
+  # Round a qty Decimal down to Decimal(20,10) storage precision.
+  # Any digit past position 10 is sub-storage noise (a picoscale
+  # residue of BOM.qty x MO.quantity) — carrying it into the FE
+  # subtraction lights the row up as short by 2.5e-11 kg and pops
+  # an add-booking modal for a qty the operator can't book.
+  defp normalise_qty_to_storage_precision(%Decimal{} = d),
+    do: Decimal.round(d, 10, :half_up)
+
+  defp normalise_qty_to_storage_precision(other), do: other
+
   # ---------------------------------------------------------------
   # Loyalty.
   # ---------------------------------------------------------------
@@ -2804,6 +2814,14 @@ defmodule BackendWeb.Payloads do
             true -> Decimal.mult(line.qty, mo_qty)
           end
           |> Backend.Production.normalise_count_qty(line)
+          # Bookings, shortages and the qty input on the FE all live at
+          # Decimal(20,10) storage precision. Round the pure-math
+          # BOM.qty x MO.quantity result to the same precision so the
+          # FE ``required - booked`` subtraction can't leak a
+          # picoscale (2.5e-11) residue that lights the row up as
+          # under-booked and pops an add-booking modal for a qty the
+          # operator can't actually book.
+          |> normalise_qty_to_storage_precision()
 
         line_total =
           cond do
@@ -3034,7 +3052,10 @@ defmodule BackendWeb.Payloads do
     # count items) — so ``required_qty`` reads straight off the row.
     # Do not scale by mo.quantity again; the old per-unit contract
     # forced repeating-decimal drift for count items.
-    required_qty = overlay_decimal(row, "quantity", Decimal.new("1"))
+    required_qty =
+      overlay_decimal(row, "quantity", Decimal.new("1"))
+      |> normalise_qty_to_storage_precision()
+
     per_unit_qty = required_qty
 
     unit_cost = Map.get(costs, item.id)
