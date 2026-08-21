@@ -124,6 +124,10 @@ interface PlanCanvasProps {
    *  dots on top of the canvas. World coordinates so different
    *  zoom levels still line up. */
   remoteCursors?: Record<string, RemotePlanCursor>;
+  /** Fires on right-click over the canvas so the parent can render
+   *  a context menu at the cursor. Screen coordinates (viewport
+   *  clientX/Y) — the menu portals to the document body. */
+  onContextMenuAt?: (screenX: number, screenY: number) => void;
 }
 
 export interface PlanCanvasHandle {
@@ -232,6 +236,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onCursorMove,
       onCursorLeave,
       remoteCursors,
+      onContextMenuAt,
     },
     ref,
   ) {
@@ -832,6 +837,11 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           cursorClass,
         )}
         style={{ touchAction: "none" }}
+        onContextMenu={(e) => {
+          if (!onContextMenuAt) return;
+          e.preventDefault();
+          onContextMenuAt(e.clientX, e.clientY);
+        }}
       >
         <Stage
           ref={stageRef}
