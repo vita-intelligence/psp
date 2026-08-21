@@ -988,6 +988,27 @@ defmodule BackendWeb.IntegrationReadController do
   defp integration_item_shape(%Item{} = i, prices_by_id, %Company{} = company) do
     price = Map.get(prices_by_id, i.id)
     attributes = i.attributes || %{}
+    # Stock UoM — the base unit the item is procured / stored in.
+    # NPD needs this on the wire so its BOM push can tag every stage
+    # row with the correct target dimension (mass / count / volume)
+    # instead of defaulting to mg and getting rejected by the boundary
+    # dimension guard on a count-typed item like a capsule shell or
+    # bottle. Nil for legacy items whose stock_uom wasn't set on PSP
+    # yet — NPD falls back to its historical "assume mg" behaviour.
+    stock_uom =
+      case i.stock_uom_id do
+        nil ->
+          nil
+
+        _ ->
+          case Repo.get(Backend.Units.UnitOfMeasurement, i.stock_uom_id) do
+            %Backend.Units.UnitOfMeasurement{} = u ->
+              %{uuid: u.uuid, symbol: u.symbol, dimension: u.dimension}
+
+            _ ->
+              nil
+          end
+      end
     # Two possible sources for ``use_as``:
     #
     # 1. ``attributes.use_as`` (a JSONB key) — populated by the
@@ -1056,7 +1077,8 @@ defmodule BackendWeb.IntegrationReadController do
         case price do
           %{currency_code: c} -> c
           _ -> nil
-        end
+        end,
+      stock_uom: stock_uom
     }
   end
 
