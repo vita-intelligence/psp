@@ -49,10 +49,17 @@ export function formatCompanyDate(
 
 /**
  * Quantity formatter — uses the company's decimal + thousands
- * separators. Drops trailing zeros so "5.00" reads as "5".
+ * separators.
  *
  *     formatCompanyNumber("12345.6789", { decimal_separator: ",", thousands_separator: "." })
  *     // "12.345,6789"
+ *
+ * By default drops trailing zeros so "5.00" reads as "5". Pass
+ * ``minFractionDigits`` to pad instead — required by the pharma
+ * display convention where "5.00000 kg" (recorded to 10 mg precision)
+ * is meaningfully different from "5 kg" (no recorded decimals). See
+ * :func:`formatQtyHumanized` for the standard mass / volume / count
+ * decimal choice.
  *
  * Sub-precision-preserving: when a non-zero input would round to
  * exactly 0 at ``maxFractionDigits`` (e.g. ``0.00000005`` with
@@ -64,7 +71,7 @@ export function formatCompanyDate(
 export function formatCompanyNumber(
   value: string | number | null | undefined,
   prefs: FormatPrefs | null | undefined,
-  opts: { maxFractionDigits?: number } = {},
+  opts: { maxFractionDigits?: number; minFractionDigits?: number } = {},
 ): string {
   if (value === null || value === undefined) return "—";
   const n = typeof value === "string" ? Number(value) : value;
@@ -73,8 +80,10 @@ export function formatCompanyNumber(
   const decimal = prefs?.decimal_separator || ".";
   const thousands = prefs?.thousands_separator || ",";
   const maxFrac = opts.maxFractionDigits ?? 4;
+  const minFrac = Math.min(opts.minFractionDigits ?? 0, maxFrac);
 
-  // Trim trailing zeros first so "5.0000" → "5".
+  // Trim trailing zeros first so "5.0000" → "5" (unless minFrac
+  // asks for padding — handled below).
   let trimmed = Number(n.toFixed(maxFrac)).toString();
 
   // Rescue path: n is non-zero but rounded to "0" at requested
@@ -88,7 +97,16 @@ export function formatCompanyNumber(
     trimmed = Number(precise) === 0 ? String(n) : expandScientific(precise);
   }
 
-  const [intPart, fracPart] = trimmed.split(".");
+  const [intPart, fracPartRaw] = trimmed.split(".");
+  let fracPart = fracPartRaw ?? "";
+
+  // Pad trailing zeros up to ``minFrac``. Pharma audit convention:
+  // "5.00000 kg" communicates "recorded to 10 mg precision", not
+  // "exactly 5" — trailing zeros carry information about the
+  // instrument / process precision that produced the record.
+  if (minFrac > 0 && fracPart.length < minFrac) {
+    fracPart = fracPart.padEnd(minFrac, "0");
+  }
 
   const intGrouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, thousands);
   return fracPart ? `${intGrouped}${decimal}${fracPart}` : intGrouped;
@@ -133,13 +151,21 @@ function expandScientific(precise: string): string {
  *           kg → kg (identity)
  *   volume: ml → l  (÷ 1_000)
  *           l  → l  (identity)
- *   other:  count / unit / pcs / … pass through untouched
+ *   count:  pcs / dozen / … pass through untouched
  *
- * ``maxFractionDigits`` — enough precision to keep tiny doses (a
- * 60 mg active = 0.00006 kg) distinguishable from zero when they
- * share a table with kg-scale bulk items. Formatted through the
- * company number formatter so the operator's decimal / thousands
- * separators still apply.
+ * Display precision — fixed decimals with trailing zeros, pharma
+ * audit convention:
+ *
+ *   * Mass / volume → exactly 5 decimals (``0.48924 kg``,
+ *     ``5.00000 kg``). Trailing zeros signal "recorded to 10 mg /
+ *     10 µL precision", which regulators treat as materially
+ *     different from a decimal-free integer. Trace doses below
+ *     that threshold survive via ``formatCompanyNumber``'s
+ *     sub-precision rescue path (see comment there).
+ *   * Count → zero decimals (whole units). ``0.025 bottles`` is
+ *     physically meaningless; count qtys are pre-normalised
+ *     server-side by :func:`Backend.Production.normalise_count_qty`
+ *     to integer values before they reach here.
  */
 export function formatQtyHumanized(
   value: string | number | null | undefined,
@@ -162,6 +188,7 @@ export function formatQtyHumanized(
   const lower = rawUnit.toLowerCase();
   let scaled = n;
   let unit = lower;
+  let isMassOrVolume = true;
   switch (lower) {
     case "mg":
       scaled = n / 1_000_000;
@@ -182,17 +209,28 @@ export function formatQtyHumanized(
       unit = "l";
       break;
     default:
-      // Unknown / count-based — leave the caller's original label
-      // and value alone. Preserves the caller's casing so ``L`` /
-      // ``Each`` / ``bottle`` render unchanged.
-      return {
-        value: formatCompanyNumber(value, prefs),
-        unit: rawUnit,
-      };
+      isMassOrVolume = false;
+  }
+
+  if (!isMassOrVolume) {
+    // Count / unit / pcs / anything else — render as whole integer
+    // (pharma convention for discrete items). ``normalise_count_qty``
+    // on the backend already snapped drift / ceil'd fractional
+    // demand to whole units, so we don't fight it here.
+    return {
+      value: formatCompanyNumber(value, prefs, {
+        maxFractionDigits: 0,
+        minFractionDigits: 0,
+      }),
+      unit: rawUnit,
+    };
   }
 
   return {
-    value: formatCompanyNumber(scaled, prefs, { maxFractionDigits: 6 }),
+    value: formatCompanyNumber(scaled, prefs, {
+      maxFractionDigits: 5,
+      minFractionDigits: 5,
+    }),
     unit,
   };
 }

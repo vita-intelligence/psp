@@ -2102,7 +2102,12 @@ defmodule Backend.Production do
   defp cascade_unbooked_children(_actor, _mo, depth) when depth >= @max_cascade_depth, do: :ok
 
   defp cascade_unbooked_children(%User{} = actor, %ManufacturingOrder{} = mo, depth) do
-    mo = Repo.preload(mo, [:bookings, bom: [lines: :part]], force: true)
+    mo =
+      Repo.preload(
+        mo,
+        [:bookings, bom: [lines: [:unit_of_measurement, part: :stock_uom]]],
+        force: true
+      )
 
     lines =
       case mo.bom do
@@ -2126,7 +2131,8 @@ defmodule Backend.Production do
           if line.is_fixed do
             per_output
           else
-            Decimal.mult(per_output, mo.quantity || Decimal.new(0))
+            raw = Decimal.mult(per_output, mo.quantity || Decimal.new(0))
+            normalise_count_qty(raw, line)
           end
 
         booked =
@@ -4794,6 +4800,70 @@ defmodule Backend.Production do
     |> Enum.map(fn {mo, gap, _start} -> {mo, gap} end)
   end
 
+  # Count-dimension parts must land on whole units — 5.004 capsules
+  # and 0.025 bottles are both physically impossible. Two failure
+  # modes to handle at once:
+  #
+  #   * **Drift** (arithmetic artefact of 4-decimal parent qty ×
+  #     integer per-parent qty, e.g. 0.0417 × 120 = 5.004 for a
+  #     stored 5-cap batch): snap to nearest whole. 5.004 → 5.
+  #   * **Real fractional demand** (parent smaller than 1 whole
+  #     output of the child, e.g. 0.025 bottles for a 3-cap sample
+  #     of a 120-cap bottle): ceil to at least 1. You can't
+  #     manufacture 0.025 of a bottle; the run has to produce a
+  #     whole one and the excess is scrap.
+  #
+  # Heuristic: if the value is within 0.01 of a whole, treat as
+  # drift and round to nearest; otherwise ceil to protect supply.
+  # Threshold matches typical 4-decimal parent × integer-BOM drift
+  # (~0.001–0.005) while leaving real half-unit values (0.5, 0.025,
+  # 5.5) rounding UP.
+  #
+  # Mass / volume / length qtys carry legitimate fractions and are
+  # left alone.
+  #
+  # UoM source: line's own ``unit_of_measurement`` first (BOM push
+  # tags every line now), else the part's ``stock_uom`` (pre-tagging
+  # legacy lines). The dimension guard on ``BOMLine.changeset``
+  # keeps those two in sync so either is authoritative.
+  def normalise_count_qty(nil, _line), do: nil
+
+  def normalise_count_qty(%Decimal{} = qty, line) do
+    if count_dimension_line?(line) do
+      rounded = Decimal.round(qty, 0, :half_up)
+      drift = Decimal.abs(Decimal.sub(qty, rounded))
+
+      case Decimal.compare(drift, Decimal.new("0.01")) do
+        :lt -> rounded
+        _ -> Decimal.round(qty, 0, :ceiling)
+      end
+    else
+      qty
+    end
+  end
+
+  def normalise_count_qty(qty, _line), do: qty
+
+  defp count_dimension_line?(line) do
+    dim =
+      case line.unit_of_measurement do
+        %Backend.Units.UnitOfMeasurement{dimension: d} when is_binary(d) ->
+          d
+
+        _ ->
+          case line.part do
+            %Backend.Items.Item{stock_uom: %Backend.Units.UnitOfMeasurement{dimension: d}}
+            when is_binary(d) ->
+              d
+
+            _ ->
+              nil
+          end
+      end
+
+    dim == "count"
+  end
+
   # Per-item shortage on a single MO: required_qty - booked_qty (incl.
   # any existing placeholders). Mirrors the shortages calc but at the
   # per-MO grain.
@@ -4831,8 +4901,9 @@ defmodule Backend.Production do
         %BOMLine{is_fixed: true, qty: q} ->
           q || Decimal.new(0)
 
-        %BOMLine{qty: q} ->
-          Decimal.mult(q || Decimal.new(0), mo.quantity || Decimal.new(0))
+        %BOMLine{qty: q} = ln ->
+          raw = Decimal.mult(q || Decimal.new(0), mo.quantity || Decimal.new(0))
+          normalise_count_qty(raw, ln)
       end
 
     overlay_required = overlay_required_for_item(mo, item_id)
