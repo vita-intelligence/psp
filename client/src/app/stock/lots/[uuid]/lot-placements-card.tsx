@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Building2, Layers, MapPin, Sparkles } from "lucide-react";
 import type { StockLot, StockLotPlacement } from "@/lib/types";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { formatCompanyNumber } from "@/lib/format/company";
+import { formatQtyHumanized } from "@/lib/format/company";
 import { purposeMeta } from "@/lib/storage-cells/purpose";
 import { PlacementMapToggle } from "./placement-map-toggle";
 
@@ -58,15 +58,22 @@ export async function LotPlacementsCard({ lot }: { lot: StockLot }) {
       </header>
 
       <ul className="divide-y divide-border/60">
-        {active.map((p) => (
-          <PlacementRow
-            key={p.uuid}
-            placement={p}
-            qty={formatCompanyNumber(p.qty, prefs)}
-            symbol={symbol}
-            holdingName={holdingName}
-          />
-        ))}
+        {active.map((p) => {
+          // Pharma display convention — 5 decimals mass/volume, whole
+          // units for count. formatQtyHumanized also auto-scales
+          // mg → kg / mL → L so the placement chips read uniformly
+          // regardless of the lot's stored unit.
+          const q = formatQtyHumanized(p.qty, symbol, prefs);
+          return (
+            <PlacementRow
+              key={p.uuid}
+              placement={p}
+              qty={q.value}
+              symbol={q.unit}
+              holdingName={holdingName}
+            />
+          );
+        })}
       </ul>
     </section>
   );

@@ -11,7 +11,7 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { PageLockBanner } from "@/components/realtime/page-lock-banner";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
-import { formatCompanyMoney, formatCompanyNumber } from "@/lib/format/company";
+import { formatCompanyMoney, formatCompanyNumber, formatQtyHumanized } from "@/lib/format/company";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import { setBOMPrimaryAction } from "@/lib/production/actions";
@@ -282,7 +282,19 @@ function ReadOnlyView({
                           "—"}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono">
-                        {formatCompanyNumber(line.qty, prefs)}
+                        {(() => {
+                          const lineUom =
+                            line.unit_of_measurement?.symbol ??
+                            line.part?.stock_uom?.symbol ??
+                            "";
+                          // Pharma display convention — 5 decimals with
+                          // trailing zeros for mass/volume, whole units
+                          // for count. Routed through formatQtyHumanized
+                          // so BOM lines read the same way as the MO
+                          // Parts breakdown and stock-lot cards.
+                          const q = formatQtyHumanized(line.qty, lineUom, prefs);
+                          return q.value;
+                        })()}
                       </td>
                       <td className="px-2 py-1.5 text-center">
                         {line.is_fixed ? (

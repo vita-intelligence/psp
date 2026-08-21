@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { usePageLeadership } from "@/components/realtime/page-lock-guard";
 import type { StockLot } from "@/lib/types";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
-import { formatCompanyNumber } from "@/lib/format/company";
+import { formatQtyHumanized } from "@/lib/format/company";
 import { PrintLabelDialog } from "../print-label-dialog";
 import { MoveLotDialog } from "./move-lot-dialog";
 import { AdjustQtyDialog } from "./adjust-qty-dialog";
@@ -45,9 +45,13 @@ export function LotHeader({
   const isIssuableConsumable =
     lot.item?.item_type === "consumable" && lot.status === "available";
 
-  const qtyOnHand = formatCompanyNumber(lot.qty_on_hand, prefs);
-  const qtyReceived = formatCompanyNumber(lot.qty_received, prefs);
+  // Pharma display convention — 5 decimals for mass/volume with
+  // trailing zeros, whole units for count. formatQtyHumanized handles
+  // both the value formatting and any auto-scaling (mg → kg / mL → L)
+  // so the header reads uniformly across item types.
   const symbol = lot.unit_of_measurement?.symbol ?? "";
+  const onHand = formatQtyHumanized(lot.qty_on_hand, symbol, prefs);
+  const received = formatQtyHumanized(lot.qty_received, symbol, prefs);
 
   return (
     <header className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
@@ -142,8 +146,8 @@ export function LotHeader({
       </div>
 
       <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-        <Stat label="On hand" value={`${qtyOnHand} ${symbol}`} accent />
-        <Stat label="Received" value={`${qtyReceived} ${symbol}`} />
+        <Stat label="On hand" value={`${onHand.value} ${onHand.unit}`} accent />
+        <Stat label="Received" value={`${received.value} ${received.unit}`} />
         <Stat
           label="Placements"
           value={`${lot.placements.length}`}

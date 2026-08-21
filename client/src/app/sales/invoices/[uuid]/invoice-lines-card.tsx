@@ -37,7 +37,7 @@ import {
   removeCILineAction,
   updateCILineAction,
 } from "@/lib/customer-invoices/actions";
-import { formatCompanyNumber } from "@/lib/format/company";
+import { formatCompanyNumber, formatQtyHumanized } from "@/lib/format/company";
 
 interface ItemPickerOption extends SearchPickerOption {
   itemId: number;
@@ -403,7 +403,7 @@ function LineRow({
         />
       ) : (
         <span className="text-right font-mono text-sm">
-          {formatCompanyNumber(line.qty, prefs)}
+          {formatQtyHumanized(line.qty, line.item?.stock_uom?.symbol ?? "", prefs).value}
         </span>
       )}
       {editing ? (
