@@ -24,6 +24,13 @@ import { AuditHistoryDialog } from "@/components/audit/audit-history-dialog";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge-mini";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { PlanToolbar } from "./plan-toolbar";
 import { PlanProperties } from "./plan-properties";
@@ -58,6 +65,7 @@ import type { PlanCanvasHandle } from "./plan-canvas";
 import {
   AlertTriangle,
   History,
+  Keyboard,
   Loader2,
   Maximize2,
   Minimize2,
@@ -207,12 +215,17 @@ export function WarehousePlanEditor({
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
   const [saving, startSaving] = useTransition();
 
-  // Fullscreen plan editor — toggles to a `fixed inset-0` overlay that
-  // covers the app shell so the whole viewport is canvas. `F` from
-  // anywhere outside an input flips it; `Esc` exits. Critical for
-  // detailed plan work on small laptops where the sidebar shell eats
-  // half the canvas room.
+  // Fullscreen plan editor — toggles to a `fixed inset-0` overlay
+  // that covers the app shell so the whole viewport is canvas.
+  // `Shift+F` from anywhere outside an input flips it; `Esc` exits.
+  // (Plain `F` is the outline-tool shortcut — moved fullscreen to
+  // Shift+F to end the conflict.)
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Keyboard cheatsheet — `?` (i.e. Shift+/) toggles a Dialog
+  // listing every shortcut the editor honours. Discoverability for
+  // tools + zoom + delete without cluttering the toolbar.
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   // What text to put on each location rectangle on the canvas. `code`
   // (the auto-numbered identifier) is the default because it's stable
@@ -244,9 +257,25 @@ export function WarehousePlanEditor({
         setIsFullscreen(false);
         return;
       }
-      if (e.key === "f" && !inField && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Shift+F toggles fullscreen — plain F is the outline tool
+      // shortcut. Ignore when a modifier other than Shift is held so
+      // Cmd+F (browser find) still works.
+      if (
+        e.key === "F" &&
+        e.shiftKey &&
+        !inField &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
         e.preventDefault();
         setIsFullscreen((v) => !v);
+        return;
+      }
+      // "?" (Shift+/) toggles the keyboard shortcut cheatsheet.
+      if (e.key === "?" && !inField) {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -1707,6 +1736,12 @@ export function WarehousePlanEditor({
   return (
     <div className={desktopFrameClass}>
 
+      <KeyboardShortcutsOverlay
+        open={showShortcuts}
+        onOpenChange={setShowShortcuts}
+        hasOutline={!!activeFloor?.outline}
+      />
+
       <div className={cn(!isMobile && "px-3 pt-3")}>
         <ReadinessBanner
           readiness={readiness}
@@ -1778,11 +1813,21 @@ export function WarehousePlanEditor({
             type="button"
             size="sm"
             variant="ghost"
+            onClick={() => setShowShortcuts(true)}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+          >
+            <Keyboard className="size-4" />
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
             onClick={() => setIsFullscreen((v) => !v)}
             title={
               isFullscreen
-                ? "Exit fullscreen (F or Esc)"
-                : "Fullscreen editor (F)"
+                ? "Exit fullscreen (Shift+F or Esc)"
+                : "Fullscreen editor (Shift+F)"
             }
             aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen editor"}
           >
@@ -2369,6 +2414,120 @@ const LabelModeSelect = memo(function LabelModeSelect({
     </label>
   );
 });
+
+/**
+ * Keyboard cheatsheet — toggled with `?` (or the Keyboard icon in
+ * the header). Lists every shortcut the editor honours in one
+ * place so operators aren't discovering them by accident.
+ *
+ * Kept as a plain data-driven table so adding / renaming a
+ * shortcut only needs a row edit here, not a separate doc page.
+ */
+function KeyboardShortcutsOverlay({
+  open,
+  onOpenChange,
+  hasOutline,
+}: {
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+  hasOutline: boolean;
+}) {
+  const groups: Array<{
+    title: string;
+    rows: Array<{ keys: string[]; label: string; muted?: boolean }>;
+  }> = [
+    {
+      title: "Tools",
+      rows: [
+        { keys: ["V"], label: "Select" },
+        { keys: ["H"], label: "Pan" },
+        { keys: ["W"], label: "Wall" },
+        { keys: ["F"], label: "Floor outline" },
+        {
+          keys: ["O"],
+          label: "Cut hole",
+          muted: !hasOutline,
+        },
+        { keys: ["L"], label: "Storage location" },
+        { keys: ["T"], label: "Text" },
+        { keys: ["A"], label: "Arrow" },
+        { keys: ["R"], label: "Path / route" },
+      ],
+    },
+    {
+      title: "Edit",
+      rows: [
+        { keys: ["⌘/Ctrl", "Z"], label: "Undo" },
+        { keys: ["⌘/Ctrl", "Shift", "Z"], label: "Redo" },
+        { keys: ["Delete"], label: "Delete selected" },
+        { keys: ["Esc"], label: "Cancel draft / clear selection" },
+      ],
+    },
+    {
+      title: "View",
+      rows: [
+        { keys: ["Shift", "F"], label: "Toggle fullscreen" },
+        { keys: ["?"], label: "Show / hide this cheatsheet" },
+        {
+          keys: ["Scroll"],
+          label: "Zoom to cursor (trackpad pinch too)",
+        },
+        {
+          keys: ["Right-click"],
+          label: "Context menu on the selected item",
+        },
+      ],
+    },
+  ];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Keyboard shortcuts</DialogTitle>
+          <DialogDescription>
+            Speeds every hand off the toolbar. Available anywhere on the
+            planner unless you&apos;re typing into a field.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-2 sm:grid-cols-2">
+          {groups.map((g) => (
+            <div key={g.title}>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {g.title}
+              </p>
+              <ul className="space-y-1.5 text-xs">
+                {g.rows.map((r) => (
+                  <li
+                    key={r.label}
+                    className={cn(
+                      "flex items-center justify-between gap-3",
+                      r.muted && "opacity-50",
+                    )}
+                  >
+                    <span>{r.label}</span>
+                    <span className="flex items-center gap-1">
+                      {r.keys.map((k, idx) => (
+                        <span key={idx} className="flex items-center gap-1">
+                          {idx > 0 && (
+                            <span className="text-muted-foreground">+</span>
+                          )}
+                          <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+                            {k}
+                          </kbd>
+                        </span>
+                      ))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /**
  * Autosave status pill — replaces the old "Unsaved changes / Saved"
