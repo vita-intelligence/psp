@@ -6672,6 +6672,19 @@ defmodule Backend.Production do
   defp to_decimal(s) when is_binary(s), do: Decimal.new(s)
   defp to_decimal(_), do: Decimal.new(0)
 
+  # Round a qty Decimal to Decimal(20,10) storage precision. Coverage
+  # gates compare BOM.qty x MO.quantity (up to 20 dec of math) against
+  # bookings/pending qtys that live at Decimal(20,10). Without this,
+  # a required of 0.00648806392476 vs coverage of 0.0064880639
+  # trips ``Decimal.compare == :gt`` on a 2.5e-11 residue — the row
+  # reports as under-booked, ``under_booked_count`` goes up, and the
+  # planner is offered "Request purchases" for a qty they can't
+  # actually buy or book.
+  defp normalise_qty_to_storage_precision(%Decimal{} = d),
+    do: Decimal.round(d, 10, :half_up)
+
+  defp normalise_qty_to_storage_precision(other), do: other
+
   defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d)
   defp decimal_to_string(n) when is_integer(n), do: Integer.to_string(n)
   defp decimal_to_string(n) when is_float(n), do: Float.to_string(n)
@@ -13083,6 +13096,7 @@ defmodule Backend.Production do
               else
                 Decimal.mult(line.qty || Decimal.new(0), mo_qty)
               end
+              |> normalise_qty_to_storage_precision()
 
             booked =
               bookings_by_item
@@ -13145,7 +13159,9 @@ defmodule Backend.Production do
   defp overlay_shortage_rows(%ManufacturingOrder{} = mo, _mo_qty, bookings_by_item) do
     Enum.flat_map(mo.packaging_combo_items || [], fn row ->
       with {:ok, item_id} <- overlay_extract_int(row, "item_id"),
-           {:ok, required} <- overlay_extract_decimal(row, "quantity") do
+           {:ok, raw_required} <- overlay_extract_decimal(row, "quantity") do
+        required = normalise_qty_to_storage_precision(raw_required)
+
         booked =
           bookings_by_item
           |> Map.get(item_id, [])
@@ -13271,6 +13287,7 @@ defmodule Backend.Production do
               else
                 Decimal.mult(line.qty || Decimal.new(0), mo_qty)
               end
+              |> normalise_qty_to_storage_precision()
 
             booked =
               mo.bookings
