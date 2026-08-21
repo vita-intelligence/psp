@@ -39,3 +39,37 @@ Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/control
 XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/procurement_invoice_controller.ex:237,lib/backend_web/controllers/procurement_invoice_controller.ex:237,1ED6276
 Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/item_file_controller.ex:96,lib/backend_web/controllers/item_file_controller.ex:96,58C317A
 Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/production/final_releases.ex:534,lib/backend/production/final_releases.ex:534,6FCDEB1
+SQL.Query: SQL injection - lib/backend/hr.ex:736,lib/backend/hr.ex:736,71DF4FB
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/goods_in.ex:1047,lib/backend/goods_in.ex:1047,6E19AB2
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/goods_in_inspection_controller.ex:541,lib/backend_web/controllers/goods_in_inspection_controller.ex:541,43B5BAF
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/integration_customer_order_controller.ex:504,lib/backend_web/controllers/integration_customer_order_controller.ex:504,7C12EE3
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/shipment_controller.ex:260,lib/backend_web/controllers/shipment_controller.ex:260,2F8209A
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/shipment_controller.ex:391,lib/backend_web/controllers/shipment_controller.ex:391,1004F92
+SQL.Query: SQL injection - lib/backend/customer_orders/time_breakdown.ex:547,lib/backend/customer_orders/time_breakdown.ex:547,3E1045C
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/purchase_order_controller.ex:591,lib/backend_web/controllers/purchase_order_controller.ex:591,7D852D1
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/controllers/manufacturing_order_controller.ex:1387,lib/backend_web/controllers/manufacturing_order_controller.ex:1387,200A402
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/shipment_controller.ex:456,lib/backend_web/controllers/shipment_controller.ex:456,4407BA1
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/equipment_controller.ex:362,lib/backend_web/controllers/equipment_controller.ex:362,236A820
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/controllers/equipment_controller.ex:367,lib/backend_web/controllers/equipment_controller.ex:367,4DD4FB1
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/shipment_controller.ex:255,lib/backend_web/controllers/shipment_controller.ex:255,7E282C6
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/goods_in_inspection_controller.ex:546,lib/backend_web/controllers/goods_in_inspection_controller.ex:546,3C38607
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/integration_item_file_controller.ex:149,lib/backend_web/controllers/integration_item_file_controller.ex:149,693F2B5
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/customer_order_controller.ex:686,lib/backend_web/controllers/customer_order_controller.ex:686,59B7296
+DOS.StringToAtom: Unsafe `String.to_atom` - lib/backend/statistics.ex:380,lib/backend/statistics.ex:380,9FAB87
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend/production/final_releases.ex:570,lib/backend/production/final_releases.ex:570,7A44BBF
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/production_final_release_controller.ex:219,lib/backend_web/controllers/production_final_release_controller.ex:219,CE84FE
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/controllers/manufacturing_order_controller.ex:987,lib/backend_web/controllers/manufacturing_order_controller.ex:987,463A670
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/comments_controller.ex:822,lib/backend_web/controllers/comments_controller.ex:822,645D299
+Config.Headers: Missing Secure Browser Headers - lib/backend_web/router.ex:9,lib/backend_web/router.ex:9,271A692
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/purchase_order_controller.ex:618,lib/backend_web/controllers/purchase_order_controller.ex:618,3169DF0
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/controllers/manufacturing_order_controller.ex:1138,lib/backend_web/controllers/manufacturing_order_controller.ex:1138,18106AA
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/plugs/misclick_guard.ex:95,lib/backend_web/plugs/misclick_guard.ex:95,22F5572
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/controllers/manufacturing_order_controller.ex:1186,lib/backend_web/controllers/manufacturing_order_controller.ex:1186,26BF4D2
+SQL.Query: SQL injection - lib/backend/production/costing.ex:489,lib/backend/production/costing.ex:489,1EC8D8
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/integration_customer_order_controller.ex:655,lib/backend_web/controllers/integration_customer_order_controller.ex:655,64A4B0E
+SQL.Query: SQL injection - lib/backend/production.ex:2004,lib/backend/production.ex:2004,26B592D
+XSS.SendResp: XSS in `send_resp` - lib/backend_web/controllers/manufacturing_order_controller.ex:1047,lib/backend_web/controllers/manufacturing_order_controller.ex:1047,751221B
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/shipment_controller.ex:396,lib/backend_web/controllers/shipment_controller.ex:396,2C3EBF5
+XSS.ContentType: XSS in `put_resp_content_type` - lib/backend_web/controllers/customer_order_controller.ex:681,lib/backend_web/controllers/customer_order_controller.ex:681,160968A
+Traversal.FileModule: Directory Traversal in `File.read` - lib/backend_web/controllers/customer_order_controller.ex:747,lib/backend_web/controllers/customer_order_controller.ex:747,5063E97
+Traversal.SendFile: Directory Traversal in `send_file` - lib/backend_web/controllers/purchase_order_controller.ex:596,lib/backend_web/controllers/purchase_order_controller.ex:596,6ED7E3A
