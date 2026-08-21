@@ -17,6 +17,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DevSkipPhotoButton } from "@/components/dev-skip-photo-button";
 import { Input } from "@/components/ui/input";
 import { moveLotAction } from "@/lib/stock/mobile-actions";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
@@ -298,6 +299,7 @@ export function MoveFlow({
           photoUploading={photoUploading}
           onPhotoChange={onPhotoChange}
           onClearPhoto={() => setPhotoUrl(null)}
+          onDevSkipPhoto={setPhotoUrl}
           error={error}
           onContinue={() => setStep("verify-scan")}
         />
@@ -426,6 +428,7 @@ function DirectionsStep({
   photoUploading,
   onPhotoChange,
   onClearPhoto,
+  onDevSkipPhoto,
   error,
   onContinue,
 }: {
@@ -437,6 +440,7 @@ function DirectionsStep({
   photoUploading: boolean;
   onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClearPhoto: () => void;
+  onDevSkipPhoto: (markerUrl: string) => void;
   error: string | null;
   onContinue: () => void;
 }) {
@@ -566,6 +570,7 @@ function DirectionsStep({
                 A photo is required for every move — BRCGS 3.5.1 / FSSC
                 22000 traceability.
               </p>
+              <DevSkipPhotoButton onSkip={onDevSkipPhoto} />
             </>
           )}
         </section>
