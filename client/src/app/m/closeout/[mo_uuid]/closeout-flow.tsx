@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DevSkipPhotoButton } from "@/components/dev-skip-photo-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/components/forms/error-banner";
@@ -910,6 +911,7 @@ export function CloseoutFlow({
                   A photo is required for every closeout movement —
                   BRCGS 3.5.1 / FSSC 22000 traceability.
                 </p>
+                <DevSkipPhotoButton onSkip={setPhotoUrl} />
               </>
             )}
           </div>
