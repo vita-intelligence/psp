@@ -152,6 +152,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "awaiting_sample_selection",
   "proposal_accepted",
   "trial_batches_in_flight",
+  "awaiting_final_spec",
   "setup",
   "approval",
   "production_planning",
@@ -177,6 +178,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   awaiting_sample_selection: "Choose samples",
   proposal_accepted: "Awaiting R&D payment",
   trial_batches_in_flight: "Trial batches",
+  awaiting_final_spec: "Final spec",
   setup: "Setup",
   approval: "Approval",
   production_planning: "Planning",
@@ -210,6 +212,8 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
     "Customer signed + confirmed sample quantity. Awaiting the R&D deposit — trial batches unlock once finance approves the payment.",
   trial_batches_in_flight:
     "Deposit landed. R&D is producing trial samples one at a time. Each sample MO shows on the kanban with a \"↳ Trial N/M\" badge. Card leaves this column once the customer signs the final spec.",
+  awaiting_final_spec:
+    "Customer confirmed they're done with trial batches. Team owes them a FINAL spec, customer owes us a signature on it, or finance owes us an approval on the FINAL invoice. Rejection sends the card back to trial batches.",
   setup: "Add lines and price the order.",
   approval: "Two-tier sign-off before production starts.",
   production_planning: "Spawn MOs, schedule, gather ingredients.",
@@ -244,6 +248,7 @@ const PHASE_ICON: Record<
   awaiting_sample_selection: FlaskConical,
   proposal_accepted: CheckCircle2,
   trial_batches_in_flight: FlaskConical,
+  awaiting_final_spec: FileText,
   setup: FileText,
   approval: ShieldCheck,
   production_planning: Factory,
@@ -1533,6 +1538,10 @@ const PHASE_EXPLAINER: Record<
   trial_batches_in_flight: {
     title: "Trial-batch cycle in flight on NPD.",
     body: "The customer's deposit has landed and R&D is producing the trial samples one at a time. Each sample MO for this project shows on the /projects kanban with a \"↳ Trial N/M\" badge, so scientists can spot siblings at a glance. The card leaves this column once the customer signs the final specification and the order transitions into standard production.",
+  },
+  awaiting_final_spec: {
+    title: "Customer confirmed done — final spec pending.",
+    body: "The customer clicked \"we're done\" on the trial-batches portal card. R&D owes them a FINAL specification, the customer owes us a signature on it, or finance owes us an approval on the FINAL invoice — whichever step is next. If the customer rejects the FINAL, this card returns to trial batches automatically.",
   },
   setup: {
     title: "You're building the order.",
@@ -4360,6 +4369,8 @@ function phaseBadgeTone(
     case "proposal_accepted":
       return "emerald";
     case "trial_batches_in_flight":
+      return "amber";
+    case "awaiting_final_spec":
       return "amber";
     case "setup":
       return "muted";

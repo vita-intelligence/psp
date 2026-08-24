@@ -441,7 +441,26 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       # the cycle is running (vs. still waiting on the customer to
       # pay). Nil clears the mirror if a payment is voided upstream.
       npd_deposit_paid_at:
-        parse_datetime(params["npd_deposit_paid_at"])
+        parse_datetime(params["npd_deposit_paid_at"]),
+      # FINAL-spec + FINAL-payment lifecycle mirror. NPD is
+      # authoritative and re-sends each field on every relevant
+      # transition (customer confirmed done, FINAL sent/signed/
+      # rejected, FINAL payment approved). Nil overwrites so the
+      # reject-and-restart flow — which clears
+      # `customer_confirmed_done_at` and re-fires the sync — resets
+      # the kanban back to ``:trial_batches_in_flight`` automatically.
+      npd_customer_confirmed_done_at:
+        parse_datetime(params["npd_customer_confirmed_done_at"]),
+      npd_final_spec_uuid:
+        sanitize(params["npd_final_spec_uuid"]),
+      npd_final_spec_status:
+        sanitize(params["npd_final_spec_status"]),
+      npd_final_spec_signed_at:
+        parse_datetime(params["npd_final_spec_signed_at"]),
+      npd_final_spec_rejected_at:
+        parse_datetime(params["npd_final_spec_rejected_at"]),
+      npd_final_payment_approved_at:
+        parse_datetime(params["npd_final_payment_approved_at"])
     }
 
     # Full audit event log — NPD is authoritative and replaces the

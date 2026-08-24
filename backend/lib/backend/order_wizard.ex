@@ -328,7 +328,9 @@ defmodule Backend.OrderWizard do
            npd_proposal_status: proposal_status,
            npd_customer_signed_at: customer_signed_at,
            npd_sample_allocation_status: allocation_status,
-           npd_deposit_paid_at: deposit_paid_at
+           npd_deposit_paid_at: deposit_paid_at,
+           npd_customer_confirmed_done_at: customer_confirmed_done_at,
+           npd_final_payment_approved_at: final_payment_approved_at
          },
          _line_states,
          _mos
@@ -339,7 +341,7 @@ defmodule Backend.OrderWizard do
       "in_review" -> :proposal_in_review
       "approved" -> :proposal_ready_to_send
       "sent" ->
-        # ``sent`` splits into four columns based on customer
+        # ``sent`` splits into six columns based on customer
         # commitment state (mirrored from vita-cff):
         #
         #   * signed_at nil                       → :awaiting_customer_signature
@@ -353,23 +355,50 @@ defmodule Backend.OrderWizard do
         #     ("Awaiting R&D payment" — bundled deposit+samples
         #      invoice has been auto-generated and is now on
         #      finance's queue awaiting customer payment)
-        #   * everything above AND deposit paid  → :trial_batches_in_flight
-        #     ("Trial batches" — finance approved the deposit; the
-        #      vita-cff TrialBatchCycle is spinning up sample MOs
-        #      one-at-a-time. Card sits here until the customer
-        #      signs the final spec + the CO leaves status="draft".)
+        #   * deposit paid + customer_confirmed_done nil
+        #                                        → :trial_batches_in_flight
+        #     ("Trial batches" — TrialBatchCycle is spinning up
+        #      sample MOs; customer still iterating.)
+        #   * confirmed done + final payment not approved
+        #                                        → :awaiting_final_spec
+        #     ("Final spec" — customer clicked "we're done" on
+        #      trial batches; scientist owes them a FINAL, or
+        #      customer owes us a signature, or finance owes us
+        #      an approval on the FINAL invoice.)
+        #   * final payment approved             → :needs_mo_creation
+        #     ("Needs MO" — customer paid the FINAL invoice;
+        #      production is authorised, shop floor scientist
+        #      needs to create the manufacturing order.)
+        #
+        # Rejection is self-healing: when the customer rejects a
+        # FINAL, vita-cff clears ``customer_confirmed_done_at`` via
+        # the reopen-cycle hook and re-fires the sync — the CO
+        # falls back through the confirmed-done → :trial_batches_in_flight
+        # branch on the next ``derive_phase`` call.
         cond do
           is_nil(customer_signed_at) ->
             :awaiting_customer_signature
 
-          allocation_status == "confirmed" and not is_nil(deposit_paid_at) ->
-            :trial_batches_in_flight
+          allocation_status != "confirmed" ->
+            :awaiting_sample_selection
 
-          allocation_status == "confirmed" ->
+          is_nil(deposit_paid_at) ->
             :proposal_accepted
 
+          # Final payment approved → production is authorised;
+          # someone owes the shop floor an MO. Reuses the existing
+          # ``:production_planning`` phase ("Need MO created") which
+          # already carries the same "MO pending" semantic downstream
+          # once the CO has left draft. Consolidating avoids two
+          # near-identical kanban columns.
+          not is_nil(final_payment_approved_at) ->
+            :production_planning
+
+          not is_nil(customer_confirmed_done_at) ->
+            :awaiting_final_spec
+
           true ->
-            :awaiting_sample_selection
+            :trial_batches_in_flight
         end
       # Rejected (customer said no on the kiosk, or staff closed on
       # their behalf). The spec is still director-signed so a new
