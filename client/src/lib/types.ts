@@ -2894,6 +2894,7 @@ export type OrderWizardPhaseKey =
   | "awaiting_sample_selection"
   | "proposal_accepted"
   | "trial_batches_in_flight"
+  | "awaiting_final_spec"
   | "setup"
   | "approval"
   | "production_planning"

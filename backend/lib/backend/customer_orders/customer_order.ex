@@ -183,6 +183,22 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :parent_customer_order_reference, :string
     field :npd_trial_slot_sequence_no, :integer
     field :npd_trial_slot_total, :integer
+    # FINAL-spec + FINAL-payment lifecycle mirror. Gate signals for
+    # the `:awaiting_final_spec` and `:needs_mo_creation` phases
+    # (see `Backend.OrderWizard.derive_phase/3`). Rejection is
+    # self-healing: vita-cff clears `customer_confirmed_done_at` on
+    # the reopen-cycle hook and re-fires the sync, which nulls the
+    # mirror here — the CO falls back to `:trial_batches_in_flight`
+    # automatically on the next `derive_phase` call.
+    field :npd_customer_confirmed_done_at, :utc_datetime
+    field :npd_final_spec_uuid, Ecto.UUID
+    field :npd_final_spec_status, :string
+    field :npd_final_spec_signed_at, :utc_datetime
+    field :npd_final_spec_rejected_at, :utc_datetime
+    # Finance approving the FINAL invoice is what promotes the CO
+    # from `:awaiting_final_spec` to `:needs_mo_creation` — the
+    # customer has paid, production is authorised.
+    field :npd_final_payment_approved_at, :utc_datetime
     # Full audit-preserving event log — one entry per NPD-side event
     # (formulation created, spec transitioned, proposal transitioned).
     # NPD is authoritative and replaces the array on every sync so a
