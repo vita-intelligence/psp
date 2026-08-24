@@ -32,6 +32,10 @@ defmodule BackendWeb.ManufacturingOrderController do
   plug RequirePermission, "production.mo_delete" when action in [:delete]
 
   plug RequirePermission,
+       "production.mo_edit"
+       when action in [:apply_bom_override, :revert_bom_override]
+
+  plug RequirePermission,
        "production.mo_release"
        when action in [:release, :unrelease, :clear_replan]
 
@@ -104,6 +108,99 @@ defmodule BackendWeb.ManufacturingOrderController do
 
           {:error, code} when is_atom(code) ->
             creation_error(conn, code)
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
+        end
+    end
+  end
+
+  # POST /api/production/manufacturing-orders/:id/bom-overrides
+  #
+  # Body shapes:
+  #   {"action": "removed",     "bom_line_id": 42, "reason": "..."}
+  #   {"action": "qty_changed", "bom_line_id": 42, "to_qty": "10.5"}
+  #   {"action": "added",       "item_id": 99,     "to_qty": "5.0",
+  #    "unit_of_measurement_id": 3, "is_fixed": false}
+  #
+  # Response: {mo: <full MO payload with overrides applied>} so the
+  # FE parts table refreshes atomically without a follow-up GET.
+  def apply_bom_override(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        attrs = Map.take(params, [
+          "action",
+          "bom_line_id",
+          "item_id",
+          "unit_of_measurement_id",
+          "to_qty",
+          "is_fixed",
+          "reason"
+        ])
+
+        case Production.apply_mo_bom_override(actor, mo, attrs) do
+          {:ok, _override} ->
+            refreshed = Production.get_manufacturing_order(actor.company_id, uuid)
+            json(conn, %{mo: Payloads.manufacturing_order(refreshed)})
+
+          {:error, :mo_locked} ->
+            unprocessable(
+              conn,
+              "mo_locked",
+              "Bring the MO back to draft to change its BOM."
+            )
+
+          {:error, :bom_line_not_found} ->
+            unprocessable(
+              conn,
+              "bom_line_not_found",
+              "That BOM line isn't on this MO's BOM."
+            )
+
+          {:error, :invalid_shape} ->
+            unprocessable(
+              conn,
+              "invalid_shape",
+              "Pass action + the fields it requires."
+            )
+
+          {:error, %Ecto.Changeset{} = cs} ->
+            changeset_error(conn, cs)
+        end
+    end
+  end
+
+  # DELETE /api/production/manufacturing-orders/:id/bom-overrides/:override_uuid
+  #
+  # Reverts a single override so the effective BOM collapses back to
+  # the master row (or drops the injected part entirely for adds).
+  def revert_bom_override(conn, %{"id" => uuid, "override_uuid" => override_uuid}) do
+    actor = conn.assigns.current_user
+
+    case Production.get_manufacturing_order(actor.company_id, uuid) do
+      nil ->
+        not_found(conn)
+
+      %ManufacturingOrder{} = mo ->
+        case Production.revert_mo_bom_override(actor, mo, override_uuid) do
+          {:ok, _deleted} ->
+            refreshed = Production.get_manufacturing_order(actor.company_id, uuid)
+            json(conn, %{mo: Payloads.manufacturing_order(refreshed)})
+
+          {:error, :mo_locked} ->
+            unprocessable(
+              conn,
+              "mo_locked",
+              "Bring the MO back to draft to change its BOM."
+            )
+
+          {:error, :not_found} ->
+            not_found(conn)
 
           {:error, %Ecto.Changeset{} = cs} ->
             changeset_error(conn, cs)

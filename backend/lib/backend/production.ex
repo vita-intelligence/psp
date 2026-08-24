@@ -32,6 +32,7 @@ defmodule Backend.Production do
     BOM,
     BOMLine,
     BOMVersion,
+    BOMOverrides,
     Machine,
     ManufacturingOrder,
     ManufacturingOrderBooking,
@@ -1905,7 +1906,13 @@ defmodule Backend.Production do
       parent_mo: [item: :stock_uom],
       children: [item: :stock_uom],
       consumer_links: [consumer_mo: [item: :stock_uom]],
-      supplier_links: [batch_mo: [item: :stock_uom]]
+      supplier_links: [batch_mo: [item: :stock_uom]],
+      bom_overrides: [
+        :created_by,
+        :unit_of_measurement,
+        bom_line: [:part, :unit_of_measurement],
+        part: :stock_uom
+      ]
     ])
     |> Repo.one()
   end
@@ -2105,15 +2112,21 @@ defmodule Backend.Production do
     mo =
       Repo.preload(
         mo,
-        [:bookings, bom: [lines: [:unit_of_measurement, part: :stock_uom]]],
+        [
+          :bookings,
+          bom: [lines: [:unit_of_measurement, part: :stock_uom]],
+          bom_overrides: [:unit_of_measurement, part: :stock_uom]
+        ],
         force: true
       )
 
-    lines =
-      case mo.bom do
-        %BOM{lines: lines} when is_list(lines) -> lines
-        _ -> []
-      end
+    # Walk the effective BOM (master + per-MO overrides) so a semi-
+    # finished component the planner removed for this MO doesn't
+    # trigger a child MO for stock it will never need — and a semi-
+    # finished component the planner ADDED for this MO does trigger
+    # one. Skips ``removed`` overrides, uses the overridden qty on
+    # ``qty_changed``, and includes synthesised ``added`` lines.
+    lines = effective_bom_lines_for_mo(mo)
 
     Enum.each(lines, fn line ->
       maybe_spawn_unbooked_child(actor, mo, line, depth)
@@ -4885,14 +4898,13 @@ defmodule Backend.Production do
   # shortage was computed correctly. Extending the calc here keeps the
   # rest of the auto-book pipeline (upgrade on QC-pass etc.) unchanged.
   defp mo_item_shortage(%ManufacturingOrder{} = mo, item_id) do
-    line =
-      case mo.bom do
-        %BOM{lines: lines} when is_list(lines) ->
-          Enum.find(lines, fn l -> l.part_id == item_id end)
-
-        _ ->
-          nil
-      end
+    # Walk the effective BOM (master + per-MO overrides) so a removed
+    # line contributes 0 to required, a qty-changed line uses the
+    # overridden qty, and an added synthetic line surfaces its qty.
+    # Master-only lookup here silently reported "we need X of removed
+    # component" and the PO auto-book pipeline chased phantom
+    # shortages.
+    line = Enum.find(effective_bom_lines_for_mo(mo), fn l -> l.part_id == item_id end)
 
     bom_required =
       case line do
@@ -5086,14 +5098,15 @@ defmodule Backend.Production do
     mo =
       Repo.preload(mo, [
         :bookings,
-        bom: [lines: :part]
+        bom: [lines: :part],
+        bom_overrides: [:unit_of_measurement, part: :stock_uom]
       ])
 
-    bom_lines =
-      case mo.bom do
-        %BOM{lines: lines} when is_list(lines) -> lines
-        _ -> []
-      end
+    # Effective BOM = master lines with per-MO overrides applied.
+    # ``qty_changed`` swaps the per-output qty; ``removed`` drops the
+    # line so no booking is attempted; ``added`` appends synthesised
+    # lines that book like any other component.
+    bom_lines = effective_bom_lines_for_mo(mo)
 
     # R&D stream isolation. The allocator (see ``allocate_for_item``
     # → ``list_bookable_lots``) filters lots by the ``is_rnd`` flag
@@ -9788,14 +9801,12 @@ defmodule Backend.Production do
   defp parent_line_shortage(%ManufacturingOrder{} = parent_mo, item_id) do
     mo_qty = parent_mo.quantity || Decimal.new(0)
 
+    # Effective BOM so a semi-finished component the planner removed
+    # for this MO doesn't owe stock to the parent; a qty-changed
+    # component uses the overridden qty; a synthetic added line still
+    # gets its shortage rolled up to the parent.
     line =
-      case parent_mo.bom do
-        %BOM{lines: lines} when is_list(lines) ->
-          Enum.find(lines, fn l -> l.part_id == item_id end)
-
-        _ ->
-          nil
-      end
+      Enum.find(effective_bom_lines_for_mo(parent_mo), fn l -> l.part_id == item_id end)
 
     case line do
       nil ->
@@ -13052,11 +13063,16 @@ defmodule Backend.Production do
     # so ``packaging_combo_items`` is always what the DB says now.
     mo =
       Repo.get!(ManufacturingOrder, mo.id)
-      |> Repo.preload([:bookings, :children, bom: [lines: :part]])
+      |> Repo.preload([
+        :bookings,
+        :children,
+        bom: [lines: :part],
+        bom_overrides: [:unit_of_measurement, part: :stock_uom]
+      ])
 
     overlay_active? = packaging_overlay_active?(mo)
 
-    lines =
+    master_lines =
       case mo.bom do
         %BOM{lines: lines} when is_list(lines) -> lines
         _ -> []
@@ -13067,6 +13083,11 @@ defmodule Backend.Production do
       |> then(fn ls ->
         if overlay_active?, do: Enum.reject(ls, &is_packaging_line?/1), else: ls
       end)
+
+    # Layer per-MO overrides on top before the shortage check so
+    # removed lines don't trip the gate and added / qty-changed lines
+    # are gated against their overridden qty.
+    lines = effective_bom_lines_for_mo(%{mo | bom: %{mo.bom | lines: master_lines}})
 
     mo_qty = mo.quantity || Decimal.new(0)
 
@@ -13254,11 +13275,16 @@ defmodule Backend.Production do
     # — never trust an in-memory MO struct for the overlay decision.
     mo =
       Repo.get!(ManufacturingOrder, mo.id)
-      |> Repo.preload([:bookings, :children, bom: [lines: :part]])
+      |> Repo.preload([
+        :bookings,
+        :children,
+        bom: [lines: :part],
+        bom_overrides: [:unit_of_measurement, part: :stock_uom]
+      ])
 
     overlay_active? = packaging_overlay_active?(mo)
 
-    lines =
+    master_lines =
       case mo.bom do
         %BOM{lines: lines} when is_list(lines) -> lines
         _ -> []
@@ -13266,6 +13292,11 @@ defmodule Backend.Production do
       |> then(fn ls ->
         if overlay_active?, do: Enum.reject(ls, &is_packaging_line?/1), else: ls
       end)
+
+    # Layer per-MO overrides so removed lines don't trip this gate and
+    # added / qty-changed lines are gated against their overridden qty.
+    # Mirrors the fix in ``ensure_all_lines_fully_booked``.
+    lines = effective_bom_lines_for_mo(%{mo | bom: %{mo.bom | lines: master_lines}})
 
     mo_qty = mo.quantity || Decimal.new(0)
 
@@ -13460,4 +13491,84 @@ defmodule Backend.Production do
   # or sample. Left here as a marker in case a future caller needs
   # the strict production-only variant back.
 
+  # ---------------------------------------------------------------
+  # BOM override delegates. The service lives in
+  # ``Backend.Production.BOMOverrides``; these thin wrappers give the
+  # controller the standard ``Backend.Production.*`` boundary the rest
+  # of the app already imports.
+  # ---------------------------------------------------------------
+
+  @doc """
+  All override rows for an MO. Preloads the master BOM line + item so
+  the controller / payload never round-trips.
+  """
+  def list_mo_bom_overrides(mo_id) when is_integer(mo_id),
+    do: BOMOverrides.list_for_mo(mo_id)
+
+  @doc """
+  True when the MO is in a status that allows override edits.
+  """
+  def can_override_bom?(%ManufacturingOrder{} = mo), do: BOMOverrides.editable?(mo)
+  def can_override_bom?(_), do: false
+
+  @doc """
+  Create or update an override on the given MO. See
+  ``Backend.Production.BOMOverrides.apply_override/3`` for the
+  attribute contract.
+  """
+  def apply_mo_bom_override(actor, %ManufacturingOrder{} = mo, attrs),
+    do: BOMOverrides.apply_override(actor, mo, attrs)
+
+  @doc """
+  Delete an override so the effective BOM collapses back to the
+  master row (or drops the injected part entirely).
+  """
+  def revert_mo_bom_override(actor, %ManufacturingOrder{} = mo, override_uuid),
+    do: BOMOverrides.revert(actor, mo, override_uuid)
+
+  @doc """
+  Apply a preloaded override list on top of the master BOM lines.
+  Returns the effective set: masters kept + qty-changed masters +
+  synthesised added lines. Removed masters are dropped.
+
+  Consumers: parts payload, booking loop, release-time shortage
+  gate. Everything that used to iterate over ``mo.bom.lines``
+  routes through this helper so add / remove / qty-change round-
+  trips consistently through picking, book-all, and pre-check.
+  """
+  def effective_bom_lines(bom_lines, overrides)
+      when is_list(bom_lines) and is_list(overrides),
+      do: BOMOverrides.apply_to_lines(bom_lines, overrides)
+
+  @doc """
+  The subset of overrides whose action is ``removed`` — surfaced on
+  the parts payload so the FE can render ghost rows ("Bottle 60ct —
+  removed by Sam for individual capsules · Restore").
+  """
+  def removed_bom_overrides(overrides) when is_list(overrides),
+    do: BOMOverrides.removed_lines(overrides)
+
+  @doc """
+  Effective BOM lines for an MO, walking the association if needed.
+  Never mutates. Used by callers that already have the MO loaded
+  (booking, shortage guard) rather than re-fetching.
+  """
+  def effective_bom_lines_for_mo(%ManufacturingOrder{} = mo) do
+    master_lines =
+      case mo.bom do
+        %BOM{lines: lines} when is_list(lines) -> lines
+        %BOM{} = bom -> Repo.preload(bom, lines: [:part, :unit_of_measurement]).lines
+        _ -> []
+      end
+      |> Enum.sort_by(& &1.sort_order)
+
+    overrides =
+      case Map.get(mo, :bom_overrides) do
+        %Ecto.Association.NotLoaded{} -> list_mo_bom_overrides(mo.id)
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    effective_bom_lines(master_lines, overrides)
+  end
 end

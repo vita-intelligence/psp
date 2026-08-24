@@ -756,6 +756,7 @@ export interface ManufacturingOrderPart {
     | "consumed"
     | "consumed_short"
     | "consumed_none"
+    | "removed"
     | "unknown";
   /** Real bookings against existing lots. Render with status
    *  label "Booked". */
@@ -763,6 +764,11 @@ export interface ManufacturingOrderPart {
   /** Open child MOs producing this part — render as additional
    *  amber "Awaiting production from MO-XXX" sub-rows on the FE. */
   pending_from_sub_mos: ManufacturingOrderRelation[];
+  /** Per-MO override state. Non-null when the line was added,
+   *  qty-changed, or removed for THIS MO only (master BOM stays
+   *  untouched). Drives the "Modified for this MO" badge and the
+   *  Restore / Reset controls. */
+  override: ManufacturingOrderPartOverride | null;
   /** Legacy single-row columns — always null now that bookings can
    *  stack against a line. Kept on the type so older payload
    *  consumers don't break. */
@@ -770,6 +776,38 @@ export interface ManufacturingOrderPart {
   status: string | null;
   storage_location: string | null;
   available_from: string | null;
+}
+
+export type MOBOMOverrideAction = "added" | "qty_changed" | "removed";
+
+export interface ManufacturingOrderPartOverride {
+  uuid: string;
+  action: MOBOMOverrideAction;
+  /** Master BOM per-output qty at the moment the override was recorded
+   *  (nil for `added` — the item isn't on the master BOM). Used by the
+   *  FE to show "was 1.0 → now 2.5" tooltips. */
+  from_qty: string | null;
+  /** The overridden per-output qty. Nil for `removed` (the line is
+   *  dropped, not repriced). */
+  to_qty: string | null;
+  reason: string | null;
+  created_by: {
+    id: number;
+    uuid: string | null;
+    name: string | null;
+    email: string | null;
+  } | null;
+  created_at: string;
+}
+
+/** Summary row surfaced on the top-level MO payload so the header
+ *  banner can render "N overrides applied" without a follow-up fetch. */
+export interface ManufacturingOrderBomOverrideSummary
+  extends ManufacturingOrderPartOverride {
+  bom_line_id: number | null;
+  item_id: number | null;
+  part: BOMPartSummary | null;
+  is_fixed: boolean;
 }
 
 export interface ManufacturingOrderBookingLotSummary {
@@ -1287,6 +1325,15 @@ export interface ManufacturingOrder {
   purchasing_requested_by: AuditActor | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
+  /** Every per-MO BOM override active on this run — one row per
+   *  add / remove / qty-change. Used by the header banner + the
+   *  audit-style popover; individual rows also carry their override
+   *  reference via `part.override`. */
+  bom_overrides: ManufacturingOrderBomOverrideSummary[];
+  /** True when the MO status allows override edits (draft / prepared).
+   *  Mirrors the server-side gate — FE hides edit affordances when
+   *  false. */
+  can_override_bom: boolean;
   inserted_at: string;
   updated_at: string;
 }

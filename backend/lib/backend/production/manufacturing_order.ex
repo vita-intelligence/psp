@@ -236,6 +236,13 @@ defmodule Backend.Production.ManufacturingOrder do
       foreign_key: :consumer_mo_id,
       preload_order: [asc: :inserted_at]
 
+    # Per-MO BOM deltas layered on top of the master BOM (add / remove
+    # a component, override its qty for this run only). Applies only
+    # while the MO is draft or prepared; frozen once approved.
+    has_many :bom_overrides, Backend.Production.MOBOMOverride,
+      foreign_key: :manufacturing_order_id,
+      preload_order: [asc: :inserted_at]
+
     timestamps(type: :utc_datetime)
   end
 
