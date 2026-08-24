@@ -9,8 +9,11 @@ import {
   ChevronRight,
   Factory,
   Loader2,
+  Pencil,
   Plus,
   RotateCcw,
+  Trash2,
+  Undo2,
 } from "lucide-react";
 import {
   formatCompanyMoney,
@@ -34,6 +37,12 @@ import { ReleaseBookingDialog } from "./release-booking-dialog";
 import { BookAllDialog } from "./book-all-dialog";
 import { AddSubMoDialog } from "./add-sub-mo-dialog";
 import { ReleaseSubMoDialog } from "./release-sub-mo-dialog";
+import {
+  AddBomLineDialog,
+  QtyOverrideDialog,
+  RemoveLineDialog,
+  useRevertOverride,
+} from "./mo-bom-override-dialogs";
 
 interface Props {
   mo: ManufacturingOrder;
@@ -64,6 +73,18 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
   } | null>(null);
   const [bookAllOpen, setBookAllOpen] = useState(false);
   const [pendingAll, startTransitionAll] = useTransition();
+  // Per-MO BOM override state — only wired when the MO is still in a
+  // status the server accepts edits on (`draft` / `prepared`). Past
+  // approval `mo.can_override_bom` flips to false and we hide every
+  // affordance below.
+  const [editingQtyFor, setEditingQtyFor] =
+    useState<ManufacturingOrderPart | null>(null);
+  const [removingLineFor, setRemovingLineFor] =
+    useState<ManufacturingOrderPart | null>(null);
+  const [addingBomLineOpen, setAddingBomLineOpen] = useState(false);
+  const { revert: revertOverride, pending: revertPending } =
+    useRevertOverride(mo);
+  const overrideEditable = canEdit && mo.can_override_bom;
 
   if (mo.parts.length === 0) {
     return (
@@ -182,7 +203,29 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
               Release all booked parts
             </Button>
           )}
+          {overrideEditable && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setAddingBomLineOpen(true)}
+              className="ml-auto"
+              title="Inject a one-off component into this MO only"
+            >
+              <Plus className="size-3.5" />
+              Add BOM line (this MO)
+            </Button>
+          )}
         </div>
+      )}
+
+      {mo.bom_overrides.length > 0 && (
+        <BomOverridesBanner
+          mo={mo}
+          overrideEditable={overrideEditable}
+          onRevert={(uuid) => revertOverride(uuid, "Override reverted.")}
+          reverting={revertPending}
+        />
       )}
 
       <div className="overflow-x-auto">
@@ -210,6 +253,7 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
                 p={p}
                 company={company}
                 canEdit={canEdit}
+                overrideEditable={overrideEditable}
                 purchasingRequested={mo.purchasing_requested_at != null}
                 onAdd={() => setAddingFor(p)}
                 onRelease={(b) => setReleasing({ part: p, booking: b })}
@@ -217,6 +261,10 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
                 onReleaseSubMo={(child) =>
                   setReleasingSubMo({ part: p, child })
                 }
+                onEditQty={() => setEditingQtyFor(p)}
+                onRemoveLine={() => setRemovingLineFor(p)}
+                onRestore={(uuid) => revertOverride(uuid, "Line restored.")}
+                revertPending={revertPending}
               />
             ))}
           </tbody>
@@ -272,7 +320,114 @@ export function MOPartsTable({ mo, company, canEdit }: Props) {
           onOpenChange={(o) => !o && setReleasingSubMo(null)}
         />
       )}
+
+      {editingQtyFor && (
+        <QtyOverrideDialog
+          mo={mo}
+          part={editingQtyFor}
+          open={Boolean(editingQtyFor)}
+          onOpenChange={(o) => !o && setEditingQtyFor(null)}
+        />
+      )}
+
+      {removingLineFor && (
+        <RemoveLineDialog
+          mo={mo}
+          part={removingLineFor}
+          open={Boolean(removingLineFor)}
+          onOpenChange={(o) => !o && setRemovingLineFor(null)}
+        />
+      )}
+
+      {addingBomLineOpen && (
+        <AddBomLineDialog
+          mo={mo}
+          open={addingBomLineOpen}
+          onOpenChange={setAddingBomLineOpen}
+        />
+      )}
     </section>
+  );
+}
+
+function BomOverridesBanner({
+  mo,
+  overrideEditable,
+  onRevert,
+  reverting,
+}: {
+  mo: ManufacturingOrder;
+  overrideEditable: boolean;
+  onRevert: (overrideUuid: string) => void;
+  reverting: boolean;
+}) {
+  const count = mo.bom_overrides.length;
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-medium">
+          {count} BOM override{count === 1 ? "" : "s"} applied to this MO
+        </p>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="text-[11px] underline underline-offset-2 hover:text-amber-950 dark:hover:text-amber-100"
+        >
+          {expanded ? "Hide" : "See changes"}
+        </button>
+      </div>
+      {expanded && (
+        <ul className="mt-2 space-y-1">
+          {mo.bom_overrides.map((ov) => (
+            <li
+              key={ov.uuid}
+              className="flex items-center justify-between gap-3 border-t border-amber-500/30 pt-1 first:border-t-0 first:pt-0"
+            >
+              <div className="min-w-0 leading-snug">
+                <p className="truncate">
+                  <span className="font-medium">
+                    {ov.part?.name ?? `Item #${ov.item_id ?? "?"}`}
+                  </span>{" "}
+                  <span className="text-[10px] uppercase tracking-wide">
+                    {ov.action === "added"
+                      ? "· added"
+                      : ov.action === "removed"
+                        ? "· removed"
+                        : `· qty ${ov.from_qty ?? "?"} → ${ov.to_qty ?? "?"}`}
+                  </span>
+                </p>
+                {ov.reason && (
+                  <p className="mt-0.5 text-[11px] italic text-amber-900/80 dark:text-amber-200/80">
+                    "{ov.reason}"
+                  </p>
+                )}
+                {ov.created_by?.name && (
+                  <p className="mt-0.5 text-[10px] text-amber-900/70 dark:text-amber-200/70">
+                    {ov.created_by.name} ·{" "}
+                    {new Date(ov.created_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              {overrideEditable && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={reverting}
+                  onClick={() => onRevert(ov.uuid)}
+                  className="h-7 px-2 text-[11px] text-amber-900 hover:bg-amber-500/20 dark:text-amber-200"
+                  title="Revert this override"
+                >
+                  <Undo2 className="size-3" />
+                  Revert
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -280,6 +435,10 @@ interface PartRowsProps {
   p: ManufacturingOrderPart;
   company: CompanyDefaults;
   canEdit: boolean;
+  /** True when the MO is in a status that accepts BOM-override edits
+   *  AND the operator has permission. Drives visibility of the pencil
+   *  / trash / restore controls on each row. */
+  overrideEditable: boolean;
   /** True when the MO's purchasing_requested_at flag is set —
    *  drives "Sent to procurement" tone on the synthetic gap row
    *  even when coverage_status is "partial" (some bookings done,
@@ -289,18 +448,30 @@ interface PartRowsProps {
   onRelease: (b: ManufacturingOrderBooking) => void;
   onAddSubMo: () => void;
   onReleaseSubMo: (child: ManufacturingOrderRelation) => void;
+  onEditQty: () => void;
+  onRemoveLine: () => void;
+  onRestore: (overrideUuid: string) => void;
+  revertPending: boolean;
 }
 
 function PartRows({
   p,
   company,
   canEdit,
+  overrideEditable,
   purchasingRequested,
   onAdd,
   onRelease,
   onAddSubMo,
   onReleaseSubMo,
+  onEditQty,
+  onRemoveLine,
+  onRestore,
+  revertPending,
 }: PartRowsProps) {
+  const isRemovedGhost = p.coverage_status === "removed";
+  const isAddedLine = p.override?.action === "added";
+  const isQtyChanged = p.override?.action === "qty_changed";
   const hasUnbooked = Number(p.unbooked_qty ?? "0") > 0;
   const hasBookings =
     p.bookings.length > 0 || p.pending_from_sub_mos.length > 0 || hasUnbooked;
@@ -320,7 +491,18 @@ function PartRows({
 
   return (
     <>
-      <tr className="border-y border-border/60 bg-muted/20 font-medium">
+      <tr
+        className={cn(
+          "border-y border-border/60 font-medium",
+          isRemovedGhost
+            ? "bg-muted/10 opacity-60"
+            : isAddedLine
+              ? "bg-emerald-500/5"
+              : isQtyChanged
+                ? "bg-amber-500/5"
+                : "bg-muted/20",
+        )}
+      >
         <td className="px-2 py-2">
           <div className="flex items-center gap-1.5">
             {hasBookings ? (
@@ -340,7 +522,12 @@ function PartRows({
               <span className="inline-block size-3.5" />
             )}
             <div className="min-w-0">
-              <p className="text-sm">
+              <p
+                className={cn(
+                  "text-sm",
+                  isRemovedGhost && "line-through decoration-muted-foreground/60",
+                )}
+              >
                 {p.part?.name ?? `Item #${p.part?.id ?? "?"}`}
               </p>
               {p.part?.code && (
@@ -348,16 +535,25 @@ function PartRows({
                   {p.part.code}
                 </p>
               )}
+              {p.override && (
+                <p className="mt-0.5 text-[10px] font-normal uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                  {p.override.action === "added"
+                    ? "Added for this MO"
+                    : p.override.action === "removed"
+                      ? "Removed for this MO"
+                      : `Qty modified · was ${p.override.from_qty ?? "?"}`}
+                </p>
+              )}
             </div>
           </div>
         </td>
         <td className="px-2 py-2 text-right font-mono">
           {(() => {
-            if (!p.required_qty) return "—";
+            if (!p.required_qty || isRemovedGhost) return "—";
             const h = formatQtyHumanized(p.required_qty, uom, company);
             return `${h.value} ${h.unit}`.trim();
           })()}
-          {p.is_fixed && (
+          {p.is_fixed && !isRemovedGhost && (
             <p className="text-[9px] text-muted-foreground">fixed</p>
           )}
         </td>
@@ -389,7 +585,23 @@ function PartRows({
         <td className="px-2 py-2 text-muted-foreground/60">—</td>
         <td className="px-2 py-2 text-muted-foreground/60">—</td>
         <td className="px-1 py-1 text-right">
-          {canEdit && (
+          {isRemovedGhost && overrideEditable && p.override && (
+            <div className="flex items-center justify-end gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                disabled={revertPending}
+                onClick={() => onRestore(p.override!.uuid)}
+                aria-label="Restore removed line"
+                title="Restore removed line"
+                className="text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/30"
+              >
+                <Undo2 />
+              </Button>
+            </div>
+          )}
+          {!isRemovedGhost && canEdit && (
             <div className="flex items-center justify-end gap-1">
               <Button
                 type="button"
@@ -412,6 +624,46 @@ function PartRows({
                   className="text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/30"
                 >
                   <Factory />
+                </Button>
+              )}
+              {overrideEditable && !isAddedLine && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={onEditQty}
+                  aria-label="Override qty for this MO"
+                  title="Override qty for this MO"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <Pencil />
+                </Button>
+              )}
+              {overrideEditable && !isAddedLine && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={onRemoveLine}
+                  aria-label="Remove line from this MO"
+                  title="Remove line from this MO"
+                  className="text-destructive/70 hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <Trash2 />
+                </Button>
+              )}
+              {overrideEditable && p.override && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={revertPending}
+                  onClick={() => onRestore(p.override!.uuid)}
+                  aria-label="Revert this override"
+                  title="Revert this override"
+                  className="text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                >
+                  <Undo2 />
                 </Button>
               )}
             </div>
@@ -506,6 +758,11 @@ const COVERAGE_STYLE: Record<
   consumed_none: {
     text: "text-muted-foreground/60",
     label: "Not consumed",
+    dot: "bg-muted-foreground/40",
+  },
+  removed: {
+    text: "text-muted-foreground/70",
+    label: "Removed for this MO",
     dot: "bg-muted-foreground/40",
   },
   unknown: {

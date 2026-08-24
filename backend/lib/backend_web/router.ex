@@ -912,6 +912,17 @@ defmodule BackendWeb.Router do
              ManufacturingOrderController,
              :delete
 
+      # Per-MO BOM overrides. Add / remove / qty-change a component
+      # for THIS MO only — the master BOM stays untouched. Editable
+      # while status ∈ {draft, prepared}; frozen once approved.
+      post "/manufacturing-orders/:id/bom-overrides",
+           ManufacturingOrderController,
+           :apply_bom_override
+
+      delete "/manufacturing-orders/:id/bom-overrides/:override_uuid",
+             ManufacturingOrderController,
+             :revert_bom_override
+
       # Warehouse-pickup release gate. Planner stamps the MO with a
       # released-at timestamp + optional per-MO window override; the
       # picker queue then surfaces it inside its visibility window.

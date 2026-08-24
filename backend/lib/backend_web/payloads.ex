@@ -2478,12 +2478,57 @@ defmodule BackendWeb.Payloads do
         end,
       created_by: actor(mo, :created_by),
       updated_by: actor(mo, :updated_by),
+      # Per-MO BOM override state. `bom_overrides` is the full list
+      # (one row per delta) so the FE can render the header banner
+      # + audit-style "who changed what" popover without re-fetching.
+      # `can_override_bom` mirrors the server-side editable-status
+      # gate so the FE hides edit affordances on approved+ MOs.
+      bom_overrides: mo_bom_overrides_payload(mo),
+      can_override_bom: Backend.Production.can_override_bom?(mo),
       inserted_at: mo.inserted_at,
       updated_at: mo.updated_at
     }
   end
 
   def manufacturing_order(_), do: nil
+
+  defp mo_bom_overrides_payload(%Backend.Production.ManufacturingOrder{} = mo) do
+    overrides =
+      case Map.get(mo, :bom_overrides) do
+        %Ecto.Association.NotLoaded{} -> Backend.Production.list_mo_bom_overrides(mo.id)
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    Enum.map(overrides, &mo_bom_override_summary/1)
+  end
+
+  defp mo_bom_override_summary(%Backend.Production.MOBOMOverride{} = ov) do
+    %{
+      uuid: ov.uuid,
+      action: ov.action,
+      bom_line_id: ov.bom_line_id,
+      item_id: ov.item_id,
+      part: maybe_item_summary(safe_part(ov)),
+      from_qty: ov.from_qty && Decimal.to_string(ov.from_qty),
+      to_qty: ov.to_qty && Decimal.to_string(ov.to_qty),
+      is_fixed: ov.is_fixed,
+      reason: ov.reason,
+      created_by: actor_light(ov.created_by),
+      created_at: ov.inserted_at
+    }
+  end
+
+  # `added` overrides point at the item directly (`ov.part`); edits
+  # and removes borrow the item from the master BOM line (`ov.bom_line.part`).
+  defp safe_part(%Backend.Production.MOBOMOverride{} = ov) do
+    cond do
+      match?(%Backend.Items.Item{}, ov.part) -> ov.part
+      match?(%Backend.Production.BOMLine{part: %Backend.Items.Item{}}, ov.bom_line) ->
+        ov.bom_line.part
+      true -> nil
+    end
+  end
 
   defp mo_broken_bookings_payload(%Backend.Production.ManufacturingOrder{id: id}) do
     Backend.Production.list_broken_bookings_for([id])
@@ -2734,7 +2779,14 @@ defmodule BackendWeb.Payloads do
     # render as before.
     overlay_active? = is_list(overlay_items)
 
-    lines =
+    overrides =
+      case Map.get(mo, :bom_overrides) do
+        %Ecto.Association.NotLoaded{} -> Backend.Production.list_mo_bom_overrides(mo.id)
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    master_lines =
       case bom.lines do
         %Ecto.Association.NotLoaded{} ->
           Backend.Repo.preload(bom,
@@ -2748,6 +2800,12 @@ defmodule BackendWeb.Payloads do
       |> then(fn ls ->
         if overlay_active?, do: Enum.reject(ls, &packaging_bom_line?/1), else: ls
       end)
+
+    # Layer per-MO overrides on top: qty edits swap the line's :qty
+    # in place; removes drop the master line entirely (surfaced
+    # separately as ghost rows below); adds land as synthetic
+    # lines with a negative id.
+    lines = Backend.Production.effective_bom_lines(master_lines, overrides)
 
     bookings =
       case Map.get(mo, :bookings) do
@@ -2918,6 +2976,10 @@ defmodule BackendWeb.Payloads do
           coverage_status: coverage_status,
           bookings: Enum.map(line_bookings, &mo_booking(&1, last_photo_urls)),
           pending_from_sub_mos: Enum.map(pending_children, &mo_pending_sub_mo_row/1),
+          # Per-MO override state. `nil` when the row is the master
+          # BOM row untouched. Populated when the planner has added
+          # this line or tweaked its qty for this MO only.
+          override: mo_override_row(Map.get(line, :__override__)),
           # Legacy single-row columns — kept null since multiple
           # bookings can stack against the same line.
           lot: nil,
@@ -2961,10 +3023,81 @@ defmodule BackendWeb.Payloads do
         do: nil,
         else: combined_total
 
-    {parts ++ overlay_parts, materials_total}
+    # Ghost rows for removed lines — dimmed on the parts table with a
+    # "Restore" quick action so the planner can put a mistake back.
+    # Zero coverage, zero required — they exist purely for
+    # transparency in the audit trail + one-click revert.
+    removed_parts =
+      overrides
+      |> Backend.Production.removed_bom_overrides()
+      |> Enum.map(&removed_override_ghost_row/1)
+
+    {parts ++ overlay_parts ++ removed_parts, materials_total}
   end
 
   defp mo_parts_breakdown(_), do: {[], nil}
+
+  # Renders an override row for the parts payload. `nil` when the
+  # line has no override attached (i.e. an untouched master row).
+  defp mo_override_row(nil), do: nil
+
+  defp mo_override_row(%Backend.Production.MOBOMOverride{} = ov) do
+    %{
+      uuid: ov.uuid,
+      action: ov.action,
+      from_qty: ov.from_qty && Decimal.to_string(ov.from_qty),
+      to_qty: ov.to_qty && Decimal.to_string(ov.to_qty),
+      reason: ov.reason,
+      created_by: actor_light(ov.created_by),
+      created_at: ov.inserted_at
+    }
+  end
+
+  defp removed_override_ghost_row(%Backend.Production.MOBOMOverride{} = ov) do
+    line = ov.bom_line
+
+    part =
+      cond do
+        line && not is_nil(line.part) -> line.part
+        true -> nil
+      end
+
+    %{
+      id: -ov.id,
+      uuid: ov.uuid,
+      sort_order: 20_000,
+      is_fixed: (line && line.is_fixed) || false,
+      part: maybe_item_summary(part),
+      unit_of_measurement:
+        maybe_unit_compact(line && line.unit_of_measurement) ||
+          maybe_unit_compact(part && part.stock_uom),
+      line_qty: line && decimal_to_string(line.qty),
+      required_qty: "0",
+      unit_cost: nil,
+      total_cost: nil,
+      booked_qty: "0",
+      consumed_qty: "0",
+      pending_from_sub_mos_qty: "0",
+      unbooked_qty: nil,
+      coverage_status: "removed",
+      bookings: [],
+      pending_from_sub_mos: [],
+      override: mo_override_row(ov),
+      lot: nil,
+      status: nil,
+      storage_location: nil,
+      available_from: nil
+    }
+  end
+
+  defp actor_light(nil), do: nil
+  defp actor_light(%Ecto.Association.NotLoaded{}), do: nil
+
+  defp actor_light(%Backend.Accounts.User{} = u) do
+    %{id: u.id, uuid: u.uuid, name: u.name, email: u.email}
+  end
+
+  defp actor_light(_), do: nil
 
   # Overlay counterpart of the BOM parts loop. Same row shape as the
   # real BOM lines so ``mo-parts-table.tsx`` renders them side-by-side

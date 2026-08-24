@@ -1153,3 +1153,71 @@ export async function clearReplanAction(
       });
   }
 }
+
+// -------------------------------------------------------------
+// Per-MO BOM overrides — planner edits the BOM for THIS MO only.
+// Master BOM is untouched; server records the delta + who + why so
+// the audit trail sees exactly what changed. Editable while MO
+// status ∈ {draft, prepared}; the BE returns `mo_locked` past that.
+// -------------------------------------------------------------
+
+export type ApplyBomOverrideInput =
+  | {
+      action: "removed";
+      bom_line_id: number;
+      reason: string;
+    }
+  | {
+      action: "qty_changed";
+      bom_line_id: number;
+      to_qty: string;
+    }
+  | {
+      action: "added";
+      item_id: number;
+      to_qty: string;
+      unit_of_measurement_id?: number | null;
+      is_fixed?: boolean;
+    };
+
+export async function applyBomOverrideAction(
+  uuid: string,
+  input: ApplyBomOverrideInput,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("applyBomOverrideAction");
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/bom-overrides`,
+      { method: "POST", token, body: JSON.stringify(input) },
+    );
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "applyBomOverrideAction",
+      fallbackDetail: "Couldn't save the BOM override.",
+    });
+  }
+}
+
+export async function revertBomOverrideAction(
+  uuid: string,
+  overrideUuid: string,
+): Promise<ManufacturingOrderResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("revertBomOverrideAction");
+  try {
+    const { mo } = await api<{ mo: ManufacturingOrder }>(
+      `/api/production/manufacturing-orders/${encodeURIComponent(uuid)}/bom-overrides/${encodeURIComponent(overrideUuid)}`,
+      { method: "DELETE", token },
+    );
+    revalidatePath(`/production/manufacturing-orders/${uuid}`);
+    return { ok: true, mo };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "revertBomOverrideAction",
+      fallbackDetail: "Couldn't revert the BOM override.",
+    });
+  }
+}

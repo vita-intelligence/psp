@@ -277,8 +277,20 @@ defmodule BackendWeb.IntegrationReadController do
         where: mo.company_id == ^company_id and mo.uuid == ^uuid,
         preload: [
           :item,
+          bookings: [
+            stock_lot: [
+              placements: [
+                storage_cell: [storage_location: [floor: [:warehouse]]]
+              ]
+            ]
+          ],
           bom: [
             lines: [:unit_of_measurement, part: :stock_uom]
+          ],
+          bom_overrides: [
+            :unit_of_measurement,
+            bom_line: :part,
+            part: :stock_uom
           ]
         ]
 
@@ -289,19 +301,48 @@ defmodule BackendWeb.IntegrationReadController do
       %ManufacturingOrder{bom: nil} = mo ->
         json(conn, %{mo: mo_parts_header(mo, company), parts: []})
 
-      %ManufacturingOrder{bom: %BOM{lines: lines}} = mo ->
-        sorted = Enum.sort_by(lines, & &1.sort_order)
+      %ManufacturingOrder{} = mo ->
+        # Apply per-MO overrides on top of the master BOM so the kiosk /
+        # closeout / run views see exactly what the operator is meant to
+        # produce — removed lines drop out, qty-changed lines carry the
+        # overridden qty, added lines appear as synthetic rows. Without
+        # this the kiosk BomCard would still list a line the planner
+        # explicitly removed for this run.
+        effective_lines = Backend.Production.effective_bom_lines_for_mo(mo)
+        sorted = Enum.sort_by(effective_lines, & &1.sort_order)
         part_ids = sorted |> Enum.map(& &1.part_id) |> Enum.reject(&is_nil/1)
         photos_by_item = last_photo_uuid_by_item_ids(company_id, part_ids)
+        bookings_by_item = index_bookings_by_item(mo)
+        snapshot_at = DateTime.utc_now() |> DateTime.truncate(:second)
 
         parts =
           Enum.map(sorted, fn line ->
-            mo_part_row(line, mo.quantity, company, photos_by_item)
+            mo_part_row(
+              line,
+              mo.quantity,
+              company,
+              photos_by_item,
+              bookings_by_item,
+              snapshot_at
+            )
           end)
 
         json(conn, %{mo: mo_parts_header(mo, company), parts: parts})
     end
   end
+
+  # `mo.bookings` grouped by item_id so a BOM line can look up "which
+  # lot did picking allocate for me, and where does it live right now?"
+  # in O(1). Only ``requested`` and ``consumed`` bookings — anything
+  # else is either released or a stub, and its placement doesn't
+  # represent the operator's current material.
+  defp index_bookings_by_item(%ManufacturingOrder{bookings: bookings}) when is_list(bookings) do
+    bookings
+    |> Enum.filter(&(&1.status in ["requested", "consumed"]))
+    |> Enum.group_by(& &1.item_id)
+  end
+
+  defp index_bookings_by_item(_), do: %{}
 
   # Latest movement-photo UUID per item — bulk one-query lookup so the
   # BOM payload doesn't spawn N round-trips when the MO has many
@@ -359,7 +400,14 @@ defmodule BackendWeb.IntegrationReadController do
     }
   end
 
-  defp mo_part_row(%BOMLine{} = line, mo_qty, %Company{} = company, photos_by_item) do
+  defp mo_part_row(
+         %BOMLine{} = line,
+         mo_qty,
+         %Company{} = company,
+         photos_by_item,
+         bookings_by_item,
+         snapshot_at
+       ) do
     required_qty =
       cond do
         line.is_fixed -> line.qty
@@ -370,6 +418,9 @@ defmodule BackendWeb.IntegrationReadController do
 
     uom = line.unit_of_measurement || (line.part && line.part.stock_uom)
     photo_uuid = line.part_id && Map.get(photos_by_item, line.part_id)
+
+    line_bookings = Map.get(bookings_by_item, line.part_id, [])
+    location = resolve_line_location(line_bookings, snapshot_at)
 
     %{
       uuid: line.uuid,
@@ -385,6 +436,13 @@ defmodule BackendWeb.IntegrationReadController do
       # ingredient before Start. The caller builds its own proxy URL
       # since the raw /api/stock/movement-photos endpoint is UI-authed.
       last_photo_uuid: photo_uuid,
+      # Where the booked material sits RIGHT NOW. The pickup workflow
+      # moves the lot to the production_feed cell before the run
+      # starts, so this normally reads as "next to the workstation"
+      # once the operator is on the shop floor. Prior to pickup it
+      # points at the reserve shelf. ``nil`` when nothing is booked yet
+      # (the operator has to book / pick to see a location).
+      location: location,
       part:
         line.part &&
           %{
@@ -392,6 +450,65 @@ defmodule BackendWeb.IntegrationReadController do
             code: Numbering.render(line.part.id, company, "item"),
             name: line.part.name
           }
+    }
+  end
+
+  # Best "where does the material for this BOM line live?" answer.
+  # Walks every booking for the line's part, follows each into its
+  # lot's placements, and picks the placement holding the largest qty.
+  # Ties broken by preferring a ``production_feed``-purpose cell (that's
+  # where the picker parks material for the workstation, so it beats
+  # a shelf reservation on the ``regular`` floor).
+  defp resolve_line_location([], _snapshot_at), do: nil
+
+  defp resolve_line_location(bookings, snapshot_at) do
+    bookings
+    |> Enum.flat_map(fn booking ->
+      case booking.stock_lot do
+        %{placements: placements} when is_list(placements) -> placements
+        _ -> []
+      end
+    end)
+    |> Enum.filter(fn p ->
+      Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt
+    end)
+    |> Enum.sort_by(&placement_sort_key/1, :desc)
+    |> List.first()
+    |> case do
+      nil -> nil
+      placement -> placement_to_location(placement, snapshot_at)
+    end
+  end
+
+  # Sort key: {production_feed?, qty}. Larger qty wins by default;
+  # production_feed placements outrank a bigger shelf pile because
+  # that's the picked-and-waiting position the operator cares about.
+  defp placement_sort_key(placement) do
+    is_feed =
+      case placement.storage_cell do
+        %{purpose: "production_feed"} -> 1
+        _ -> 0
+      end
+
+    qty = placement.qty || Decimal.new(0)
+    {is_feed, qty}
+  end
+
+  defp placement_to_location(placement, snapshot_at) do
+    cell = placement.storage_cell
+    location = cell && cell.storage_location
+    floor = location && location.floor
+    warehouse = floor && floor.warehouse
+
+    %{
+      cell_name: cell && cell.name,
+      cell_purpose: cell && cell.purpose,
+      location_name: location && location.name,
+      location_code: location && location.code,
+      floor_name: floor && floor.name,
+      warehouse_name: warehouse && warehouse.name,
+      qty: placement.qty && to_string(placement.qty),
+      snapshot_at: snapshot_at
     }
   end
 
