@@ -498,6 +498,31 @@ defmodule Backend.CustomerOrders.ProposalMerge do
         _ -> %{}
       end
 
+    # FINAL payment approved on NPD ⇒ the customer has paid the balance
+    # and production is authorised. The CO here was born inside the NPD
+    # integration (no operator ran the PSP submit / approver-sign /
+    # director-sign / mark-confirmed wizard) so gating MO creation on
+    # PSP-side manual confirmation would strand the flow. Auto-confirm
+    # matches the sample-CO path in ``npd_sync.ex`` — same rationale.
+    #
+    # Only fire when the CO isn't already in a terminal state — a manually
+    # cancelled row shouldn't get resurrected by a downstream sync, and a
+    # CO already at ``confirmed`` doesn't need the fields overwritten.
+    auto_confirm_attrs =
+      case transition_attrs.npd_final_payment_approved_at do
+        %DateTime{} when primary.status not in ~w(confirmed cancelled) ->
+          now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+          %{
+            status: "confirmed",
+            submitted_at: primary.submitted_at || now,
+            confirmed_at: primary.confirmed_at || now
+          }
+
+        _ ->
+          %{}
+      end
+
     attrs =
       %{
         npd_proposal_uuid: proposal_uuid,
@@ -510,6 +535,7 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       |> Map.merge(transition_attrs)
       |> Map.merge(timeline_attr)
       |> Map.merge(allocation_attr)
+      |> Map.merge(auto_confirm_attrs)
 
     Ecto.Changeset.change(primary, attrs)
   end
