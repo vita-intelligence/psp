@@ -53,15 +53,39 @@ defmodule Backend.CustomerOrders.NpdSync do
         placeholder = ensure_placeholder_customer(company_id)
         active_customer = resolve_customer(company_id, placeholder, params)
 
-        case Repo.get_by(CustomerOrder,
-               company_id: company_id,
-               npd_formulation_uuid: npd_uuid
-             ) do
-          nil ->
-            insert_new(company_id, active_customer, npd_uuid, params)
+        upsert_result =
+          case Repo.get_by(CustomerOrder,
+                 company_id: company_id,
+                 npd_formulation_uuid: npd_uuid,
+                 # Sample sub-COs share the same ``npd_formulation_uuid``
+                 # as their parent commercial CO (the trial-batch cycle
+                 # writes N sample rows per formulation). Only the main
+                 # commercial row is 1-per-formulation — the partial
+                 # unique index on ``customer_orders`` scopes uniqueness
+                 # to ``sample_kind = false``. Scope the lookup the same
+                 # way or a formulation with any trial samples raises
+                 # ``Ecto.MultipleResultsError`` here.
+                 sample_kind: false
+               ) do
+            nil ->
+              insert_new(company_id, active_customer, npd_uuid, params)
 
-          existing ->
-            update_existing(existing, active_customer, params)
+            existing ->
+              update_existing(existing, active_customer, params)
+          end
+
+        # After the CO row is landed, mirror the child ``payments``
+        # list in the same transaction so a rollback covers both. A
+        # partial state (row written, payments not) would leave the
+        # invoice card showing stale rows. Skipped on error — the
+        # outer transaction is about to rollback anyway.
+        case upsert_result do
+          {:ok, co} ->
+            sync_npd_payments(co, params)
+            {:ok, co}
+
+          error ->
+            error
         end
       end)
       |> case do
@@ -109,6 +133,7 @@ defmodule Backend.CustomerOrders.NpdSync do
     |> Ecto.Changeset.put_change(:status, "draft")
     |> put_npd_team(params)
     |> put_customer_delivery_address(params)
+    |> put_label_extras(params)
     |> Repo.insert()
   end
 
@@ -134,6 +159,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> CustomerOrder.changeset(attrs)
       |> put_npd_team(params)
       |> put_customer_delivery_address(params, existing.status)
+      |> put_label_extras(params)
 
     changeset =
       if existing.status == "draft" and existing.customer_id != active_customer.id do
@@ -1000,4 +1026,186 @@ defmodule Backend.CustomerOrders.NpdSync do
     do: Ecto.Changeset.put_change(changeset, field, Decimal.new(v))
 
   defp maybe_put_decimal(changeset, _field, _), do: changeset
+
+  # ----- Label extras + header image on the CO row -----------------
+
+  # ``label_files`` (supplementary artwork revision assets) and
+  # ``header_image_url`` are two new fields on the main sync payload.
+  # Both are authoritative on NPD — the writer replaces them on every
+  # push. An omitted key is treated as "no change" so a spec sync
+  # that predates this feature doesn't wipe values a later label sync
+  # populated.
+  defp put_label_extras(changeset, params) do
+    changeset
+    |> put_label_files(params["label_files"] || params[:label_files])
+    |> maybe_put(:npd_header_image_url,
+         sanitize(params["header_image_url"] || params[:header_image_url])
+       )
+  end
+
+  defp put_label_files(changeset, files) when is_list(files) do
+    normalised =
+      files
+      |> Enum.filter(&is_map/1)
+      |> Enum.map(fn f ->
+        %{
+          "uuid" => sanitize(f["uuid"] || f[:uuid]),
+          "label" => sanitize(f["label"] || f[:label]) || "",
+          "content_type" => sanitize(f["content_type"] || f[:content_type]) || "",
+          "filename" => sanitize(f["filename"] || f[:filename]) || "",
+          "byte_size" =>
+            case f["byte_size"] || f[:byte_size] do
+              n when is_integer(n) and n >= 0 -> n
+              _ -> 0
+            end,
+          "file_url" => sanitize(f["file_url"] || f[:file_url]) || ""
+        }
+      end)
+
+    Ecto.Changeset.put_change(changeset, :npd_label_files, normalised)
+  end
+
+  defp put_label_files(changeset, _), do: changeset
+
+  # ----- Payments child-row mirror ---------------------------------
+
+  # NPD is authoritative for the payments list. Every sync push
+  # replaces the local child rows to match: upsert by
+  # ``(customer_order_id, npd_payment_id)``, delete any local row not
+  # present in the fresh payload. That's what makes voided-then-
+  # deleted rows disappear on the next sync without a per-event
+  # delete signal.
+  #
+  # Missing ``payments`` key in the payload → no-op (older NPD, or a
+  # narrow sync that didn't compute it). Only an explicit empty list
+  # wipes the mirror.
+  defp sync_npd_payments(%CustomerOrder{} = co, params) do
+    case params["payments"] || params[:payments] do
+      list when is_list(list) ->
+        do_sync_npd_payments(co, list)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp do_sync_npd_payments(%CustomerOrder{id: co_id}, list) do
+    import Ecto.Query, only: [from: 2]
+
+    alias Backend.CustomerOrders.NpdPayment
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    # Build the fresh set of NPD payment uuids so we can delete stale
+    # child rows in one shot below.
+    fresh_uuids =
+      list
+      |> Enum.map(fn row -> sanitize(row["id"] || row[:id]) end)
+      |> Enum.reject(&is_nil/1)
+
+    # Upsert each incoming payment. Cheap-and-correct: fetch by pair,
+    # update-or-insert. The list is 0-N per CO (typically 0-8), so a
+    # per-row round trip is fine.
+    for row <- list do
+      npd_uuid = sanitize(row["id"] || row[:id])
+
+      if npd_uuid do
+        attrs = %{
+          customer_order_id: co_id,
+          npd_payment_id: npd_uuid,
+          kind: sanitize(row["kind"] || row[:kind]) || "",
+          status: sanitize(row["status"] || row[:status]) || "",
+          invoice_number: sanitize(row["invoice_number"] || row[:invoice_number]),
+          amount: parse_decimal(row["amount"] || row[:amount]),
+          currency: sanitize(row["currency"] || row[:currency]),
+          paid_at: parse_utc(row["paid_at"] || row[:paid_at]),
+          files: normalise_payment_files(row["files"] || row[:files]),
+          synced_at: now
+        }
+
+        case Repo.get_by(NpdPayment,
+               customer_order_id: co_id,
+               npd_payment_id: npd_uuid
+             ) do
+          nil ->
+            %NpdPayment{}
+            |> NpdPayment.changeset(attrs)
+            |> Repo.insert!()
+
+          existing ->
+            existing
+            |> NpdPayment.changeset(attrs)
+            |> Repo.update!()
+        end
+      end
+    end
+
+    # Sweep stale rows. Deleting instead of soft-flagging so the local
+    # state always mirrors NPD one-to-one. Split into two clauses
+    # because Ecto can't interpolate an empty list into ``not in``
+    # (Postgrex rejects with an "expected a binary" error) — the
+    # empty-list case wipes every child row for this CO in one shot.
+    case fresh_uuids do
+      [] ->
+        Repo.delete_all(from p in NpdPayment, where: p.customer_order_id == ^co_id)
+
+      uuids ->
+        Repo.delete_all(
+          from p in NpdPayment,
+            where:
+              p.customer_order_id == ^co_id and
+                p.npd_payment_id not in ^uuids
+        )
+    end
+
+    :ok
+  end
+
+  defp normalise_payment_files(files) when is_list(files) do
+    files
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(fn f ->
+      %{
+        "uuid" => sanitize(f["uuid"] || f[:uuid]),
+        "filename" => sanitize(f["filename"] || f[:filename]) || "",
+        "mime" => sanitize(f["mime"] || f[:mime]) || "",
+        "byte_size" =>
+          case f["byte_size"] || f[:byte_size] do
+            n when is_integer(n) and n >= 0 -> n
+            _ -> 0
+          end,
+        "uploaded_at" => sanitize(f["uploaded_at"] || f[:uploaded_at]) || ""
+      }
+    end)
+  end
+
+  defp normalise_payment_files(_), do: []
+
+  defp parse_decimal(nil), do: nil
+  defp parse_decimal(""), do: nil
+  defp parse_decimal(%Decimal{} = d), do: d
+  defp parse_decimal(v) when is_integer(v), do: Decimal.new(v)
+  defp parse_decimal(v) when is_float(v), do: Decimal.from_float(v)
+
+  defp parse_decimal(v) when is_binary(v) do
+    case Decimal.parse(v) do
+      {d, ""} -> d
+      _ -> nil
+    end
+  end
+
+  defp parse_decimal(_), do: nil
+
+  defp parse_utc(nil), do: nil
+  defp parse_utc(""), do: nil
+  defp parse_utc(%DateTime{} = dt), do: DateTime.truncate(dt, :second)
+
+  defp parse_utc(v) when is_binary(v) do
+    case DateTime.from_iso8601(v) do
+      {:ok, dt, _} -> DateTime.truncate(dt, :second)
+      _ -> nil
+    end
+  end
+
+  defp parse_utc(_), do: nil
 end

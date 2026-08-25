@@ -88,6 +88,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { createInvoiceFromCOAction } from "@/lib/customer-invoices/actions";
+import { npdFileUrl } from "@/lib/npd/file-proxy";
 import {
   listMyDevicesAction,
   pushNavigateToDeviceAction,
@@ -812,6 +813,13 @@ export function ProjectControlBoard({
               canCreateInvoice={permissions.canCreateInvoice}
             />
 
+            {/* Approved label artwork — primary PDF + supplementary
+                views (back / side / bottle mockup) uploaded on NPD.
+                Hidden until the customer has signed off the label
+                (``npd_label_approved_at``); before then the small
+                preview in the R&D card is enough context. */}
+            <LabelArtworkCard co={co} />
+
             {/* Lines & MOs */}
             <section data-phase="production_planning">
               <LinesSection
@@ -1010,6 +1018,24 @@ function StickyHeader({
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="mx-auto max-w-7xl px-4 py-3 sm:px-8 sm:py-4">
         <div className="flex flex-wrap items-center gap-4">
+          {/* Project header image — vita-cff picked the URL
+              (approved label preview → first product photo → empty).
+              Shown as a compact square thumbnail so the operator sees
+              WHICH product this board is about the moment the page
+              loads. Hidden when NPD had nothing to give (kanban stays
+              clean). */}
+          {(() => {
+            const src = npdFileUrl(co.npd_header_image_url);
+            if (!src) return null;
+            return (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={src}
+                alt="Product artwork"
+                className="hidden size-12 shrink-0 rounded-md border border-border/60 object-contain sm:block"
+              />
+            );
+          })()}
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Link
@@ -1630,16 +1656,28 @@ function InvoiceReminderCard({
   const router = useRouter();
   const [generating, startGenerate] = useTransition();
 
+  // NPD multi-payment flow (custom projects) — vita-cff mirrors
+  // every finance-queue Payment (deposit / additional_samples /
+  // label_design / final) onto ``customer_orders.npd_payments``.
+  // Render THAT list regardless of PSP CO status: the payments are
+  // recorded on NPD before the PSP CO reaches ``confirmed``, and
+  // the operator needs to see them from R&D onwards. Only render
+  // when the list actually has rows — an empty list means "no
+  // finance activity yet on NPD" and we fall through.
+  if (co.npd_payments && co.npd_payments.length > 0) {
+    return <NpdPaymentsCard payments={co.npd_payments} />;
+  }
+
   // No reminder before the CO is confirmed — too early to invoice.
   // No reminder when terminal-cancelled — moot.
   if (co.status !== "confirmed") return null;
 
-  // NPD sample flow — the customer already paid on NPD, finance
-  // recorded the payment there, and finance may have attached one
-  // or more invoice/receipt files. Render THAT record here so the
-  // PSP operator doesn't have to switch apps to see what got paid.
-  // Never falls through to the "Generate invoice" prompt because
-  // sample COs don't produce PSP-side invoices.
+  // NPD sample flow (RTG only) — the customer already paid on NPD,
+  // finance recorded the payment there, and finance may have
+  // attached one or more invoice/receipt files. Render THAT record
+  // here so the PSP operator doesn't have to switch apps to see
+  // what got paid. Never falls through to the "Generate invoice"
+  // prompt because sample COs don't produce PSP-side invoices.
   if (co.sample_kind && co.npd_payment_id) {
     return <NpdPaymentCard co={co} />;
   }
@@ -1787,6 +1825,132 @@ function NpdPaymentCard({ co }: { co: CustomerOrder }) {
   );
 }
 
+/** NPD multi-payments card — renders every ``Payment`` vita-cff
+ *  mirrored onto this project's CO (deposit / additional_samples /
+ *  label_design / final, in the order they landed). Each row shows
+ *  kind, amount + currency, status chip, invoice ref, paid date, and
+ *  attached invoice files. Files open through the ``/api/npd-files``
+ *  proxy so the operator's browser can render bytes that live on NPD.
+ */
+function NpdPaymentsCard({
+  payments,
+}: {
+  payments: CustomerOrder["npd_payments"];
+}) {
+  // Approved rows tell the "money in" story — sort them first, then
+  // pending, then voided. Within a bucket, keep the paid_at ordering
+  // that vita-cff sent so the timeline reads chronologically.
+  const rows = [...payments].sort((a, b) => {
+    const bucket = (s: string) =>
+      s === "approved" ? 0 : s === "pending" ? 1 : 2;
+    const d = bucket(a.status) - bucket(b.status);
+    if (d !== 0) return d;
+    return (a.paid_at || "").localeCompare(b.paid_at || "");
+  });
+
+  const approvedTotal = rows
+    .filter((p) => p.status === "approved" && p.amount)
+    .reduce((sum, p) => sum + parseFloat(p.amount || "0"), 0);
+  const currency = rows.find((p) => p.currency)?.currency || "GBP";
+
+  return (
+    <Card className="border-emerald-300/50 bg-emerald-50/30 dark:border-emerald-800/40 dark:bg-emerald-950/15">
+      <CardContent className="flex flex-col gap-3 py-4 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 font-semibold text-emerald-900 dark:text-emerald-200">
+            <Receipt className="size-4 shrink-0" />
+            <span>
+              {rows.length} NPD payment{rows.length === 1 ? "" : "s"}
+              {approvedTotal > 0
+                ? ` · ${_formatNpdMoney(approvedTotal.toFixed(2), currency)} approved`
+                : ""}
+            </span>
+          </div>
+        </div>
+        <ul className="divide-y divide-border/40">
+          {rows.map((p) => (
+            <li key={p.npd_payment_id} className="py-2">
+              <NpdPaymentRow row={p} />
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function NpdPaymentRow({
+  row,
+}: {
+  row: CustomerOrder["npd_payments"][number];
+}) {
+  const paidAt = row.paid_at ? new Date(row.paid_at) : null;
+  const statusTone =
+    _NPD_PAYMENT_STATUS_TONE[row.status ?? ""] ??
+    "bg-muted text-muted-foreground";
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold capitalize">
+            {row.kind.replace(/_/g, " ")}
+          </span>
+          {row.amount ? (
+            <span className="text-muted-foreground">
+              {_formatNpdMoney(row.amount, row.currency || "GBP")}
+            </span>
+          ) : null}
+        </div>
+        <span
+          className={cn(
+            "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+            statusTone,
+          )}
+        >
+          {row.status}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        {row.invoice_number ? <span>Ref {row.invoice_number}</span> : null}
+        {paidAt ? (
+          <span>
+            Paid{" "}
+            {paidAt.toLocaleDateString("en-GB", {
+              day: "numeric",
+              month: "short",
+              year: "numeric",
+            })}
+          </span>
+        ) : null}
+      </div>
+      {row.files.length > 0 ? (
+        <ul className="mt-1 border-t border-border/40 divide-y divide-border/40 text-xs">
+          {row.files.map((f) => {
+            // The payment-file URL for the download proxy — the
+            // filename is joined into a synthetic path so a click
+            // opens with a clean "Save as" name. In dev the file
+            // bytes live on NPD's local FS and are streamed through
+            // ``/api/npd-files``.
+            return (
+              <li
+                key={f.uuid}
+                className="flex items-center gap-2 py-1.5"
+              >
+                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{f.filename}</span>
+                <span className="text-muted-foreground shrink-0 text-[10px]">
+                  {_formatBytes(f.byte_size)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 const _NPD_PAYMENT_STATUS_TONE: Record<string, string> = {
   pending: "bg-amber-100 text-amber-900",
   approved: "bg-emerald-100 text-emerald-900",
@@ -1810,6 +1974,125 @@ function _formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** Approved label artwork — primary PDF preview + supplementary
+ *  views (back / side / bottle mockup) mirrored from vita-cff's
+ *  LabelDesign current revision. Rendered only after the customer
+ *  has signed off (``npd_label_approved_at``); before then the small
+ *  preview inside the R&D card is enough context. Every file opens
+ *  through the ``/api/npd-files`` proxy so a PSP browser can render
+ *  bytes that live on NPD without a cross-origin dance.
+ */
+function LabelArtworkCard({ co }: { co: CustomerOrder }) {
+  const approved = !!co.npd_label_approved_at;
+  const pdfUrl = npdFileUrl(co.npd_label_pdf_url);
+  const previewUrl = npdFileUrl(co.npd_label_preview_png_url);
+  const extras = co.npd_label_files || [];
+
+  // Nothing to show — no signed-off artwork yet, no supplementary
+  // views. The R&D card already carries the in-flight preview.
+  if (!approved) return null;
+  if (!pdfUrl && !previewUrl && extras.length === 0) return null;
+
+  return (
+    <Card className="border-violet-300/50 bg-violet-50/40 dark:border-violet-800/40 dark:bg-violet-950/20">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ImageIcon className="size-4 text-violet-600 dark:text-violet-400" />
+          Approved label artwork
+        </CardTitle>
+        <CardDescription>
+          Signed off on{" "}
+          {co.npd_label_approved_at
+            ? new Date(co.npd_label_approved_at).toLocaleDateString("en-GB", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })
+            : "—"}
+          . Bytes live on NPD; opens stream through this app.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {previewUrl ? (
+          <a
+            href={pdfUrl ?? previewUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="block overflow-hidden rounded-md border border-violet-200/60 bg-white dark:border-violet-900/50 dark:bg-violet-950/40"
+            title="Open the approved artwork"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={previewUrl}
+              alt="Approved label"
+              className="h-56 w-full object-contain"
+            />
+          </a>
+        ) : null}
+        {pdfUrl ? (
+          <a
+            href={pdfUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-violet-300/70 bg-white px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:bg-violet-900/40"
+          >
+            <ExternalLink className="size-3.5" />
+            Open approved artwork PDF
+          </a>
+        ) : null}
+        {extras.length > 0 ? (
+          <div>
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+              Extra views ({extras.length})
+            </div>
+            <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {extras.map((asset) => {
+                const url = npdFileUrl(asset.file_url);
+                const isImage = asset.content_type.startsWith("image/");
+                if (!url) return null;
+                return (
+                  <li
+                    key={asset.uuid}
+                    className="overflow-hidden rounded-md border border-violet-200/60 dark:border-violet-900/50"
+                  >
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="block"
+                      title={asset.filename || asset.label}
+                    >
+                      {isImage ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={url}
+                          alt={asset.label || "extra view"}
+                          className="h-24 w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-24 w-full flex-col items-center justify-center gap-1 bg-muted/40">
+                          <FileText className="size-4 text-muted-foreground" />
+                          <span className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {asset.content_type.includes("pdf")
+                              ? "PDF"
+                              : "File"}
+                          </span>
+                        </div>
+                      )}
+                      <p className="truncate bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-wide dark:bg-violet-950/40">
+                        {asset.label || asset.filename}
+                      </p>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 function BlockerRow({ blocker }: { blocker: OrderWizardBlocker }) {
   const Icon = blocker.severity === "error" ? AlertCircle : AlertTriangle;

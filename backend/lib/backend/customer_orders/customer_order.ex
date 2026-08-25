@@ -214,6 +214,17 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :npd_label_preview_png_url, :string
     field :npd_label_pdf_url, :string
     field :npd_label_url, :string
+    # Supplementary artwork views on the CURRENT LabelDesign revision
+    # (back / side / bottle mockup). List of ``%{uuid, label,
+    # content_type, filename, byte_size, file_url}`` maps — the file
+    # bytes stay on NPD, PSP proxies opens through its own origin.
+    # Empty when no revision or no extras.
+    field :npd_label_files, {:array, :map}, default: []
+    # One URL vita-cff picked for PSP to render as the project's
+    # header image (dashboard tile + detail hero). Priority chain
+    # runs on NPD: approved label preview PNG → first product photo
+    # → empty. Empty renders a neutral placeholder on PSP.
+    field :npd_header_image_url, :string
     # Full audit-preserving event log — one entry per NPD-side event
     # (formulation created, spec transitioned, proposal transitioned).
     # NPD is authoritative and replaces the array on every sync so a
@@ -243,6 +254,14 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     has_many :lines, CustomerOrderLine, foreign_key: :customer_order_id
     has_many :approvals, CustomerOrderApproval, foreign_key: :customer_order_id
     has_many :files, CustomerOrderFile, foreign_key: :customer_order_id
+    # NPD payment mirror — one row per Payment attached to the CO's
+    # formulation (deposit / additional_samples / label_design /
+    # final). Populated by the main formulation sync; RTG sample
+    # payments continue to write the singular ``npd_payment_*`` fields
+    # on this row for back-compat.
+    has_many :npd_payments,
+             Backend.CustomerOrders.NpdPayment,
+             foreign_key: :customer_order_id
     # Every CO that was folded into this one during a proposal merge.
     # Preloaded on the detail fetch so the payload can enumerate the
     # spec sheets of the sibling formulations that came in via the
