@@ -246,15 +246,24 @@ defmodule Backend.OrderWizard do
     }
   end
 
-  # Public-safe per-MO roadmap projection for the NPD push. Only
-  # root production MOs (parent_mo_id IS NULL, project_type =
-  # "production") — child cascades are internal scaffolding the
-  # customer never asked about. For each MO we ship:
+  # Public-safe per-MO roadmap projection for the NPD push. Ships
+  # EVERY production MO in the customer's chain — root plus every
+  # semi-finished child (blending / encapsulation / bottling MOs
+  # cascade under the finished-product MO). The customer's portal
+  # renders them as one chain so they can see which stage is
+  # actually running right now, not just the root MO's "waiting
+  # on ingredients" placeholder.
   #
-  #   * identity (uuid, code, item_name, quantity)
-  #   * stage + stage_index (mirrors PSP's canonical 8-stage stepper)
-  #   * target_lot_code (from the reservation flow — customers see
-  #     the code before production starts)
+  # Trial / sample MOs are still excluded — that's R&D scaffolding.
+  #
+  # For each MO we ship:
+  #
+  #   * identity (uuid, code, item_name, quantity, parent_mo_uuid
+  #     so the FE can build the chain).
+  #   * stage + stage_index (mirrors PSP's canonical 8-stage stepper).
+  #   * target_lot_code (from the reservation flow — meaningful for
+  #     the root; child target lots are internal but shipping the
+  #     code doesn't leak anything sensitive).
   #   * every stage-transition timestamp so the FE can decorate
   #     completed steps with "moved on at ...".
   #   * rollup counts for the current stage's substage progress
@@ -263,25 +272,72 @@ defmodule Backend.OrderWizard do
   # NEVER include operator-only fields (booking placement details,
   # broken-booking counts, planner-internal blockers). The FE
   # translates these to customer-friendly copy.
+  #
+  # We climb the tree from every line's primary MO through
+  # ``parent_mo_id`` chains AND descend to include children —
+  # actually simpler: a single query rooted at the CO's lines and
+  # extended via a recursive walk. Since Ecto doesn't ship a
+  # native recursive CTE builder we do it in two passes: fetch
+  # every root MO for the CO, then fetch every descendant via
+  # ``parent_mo_id`` until closure. Bounded by ``@max_cascade_depth``
+  # already, so the loop terminates.
   defp public_mos_for_npd(snap) do
     import Ecto.Query
 
     co_id = snap.customer_order.id
 
-    query =
-      from mo in ManufacturingOrder,
+    roots =
+      from(mo in ManufacturingOrder,
         join: col in Backend.CustomerOrders.CustomerOrderLine,
         on: mo.customer_order_line_id == col.id,
         where:
           col.customer_order_id == ^co_id and
-            mo.project_type == "production" and
-            is_nil(mo.parent_mo_id),
-        preload: [:item, :bookings, :produced_lot],
-        order_by: [asc: mo.id]
+            mo.project_type == "production",
+        select: mo.id
+      )
+      |> Repo.all()
 
-    query
-    |> Repo.all()
-    |> Enum.map(&public_mo_snapshot_for_npd/1)
+    all_ids = expand_mo_tree_ids(roots)
+
+    case all_ids do
+      [] ->
+        []
+
+      _ ->
+        from(mo in ManufacturingOrder,
+          where: mo.id in ^all_ids,
+          preload: [:item, :bookings, :produced_lot, :parent_mo],
+          order_by: [asc: mo.id]
+        )
+        |> Repo.all()
+        |> Enum.map(&public_mo_snapshot_for_npd/1)
+    end
+  end
+
+  # BFS from a set of MO ids down through every ``parent_mo_id`` link
+  # until closure. Terminates because trees are finite + we track
+  # visited ids. Returns the union (roots + all descendants) as a
+  # unique-id list — the caller re-hydrates the structs in one
+  # query.
+  defp expand_mo_tree_ids(root_ids) do
+    import Ecto.Query
+    do_expand(MapSet.new(root_ids), root_ids)
+  end
+
+  defp do_expand(acc, []), do: MapSet.to_list(acc)
+
+  defp do_expand(acc, frontier) do
+    import Ecto.Query
+
+    children =
+      from(mo in ManufacturingOrder,
+        where: mo.parent_mo_id in ^frontier and mo.project_type == "production",
+        select: mo.id
+      )
+      |> Repo.all()
+
+    new = Enum.reject(children, &MapSet.member?(acc, &1))
+    do_expand(MapSet.union(acc, MapSet.new(new)), new)
   end
 
   defp public_mo_snapshot_for_npd(%ManufacturingOrder{} = mo) do
@@ -299,8 +355,18 @@ defmodule Backend.OrderWizard do
     output_lots_pending_qc_count =
       if Backend.Production.mo_stage_output_qc_pending?(mo), do: 1, else: 0
 
+    parent_mo_uuid =
+      case mo.parent_mo do
+        %ManufacturingOrder{uuid: uuid} when is_binary(uuid) -> uuid
+        _ -> nil
+      end
+
     %{
       uuid: to_string(mo.uuid),
+      # Chain edge — null on the root (finished-product) MO. The
+      # customer FE walks this to sort MOs into execution order
+      # (leaves first: blending → encapsulation → bottling → root).
+      parent_mo_uuid: parent_mo_uuid,
       code:
         if(company,
           do: Backend.Numbering.render(mo.id, company, "manufacturing_order"),
