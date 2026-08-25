@@ -65,18 +65,80 @@ defmodule Backend.OrderWizard do
   `manufacturing_order_id`, `purchase_order_id`, or `customer_order_id`
   and we resolve.
   """
-  def notify_co_changed(%CustomerOrder{uuid: uuid}) when not is_nil(uuid) do
+  def notify_co_changed(%CustomerOrder{uuid: uuid} = co) when not is_nil(uuid) do
     BackendWeb.WizardChannel.broadcast_changed(uuid)
+    # Fire-and-forget push to NPD so the customer's portal reflects
+    # the new phase / sub-stage counters without polling. Runs
+    # async so a slow / down NPD never delays the wizard-refresh
+    # broadcast (which our own operators are waiting on).
+    Task.start(fn -> push_production_status_to_npd(co) end)
+    :ok
   end
 
   def notify_co_changed(co_id) when is_integer(co_id) do
     case Repo.get(CustomerOrder, co_id) do
-      %{uuid: uuid} -> BackendWeb.WizardChannel.broadcast_changed(uuid)
+      %CustomerOrder{} = co -> notify_co_changed(co)
       _ -> :ok
     end
   end
 
   def notify_co_changed(_), do: :ok
+
+  # Build the summary payload NPD expects and hand it to the
+  # NpdCallbacks pusher. Silent-degrade on any failure — the
+  # local wizard is authoritative; NPD's mirror is a convenience.
+  defp push_production_status_to_npd(%CustomerOrder{} = co) do
+    try do
+      # Reload with the fields snapshot/1 needs — the callers pass
+      # us bare COs that may only carry :id/:uuid.
+      case Repo.get(CustomerOrder, co.id) do
+        nil ->
+          :ok
+
+        %CustomerOrder{} = fresh ->
+          npd_uuid = to_string(fresh.npd_formulation_uuid || "")
+
+          if npd_uuid == "" do
+            # Sample COs born from a payment carry no NPD
+            # formulation ref (they map to a TrialBatch instead).
+            # The label / production portal cards render off
+            # formulation state, so there's nothing to push.
+            :ok
+          else
+            summary = summary_for(fresh)
+            phase = summary.phase
+
+            payload = %{
+              formulation_uuid: npd_uuid,
+              psp_customer_order_uuid: to_string(fresh.uuid),
+              phase: to_string(phase.key),
+              phase_label: phase.label || "",
+              next_action_title: summary.next_action_title || "",
+              next_action_detail: summary.next_action_detail || "",
+              blocker_count: summary.blocker_count,
+              line_count: summary.line_count,
+              mo_count: summary.mo_count,
+              lines_awaiting_mo: summary.lines_awaiting_mo,
+              mos_awaiting_po_send: summary.mos_awaiting_po_send,
+              mos_awaiting_delivery: summary.mos_awaiting_delivery,
+              mos_in_production: summary.mos_in_production,
+              mos_awaiting_closeout: summary.mos_awaiting_closeout,
+              psp_updated_at:
+                fresh.updated_at && NaiveDateTime.to_iso8601(fresh.updated_at)
+            }
+
+            company = Backend.Companies.current()
+            Backend.NpdCallbacks.push_production_status(company, payload)
+            :ok
+          end
+      end
+    rescue
+      err ->
+        require Logger
+        Logger.warning("push_production_status_to_npd bubbled: #{inspect(err)}")
+        :ok
+    end
+  end
 
   @doc """
   Resolve from an MO id → the customer-order line → the CO, and
