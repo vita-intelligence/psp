@@ -786,6 +786,8 @@ defmodule BackendWeb.Payloads do
       npd_spec_prepared_at: co.npd_spec_prepared_at,
       npd_spec_director_name: co.npd_spec_director_name,
       npd_spec_approved_at: co.npd_spec_approved_at,
+      npd_spec_customer_signed_at: co.npd_spec_customer_signed_at,
+      npd_spec_customer_signed_by_name: co.npd_spec_customer_signed_by_name,
       bundled_specs: bundled_specs(co),
       npd_proposal_uuid: co.npd_proposal_uuid,
       npd_proposal_code: co.npd_proposal_code,
@@ -1910,6 +1912,13 @@ defmodule BackendWeb.Payloads do
       item_id: b.item_id,
       item: maybe_item_summary(b.item),
       lines: preloaded_list(b, :lines, &bom_line/1),
+      # NPD provenance — the MO-create trust card compares
+      # `npd_spec_sheet_uuid` + `npd_synced_at` against the CO's
+      # `npd_spec_customer_signed_at` to detect drift ("BOM re-synced
+      # after the customer signed the spec").
+      npd_spec_sheet_uuid: b.npd_spec_sheet_uuid,
+      npd_formulation_version_id: b.npd_formulation_version_id,
+      npd_synced_at: b.npd_synced_at,
       inserted_at: b.inserted_at,
       updated_at: b.updated_at,
       created_by: actor(b, :created_by),
@@ -1953,11 +1962,55 @@ defmodule BackendWeb.Payloads do
       created_by: actor(b, :created_by),
       updated_by: actor(b, :updated_by),
       inserted_at: b.inserted_at,
-      updated_at: b.updated_at
+      updated_at: b.updated_at,
+      # NPD provenance — mirrored on the summary so the MO-form BOM
+      # picker's trust card can render "signed by X on Y" without a
+      # follow-up fetch of the full BOM.
+      npd_spec_sheet_uuid: b.npd_spec_sheet_uuid,
+      npd_formulation_version_id: b.npd_formulation_version_id,
+      npd_synced_at: b.npd_synced_at
     }
   end
 
   def bom_summary(_), do: nil
+
+  # Small CO summary attached to the MO payload so the "trust card"
+  # on the MO-create form can compare BOM sync time against customer
+  # signature time without a follow-up fetch. Matches on
+  # `npd_formulation_uuid` and always picks the primary
+  # (`sample_kind = false`) row — trial-batch sample sub-COs share
+  # the formulation uuid but their spec metadata mirrors the parent
+  # anyway.
+  defp linked_customer_order_for_mo(%Backend.Production.ManufacturingOrder{
+         npd_formulation_uuid: uuid,
+         company_id: company_id
+       })
+       when is_binary(uuid) do
+    import Ecto.Query, only: [from: 2]
+
+    query =
+      from co in Backend.CustomerOrders.CustomerOrder,
+        where:
+          co.company_id == ^company_id and
+            co.npd_formulation_uuid == ^uuid and
+            co.sample_kind == false,
+        select: %{
+          uuid: co.uuid,
+          npd_spec_sheet_uuid: co.npd_spec_sheet_uuid,
+          npd_spec_sheet_url: co.npd_spec_sheet_url,
+          npd_spec_prepared_by_name: co.npd_spec_prepared_by_name,
+          npd_spec_prepared_at: co.npd_spec_prepared_at,
+          npd_spec_director_name: co.npd_spec_director_name,
+          npd_spec_approved_at: co.npd_spec_approved_at,
+          npd_spec_customer_signed_at: co.npd_spec_customer_signed_at,
+          npd_spec_customer_signed_by_name: co.npd_spec_customer_signed_by_name
+        },
+        limit: 1
+
+    Backend.Repo.one(query)
+  end
+
+  defp linked_customer_order_for_mo(_), do: nil
 
   @doc """
   One row from `bom_versions`. Snapshot stays opaque to the FE — the
@@ -2405,6 +2458,11 @@ defmodule BackendWeb.Payloads do
       npd_validation_status: mo.npd_validation_status,
       npd_validation_synced_at: mo.npd_validation_synced_at,
       npd_validation_failure_reason: mo.npd_validation_failure_reason,
+      # Linked customer order — trust-card summary the FE uses to
+      # cross-check that the BOM being pulled matches the spec the
+      # customer signed off on. Null when there is no CO for this
+      # formulation (bare BOMs created directly on PSP).
+      linked_customer_order: linked_customer_order_for_mo(mo),
       quantity: decimal_to_string(mo.quantity),
       due_date: mo.due_date,
       # Derived from steps — null when the MO is unscheduled.

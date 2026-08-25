@@ -74,6 +74,20 @@ export interface BOM {
   updated_by: AuditActor | null;
 }
 
+/** Slim CO block on the MO payload — enough to render the MO-create
+ *  trust card without a follow-up fetch. */
+export interface MoLinkedCustomerOrder {
+  uuid: string;
+  npd_spec_sheet_uuid: string | null;
+  npd_spec_sheet_url: string | null;
+  npd_spec_prepared_by_name: string | null;
+  npd_spec_prepared_at: string | null;
+  npd_spec_director_name: string | null;
+  npd_spec_approved_at: string | null;
+  npd_spec_customer_signed_at: string | null;
+  npd_spec_customer_signed_by_name: string | null;
+}
+
 export interface BOMSummary {
   id: number;
   uuid: string;
@@ -86,6 +100,14 @@ export interface BOMSummary {
   updated_by: AuditActor | null;
   inserted_at: string;
   updated_at: string;
+  /** NPD provenance — the MO-create trust card compares
+   *  `npd_spec_sheet_uuid` + `npd_synced_at` against the CO's
+   *  `npd_spec_customer_signed_at` to detect drift ("BOM re-synced
+   *  after the customer signed the spec"). Null on BOMs authored
+   *  directly on PSP. */
+  npd_spec_sheet_uuid?: string | null;
+  npd_formulation_version_id?: string | null;
+  npd_synced_at?: string | null;
 }
 
 export interface BOMLedgerPage {
@@ -1199,6 +1221,11 @@ export interface ManufacturingOrder {
     | null;
   npd_validation_synced_at: string | null;
   npd_validation_failure_reason: string | null;
+  /** Trust-card summary of the CO whose formulation this MO produces.
+   *  Populated when `npd_formulation_uuid` matches a customer_order
+   *  in PSP. Compared against `bom.npd_synced_at` to detect drift
+   *  ("BOM was re-synced AFTER the customer signed the spec"). */
+  linked_customer_order: MoLinkedCustomerOrder | null;
   quantity: string;
   due_date: string | null;
   /** Derived from min(steps.planned_start) — null when unscheduled. */
