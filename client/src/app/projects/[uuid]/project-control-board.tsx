@@ -2998,6 +2998,7 @@ function RandDTeamCard({
   const labelStatusCopy: Record<string, string> = {
     payment_pending: "Awaiting final payment",
     label_path_pending: "Customer choosing design path",
+    design_fee_pending: "Awaiting design fee approval",
     design_preferences_pending: "Awaiting design brief from customer",
     design_in_progress: "Design in progress",
     scientist_review: "Scientist reviewing",
