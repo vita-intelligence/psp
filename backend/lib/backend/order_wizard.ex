@@ -306,7 +306,12 @@ defmodule Backend.OrderWizard do
       _ ->
         from(mo in ManufacturingOrder,
           where: mo.id in ^all_ids,
-          preload: [:item, :bookings, :produced_lot, :parent_mo],
+          preload: [
+            [item: :stock_uom],
+            :bookings,
+            :produced_lot,
+            :parent_mo
+          ],
           order_by: [asc: mo.id]
         )
         |> Repo.all()
@@ -373,6 +378,13 @@ defmodule Backend.OrderWizard do
           else: nil
         ),
       item_name: mo.item && mo.item.name,
+      # UoM symbol of the OUTPUT item (kg / L / pcs / mg …). The
+      # customer FE appends this to quantity + quantity_produced so
+      # "10000 pcs" reads honestly instead of a bare integer.
+      # Falls through to nil when the item's stock_uom is unset
+      # (rare; ops usually sets one on item create).
+      uom_symbol:
+        mo.item && mo.item.stock_uom && mo.item.stock_uom.symbol,
       quantity: mo.quantity && Decimal.to_string(mo.quantity),
       quantity_produced: mo.quantity_produced && Decimal.to_string(mo.quantity_produced),
       # Canonical stage + 1-based index / total (matches PSP's
