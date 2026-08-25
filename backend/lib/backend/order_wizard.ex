@@ -84,6 +84,68 @@ defmodule Backend.OrderWizard do
 
   def notify_co_changed(_), do: :ok
 
+  @doc """
+  Fan out ``notify_co_changed`` to every CO whose MO tree contains
+  a placeholder booking against this PO. Used by the Purchasing /
+  Procurement modules on every PO / invoice mutation so the
+  customer portal picks up delivery + payment status changes in
+  real time without polling.
+
+  A single PO can supply MOs across MULTIPLE customer projects
+  (shared bulk buys). Every one of them gets notified.
+
+  Walks the parent_mo tree with a recursive CTE — child MOs
+  (semi-finished cascades) don't carry ``customer_order_line_id``
+  directly, so we climb to the root MO before resolving the CO.
+  Distinct on ``customer_order_id`` so a project with N MOs on
+  the same PO fires ONE notify per project, not N.
+
+  Silent-degrade on any failure — the PO mutation itself has
+  already committed; NPD's mirror is a convenience. Wrapped in
+  ``Task.start`` at the callsite so a downed NPD never blocks the
+  operator's PO action.
+  """
+  def notify_cos_for_po(po_id) when is_integer(po_id) do
+    try do
+      tree_query = """
+        WITH RECURSIVE mo_ancestors AS (
+          -- Seed: MOs with a placeholder booking against this PO
+          SELECT mo.id, mo.parent_mo_id, mo.customer_order_line_id
+          FROM manufacturing_orders mo
+          JOIN manufacturing_order_bookings b
+            ON b.manufacturing_order_id = mo.id
+          JOIN purchase_order_lines pol
+            ON pol.id = b.purchase_order_line_id
+          WHERE pol.purchase_order_id = $1
+          UNION ALL
+          -- Climb parents until every branch hits a root MO
+          SELECT p.id, p.parent_mo_id, p.customer_order_line_id
+          FROM manufacturing_orders p
+          JOIN mo_ancestors ma ON ma.parent_mo_id = p.id
+        )
+        SELECT DISTINCT col.customer_order_id
+        FROM mo_ancestors ma
+        JOIN customer_order_lines col ON col.id = ma.customer_order_line_id
+        WHERE ma.customer_order_line_id IS NOT NULL
+      """
+
+      %{rows: rows} = Repo.query!(tree_query, [po_id])
+
+      rows
+      |> Enum.map(&List.first/1)
+      |> Enum.each(&notify_co_changed/1)
+
+      :ok
+    rescue
+      err ->
+        require Logger
+        Logger.warning("notify_cos_for_po bubbled: #{inspect(err)}")
+        :ok
+    end
+  end
+
+  def notify_cos_for_po(_), do: :ok
+
   # Build the summary payload NPD expects and hand it to the
   # NpdCallbacks pusher. Silent-degrade on any failure — the
   # local wizard is authoritative; NPD's mirror is a convenience.
