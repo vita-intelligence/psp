@@ -460,7 +460,30 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       npd_final_spec_rejected_at:
         parse_datetime(params["npd_final_spec_rejected_at"]),
       npd_final_payment_approved_at:
-        parse_datetime(params["npd_final_payment_approved_at"])
+        parse_datetime(params["npd_final_payment_approved_at"]),
+      # Label-design workflow mirror. NPD is authoritative and
+      # re-sends every field on every LabelDesign mutation (path
+      # chosen, artwork uploaded, reviewer verdict, customer
+      # approval). Nil overwrites so a customer / staff rollback
+      # clears the mirror cleanly.
+      npd_label_design_uuid:
+        sanitize(params["npd_label_design_uuid"]),
+      npd_label_status:
+        sanitize(params["npd_label_status"]),
+      npd_label_design_path:
+        sanitize(params["npd_label_design_path"]),
+      npd_label_approved_at:
+        parse_datetime(params["npd_label_approved_at"]),
+      npd_label_rejection_count:
+        parse_integer(params["npd_label_rejection_count"]),
+      npd_label_updated_at:
+        parse_datetime(params["npd_label_updated_at"]),
+      npd_label_preview_png_url:
+        sanitize(params["npd_label_preview_png_url"]),
+      npd_label_pdf_url:
+        sanitize(params["npd_label_pdf_url"]),
+      npd_label_url:
+        sanitize(params["npd_label_url"])
     }
 
     # Full audit event log — NPD is authoritative and replaces the
@@ -588,6 +611,19 @@ defmodule Backend.CustomerOrders.ProposalMerge do
 
   defp parse_datetime(%DateTime{} = dt), do: DateTime.truncate(dt, :second)
   defp parse_datetime(_), do: nil
+
+  defp parse_integer(nil), do: nil
+  defp parse_integer(""), do: nil
+  defp parse_integer(v) when is_integer(v), do: v
+
+  defp parse_integer(v) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_integer(_), do: nil
 
   # Wipe existing lines on the primary and insert fresh ones from the
   # proposal spec. Cleaner than diffing — proposals aren't edited in

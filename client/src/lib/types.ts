@@ -2331,6 +2331,24 @@ export interface CustomerOrder {
   npd_proposal_status: string | null;
   npd_proposal_accepted_at: string | null;
   npd_proposal_accepted_by_name: string | null;
+  /** Label-design workflow mirror. Populated by vita-cff's LabelDesign
+   *  post_save signal via ``_sync_formulation_proposal_to_psp``. All
+   *  null when no label workflow exists yet for this project's
+   *  formulation. ``npd_label_status`` is one of the nine
+   *  ``LabelDesignStatus`` values: ``payment_pending`` /
+   *  ``label_path_pending`` / ``design_preferences_pending`` /
+   *  ``design_in_progress`` / ``scientist_review`` /
+   *  ``director_review`` / ``customer_approval`` / ``label_approved`` /
+   *  ``on_hold``. */
+  npd_label_design_uuid: string | null;
+  npd_label_status: string | null;
+  npd_label_design_path: string | null;
+  npd_label_approved_at: string | null;
+  npd_label_rejection_count: number | null;
+  npd_label_updated_at: string | null;
+  npd_label_preview_png_url: string | null;
+  npd_label_pdf_url: string | null;
+  npd_label_url: string | null;
   default_warehouse_id: number | null;
   default_warehouse: { id: number; uuid: string; name: string } | null;
   submitted_at: string | null;

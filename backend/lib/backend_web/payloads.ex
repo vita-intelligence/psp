@@ -803,6 +803,19 @@ defmodule BackendWeb.Payloads do
       # Bundled deposit+samples Payment approval timestamp. Drives
       # the wizard's :trial_batches_in_flight phase.
       npd_deposit_paid_at: co.npd_deposit_paid_at,
+      # Label-design workflow mirror. Populated by vita-cff's
+      # LabelDesign post_save signal via the proposal-merge sync.
+      # All nil when no label workflow exists yet for the primary
+      # formulation.
+      npd_label_design_uuid: co.npd_label_design_uuid,
+      npd_label_status: co.npd_label_status,
+      npd_label_design_path: co.npd_label_design_path,
+      npd_label_approved_at: co.npd_label_approved_at,
+      npd_label_rejection_count: co.npd_label_rejection_count,
+      npd_label_updated_at: co.npd_label_updated_at,
+      npd_label_preview_png_url: co.npd_label_preview_png_url,
+      npd_label_pdf_url: co.npd_label_pdf_url,
+      npd_label_url: co.npd_label_url,
       default_warehouse_id: co.default_warehouse_id,
       default_warehouse: maybe_warehouse_compact(co.default_warehouse),
       submitted_at: co.submitted_at,

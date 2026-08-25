@@ -52,6 +52,7 @@ import {
   FileText,
   FlaskConical,
   Hourglass,
+  ImageIcon,
   Layers,
   Loader2,
   Package,
@@ -2981,6 +2982,36 @@ function RandDTeamCard({
   const proposalAcceptedAt = co.npd_proposal_accepted_at;
   const proposalAcceptedBy = (co.npd_proposal_accepted_by_name || "").trim();
   const hasSignedProposal = !!proposalAcceptedAt;
+  //: Label-design mirror. Presence of ``npd_label_design_uuid``
+  //: signals the workflow has bootstrapped on NPD. The status +
+  //: path fields drive the copy shown; the preview PNG / label URL
+  //: drive the affordances.
+  const labelStatus = (co.npd_label_status || "").trim();
+  const labelPath = (co.npd_label_design_path || "").trim();
+  const labelPreviewUrl = (co.npd_label_preview_png_url || "").trim();
+  const labelPdfUrl = (co.npd_label_pdf_url || "").trim();
+  const labelUrl = (co.npd_label_url || "").trim();
+  const labelApprovedAt = co.npd_label_approved_at;
+  const labelRejectionCount = co.npd_label_rejection_count ?? 0;
+  const hasLabelWorkflow = !!co.npd_label_design_uuid;
+  const labelIsApproved = labelStatus === "label_approved";
+  const labelStatusCopy: Record<string, string> = {
+    payment_pending: "Awaiting final payment",
+    label_path_pending: "Customer choosing design path",
+    design_preferences_pending: "Awaiting design brief from customer",
+    design_in_progress: "Design in progress",
+    scientist_review: "Scientist reviewing",
+    director_review: "Director reviewing",
+    customer_approval: "Awaiting customer approval",
+    label_approved: "Label approved",
+    on_hold: "On hold",
+  };
+  const labelPathCopy: Record<string, string> = {
+    design_by_us: "Our team designs",
+    design_by_customer: "Customer designs",
+  };
+  const labelStatusText = labelStatusCopy[labelStatus] || labelStatus || "—";
+  const labelPathText = labelPath ? labelPathCopy[labelPath] || labelPath : "";
 
   return (
     <Card className="border-fuchsia-200/70 bg-gradient-to-br from-fuchsia-50/60 via-background to-background dark:border-fuchsia-900/40 dark:from-fuchsia-950/20">
@@ -3206,6 +3237,85 @@ function RandDTeamCard({
               >
                 <ExternalLink className="size-3" />
                 Open signed proposal on NPD
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Labelling workflow — mirrored from vita-cff's LabelDesign.
+            Bootstraps on customer FINAL-spec sign, then any state
+            change (path chosen, artwork uploaded, reviewer verdict,
+            customer approval) re-fires the sync so this block stays
+            live. Violet-tinted so the operator can distinguish it
+            from the spec (sky) / proposal (emerald) blocks above. */}
+        {hasLabelWorkflow ? (
+          <div className="rounded-md border border-violet-200/70 bg-violet-50/70 p-2.5 dark:border-violet-900/40 dark:bg-violet-950/20">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+              {labelIsApproved ? (
+                <CheckCircle2 className="size-3" />
+              ) : (
+                <ImageIcon className="size-3" />
+              )}
+              Labelling
+            </div>
+            {labelPreviewUrl ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <a
+                href={labelPdfUrl || labelUrl || labelPreviewUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="mb-2 block overflow-hidden rounded border border-violet-200/60 bg-white dark:border-violet-900/50 dark:bg-violet-950/40"
+                title="Open the current artwork revision"
+              >
+                <img
+                  src={labelPreviewUrl}
+                  alt="Current label revision"
+                  className="h-24 w-full object-contain"
+                />
+              </a>
+            ) : null}
+            <dl className="space-y-1.5 text-[11px]">
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Status</dt>
+                <dd className="truncate text-right font-medium">
+                  {labelStatusText}
+                </dd>
+              </div>
+              {labelPathText ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-muted-foreground">Design path</dt>
+                  <dd className="truncate text-right font-medium">
+                    {labelPathText}
+                  </dd>
+                </div>
+              ) : null}
+              {labelRejectionCount > 0 && !labelIsApproved ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-muted-foreground">Customer rejects</dt>
+                  <dd className="truncate text-right font-medium text-amber-700 dark:text-amber-300">
+                    {labelRejectionCount}
+                  </dd>
+                </div>
+              ) : null}
+              {labelIsApproved && labelApprovedAt ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-muted-foreground">Approved on</dt>
+                  <dd className="truncate text-right font-medium">
+                    {formatCompanyDate(labelApprovedAt, prefs)}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            {labelUrl ? (
+              <a
+                href={labelUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-violet-300/70 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-violet-700 shadow-sm transition-colors hover:bg-violet-50 dark:border-violet-800/60 dark:bg-violet-950/30 dark:text-violet-300 dark:hover:bg-violet-900/40"
+                title="Opens the labelling workspace on NPD in a new tab"
+              >
+                <ExternalLink className="size-3" />
+                Open labelling on NPD
               </a>
             ) : null}
           </div>
