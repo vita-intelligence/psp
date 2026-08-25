@@ -17,6 +17,7 @@ defmodule Backend.Production.BOMOverrides do
   import Ecto.Query, warn: false
 
   alias Backend.Audit
+  alias Backend.Production
   alias Backend.Production.{BOMLine, ManufacturingOrder, MOBOMOverride}
   alias Backend.Repo
 
@@ -61,7 +62,21 @@ defmodule Backend.Production.BOMOverrides do
   """
   def apply_override(actor, %ManufacturingOrder{} = mo, attrs) do
     if editable?(mo) do
-      do_apply(actor, mo, normalise_attrs(attrs))
+      normalised = normalise_attrs(attrs)
+
+      # Same-txn rebook: the just-persisted override MUST propagate
+      # to the bookings snapshot before pickup / preflight / closeout
+      # can observe stale line items. Without this, `added` shows up
+      # with zero bookings, `removed` still lists the dropped part,
+      # and `qty_changed` picks the pre-edit qty.
+      Repo.transaction(fn ->
+        with {:ok, override} <- do_apply(actor, mo, normalised),
+             {:ok, _} <- sync_bookings_for_override(actor, mo, override) do
+          override
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     else
       {:error, :mo_locked}
     end
@@ -196,19 +211,64 @@ defmodule Backend.Production.BOMOverrides do
           {:error, :not_found}
 
         %MOBOMOverride{} = ov ->
-          case Repo.delete(ov) do
-            {:ok, deleted} ->
-              Audit.record_deleted(actor, "mo_bom_override", deleted, audit_snapshot(deleted))
-              {:ok, deleted}
-
-            {:error, cs} ->
-              {:error, cs}
-          end
+          # Reverting an override collapses the effective BOM for the
+          # affected part back to master. Bookings for that part need
+          # to be re-synced in the SAME txn so pickup sees the master
+          # line (removed comes back; qty_changed goes to master qty;
+          # added disappears).
+          Repo.transaction(fn ->
+            with {:ok, deleted} <- do_delete(actor, ov),
+                 {:ok, _} <- sync_bookings_for_override(actor, mo, deleted) do
+              deleted
+            else
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end)
       end
     else
       {:error, :mo_locked}
     end
   end
+
+  defp do_delete(actor, %MOBOMOverride{} = ov) do
+    case Repo.delete(ov) do
+      {:ok, deleted} ->
+        Audit.record_deleted(actor, "mo_bom_override", deleted, audit_snapshot(deleted))
+        {:ok, deleted}
+
+      {:error, cs} ->
+        {:error, cs}
+    end
+  end
+
+  # Booking sync after an override is applied OR reverted. The
+  # `item_id` (part) whose bookings need to be re-run is derived
+  # from the override row itself:
+  #
+  #   * `added`      — `item_id` is on the override.
+  #   * `removed` /
+  #     `qty_changed` — `bom_line_id` is on the override; look up the
+  #                     master line's `part_id`.
+  #
+  # `Production.sync_line_bookings/3` deletes existing `requested`
+  # bookings for that part then re-runs FEFO booking against the
+  # CURRENT effective BOM (which reflects the post-apply / post-revert
+  # override set). Rebook results are ignored — the effective BOM +
+  # picker screen already surface partial fulfilment.
+  defp sync_bookings_for_override(actor, mo, %MOBOMOverride{action: "added", item_id: item_id})
+       when is_integer(item_id) do
+    Production.sync_line_bookings(actor, mo, item_id)
+  end
+
+  defp sync_bookings_for_override(actor, mo, %MOBOMOverride{bom_line_id: bom_line_id})
+       when is_integer(bom_line_id) do
+    case Repo.one(from l in BOMLine, where: l.id == ^bom_line_id, select: l.part_id) do
+      nil -> {:ok, []}
+      item_id -> Production.sync_line_bookings(actor, mo, item_id)
+    end
+  end
+
+  defp sync_bookings_for_override(_actor, _mo, _override), do: {:ok, []}
 
   @doc """
   Apply the overrides to a preloaded list of master BOM lines +

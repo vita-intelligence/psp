@@ -5081,6 +5081,82 @@ defmodule Backend.Production do
   end
 
   @doc """
+  Delete every `requested` booking on this MO for the given item.
+  Skips picked bookings — those already moved stock and the operator
+  must abort pickup first. Returns `:ok` on clean sweep,
+  `{:error, :booking_already_picked}` if any booking is beyond
+  reversal.
+
+  Consumers: BOM override sync (removed / qty_changed on a line
+  need the pre-existing bookings for that part cleared before the
+  rebook runs against the new effective BOM).
+  """
+  def delete_line_bookings(%User{} = actor, %ManufacturingOrder{} = mo, item_id)
+      when is_integer(item_id) do
+    bookings =
+      from(b in ManufacturingOrderBooking,
+        where:
+          b.manufacturing_order_id == ^mo.id and
+            b.item_id == ^item_id and
+            b.status == "requested"
+      )
+      |> Repo.all()
+
+    Enum.reduce_while(bookings, :ok, fn booking, _acc ->
+      case delete_booking(actor, booking) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  @doc """
+  Sync bookings on this MO for one part_id to match the CURRENT
+  effective BOM (master + overrides). Delete any stale
+  `requested` bookings for that part, then re-run FEFO booking
+  against the effective line. Called from BOM override apply /
+  revert so `qty_changed` / `added` propagate through to pickup
+  automatically.
+
+  Passing an `item_id` that no longer maps to any effective line
+  (i.e. the line was `removed` in the current override set) still
+  clears bookings — the effective line lookup returns nil, no
+  rebook happens.
+
+  Returns `{:ok, created_bookings}` on success (list may be empty)
+  or `{:error, reason}` if the delete step trips
+  `booking_already_picked` — the caller should rollback the
+  parent transaction.
+  """
+  def sync_line_bookings(%User{} = actor, %ManufacturingOrder{} = mo, item_id)
+      when is_integer(item_id) do
+    strategy = normalise_strategy(:fefo)
+
+    with :ok <- delete_line_bookings(actor, mo, item_id) do
+      mo =
+        Repo.preload(
+          mo,
+          [
+            :bookings,
+            bom: [lines: :part],
+            bom_overrides: [:unit_of_measurement, part: :stock_uom]
+          ],
+          force: true
+        )
+
+      effective = effective_bom_lines_for_mo(mo)
+
+      case Enum.find(effective, fn l -> l.part_id == item_id end) do
+        nil ->
+          {:ok, []}
+
+        line ->
+          {:ok, book_one_bom_line(actor, mo, line, strategy)}
+      end
+    end
+  end
+
+  @doc """
   Auto-book everything still outstanding on the MO's BOM, picking
   oldest-expiry lots first. Per-line behaviour:
 
