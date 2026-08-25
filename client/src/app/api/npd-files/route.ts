@@ -43,25 +43,34 @@ export async function GET(req: NextRequest) {
   }
 
   const config = await loadNpdIntegrationConfig();
-  if (!config?.enabled || !config.base_url) {
+  if (!config?.enabled) {
     return NextResponse.json({ detail: "integration_off" }, { status: 503 });
   }
 
-  let allowedBase: URL;
-  try {
-    allowedBase = new URL(config.base_url);
-  } catch {
+  // Two allowed origins:
+  // * ``base_url`` — Django API (``/api/…`` calls), and in prod the
+  //   media host when NPD is deployed behind a single domain.
+  // * ``frontend_url`` — Next.js origin. In dev Django + Next run on
+  //   different ports (Django :8000, Next :3001) and NPD's
+  //   ``_absolute_media_url`` prefixes media paths with
+  //   ``APP_BASE_URL`` = the frontend origin. Without this, dev PSP
+  //   rejects every media URL with ``host_rejected``.
+  const allowedOrigins: string[] = [];
+  for (const raw of [config.base_url, config.frontend_url]) {
+    if (!raw) continue;
+    try {
+      const u = new URL(raw);
+      allowedOrigins.push(`${u.protocol}//${u.host}`);
+    } catch {
+      // fall through — a malformed entry doesn't kill the other one
+    }
+  }
+  if (allowedOrigins.length === 0) {
     return NextResponse.json({ detail: "config_invalid" }, { status: 503 });
   }
 
-  // Origin match — the upstream URL must share host + protocol with
-  // the configured NPD base. Path prefix isn't required (NPD hosts
-  // media at ``/media/…`` while the API lives at ``/api/…``; both
-  // ride the same host).
-  if (
-    parsed.protocol !== allowedBase.protocol ||
-    parsed.host !== allowedBase.host
-  ) {
+  const upstreamOrigin = `${parsed.protocol}//${parsed.host}`;
+  if (!allowedOrigins.includes(upstreamOrigin)) {
     return NextResponse.json({ detail: "host_rejected" }, { status: 400 });
   }
 
