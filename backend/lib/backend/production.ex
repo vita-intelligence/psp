@@ -7385,9 +7385,13 @@ defmodule Backend.Production do
     end
   end
 
-  # Any output lot from this MO still awaiting QC (status = received).
-  # One targeted query — no joins, indexed on source_ref.
-  defp mo_stage_output_qc_pending?(%ManufacturingOrder{uuid: mo_uuid}) do
+  @doc """
+  Any output lot from this MO still awaiting QC (status = received).
+  One targeted query — no joins, indexed on source_ref. Exposed
+  publicly so wizard summarisers + the NPD-callback projection can
+  read the same signal `mo_stage/1` uses internally.
+  """
+  def mo_stage_output_qc_pending?(%ManufacturingOrder{uuid: mo_uuid}) do
     Repo.exists?(
       from l in StockLot,
         where:
