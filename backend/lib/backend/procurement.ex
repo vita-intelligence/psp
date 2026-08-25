@@ -225,6 +225,7 @@ defmodule Backend.Procurement do
       {:ok, invoice} ->
         Audit.record_created(actor, "procurement_invoice", invoice, snapshot(invoice))
         Backend.Broadcasts.entity_changed("purchase-invoice", invoice.uuid, invoice.company_id, "created")
+        notify_cos_for_invoice(invoice)
         {:ok, preload(invoice)}
 
       {:error, cs} ->
@@ -251,6 +252,7 @@ defmodule Backend.Procurement do
       {:ok, updated} ->
         Audit.record_updated(actor, "procurement_invoice", updated, before, snapshot(updated))
         Backend.Broadcasts.entity_changed("purchase-invoice", updated.uuid, updated.company_id, "updated")
+        notify_cos_for_invoice(updated)
         {:ok, preload(updated)}
 
       {:error, cs} ->
@@ -275,6 +277,7 @@ defmodule Backend.Procurement do
     case result do
       {:ok, _} ->
         Backend.Broadcasts.entity_changed("purchase-invoice", invoice.uuid, invoice.company_id, "deleted")
+        notify_cos_for_invoice(invoice)
 
       _ ->
         :ok
@@ -282,6 +285,18 @@ defmodule Backend.Procurement do
 
     result
   end
+
+  # Invoice payment status feeds directly into the customer portal's
+  # "Ingredients on order" block (Paid / Awaiting payment / etc.), so
+  # every mutation invalidates the roadmap for every CO whose MO tree
+  # has a booking against this invoice's PO. Task.start so a downed
+  # NPD can't block the AP clerk's action.
+  defp notify_cos_for_invoice(%Invoice{purchase_order_id: po_id})
+       when is_integer(po_id) do
+    Task.start(fn -> Backend.OrderWizard.notify_cos_for_po(po_id) end)
+  end
+
+  defp notify_cos_for_invoice(_), do: :ok
 
   # ----- pay / dispute / void --------------------------------------
 

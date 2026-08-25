@@ -212,6 +212,7 @@ defmodule Backend.Purchasing do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+    |> tap_notify_cos_for_po()
   end
 
   defp insert_lines_for(_actor, _po, []), do: {:ok, []}
@@ -791,10 +792,23 @@ defmodule Backend.Purchasing do
   # branch.
   defp tap_broadcast_po({:ok, %PurchaseOrder{} = po} = res, action) do
     Backend.Broadcasts.entity_changed("purchase-order", po.uuid, po.company_id, action)
+    tap_notify_cos_for_po(res)
     res
   end
 
   defp tap_broadcast_po(other, _action), do: other
+
+  # Fire-and-forget PO → CO notification. Every mutation on a PO
+  # touches the customer portal's "Ingredients on order" block, so
+  # we need to invalidate the roadmap for every CO that has an MO
+  # bookable against this PO. Task.start so a downed NPD can't
+  # block the operator's PO action.
+  defp tap_notify_cos_for_po({:ok, %PurchaseOrder{id: id}} = res) do
+    Task.start(fn -> Backend.OrderWizard.notify_cos_for_po(id) end)
+    res
+  end
+
+  defp tap_notify_cos_for_po(other), do: other
 
   # Convenience so we can pipe: `po |> transition(actor, attrs)`.
   defp transition(%PurchaseOrder{} = po, actor, attrs), do: transition(actor, po, attrs)
