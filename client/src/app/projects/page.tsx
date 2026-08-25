@@ -398,6 +398,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   const labelStatusPillCopy: Record<string, string> = {
     payment_pending: "Label · awaiting payment",
     label_path_pending: "Label · path pending",
+    design_fee_pending: "Label · fee pending",
     design_preferences_pending: "Label · brief pending",
     design_in_progress: "Label · in design",
     scientist_review: "Label · sci review",
