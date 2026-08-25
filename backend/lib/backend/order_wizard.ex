@@ -105,7 +105,11 @@ defmodule Backend.OrderWizard do
             # formulation state, so there's nothing to push.
             :ok
           else
-            summary = summary_for(fresh)
+            # Take one snapshot and derive BOTH the coarse summary
+            # (existing counters) AND the per-MO roadmap. Avoids two
+            # snapshot passes in the hot path.
+            snap = snapshot(fresh)
+            summary = summary_from_snapshot(snap)
             phase = summary.phase
 
             payload = %{
@@ -124,7 +128,13 @@ defmodule Backend.OrderWizard do
               mos_in_production: summary.mos_in_production,
               mos_awaiting_closeout: summary.mos_awaiting_closeout,
               psp_updated_at:
-                fresh.updated_at && NaiveDateTime.to_iso8601(fresh.updated_at)
+                fresh.updated_at && NaiveDateTime.to_iso8601(fresh.updated_at),
+              # Per-MO 8-stage detail — the customer portal renders one
+              # roadmap per production MO with substage progress and
+              # timestamps. Trial / sample MOs are excluded (R&D scaffolding
+              # the customer never asked about); only project_type =
+              # "production" surfaces on the customer-facing roadmap.
+              manufacturing_orders: public_mos_for_npd(snap)
             }
 
             company = Backend.Companies.current()
@@ -199,8 +209,12 @@ defmodule Backend.OrderWizard do
   end
 
   defp summary_for(%CustomerOrder{} = co) do
-    snap = snapshot(co)
+    co |> snapshot() |> summary_from_snapshot()
+  end
 
+  # Split out so the NPD push path can share one snapshot pass with
+  # the counter rollup.
+  defp summary_from_snapshot(snap) do
     %{
       customer_order: snap.customer_order,
       phase: snap.phase,
@@ -229,6 +243,105 @@ defmodule Backend.OrderWizard do
         Enum.count(snap.mos, &(&1.status in ["scheduled", "in_progress"])),
       mos_awaiting_closeout:
         Enum.count(snap.mos, & &1.has_output_at_production_feed?)
+    }
+  end
+
+  # Public-safe per-MO roadmap projection for the NPD push. Only
+  # root production MOs (parent_mo_id IS NULL, project_type =
+  # "production") — child cascades are internal scaffolding the
+  # customer never asked about. For each MO we ship:
+  #
+  #   * identity (uuid, code, item_name, quantity)
+  #   * stage + stage_index (mirrors PSP's canonical 8-stage stepper)
+  #   * target_lot_code (from the reservation flow — customers see
+  #     the code before production starts)
+  #   * every stage-transition timestamp so the FE can decorate
+  #     completed steps with "moved on at ...".
+  #   * rollup counts for the current stage's substage progress
+  #     (bookings picked / received / output lots awaiting QC).
+  #
+  # NEVER include operator-only fields (booking placement details,
+  # broken-booking counts, planner-internal blockers). The FE
+  # translates these to customer-friendly copy.
+  defp public_mos_for_npd(snap) do
+    import Ecto.Query
+
+    co_id = snap.customer_order.id
+
+    query =
+      from mo in ManufacturingOrder,
+        join: col in Backend.CustomerOrders.CustomerOrderLine,
+        on: mo.customer_order_line_id == col.id,
+        where:
+          col.customer_order_id == ^co_id and
+            mo.project_type == "production" and
+            is_nil(mo.parent_mo_id),
+        preload: [:item, :bookings, :produced_lot],
+        order_by: [asc: mo.id]
+
+    query
+    |> Repo.all()
+    |> Enum.map(&public_mo_snapshot_for_npd/1)
+  end
+
+  defp public_mo_snapshot_for_npd(%ManufacturingOrder{} = mo) do
+    stage = Backend.Production.mo_stage(mo)
+    company = Backend.Companies.current()
+
+    bookings_total = length(mo.bookings)
+
+    bookings_picked_count =
+      Enum.count(mo.bookings, &(not is_nil(&1.picked_at)))
+
+    bookings_received_count =
+      Enum.count(mo.bookings, &(not is_nil(&1.received_at)))
+
+    output_lots_pending_qc_count =
+      if Backend.Production.mo_stage_output_qc_pending?(mo), do: 1, else: 0
+
+    %{
+      uuid: to_string(mo.uuid),
+      code:
+        if(company,
+          do: Backend.Numbering.render(mo.id, company, "manufacturing_order"),
+          else: nil
+        ),
+      item_name: mo.item && mo.item.name,
+      quantity: mo.quantity && Decimal.to_string(mo.quantity),
+      quantity_produced: mo.quantity_produced && Decimal.to_string(mo.quantity_produced),
+      # Canonical stage + 1-based index / total (matches PSP's
+      # internal 8-stage stepper 1:1 so the customer FE can render
+      # the same sequence).
+      stage: to_string(stage),
+      stage_index: Backend.Production.mo_stage_index(stage),
+      stage_total: Backend.Production.mo_stage_total(),
+      status: mo.status,
+      # Target lot code — the label the customer can watch for on
+      # their finished pack. Reserved at MO create, stable through
+      # completion (see the reservation flow).
+      target_lot_code:
+        if(company && mo.produced_lot_id,
+          do: Backend.Numbering.render(mo.produced_lot_id, company, "stock_lot"),
+          else: nil
+        ),
+      # Every stage-boundary timestamp so the customer FE can render
+      # "moved on at X" under completed steps and "started at Y" on
+      # the current one.
+      approved_at: mo.approved_at,
+      released_to_warehouse_at: mo.released_to_warehouse_at,
+      pickup_started_at: mo.pickup_started_at,
+      pickup_completed_at: mo.pickup_completed_at,
+      actual_start: mo.actual_start,
+      actual_finish: mo.actual_finish,
+      closeout_completed_at: mo.closeout_completed_at,
+      due_date: mo.due_date,
+      # Substage rollups so the FE can render "3 of 12 ingredients
+      # collected" under the pickup step without pulling every
+      # booking down the wire.
+      bookings_total: bookings_total,
+      bookings_picked_count: bookings_picked_count,
+      bookings_received_count: bookings_received_count,
+      output_lots_pending_qc_count: output_lots_pending_qc_count
     }
   end
 
