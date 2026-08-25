@@ -30,7 +30,13 @@ defmodule Backend.Stock.Lot do
   # = operator put it on hold post-QC. `rejected` = QC fail.
   # `disposed` = written off. `depleted` = consumed to zero.
   # `canceled` = paperwork voided before receipt.
-  @statuses ~w(expected requested received quarantine awaiting_release available
+  # `reserved` = placeholder row inserted at MO create so the design
+  # team can print the target lot code on the label BEFORE production
+  # starts. Not a receipt state — the lot has no qty / packaging /
+  # placement until the run finishes and the row is upgraded in place
+  # (same PK ⇒ same numbering code ⇒ pre-printed label stays valid).
+  # Filtered out of every stock-availability / allocator query.
+  @statuses ~w(reserved expected requested received quarantine awaiting_release available
                on_hold depleted disposed rejected canceled)
   @source_kinds ~w(purchase_order manufacturing_order opening_balance return adjustment manual)
   @risk_levels ~w(low medium high)
@@ -144,6 +150,85 @@ defmodule Backend.Stock.Lot do
              foreign_key: :stock_lot_id
 
     timestamps(type: :utc_datetime)
+  end
+
+  @doc """
+  Placeholder changeset for the `reserved` lot inserted at MO create.
+  Casts the minimal identity fields (company, item, uom, source
+  ref) + forces `status = "reserved"` and `qty_received = 0`. The
+  strict receipt-time validations (packaging dims > 0, qty > 0) don't
+  apply — the lot has no physical form yet; the run's finish step
+  fills those in via `receive_changeset/2`.
+
+  Placement is deliberately skipped: a reserved lot isn't at a cell
+  yet. Auto-router picks it up at completion via
+  `Backend.Stock.Placement.changeset/2`.
+  """
+  def reservation_changeset(lot, attrs) do
+    lot
+    |> cast(attrs, [
+      :company_id,
+      :item_id,
+      :unit_of_measurement_id,
+      :source_kind,
+      :source_ref,
+      :is_rnd,
+      :created_by_id,
+      :updated_by_id
+    ])
+    |> put_change(:status, "reserved")
+    |> put_change(:qty_received, Decimal.new(0))
+    |> validate_required([
+      :company_id,
+      :item_id,
+      :unit_of_measurement_id,
+      :source_kind,
+      :source_ref
+    ])
+    |> validate_inclusion(:source_kind, @source_kinds)
+    |> validate_length(:source_ref, max: 80)
+  end
+
+  @doc """
+  Upgrade an existing `reserved` lot to a real produced lot. Sets
+  the qty / dims / status the run produced without changing the PK
+  (which is what makes the pre-printed lot code still valid on the
+  physical label).
+  """
+  def upgrade_reservation_changeset(%__MODULE__{status: "reserved"} = lot, attrs) do
+    lot
+    |> cast(attrs, [
+      :status,
+      :qty_received,
+      :manufactured_at,
+      :expiry_at,
+      :received_at,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor,
+      :updated_by_id
+    ])
+    |> validate_required([
+      :status,
+      :qty_received,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor
+    ])
+    |> validate_inclusion(:status, @statuses)
+    |> validate_number(:qty_received, greater_than: 0)
+    |> validate_number(:package_length_mm, greater_than: 0)
+    |> validate_number(:package_width_mm, greater_than: 0)
+    |> validate_number(:package_height_mm, greater_than: 0)
+    |> validate_number(:package_weight_kg, greater_than: 0)
+    |> validate_number(:units_per_package, greater_than: 0)
+    |> validate_number(:stack_factor, greater_than: 0, less_than_or_equal_to: 50)
   end
 
   def changeset(lot, attrs) do

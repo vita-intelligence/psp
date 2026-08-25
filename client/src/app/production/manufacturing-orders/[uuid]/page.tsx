@@ -116,6 +116,14 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
                     </Link>
                   </>
                 )}
+                {mo.target_lot_code && (
+                  <>
+                    {" "}· Target lot:{" "}
+                    <span className="font-medium text-foreground">
+                      {mo.target_lot_code}
+                    </span>
+                  </>
+                )}
               </span>
             }
             backHref="/production/manufacturing-orders"
