@@ -464,33 +464,49 @@ defmodule Backend.OrderWizard do
   # Customer-safe PO projection. Joins the MO's placeholder bookings
   # → purchase_order_lines → purchase_orders → vendors, deduped by PO.
   # Skips cancelled POs (they're not supplying anything). Fields are
-  # allowlisted (uuid, code, vendor name, status, expected_delivery_
-  # date, counts) — pricing, notes, addresses, contact details stay
+  # allowlisted — pricing / notes / addresses / contact details stay
   # server-side.
+  #
+  # Payment info is derived from Backend.Procurement.Invoice rows
+  # attached to the same PO. A single PO can carry N invoices (partial
+  # shipments, prepayment splits) so we roll up:
+  #   * has_invoices   — any procurement_invoice at all?
+  #   * fully_paid?    — every non-void invoice has status=paid
+  #   * any_disputed?  — any invoice in "disputed" state
+  #   * paid_at        — max(paid_at) once fully_paid, else nil
+  # The FE composes these into a customer-friendly payment label.
   defp public_pos_for_mo(%ManufacturingOrder{} = mo) do
     import Ecto.Query
 
     company = Backend.Companies.current()
 
-    from(b in Backend.Production.ManufacturingOrderBooking,
-      where: b.manufacturing_order_id == ^mo.id and not is_nil(b.purchase_order_line_id),
-      join: pol in Backend.Purchasing.PurchaseOrderLine, on: pol.id == b.purchase_order_line_id,
-      join: po in Backend.Purchasing.PurchaseOrder, on: po.id == pol.purchase_order_id,
-      left_join: v in Backend.Vendors.Vendor, on: v.id == po.vendor_id,
-      where: po.status != "cancelled",
-      select: %{
-        po_id: po.id,
-        po_uuid: po.uuid,
-        status: po.status,
-        expected_delivery_date: po.expected_delivery_date,
-        vendor_name: coalesce(v.name, v.legal_name),
-        booking_id: b.id
-      }
-    )
-    |> Repo.all()
+    line_rows =
+      from(b in Backend.Production.ManufacturingOrderBooking,
+        where: b.manufacturing_order_id == ^mo.id and not is_nil(b.purchase_order_line_id),
+        join: pol in Backend.Purchasing.PurchaseOrderLine, on: pol.id == b.purchase_order_line_id,
+        join: po in Backend.Purchasing.PurchaseOrder, on: po.id == pol.purchase_order_id,
+        left_join: v in Backend.Vendors.Vendor, on: v.id == po.vendor_id,
+        where: po.status != "cancelled",
+        select: %{
+          po_id: po.id,
+          po_uuid: po.uuid,
+          status: po.status,
+          expected_delivery_date: po.expected_delivery_date,
+          vendor_name: coalesce(v.name, v.legal_name),
+          booking_id: b.id
+        }
+      )
+      |> Repo.all()
+
+    po_ids = line_rows |> Enum.map(& &1.po_id) |> Enum.uniq()
+
+    invoice_rollup = po_invoice_rollup(po_ids)
+
+    line_rows
     |> Enum.group_by(& &1.po_id)
     |> Enum.map(fn {po_id, rows} ->
       first = hd(rows)
+      inv = Map.get(invoice_rollup, po_id, %{})
 
       %{
         uuid: to_string(first.po_uuid),
@@ -498,15 +514,73 @@ defmodule Backend.OrderWizard do
           if(company, do: Backend.Numbering.render(po_id, company, "purchase_order"), else: nil),
         vendor_name: first.vendor_name,
         # Raw PSP status — the FE translates to a customer-friendly
-        # label (draft/pending_* → "Awaiting approval", ordered →
-        # "Ordered — awaiting delivery", partially_received →
-        # "Partial delivery received", received → "Delivered").
+        # label (draft / pending_approver / pending_director /
+        # approved / ordered / partially_received / received).
         status: first.status,
         expected_delivery_date: first.expected_delivery_date,
-        line_count: length(rows)
+        line_count: length(rows),
+        # Derived payment fields — customer-safe (no amounts). The FE
+        # composes into a payment label ("Paid 15 Aug" /
+        # "Invoice received — awaiting payment" / "Partially paid" /
+        # "Payment disputed" / "Not invoiced yet").
+        payment_status: Map.get(inv, :status, "not_invoiced"),
+        paid_at: Map.get(inv, :paid_at)
       }
     end)
     |> Enum.sort_by(& &1.code)
+  end
+
+  # Rollup Backend.Procurement.Invoice rows for a list of PO ids into
+  # a customer-safe payment snapshot per PO:
+  #
+  #   %{status: "not_invoiced" | "invoiced_unpaid" | "partially_paid"
+  #                | "paid" | "disputed",
+  #     paid_at: nil | ~U[...]}
+  #
+  # Void invoices are ignored — they were rejected / rewritten. A PO
+  # with ONLY void invoices reads as "not_invoiced" (correct — the
+  # supplier hasn't successfully billed us for it yet).
+  defp po_invoice_rollup([]), do: %{}
+
+  defp po_invoice_rollup(po_ids) do
+    import Ecto.Query
+
+    from(i in Backend.Procurement.Invoice,
+      where: i.purchase_order_id in ^po_ids and i.status != "void",
+      select: %{
+        po_id: i.purchase_order_id,
+        status: i.status,
+        paid_at: i.paid_at
+      }
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.po_id)
+    |> Map.new(fn {po_id, invoices} ->
+      statuses = MapSet.new(invoices, & &1.status)
+      any_disputed? = MapSet.member?(statuses, "disputed")
+      all_paid? = MapSet.equal?(statuses, MapSet.new(["paid"]))
+      any_paid? = MapSet.member?(statuses, "paid")
+
+      derived =
+        cond do
+          any_disputed? -> "disputed"
+          all_paid? -> "paid"
+          any_paid? -> "partially_paid"
+          true -> "invoiced_unpaid"
+        end
+
+      paid_at =
+        if derived == "paid" do
+          invoices
+          |> Enum.map(& &1.paid_at)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.max(DateTime, fn -> nil end)
+        else
+          nil
+        end
+
+      {po_id, %{status: derived, paid_at: paid_at}}
+    end)
   end
 
   defp public_session_snapshot(session, now) do
