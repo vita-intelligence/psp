@@ -2059,15 +2059,21 @@ defmodule Backend.Production do
                |> ManufacturingOrder.changeset(attrs)
                |> Repo.insert(),
              :ok <- snapshot_mo_steps(actor, mo),
+             # Reserve the target output lot BEFORE booking so the
+             # design team can print the lot code on labels ahead of
+             # the physical run. The placeholder lot's PK ⇒ code stays
+             # stable; the finish step upgrades this row in place
+             # (same PK ⇒ same code ⇒ pre-printed label still valid).
+             {:ok, mo_with_lot} <- reserve_output_lot(actor, mo),
              # Auto-book FEFO so existing stock is reserved up-front.
              # Then cascade only the unbooked remainder of semi-finished
              # inputs into child MOs — so a parent that already has
              # half its inputs in stock spawns a child MO only for the
              # missing half.
-             {:ok, _bookings} <- book_all_for_mo(actor, mo, strategy: :fefo),
-             :ok <- cascade_unbooked_children(actor, mo, 0) do
-          Audit.record_created(actor, "manufacturing_order", mo, mo_snapshot(mo))
-          mo
+             {:ok, _bookings} <- book_all_for_mo(actor, mo_with_lot, strategy: :fefo),
+             :ok <- cascade_unbooked_children(actor, mo_with_lot, 0) do
+          Audit.record_created(actor, "manufacturing_order", mo_with_lot, mo_snapshot(mo_with_lot))
+          mo_with_lot
         else
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -2315,6 +2321,67 @@ defmodule Backend.Production do
   Without a routing, also a no-op — the operator can still finish
   the MO; the operations table just stays empty.
   """
+  @doc """
+  Insert a placeholder `reserved` stock_lot for this MO and link
+  it via `mo.produced_lot_id`. The lot's PK ⇒ its numbering code
+  is stable for the lifetime of the MO — the design team can
+  print labels the moment the MO is created, weeks before the
+  physical run, and the code they print is what the finished pack
+  will carry.
+
+  On finish, `create_produced_lots/3` upgrades this same row in
+  place (same PK ⇒ same code) rather than inserting a fresh lot.
+  Additional packs beyond the first still get their own lots.
+
+  On delete, `delete_manufacturing_order/2` sweeps the reservation
+  IF it's still `reserved` — real production lots (post-finish)
+  are protected.
+
+  Idempotent — an MO that already has `produced_lot_id` set (e.g.
+  a re-play through the create path) short-circuits with the
+  existing pointer.
+  """
+  def reserve_output_lot(%User{} = actor, %ManufacturingOrder{} = mo) do
+    cond do
+      not is_nil(mo.produced_lot_id) ->
+        {:ok, mo}
+
+      true ->
+        item =
+          Repo.get!(Backend.Items.Item, mo.item_id)
+
+        lot_attrs = %{
+          "company_id" => mo.company_id,
+          "item_id" => mo.item_id,
+          "unit_of_measurement_id" => item.stock_uom_id,
+          "source_kind" => "manufacturing_order",
+          "source_ref" => mo.uuid,
+          "is_rnd" => mo_produces_rnd_lot?(mo),
+          "created_by_id" => actor.id,
+          "updated_by_id" => actor.id
+        }
+
+        with {:ok, lot} <-
+               %StockLot{}
+               |> StockLot.reservation_changeset(lot_attrs)
+               |> Repo.insert(),
+             {:ok, updated_mo} <-
+               mo
+               |> Ecto.Changeset.change(produced_lot_id: lot.id)
+               |> Repo.update() do
+          Audit.record_created(actor, "stock_lot", lot, %{
+            item_id: lot.item_id,
+            status: lot.status,
+            source_kind: lot.source_kind,
+            source_ref: lot.source_ref,
+            purpose: "target_lot_reservation"
+          })
+
+          {:ok, %{updated_mo | produced_lot: lot}}
+        end
+    end
+  end
+
   def snapshot_mo_steps(%User{} = actor, %ManufacturingOrder{} = mo) do
     mo =
       Repo.preload(mo, [
@@ -3545,21 +3612,55 @@ defmodule Backend.Production do
   def delete_manufacturing_order(%User{} = actor, %ManufacturingOrder{} = mo) do
     before = mo_snapshot(mo)
 
-    case Repo.delete(mo) do
-      {:ok, deleted} ->
-        Audit.record_deleted(actor, "manufacturing_order", deleted, before)
+    # If the MO still owns a `reserved` output lot (i.e. the run never
+    # finished), release the reservation so the numbering code isn't
+    # burned to an orphan. Post-completion lots (status ≥ received)
+    # stay put — they represent real produced stock; the FK is
+    # `nilify_all`, so the lot just loses its back-reference.
+    Repo.transaction(fn ->
+      _ = maybe_release_reserved_lot(actor, mo)
 
-        Backend.Broadcasts.entity_changed(
-          "manufacturing-order",
-          mo.uuid,
-          mo.company_id,
-          "deleted"
-        )
+      case Repo.delete(mo) do
+        {:ok, deleted} ->
+          Audit.record_deleted(actor, "manufacturing_order", deleted, before)
 
-        {:ok, deleted}
+          Backend.Broadcasts.entity_changed(
+            "manufacturing-order",
+            mo.uuid,
+            mo.company_id,
+            "deleted"
+          )
 
-      err ->
-        err
+          deleted
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp maybe_release_reserved_lot(_actor, %ManufacturingOrder{produced_lot_id: nil}), do: :ok
+
+  defp maybe_release_reserved_lot(%User{} = actor, %ManufacturingOrder{produced_lot_id: lot_id}) do
+    case Repo.get(StockLot, lot_id) do
+      %StockLot{status: "reserved"} = lot ->
+        case Repo.delete(lot) do
+          {:ok, deleted} ->
+            Audit.record_deleted(actor, "stock_lot", deleted, %{
+              status: deleted.status,
+              source_kind: deleted.source_kind,
+              source_ref: deleted.source_ref,
+              purpose: "target_lot_release"
+            })
+
+            :ok
+
+          _ ->
+            :ok
+        end
+
+      _ ->
+        :ok
     end
   end
 
@@ -12781,8 +12882,25 @@ defmodule Backend.Production do
       manufactured_at = mo.actual_finish || now()
       expiry_at = compute_lot_expiry(item, manufactured_at)
 
-      Enum.reduce_while(packs, {:ok, []}, fn pack, {:ok, acc} ->
-        case create_produced_lot(actor, mo, item, pack, manufactured_at, expiry_at) do
+      # If this MO was created with a target-lot reservation, the
+      # FIRST pack adopts it — same PK ⇒ same numbering code ⇒
+      # pre-printed label stays valid. Subsequent packs create fresh
+      # lots as before.
+      reserved_lot = load_reserved_output_lot(mo)
+
+      packs
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {pack, index}, {:ok, acc} ->
+        result =
+          case {index, reserved_lot} do
+            {0, %StockLot{status: "reserved"} = lot} ->
+              upgrade_reserved_lot(actor, mo, lot, pack, manufactured_at, expiry_at)
+
+            _ ->
+              create_produced_lot(actor, mo, item, pack, manufactured_at, expiry_at)
+          end
+
+        case result do
           {:ok, lot} -> {:cont, {:ok, [lot | acc]}}
           {:error, reason} -> {:halt, {:error, reason}}
         end
@@ -12791,6 +12909,71 @@ defmodule Backend.Production do
         {:ok, lots} -> {:ok, Enum.reverse(lots)}
         err -> err
       end
+    end
+  end
+
+  # Reload the reserved output lot fresh — the MO passed in may
+  # carry a stale `produced_lot` preload from create time.
+  defp load_reserved_output_lot(%ManufacturingOrder{produced_lot_id: nil}), do: nil
+
+  defp load_reserved_output_lot(%ManufacturingOrder{produced_lot_id: id}),
+    do: Repo.get(StockLot, id)
+
+  # Turn a `reserved` lot into a real produced lot in place. Same
+  # PK ⇒ same numbering code ⇒ any label the design team already
+  # printed matches. Fills qty / packaging / dates / status, then
+  # writes the placement at the production-feed cell exactly like
+  # the fresh-insert path.
+  defp upgrade_reserved_lot(
+         %User{} = actor,
+         %ManufacturingOrder{} = mo,
+         %StockLot{} = lot,
+         pack,
+         manufactured_at,
+         expiry_at
+       ) do
+    qty = pack["qty"]
+
+    upgrade_attrs = %{
+      "status" => "received",
+      "qty_received" => qty,
+      "manufactured_at" => manufactured_at,
+      "expiry_at" => expiry_at,
+      "received_at" => now(),
+      "package_length_mm" => pack["length_mm"],
+      "package_width_mm" => pack["width_mm"],
+      "package_height_mm" => pack["height_mm"],
+      "package_weight_kg" => pack["weight_kg"],
+      "units_per_package" => qty,
+      "stack_factor" => pack["stack_factor"],
+      "updated_by_id" => actor.id
+    }
+
+    before = %{
+      status: lot.status,
+      qty_received: lot.qty_received && Decimal.to_string(lot.qty_received)
+    }
+
+    with {:ok, upgraded} <-
+           lot
+           |> StockLot.upgrade_reservation_changeset(upgrade_attrs)
+           |> Repo.update(),
+         {:ok, _placement} <-
+           %Backend.Stock.Placement{}
+           |> Backend.Stock.Placement.changeset(%{
+             "company_id" => mo.company_id,
+             "stock_lot_id" => upgraded.id,
+             "storage_cell_id" => mo.production_cell_id,
+             "qty" => qty
+           })
+           |> Repo.insert() do
+      Audit.record_updated(actor, "stock_lot", upgraded, before, %{
+        status: upgraded.status,
+        qty_received: Decimal.to_string(upgraded.qty_received),
+        purpose: "target_lot_upgrade"
+      })
+
+      {:ok, upgraded}
     end
   end
 

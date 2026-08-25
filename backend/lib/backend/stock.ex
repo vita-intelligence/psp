@@ -59,6 +59,7 @@ defmodule Backend.Stock do
     base =
       Lot
       |> where([l], l.company_id == ^company_id)
+      |> maybe_hide_reserved_placeholders(opts[:status])
       |> maybe_status_filter(opts[:status])
       |> maybe_item_filter(opts[:item_id])
       |> maybe_cell_filter(opts[:cell_id])
@@ -378,6 +379,17 @@ defmodule Backend.Stock do
 
   defp maybe_status_filter(query, status) when is_binary(status) do
     where(query, [l], l.status == ^status)
+  end
+
+  # MO-target-lot placeholders (status = "reserved") are hidden from
+  # the default stock list — they carry no qty, no packaging, no
+  # placement, and would just clutter the operator's view. Explicit
+  # `?status=reserved` filter still returns them (rare — mostly for
+  # admin / debugging).
+  defp maybe_hide_reserved_placeholders(query, "reserved"), do: query
+
+  defp maybe_hide_reserved_placeholders(query, _status_filter) do
+    where(query, [l], l.status != "reserved")
   end
 
   defp maybe_item_filter(query, nil), do: query

@@ -2544,6 +2544,13 @@ defmodule BackendWeb.Payloads do
       actual_finish: mo.actual_finish,
       quantity_produced: decimal_to_string(mo.quantity_produced),
       produced_lot_id: mo.produced_lot_id,
+      # Target lot code — rendered at MO create against the placeholder
+      # `reserved` stock_lot so the design team can print labels ahead
+      # of the physical run. Stays stable through completion (the
+      # first pack adopts the same PK ⇒ same code). Null when the MO
+      # has no reserved lot (legacy MOs created before the reservation
+      # flow shipped).
+      target_lot_code: mo_target_lot_code(mo),
       approximate_cost: decimal_to_string(materials_cost),
       materials_cost: decimal_to_string(materials_cost),
       cost_per_unit: mo_cost_per_unit(materials_cost, mo.quantity),
@@ -6054,6 +6061,19 @@ defmodule BackendWeb.Payloads do
   end
 
   def render_code(_entity, _entity_key), do: nil
+
+  # Renders the numbering code (e.g. "L00123") for the MO's target
+  # output lot without a preload. Falls back to nil when the MO has
+  # no produced_lot_id (never reserved, or reserved lot has since
+  # been released via delete).
+  defp mo_target_lot_code(%Backend.Production.ManufacturingOrder{produced_lot_id: nil}), do: nil
+
+  defp mo_target_lot_code(%Backend.Production.ManufacturingOrder{produced_lot_id: id})
+       when is_integer(id) do
+    render_code(%{id: id}, "stock_lot")
+  end
+
+  defp mo_target_lot_code(_), do: nil
 
   # ============================================================
   # Final Product Release payloads — BRCGS Issue 9 § 5.6

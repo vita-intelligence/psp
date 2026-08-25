@@ -1317,6 +1317,12 @@ export interface ManufacturingOrder {
   actual_finish: string | null;
   quantity_produced: string | null;
   produced_lot_id: number | null;
+  /** Numbering code (e.g. "L00123") of the placeholder `reserved`
+   *  stock_lot inserted at MO create so the design team can print
+   *  labels ahead of the physical run. Stays stable through
+   *  completion — the first produced pack adopts the same PK.
+   *  Null on legacy MOs created before the reservation flow. */
+  target_lot_code: string | null;
   /** Materials cost = sum(bom_line × MO qty × unit_cost). */
   approximate_cost: string | null;
   materials_cost: string | null;
