@@ -2349,6 +2349,46 @@ export interface CustomerOrder {
   npd_label_preview_png_url: string | null;
   npd_label_pdf_url: string | null;
   npd_label_url: string | null;
+  /** Supplementary artwork views on the CURRENT LabelDesign revision
+   *  (back / side / bottle mockup) — the primary PDF + PNG preview
+   *  above cover the main artwork. Empty list when no revision or no
+   *  extras attached. File bytes stay on NPD; open through the file
+   *  proxy. */
+  npd_label_files: ReadonlyArray<{
+    readonly uuid: string;
+    readonly label: string;
+    readonly content_type: string;
+    readonly filename: string;
+    readonly byte_size: number;
+    readonly file_url: string;
+  }>;
+  /** One URL vita-cff picked for PSP to render as the project's
+   *  header image (dashboard tile + detail hero). Priority chain runs
+   *  on NPD: approved label preview PNG → first product photo →
+   *  empty. Empty renders the neutral placeholder. */
+  npd_header_image_url: string | null;
+  /** Multi-payment mirror. One row per NPD Payment attached to this
+   *  formulation (deposit / additional_samples / label_design /
+   *  final). Empty on projects with no finance activity yet. Replaces
+   *  the singular ``npd_payment_*`` fields for custom projects; the
+   *  singular fields remain for RTG sample flow back-compat. */
+  npd_payments: ReadonlyArray<{
+    readonly npd_payment_id: string;
+    readonly kind: string;
+    readonly amount: string | null;
+    readonly currency: string | null;
+    readonly status: string;
+    readonly invoice_number: string | null;
+    readonly paid_at: string | null;
+    readonly files: ReadonlyArray<{
+      readonly uuid: string;
+      readonly filename: string;
+      readonly mime: string;
+      readonly byte_size: number;
+      readonly uploaded_at: string;
+    }>;
+    readonly synced_at: string;
+  }>;
   default_warehouse_id: number | null;
   default_warehouse: { id: number; uuid: string; name: string } | null;
   submitted_at: string | null;

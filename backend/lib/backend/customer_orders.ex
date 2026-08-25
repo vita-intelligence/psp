@@ -895,7 +895,11 @@ defmodule Backend.CustomerOrders do
       # Sibling COs folded into this primary during a proposal merge.
       # The R&D card on the FE uses this to render one "Open spec on
       # NPD" link per formulation, not just the primary's own spec.
-      :merged_secondaries
+      :merged_secondaries,
+      # NPD payments mirror — deposit / additional_samples /
+      # label_design / final each as a discrete row. Rendered on the
+      # project's invoice card without a round-trip.
+      :npd_payments
     ])
   end
 

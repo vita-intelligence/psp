@@ -30,6 +30,7 @@ import type {
   OrderWizardPhaseKey,
   ProjectSummary,
 } from "@/lib/types";
+import { npdFileUrl } from "@/lib/npd/file-proxy";
 
 export const metadata = { title: "Production pipeline · PSP" };
 
@@ -385,14 +386,16 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
     co.customer_reference ||
     "—";
 
-  //: Approved-label thumbnail is the strongest identity cue on the
-  //: card. Rendered as a wide banner above the code so the operator
-  //: can eyeball whose label is whose when 30+ cards are on screen.
-  //: Falls back to a mono pill when the workflow exists but no
-  //: preview PNG is available yet. Nothing renders when there's no
-  //: LabelDesign row — that's a project that hasn't reached the
-  //: label phase yet, and the kanban should stay clean.
-  const labelPreview = (co.npd_label_preview_png_url || "").trim();
+  //: Header image is the strongest identity cue on the card.
+  //: Rendered as a wide banner above the code so the operator can
+  //: eyeball whose product is whose when 30+ cards are on screen.
+  //: vita-cff picks the URL (approved label preview → first product
+  //: photo → empty), we just render whatever it hands over. Routed
+  //: through the file proxy so the cross-origin fetch is authorised.
+  //: Nothing renders when the URL is empty — matches the historical
+  //: behaviour ("no LabelDesign row" now also captures "no product
+  //: image either").
+  const headerImage = npdFileUrl(co.npd_header_image_url);
   const labelApproved = co.npd_label_status === "label_approved";
   const hasLabelWorkflow = !!co.npd_label_design_uuid;
   const labelStatusPillCopy: Record<string, string> = {
@@ -416,16 +419,22 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
       data-collab-id={`project:${co.uuid}`}
       className="group block rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-brand/60 hover:shadow-md"
     >
-      {/* Approved-label banner. Sits above everything else because a
-          finalised label is the customer-recognisable identity of
-          the product and the fastest visual grouping cue on a busy
-          board. */}
-      {labelApproved && labelPreview ? (
+      {/* Header banner. vita-cff picked the URL (approved label PNG
+          → first product photo → empty); we render whatever's there.
+          The violet ring stays for approved-label variants so the
+          "signed off" state is visually distinct from a product-photo
+          fallback. */}
+      {headerImage ? (
         /* eslint-disable-next-line @next/next/no-img-element */
         <img
-          src={labelPreview}
-          alt="Approved label preview"
-          className="mb-2 h-14 w-full rounded border border-violet-200/60 object-contain dark:border-violet-900/50"
+          src={headerImage}
+          alt={labelApproved ? "Approved label preview" : "Product image"}
+          className={cn(
+            "mb-2 h-14 w-full rounded border object-contain",
+            labelApproved
+              ? "border-violet-200/60 dark:border-violet-900/50"
+              : "border-border/50",
+          )}
         />
       ) : null}
 

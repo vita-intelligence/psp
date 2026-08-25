@@ -816,6 +816,19 @@ defmodule BackendWeb.Payloads do
       npd_label_preview_png_url: co.npd_label_preview_png_url,
       npd_label_pdf_url: co.npd_label_pdf_url,
       npd_label_url: co.npd_label_url,
+      # Supplementary artwork views on the current LabelDesign
+      # revision (back / side / bottle mockup). PSP opens each through
+      # the file proxy so the customer's browser can render bytes
+      # that live on NPD.
+      npd_label_files: co.npd_label_files || [],
+      # One URL for the dashboard tile + detail hero header image
+      # (NPD picked: approved label preview → first product photo →
+      # empty).
+      npd_header_image_url: co.npd_header_image_url,
+      # Multi-payment mirror — deposit / additional_samples /
+      # label_design / final each as a discrete row. Empty on projects
+      # with no finance activity yet.
+      npd_payments: preloaded_list(co, :npd_payments, &npd_payment_row/1),
       default_warehouse_id: co.default_warehouse_id,
       default_warehouse: maybe_warehouse_compact(co.default_warehouse),
       submitted_at: co.submitted_at,
@@ -858,6 +871,25 @@ defmodule BackendWeb.Payloads do
   end
 
   defp maybe_warehouse_compact(_), do: nil
+
+  # One row in the CO's ``npd_payments`` list. Passed straight through
+  # to the client — the shape mirrors the vita-cff sync payload
+  # (kind / amount / currency / status / invoice_number / paid_at /
+  # files) so the invoice card can render without a translation
+  # layer.
+  defp npd_payment_row(%Backend.CustomerOrders.NpdPayment{} = p) do
+    %{
+      npd_payment_id: p.npd_payment_id,
+      kind: p.kind,
+      amount: p.amount,
+      currency: p.currency,
+      status: p.status,
+      invoice_number: p.invoice_number,
+      paid_at: p.paid_at,
+      files: p.files || [],
+      synced_at: p.synced_at
+    }
+  end
 
   # Every spec sheet referenced by this CO or by any of its merged
   # secondaries. A bundled proposal spans N formulations, but the
