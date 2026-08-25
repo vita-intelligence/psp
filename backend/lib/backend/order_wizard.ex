@@ -425,7 +425,13 @@ defmodule Backend.OrderWizard do
       # customer-safe projection: worker names / form responses /
       # notes stay server-side. Capped at ``@public_sessions_cap``
       # newest first so a chatty MO doesn't blow the payload.
-      sessions: public_sessions_for_mo(mo)
+      sessions: public_sessions_for_mo(mo),
+      # POs currently supplying this MO's placeholder bookings.
+      # Empty list once every ingredient has landed. Skips cancelled
+      # POs (they're not blocking anything). Customer-safe: vendor
+      # NAME only; no pricing, no address, no contact details, no
+      # internal notes.
+      purchase_orders: public_pos_for_mo(mo)
     }
   end
 
@@ -453,6 +459,54 @@ defmodule Backend.OrderWizard do
     )
     |> Repo.all()
     |> Enum.map(&public_session_snapshot(&1, now))
+  end
+
+  # Customer-safe PO projection. Joins the MO's placeholder bookings
+  # → purchase_order_lines → purchase_orders → vendors, deduped by PO.
+  # Skips cancelled POs (they're not supplying anything). Fields are
+  # allowlisted (uuid, code, vendor name, status, expected_delivery_
+  # date, counts) — pricing, notes, addresses, contact details stay
+  # server-side.
+  defp public_pos_for_mo(%ManufacturingOrder{} = mo) do
+    import Ecto.Query
+
+    company = Backend.Companies.current()
+
+    from(b in Backend.Production.ManufacturingOrderBooking,
+      where: b.manufacturing_order_id == ^mo.id and not is_nil(b.purchase_order_line_id),
+      join: pol in Backend.Purchasing.PurchaseOrderLine, on: pol.id == b.purchase_order_line_id,
+      join: po in Backend.Purchasing.PurchaseOrder, on: po.id == pol.purchase_order_id,
+      left_join: v in Backend.Vendors.Vendor, on: v.id == po.vendor_id,
+      where: po.status != "cancelled",
+      select: %{
+        po_id: po.id,
+        po_uuid: po.uuid,
+        status: po.status,
+        expected_delivery_date: po.expected_delivery_date,
+        vendor_name: coalesce(v.name, v.legal_name),
+        booking_id: b.id
+      }
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.po_id)
+    |> Enum.map(fn {po_id, rows} ->
+      first = hd(rows)
+
+      %{
+        uuid: to_string(first.po_uuid),
+        code:
+          if(company, do: Backend.Numbering.render(po_id, company, "purchase_order"), else: nil),
+        vendor_name: first.vendor_name,
+        # Raw PSP status — the FE translates to a customer-friendly
+        # label (draft/pending_* → "Awaiting approval", ordered →
+        # "Ordered — awaiting delivery", partially_received →
+        # "Partial delivery received", received → "Delivered").
+        status: first.status,
+        expected_delivery_date: first.expected_delivery_date,
+        line_count: length(rows)
+      }
+    end)
+    |> Enum.sort_by(& &1.code)
   end
 
   defp public_session_snapshot(session, now) do
