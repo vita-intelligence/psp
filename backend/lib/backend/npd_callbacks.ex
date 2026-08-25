@@ -102,6 +102,76 @@ defmodule Backend.NpdCallbacks do
 
   def pin_mo_on_trial_batch(_, _, _), do: :ok
 
+  @doc """
+  Push the current production-phase snapshot for one customer order to
+  NPD's ``/api/psp-integration/production-status/upsert/`` endpoint.
+
+  Fires from :func:`Backend.OrderWizard.notify_co_changed` on every
+  state change so NPD's portal always reflects the latest phase +
+  sub-stage counters — no polling. NPD upserts a
+  ``PspProductionStatus`` row keyed on the formulation, which the
+  portal's project-detail response then surfaces alongside the
+  label-design workflow so the customer sees the two concurrent
+  workstreams in parallel.
+
+  ``summary`` is a subset of :func:`Backend.OrderWizard.summary_for/1`
+  — the caller passes the already-computed map so we don't
+  re-snapshot inside a hot loop. Silent-degrade returns ``:ok`` on
+  every failure (missing config, network, non-2xx, malformed body)
+  — the PSP state stayed correct on our side; NPD just lags one
+  push behind and will catch up on the next state change.
+  """
+  @spec push_production_status(Company.t(), map()) :: {:ok, map()} | :ok
+  def push_production_status(%Company{} = company, %{formulation_uuid: uuid} = summary)
+      when is_binary(uuid) and uuid != "" do
+    with {:ok, base_url} <- fetch_base_url(company),
+         {:ok, token} <- fetch_token(company) do
+      url = String.trim_trailing(base_url, "/") <> "/api/psp-integration/production-status/upsert/"
+
+      body =
+        summary
+        |> Map.new(fn {k, v} -> {to_string(k), v} end)
+
+      req =
+        Req.new(
+          url: url,
+          json: body,
+          headers: [{"authorization", "Bearer " <> token}],
+          receive_timeout: 10_000
+        )
+
+      case Req.post(req) do
+        {:ok, %Req.Response{status: status, body: resp_body}}
+        when status in 200..299 ->
+          {:ok, normalise_body(resp_body)}
+
+        {:ok, %Req.Response{status: 404}} ->
+          # NPD doesn't know this formulation — sample CO born on
+          # PSP with no NPD counterpart, or a formulation that was
+          # deleted upstream. Nothing to sync.
+          :ok
+
+        {:ok, %Req.Response{status: status}} ->
+          Logger.warning(
+            "NpdCallbacks.push_production_status: NPD returned #{status} " <>
+              "for formulation #{uuid}; phase #{summary[:phase]} not mirrored"
+          )
+
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "NpdCallbacks.push_production_status: transport failure " <>
+              "(#{inspect(reason)}); formulation #{uuid} not mirrored"
+          )
+
+          :ok
+      end
+    end
+  end
+
+  def push_production_status(_, _), do: :ok
+
   # ── helpers ─────────────────────────────────────────────────────
 
   defp fetch_base_url(%Company{npd_base_url: url}) when is_binary(url) and url != "",
