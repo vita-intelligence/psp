@@ -3366,6 +3366,29 @@ function RandDTeamCard({
                   ) : null}
                 </dd>
               </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">Customer signed</dt>
+                <dd
+                  className={cn(
+                    "truncate text-right font-medium",
+                    !co.npd_spec_customer_signed_at &&
+                      "text-muted-foreground/60 italic font-normal",
+                  )}
+                >
+                  {co.npd_spec_customer_signed_at
+                    ? co.npd_spec_customer_signed_by_name || "Customer"
+                    : "Awaiting kiosk"}
+                  {co.npd_spec_customer_signed_at ? (
+                    <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                      ·{" "}
+                      {formatCompanyDate(
+                        co.npd_spec_customer_signed_at,
+                        prefs,
+                      )}
+                    </span>
+                  ) : null}
+                </dd>
+              </div>
             </dl>
             {(() => {
               // A bundled proposal spans N spec sheets. Render one

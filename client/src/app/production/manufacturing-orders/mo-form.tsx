@@ -56,6 +56,7 @@ import type {
   ManufacturingOrder,
   ManufacturingOrderUpsertInput,
 } from "@/lib/production/types";
+import { BomTrustCard } from "./mo-bom-trust-card";
 
 interface SiteOption extends SearchPickerOption {
   kind: string;
@@ -664,6 +665,11 @@ export function ManufacturingOrderForm({
                   )}
                 />
                 <FieldError messages={fieldErrors.bom_id} />
+                <BomTrustCard
+                  bom={mo?.bom ?? null}
+                  co={mo?.linked_customer_order ?? null}
+                  company={company}
+                />
                 {mo?.approximate_cost && (
                   <p className="text-[11px] text-muted-foreground">
                     Approximate cost (qty × BOM cost):{" "}

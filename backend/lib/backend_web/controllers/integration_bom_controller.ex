@@ -47,12 +47,19 @@ defmodule BackendWeb.IntegrationBomController do
          %User{} = actor <- fetch_actor(token),
          {:ok, resolved_lines} <- translate_lines(company_id, params["lines"]),
          :ok <- require_non_empty(resolved_lines) do
+      # NPD provenance stamped on every push so the MO-create trust
+      # card can prove this BOM matches the spec the customer signed.
+      # `npd_synced_at` is server-set to now so a stale clock on the
+      # NPD side can't retro-date the sync into the past.
       attrs = %{
         "item_id" => item.id,
         "name" => params["name"] || "#{item.name} BOM",
         "notes" => params["notes"],
         "version_notes" => params["version_notes"] || "Pushed via integration",
-        "lines" => resolved_lines
+        "lines" => resolved_lines,
+        "npd_spec_sheet_uuid" => sanitize_uuid(params["npd_spec_sheet_uuid"]),
+        "npd_formulation_version_id" => sanitize_string(params["npd_formulation_version_id"]),
+        "npd_synced_at" => DateTime.utc_now() |> DateTime.truncate(:second)
       }
 
       run_upsert(conn, actor, item, attrs)
@@ -61,6 +68,23 @@ defmodule BackendWeb.IntegrationBomController do
       nil -> unprocessable(conn, "item_not_found", item_uuid)
     end
   end
+
+  defp sanitize_uuid(nil), do: nil
+  defp sanitize_uuid(""), do: nil
+
+  defp sanitize_uuid(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> uuid
+      :error -> nil
+    end
+  end
+
+  defp sanitize_uuid(_), do: nil
+
+  defp sanitize_string(nil), do: nil
+  defp sanitize_string(""), do: nil
+  defp sanitize_string(value) when is_binary(value), do: String.trim(value)
+  defp sanitize_string(_), do: nil
 
   # ---- internals ----
 

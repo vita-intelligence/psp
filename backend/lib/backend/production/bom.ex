@@ -28,6 +28,13 @@ defmodule Backend.Production.BOM do
     field :is_primary, :boolean, default: false
     field :is_active, :boolean, default: true
 
+    # NPD provenance — populated by the integration BOM push. Lets
+    # the MO-create trust card prove this BOM was the one attached
+    # to the spec sheet the customer signed off on.
+    field :npd_spec_sheet_uuid, Ecto.UUID
+    field :npd_formulation_version_id, :string
+    field :npd_synced_at, :utc_datetime
+
     belongs_to :company, Company
     belongs_to :item, Item
     belongs_to :created_by, User
@@ -57,7 +64,10 @@ defmodule Backend.Production.BOM do
       :is_primary,
       :is_active,
       :created_by_id,
-      :updated_by_id
+      :updated_by_id,
+      :npd_spec_sheet_uuid,
+      :npd_formulation_version_id,
+      :npd_synced_at
     ])
     |> validate_required([:company_id, :item_id, :name])
     |> validate_length(:name, min: 1, max: 200)

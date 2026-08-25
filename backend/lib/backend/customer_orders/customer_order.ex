@@ -130,6 +130,13 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :npd_spec_prepared_at, :utc_datetime
     field :npd_spec_director_name, :string
     field :npd_spec_approved_at, :utc_datetime
+    # Customer signature on the SPEC sheet — the compliance gate the
+    # MO-create trust card uses to prove the BOM being pulled matches
+    # what the customer approved. Distinct from
+    # ``npd_customer_signed_at`` below, which mirrors the PROPOSAL
+    # customer signature (a different signing surface).
+    field :npd_spec_customer_signed_at, :utc_datetime
+    field :npd_spec_customer_signed_by_name, :string
     # Proposal identity, planted on the primary CO by the merge sync
     # (``Backend.CustomerOrders.ProposalMerge``). Presence of
     # ``npd_proposal_uuid`` is the phase-gate signal: draft CO with a

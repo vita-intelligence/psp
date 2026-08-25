@@ -278,6 +278,8 @@ defmodule Backend.CustomerOrders.NpdSync do
         |> Ecto.Changeset.put_change(:npd_spec_prepared_at, nil)
         |> Ecto.Changeset.put_change(:npd_spec_director_name, nil)
         |> Ecto.Changeset.put_change(:npd_spec_approved_at, nil)
+        |> Ecto.Changeset.put_change(:npd_spec_customer_signed_at, nil)
+        |> Ecto.Changeset.put_change(:npd_spec_customer_signed_by_name, nil)
 
       _ ->
         changeset
@@ -287,6 +289,8 @@ defmodule Backend.CustomerOrders.NpdSync do
         |> maybe_put_dt(:npd_spec_prepared_at, params["spec_prepared_at"] || params[:spec_prepared_at])
         |> maybe_put(:npd_spec_director_name, sanitize(params["spec_director_name"] || params[:spec_director_name]))
         |> maybe_put_dt(:npd_spec_approved_at, params["spec_approved_at"] || params[:spec_approved_at])
+        |> maybe_put_dt(:npd_spec_customer_signed_at, params["spec_customer_signed_at"] || params[:spec_customer_signed_at])
+        |> maybe_put(:npd_spec_customer_signed_by_name, sanitize(params["spec_customer_signed_by_name"] || params[:spec_customer_signed_by_name]))
     end
   end
 

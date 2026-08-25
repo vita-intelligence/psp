@@ -2302,6 +2302,13 @@ export interface CustomerOrder {
   npd_spec_prepared_at: string | null;
   npd_spec_director_name: string | null;
   npd_spec_approved_at: string | null;
+  /** Customer signature on the SPEC sheet — the compliance gate the
+   *  MO-create trust card uses to prove the BOM being pulled matches
+   *  what the customer approved. Distinct from
+   *  ``npd_customer_signed_at`` (proposal signature). Null on a CO
+   *  whose customer hasn't kiosk-signed the spec yet. */
+  npd_spec_customer_signed_at: string | null;
+  npd_spec_customer_signed_by_name: string | null;
   /** Every spec sheet on this CO's proposal bundle. Length ≥ 1 when
    *  the CO carries an NPD spec: primary's own spec first, then one
    *  entry per merged secondary CO. Length > 1 indicates a bundled
