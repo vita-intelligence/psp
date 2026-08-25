@@ -199,6 +199,21 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     # from `:awaiting_final_spec` to `:needs_mo_creation` — the
     # customer has paid, production is authorised.
     field :npd_final_payment_approved_at, :utc_datetime
+    # ---- Label-design workflow mirror ---------------------------
+    # Populated by vita-cff's label_design app via a `post_save`
+    # signal that fires `_sync_formulation_proposal_to_psp` on any
+    # LabelDesign mutation. All fields nil when no LabelDesign row
+    # exists yet for the formulation (customer hasn't reached the
+    # label phase, or the sync predates this feature).
+    field :npd_label_design_uuid, Ecto.UUID
+    field :npd_label_status, :string
+    field :npd_label_design_path, :string
+    field :npd_label_approved_at, :utc_datetime
+    field :npd_label_rejection_count, :integer
+    field :npd_label_updated_at, :utc_datetime
+    field :npd_label_preview_png_url, :string
+    field :npd_label_pdf_url, :string
+    field :npd_label_url, :string
     # Full audit-preserving event log — one entry per NPD-side event
     # (formulation created, spec transitioned, proposal transitioned).
     # NPD is authoritative and replaces the array on every sync so a

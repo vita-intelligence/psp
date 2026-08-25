@@ -385,12 +385,49 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
     co.customer_reference ||
     "—";
 
+  //: Approved-label thumbnail is the strongest identity cue on the
+  //: card. Rendered as a wide banner above the code so the operator
+  //: can eyeball whose label is whose when 30+ cards are on screen.
+  //: Falls back to a mono pill when the workflow exists but no
+  //: preview PNG is available yet. Nothing renders when there's no
+  //: LabelDesign row — that's a project that hasn't reached the
+  //: label phase yet, and the kanban should stay clean.
+  const labelPreview = (co.npd_label_preview_png_url || "").trim();
+  const labelApproved = co.npd_label_status === "label_approved";
+  const hasLabelWorkflow = !!co.npd_label_design_uuid;
+  const labelStatusPillCopy: Record<string, string> = {
+    payment_pending: "Label · awaiting payment",
+    label_path_pending: "Label · path pending",
+    design_preferences_pending: "Label · brief pending",
+    design_in_progress: "Label · in design",
+    scientist_review: "Label · sci review",
+    director_review: "Label · dir review",
+    customer_approval: "Label · customer review",
+    label_approved: "Label approved",
+    on_hold: "Label · on hold",
+  };
+  const labelPillText =
+    labelStatusPillCopy[co.npd_label_status || ""] || "Label pending";
+
   return (
     <Link
       href={`/projects/${co.uuid}`}
       data-collab-id={`project:${co.uuid}`}
       className="group block rounded-lg border border-border/60 bg-card p-3 shadow-sm transition hover:border-brand/60 hover:shadow-md"
     >
+      {/* Approved-label banner. Sits above everything else because a
+          finalised label is the customer-recognisable identity of
+          the product and the fastest visual grouping cue on a busy
+          board. */}
+      {labelApproved && labelPreview ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img
+          src={labelPreview}
+          alt="Approved label preview"
+          className="mb-2 h-14 w-full rounded border border-violet-200/60 object-contain dark:border-violet-900/50"
+        />
+      ) : null}
+
       {/* CO code + optional Sample chip. Sample sits inline with the
           code (not in the phase-gated chips row below) because it's
           an identity marker of the project, not a status. Trial-slot
@@ -407,6 +444,17 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
             className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-700 ring-1 ring-violet-200/60 dark:bg-violet-950/30 dark:text-violet-300 dark:ring-violet-700/40"
           >
             Sample
+          </span>
+        ) : null}
+        {/* Label progress pill — surfaces workflow state for the pre-
+            approved states. Suppressed once approved (the banner
+            carries the signal). */}
+        {hasLabelWorkflow && !labelApproved ? (
+          <span
+            title={`Label workflow: ${labelPillText}`}
+            className="ml-auto inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-700 ring-1 ring-violet-200/60 dark:bg-violet-950/30 dark:text-violet-300 dark:ring-violet-700/40"
+          >
+            {labelPillText}
           </span>
         ) : null}
       </div>
