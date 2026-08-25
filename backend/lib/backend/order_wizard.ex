@@ -419,7 +419,68 @@ defmodule Backend.OrderWizard do
       bookings_total: bookings_total,
       bookings_picked_count: bookings_picked_count,
       bookings_received_count: bookings_received_count,
-      output_lots_pending_qc_count: output_lots_pending_qc_count
+      output_lots_pending_qc_count: output_lots_pending_qc_count,
+      # WorkstationSession timeline — active + past sessions the
+      # operator has run for this MO via vita-performance. Slim
+      # customer-safe projection: worker names / form responses /
+      # notes stay server-side. Capped at ``@public_sessions_cap``
+      # newest first so a chatty MO doesn't blow the payload.
+      sessions: public_sessions_for_mo(mo)
+    }
+  end
+
+  # Max sessions per MO on the customer roadmap payload. Kyrgyz-scale
+  # runs are 1-5 sessions per stage; 20 buys headroom without letting
+  # a runaway rework tail dominate the payload.
+  @public_sessions_cap 20
+
+  # Customer-safe session projection — one query per MO snapshot
+  # is fine at this scale (roadmap ships at most a handful of MOs
+  # per project). Skips employee names + form responses; keeps the
+  # workstation NAME so the customer sees "Encapsulator #2" not a
+  # bare id.
+  defp public_sessions_for_mo(%ManufacturingOrder{} = mo) do
+    import Ecto.Query
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    from(s in Backend.Production.WorkstationSession,
+      join: step in assoc(s, :manufacturing_order_step),
+      where: s.company_id == ^mo.company_id and step.manufacturing_order_id == ^mo.id,
+      preload: [:workstation],
+      order_by: [desc: s.started_at, desc: s.id],
+      limit: @public_sessions_cap
+    )
+    |> Repo.all()
+    |> Enum.map(&public_session_snapshot(&1, now))
+  end
+
+  defp public_session_snapshot(session, now) do
+    started = session.started_at
+    finished = session.finished_at
+
+    duration_seconds =
+      case {started, finished} do
+        {%DateTime{} = a, %DateTime{} = b} ->
+          max(DateTime.diff(b, a, :second), 0)
+
+        {%DateTime{} = a, nil} ->
+          # Active session — measure against server clock so the FE
+          # can render "running for N minutes" without a wall-clock
+          # skew argument.
+          max(DateTime.diff(now, a, :second), 0)
+
+        _ ->
+          nil
+      end
+
+    %{
+      uuid: to_string(session.uuid),
+      workstation_name: session.workstation && session.workstation.name,
+      started_at: started,
+      finished_at: finished,
+      status: session.status,
+      duration_seconds: duration_seconds
     }
   end
 
