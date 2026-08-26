@@ -17,6 +17,9 @@ backend/erl_crash.dump
 backend/cover/
 backend/.fetch
 backend/priv/static/uploads/
+# Stray SQLite dev dump that sometimes appears alongside the
+# Postgres dev DB (docker) — keep it local, never commit.
+backend/dev.db
 
 # Logs
 *.log
