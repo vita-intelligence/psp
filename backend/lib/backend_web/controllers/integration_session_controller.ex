@@ -283,23 +283,24 @@ defmodule BackendWeb.IntegrationSessionController do
         "created"
       )
 
-      # Also broadcast to the parent CO if the MO is tied to one so
-      # the wizard timeline refreshes without polling.
-      case Repo.preload(mo, :customer_order_line) do
-        %ManufacturingOrder{customer_order_line: %{customer_order_id: co_id}}
-        when not is_nil(co_id) ->
-          case Repo.get(Backend.CustomerOrders.CustomerOrder, co_id) do
-            %{uuid: co_uuid} ->
-              Backend.Broadcasts.entity_changed(
-                "workstation_session_co",
-                co_uuid,
-                company_id,
-                "created"
-              )
+      # Push the roadmap payload to NPD + broadcast the CO for the
+      # wizard timeline. Walks the parent_mo tree so CHILD MOs
+      # (Encapsulation / Bottling on top of a Blending root) find
+      # their root's CO. Previous version only handled root MOs via
+      # `mo.customer_order_line_id`, so sessions on child MOs never
+      # reached the customer portal.
+      #
+      # Task.start — a slow / down NPD can't hang the VP kiosk request.
+      Task.start(fn -> Backend.OrderWizard.notify_via_mo(mo) end)
 
-            _ ->
-              :ok
-          end
+      case resolve_root_co_uuid(mo) do
+        {:ok, co_uuid} ->
+          Backend.Broadcasts.entity_changed(
+            "workstation_session_co",
+            co_uuid,
+            company_id,
+            "created"
+          )
 
         _ ->
           :ok
@@ -308,6 +309,36 @@ defmodule BackendWeb.IntegrationSessionController do
 
     :ok
   end
+
+  # Walk the parent_mo chain up to the root MO's customer order.
+  # Handles child MOs (semi-finished cascades) whose
+  # `customer_order_line_id` is nil — the root MO carries it.
+  defp resolve_root_co_uuid(%ManufacturingOrder{id: mo_id}) do
+    tree_query = """
+      WITH RECURSIVE mo_ancestors AS (
+        SELECT id, parent_mo_id, customer_order_line_id
+        FROM manufacturing_orders
+        WHERE id = $1
+        UNION ALL
+        SELECT p.id, p.parent_mo_id, p.customer_order_line_id
+        FROM manufacturing_orders p
+        JOIN mo_ancestors ma ON ma.parent_mo_id = p.id
+      )
+      SELECT co.uuid
+      FROM mo_ancestors ma
+      JOIN customer_order_lines col ON col.id = ma.customer_order_line_id
+      JOIN customer_orders co ON co.id = col.customer_order_id
+      WHERE ma.customer_order_line_id IS NOT NULL
+      LIMIT 1
+    """
+
+    case Repo.query(tree_query, [mo_id]) do
+      {:ok, %{rows: [[uuid]]}} when is_binary(uuid) -> {:ok, uuid}
+      _ -> :error
+    end
+  end
+
+  defp resolve_root_co_uuid(_), do: :error
 
   defp refuse_not_sot(conn) do
     conn

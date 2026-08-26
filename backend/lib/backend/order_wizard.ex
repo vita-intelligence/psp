@@ -146,6 +146,54 @@ defmodule Backend.OrderWizard do
 
   def notify_cos_for_po(_), do: :ok
 
+  @doc """
+  Fan out ``notify_co_changed`` to the CO that owns this MO (walking
+  up through any parent MO cascade to the root MO's
+  ``customer_order_line_id``). Used by Production hooks on every MO
+  state transition — pickup start / complete, preflight sign-off,
+  run start / complete, closeout sign, final release, output QC — so
+  the customer portal reflects "picking → in production → closeout"
+  in real time without polling.
+
+  Silent-degrade on any failure — the MO mutation itself has already
+  committed; NPD's mirror is a convenience. Wrapped in ``Task.start``
+  at the callsite so a downed NPD never blocks the operator.
+  """
+  def notify_cos_for_mo(mo_id) when is_integer(mo_id) do
+    try do
+      tree_query = """
+        WITH RECURSIVE mo_ancestors AS (
+          SELECT id, parent_mo_id, customer_order_line_id
+          FROM manufacturing_orders
+          WHERE id = $1
+          UNION ALL
+          SELECT p.id, p.parent_mo_id, p.customer_order_line_id
+          FROM manufacturing_orders p
+          JOIN mo_ancestors ma ON ma.parent_mo_id = p.id
+        )
+        SELECT DISTINCT col.customer_order_id
+        FROM mo_ancestors ma
+        JOIN customer_order_lines col ON col.id = ma.customer_order_line_id
+        WHERE ma.customer_order_line_id IS NOT NULL
+      """
+
+      %{rows: rows} = Repo.query!(tree_query, [mo_id])
+
+      rows
+      |> Enum.map(&List.first/1)
+      |> Enum.each(&notify_co_changed/1)
+
+      :ok
+    rescue
+      err ->
+        require Logger
+        Logger.warning("notify_cos_for_mo bubbled: #{inspect(err)}")
+        :ok
+    end
+  end
+
+  def notify_cos_for_mo(_), do: :ok
+
   # Build the summary payload NPD expects and hand it to the
   # NpdCallbacks pusher. Silent-degrade on any failure — the
   # local wizard is authoritative; NPD's mirror is a convenience.
@@ -213,27 +261,25 @@ defmodule Backend.OrderWizard do
   end
 
   @doc """
-  Resolve from an MO id → the customer-order line → the CO, and
-  notify. Used by Production context functions that don't directly
-  hold a CO reference.
+  Resolve from an MO → the CO that owns it, and notify. Used by
+  Production context functions that don't directly hold a CO
+  reference.
+
+  Walks the parent_mo tree so CHILD MOs (semi-finished cascades —
+  Encapsulation / Bottling / Finishing on top of a Blending root)
+  correctly notify the customer order that owns the root. Without
+  this, pickup / preflight / run / closeout state changes on child
+  MOs never reach the customer portal roadmap.
+
+  Delegates to `notify_cos_for_mo/1` which does the recursive CTE
+  walk once and dedupes by CO.
   """
-  def notify_via_mo(%ManufacturingOrder{customer_order_line_id: nil}), do: :ok
-
-  def notify_via_mo(%ManufacturingOrder{customer_order_line_id: line_id}) do
-    line = Repo.get(CustomerOrderLine, line_id)
-
-    if line && line.customer_order_id do
-      notify_co_changed(line.customer_order_id)
-    end
-
-    :ok
+  def notify_via_mo(%ManufacturingOrder{id: id}) when is_integer(id) do
+    notify_cos_for_mo(id)
   end
 
   def notify_via_mo(mo_id) when is_integer(mo_id) do
-    case Repo.get(ManufacturingOrder, mo_id) do
-      %ManufacturingOrder{} = mo -> notify_via_mo(mo)
-      _ -> :ok
-    end
+    notify_cos_for_mo(mo_id)
   end
 
   def notify_via_mo(_), do: :ok
@@ -1428,7 +1474,7 @@ defmodule Backend.OrderWizard do
           code: "submit_co",
           title: "Submit for approval.",
           detail:
-            "All checks pass. Click Submit to start the 2-tier signature flow (approver → director → confirmed).",
+            "All checks pass. Click Submit to start the 2-tier signature flow (approver → authoriser → confirmed).",
           primary_cta: %{
             label: "Submit for approval",
             kind: "action",
@@ -1471,11 +1517,11 @@ defmodule Backend.OrderWizard do
 
         %{
           code: "awaiting_director",
-          title: "Awaiting director signature.",
+          title: "Awaiting authoriser signature.",
           detail:
-            "#{approver_name} signed as approver. A director (different from the approver, and not the author) signs to finalise the order.",
+            "#{approver_name} signed as approver. An authoriser (different from the approver, and not the author) signs to finalise the order.",
           primary_cta: %{
-            label: "Approve as director",
+            label: "Approve as authoriser",
             kind: "action",
             action: "sign_director"
           },
@@ -1921,7 +1967,7 @@ defmodule Backend.OrderWizard do
 
   defp po_status_label("draft"), do: "still in draft"
   defp po_status_label("pending_approver"), do: "waiting on approver sign-off"
-  defp po_status_label("pending_director"), do: "waiting on director sign-off"
+  defp po_status_label("pending_director"), do: "waiting on authoriser sign-off"
   defp po_status_label("approved"), do: "approved but not marked ordered yet"
   defp po_status_label("ordered"), do: "ordered"
   defp po_status_label("partially_received"), do: "partially received"
@@ -3764,7 +3810,7 @@ defmodule Backend.OrderWizard do
       signers.director &&
         co_event(
           signers.director.signed_at,
-          "Director signed off",
+          "Authoriser signed off",
           co,
           signers.director.signed_by
         )

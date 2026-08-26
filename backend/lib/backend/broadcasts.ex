@@ -50,10 +50,41 @@ defmodule Backend.Broadcasts do
       )
     end
 
+    # Portal notification hook — every MO state change (pickup start /
+    # complete, preflight sign, run start / complete, closeout, final
+    # release, output QC, etc.) needs to invalidate the customer portal
+    # roadmap so the website + NPD portal reflect "picking → in
+    # production → closeout" in real time. Task.start inside the
+    # helper so a downed NPD never blocks the local mutation.
+    #
+    # Same-shape hook exists for POs / invoices via
+    # `Backend.Purchasing.tap_notify_cos_for_po/1` — that path predates
+    # this centralised hook. Migration deferred to avoid churn.
+    maybe_notify_customer_orders(entity, id)
+
     :ok
   end
 
   def entity_changed(_entity, _id, _company_id, _action), do: :ok
+
+  # Only MO broadcasts need the CO fan-out today. Kept as a case so
+  # adding new entities (e.g. shipment → CO for dispatch stage) is a
+  # one-clause change without touching every callsite in the codebase.
+  defp maybe_notify_customer_orders("manufacturing-order", uuid) when is_binary(uuid) do
+    Task.start(fn ->
+      case Backend.Repo.get_by(Backend.Production.ManufacturingOrder, uuid: uuid) do
+        %Backend.Production.ManufacturingOrder{id: id} ->
+          Backend.OrderWizard.notify_cos_for_mo(id)
+
+        _ ->
+          :ok
+      end
+    end)
+
+    :ok
+  end
+
+  defp maybe_notify_customer_orders(_entity, _id), do: :ok
 
   defp id_string(id) when is_binary(id), do: id
   defp id_string(id) when is_integer(id), do: Integer.to_string(id)
