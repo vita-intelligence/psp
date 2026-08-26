@@ -547,13 +547,13 @@ defmodule BackendWeb.CustomerOrderController do
           json(conn, %{customer_order: Payloads.customer_order(updated)})
 
         {:error, :bad_status} ->
-          conflict(conn, "bad_status", "CO is not awaiting director sign-off.")
+          conflict(conn, "bad_status", "CO is not awaiting authoriser sign-off.")
 
         {:error, :same_signer} ->
           conflict(
             conn,
             "same_signer",
-            "Director sign-off must be a different user from the approver-tier signer."
+            "Authoriser sign-off must be a different user from the approver-tier signer."
           )
 
         {:error, %Ecto.Changeset{} = cs} ->

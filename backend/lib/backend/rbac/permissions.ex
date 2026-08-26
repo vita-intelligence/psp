@@ -202,7 +202,7 @@ defmodule Backend.RBAC.Permissions do
     {"customer_orders.submit", "Submit a draft CO for approval"},
     {"customer_orders.approve", "Sign off as approver tier (1st of 2)"},
     {"customer_orders.director_approve",
-     "Sign off as director tier (2nd of 2) + mark approved COs as confirmed"},
+     "Sign off as authoriser tier (2nd of 2) + mark approved COs as confirmed"},
     {"customer_orders.delete", "Delete draft customer orders"}
   ]
 
@@ -279,7 +279,7 @@ defmodule Backend.RBAC.Permissions do
     {"procurement.po_submit", "Submit a draft PO for approval"},
     {"procurement.po_approve", "Sign off as approver tier"},
     {"procurement.po_director_approve",
-     "Sign off as director tier + mark approved POs as ordered"},
+     "Sign off as authoriser tier + mark approved POs as ordered"},
     {"procurement.po_receive", "Receive stock against an open PO"},
     {"procurement.invoice_view", "View invoices"},
     {"procurement.invoice_manage", "Create + edit + delete invoices"},
@@ -712,7 +712,7 @@ defmodule Backend.RBAC.Permissions do
             key: "customer_order_approval",
             label: "CO approval",
             description:
-              "Approver-tier signature, director-tier signature, and mark-confirmed action. Director must differ from approver (segregation of duties).",
+              "Approver-tier signature, authoriser-tier signature, and mark-confirmed action. Authoriser must differ from approver (segregation of duties).",
             read: "customer_orders.view",
             create: "customer_orders.approve",
             update: "customer_orders.director_approve",
@@ -847,7 +847,7 @@ defmodule Backend.RBAC.Permissions do
             key: "po_approval",
             label: "PO approval",
             description:
-              "First-tier (approver) and second-tier (director) signatures. Director also marks approved POs as sent to vendor.",
+              "First-tier (approver) and second-tier (authoriser) signatures. Authoriser also marks approved POs as sent to vendor.",
             read: "procurement.po_view",
             create: "procurement.po_approve",
             update: "procurement.po_director_approve",

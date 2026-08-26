@@ -377,12 +377,12 @@ defmodule BackendWeb.PurchaseOrderController do
     with %{} = po <- Purchasing.get_for_company(actor.company_id, uuid) do
       case Purchasing.sign_director(actor, po, opts) do
         {:ok, updated} -> json(conn, %{purchase_order: Payloads.purchase_order(updated)})
-        {:error, :bad_status} -> conflict(conn, "bad_status", "PO is not awaiting director sign-off.")
+        {:error, :bad_status} -> conflict(conn, "bad_status", "PO is not awaiting authoriser sign-off.")
         {:error, :same_signer} ->
           conflict(
             conn,
             "same_signer",
-            "Director sign-off must be a different user from the approver-tier signer."
+            "Authoriser sign-off must be a different user from the approver-tier signer."
           )
 
         {:error, %Ecto.Changeset{} = cs} ->

@@ -1576,7 +1576,7 @@ const PHASE_EXPLAINER: Record<
   },
   approval: {
     title: "Two signatures needed.",
-    body: "Approver signs first (commercial check), then director signs second (segregation of duties — must be a different person). Once both signatures are in, hit Release to production to move the order out of Approval and into the production planning pipeline.",
+    body: "Approver signs first (commercial check), then authoriser signs second (segregation of duties — must be a different person). Once both signatures are in, hit Release to production to move the order out of Approval and into the production planning pipeline.",
   },
   production_planning: {
     title: "Plan every MO, then we move on.",
@@ -4875,7 +4875,7 @@ async function runAction(cta: OrderWizardCta, ctx: CtaDispatchContext) {
     }
     case "sign_director": {
       const res = await signDirectorCOAction(ctx.coUuid, "");
-      surfaceResult(res, "Signed as director", ctx.refresh);
+      surfaceResult(res, "Signed as authoriser", ctx.refresh);
       return;
     }
     case "confirm": {

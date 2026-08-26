@@ -37,7 +37,7 @@ defmodule BackendWeb.FallbackController do
     |> json(
       Errors.payload(
         "document_not_available",
-        "Documents are available once the director has signed this purchase order."
+        "Documents are available once the authoriser has signed this purchase order."
       )
     )
   end

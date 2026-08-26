@@ -68,7 +68,7 @@ import { ENFORCE_FOUR_EYES } from "@/lib/four-eyes";
 const STATUS_LABEL: Record<CustomerOrderStatus, string> = {
   draft: "Draft",
   pending_approver: "Awaiting approver",
-  pending_director: "Awaiting director",
+  pending_director: "Awaiting authoriser",
   approved: "Approved",
   confirmed: "Confirmed",
   cancelled: "Cancelled",
@@ -184,7 +184,7 @@ export function COWorkflowCard({
               <Badge tone={STATUS_TONE[co.status]}>{STATUS_LABEL[co.status]}</Badge>
             </CardTitle>
             <CardDescription>
-              Two-tier ESIGN approval. Director must differ from the approver
+              Two-tier ESIGN approval. Authoriser must differ from the approver
               (segregation of duties — server enforces too).
             </CardDescription>
           </div>
@@ -215,7 +215,7 @@ export function COWorkflowCard({
           {directorSig && directorSig.signed_by && (
             <StampRow
               icon={ShieldCheck}
-              label="Director-tier signed"
+              label="Authoriser signed"
               actor={directorSig.signed_by.name}
               at={formatCompanyDate(directorSig.signed_at, prefs)}
               tone="sky"
@@ -307,12 +307,12 @@ export function COWorkflowCard({
                     locked
                       ? "Only the head of the room can act here."
                       : actorIsApprover
-                      ? "You signed as approver — a different reviewer must sign as director."
+                      ? "You signed as approver — a different reviewer must sign as authoriser."
                       : undefined
                   }
                 >
                   <ShieldCheck className="mr-1.5 size-3.5" />
-                  Sign as director
+                  Sign as authoriser
                 </Button>
               )}
               {showMarkConfirmed && (
@@ -348,7 +348,7 @@ export function COWorkflowCard({
             {actorIsApprover && showSignDirector && (
               <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-400">
                 <ShieldAlert className="mr-1 inline size-3" />
-                You signed as approver. The director sign-off must come from
+                You signed as approver. The authoriser sign-off must come from
                 a different reviewer.
               </p>
             )}
@@ -485,7 +485,7 @@ function SubmitDialog({ open, onClose, co }: DialogProps) {
             <p className="font-medium">After submit:</p>
             <ul className="mt-1 space-y-0.5 text-muted-foreground">
               <li>• Header + line edits are locked</li>
-              <li>• An approver must sign first, then a different director</li>
+              <li>• An approver must sign first, then a different authoriser</li>
             </ul>
           </div>
           {error && (
@@ -524,7 +524,7 @@ function SignApproverDialog({ open, onClose, co }: DialogProps) {
           <DialogDescription>
             Stamps your name + the current time on the approver-tier
             signature row. After this, a different user must sign as
-            director.
+            authoriser.
           </DialogDescription>
         </DialogHeader>
 
@@ -576,7 +576,7 @@ function SignDirectorDialog({ open, onClose, co }: DialogProps) {
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Sign as director (2nd of 2)</DialogTitle>
+          <DialogTitle>Sign as authoriser (2nd of 2)</DialogTitle>
           <DialogDescription>
             Final approval. Must differ from the approver-tier signer —
             server enforces.
@@ -609,13 +609,13 @@ function SignDirectorDialog({ open, onClose, co }: DialogProps) {
             onClick={() =>
               run(
                 () => signDirectorCOAction(co.uuid, notes.trim() || null),
-                "Director-tier signed",
+                "Authoriser signed",
               )
             }
             disabled={pending}
           >
             {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
-            Sign as director
+            Sign as authoriser
           </Button>
         </DialogFooter>
       </DialogContent>

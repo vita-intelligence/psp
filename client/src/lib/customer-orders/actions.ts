@@ -276,7 +276,7 @@ export async function signDirectorCOAction(
   } catch (err) {
     return toErrorResult(err, {
       source: "signDirectorCOAction",
-      fallbackDetail: "Couldn't sign as director.",
+      fallbackDetail: "Couldn't sign as authoriser.",
     });
   }
 }

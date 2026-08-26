@@ -28,7 +28,7 @@ export const metadata = { title: "Customer order · Sales · PSP" };
 const STATUS_LABEL: Record<CustomerOrderStatus, string> = {
   draft: "Draft",
   pending_approver: "Awaiting approver",
-  pending_director: "Awaiting director",
+  pending_director: "Awaiting authoriser",
   approved: "Approved",
   confirmed: "Confirmed",
   cancelled: "Cancelled",

@@ -27,7 +27,7 @@ interface Props {
 const STATUS_LABEL: Record<PurchaseOrderStatus, string> = {
   draft: "Draft",
   pending_approver: "Pending approver",
-  pending_director: "Pending director",
+  pending_director: "Pending authoriser",
   approved: "Approved",
   ordered: "Ordered",
   partially_received: "Partially received",

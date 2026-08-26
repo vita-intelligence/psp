@@ -200,7 +200,7 @@ function Leaderboard({
 const STAGE_LABEL: Record<string, string> = {
   draft: "Draft",
   pending_approver: "Pending approver",
-  pending_director: "Pending director",
+  pending_director: "Pending authoriser",
   approved: "Approved",
   confirmed: "Confirmed",
 };

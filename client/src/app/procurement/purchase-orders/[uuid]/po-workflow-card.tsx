@@ -187,7 +187,7 @@ export function POWorkflowCard({
       <StepRow
         status={po.status}
         step="approved"
-        label="Director sign-off"
+        label="Authoriser sign-off"
         actor={directorSig?.signed_by ?? null}
         timestamp={directorSig?.signed_at ?? null}
         notes={directorSig?.notes ?? null}
@@ -276,7 +276,7 @@ export function POWorkflowCard({
               disabled={pending || locked}
             >
               <ShieldCheck className="mr-1.5 size-4" />
-              Sign as director
+              Sign as authoriser
             </Button>
           )}
           {po.status === "approved" && canDirectorApprove && (
@@ -323,14 +323,14 @@ export function POWorkflowCard({
             <DialogTitle>
               {openDialog === "approver"
                 ? "Sign as approver"
-                : "Sign as director"}
+                : "Sign as authoriser"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <p className="text-xs text-muted-foreground">
               Your name and the current time will be stamped onto the PO.
               {openDialog === "director" &&
-                " The director signature must be a different user from the approver."}
+                " The authoriser signature must be a different user from the approver."}
             </p>
             <div className="space-y-1.5">
               <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
