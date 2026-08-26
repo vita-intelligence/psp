@@ -12,6 +12,7 @@ export const metadata = { title: "Goods-In · PSP Mobile" };
 
 interface Props {
   params: Promise<{ uuid: string }>;
+  searchParams: Promise<{ lines?: string | string[] }>;
 }
 
 /**
@@ -23,12 +24,26 @@ interface Props {
  * Either auth gate satisfies the page; the BE still enforces RBAC on
  * every action (`goods_in.inspect` vs `goods_in.approve`).
  */
-export default async function MobileInspectionPage({ params }: Props) {
+export default async function MobileInspectionPage({
+  params,
+  searchParams,
+}: Props) {
   const deviceToken = await getDeviceToken();
   const sessionToken = await getSessionToken();
   if (!deviceToken && !sessionToken) redirect("/pair");
 
   const { uuid } = await params;
+  const sp = await searchParams;
+  // `?lines=uuid1,uuid2,uuid3` — set by the pre-receive hub when the
+  // operator ticks which items came on the truck. Wizard seeds its
+  // per-line walk from this so it skips straight to the picked items.
+  // Fresh inspections only — if the inspection already has saved
+  // items, the wizard prefers those over the URL param.
+  const rawLines = sp.lines;
+  const initialSelectedLineUuids: string[] =
+    typeof rawLines === "string"
+      ? rawLines.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
 
   // Bulk SSR fetch — inspection + viewer in parallel. The inspection
   // payload carries the parent PO uuid (preloaded), so we kick off the
@@ -48,6 +63,7 @@ export default async function MobileInspectionPage({ params }: Props) {
       inspection={inspection}
       purchaseOrder={purchaseOrder}
       viewer={viewer}
+      initialSelectedLineUuids={initialSelectedLineUuids}
     />
   );
 }

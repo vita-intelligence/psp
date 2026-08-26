@@ -1070,6 +1070,405 @@ defmodule Backend.Stock do
   end
 
   @doc """
+  Repackage a lot's remaining stock into 1 or N physical containers,
+  updating the lot's own package dims to match the new physical
+  reality AND optionally splitting into N sibling lots.
+
+  Why this exists: package dims live on the Lot row (one lot = one
+  physical container at goods-in time). When production consumes most
+  of the lot, `package_weight_kg` still reflects the ORIGINAL container
+  (e.g. 300 kg drum) even though the operator has poured the 10 kg
+  leftover into a small tote. Cell-fit checks then reject the tote
+  from any normal shelf because the math thinks it weighs 300 kg. The
+  fix is to let the operator refresh the lot's dims at closeout (or
+  retrospectively from the stock lot page).
+
+  `packs` — a non-empty list of pack maps. Each pack must have:
+
+      %{
+        "qty" => "10.0",              # decimal string
+        "package_length_mm" => 300,
+        "package_width_mm" => 200,
+        "package_height_mm" => 150,
+        "package_weight_kg" => "10.0",
+        "units_per_package" => "1",
+        "stack_factor" => "1"
+      }
+
+  * The FIRST pack updates the ORIGINAL lot in place (dims + qty
+    stay attached to the same uuid so the QR label on the container
+    is still valid — same trick `upgrade_reservation_changeset` uses).
+  * Every ADDITIONAL pack creates a sibling lot that inherits the
+    original's identity fields (item_id, supplier_batch_no,
+    country_of_origin, manufactured_at, expiry_at, revision,
+    overall_risk, allergen_status, coa_status, quality_status,
+    unit_cost, currency, source_kind, source_ref) but gets its own
+    uuid, dims, and qty.
+
+  Placement math: assumes the lot has ONE placement (the typical
+  post-run state where the leftover sits at a single cell). Reduces
+  that placement to pack[0]'s qty and inserts sibling-lot placements
+  at the SAME cell for each additional pack. Callers that need
+  cross-cell splits should do a follow-up `move_placement` per
+  sibling.
+
+  Returns `{:ok, %{primary: lot, siblings: [lot, ...]}}` on success.
+  """
+  def repackage_lot(%User{} = actor, %Lot{} = lot, packs) when is_list(packs) do
+    with :ok <- ensure_packs_present(packs),
+         {:ok, decoded} <- decode_packs(packs),
+         {:ok, target_placement} <- fetch_single_placement(lot),
+         :ok <- ensure_qty_matches_on_hand(decoded, target_placement) do
+      Repo.transaction(fn ->
+        primary_attrs = pack_to_lot_attrs(hd(decoded), actor.id)
+
+        {:ok, primary} =
+          lot
+          |> Lot.repackage_changeset(primary_attrs)
+          |> Repo.update()
+
+        # Reduce original placement to pack[0]'s qty.
+        {:ok, _} = update_placement_qty(target_placement, hd(decoded).qty)
+
+        siblings =
+          case tl(decoded) do
+            [] ->
+              []
+
+            extras ->
+              Enum.map(extras, fn pack ->
+                {:ok, new_lot} = clone_lot_for_repackage(actor, lot, pack)
+
+                {:ok, _} =
+                  %Backend.Stock.Placement{
+                    company_id: lot.company_id,
+                    stock_lot_id: new_lot.id,
+                    storage_cell_id: target_placement.storage_cell_id,
+                    qty: pack.qty
+                  }
+                  |> Repo.insert()
+
+                new_lot
+              end)
+          end
+
+        Audit.record_updated(
+          actor,
+          "stock_lot",
+          primary,
+          %{
+            package_length_mm: lot.package_length_mm,
+            package_width_mm: lot.package_width_mm,
+            package_height_mm: lot.package_height_mm,
+            package_weight_kg: lot.package_weight_kg,
+            units_per_package: lot.units_per_package,
+            stack_factor: lot.stack_factor
+          },
+          Map.take(primary_attrs, [
+            "package_length_mm",
+            "package_width_mm",
+            "package_height_mm",
+            "package_weight_kg",
+            "units_per_package",
+            "stack_factor"
+          ])
+        )
+
+        Backend.Broadcasts.entity_changed(
+          "stock-lot",
+          primary.uuid,
+          primary.company_id,
+          "repackaged"
+        )
+
+        %{primary: primary, siblings: siblings}
+      end)
+      |> case do
+        {:ok, %{} = out} -> {:ok, out}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  def repackage_lot(_actor, _lot, _), do: {:error, :bad_args}
+
+  @doc """
+  Dims-only update on a lot's packaging fields. Used inside the
+  closeout transaction where the operator has typed the NEW dims for
+  the leftover container but the placement is being resized separately
+  in the same tx (so the qty-match check `repackage_lot` runs would
+  race against the drain).
+
+  Also used from the retrospective stock-lot detail page when the
+  operator only needs to fix bad dims and doesn't want a split.
+
+  Accepts the same pack shape as `repackage_lot` (first pack only —
+  extras ignored). Skips qty_received changes so the caller can drive
+  placement qty independently.
+  """
+  def update_lot_packaging(%User{} = actor, %Lot{} = lot, raw_pack) when is_map(raw_pack) do
+    with {:ok, pack} <- decode_packaging(raw_pack) do
+      attrs = %{
+        "package_length_mm" => pack.package_length_mm,
+        "package_width_mm" => pack.package_width_mm,
+        "package_height_mm" => pack.package_height_mm,
+        "package_weight_kg" => pack.package_weight_kg,
+        "units_per_package" => pack.units_per_package,
+        "stack_factor" => pack.stack_factor,
+        "updated_by_id" => actor.id
+      }
+
+      before_snap = %{
+        package_length_mm: lot.package_length_mm,
+        package_width_mm: lot.package_width_mm,
+        package_height_mm: lot.package_height_mm,
+        package_weight_kg: lot.package_weight_kg,
+        units_per_package: lot.units_per_package,
+        stack_factor: lot.stack_factor
+      }
+
+      lot
+      |> Ecto.Changeset.change(%{
+        package_length_mm: pack.package_length_mm,
+        package_width_mm: pack.package_width_mm,
+        package_height_mm: pack.package_height_mm,
+        package_weight_kg: pack.package_weight_kg,
+        units_per_package: pack.units_per_package,
+        stack_factor: pack.stack_factor,
+        updated_by_id: actor.id
+      })
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          Audit.record_updated(actor, "stock_lot", updated, before_snap, attrs)
+
+          Backend.Broadcasts.entity_changed(
+            "stock-lot",
+            updated.uuid,
+            updated.company_id,
+            "packaging_updated"
+          )
+
+          {:ok, updated}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  def update_lot_packaging(_actor, _lot, _), do: {:error, :bad_args}
+
+  defp ensure_packs_present([]), do: {:error, :no_packs}
+  defp ensure_packs_present(list) when is_list(list), do: :ok
+
+  defp decode_packs(packs) do
+    packs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {raw, idx}, {:ok, acc} ->
+      case decode_pack(raw) do
+        {:ok, pack} -> {:cont, {:ok, [pack | acc]}}
+        {:error, reason} -> {:halt, {:error, {:bad_pack, idx, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      other -> other
+    end
+  end
+
+  defp decode_pack(raw) when is_map(raw) do
+    with {:ok, qty} <- decode_decimal(raw["qty"] || raw[:qty]),
+         :ok <- ensure_pos(qty, :qty),
+         {:ok, length} <- decode_int(raw["package_length_mm"] || raw[:package_length_mm]),
+         :ok <- ensure_pos_int(length, :package_length_mm),
+         {:ok, width} <- decode_int(raw["package_width_mm"] || raw[:package_width_mm]),
+         :ok <- ensure_pos_int(width, :package_width_mm),
+         {:ok, height} <- decode_int(raw["package_height_mm"] || raw[:package_height_mm]),
+         :ok <- ensure_pos_int(height, :package_height_mm),
+         {:ok, weight} <- decode_decimal(raw["package_weight_kg"] || raw[:package_weight_kg]),
+         :ok <- ensure_pos(weight, :package_weight_kg),
+         {:ok, upp} <- decode_decimal(raw["units_per_package"] || raw[:units_per_package] || "1"),
+         :ok <- ensure_pos(upp, :units_per_package),
+         {:ok, sf} <- decode_int(raw["stack_factor"] || raw[:stack_factor] || 1),
+         :ok <- ensure_pos_int(sf, :stack_factor) do
+      {:ok,
+       %{
+         qty: qty,
+         package_length_mm: length,
+         package_width_mm: width,
+         package_height_mm: height,
+         package_weight_kg: weight,
+         units_per_package: upp,
+         stack_factor: sf
+       }}
+    end
+  end
+
+  defp decode_pack(_), do: {:error, :not_a_map}
+
+  defp decode_decimal(%Decimal{} = d), do: {:ok, d}
+  defp decode_decimal(n) when is_integer(n), do: {:ok, Decimal.new(n)}
+  defp decode_decimal(n) when is_float(n), do: {:ok, Decimal.from_float(n)}
+
+  defp decode_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, ""} -> {:ok, d}
+      _ -> {:error, :bad_decimal}
+    end
+  end
+
+  defp decode_decimal(_), do: {:error, :bad_decimal}
+
+  defp decode_int(n) when is_integer(n), do: {:ok, n}
+
+  defp decode_int(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> {:ok, n}
+      _ -> {:error, :bad_int}
+    end
+  end
+
+  defp decode_int(_), do: {:error, :bad_int}
+
+  defp ensure_pos(%Decimal{} = d, _field) do
+    if Decimal.compare(d, Decimal.new(0)) == :gt, do: :ok, else: {:error, :not_positive}
+  end
+
+  defp ensure_pos_int(n, _field) when is_integer(n) and n > 0, do: :ok
+  defp ensure_pos_int(_, _), do: {:error, :not_positive}
+
+  # Dims-only variant of `decode_pack` used by `update_lot_packaging`.
+  # Identical shape MINUS the `qty` field (a dims update doesn't
+  # change the lot's stock, so requiring qty in the payload would
+  # only invent friction — and the closeout callsite legitimately
+  # doesn't have a leftover qty to hand until the drain has run).
+  defp decode_packaging(raw) when is_map(raw) do
+    with {:ok, length} <- decode_int(raw["package_length_mm"] || raw[:package_length_mm]),
+         :ok <- ensure_pos_int(length, :package_length_mm),
+         {:ok, width} <- decode_int(raw["package_width_mm"] || raw[:package_width_mm]),
+         :ok <- ensure_pos_int(width, :package_width_mm),
+         {:ok, height} <- decode_int(raw["package_height_mm"] || raw[:package_height_mm]),
+         :ok <- ensure_pos_int(height, :package_height_mm),
+         {:ok, weight} <- decode_decimal(raw["package_weight_kg"] || raw[:package_weight_kg]),
+         :ok <- ensure_pos(weight, :package_weight_kg),
+         {:ok, upp} <- decode_decimal(raw["units_per_package"] || raw[:units_per_package] || "1"),
+         :ok <- ensure_pos(upp, :units_per_package),
+         {:ok, sf} <- decode_int(raw["stack_factor"] || raw[:stack_factor] || 1),
+         :ok <- ensure_pos_int(sf, :stack_factor) do
+      {:ok,
+       %{
+         package_length_mm: length,
+         package_width_mm: width,
+         package_height_mm: height,
+         package_weight_kg: weight,
+         units_per_package: upp,
+         stack_factor: sf
+       }}
+    end
+  end
+
+  defp decode_packaging(_), do: {:error, :not_a_map}
+
+  # Sum(pack qtys) must equal the placement's current qty. Anything
+  # else means the operator's numbers don't add up — surface the
+  # mismatch rather than silently overwriting.
+  defp ensure_qty_matches_on_hand(packs, %Backend.Stock.Placement{qty: on_hand}) do
+    sum =
+      Enum.reduce(packs, Decimal.new(0), fn %{qty: q}, acc -> Decimal.add(acc, q) end)
+
+    if Decimal.equal?(Decimal.round(sum, 6), Decimal.round(on_hand, 6)) do
+      :ok
+    else
+      {:error, {:qty_mismatch, %{sum: sum, on_hand: on_hand}}}
+    end
+  end
+
+  # For MVP: repackage assumes ONE physical placement. Callers that
+  # need multi-placement flows should consolidate first.
+  defp fetch_single_placement(%Lot{id: lot_id}) do
+    placements =
+      Repo.all(
+        from(p in Backend.Stock.Placement,
+          where: p.stock_lot_id == ^lot_id and p.qty > 0,
+          preload: [:storage_cell]
+        )
+      )
+
+    case placements do
+      [only] -> {:ok, only}
+      [] -> {:error, :no_placement}
+      _ -> {:error, :multiple_placements}
+    end
+  end
+
+  defp pack_to_lot_attrs(pack, actor_id) do
+    %{
+      "package_length_mm" => pack.package_length_mm,
+      "package_width_mm" => pack.package_width_mm,
+      "package_height_mm" => pack.package_height_mm,
+      "package_weight_kg" => pack.package_weight_kg,
+      "units_per_package" => pack.units_per_package,
+      "stack_factor" => pack.stack_factor,
+      "qty_received" => pack.qty,
+      "updated_by_id" => actor_id
+    }
+  end
+
+  defp update_placement_qty(%Backend.Stock.Placement{} = p, new_qty) do
+    p
+    |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+    |> Repo.update()
+  end
+
+  # Clone the lot's identity fields (item / batch / expiry / etc.)
+  # into a new Lot row with the pack's own dims + qty. Skips
+  # placements — the caller inserts one at the same cell as the
+  # primary's placement.
+  defp clone_lot_for_repackage(%User{} = actor, %Lot{} = source, pack) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    attrs =
+      %{
+        company_id: source.company_id,
+        item_id: source.item_id,
+        unit_of_measurement_id: source.unit_of_measurement_id,
+        status: source.status,
+        qty_received: pack.qty,
+        unit_cost: source.unit_cost,
+        currency: source.currency,
+        source_kind: source.source_kind,
+        source_ref: source.source_ref,
+        supplier_batch_no: source.supplier_batch_no,
+        country_of_origin: source.country_of_origin,
+        revision: source.revision,
+        overall_risk: source.overall_risk,
+        allergen_status: source.allergen_status,
+        coa_status: source.coa_status,
+        quality_status: source.quality_status,
+        manufactured_at: source.manufactured_at,
+        expiry_at: source.expiry_at,
+        available_from: source.available_from,
+        received_at: source.received_at,
+        package_length_mm: pack.package_length_mm,
+        package_width_mm: pack.package_width_mm,
+        package_height_mm: pack.package_height_mm,
+        package_weight_kg: pack.package_weight_kg,
+        units_per_package: pack.units_per_package,
+        stack_factor: pack.stack_factor,
+        goods_in_inspection_id: source.goods_in_inspection_id,
+        created_by_id: actor.id,
+        updated_by_id: actor.id,
+        inserted_at: now,
+        updated_at: now
+      }
+
+    %Lot{}
+    |> Lot.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
   Every lot stamped with the given inspection id. The goods-in
   quality-approver transaction walks this list and emits one
   lifecycle event per lot based on the (inspection-level decision,

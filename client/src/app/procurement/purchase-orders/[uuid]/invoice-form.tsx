@@ -32,6 +32,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { CurrencyPicker } from "@/components/forms/currency-picker";
 import { FieldError } from "@/components/forms/field-error";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { formatCompanyMoney } from "@/lib/format/company";
+import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { CollabAvatars } from "@/components/realtime/collab-avatars";
 import { FieldEditingIndicator } from "@/components/realtime/field-editing-indicator";
 import { RemoteCursor } from "@/components/realtime/remote-cursor";
@@ -80,21 +82,81 @@ interface Props {
   /** Company default currency (read from `/settings/company`). Used
    *  when the PO doesn't carry its own. */
   companyCurrency: string;
+  /** Create-mode only. Powers the "compute-don't-ask" defaults for
+   *  Subtotal / Tax / Due date so the AP clerk doesn't retype what
+   *  the PO already knows. */
+  poDefaults?: {
+    grand_total: string;
+    tax_amount: string;
+    /** Sum of non-void invoice totals already booked against this PO.
+     *  Used to default the new invoice to the remaining unbilled
+     *  balance (pro-rata tax split). */
+    already_billed: number;
+    /** Vendor's Net-N — invoice_date + this = due_date default. */
+    payment_terms_days: number | null;
+  };
   canManage: boolean;
   /** When the form lives in a dialog, this closes it on a successful
    *  save / delete. Omit if the form is inline. */
   onDone?: () => void;
 }
 
-function emptyState(poCurrency: string, companyCurrency: string): InvoiceFormState {
+/** Two-decimal string, empty-string-safe. */
+function money(n: number): string {
+  if (!Number.isFinite(n)) return "";
+  return n.toFixed(2);
+}
+
+/** Add `days` to an ISO date string (yyyy-MM-dd). Returns empty string
+ *  if either input is unusable. */
+function addDays(isoDate: string, days: number): string {
+  if (!isoDate || !Number.isFinite(days) || days <= 0) return "";
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function emptyState(
+  poCurrency: string,
+  companyCurrency: string,
+  poDefaults?: Props["poDefaults"],
+): InvoiceFormState {
+  const invoiceDate = new Date().toISOString().slice(0, 10);
+  const dueDate = addDays(invoiceDate, poDefaults?.payment_terms_days ?? 0);
+
+  // Compute-don't-ask amounts. If we don't have PO context, fall back
+  // to blank + "0" tax so the user types everything (old behaviour).
+  let subtotal = "";
+  let tax = "0";
+  if (poDefaults) {
+    const poTotal = Number(poDefaults.grand_total);
+    const poTax = Number(poDefaults.tax_amount);
+    if (Number.isFinite(poTotal) && poTotal > 0) {
+      const remaining = Math.max(0, poTotal - poDefaults.already_billed);
+      if (remaining > 0) {
+        // Pro-rata tax split — keeps the tax fraction constant even
+        // when only a portion of the PO is being invoiced. Guards
+        // against tax_amount > grand_total edge case.
+        const taxFrac = Number.isFinite(poTax) && poTax > 0
+          ? Math.min(1, poTax / poTotal)
+          : 0;
+        const defTax = remaining * taxFrac;
+        const defSubtotal = remaining - defTax;
+        subtotal = money(defSubtotal);
+        tax = money(defTax);
+      }
+    }
+  }
+
   return {
     invoice_number: "",
-    invoice_date: new Date().toISOString().slice(0, 10),
-    due_date: "",
+    invoice_date: invoiceDate,
+    due_date: dueDate,
     currency_code: poCurrency || companyCurrency || "GBP",
-    subtotal: "",
-    tax_amount: "0",
-    total_inc_tax: "",
+    subtotal,
+    tax_amount: tax,
+    total_inc_tax: subtotal && tax ? money(Number(subtotal) + Number(tax)) : "",
     paid_amount: "0",
     notes: "",
   };
@@ -117,8 +179,9 @@ function initialFrom(
   invoice: ProcurementInvoice | null,
   poCurrency: string,
   companyCurrency: string,
+  poDefaults?: Props["poDefaults"],
 ): InvoiceFormState {
-  if (!invoice) return emptyState(poCurrency, companyCurrency);
+  if (!invoice) return emptyState(poCurrency, companyCurrency, poDefaults);
   return {
     invoice_number: invoice.invoice_number ?? "",
     invoice_date: invoice.invoice_date ?? "",
@@ -155,10 +218,12 @@ export function InvoiceForm({
   poUuid,
   poCurrency,
   companyCurrency,
+  poDefaults,
   canManage,
   onDone,
 }: Props) {
   const router = useRouter();
+  const prefs = useFormatPrefs();
   // Channel resource shape — matches `can_edit_resource?("invoice", …)`
   // on the BE. Create mode uses `invoice:<po_uuid>:new` so peers on
   // the SAME PO converge into one drafting room; edit mode keys to
@@ -174,8 +239,8 @@ export function InvoiceForm({
     | { kind: "deleted" };
 
   const initial = useMemo(
-    () => initialFrom(invoice, poCurrency, companyCurrency),
-    [invoice, poCurrency, companyCurrency],
+    () => initialFrom(invoice, poCurrency, companyCurrency, poDefaults),
+    [invoice, poCurrency, companyCurrency, poDefaults],
   );
 
   const {
@@ -526,6 +591,24 @@ export function InvoiceForm({
             </div>
 
             <SectionHeader>Amounts</SectionHeader>
+            {!invoice && poDefaults && (() => {
+              const poTotal = Number(poDefaults.grand_total);
+              if (!Number.isFinite(poTotal) || poTotal <= 0) return null;
+              const remaining = Math.max(0, poTotal - poDefaults.already_billed);
+              if (remaining <= 0) return null;
+              const isFirst = poDefaults.already_billed <= 0;
+              const money = (n: number) =>
+                formatCompanyMoney(n, prefs, { currency_code: state.currency_code });
+              return (
+                <p className="-mt-1 text-[11px] text-muted-foreground">
+                  {isFirst ? (
+                    <>Pre-filled from the PO ({money(poTotal)}). Override if the vendor's invoice differs.</>
+                  ) : (
+                    <>Pre-filled with the remaining unbilled balance ({money(remaining)} of {money(poTotal)}; {money(poDefaults.already_billed)} already invoiced). Override if this invoice covers a different amount.</>
+                  )}
+                </p>
+              );
+            })()}
             <div className="rounded-md border border-border/60 bg-muted/20 p-4 space-y-3">
               <div className="grid gap-3 sm:grid-cols-2">
                 <CollabField

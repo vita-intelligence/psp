@@ -376,7 +376,10 @@ function IncomingCard({
               {badge.label}
             </span>
             {row.open_inspection && (
-              <InspectionBadge inspection={row.open_inspection} />
+              <InspectionBadge
+                inspection={row.open_inspection}
+                counts={row.open_inspection_counts}
+              />
             )}
           </div>
 
@@ -411,9 +414,32 @@ function IncomingCard({
 
 function InspectionBadge({
   inspection,
+  counts,
 }: {
   inspection: MobileIncomingOpenInspection;
+  counts?: { draft: number; submitted: number };
 }) {
+  const draftCount = counts?.draft ?? 0;
+  const submittedCount = counts?.submitted ?? 0;
+  const total = draftCount + submittedCount;
+
+  // Multi-inspection summary — kicks in when the PO has more than one
+  // active inspection (spam-tap case or a genuine multi-truck delivery
+  // where an earlier inspection is still awaiting QC). The single-
+  // inspection legacy label falls through when total ≤ 1.
+  if (total > 1) {
+    const parts: string[] = [];
+    if (draftCount > 0) parts.push(`${draftCount} ${draftCount === 1 ? "draft" : "drafts"}`);
+    if (submittedCount > 0)
+      parts.push(`${submittedCount} awaiting QC`);
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+        <Clock className="size-2.5" />
+        {parts.join(" · ")}
+      </span>
+    );
+  }
+
   const operatorName = inspection.goods_in_operator?.name;
   const label =
     inspection.status === "submitted"

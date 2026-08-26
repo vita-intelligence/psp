@@ -61,7 +61,17 @@ export interface MobileIncomingOpenInspection {
 
 export interface MobileIncomingRow {
   purchase_order: MobileIncomingPo;
+  /** Most-recent non-terminal inspection for this PO (legacy single-
+   *  inspection surface — the badge on the card falls back to this
+   *  when there's only one). */
   open_inspection: MobileIncomingOpenInspection | null;
+  /** Per-status counts across ALL open inspections on this PO. Drives
+   *  the multi-delivery summary badge ("3 drafts · 1 awaiting QC")
+   *  when the PO has more than one active inspection. */
+  open_inspection_counts: {
+    draft: number;
+    submitted: number;
+  };
 }
 
 export interface MobileIncomingResponse {
@@ -147,6 +157,29 @@ export async function listInspectionsForPo(
   try {
     const { items } = await api<{ items: Inspection[] }>(
       `/api/purchase-orders/${encodeURIComponent(poUuid)}/goods-in-inspections`,
+      { token, cache: "no-store" },
+    );
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Recent inspections that touched a given item across all POs. Feeds
+ * the "Recent deliveries" section on the item detail page. Server
+ * caps `limit` at 100; default is 10.
+ */
+export async function listInspectionsForItem(
+  itemUuid: string,
+  opts: { limit?: number } = {},
+): Promise<Inspection[]> {
+  const token = (await getDeviceToken()) ?? (await getSessionToken());
+  if (!token) return [];
+  const qs = opts.limit ? `?limit=${opts.limit}` : "";
+  try {
+    const { items } = await api<{ items: Inspection[] }>(
+      `/api/items/${encodeURIComponent(itemUuid)}/goods-in-inspections${qs}`,
       { token, cache: "no-store" },
     );
     return items;

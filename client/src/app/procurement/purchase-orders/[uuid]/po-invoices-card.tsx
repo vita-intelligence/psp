@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -178,6 +178,20 @@ export function POInvoicesCard({
   });
   const fullyBilled = poTotal > 0 && billed >= poTotal;
   const overBilled = billed > poTotal && poTotal > 0;
+
+  // Memoised so InvoiceForm's `useMemo` / `useLiveForm` initial-state
+  // deps see a stable identity across renders. Only rebuilds when the
+  // PO's totals, the billed sum, or the vendor's terms change — none
+  // of which are edited from inside the form itself.
+  const createPoDefaults = useMemo(
+    () => ({
+      grand_total: po.grand_total,
+      tax_amount: po.tax_amount,
+      already_billed: billed,
+      payment_terms_days: po.vendor?.payment_terms_days ?? null,
+    }),
+    [po.grand_total, po.tax_amount, po.vendor?.payment_terms_days, billed],
+  );
   const countsByStatus = invoices.reduce<
     Partial<Record<ProcurementInvoiceStatus, number>>
   >((acc, inv) => {
@@ -418,6 +432,7 @@ export function POInvoicesCard({
               poUuid={poUuid}
               poCurrency={poCurrency}
               companyCurrency={companyCurrency}
+              poDefaults={createPoDefaults}
               canManage={canManage}
               onDone={closeDialog}
             />

@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Camera,
   Check,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Image as ImageIcon,
@@ -46,6 +47,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { DimensionMmInput } from "@/components/forms/dimension-mm-input";
 import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { SignaturePad } from "@/components/forms/signature-pad";
@@ -57,6 +59,7 @@ import { cn } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import {
+  deleteInspectionAction,
   deleteInspectionFileAction,
   signOperatorAction,
   signQualityAction,
@@ -171,6 +174,7 @@ const STORAGE_CHECKS: CheckRow[] = [
 /* ============ step bookkeeping ============ */
 
 type Step =
+  | "which_items"
   | "delivery"
   | "vehicle"
   | "lines"
@@ -181,7 +185,13 @@ type Step =
   | "quarantine_label"
   | "sign_off";
 
+// Step order. `which_items` runs FIRST — the operator's first
+// decision when the truck arrives is "which of the PO lines are
+// actually here?", so it goes before delivery paperwork. Unchecked
+// lines are skipped for the whole rest of the wizard and resurface
+// on the next delivery's inspection.
 const STEPS: { id: Step; title: string }[] = [
+  { id: "which_items", title: "Which items came?" },
   { id: "delivery", title: "Delivery information" },
   { id: "vehicle", title: "Vehicle inspection" },
   { id: "lines", title: "Per-line decisions" },
@@ -222,6 +232,11 @@ interface Props {
   inspection: Inspection;
   purchaseOrder: PurchaseOrder;
   viewer: User;
+  /** Set by the pre-receive hub via `?lines=` when the operator
+   *  ticked which items are on this truck. Seeds the per-line walk
+   *  so the wizard skips straight to the picked items. Ignored when
+   *  the inspection already has saved items (resume takes priority). */
+  initialSelectedLineUuids?: string[];
 }
 
 /**
@@ -241,15 +256,15 @@ export function MobileInspectionWizard({
   inspection: initial,
   purchaseOrder,
   viewer,
+  initialSelectedLineUuids,
 }: Props) {
   const router = useRouter();
   const [inspection, setInspection] = useState(initial);
   const [stepIdx, setStepIdx] = useState(0);
-  // Sub-step inside the "lines" step — the PO can have many lines, and
-  // stacking them on one phone screen drowns the operator. We render
-  // ONE line at a time and bounce through them with the same footer
-  // Back / Next buttons. Reset to the first line whenever the operator
-  // re-enters the lines step from outside.
+  // Sub-step inside the "lines" step — walks the ticked lines one at
+  // a time. The selection itself lives on the dedicated `which_items`
+  // step (STEPS[0]); by the time the operator gets here they've
+  // already picked what came, so we start straight at line 0.
   const [lineIdx, setLineIdx] = useState(0);
   const [error, setError] = useState<WizardError | null>(null);
   const [saving, startSave] = useTransition();
@@ -289,6 +304,52 @@ export function MobileInspectionWizard({
 
   const [items, setItems] = useState<Record<string, ItemDraft>>(
     () => buildInitialItems(lines, inspection.items),
+  );
+
+  // Which PO lines the current truck actually delivered. Unchecked
+  // lines are skipped for the whole "lines" walk — they produce no
+  // inspection_items on save, so their PO qty_received stays flat and
+  // they resurface on the NEXT delivery's inspection.
+  //
+  // Priority (highest first):
+  //   1. Server-saved items on this draft → pre-check those lines
+  //      (resume takes priority; operator's mid-flow work is trusted
+  //      over the hub's original guess).
+  //   2. `initialSelectedLineUuids` from `?lines=` param → the pre-
+  //      receive hub's explicit tick-list, honoured for fresh drafts.
+  //   3. Every line with remaining qty → the "truck brought (most of)
+  //      the PO" default when neither of the above applies.
+  const [selectedLineUuids, setSelectedLineUuids] = useState<Set<string>>(
+    () => {
+      const savedLineUuids = new Set(
+        (inspection.items ?? [])
+          .map((it) => it.purchase_order_line_uuid)
+          .filter((u): u is string => Boolean(u)),
+      );
+      if (savedLineUuids.size > 0) return savedLineUuids;
+      const validUuids = new Set(lines.map((l) => l.uuid));
+      if (initialSelectedLineUuids && initialSelectedLineUuids.length > 0) {
+        // Prune uuids that don't exist on this PO (defensive: URL
+        // could carry stale uuids from a PO edit).
+        return new Set(
+          initialSelectedLineUuids.filter((u) => validUuids.has(u)),
+        );
+      }
+      const remaining = new Set<string>();
+      for (const l of lines) {
+        const ordered = Number(l.qty_ordered) || 0;
+        const received = Number(l.qty_received) || 0;
+        if (ordered - received > 0) remaining.add(l.uuid);
+      }
+      return remaining;
+    },
+  );
+
+  // Ordered subset of `lines` that the walk covers. Recomputed on
+  // check/uncheck so lineIdx maps cleanly to walkableLines[lineIdx].
+  const walkableLines = useMemo(
+    () => lines.filter((l) => selectedLineUuids.has(l.uuid)),
+    [lines, selectedLineUuids],
   );
 
   const [operatorSignature, setOperatorSignature] = useState<string | null>(
@@ -396,12 +457,21 @@ export function MobileInspectionWizard({
 
   const canAdvance = stepIdx < STEPS.length - 1;
 
-  // Reset the inner line index whenever the operator enters or leaves
-  // the "lines" step. This means stepping back from a later step
-  // re-enters at line 1 — explicit but simple.
+  // Reset the walk index whenever the operator enters or leaves the
+  // "lines" step. Fresh entry starts at line 0 so re-entering from
+  // a later step doesn't drop them mid-walk.
   useEffect(() => {
     if (step.id === "lines") setLineIdx(0);
   }, [step.id]);
+
+  // Defensive clamp: if `walkableLines` shrinks below the current
+  // `lineIdx` (operator unticked lines on the which_items step then
+  // came back, or a PO edit removed a line mid-draft), bounce back
+  // to line 0 rather than rendering an undefined line.
+  useEffect(() => {
+    if (step.id !== "lines") return;
+    if (lineIdx >= walkableLines.length) setLineIdx(0);
+  }, [step.id, lineIdx, walkableLines.length]);
 
   // Local-draft persistence ------------------------------------------------
   // The wizard only PATCHes the BE when the operator hits "Save & continue"
@@ -410,8 +480,12 @@ export function MobileInspectionWizard({
   // state into localStorage so the operator can pick up exactly where
   // they left off — keyed by inspection uuid, capped at 24 h so a stale
   // draft from yesterday doesn't override a clean inspection.
+  // v2 key — bumped when STEPS reordered ("which_items" inserted at
+  // index 0). Old v1 drafts had `stepIdx` values pointing to the
+  // pre-reorder positions; loading them would land the operator on
+  // the wrong step. Bumping the key silently invalidates old drafts.
   const draftKey = useMemo(
-    () => `psp:inspection-draft:${inspection.uuid}`,
+    () => `psp:inspection-draft-v2:${inspection.uuid}`,
     [inspection.uuid],
   );
   const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -435,6 +509,7 @@ export function MobileInspectionWizard({
         items?: Record<string, ItemDraft>;
         stepIdx?: number;
         lineIdx?: number;
+        selectedLineUuids?: string[];
         savedAt?: number;
       };
       if (!draft.savedAt || Date.now() - draft.savedAt > DRAFT_TTL_MS) {
@@ -449,7 +524,32 @@ export function MobileInspectionWizard({
       if (draft.storage) setStorage(draft.storage);
       if (draft.items) setItems(draft.items);
       if (typeof draft.stepIdx === "number") setStepIdx(draft.stepIdx);
-      if (typeof draft.lineIdx === "number") setLineIdx(draft.lineIdx);
+      // Prune uuids that no longer exist on the PO (edited between
+      // draft-save and resume). Then clamp lineIdx so a stale index
+      // doesn't crash the walk if the selection shrank.
+      const validUuids = new Set(lines.map((l) => l.uuid));
+      const restoredSelection = Array.isArray(draft.selectedLineUuids)
+        ? new Set(
+            draft.selectedLineUuids.filter((u) => validUuids.has(u)),
+          )
+        : null;
+      if (restoredSelection) {
+        setSelectedLineUuids(restoredSelection);
+      }
+      if (typeof draft.lineIdx === "number") {
+        const walkableCount = restoredSelection
+          ? restoredSelection.size
+          : lines.filter((l) => selectedLineUuids.has(l.uuid)).length;
+        // Clamp to 0 if the saved index points past the available
+        // walk length (selection shrank since save) or is otherwise
+        // out of range. `which_items` step owns the selection UI now,
+        // so lineIdx always represents a walk position.
+        const safeIdx =
+          draft.lineIdx >= 0 && draft.lineIdx < walkableCount
+            ? draft.lineIdx
+            : 0;
+        setLineIdx(safeIdx);
+      }
     } catch {
       try {
         window.localStorage.removeItem(draftKey);
@@ -486,6 +586,7 @@ export function MobileInspectionWizard({
             items,
             stepIdx,
             lineIdx,
+            selectedLineUuids: Array.from(selectedLineUuids),
             savedAt: Date.now(),
           }),
         );
@@ -507,6 +608,7 @@ export function MobileInspectionWizard({
     items,
     stepIdx,
     lineIdx,
+    selectedLineUuids,
   ]);
 
   /* ============ persistence helpers ============ */
@@ -586,6 +688,20 @@ export function MobileInspectionWizard({
             // not they actually printed anything.
             resolve(true);
             return;
+          case "which_items":
+            // Client-side gate only — no BE call. The selection is
+            // local state that shapes the walk on the "lines" step.
+            if (selectedLineUuids.size === 0) {
+              setError({
+                detail:
+                  "Tick at least one item this truck brought. Untouched items stay unreceived and show up on the next delivery.",
+                code: "no_lines_selected",
+              });
+              resolve(false);
+              return;
+            }
+            resolve(true);
+            return;
           case "lines": {
             // One product per save — the operator advances through
             // lines via the footer Next button, and we upsert that
@@ -593,7 +709,7 @@ export function MobileInspectionWizard({
             // hitting a wall when line 5 is broken but lines 1-4 are
             // already good (previous behaviour PATCHed every line on
             // every Next and surfaced the first failure each time).
-            const line = lines[lineIdx];
+            const line = walkableLines[lineIdx];
             if (!line) {
               resolve(true);
               return;
@@ -723,10 +839,10 @@ export function MobileInspectionWizard({
   async function onNext() {
     const ok = await saveCurrentStep();
     if (!ok) return;
-    // Inside the lines step we walk through products one at a time
-    // before advancing the wizard. The footer button doubles as a
-    // "Next product" until we reach the last line.
-    if (step.id === "lines" && lineIdx < lines.length - 1) {
+    // Inside the lines step:
+    //   n (< last)  → n+1 (next checked line)
+    //   n (== last) → advance the outer wizard
+    if (step.id === "lines" && lineIdx < walkableLines.length - 1) {
       setLineIdx((i) => i + 1);
       window.scrollTo({ top: 0 });
       return;
@@ -739,9 +855,9 @@ export function MobileInspectionWizard({
 
   function onBackStep() {
     // Walk back through line indices first if we're inside the lines
-    // step. Same logic as onNext mirrored: the footer Back button
-    // behaves as "Previous product" until we hit line 0, then it
-    // steps the outer wizard.
+    // step. When we hit line 0, step back to the previous wizard
+    // step (Vehicle inspection). The `which_items` step handles its
+    // own back navigation via the outer step buttons.
     if (step.id === "lines" && lineIdx > 0) {
       setLineIdx((i) => i - 1);
       window.scrollTo({ top: 0 });
@@ -752,11 +868,57 @@ export function MobileInspectionWizard({
     window.scrollTo({ top: 0 });
   }
 
+  function discardDraft() {
+    if (inspection.status !== "draft") return;
+    // Only the head-of-room can discard — mirrors the sign-off gate,
+    // stops a peer nuking someone else's in-flight work.
+    if (canJoinCollab && !isCreator) return;
+    if (
+      !window.confirm(
+        "Delete this draft delivery? Any info entered here will be lost — this can't be undone.",
+      )
+    )
+      return;
+
+    // Clear the localStorage draft so a stale restore doesn't
+    // resurrect the deleted state on the next visit.
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        // ignore quota / private-mode failures
+      }
+    }
+
+    startSave(async () => {
+      const res = await deleteInspectionAction(inspection.uuid);
+      if (res.ok) {
+        toast.success("Draft delivery deleted");
+        router.replace(`/m/incoming/${purchaseOrder.uuid}`);
+      } else {
+        setError(res);
+      }
+    });
+  }
+
   async function onSignOperator() {
     if (!operatorSignature) {
       setError({
         detail: "Draw your signature to continue.",
         code: "missing_signature",
+      });
+      return;
+    }
+    // Empty-inspection guard: submitting with zero per-line records
+    // is nonsensical (nothing was actually received) and would flip
+    // the PO into partial/received with no lots to show for it.
+    // Reachable only through weird nav (localStorage restore of a
+    // stale state) — block explicitly rather than trusting the walk.
+    if ((inspection.items ?? []).length === 0) {
+      setError({
+        detail:
+          "No items recorded yet. Go back to Per-line decisions and tick + save at least one item this truck delivered.",
+        code: "no_items_recorded",
       });
       return;
     }
@@ -898,6 +1060,21 @@ export function MobileInspectionWizard({
           </p>
         </div>
         {canJoinCollab && <CollabAvatars peers={presence} />}
+        {/* Discard-draft — mobile-only shortcut for the "I mis-tapped
+            New delivery" case. Draft-only, head-of-room-only. Signed
+            inspections stay as audit artefacts (BE enforces too). */}
+        {editing && (!canJoinCollab || isCreator) && (
+          <button
+            type="button"
+            onClick={discardDraft}
+            disabled={saving}
+            className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground active:bg-destructive/10 active:text-destructive disabled:opacity-40"
+            aria-label="Discard this draft"
+            title="Discard this draft"
+          >
+            <Trash2 className="size-4" />
+          </button>
+        )}
         <span
           className={cn(
             "rounded-full px-2 py-0.5 text-[10px] font-medium",
@@ -1062,9 +1239,13 @@ export function MobileInspectionWizard({
                 <Loader2 className="size-4 animate-spin" />
               ) : (
                 <>
-                  {step.id === "lines" && lineIdx < lines.length - 1
-                    ? "Save & next product"
-                    : "Save & continue"}
+                  {step.id === "which_items"
+                    ? selectedLineUuids.size > 0
+                      ? `Continue with ${selectedLineUuids.size} ${selectedLineUuids.size === 1 ? "item" : "items"}`
+                      : "Continue"
+                    : step.id === "lines" && lineIdx < walkableLines.length - 1
+                      ? "Save & next product"
+                      : "Save & continue"}
                   <ChevronRight className="size-4" />
                 </>
               )}
@@ -1279,32 +1460,52 @@ export function MobileInspectionWizard({
             testId="step-storage"
           />
         );
+      case "which_items":
+        return (
+          <LineSelector
+            lines={lines}
+            inspection={inspection}
+            selected={selectedLineUuids}
+            onToggle={(uuid, checked) =>
+              setSelectedLineUuids((prev) => {
+                const next = new Set(prev);
+                if (checked) next.add(uuid);
+                else next.delete(uuid);
+                return next;
+              })
+            }
+            onSelectAll={() =>
+              setSelectedLineUuids(new Set(lines.map((l) => l.uuid)))
+            }
+            onSelectNone={() => setSelectedLineUuids(new Set())}
+          />
+        );
       case "lines": {
-        const currentLine = lines[lineIdx];
+        const currentLine = walkableLines[lineIdx];
         return (
           <section className="space-y-4" data-testid="step-lines">
             <StepHeading title={step.title} />
-            {lines.length === 0 || !currentLine ? (
+            {walkableLines.length === 0 || !currentLine ? (
               <p className="text-sm text-muted-foreground">
-                This PO has no lines.
+                No items selected. Go back to &ldquo;Which items came?&rdquo; and tick what the truck brought.
               </p>
             ) : (
               <>
                 {/* Sub-step progress — operator can see they're on
-                    line 2 of 4 without parsing pack rows. Pills show
-                    each line at a glance: green = saved on BE, brand
-                    = current, grey = pending. */}
+                    line 2 of 4 without parsing pack rows. Counter +
+                    pill strip cover ONLY the checked lines, not every
+                    line on the PO. */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium text-muted-foreground">
-                      Product {lineIdx + 1} of {lines.length}
+                      Product {lineIdx + 1} of {walkableLines.length}
                     </span>
                     <span className="text-muted-foreground/70">
                       {itemNameFor(currentLine)}
                     </span>
                   </div>
                   <div className="flex gap-1">
-                    {lines.map((l, i) => {
+                    {walkableLines.map((l, i) => {
                       const submitted = (inspection.items ?? []).some(
                         (it) => it.purchase_order_line_uuid === l.uuid,
                       );
@@ -2100,6 +2301,249 @@ const LineCard = memo(function LineCard({
   );
 });
 
+/**
+ * "Which items did this truck actually bring?" sub-step of the lines
+ * phase. Displayed BEFORE the per-line pack editor so the operator
+ * only walks through the products they physically have on the floor.
+ *
+ * Rows are split into two buckets:
+ *   - Remaining lines (qty_remaining > 0) — the main list; ticked by
+ *     default so the whole-truckload case is a one-tap Continue.
+ *   - Fully-received lines — greyed at the bottom; still tickable so
+ *     an over-shipment can be logged if the vendor sent extra.
+ *
+ * Any line that already has server-saved packs on THIS inspection is
+ * shown with a "packs saved" hint; unticking it doesn't delete the
+ * saved packs (the walk just skips the line). If the operator really
+ * needs to remove packs, they walk to that line and use the pack
+ * editor.
+ */
+function LineSelector({
+  lines,
+  inspection,
+  selected,
+  onToggle,
+  onSelectAll,
+  onSelectNone,
+}: {
+  lines: PurchaseOrderLine[];
+  inspection: Inspection;
+  selected: Set<string>;
+  onToggle: (uuid: string, checked: boolean) => void;
+  onSelectAll: () => void;
+  onSelectNone: () => void;
+}) {
+  const savedLineUuids = useMemo(
+    () =>
+      new Set(
+        (inspection.items ?? [])
+          .map((it) => it.purchase_order_line_uuid)
+          .filter((u): u is string => Boolean(u)),
+      ),
+    [inspection.items],
+  );
+
+  const { remainingRows, fullyReceivedRows } = useMemo(() => {
+    const remaining: PurchaseOrderLine[] = [];
+    const done: PurchaseOrderLine[] = [];
+    for (const l of lines) {
+      const ordered = Number(l.qty_ordered) || 0;
+      const received = Number(l.qty_received) || 0;
+      if (ordered > 0 && received >= ordered) done.push(l);
+      else remaining.push(l);
+    }
+    return { remainingRows: remaining, fullyReceivedRows: done };
+  }, [lines]);
+
+  if (lines.length === 0) {
+    return (
+      <section className="space-y-4" data-testid="step-lines-selector">
+        <StepHeading title="What did this truck bring?" />
+        <p className="text-sm text-muted-foreground">
+          This PO has no lines to receive.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="space-y-4" data-testid="step-lines-selector">
+      <StepHeading title="What did this truck bring?" />
+      <p className="text-sm text-muted-foreground">
+        Tick every item you can see on the truck. Unticked items stay
+        unreceived and show up on the next delivery&apos;s inspection.
+      </p>
+
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium text-muted-foreground">
+          {selected.size} of {lines.length} selected
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onSelectAll}
+            className="text-xs font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            Select all
+          </button>
+          <span aria-hidden className="text-muted-foreground/40">·</span>
+          <button
+            type="button"
+            onClick={onSelectNone}
+            className="text-xs font-medium text-muted-foreground underline-offset-2 hover:underline"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      {remainingRows.length > 0 && (
+        <ul className="divide-y divide-border/40 rounded-xl border border-border/60 bg-card">
+          {remainingRows.map((line) => (
+            <LineSelectorRow
+              key={line.uuid}
+              line={line}
+              checked={selected.has(line.uuid)}
+              hasSavedPacks={savedLineUuids.has(line.uuid)}
+              onToggle={(checked) => onToggle(line.uuid, checked)}
+            />
+          ))}
+        </ul>
+      )}
+
+      {fullyReceivedRows.length > 0 && (
+        <div className="space-y-2">
+          <p className="px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Already fully received
+          </p>
+          <ul className="divide-y divide-border/40 rounded-xl border border-border/60 bg-muted/20">
+            {fullyReceivedRows.map((line) => (
+              <LineSelectorRow
+                key={line.uuid}
+                line={line}
+                checked={selected.has(line.uuid)}
+                hasSavedPacks={savedLineUuids.has(line.uuid)}
+                onToggle={(checked) => onToggle(line.uuid, checked)}
+                dimmed
+                locked
+              />
+            ))}
+          </ul>
+          <p className="px-1 text-[11px] text-muted-foreground">
+            Fully received in a prior delivery. Locked to prevent
+            accidental double-receipts — contact QC if the vendor
+            genuinely over-shipped.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function LineSelectorRow({
+  line,
+  checked,
+  hasSavedPacks,
+  onToggle,
+  dimmed = false,
+  locked = false,
+}: {
+  line: PurchaseOrderLine;
+  checked: boolean;
+  hasSavedPacks: boolean;
+  onToggle: (checked: boolean) => void;
+  dimmed?: boolean;
+  /** When true, the checkbox is replaced with a locked icon and the
+   *  row is inert. Used for fully-received lines — over-shipments
+   *  are a rare, deliberate flow, not something to hit by scrolling. */
+  locked?: boolean;
+}) {
+  const item = line.item;
+  const uomSymbol = item?.stock_uom?.symbol ?? item?.stock_uom?.code ?? null;
+  const ordered = Number(line.qty_ordered) || 0;
+  const received = Number(line.qty_received) || 0;
+  const remaining = Math.max(ordered - received, 0);
+
+  const innerContent = (
+    <>
+      {locked ? (
+        <CheckCircle2
+          className="mt-1 size-5 shrink-0 text-emerald-500/70"
+          aria-label="Fully received — locked"
+        />
+      ) : (
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="mt-1 size-5 shrink-0 accent-foreground"
+        />
+      )}
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="truncate text-sm font-medium">
+          {item?.name ?? "Unknown item"}
+        </p>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+          {item?.code && <span className="font-mono">{item.code}</span>}
+          {line.vendor_part_no && (
+            <span className="font-mono">Vendor: {line.vendor_part_no}</span>
+          )}
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-mono text-foreground">
+            {ordered}
+            {uomSymbol ? ` ${uomSymbol}` : ""}
+          </span>{" "}
+          ordered
+          {received > 0 && (
+            <>
+              {" · "}
+              <span className="font-mono">{received}</span> already received
+              {" · "}
+              <span className="font-mono font-semibold text-foreground">
+                {remaining}
+              </span>{" "}
+              remaining
+            </>
+          )}
+          {hasSavedPacks && (
+            <>
+              {" · "}
+              <span className="font-medium text-sky-700 dark:text-sky-300">
+                packs saved on this inspection
+              </span>
+            </>
+          )}
+        </p>
+      </div>
+    </>
+  );
+
+  return (
+    <li>
+      {locked ? (
+        <div
+          className={cn(
+            "flex items-start gap-3 px-3 py-3 text-left",
+            dimmed && "opacity-70",
+          )}
+        >
+          {innerContent}
+        </div>
+      ) : (
+        <label
+          className={cn(
+            "flex cursor-pointer items-start gap-3 px-3 py-3 text-left active:bg-muted",
+            dimmed && "opacity-70",
+          )}
+        >
+          {innerContent}
+        </label>
+      )}
+    </li>
+  );
+}
+
 
 const PackEditor = memo(function PackEditor({
   index,
@@ -2156,26 +2600,30 @@ const PackEditor = memo(function PackEditor({
       </div>
 
       <div className="grid grid-cols-3 gap-2">
-        <PackInput
-          label="L (mm)"
+        <DimensionMmInput
+          label="Length"
           value={pack.package_length_mm}
-          onChange={(v) => onPatch({ package_length_mm: v.replace(/\D/g, "") })}
+          onChange={(v) =>
+            // Strip any decimal — L/W/H stored as integer mm on BE.
+            onPatch({ package_length_mm: v.replace(/\D/g, "") })
+          }
           placeholder="400"
-          mode="integer"
         />
-        <PackInput
-          label="W (mm)"
+        <DimensionMmInput
+          label="Width"
           value={pack.package_width_mm}
-          onChange={(v) => onPatch({ package_width_mm: v.replace(/\D/g, "") })}
+          onChange={(v) =>
+            onPatch({ package_width_mm: v.replace(/\D/g, "") })
+          }
           placeholder="300"
-          mode="integer"
         />
-        <PackInput
-          label="H (mm)"
+        <DimensionMmInput
+          label="Height"
           value={pack.package_height_mm}
-          onChange={(v) => onPatch({ package_height_mm: v.replace(/\D/g, "") })}
+          onChange={(v) =>
+            onPatch({ package_height_mm: v.replace(/\D/g, "") })
+          }
           placeholder="250"
-          mode="integer"
         />
       </div>
 

@@ -80,6 +80,33 @@ export async function createDraftAction(
 }
 
 /**
+ * Hard-delete a draft inspection. Signed / terminal inspections
+ * return a `not_deletable` conflict from the server — surface that
+ * back to the caller so the UI can explain why.
+ *
+ * Used by the deliveries hub to discard mis-tapped New delivery
+ * drafts before they clutter the audit trail.
+ */
+export async function deleteInspectionAction(
+  uuid: string,
+): Promise<DeleteResult> {
+  const token = await activeToken();
+  if (!token) return unauthorizedResult("deleteInspectionAction");
+  try {
+    await api<void>(`/api/goods-in-inspections/${encodeURIComponent(uuid)}`, {
+      method: "DELETE",
+      token,
+    });
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "deleteInspectionAction",
+      fallbackDetail: "Couldn't delete the inspection.",
+    });
+  }
+}
+
+/**
  * Two-way: either patch the delivery-info columns (section 1) OR
  * patch a section JSONB. The backend's `update_dispatch/2` checks
  * for `section + value` and routes accordingly.

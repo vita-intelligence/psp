@@ -10813,6 +10813,15 @@ defmodule Backend.Production do
         Repo.transaction(fn ->
           with {:ok, updated_booking} <-
                  stamp_booking_consumed(actor, booking, consumed, route_choice),
+               # Repackage the leftover BEFORE the move — the operator
+               # has weighed/measured what's actually left in a new
+               # (smaller) container, and `ensure_placement_fits` needs
+               # the fresh dims to accept the leftover in a normal
+               # shelf cell. Optional: when omitted, the lot keeps its
+               # goods-in dims and any cell-fit failure is the caller's
+               # signal to redo closeout with a repackage payload.
+               :ok <-
+                 maybe_repackage_leftover(actor, booking, attrs, remaining),
                :ok <-
                  apply_booking_movement(
                    actor,
@@ -10820,7 +10829,8 @@ defmodule Backend.Production do
                    consumed,
                    remaining,
                    dest_cell,
-                   photo_meta
+                   photo_meta,
+                   attrs
                  ),
                :ok <-
                  maybe_stamp_placement_kept_at(
@@ -11211,13 +11221,72 @@ defmodule Backend.Production do
   #   3. Any feed-cell qty still left after step 1 moves to the
   #      scanned dispatch cell via `Stock.move_placement` (reuses
   #      the existing move + audit + photo plumbing).
+  # Optional dims refresh on the booking's lot BEFORE the leftover
+  # move.
+  #
+  # Two shapes accepted:
+  #
+  #   * `remainder_packaging: %{pack_fields}` (legacy) — single
+  #     container. Dims-only update; the leftover keeps its qty on
+  #     the original lot.
+  #   * `remainder_packaging: [%{pack1}, %{pack2}, ...]` — one entry
+  #     per container the operator poured the leftover into. Length
+  #     1 → same as the single-container path (dims-only). Length >
+  #     1 → split into N sibling lots (each with its own dims + qty),
+  #     handled inside `apply_booking_movement` AFTER the drain so
+  #     the placement qty matches the pack sum.
+  #
+  # This helper handles the "dims-only for the primary lot" step
+  # BEFORE the drain. The split path (creating siblings + moving
+  # them) is handled inside the movement flow, so this helper is a
+  # no-op when len > 1.
+  defp maybe_repackage_leftover(actor, booking, attrs, remaining) do
+    case Map.get(attrs, "remainder_packaging") do
+      nil ->
+        :ok
+
+      pack when is_map(pack) ->
+        run_single_pack_update(actor, booking, pack, remaining)
+
+      [single] when is_map(single) ->
+        run_single_pack_update(actor, booking, single, remaining)
+
+      packs when is_list(packs) and length(packs) > 1 ->
+        # Split path — apply the FIRST pack's dims to the primary
+        # lot now (so the leftover-that-stays fits its cell). The
+        # sibling-creation + move happens inside
+        # `apply_booking_movement` where we can time it against the
+        # drain.
+        run_single_pack_update(actor, booking, hd(packs), remaining)
+
+      _ ->
+        {:error, {:repackage_failed, :bad_shape}}
+    end
+  end
+
+  defp run_single_pack_update(actor, booking, pack, remaining) do
+    cond do
+      Decimal.compare(remaining, Decimal.new(0)) == :eq ->
+        :ok
+
+      true ->
+        lot = Repo.get!(Backend.Stock.Lot, booking.stock_lot_id)
+
+        case Backend.Stock.update_lot_packaging(actor, lot, pack) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, {:repackage_failed, reason}}
+        end
+    end
+  end
+
   defp apply_booking_movement(
          %User{} = actor,
          %ManufacturingOrderBooking{} = booking,
          consumed,
          remaining,
          dest_cell,
-         photo_meta
+         photo_meta,
+         attrs \\ %{}
        ) do
     lot = Repo.get!(StockLot, booking.stock_lot_id)
     mo = Repo.get!(ManufacturingOrder, booking.manufacturing_order_id)
@@ -11261,19 +11330,311 @@ defmodule Backend.Production do
              photo_meta,
              consume_reason
            ),
+         # Split the drained-down feed placement into N sibling lots
+         # when the operator poured the leftover into multiple
+         # containers. Runs AFTER the drain so the placement's qty
+         # equals feed_leftover (= sum of pack qtys). Each sibling's
+         # placement is also moved to dest_cell right here so all
+         # containers land at the same scanned dispatch cell.
+         # Returns {siblings, primary_move_qty}: for a split,
+         # primary_move_qty = pack[0].qty (the primary's placement
+         # was reduced to this value). No-split → primary_move_qty
+         # = feed_leftover (unchanged).
+         {:ok, {_sibling_lots, primary_move_qty}} <-
+           split_feed_leftover_into_siblings(
+             actor,
+             booking,
+             lot,
+             feed_placement,
+             feed_leftover,
+             dest_cell,
+             photo_meta,
+             attrs
+           ),
          :ok <-
            move_feed_leftover_to_dispatch(
              actor,
              booking,
              lot,
              feed_placement,
-             feed_leftover,
+             primary_move_qty,
              remaining,
              dest_cell,
              photo_meta
            ) do
       :ok
     end
+  end
+
+  # Split the leftover at the feed cell into N sibling lots when the
+  # operator's remainder_packaging payload has more than one pack.
+  # Runs AFTER the drain (in the same tx) so the placement qty equals
+  # feed_leftover, which must equal sum(pack qtys).
+  #
+  # No-op when:
+  #   * remainder_packaging is nil or a single-element map/list
+  #     (dims-only update already ran in `maybe_repackage_leftover`)
+  #   * feed_leftover == 0 (nothing to split)
+  #   * feed_placement is nil (no leftover physically at the feed
+  #     cell — the caller's separately-tracked `remaining` already
+  #     accounts for it via extra-cell drains)
+  #
+  # For each additional pack[1..N]:
+  #   * insert a sibling Lot inheriting the primary's identity fields
+  #     (item, batch, expiry, ...) with the pack's dims + qty
+  #   * insert a new placement at the SAME feed cell with pack.qty
+  #
+  # The primary lot's placement is reduced to pack[0].qty. The subsequent
+  # `move_feed_leftover_to_dispatch` step moves the primary; sibling
+  # placements move via `move_placement/3` at the tail here so ALL
+  # containers land at the same scanned dispatch cell.
+  #
+  # Returns `{:ok, [sibling_lot, ...]}` (empty list when no split).
+  defp split_feed_leftover_into_siblings(
+         actor,
+         booking,
+         primary_lot,
+         feed_placement,
+         feed_leftover,
+         dest_cell,
+         photo_meta,
+         attrs
+       ) do
+    packs = extract_pack_list(Map.get(attrs, "remainder_packaging"))
+
+    cond do
+      length(packs) <= 1 ->
+        # No split — primary's placement stays at feed_leftover,
+        # so the caller moves that same qty from feed → dispatch.
+        {:ok, {[], feed_leftover}}
+
+      feed_placement == nil ->
+        {:ok, {[], feed_leftover}}
+
+      Decimal.compare(feed_leftover, Decimal.new(0)) == :eq ->
+        {:ok, {[], feed_leftover}}
+
+      true ->
+        do_split_feed_leftover(
+          actor,
+          booking,
+          primary_lot,
+          feed_placement,
+          feed_leftover,
+          dest_cell,
+          photo_meta,
+          packs
+        )
+    end
+  end
+
+  defp extract_pack_list(nil), do: []
+  defp extract_pack_list(pack) when is_map(pack), do: [pack]
+  defp extract_pack_list(list) when is_list(list), do: Enum.filter(list, &is_map/1)
+  defp extract_pack_list(_), do: []
+
+  defp do_split_feed_leftover(
+         actor,
+         booking,
+         primary_lot,
+         feed_placement,
+         feed_leftover,
+         dest_cell,
+         photo_meta,
+         packs
+       ) do
+    with :ok <- ensure_pack_sum_matches(packs, feed_leftover),
+         {:ok, extras} <- decode_split_packs(tl(packs)),
+         {:ok, %{} = primary_pack} <- decode_split_pack_head(hd(packs)) do
+      # Reduce the primary's placement to pack[0].qty. The dims on
+      # the primary lot were already updated by the pre-drain single
+      # pack update in `maybe_repackage_leftover`.
+      {:ok, _} =
+        feed_placement
+        |> Backend.Stock.Placement.changeset(%{"qty" => primary_pack.qty})
+        |> Repo.update()
+
+      # Create each sibling + its placement at the feed cell, then
+      # move each placement to dest_cell so all containers land at
+      # the same scanned dispatch cell. Same photo used for every
+      # movement — one physical event covers the whole split.
+      siblings =
+        Enum.map(extras, fn pack ->
+          {:ok, sibling_lot} = clone_lot_for_split(actor, primary_lot, pack)
+
+          {:ok, _placement} =
+            %Backend.Stock.Placement{
+              company_id: primary_lot.company_id,
+              stock_lot_id: sibling_lot.id,
+              storage_cell_id: feed_placement.storage_cell_id,
+              qty: pack.qty
+            }
+            |> Repo.insert()
+
+          # Move the sibling to dispatch. Skipped when dest_cell is
+          # nil (keep-in-place — unusual for split but we don't
+          # error, the sibling stays at feed).
+          if dest_cell do
+            case Backend.Stock.move_placement(actor, sibling_lot.uuid, %{
+                   "from_cell_uuid" => feed_placement.storage_cell.uuid,
+                   "to_cell_uuid" => dest_cell.uuid,
+                   "qty" => Decimal.to_string(pack.qty),
+                   "photo_url" => Map.get(photo_meta, "photo_url"),
+                   "skip_photo_reason" => Map.get(photo_meta, "skip_photo_reason"),
+                   "reference_kind" => "manufacturing_order",
+                   "reference_uuid" => booking.manufacturing_order_id
+                 }) do
+              {:ok, _} -> :ok
+              {:error, reason} -> Repo.rollback({:move_failed, reason})
+            end
+          end
+
+          sibling_lot
+        end)
+
+      # Primary's placement now holds pack[0].qty — that's the qty
+      # the outer move step should move from feed → dispatch. Using
+      # the pre-split feed_leftover would trip the placement's
+      # insufficient-qty check because feed_leftover > pack[0].qty
+      # after the split.
+      {:ok, {siblings, primary_pack.qty}}
+    else
+      {:error, reason} -> {:error, {:repackage_failed, reason}}
+    end
+  end
+
+  defp ensure_pack_sum_matches(packs, feed_leftover) do
+    sum =
+      Enum.reduce(packs, Decimal.new(0), fn p, acc ->
+        case decode_pack_qty(p) do
+          {:ok, q} -> Decimal.add(acc, q)
+          _ -> acc
+        end
+      end)
+
+    if Decimal.equal?(Decimal.round(sum, 6), Decimal.round(feed_leftover, 6)) do
+      :ok
+    else
+      {:error, {:pack_sum_mismatch, %{sum: sum, expected: feed_leftover}}}
+    end
+  end
+
+  defp decode_pack_qty(pack) do
+    case pack["qty"] || pack[:qty] do
+      %Decimal{} = d -> {:ok, d}
+      n when is_integer(n) -> {:ok, Decimal.new(n)}
+      s when is_binary(s) ->
+        case Decimal.parse(s) do
+          {d, ""} -> {:ok, d}
+          _ -> {:error, :bad_decimal}
+        end
+      _ -> {:error, :bad_decimal}
+    end
+  end
+
+  defp decode_split_pack_head(pack) do
+    case decode_pack_qty(pack) do
+      {:ok, qty} -> {:ok, %{qty: qty}}
+      err -> err
+    end
+  end
+
+  defp decode_split_packs(packs) do
+    packs
+    |> Enum.reduce_while({:ok, []}, fn raw, {:ok, acc} ->
+      with {:ok, qty} <- decode_pack_qty(raw),
+           :ok <- non_negative(qty),
+           {:ok, l} <- to_int(raw["package_length_mm"] || raw[:package_length_mm]),
+           :ok <- positive_int(l),
+           {:ok, w} <- to_int(raw["package_width_mm"] || raw[:package_width_mm]),
+           :ok <- positive_int(w),
+           {:ok, h} <- to_int(raw["package_height_mm"] || raw[:package_height_mm]),
+           :ok <- positive_int(h),
+           {:ok, kg} <- decode_pack_qty(%{"qty" => raw["package_weight_kg"] || raw[:package_weight_kg]}),
+           {:ok, sf} <- to_int(raw["stack_factor"] || raw[:stack_factor] || 1),
+           :ok <- positive_int(sf) do
+        {:cont,
+         {:ok,
+          [
+            %{
+              qty: qty,
+              package_length_mm: l,
+              package_width_mm: w,
+              package_height_mm: h,
+              package_weight_kg: kg,
+              stack_factor: sf
+            }
+            | acc
+          ]}}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      other -> other
+    end
+  end
+
+  defp non_negative(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new(0)) != :lt, do: :ok, else: {:error, :not_positive}
+  end
+
+  defp to_int(n) when is_integer(n), do: {:ok, n}
+  defp to_int(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> {:ok, n}
+      _ -> {:error, :bad_int}
+    end
+  end
+  defp to_int(_), do: {:error, :bad_int}
+
+  defp positive_int(n) when is_integer(n) and n > 0, do: :ok
+  defp positive_int(_), do: {:error, :not_positive}
+
+  # Clone the primary lot's identity fields into a new Lot row for
+  # the sibling. Skips placements — the caller inserts the placement
+  # at the feed cell with the pack's qty.
+  defp clone_lot_for_split(%User{} = actor, %StockLot{} = primary, pack) do
+    now_dt = now()
+
+    attrs = %{
+      company_id: primary.company_id,
+      item_id: primary.item_id,
+      unit_of_measurement_id: primary.unit_of_measurement_id,
+      status: primary.status,
+      qty_received: pack.qty,
+      unit_cost: primary.unit_cost,
+      currency: primary.currency,
+      source_kind: primary.source_kind,
+      source_ref: primary.source_ref,
+      supplier_batch_no: primary.supplier_batch_no,
+      country_of_origin: primary.country_of_origin,
+      revision: primary.revision,
+      overall_risk: primary.overall_risk,
+      allergen_status: primary.allergen_status,
+      coa_status: primary.coa_status,
+      quality_status: primary.quality_status,
+      manufactured_at: primary.manufactured_at,
+      expiry_at: primary.expiry_at,
+      available_from: primary.available_from,
+      received_at: primary.received_at,
+      package_length_mm: pack.package_length_mm,
+      package_width_mm: pack.package_width_mm,
+      package_height_mm: pack.package_height_mm,
+      package_weight_kg: pack.package_weight_kg,
+      units_per_package: primary.units_per_package,
+      stack_factor: pack.stack_factor,
+      goods_in_inspection_id: primary.goods_in_inspection_id,
+      created_by_id: actor.id,
+      updated_by_id: actor.id,
+      inserted_at: now_dt,
+      updated_at: now_dt
+    }
+
+    %StockLot{}
+    |> StockLot.changeset(attrs)
+    |> Repo.insert()
   end
 
   defp decimal_min(a, b), do: if(Decimal.compare(a, b) == :gt, do: b, else: a)
@@ -12274,12 +12635,48 @@ defmodule Backend.Production do
           booking_snapshot(updated)
         )
 
+        # Booking changes (picked / received / preflight-confirmed)
+        # flip the MO's derived state (mo_preflight_complete? counts
+        # unreceived bookings; pickup rollup counts unpicked). Fire an
+        # MO broadcast so the FE realtime channels refresh AND the
+        # customer portal roadmap invalidates via the auto-hook in
+        # Backend.Broadcasts. Without this, preflight sign-off silently
+        # advances the MO stage without any downstream notification.
+        broadcast_mo_for_booking(updated)
+
         {:ok, Repo.preload(updated, [:item, :stock_lot, :picked_by, :received_by])}
 
       err ->
         err
     end
   end
+
+  # Fetch the MO's (uuid, company_id) via one small query so we can
+  # broadcast the MO-level change without preloading the full MO on
+  # every booking update. Silent-fail on missing MO — the booking
+  # update already committed and the broadcast is best-effort.
+  defp broadcast_mo_for_booking(%ManufacturingOrderBooking{manufacturing_order_id: mo_id})
+       when is_integer(mo_id) do
+    case Repo.one(
+           from(mo in ManufacturingOrder,
+             where: mo.id == ^mo_id,
+             select: {mo.uuid, mo.company_id}
+           )
+         ) do
+      {uuid, company_id} when is_binary(uuid) and is_integer(company_id) ->
+        Backend.Broadcasts.entity_changed(
+          "manufacturing-order",
+          uuid,
+          company_id,
+          "booking_changed"
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp broadcast_mo_for_booking(_), do: :ok
 
   @doc """
   True when every raw_material / packaging booking on the MO has been

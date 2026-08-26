@@ -45,7 +45,11 @@ defmodule Backend.GoodsIn.MobileIncoming do
   Returns:
 
       %{
-        items: [%{purchase_order: PO_payload, open_inspection: insp | nil}],
+        items: [%{
+          purchase_order: PO_payload,
+          open_inspection: insp | nil,             # most-recent, for legacy FE
+          open_inspection_counts: %{draft: 3, submitted: 1}  # multi-delivery summary
+        }],
         by_day: %{"2026-06-11" => 3, "2026-06-12" => 1, ...}
       }
   """
@@ -135,24 +139,33 @@ defmodule Backend.GoodsIn.MobileIncoming do
         )
       )
 
-    # Bucket by PO id, keeping the first (most recent) per group.
-    by_po =
+    # Bucket by PO id — keep both the most-recent inspection (legacy
+    # single-inspection FE) AND per-status counts so the card can show
+    # a proper multi-delivery summary (e.g. "3 drafts · 1 awaiting QC").
+    by_po_recent =
       Enum.reduce(inspections, %{}, fn insp, acc ->
         Map.put_new(acc, insp.purchase_order_id, insp)
       end)
 
+    by_po_counts =
+      Enum.reduce(inspections, %{}, fn insp, acc ->
+        counts = Map.get(acc, insp.purchase_order_id, %{})
+        counts = Map.update(counts, insp.status, 1, &(&1 + 1))
+        Map.put(acc, insp.purchase_order_id, counts)
+      end)
+
     Enum.map(pos, fn po ->
-      {po, Map.get(by_po, po.id)}
+      {po, Map.get(by_po_recent, po.id), Map.get(by_po_counts, po.id, %{})}
     end)
   end
 
-  defp shape_response(pairs) do
+  defp shape_response(triples) do
     by_day =
-      Enum.reduce(pairs, %{}, fn {po, _insp}, acc ->
+      Enum.reduce(triples, %{}, fn {po, _insp, _counts}, acc ->
         key = Date.to_iso8601(po.expected_delivery_date)
         Map.update(acc, key, 1, &(&1 + 1))
       end)
 
-    %{items: pairs, by_day: by_day}
+    %{items: triples, by_day: by_day}
   end
 end

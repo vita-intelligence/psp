@@ -847,6 +847,16 @@ export interface ManufacturingOrderBookingLotSummary {
    *  pickup directions screen so the worker can recognise the box
    *  at the shelf instead of just matching a label. */
   last_photo_url: string | null;
+  /** Current packaging dims — the mobile closeout uses these to
+   *  pre-fill the Repackage panel so the operator can see the
+   *  previous values and only edit what changed. Nil for legacy
+   *  lots that pre-date the dims columns. */
+  package_length_mm: number | null;
+  package_width_mm: number | null;
+  package_height_mm: number | null;
+  package_weight_kg: string | null;
+  /** Max identical packs the warehouse can safely stack vertically. */
+  stack_factor: number | null;
 }
 
 export interface ManufacturingOrderBookingCellSummary {

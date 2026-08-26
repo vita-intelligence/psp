@@ -39,6 +39,28 @@ export interface CloseBookingInput {
    *    it).
    *  - `"send_to_warehouse"` — same as ``"auto"``, explicit form. */
   route_choice?: "auto" | "keep_in_place" | "send_to_warehouse";
+  /** Fresh physical dims for the LEFTOVER containers. Applied to the
+   *  lot BEFORE the leftover is moved to dispatch so the cell-fit
+   *  gate uses the new (smaller) dims instead of the goods-in
+   *  original that describes the whole drum.
+   *
+   *  Length 1 → dims-only update on the primary lot.
+   *  Length > 1 → split into N sibling lots: the primary keeps
+   *    pack[0]'s dims + qty, each additional pack becomes a sibling
+   *    lot inheriting the primary's identity fields (item, batch,
+   *    expiry, ...) but with its own physical footprint. Sum of pack
+   *    qtys must equal the leftover qty.
+   *
+   *  Omit when the leftover is still in the original container
+   *  (nothing to refresh). */
+  remainder_packaging?: Array<{
+    qty: string;
+    package_length_mm: string;
+    package_width_mm: string;
+    package_height_mm: string;
+    package_weight_kg: string;
+    stack_factor?: string;
+  }>;
 }
 
 export type CloseoutBookingResult =
@@ -78,6 +100,8 @@ export async function closeoutBookingAction(
   if (input.photo_url) body.photo_url = input.photo_url;
   if (input.route_choice && input.route_choice !== "auto")
     body.route_choice = input.route_choice;
+  if (input.remainder_packaging)
+    body.remainder_packaging = input.remainder_packaging;
 
   try {
     const { booking } = await api<{ booking: ManufacturingOrderBooking }>(

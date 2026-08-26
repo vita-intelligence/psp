@@ -231,6 +231,42 @@ defmodule Backend.Stock.Lot do
     |> validate_number(:stack_factor, greater_than: 0, less_than_or_equal_to: 50)
   end
 
+  @doc """
+  Narrow changeset for `Backend.Stock.repackage_lot/3`. Only the
+  packaging dims + qty_received + updated_by_id are cast — identity
+  fields (item, batch, expiry, ...) stay frozen so downstream lot
+  history isn't disrupted by an operator retyping the wrong thing.
+  """
+  def repackage_changeset(%__MODULE__{} = lot, attrs) do
+    lot
+    |> cast(attrs, [
+      :qty_received,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor,
+      :updated_by_id
+    ])
+    |> validate_required([
+      :qty_received,
+      :package_length_mm,
+      :package_width_mm,
+      :package_height_mm,
+      :package_weight_kg,
+      :units_per_package,
+      :stack_factor
+    ])
+    |> validate_number(:qty_received, greater_than: 0)
+    |> validate_number(:package_length_mm, greater_than: 0)
+    |> validate_number(:package_width_mm, greater_than: 0)
+    |> validate_number(:package_height_mm, greater_than: 0)
+    |> validate_number(:package_weight_kg, greater_than: 0)
+    |> validate_number(:units_per_package, greater_than: 0)
+    |> validate_number(:stack_factor, greater_than: 0, less_than_or_equal_to: 50)
+  end
+
   def changeset(lot, attrs) do
     lot
     |> cast(attrs, [

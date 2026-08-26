@@ -7,8 +7,10 @@ import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getItem } from "@/lib/items/server";
 import { listItemPurchaseTerms } from "@/lib/purchase-terms";
+import { listInspectionsForItem } from "@/lib/goods-in/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { ItemPurchaseTermsCard } from "./item-purchase-terms-card";
+import { ItemRecentDeliveriesCard } from "./item-recent-deliveries-card";
 import { listUnitsOfMeasurement } from "@/lib/units/server";
 import {
   listActiveAttributeDefinitionsForScope,
@@ -50,6 +52,7 @@ export default async function EditItemPage({
     certificates,
     storageTags,
     purchaseTerms,
+    recentDeliveries,
     prefs,
   ] = await Promise.all([
     listUnitsOfMeasurement(),
@@ -59,6 +62,7 @@ export default async function EditItemPage({
     listCertificatesForPicker(),
     listStorageTags(),
     listItemPurchaseTerms(uuid),
+    listInspectionsForItem(uuid),
     getCompanyDefaults(),
   ]);
 
@@ -122,6 +126,16 @@ export default async function EditItemPage({
           {prefs && (
             <ItemPurchaseTermsCard terms={purchaseTerms} prefs={prefs} />
           )}
+
+          {/* Recent goods-in inspections that touched this item —
+              multi-delivery view across every PO. A single PO can
+              arrive across several trucks (each with its own
+              inspection), so an item shipped often lands here many
+              times per PO. */}
+          <ItemRecentDeliveriesCard
+            inspections={recentDeliveries}
+            prefs={prefs}
+          />
 
           {/* BOMs — visible only when the item's `item_type` is
               bommable (finished_product or semi_finished). Server-

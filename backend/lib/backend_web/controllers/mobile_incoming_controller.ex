@@ -50,11 +50,11 @@ defmodule BackendWeb.MobileIncomingController do
   defp parse_window(%{"days" => raw}), do: raw
   defp parse_window(_), do: 7
 
-  # Per-row shape: PO summary + the most-recent open inspection (or
-  # nil). Deliberately slim — the operator card doesn't need money
-  # totals or approval signatures, just "what's coming, who's it from,
-  # is someone already on it".
-  defp mobile_incoming_row({po, open_inspection}) do
+  # Per-row shape: PO summary + the most-recent open inspection (for
+  # the legacy single-inspection badge) PLUS per-status counts so the
+  # card can render a proper multi-delivery summary when a PO has
+  # several concurrent drafts (spam-tap case).
+  defp mobile_incoming_row({po, open_inspection, counts}) do
     %{
       purchase_order: %{
         id: po.id,
@@ -68,7 +68,11 @@ defmodule BackendWeb.MobileIncomingController do
         default_warehouse: warehouse_compact(po.default_warehouse),
         lines: Enum.map(po.lines || [], &line_compact/1)
       },
-      open_inspection: maybe_open_inspection(open_inspection)
+      open_inspection: maybe_open_inspection(open_inspection),
+      open_inspection_counts: %{
+        draft: Map.get(counts, "draft", 0),
+        submitted: Map.get(counts, "submitted", 0)
+      }
     }
   end
 

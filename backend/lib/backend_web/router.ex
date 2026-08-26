@@ -414,6 +414,13 @@ defmodule BackendWeb.Router do
       # route `/api/vendors/:vendor_id/purchase-terms`.
       get "/purchase-terms", PurchaseTermController, :list_for_item
 
+      # Recent goods-in inspections that touched this item across
+      # any PO — powers the "Recent deliveries" section on the item
+      # detail page. Read-only.
+      get "/goods-in-inspections",
+          GoodsInInspectionController,
+          :index_for_item
+
       # Compliance evidence files (spec sheet, food-contact DoC,
       # migration test report, …). Same shape as the vendor / lot /
       # PO / goods-in attachments — bytes live in Backend.Storage,
@@ -1177,6 +1184,10 @@ defmodule BackendWeb.Router do
     scope "/goods-in-inspections" do
       get "/:id", GoodsInInspectionController, :show
       patch "/:id", GoodsInInspectionController, :update
+      # Discard a draft (spam / mis-tapped New delivery). Server
+      # rejects with :not_deletable if the inspection has been
+      # signed — signed inspections stay as audit artefacts.
+      delete "/:id", GoodsInInspectionController, :delete
     end
 
     # Inspections ledger — global "Goods-In Inspections" feed across

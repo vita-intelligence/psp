@@ -47,22 +47,10 @@ export default async function MobilePreReceivePage({ params }: Props) {
 
   if (!purchaseOrder) notFound();
 
-  // Prefer an editable draft, fall back to anything submitted /
-  // already adjudicated. The pre-receive CTA flips its copy + icon
-  // based on the status so a terminal inspection routes to a
-  // read-only view (no accidental edits) but stays one tap away — the
-  // operator needs to be able to re-print labels they missed during
-  // the wizard.
-  const openInspection =
-    inspections.find((i) => i.status === "draft") ??
-    inspections.find((i) => i.status === "submitted") ??
-    inspections[0] ??
-    null;
-
   return (
     <MobilePreReceiveCard
       purchaseOrder={purchaseOrder}
-      openInspection={openInspection}
+      inspections={inspections}
     />
   );
 }

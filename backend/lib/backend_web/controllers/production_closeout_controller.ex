@@ -171,6 +171,16 @@ defmodule BackendWeb.ProductionCloseoutController do
           "Couldn't move the remainder: #{inspect(reason)}"
         )
 
+      {:error, {:repackage_failed, %Ecto.Changeset{} = cs}} ->
+        changeset_error(conn, cs)
+
+      {:error, {:repackage_failed, reason}} ->
+        unprocessable(
+          conn,
+          "repackage_failed",
+          repackage_failure_message(reason)
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
 
@@ -178,6 +188,24 @@ defmodule BackendWeb.ProductionCloseoutController do
         unprocessable(conn, "closeout_failed", inspect(reason))
     end
   end
+
+  # User-friendly translation of the internal repackage error atoms.
+  # The FE surfaces this string directly in the closeout error banner
+  # so the operator knows which repackage field is off.
+  defp repackage_failure_message(:not_a_map),
+    do: "Repackage details were malformed — please try again."
+
+  defp repackage_failure_message(:bad_decimal),
+    do: "Weight has to be a number (like 10 or 10.5). Check the Weight (kg) field on the Repackage panel."
+
+  defp repackage_failure_message(:bad_int),
+    do: "Length, Width, Height, and Stack factor all need whole numbers. Check the Repackage panel."
+
+  defp repackage_failure_message(:not_positive),
+    do: "Every repackage field must be a positive number greater than zero."
+
+  defp repackage_failure_message(other),
+    do: "Couldn't update the leftover packaging: #{inspect(other)}"
 
   def close_output(conn, %{"lot_uuid" => lot_uuid} = params) do
     actor = conn.assigns.current_user

@@ -87,6 +87,30 @@ defmodule Backend.GoodsIn do
   end
 
   @doc """
+  Recent inspections that touched a given item across all POs. Joins
+  through `goods_in_inspection_items → purchase_order_lines` and
+  returns distinct inspection rows newest-first. Powers the "Recent
+  deliveries" section on the item detail page.
+  """
+  def list_for_item(company_id, item_id, opts \\ []) when is_integer(item_id) do
+    limit = Keyword.get(opts, :limit, 10)
+
+    Repo.all(
+      from(i in Inspection,
+        join: it in InspectionItem,
+        on: it.goods_in_inspection_id == i.id,
+        join: pol in Backend.Purchasing.PurchaseOrderLine,
+        on: pol.id == it.purchase_order_line_id,
+        where: i.company_id == ^company_id and pol.item_id == ^item_id,
+        distinct: true,
+        order_by: [desc: i.delivery_date, desc: i.id],
+        limit: ^limit,
+        preload: [:goods_in_operator, :quality_approver, purchase_order: :vendor]
+      )
+    )
+  end
+
+  @doc """
   Global "Inspections ledger" — paginated list of every inspection
   for the company, with PO, operator, and approver preloaded so the
   desktop ledger renders the row without a per-row fetch.
@@ -221,6 +245,57 @@ defmodule Backend.GoodsIn do
         other
     end
   end
+
+  @doc """
+  Hard-delete a draft inspection. Draft-only — signed inspections
+  are audit artefacts and must never be deleted (use void/reject
+  actions if the physical goods were rejected).
+
+  The DB cascades:
+    * `goods_in_inspection_items` → delete_all (per-line drafts go)
+    * `goods_in_inspection_files` metadata → delete_all
+    * `stock_lots.goods_in_inspection_id` → nilify (defensive: draft
+      inspections shouldn't have lots, but if any exist their ref is
+      cleared, not deleted).
+
+  We also purge the blob files from `Storage` before the cascade drops
+  the metadata, otherwise the blobs would leak on disk.
+  """
+  def delete_draft(%User{} = actor, %Inspection{status: "draft"} = i) do
+    before_snap = snapshot(i)
+
+    # Snapshot file blob paths up front — after Repo.delete, the
+    # cascade wipes the metadata rows and we can't recover them.
+    file_paths =
+      from(f in InspectionFile, where: f.goods_in_inspection_id == ^i.id, select: f.blob_path)
+      |> Repo.all()
+
+    case Repo.delete(i) do
+      {:ok, deleted} ->
+        # Best-effort blob cleanup. Failing to nuke a file blob
+        # shouldn't roll back the delete — orphan blobs are a smaller
+        # problem than half-deleted inspections.
+        Enum.each(file_paths, fn path ->
+          if path, do: _ = Storage.delete(path)
+        end)
+
+        Audit.record_deleted(actor, "goods_in_inspection", deleted, before_snap)
+
+        Backend.Broadcasts.entity_changed(
+          "goods-in-inspection",
+          deleted.uuid,
+          deleted.company_id,
+          "deleted"
+        )
+
+        {:ok, deleted}
+
+      {:error, cs} ->
+        {:error, cs}
+    end
+  end
+
+  def delete_draft(_actor, %Inspection{}), do: {:error, :not_deletable}
 
   # ----- section + delivery info patches --------------------------
 
@@ -417,7 +492,7 @@ defmodule Backend.GoodsIn do
   Returns `{:error, :not_editable}` if status != draft.
   """
   def sign_operator(%User{} = actor, %Inspection{status: "draft"} = i, attrs) do
-    with :ok <- ensure_all_lines_decided(i),
+    with :ok <- ensure_at_least_one_line_decided(i),
          :ok <- ensure_all_sections_touched(i) do
       # FE posts `signature_image` to match the approver endpoint's
       # contract — rename it to the schema field before casting so
@@ -725,30 +800,26 @@ defmodule Backend.GoodsIn do
 
   # ----- helpers --------------------------------------------------
 
-  defp ensure_all_lines_decided(%Inspection{} = i) do
-    po_line_ids =
-      Repo.all(
-        from(l in PurchaseOrderLine,
-          where: l.purchase_order_id == ^i.purchase_order_id,
-          select: l.id
-        )
+  # Multi-delivery: one PO can arrive across several trucks, each
+  # with its own inspection. The operator ticks which lines came on
+  # THIS truck (mobile "Which items came?" step) and only those get
+  # inspection_items. Untouched lines resurface on the next
+  # delivery's inspection.
+  #
+  # So sign-off just needs "at least one line decided" — a fully
+  # empty inspection is nonsensical (no goods were received), but
+  # partial coverage of the PO is the whole point.
+  defp ensure_at_least_one_line_decided(%Inspection{} = i) do
+    decided_count =
+      Repo.aggregate(
+        from(it in InspectionItem, where: it.goods_in_inspection_id == ^i.id),
+        :count
       )
-      |> MapSet.new()
 
-    decided_ids =
-      Repo.all(
-        from(it in InspectionItem,
-          where: it.goods_in_inspection_id == ^i.id,
-          select: it.purchase_order_line_id
-        )
-      )
-      |> MapSet.new()
-
-    if MapSet.equal?(po_line_ids, decided_ids) do
+    if decided_count > 0 do
       :ok
     else
-      missing = MapSet.difference(po_line_ids, decided_ids) |> MapSet.to_list()
-      {:error, {:lines_undecided, missing}}
+      {:error, :no_lines_decided}
     end
   end
 

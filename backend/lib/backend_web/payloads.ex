@@ -4264,7 +4264,20 @@ defmodule BackendWeb.Payloads do
       qty_on_hand: decimal_to_string(qty_on_hand),
       # Last on-shelf photo for this lot — surfaced on the pickup
       # directions screen so the worker can recognise the box.
-      last_photo_url: Map.get(last_photo_urls, lot.id)
+      last_photo_url: Map.get(last_photo_urls, lot.id),
+      # Current packaging dims — the mobile closeout uses these to
+      # pre-fill the Repackage panel so the operator sees the previous
+      # values and only edits what the leftover container actually
+      # measures. Nil until the lot has been through goods-in (draft
+      # / reserved lots pre-dating dims).
+      package_length_mm: lot.package_length_mm,
+      package_width_mm: lot.package_width_mm,
+      package_height_mm: lot.package_height_mm,
+      package_weight_kg: decimal_to_string(lot.package_weight_kg),
+      # Stack factor — max identical packs that can be safely stacked
+      # vertically on this lot's container. Drives the PackBoxPreview
+      # 3D visualisation on the closeout Repackage panel.
+      stack_factor: lot.stack_factor
     }
   end
 
@@ -5161,6 +5174,7 @@ defmodule BackendWeb.Payloads do
       quality_approver_signature_image: i.quality_approver_signature_image,
       purchase_order_id: i.purchase_order_id,
       purchase_order_uuid: maybe_po_uuid(i),
+      purchase_order_code: maybe_po_code(i),
       items: maybe_list(i.items, &goods_in_inspection_item/1),
       files: preloaded_list(i, :files, fn f -> goods_in_inspection_file(f, i) end),
       inserted_at: i.inserted_at,
@@ -5194,6 +5208,10 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_po_uuid(%{purchase_order: %{uuid: uuid}}) when is_binary(uuid), do: uuid
   defp maybe_po_uuid(_), do: nil
+
+  defp maybe_po_code(%{purchase_order: %Backend.Purchasing.PurchaseOrder{} = po}),
+    do: render_code(po, "purchase_order")
+  defp maybe_po_code(_), do: nil
 
   @doc """
   Slim "inspections ledger" row — fields the global desktop ledger

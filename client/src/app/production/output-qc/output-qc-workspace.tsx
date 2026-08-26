@@ -28,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { DimensionMmInput } from "@/components/forms/dimension-mm-input";
 import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
@@ -768,18 +769,18 @@ export function QcCard({
               value={passDraft.qty_received}
               onChange={(v) => patchPass("qty_received", v)}
             />
-            <PackInput
-              label="Length (mm)"
+            <DimensionMmInput
+              label="Length"
               value={passDraft.package_length_mm}
               onChange={(v) => patchPass("package_length_mm", v)}
             />
-            <PackInput
-              label="Width (mm)"
+            <DimensionMmInput
+              label="Width"
               value={passDraft.package_width_mm}
               onChange={(v) => patchPass("package_width_mm", v)}
             />
-            <PackInput
-              label="Height (mm)"
+            <DimensionMmInput
+              label="Height"
               value={passDraft.package_height_mm}
               onChange={(v) => patchPass("package_height_mm", v)}
             />
@@ -1058,18 +1059,18 @@ function PartialPackagingBlock({
         contents qty above.
       </p>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        <PackInput
-          label="Length (mm)"
+        <DimensionMmInput
+          label="Length"
           value={pkg.length_mm}
           onChange={(v) => patch("length_mm", v)}
         />
-        <PackInput
-          label="Width (mm)"
+        <DimensionMmInput
+          label="Width"
           value={pkg.width_mm}
           onChange={(v) => patch("width_mm", v)}
         />
-        <PackInput
-          label="Height (mm)"
+        <DimensionMmInput
+          label="Height"
           value={pkg.height_mm}
           onChange={(v) => patch("height_mm", v)}
         />

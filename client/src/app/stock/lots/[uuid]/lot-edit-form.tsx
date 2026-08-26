@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DimensionMmInput } from "@/components/forms/dimension-mm-input";
 import {
   Select,
   SelectContent,
@@ -808,63 +809,48 @@ function PackagingSection({
       </p>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <Field
+        <DimensionMmInput
+          label="Length"
           id="package_length_mm"
-          label="Length (mm)"
-          error={fieldErrors.package_length_mm?.[0]}
+          value={draft.package_length_mm}
+          onChange={(v) =>
+            onChange("package_length_mm", v.replace(/\D/g, ""))
+          }
+          collabKey="package_length_mm"
+          focusField={focusField}
+          blurField={blurField}
           editor={fieldEditors.package_length_mm}
-        >
-          <Input
-            id="package_length_mm"
-            value={draft.package_length_mm}
-            onChange={(e) =>
-              onChange("package_length_mm", e.target.value.replace(/\D/g, ""))
-            }
-            onFocus={() => focusField("package_length_mm")}
-            onBlur={() => blurField("package_length_mm")}
-            placeholder="e.g. 400"
-            className="h-9 font-mono"
-            inputMode="numeric"
-          />
-        </Field>
-        <Field
+          error={fieldErrors.package_length_mm?.[0]}
+          placeholder="e.g. 400"
+        />
+        <DimensionMmInput
+          label="Width"
           id="package_width_mm"
-          label="Width (mm)"
-          error={fieldErrors.package_width_mm?.[0]}
+          value={draft.package_width_mm}
+          onChange={(v) =>
+            onChange("package_width_mm", v.replace(/\D/g, ""))
+          }
+          collabKey="package_width_mm"
+          focusField={focusField}
+          blurField={blurField}
           editor={fieldEditors.package_width_mm}
-        >
-          <Input
-            id="package_width_mm"
-            value={draft.package_width_mm}
-            onChange={(e) =>
-              onChange("package_width_mm", e.target.value.replace(/\D/g, ""))
-            }
-            onFocus={() => focusField("package_width_mm")}
-            onBlur={() => blurField("package_width_mm")}
-            placeholder="e.g. 400"
-            className="h-9 font-mono"
-            inputMode="numeric"
-          />
-        </Field>
-        <Field
+          error={fieldErrors.package_width_mm?.[0]}
+          placeholder="e.g. 400"
+        />
+        <DimensionMmInput
+          label="Height"
           id="package_height_mm"
-          label="Height (mm)"
-          error={fieldErrors.package_height_mm?.[0]}
+          value={draft.package_height_mm}
+          onChange={(v) =>
+            onChange("package_height_mm", v.replace(/\D/g, ""))
+          }
+          collabKey="package_height_mm"
+          focusField={focusField}
+          blurField={blurField}
           editor={fieldEditors.package_height_mm}
-        >
-          <Input
-            id="package_height_mm"
-            value={draft.package_height_mm}
-            onChange={(e) =>
-              onChange("package_height_mm", e.target.value.replace(/\D/g, ""))
-            }
-            onFocus={() => focusField("package_height_mm")}
-            onBlur={() => blurField("package_height_mm")}
-            placeholder="e.g. 600"
-            className="h-9 font-mono"
-            inputMode="numeric"
-          />
-        </Field>
+          error={fieldErrors.package_height_mm?.[0]}
+          placeholder="e.g. 600"
+        />
         <Field
           id="package_weight_kg"
           label="Net weight (kg)"

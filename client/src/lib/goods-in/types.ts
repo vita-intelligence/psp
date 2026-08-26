@@ -146,6 +146,9 @@ export interface Inspection {
    *  it to fetch the PO for line metadata without having to round-trip
    *  through the integer id. */
   purchase_order_uuid: string | null;
+  /** Parent PO code (e.g. `PO00042`) — present when the inspection
+   *  was loaded with `:purchase_order` preloaded. Nullable otherwise. */
+  purchase_order_code: string | null;
   items: InspectionItem[];
   files: InspectionFile[];
   inserted_at: string;

@@ -33,7 +33,8 @@ defmodule BackendWeb.GoodsInInspectionController do
               :upsert_item,
               :sign_operator,
               :upload_file,
-              :delete_file
+              :delete_file,
+              :delete
             ]
 
   plug RequirePermission, "goods_in.approve"
@@ -56,6 +57,32 @@ defmodule BackendWeb.GoodsInInspectionController do
       _ -> {:error, :not_found}
     end
   end
+
+  @doc """
+  Recent inspections that touched a given item (across all POs).
+  Powers the "Recent deliveries" section on the item detail page.
+  """
+  def index_for_item(conn, %{"item_id" => item_uuid} = params) do
+    actor = conn.assigns.current_user
+    limit = parse_limit(params["limit"], 10)
+
+    with %Backend.Items.Item{} = item <- Backend.Items.get_for_company(actor.company_id, item_uuid) do
+      inspections = GoodsIn.list_for_item(actor.company_id, item.id, limit: limit)
+      json(conn, %{items: Enum.map(inspections, &Payloads.goods_in_inspection/1)})
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp parse_limit(nil, default), do: default
+  defp parse_limit(raw, default) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} when n > 0 and n <= 100 -> n
+      _ -> default
+    end
+  end
+  defp parse_limit(n, _default) when is_integer(n) and n > 0 and n <= 100, do: n
+  defp parse_limit(_, default), do: default
 
   def show(conn, %{"id" => uuid}) do
     actor = conn.assigns.current_user
@@ -166,6 +193,36 @@ defmodule BackendWeb.GoodsInInspectionController do
     end
   end
 
+  @doc """
+  Discard a DRAFT inspection. Signed / terminal inspections are audit
+  artefacts and cannot be deleted — the operator must void or reject
+  through the QC flow instead.
+
+  Used by the mobile deliveries hub to clean up spam-created empty
+  drafts (operator taps New delivery multiple times, only fills one).
+  """
+  def delete(conn, %{"id" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Inspection{} = inspection <- GoodsIn.get(actor.company_id, uuid),
+         {:ok, _deleted} <- GoodsIn.delete_draft(actor, inspection) do
+      send_resp(conn, :no_content, "")
+    else
+      nil ->
+        {:error, :not_found}
+
+      {:error, :not_deletable} ->
+        conflict(
+          conn,
+          "not_deletable",
+          "Only draft inspections can be deleted. Signed inspections are audit artefacts — use void / reject instead."
+        )
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
   # ----- update (delivery info + section JSONBs) -------------------
 
   def update(conn, %{"id" => uuid} = params) do
@@ -265,11 +322,11 @@ defmodule BackendWeb.GoodsInInspectionController do
           "Inspection is no longer in draft — can't operator-sign."
         )
 
-      {:error, {:lines_undecided, missing}} ->
+      {:error, :no_lines_decided} ->
         unprocessable(
           conn,
-          "lines_undecided",
-          "Decide every PO line before signing as operator (#{length(missing)} undecided)."
+          "no_lines_decided",
+          "Add at least one item to this delivery before signing off. Go back to \"Which items came?\" and tick what the truck brought — untouched items stay unreceived and show up on the next delivery."
         )
 
       {:error, {:sections_incomplete, missing}} ->

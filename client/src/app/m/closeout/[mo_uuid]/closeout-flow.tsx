@@ -17,7 +17,14 @@
  * The warehouse pickup-from-production step runs separately later.
  */
 
-import { useCallback, useMemo, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -33,9 +40,11 @@ import {
   MapPin,
   PackageCheck,
   PackageOpen,
+  Plus,
   RefreshCw,
   ScanLine,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -44,6 +53,8 @@ import { DevSkipPhotoButton } from "@/components/dev-skip-photo-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { DimensionMmInput } from "@/components/forms/dimension-mm-input";
+import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { cn } from "@/lib/utils";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import {
@@ -79,6 +90,61 @@ type Step =
   | { kind: "details"; itemKey: string }
   | { kind: "scan_cell"; itemKey: string };
 
+/** One physical container the leftover was poured into.
+ *  `tempId` is client-only for stable react keys; server never sees it. */
+interface RepackPack {
+  tempId: string;
+  qty: string;
+  package_length_mm: string;
+  package_width_mm: string;
+  package_height_mm: string;
+  package_weight_kg: string;
+  stack_factor: string;
+}
+
+function newPackId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `repack-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Build a fresh empty pack — used when the operator taps "Add pack"
+ *  to split the leftover across containers. Everything blank so the
+ *  operator explicitly types values for each container. */
+function emptyRepackPack(): RepackPack {
+  return {
+    tempId: newPackId(),
+    qty: "",
+    package_length_mm: "",
+    package_width_mm: "",
+    package_height_mm: "",
+    package_weight_kg: "",
+    stack_factor: "1",
+  };
+}
+
+/** A pack is "complete" when every required field parses to > 0.
+ *  Sum + submit gate only consider complete packs, so an in-flight
+ *  half-typed extra row doesn't block Save. */
+function isRepackPackComplete(p: RepackPack): boolean {
+  return (
+    Number(p.qty) > 0 &&
+    Number(p.package_length_mm) > 0 &&
+    Number(p.package_width_mm) > 0 &&
+    Number(p.package_height_mm) > 0 &&
+    Number(p.package_weight_kg) > 0 &&
+    Number(p.stack_factor) > 0
+  );
+}
+
+function sumRepackPackQty(packs: RepackPack[]): number {
+  return packs.reduce((acc, p) => {
+    const n = Number(p.qty);
+    return Number.isFinite(n) ? acc + n : acc;
+  }, 0);
+}
+
 interface Props {
   initialMo: ManufacturingOrder;
   initialBookings: ManufacturingOrderBooking[];
@@ -103,6 +169,14 @@ interface CloseoutItem {
   onHandQty: string | null;
   uomSymbol: string;
   bookingUuid?: string;
+  /** Existing lot packaging dims (mm + kg). Used to pre-fill the
+   *  Repackage panel so the operator sees the previous values —
+   *  they only edit what the leftover container actually measures. */
+  lotPackageLengthMm?: number | null;
+  lotPackageWidthMm?: number | null;
+  lotPackageHeightMm?: number | null;
+  lotPackageWeightKg?: string | null;
+  lotStackFactor?: number | null;
   /** Downstream reservations against an output lot. Non-empty ⇒ the
    *  produced lot is already booked to a live downstream MO and
    *  closeout skips the "scan dispatch cell + move" step — the lot
@@ -129,6 +203,23 @@ export function CloseoutFlow({
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   // Per-row in-flight values.
   const [remainingQty, setRemainingQty] = useState("0");
+  // Fresh dims + weight for the LEFTOVER container. The lot's own
+  // dims describe the WHOLE original drum (from goods-in), which
+  // makes cell-fit reject a 10 kg leftover from a 300 kg drum. The
+  // operator refreshes these here so the leftover slots into a
+  // normal shelf. Empty strings ⇒ don't ship a `remainder_packaging`
+  // payload (backward-compatible: BE keeps the goods-in dims).
+  // Array of physical containers the leftover was poured into.
+  // Mirrors the goods-in wizard's pack editor: sum of pack qtys must
+  // equal `remaining`, each pack has its own dims + weight + stack.
+  // len == 1 → dims-only update on the lot; len > 1 → split into N
+  // sibling lots that inherit the original's identity (item, batch,
+  // expiry, ...) but each get their own physical footprint.
+  const [remainderPacks, setRemainderPacks] = useState<RepackPack[]>([]);
+  // True once the operator actually edits a repackage field. Prevents
+  // submitting an unchanged payload (which would still succeed on the
+  // BE but log a spurious audit row for "300→300, 200→200, …").
+  const [remainderPacksDirty, setRemainderPacksDirty] = useState(false);
   const [scannedCell, setScannedCell] = useState<DispatchCell | null>(null);
   // Pending dispatch-cell uuid captured by the scanner but not yet
   // committed — we wait for the scanner's onConfirmed before
@@ -178,6 +269,11 @@ export function CloseoutFlow({
       onHandQty: b.stock_lot?.qty_on_hand ?? null,
       uomSymbol: b.item?.stock_uom?.symbol ?? "ea",
       bookingUuid: b.uuid,
+      lotPackageLengthMm: b.stock_lot?.package_length_mm ?? null,
+      lotPackageWidthMm: b.stock_lot?.package_width_mm ?? null,
+      lotPackageHeightMm: b.stock_lot?.package_height_mm ?? null,
+      lotPackageWeightKg: b.stock_lot?.package_weight_kg ?? null,
+      lotStackFactor: b.stock_lot?.stack_factor ?? null,
     }));
     const outputItems: CloseoutItem[] = outputLots.map((l) => ({
       key: `o:${l.uuid}`,
@@ -199,6 +295,62 @@ export function CloseoutFlow({
     step.kind === "overview"
       ? null
       : items.find((i) => i.key === step.itemKey) ?? null;
+
+  // Seed the Repackage panel with the lot's current dims + weight
+  // when the operator lands on the details step for a booking. The
+  // operator sees the previous values and only edits what actually
+  // changed — no more "guess what the drum was". Fires only on step
+  // change (not on every render) so operator keystrokes aren't
+  // stomped mid-typing.
+  useEffect(() => {
+    if (step.kind !== "details") return;
+    if (!activeItem || activeItem.kind !== "booking") return;
+    // Seed with ONE pack pre-filled with the lot's current dims.
+    // qty stays empty — the operator hasn't declared "how much of the
+    // leftover is in this container" yet. When they type the remaining
+    // qty at the top, we'll auto-fill this first pack's qty. If they
+    // add a pack (split), the auto-fill splits between them.
+    setRemainderPacks([
+      {
+        tempId: newPackId(),
+        qty: "",
+        package_length_mm:
+          activeItem.lotPackageLengthMm != null
+            ? String(activeItem.lotPackageLengthMm)
+            : "",
+        package_width_mm:
+          activeItem.lotPackageWidthMm != null
+            ? String(activeItem.lotPackageWidthMm)
+            : "",
+        package_height_mm:
+          activeItem.lotPackageHeightMm != null
+            ? String(activeItem.lotPackageHeightMm)
+            : "",
+        package_weight_kg: activeItem.lotPackageWeightKg ?? "",
+        stack_factor:
+          activeItem.lotStackFactor != null
+            ? String(activeItem.lotStackFactor)
+            : "1",
+      },
+    ]);
+    setRemainderPacksDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step.kind, activeItem?.key]);
+
+  // Auto-fill the first pack's qty when the operator types remaining
+  // AND there's exactly one pack (no split yet). Once the operator
+  // adds a second pack, this stops firing so their split isn't
+  // clobbered.
+  useEffect(() => {
+    if (remainderPacks.length !== 1) return;
+    const only = remainderPacks[0]!;
+    // Skip if operator has typed a qty here already (respect their
+    // input over the auto-fill).
+    if (only.qty.trim() !== "" && remainderPacksDirty) return;
+    if (remainingQty === only.qty) return;
+    setRemainderPacks([{ ...only, qty: remainingQty }]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remainingQty]);
 
   const refresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -252,6 +404,8 @@ export function CloseoutFlow({
     setPhotoUrl(null);
     setRouteChoice("keep");
     setErrorDetail(null);
+    setRemainderPacks([]);
+    setRemainderPacksDirty(false);
   }
 
   async function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -326,6 +480,48 @@ export function CloseoutFlow({
     setErrorDetail(null);
     startTransition(async () => {
       if (activeItem.kind === "booking") {
+        // Ship the pack array when: (a) leftover exists, (b) every
+        // pack is complete (qty + dims + weight + stack), (c) sum
+        // matches remaining within tolerance, AND (d) the operator
+        // actually edited something (dirty flag). len 1 → BE does a
+        // dims-only update. len > 1 → BE splits into N siblings after
+        // the drain.
+        const packsAllComplete =
+          remainderPacks.length > 0 &&
+          remainderPacks.every(isRepackPackComplete);
+        const packSum = sumRepackPackQty(remainderPacks);
+        const packSumMatches = Math.abs(packSum - remaining) < 0.001;
+        const remainderPackagingPayload =
+          remaining > 0 &&
+          remainderPacksDirty &&
+          packsAllComplete &&
+          packSumMatches
+            ? remainderPacks.map((p) => ({
+                qty: p.qty,
+                package_length_mm: p.package_length_mm,
+                package_width_mm: p.package_width_mm,
+                package_height_mm: p.package_height_mm,
+                package_weight_kg: p.package_weight_kg,
+                stack_factor: p.stack_factor,
+              }))
+            : undefined;
+
+        // If operator touched fields but sum doesn't match, block —
+        // otherwise we'd silently discard their split intent. Prefer
+        // a clear error over a mystery.
+        if (remaining > 0 && remainderPacksDirty && !packSumMatches) {
+          setErrorDetail(
+            `Pack qtys must sum to ${remaining} ${activeItem.uomSymbol} (currently ${packSum}). Adjust the Repackage section.`,
+          );
+          return;
+        }
+        if (remaining > 0 && remainderPacksDirty && !packsAllComplete) {
+          setErrorDetail(
+            "Every pack row needs qty + length + width + height + weight + stack factor. Complete or remove partial rows in the Repackage section.",
+          );
+          return;
+        }
+
         const res = await closeoutBookingAction(
           mo.uuid,
           activeItem.bookingUuid!,
@@ -338,6 +534,7 @@ export function CloseoutFlow({
                 ? "keep_in_place"
                 : "send_to_warehouse"
               : "auto",
+            remainder_packaging: remainderPackagingPayload,
           },
         );
         if (res.ok) {
@@ -735,6 +932,108 @@ export function CloseoutFlow({
                   );
                 })()}
               </div>
+
+              {/* Repackage the leftover — MULTI-PACK.
+                  Same pattern as the goods-in wizard: one row per
+                  physical container the leftover was poured into.
+                  Sum of pack qtys must equal `remaining`. Length 1 =
+                  single container, dims-only update on the lot.
+                  Length > 1 = split into N sibling lots (each with
+                  its own dims + qty), all landing at the same
+                  scanned dispatch cell. */}
+              {(() => {
+                const remaining = Number(remainingQty);
+                if (!Number.isFinite(remaining) || remaining <= 0) return null;
+                const uom = activeItem.uomSymbol;
+                const sum = sumRepackPackQty(remainderPacks);
+                const diff = sum - remaining;
+                const tolerance = 0.001;
+                const isBalanced = Math.abs(diff) < tolerance;
+                const isOver = diff > tolerance;
+                const isUnder = diff < -tolerance;
+
+                function patchPack(tempId: string, patch: Partial<RepackPack>) {
+                  setRemainderPacks((prev) =>
+                    prev.map((p) =>
+                      p.tempId === tempId ? { ...p, ...patch } : p,
+                    ),
+                  );
+                  setRemainderPacksDirty(true);
+                }
+
+                function addPack() {
+                  setRemainderPacks((prev) => [...prev, emptyRepackPack()]);
+                  setRemainderPacksDirty(true);
+                }
+
+                function removePack(tempId: string) {
+                  setRemainderPacks((prev) =>
+                    prev.length <= 1
+                      ? prev
+                      : prev.filter((p) => p.tempId !== tempId),
+                  );
+                  setRemainderPacksDirty(true);
+                }
+
+                return (
+                  <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Repackage the leftover
+                    </p>
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      One row per physical container you poured the
+                      leftover into. If you split {formatCompanyNumber(remaining, companyDateFormat, { maxFractionDigits: 10 })} {uom}{" "}
+                      into two containers, tap{" "}
+                      <span className="font-medium text-foreground">+ Add pack</span>{" "}
+                      and enter the qty + dims for each. Sum of qtys must
+                      match the leftover.
+                    </p>
+
+                    {remainderPacks.map((p, idx) => (
+                      <RepackPackEditor
+                        key={p.tempId}
+                        index={idx}
+                        pack={p}
+                        uomSymbol={uom}
+                        removable={remainderPacks.length > 1}
+                        onPatch={(patch) => patchPack(p.tempId, patch)}
+                        onRemove={() => removePack(p.tempId)}
+                      />
+                    ))}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={addPack}
+                        className="gap-1"
+                      >
+                        <Plus className="size-3.5" />
+                        Add pack
+                      </Button>
+                      <p
+                        className={cn(
+                          "text-[11px] font-mono",
+                          isBalanced && "text-emerald-700 dark:text-emerald-400",
+                          isOver && "text-destructive",
+                          isUnder && "text-amber-700 dark:text-amber-400",
+                        )}
+                      >
+                        {isBalanced && (
+                          <>All {formatCompanyNumber(sum, companyDateFormat, { maxFractionDigits: 10 })} {uom} allocated</>
+                        )}
+                        {isOver && (
+                          <>Over by {formatCompanyNumber(diff, companyDateFormat, { maxFractionDigits: 10 })} {uom}</>
+                        )}
+                        {isUnder && (
+                          <>{formatCompanyNumber(-diff, companyDateFormat, { maxFractionDigits: 10 })} {uom} left to allocate</>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Route choice for the LEFTOVER after partial consume.
                   Mirrors the output-lot Keep/Move radio so bookings
@@ -1370,6 +1669,124 @@ function DirectionsRow({
         </p>
       </div>
     </li>
+  );
+}
+
+/** One physical container in the Repackage panel — matches the
+ *  goods-in wizard's PackEditor visual so operators see the same
+ *  shape everywhere they enter pack dims. */
+function RepackPackEditor({
+  index,
+  pack,
+  uomSymbol,
+  removable,
+  onPatch,
+  onRemove,
+}: {
+  index: number;
+  pack: RepackPack;
+  uomSymbol: string;
+  removable: boolean;
+  onPatch: (patch: Partial<RepackPack>) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-card p-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Pack {index + 1}
+        </span>
+        {removable && (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove pack ${index + 1}`}
+            className="rounded p-1 text-muted-foreground active:bg-destructive/10 active:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <RepackagingField
+          label={`Product in pack (${uomSymbol})`}
+          value={pack.qty}
+          onChange={(v) => onPatch({ qty: v })}
+        />
+        <RepackagingField
+          label="Pack weight (kg)"
+          value={pack.package_weight_kg}
+          onChange={(v) => onPatch({ package_weight_kg: v })}
+        />
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <DimensionMmInput
+          label="Length"
+          value={pack.package_length_mm}
+          onChange={(v) => onPatch({ package_length_mm: v.replace(/\D/g, "") })}
+        />
+        <DimensionMmInput
+          label="Width"
+          value={pack.package_width_mm}
+          onChange={(v) => onPatch({ package_width_mm: v.replace(/\D/g, "") })}
+        />
+        <DimensionMmInput
+          label="Height"
+          value={pack.package_height_mm}
+          onChange={(v) => onPatch({ package_height_mm: v.replace(/\D/g, "") })}
+        />
+      </div>
+
+      <RepackagingField
+        label="Stack factor"
+        value={pack.stack_factor}
+        onChange={(v) => {
+          // Strip non-digits, cap at 50 (BE schema limit).
+          const digits = v.replace(/\D/g, "");
+          const capped =
+            digits === "" ? "" : String(Math.min(Number(digits), 50));
+          onPatch({ stack_factor: capped });
+        }}
+      />
+
+      <PackBoxPreview
+        lengthMm={Number(pack.package_length_mm) || 0}
+        widthMm={Number(pack.package_width_mm) || 0}
+        heightMm={Number(pack.package_height_mm) || 0}
+        stack={Number(pack.stack_factor) || 1}
+      />
+    </div>
+  );
+}
+
+/** Compact numeric input for the repackage panel. Small, tap-friendly,
+ *  no borders on the outer wrapper — packed 2-up on mobile. */
+function RepackagingField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="space-y-0.5">
+      <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </Label>
+      <Input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        value={value}
+        onChange={(e) => onChange(e.target.value.replace(",", "."))}
+        className="h-10 font-mono text-sm"
+        placeholder="—"
+      />
+    </div>
   );
 }
 
