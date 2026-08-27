@@ -171,6 +171,116 @@ export async function confirmShipmentPickupAction(
   );
 }
 
+/**
+ * Log one truck arrival against a shipment. Supports partial
+ * pickups — pass ``qty`` less than the shipment's ``remaining_qty``
+ * for a first-of-many visit; the BE auto-transitions the shipment
+ * between ``partially_picked`` and ``picked_up`` as events drain
+ * the qty.
+ */
+export async function logShipmentPickupEventAction(
+  uuid: string,
+  payload: import("./types").ShipmentPickupEventPayload,
+): Promise<ShipmentResult> {
+  const t = await token();
+  if (!t) return unauthorized("logShipmentPickupEventAction");
+
+  try {
+    const { shipment } = await api<{
+      shipment: Shipment;
+      event: import("./types").ShipmentPickupEvent;
+    }>(`/api/shipments/${encodeURIComponent(uuid)}/pickup-events`, {
+      method: "POST",
+      token: t,
+      body: JSON.stringify(payload),
+    });
+    invalidate(uuid);
+    return { ok: true, shipment };
+  } catch (err) {
+    return {
+      ...toErrorResult(err, {
+        source: "logShipmentPickupEventAction",
+        fallbackDetail: "Couldn't log the pickup event.",
+      }),
+      ok: false,
+    };
+  }
+}
+
+/**
+ * Confirm receipt of ONE pickup event. Records the recipient
+ * signatory + timestamp against just that event; the shipment
+ * flips to ``delivered`` automatically once every outstanding
+ * event has been confirmed. Staff-only — customers hit the portal
+ * proxy that carries the same effect.
+ */
+export async function confirmPickupEventDeliveryAction(
+  shipmentUuid: string,
+  eventUuid: string,
+  payload: {
+    recipient_signatory: string;
+    delivery_notes?: string | null;
+  },
+): Promise<ShipmentResult> {
+  const t = await token();
+  if (!t) return unauthorized("confirmPickupEventDeliveryAction");
+
+  try {
+    const { shipment } = await api<{ shipment: Shipment }>(
+      `/api/shipments/${encodeURIComponent(shipmentUuid)}/pickup-events/${encodeURIComponent(eventUuid)}/confirm-delivery`,
+      {
+        method: "POST",
+        token: t,
+        body: JSON.stringify(payload),
+      },
+    );
+    invalidate(shipmentUuid);
+    return { ok: true, shipment };
+  } catch (err) {
+    return {
+      ...toErrorResult(err, {
+        source: "confirmPickupEventDeliveryAction",
+        fallbackDetail: "Couldn't confirm this pickup's delivery.",
+      }),
+      ok: false,
+    };
+  }
+}
+
+/** Amend paperwork on ONE pickup event after the truck has departed
+ *  (tracking number the carrier emailed later, seal transcription
+ *  fix, temperature reading from the datalogger, driver correction).
+ *  Does NOT touch qty / checklist / photos — those are frozen. */
+export async function updatePickupEventPaperworkAction(
+  shipmentUuid: string,
+  eventUuid: string,
+  payload: import("./types").ShipmentPickupEventPaperworkPayload,
+): Promise<ShipmentResult> {
+  const t = await token();
+  if (!t) return unauthorized("updatePickupEventPaperworkAction");
+
+  try {
+    const { shipment } = await api<{ shipment: Shipment }>(
+      `/api/shipments/${encodeURIComponent(shipmentUuid)}/pickup-events/${encodeURIComponent(eventUuid)}/paperwork`,
+      {
+        method: "PATCH",
+        token: t,
+        body: JSON.stringify(payload),
+      },
+    );
+    invalidate(shipmentUuid);
+    return { ok: true, shipment };
+  } catch (err) {
+    return {
+      ...toErrorResult(err, {
+        source: "updatePickupEventPaperworkAction",
+        fallbackDetail: "Couldn't save the paperwork for this pickup.",
+      }),
+      ok: false,
+    };
+  }
+}
+
 export async function confirmShipmentDeliveryAction(
   uuid: string,
   payload: import("./types").ShipmentDeliveryPayload,

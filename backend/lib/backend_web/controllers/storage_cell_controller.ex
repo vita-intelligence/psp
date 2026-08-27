@@ -103,17 +103,20 @@ defmodule BackendWeb.StorageCellController do
 
         {:error, :cell_has_active_placements} ->
           # Compliance guard (W9): dimensions / weight cap / purpose
-          # feed the fit + auto-routing engines. Changing them while
-          # the cell still holds lots silently invalidates the
-          # placement decisions. Bounce with a 422 the FE can render
-          # verbatim — same shape as changeset_error so the modal's
-          # error banner picks it up automatically.
+          # feed the fit + auto-routing engines. Shrinking or changing
+          # purpose while the cell still holds lots silently
+          # invalidates placement decisions — refuse.
+          #
+          # ENLARGING is allowed even with stock present (every lot
+          # that already fit continues to fit). If you got here, the
+          # payload is either shrinking a dimension / weight cap OR
+          # changing the purpose. Bounce with 422 the modal picks up.
           conn
           |> put_status(:unprocessable_entity)
           |> json(
             Errors.payload(
               "cell_has_active_placements",
-              "This cell still holds stock. Move the lots to another cell first, then edit the dimensions / weight cap / purpose.",
+              "This cell holds stock. You can ENLARGE it or raise the weight cap while it's occupied, but shrinking a dimension / weight cap or changing the purpose needs the lots moved out first.",
               %{}
             )
           )

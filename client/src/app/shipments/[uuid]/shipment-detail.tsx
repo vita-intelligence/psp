@@ -42,6 +42,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge-mini";
 import { ErrorBanner } from "@/components/forms/error-banner";
@@ -62,9 +70,12 @@ import { findCountry } from "@/lib/iso/countries";
 import { cn } from "@/lib/utils";
 import {
   cancelShipmentAction,
+  confirmPickupEventDeliveryAction,
   confirmShipmentDeliveryAction,
+  logShipmentPickupEventAction,
   markShipmentDraftAction,
   markShipmentReadyAction,
+  updatePickupEventPaperworkAction,
   updateShipmentAction,
   updateShipmentCarrierDetailsAction,
 } from "@/lib/shipments/actions";
@@ -895,10 +906,18 @@ export function ShipmentDetail({
         creatorName={creator?.name ?? null}
       />
 
-      {/* -------- Truck arrival — evidence captured on mobile -------- */}
-      <TruckArrivalCard
+      {/* -------- Pickup events — per-truck paperwork + evidence -------
+           Renders the whole multi-visit timeline: one card per truck
+           with its qty, checklist, photos, tracking number, seal,
+           temperature, driver, plate, waybill, and delivery POD. The
+           standalone "Truck-arrival evidence" card was retired here —
+           it was designed for a one-shot shipment and duplicated the
+           per-event data below, confusing the operator into thinking
+           the checklist / photos / paperwork were shipment-wide.        */}
+      <PickupEventsCard
         shipment={shipment}
         companyDefaults={companyDefaults}
+        canEditPaperwork={canDriveCarrier}
       />
 
       {/* -------- Delivery confirmation -------- */}
@@ -1049,22 +1068,24 @@ export function ShipmentDetail({
                 Send dispatch form to my phone
               </Button>
             )}
-            {canEdit && (
-              <Button
-                variant="ghost"
-                onClick={cancelShipment}
-                disabled={busy || !canDrive}
-                title={
-                  !canDrive
-                    ? `Only ${creator?.name ?? "the head of the room"} can cancel.`
-                    : undefined
-                }
-                className="ml-auto text-destructive hover:text-destructive"
-              >
-                <XCircle className="mr-1 size-4" />
-                Cancel shipment
-              </Button>
-            )}
+            {canEdit &&
+              (shipment.status === "draft" || shipment.status === "ready") &&
+              (shipment.pickup_events?.length ?? 0) === 0 && (
+                <Button
+                  variant="ghost"
+                  onClick={cancelShipment}
+                  disabled={busy || !canDrive}
+                  title={
+                    !canDrive
+                      ? `Only ${creator?.name ?? "the head of the room"} can cancel.`
+                      : "Cancel this shipment (only available before any truck has arrived — once a pickup is logged the audit trail is frozen)."
+                  }
+                  className="ml-auto text-destructive hover:text-destructive"
+                >
+                  <XCircle className="mr-1 size-4" />
+                  Cancel shipment
+                </Button>
+              )}
           </div>
         </div>
       )}
@@ -1176,6 +1197,14 @@ const STATUS_META: Record<
     Icon: CheckCircle2,
     cls: "border-sky-500/40 bg-sky-500/5",
     badge: "sky",
+  },
+  partially_picked: {
+    title: "Partially picked up",
+    body: (s) =>
+      `${s.picked_up_qty} of ${s.qty} units on trucks so far. Waiting for the next visit.`,
+    Icon: Truck,
+    cls: "border-amber-500/40 bg-amber-500/5",
+    badge: "amber",
   },
   picked_up: {
     title: "In transit",
@@ -1412,131 +1441,11 @@ function DetailRow({
   );
 }
 
-interface ChecklistDisplayItem {
-  key:
-    | "packaging_intact"
-    | "labels_verified"
-    | "vehicle_clean_suitable"
-    | "transport_condition_acceptable"
-    | "dispatch_approved";
-  label: string;
-}
-
-const TRUCK_ARRIVAL_CHECKLIST: ChecklistDisplayItem[] = [
-  { key: "packaging_intact", label: "Packaging intact" },
-  { key: "labels_verified", label: "Correct labels verified" },
-  { key: "vehicle_clean_suitable", label: "Vehicle clean & suitable" },
-  {
-    key: "transport_condition_acceptable",
-    label: "Transport condition acceptable",
-  },
-  { key: "dispatch_approved", label: "Dispatch approved" },
-];
-
-function TruckArrivalCard({
-  shipment,
-  companyDefaults,
-}: {
-  shipment: Shipment;
-  companyDefaults: CompanyDefaults | null;
-}) {
-  const submitted = shipment.status === "picked_up" && !!shipment.picked_up_at;
-  const files = shipment.pickup_files ?? [];
-  const anyChecklistCaptured = TRUCK_ARRIVAL_CHECKLIST.some(
-    (item) => shipment[item.key] !== null,
-  );
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <Truck className="size-4" />
-          Truck-arrival evidence
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          {submitted
-            ? "5-point sign-off + loading photos the operator captured on the mobile dispatch form when the truck arrived. Carrier / vehicle paperwork lives on the Carrier & vehicle card above."
-            : "The 5-point BRCGS sign-off + loading photos capture here once the operator completes the mobile dispatch form on truck arrival. Carrier / vehicle paperwork can be filled ahead of time on the Carrier & vehicle card above."}
-        </p>
-      </CardHeader>
-      <CardContent className="space-y-4 text-sm">
-        {submitted && shipment.picked_up_by && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/[0.05] px-3 py-2 text-emerald-800 dark:text-emerald-200">
-            <CheckCircle2 className="size-4" />
-            <p className="text-xs">
-              Signed off by{" "}
-              <span className="font-medium">
-                {shipment.picked_up_by.name}
-              </span>
-              {" · "}
-              {formatCompanyDate(shipment.picked_up_at, companyDefaults)}
-            </p>
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Checklist
-          </p>
-          {anyChecklistCaptured ? (
-            <ul className="grid gap-1.5 sm:grid-cols-2">
-              {TRUCK_ARRIVAL_CHECKLIST.map((item) => (
-                <ChecklistLine
-                  key={item.key}
-                  label={item.label}
-                  state={shipment[item.key]}
-                />
-              ))}
-            </ul>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              No sign-offs recorded yet.
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              Photos of the load
-            </p>
-            <span className="text-[11px] text-muted-foreground">
-              {files.length} attached
-            </span>
-          </div>
-          {files.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No photos captured yet.
-            </p>
-          ) : (
-            <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-              {files.map((f) => (
-                <li
-                  key={f.uuid}
-                  className="group relative overflow-hidden rounded-md border border-border/60 bg-muted/20"
-                >
-                  <a href={f.url} target="_blank" rel="noopener" title={f.filename}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={f.url}
-                      alt={f.filename}
-                      className="aspect-square w-full object-cover transition-opacity group-hover:opacity-90"
-                    />
-                  </a>
-                  {f.uploaded_by && (
-                    <p className="truncate bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      {f.uploaded_by.name}
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+// Standalone TruckArrivalCard removed — it aggregated a single
+// checklist / photo set across the shipment, which stopped making
+// sense when multi-visit pickup landed. All per-truck evidence
+// (checklist chips, photos, driver, plate, tracking, seal,
+// temperature) now lives inside ``PickupEventsCard`` on each row.
 
 /**
  * Carrier & vehicle paperwork — delivery company, plate, driver,
@@ -1587,7 +1496,11 @@ function CarrierVehicleCard({
   creatorName: string | null;
 }) {
   const showEdit = editable && canEditByPerm;
-  const postPickup = shipment.status === "picked_up";
+  const anyEvents =
+    (shipment.pickup_events?.length ?? 0) > 0 ||
+    Number(shipment.picked_up_qty ?? 0) > 0;
+  const postPickup =
+    shipment.status === "picked_up" || shipment.status === "delivered";
 
   return (
     <Card>
@@ -1599,9 +1512,21 @@ function CarrierVehicleCard({
               Carrier &amp; vehicle
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              {postPickup
-                ? "The truck has left, but you can still amend delivery company, plate, driver, waybill, tracking, seal, and temperature — anything the carrier finalises after departure."
-                : "Delivery company, plate, driver, waybill, tracking, seal, temperature. Fill what you know now; mobile dispatch will confirm on truck arrival."}
+              {anyEvents ? (
+                <>
+                  Shipment-wide defaults for the delivery company + a
+                  fallback plate / driver / waybill for the paperwork. As
+                  each truck arrives, the mobile dispatch form logs a
+                  per-truck row on the <span className="font-semibold">Pickup progress</span> card
+                  above — that's where you enter <span className="font-semibold">this truck's</span> tracking
+                  number, seal, temperature. Edit them per row via
+                  &quot;Edit paperwork&quot;.
+                </>
+              ) : postPickup ? (
+                "The truck has left, but you can still amend delivery company, plate, driver, and waybill — anything the carrier finalises after departure. Per-truck tracking / seal / temperature live on the Pickup progress card above."
+              ) : (
+                "Delivery company, plate, driver, waybill. Fill what you know now; mobile dispatch captures the per-truck tracking / seal / temperature on arrival."
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1846,6 +1771,35 @@ function ChecklistLine({
       <Icon className="size-3.5 shrink-0" />
       <span className={state === true ? "font-medium" : undefined}>{label}</span>
     </li>
+  );
+}
+
+/** Compact per-event checklist chip. Green when the operator ticked
+ *  it on mobile, muted grey otherwise. Read-only display — the values
+ *  are frozen at pickup time by the mobile form. */
+function ChecklistChip({
+  label,
+  state,
+}: {
+  label: string;
+  state: boolean | null;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-medium tracking-wider uppercase",
+        state === true
+          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+          : "bg-muted text-muted-foreground/70",
+      )}
+    >
+      {state === true ? (
+        <CheckCircle2 className="size-2.5" />
+      ) : (
+        <Circle className="size-2.5" />
+      )}
+      {label}
+    </span>
   );
 }
 
@@ -2370,3 +2324,480 @@ function DispatchDwellCard({
     </section>
   );
 }
+
+// =============================================================================
+// Pickup events — multi-visit truck arrivals
+// =============================================================================
+
+/**
+ * Renders the shipment's pickup progress + timeline of events. Each
+ * event is one truck arrival with its own qty, checklist, actor,
+ * and photos. Offers a "Log another visit" button while remaining
+ * qty > 0.
+ *
+ * Non-custom / single-visit shipments still work: one event with
+ * qty = shipment.qty accumulates on the first pickup.
+ */
+function PickupEventsCard({
+  shipment,
+  companyDefaults,
+  canEditPaperwork,
+}: {
+  shipment: Shipment;
+  companyDefaults: CompanyDefaults | null;
+  canEditPaperwork: boolean;
+  onLogged?: () => void;
+}) {
+  const totalQty = Number(shipment.qty || 0);
+  const pickedQty = Number(shipment.picked_up_qty || 0);
+  const remainingQty = Number(shipment.remaining_qty || 0);
+  const percent = totalQty > 0 ? Math.min(100, Math.round((pickedQty / totalQty) * 100)) : 0;
+  const events = shipment.pickup_events ?? [];
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Truck className="size-4" />
+              Pickup progress
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Each row is one truck visit — the checklist, load photos,
+              driver, and paperwork all live per truck. Trucks arrive
+              via the mobile dispatch form; use{" "}
+              <span className="font-semibold">Edit paperwork</span> on any
+              row to add a tracking number, seal, or temperature reading
+              the carrier sends over after departure.
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {/* Progress bar */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">
+              {pickedQty} of {totalQty} picked up
+            </span>
+            <span className="font-medium">{percent}%</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                "h-full transition-all",
+                percent === 100
+                  ? "bg-emerald-500"
+                  : percent > 0
+                    ? "bg-brand"
+                    : "bg-muted-foreground/20",
+              )}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          {remainingQty > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Remaining {remainingQty} for the next truck.
+            </p>
+          )}
+        </div>
+
+        {/* Timeline of events */}
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Timeline ({events.length})
+          </p>
+          {events.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No pickups logged yet. When the first truck arrives, log
+              the event so the customer can see the progress.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {events.map((e) => (
+                <PickupEventRow
+                  key={e.uuid}
+                  event={e}
+                  shipmentUuid={shipment.uuid}
+                  companyDefaults={companyDefaults}
+                  canEditPaperwork={canEditPaperwork}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+
+      </CardContent>
+    </Card>
+  );
+}
+
+function PickupEventRow({
+  event,
+  shipmentUuid,
+  companyDefaults,
+  canEditPaperwork,
+}: {
+  event: import("@/lib/shipments/types").ShipmentPickupEvent;
+  shipmentUuid: string;
+  companyDefaults: CompanyDefaults | null;
+  canEditPaperwork: boolean;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [signatory, setSignatory] = useState("");
+  const [notes, setNotes] = useState("");
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const delivered = Boolean(event.delivered_at);
+
+  // Paperwork edit — after the truck leaves, carriers frequently send
+  // the tracking number over email. This lets the operator amend it
+  // (plus seal / temperature / driver / plate corrections) without
+  // touching qty / checklist / photos, all of which are frozen at
+  // pickup time.
+  const [paperworkOpen, setPaperworkOpen] = useState(false);
+  const [pw, setPw] = useState({
+    tracking_number: event.tracking_number ?? "",
+    seal_number: event.seal_number ?? "",
+    temperature_c: event.temperature_c ?? "",
+    driver_name: event.driver_name ?? "",
+    vehicle_registration: event.vehicle_registration ?? "",
+    consignment_note_ref: event.consignment_note_ref ?? "",
+    notes: event.notes ?? "",
+  });
+  const [pwSaving, startPwTransition] = useTransition();
+  const [pwError, setPwError] = useState<string | null>(null);
+
+  const savePaperwork = () => {
+    setPwError(null);
+    startPwTransition(async () => {
+      const res = await updatePickupEventPaperworkAction(
+        shipmentUuid,
+        event.uuid,
+        {
+          tracking_number: pw.tracking_number.trim() || null,
+          seal_number: pw.seal_number.trim() || null,
+          temperature_c: pw.temperature_c.trim() || null,
+          driver_name: pw.driver_name.trim() || null,
+          vehicle_registration: pw.vehicle_registration.trim() || null,
+          consignment_note_ref: pw.consignment_note_ref.trim() || null,
+          notes: pw.notes.trim() || null,
+        },
+      );
+      if (!res.ok) {
+        setPwError(res.detail);
+        return;
+      }
+      toast.success("Paperwork updated for this truck.");
+      setPaperworkOpen(false);
+    });
+  };
+
+  const submit = () => {
+    if (!signatory.trim()) {
+      setError("Enter who signed for the delivery.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await confirmPickupEventDeliveryAction(
+        shipmentUuid,
+        event.uuid,
+        {
+          recipient_signatory: signatory.trim(),
+          delivery_notes: notes.trim() || null,
+        },
+      );
+      if (!res.ok) {
+        setError(res.detail);
+        return;
+      }
+      toast.success("Delivery confirmed.");
+      setConfirmOpen(false);
+      setSignatory("");
+      setNotes("");
+    });
+  };
+
+  return (
+    <li className="rounded-md border border-border/60 bg-muted/10 px-3 py-2">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-mono font-semibold">{event.qty} units</span>
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground">
+            {formatCompanyDate(event.picked_up_at, companyDefaults)}
+          </span>
+          {delivered ? (
+            <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold tracking-widest text-emerald-700 uppercase">
+              Received
+            </span>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[10px]"
+              onClick={() => setConfirmOpen((v) => !v)}
+            >
+              {confirmOpen ? "Cancel" : "Confirm receipt"}
+            </Button>
+          )}
+        </div>
+      </div>
+      <p className="mt-0.5 text-[11px] text-muted-foreground">
+        {event.picked_up_by?.name ?? "System"}
+        {event.driver_name ? ` · Driver ${event.driver_name}` : ""}
+        {event.vehicle_registration ? ` · Vehicle ${event.vehicle_registration}` : ""}
+        {event.consignment_note_ref ? ` · CN ${event.consignment_note_ref}` : ""}
+      </p>
+
+      {/* Per-truck paperwork line. Renders the tracking / seal / temp
+          the customer sees on the portal — nulls appear as em-dashes
+          so it's obvious what still needs filling. */}
+      <dl className="mt-1.5 grid grid-cols-1 gap-x-3 gap-y-0.5 text-[11px] sm:grid-cols-3">
+        <div className="flex items-baseline gap-1.5">
+          <dt className="text-muted-foreground">Tracking</dt>
+          <dd className={cn("font-mono", !event.tracking_number && "text-muted-foreground/60")}>
+            {event.tracking_number || "—"}
+          </dd>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <dt className="text-muted-foreground">Seal</dt>
+          <dd className={cn("font-mono", !event.seal_number && "text-muted-foreground/60")}>
+            {event.seal_number || "—"}
+          </dd>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <dt className="text-muted-foreground">Temp</dt>
+          <dd
+            className={cn(
+              "font-mono",
+              !event.temperature_c && "text-muted-foreground/60",
+            )}
+          >
+            {event.temperature_c ? `${event.temperature_c} °C` : "—"}
+          </dd>
+        </div>
+      </dl>
+
+      {event.notes && (
+        <p className="mt-1 text-[11px] italic text-muted-foreground">
+          {event.notes}
+        </p>
+      )}
+
+      {/* Per-truck checklist chips + edit-paperwork trigger. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+        <ChecklistChip label="Packaging" state={event.packaging_intact} />
+        <ChecklistChip label="Labels" state={event.labels_verified} />
+        <ChecklistChip label="Vehicle" state={event.vehicle_clean_suitable} />
+        <ChecklistChip label="Transport" state={event.transport_condition_acceptable} />
+        <ChecklistChip label="Approved" state={event.dispatch_approved} />
+        {canEditPaperwork && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-6 px-2 text-[10px]"
+            onClick={() => setPaperworkOpen((v) => !v)}
+          >
+            {paperworkOpen ? "Cancel" : "Edit paperwork"}
+          </Button>
+        )}
+      </div>
+
+      {paperworkOpen && canEditPaperwork && (
+        <div className="mt-2 space-y-2 rounded-md border border-brand/40 bg-brand/[0.03] p-2">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Paperwork for this truck
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor={`pw-track-${event.uuid}`} className="text-[10px]">
+                Tracking number
+              </Label>
+              <Input
+                id={`pw-track-${event.uuid}`}
+                value={pw.tracking_number}
+                onChange={(e) => setPw((s) => ({ ...s, tracking_number: e.target.value }))}
+                placeholder="e.g. DHL-9F92-4402"
+                className="h-8 text-xs font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`pw-seal-${event.uuid}`} className="text-[10px]">
+                Seal number
+              </Label>
+              <Input
+                id={`pw-seal-${event.uuid}`}
+                value={pw.seal_number}
+                onChange={(e) => setPw((s) => ({ ...s, seal_number: e.target.value }))}
+                placeholder="e.g. SL-00214"
+                className="h-8 text-xs font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`pw-temp-${event.uuid}`} className="text-[10px]">
+                Temperature (°C)
+              </Label>
+              <Input
+                id={`pw-temp-${event.uuid}`}
+                type="number"
+                step="0.1"
+                min={-60}
+                max={60}
+                value={pw.temperature_c}
+                onChange={(e) => setPw((s) => ({ ...s, temperature_c: e.target.value }))}
+                className="h-8 text-xs font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`pw-cn-${event.uuid}`} className="text-[10px]">
+                Consignment note
+              </Label>
+              <Input
+                id={`pw-cn-${event.uuid}`}
+                value={pw.consignment_note_ref}
+                onChange={(e) => setPw((s) => ({ ...s, consignment_note_ref: e.target.value }))}
+                className="h-8 text-xs font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`pw-drv-${event.uuid}`} className="text-[10px]">
+                Driver
+              </Label>
+              <Input
+                id={`pw-drv-${event.uuid}`}
+                value={pw.driver_name}
+                onChange={(e) => setPw((s) => ({ ...s, driver_name: e.target.value }))}
+                className="h-8 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor={`pw-veh-${event.uuid}`} className="text-[10px]">
+                Vehicle registration
+              </Label>
+              <Input
+                id={`pw-veh-${event.uuid}`}
+                value={pw.vehicle_registration}
+                onChange={(e) =>
+                  setPw((s) => ({ ...s, vehicle_registration: e.target.value.toUpperCase() }))
+                }
+                className="h-8 text-xs font-mono uppercase"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`pw-notes-${event.uuid}`} className="text-[10px]">
+              Notes
+            </Label>
+            <Textarea
+              id={`pw-notes-${event.uuid}`}
+              rows={2}
+              value={pw.notes}
+              onChange={(e) => setPw((s) => ({ ...s, notes: e.target.value }))}
+              className="text-xs"
+            />
+          </div>
+          {pwError && <p className="text-[11px] text-destructive">{pwError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setPaperworkOpen(false)}
+              disabled={pwSaving}
+              className="h-7 px-3 text-[11px]"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={savePaperwork}
+              disabled={pwSaving}
+              className="h-7 px-3 text-[11px]"
+            >
+              {pwSaving && <Loader2 className="mr-1 size-3 animate-spin" />}
+              Save paperwork
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {delivered && (
+        <p className="mt-1 text-[11px] text-emerald-700">
+          Signed by <span className="font-medium">{event.recipient_signatory}</span> on{" "}
+          {formatCompanyDate(event.delivered_at!, companyDefaults)}
+          {event.delivery_notes ? ` · ${event.delivery_notes}` : ""}
+        </p>
+      )}
+
+      {event.photos && event.photos.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {event.photos.map((p) => (
+            <a
+              key={p.uuid}
+              href={p.url}
+              target="_blank"
+              rel="noopener"
+              title={p.filename}
+              className="size-12 overflow-hidden rounded-md border border-border/60"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={p.url}
+                alt={p.filename}
+                className="size-full object-cover"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+
+      {confirmOpen && !delivered && (
+        <div className="mt-2 space-y-2 rounded-md border border-border/60 bg-background p-2">
+          <div className="space-y-1">
+            <Label htmlFor={`sig-${event.uuid}`} className="text-[10px]">
+              Recipient signatory
+            </Label>
+            <Input
+              id={`sig-${event.uuid}`}
+              value={signatory}
+              onChange={(e) => setSignatory(e.target.value)}
+              placeholder="Who signed for it?"
+              className="h-8 text-xs"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`notes-${event.uuid}`} className="text-[10px]">
+              Notes (optional)
+            </Label>
+            <Textarea
+              id={`notes-${event.uuid}`}
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="text-xs"
+            />
+          </div>
+          {error && <p className="text-[11px] text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={submit}
+              disabled={pending}
+              className="h-7 px-3 text-[11px]"
+            >
+              {pending && <Loader2 className="mr-1 size-3 animate-spin" />}
+              Record delivery
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { Loader2, LockKeyhole, Package } from "lucide-react";
+import { Loader2, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,9 +20,10 @@ import { RemoteCursor } from "@/components/realtime/remote-cursor";
 import { useLiveForm } from "@/lib/realtime/use-live-form";
 import { useFormPresenceBeacon } from "@/lib/realtime/use-form-presence-beacon";
 import { cn } from "@/lib/utils";
-import { updateCompanyThreePlRateAction } from "@/lib/company/actions";
+import { updateCompanyYieldToleranceAction } from "@/lib/company/actions";
 import { ErrorBanner } from "@/components/forms/error-banner";
-import type { Company } from "@/lib/types";
+import { formatCompanyNumber } from "@/lib/format/company";
+import type { Company, CompanyDefaults } from "@/lib/types";
 import type { FieldErrors } from "@/lib/auth/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import {
@@ -31,33 +32,29 @@ import {
   useFormCursorAnchor,
 } from "./_realtime";
 
-interface ThreePlRateFormProps {
+interface YieldToleranceFormProps {
   company: Company;
   canEdit: boolean;
+  defaults: CompanyDefaults;
 }
 
 interface FormState {
-  three_pl_rate_per_m3_per_day: string;
-  default_three_pl_estimate_days: number;
+  production_yield_tolerance_pct: string;
 }
 
 function initialFrom(company: Company): FormState {
   return {
-    three_pl_rate_per_m3_per_day: company.three_pl_rate_per_m3_per_day ?? "",
-    default_three_pl_estimate_days:
-      company.default_three_pl_estimate_days ?? 30,
+    production_yield_tolerance_pct: company.production_yield_tolerance_pct,
   };
 }
 
-const P = "three_pl_rate_";
+const P = "yield_tolerance_";
 
-/**
- * 3PL storage rate — company base-currency decimal applied per m³ per
- * day against every bailee lot from `bailee_routed_at` until dispatch.
- * Empty input clears the rate; the 3PL tab then renders "no rate
- * configured" instead of £0.00 lines.
- */
-export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
+export function YieldToleranceForm({
+  company,
+  canEdit,
+  defaults,
+}: YieldToleranceFormProps) {
   useFormPresenceBeacon("company:1");
 
   const {
@@ -76,14 +73,14 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
     hideCursor,
     broadcastCommit,
   } = useLiveForm<FormState>({
-    resource: "company:1:three-pl-rate",
+    resource: "company:1:yield-tolerance",
     disabled: !canEdit,
     initialState: initialFrom(company),
     onCommit: (raw) => {
-      const msg = raw as { kind: "three_pl_rate:saved"; state: FormState } | null;
-      if (!msg || msg.kind !== "three_pl_rate:saved") return;
+      const msg = raw as { kind: "yield_tolerance:saved"; state: FormState } | null;
+      if (!msg || msg.kind !== "yield_tolerance:saved") return;
       toast.success("Saved", {
-        description: `${creator?.name ?? "The host"} just saved the 3PL rate.`,
+        description: `${creator?.name ?? "The host"} just saved yield tolerance.`,
       });
       setOriginal(msg.state);
       resetState(msg.state);
@@ -106,20 +103,14 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
     if (!canEdit || !isCreator) return;
     setFieldErrors({});
     setActionError(null);
-    // Empty input clears the rate — send null so the backend
-    // distinguishes "unset" from "explicit 0".
-    const raw = form.three_pl_rate_per_m3_per_day.trim();
-    const payload = raw === "" ? null : raw;
-
     startTransition(async () => {
-      const res = await updateCompanyThreePlRateAction({
-        three_pl_rate_per_m3_per_day: payload,
-        default_three_pl_estimate_days: form.default_three_pl_estimate_days,
+      const res = await updateCompanyYieldToleranceAction({
+        production_yield_tolerance_pct: form.production_yield_tolerance_pct,
       });
       if (res.ok) {
-        toast.success("3PL rate updated");
+        toast.success("Yield tolerance updated");
         setOriginal(form);
-        broadcastCommit({ kind: "three_pl_rate:saved", state: form });
+        broadcastCommit({ kind: "yield_tolerance:saved", state: form });
         return;
       }
       setFieldErrors(res.fields ?? {});
@@ -142,8 +133,8 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
 
   if (joinError) return <JoinErrorCard error={joinError} />;
 
-  const fieldId = `${P}rate`;
-  const errors = fieldErrors.three_pl_rate_per_m3_per_day;
+  const fieldId = `${P}production_yield_tolerance_pct`;
+  const errors = fieldErrors.production_yield_tolerance_pct;
   const hasError = Boolean(errors && errors.length > 0);
 
   return (
@@ -166,17 +157,13 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1.5">
-            <CardTitle className="flex items-center gap-2">
-              <Package className="size-4" />
-              3PL storage rate
-            </CardTitle>
+            <CardTitle>Production yield tolerance</CardTitle>
             <CardDescription>
-              Charged per m³ per day against every bailee lot (customer-owned
-              finished goods held in a `three_pl_storage` cell). Accrues from
-              the routing timestamp until the lot dispatches. Currency = your
-              company base ({company.currency_code}). Leave empty to disable
-              billing — the 3PL tab then shows "no rate configured" instead
-              of £0.00 lines.
+              How much a run&apos;s actual output is allowed to drift from
+              the planned quantity before the customer order&apos;s
+              ready-to-dispatch is blocked. Real-world manufacturing
+              rarely hits the target on the nose — 10% either way is a
+              safe default for capsules and powders.
             </CardDescription>
           </div>
           <div className="flex items-center gap-3">
@@ -195,7 +182,7 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
           <form onSubmit={onSubmit} noValidate className="space-y-5">
             <div className="grid gap-2 sm:grid-cols-[260px_minmax(0,1fr)] sm:gap-4">
               <Label htmlFor={fieldId} className="pt-2.5 text-sm font-medium">
-                Rate ({company.currency_code} / m³ / day)
+                Acceptable variance (%)
               </Label>
               <div className="space-y-1.5">
                 <div className="relative">
@@ -203,12 +190,14 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
                     id={fieldId}
                     type="number"
                     min={0}
-                    step="0.0001"
-                    inputMode="decimal"
-                    placeholder="e.g. 1.5000"
-                    value={form.three_pl_rate_per_m3_per_day}
+                    max={100}
+                    step={0.1}
+                    value={form.production_yield_tolerance_pct}
                     onChange={(e) =>
-                      setField("three_pl_rate_per_m3_per_day", e.target.value)
+                      setField(
+                        "production_yield_tolerance_pct",
+                        e.target.value,
+                      )
                     }
                     onFocus={() => focusField(fieldId)}
                     onBlur={() => blurField(fieldId)}
@@ -222,58 +211,31 @@ export function ThreePlRateForm({ company, canEdit }: ThreePlRateFormProps) {
                   <FieldEditingIndicator peer={fieldEditors[fieldId]} />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Example: at 1.50 {company.currency_code}/m³/day, a 0.24 m³
-                  lot held 30 days accrues 10.80 {company.currency_code}. The
-                  actual per-lot value shows on the 3PL tab as soon as the
-                  first bailee lot lands.
+                  Applied to every finished MO: a{" "}
+                  {formatCompanyNumber(10000, defaults)}-unit order
+                  closing at{" "}
+                  <span className="font-medium">
+                    {formatCompanyNumber(
+                      Math.round(
+                        10000 * (1 - Number(form.production_yield_tolerance_pct || 0) / 100),
+                      ),
+                      defaults,
+                    )}
+                  </span>
+                  –
+                  <span className="font-medium">
+                    {formatCompanyNumber(
+                      Math.round(
+                        10000 * (1 + Number(form.production_yield_tolerance_pct || 0) / 100),
+                      ),
+                      defaults,
+                    )}
+                  </span>{" "}
+                  units clears the fulfilment gate. Anything short of
+                  the lower bound blocks dispatch until a top-up MO is
+                  raised or the operator accepts a short delivery.
                 </p>
                 <FieldError messages={errors} />
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-[260px_minmax(0,1fr)] sm:gap-4">
-              <Label
-                htmlFor={`${P}estimate_days`}
-                className="pt-2.5 text-sm font-medium"
-              >
-                Portal price illustration (days)
-              </Label>
-              <div className="space-y-1.5">
-                <div className="relative">
-                  <Input
-                    id={`${P}estimate_days`}
-                    type="number"
-                    min={1}
-                    max={365}
-                    step={1}
-                    value={form.default_three_pl_estimate_days}
-                    onChange={(e) =>
-                      setField(
-                        "default_three_pl_estimate_days",
-                        Math.max(1, Number(e.target.value || 30)),
-                      )
-                    }
-                    onFocus={() => focusField(`${P}estimate_days`)}
-                    onBlur={() => blurField(`${P}estimate_days`)}
-                    aria-invalid={Boolean(
-                      fieldErrors.default_three_pl_estimate_days &&
-                        fieldErrors.default_three_pl_estimate_days.length > 0,
-                    )}
-                    className="h-11"
-                  />
-                  <FieldEditingIndicator
-                    peer={fieldEditors[`${P}estimate_days`]}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Period the customer sees on the portal 3PL vs Direct
-                  decision card: "£X/day for {form.default_three_pl_estimate_days}{" "}
-                  days = £Y". Illustration only — actual billing accrues per
-                  day from the routing timestamp until dispatch.
-                </p>
-                <FieldError
-                  messages={fieldErrors.default_three_pl_estimate_days}
-                />
               </div>
             </div>
 

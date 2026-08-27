@@ -84,6 +84,53 @@ defmodule Backend.Broadcasts do
     :ok
   end
 
+  # Stock lot edits (package dimensions, notes, weight, units-per-pack)
+  # change the customer-facing 3PL routing snapshot — required m³,
+  # estimated daily charge, capacity-ok flag — even though the lot's
+  # lifecycle status hasn't moved. Fan out to the CO wizard so the
+  # portal + NPD payload catch the new numbers on the same push cycle
+  # the operator triggered.
+  defp maybe_notify_customer_orders("stock-lot", uuid) when is_binary(uuid) do
+    Task.start(fn ->
+      case Backend.Repo.get_by(Backend.Stock.Lot, uuid: uuid) do
+        %Backend.Stock.Lot{source_kind: "manufacturing_order", source_ref: mo_uuid}
+        when is_binary(mo_uuid) ->
+          # The source MO's id is the wizard-notify anchor. Skip the
+          # notify when the lot's not MO-sourced (raw material / manual
+          # receive) — those don't own a CO.
+          Backend.OrderWizard.notify_via_mo_uuid(mo_uuid)
+
+        _ ->
+          :ok
+      end
+    end)
+
+    :ok
+  end
+
+  # Shipment lifecycle transitions (draft → ready → picked_up →
+  # delivered) flip the CO wizard's dispatch-phase derivation:
+  # ``:ready_to_dispatch`` → ``:awaiting_pickup`` → ``:dispatched``
+  # → ``:delivered``. Without a CO fan-out the portal stays on
+  # "Preparing paperwork" while the shipment has already been
+  # marked Ready. Every shipment mutation site funnels through
+  # ``entity_changed("shipment", ...)`` so one clause here catches
+  # them all.
+  defp maybe_notify_customer_orders("shipment", uuid) when is_binary(uuid) do
+    Task.start(fn ->
+      case Backend.Repo.get_by(Backend.Shipments.Shipment, uuid: uuid) do
+        %Backend.Shipments.Shipment{customer_order_id: co_id}
+        when is_integer(co_id) ->
+          Backend.OrderWizard.notify_co_changed(co_id)
+
+        _ ->
+          :ok
+      end
+    end)
+
+    :ok
+  end
+
   defp maybe_notify_customer_orders(_entity, _id), do: :ok
 
   defp id_string(id) when is_binary(id), do: id

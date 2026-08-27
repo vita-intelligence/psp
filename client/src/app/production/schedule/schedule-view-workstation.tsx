@@ -188,10 +188,16 @@ function OperationBlock({
   const scale = useTimeScale();
   const editor = useScheduleEditor();
   const workingIntervals = useWorkingIntervals();
+  // Refuse to drag ops on a terminal MO — planned dates are archived
+  // record. BE `move_mo_step` refuses too; this just avoids the drag
+  // even being offered.
+  const isTerminalMo =
+    op.manufacturing_order?.status === "completed" ||
+    op.manufacturing_order?.status === "cancelled";
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `op-${op.id}`,
-      disabled: !canEditSteps,
+      disabled: !canEditSteps || isTerminalMo,
     });
 
   if (!op.planned_start || !op.planned_finish) return null;
@@ -241,7 +247,7 @@ function OperationBlock({
       className={cn(
         "group absolute z-10 select-none overflow-hidden rounded-md border px-2 py-1 text-[11px] shadow-sm transition-shadow",
         isDragging && "z-30 cursor-grabbing shadow-lg",
-        canEditSteps ? "cursor-grab" : "cursor-pointer",
+        canEditSteps && !isTerminalMo ? "cursor-grab" : "cursor-pointer",
         conflict
           ? "border-destructive bg-destructive/10 text-destructive ring-1 ring-destructive/60"
           : mo?.status === "completed"

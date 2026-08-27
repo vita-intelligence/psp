@@ -437,28 +437,103 @@ defmodule Backend.Warehouses.Plans do
 
   # Structural fields = the ones the fit / routing engines read.
   # Editing these on a cell that already holds live placements is
-  # a silent-drift trap; refuse until the lots move out.
+  # a silent-drift trap; refuse until the lots move out — WITH the
+  # explicit exception below.
   @cell_structural_fields ~w(width_m depth_m height_m max_weight_kg purpose)
+  @cell_grow_only_fields ~w(width_m depth_m height_m max_weight_kg)
 
+  # Grow-only bypass: an operator resizing a cell UP (bigger, heavier
+  # cap) is physically safe — every lot that already fit continues to
+  # fit at the new dimensions, and the auto-routing engine's prior
+  # placement decisions stay valid (a cell that WAS the right size
+  # is still the right size or better). We reject:
+  #
+  #   * any dimension or weight cap that goes DOWN (existing lots
+  #     no longer fit; routing decisions invalidated),
+  #   * a purpose change on an occupied cell (routing engine picks
+  #     cells by purpose; flipping mid-life leaves the lots stranded
+  #     in a cell of the wrong type on the auto-router's map),
+  #
+  # ...and pass through the "empty cell" case unconditionally.
   defp ensure_no_structural_edit_while_occupied(%StorageCell{} = cell, %{} = attrs) do
-    changes_structural? =
-      Enum.any?(@cell_structural_fields, fn key ->
-        case Map.fetch(attrs, key) do
-          :error ->
-            false
+    structural_edits = collect_structural_edits(cell, attrs)
 
-          {:ok, incoming} ->
-            current = Map.get(cell, String.to_existing_atom(key))
-            not equal_ignoring_nils?(current, incoming)
-        end
-      end)
+    cond do
+      structural_edits == [] ->
+        :ok
 
-    if changes_structural? and cell_has_active_placement?(cell.id) do
-      {:error, :cell_has_active_placements}
-    else
-      :ok
+      not cell_has_active_placement?(cell.id) ->
+        :ok
+
+      Enum.all?(structural_edits, &safe_edit_while_occupied?/1) ->
+        :ok
+
+      true ->
+        {:error, :cell_has_active_placements}
     end
   end
+
+  # Returns the list of {field, current, incoming} tuples for every
+  # structural field the incoming attrs actually try to change.
+  defp collect_structural_edits(%StorageCell{} = cell, attrs) do
+    Enum.flat_map(@cell_structural_fields, fn key ->
+      case Map.fetch(attrs, key) do
+        :error ->
+          []
+
+        {:ok, incoming} ->
+          current = Map.get(cell, String.to_existing_atom(key))
+
+          if equal_ignoring_nils?(current, incoming) do
+            []
+          else
+            [{key, current, incoming}]
+          end
+      end
+    end)
+  end
+
+  # Purpose is a categorical field — any change while occupied is
+  # unsafe (routing engine keys on it). Numeric fields are safe when
+  # the incoming value is >= the current value; ``nil`` on either
+  # side is treated as "no useful comparison" and rejected (blanking
+  # a required cap during an occupied edit is the exact drift trap
+  # the guard exists to prevent).
+  defp safe_edit_while_occupied?({"purpose", _current, _incoming}), do: false
+
+  defp safe_edit_while_occupied?({key, current, incoming})
+       when key in @cell_grow_only_fields do
+    with {:ok, current_dec} <- to_decimal_or_nil(current),
+         {:ok, incoming_dec} <- to_decimal_or_nil(incoming),
+         false <- is_nil(current_dec),
+         false <- is_nil(incoming_dec) do
+      Decimal.compare(incoming_dec, current_dec) in [:gt, :eq]
+    else
+      _ -> false
+    end
+  end
+
+  defp safe_edit_while_occupied?(_), do: false
+
+  defp to_decimal_or_nil(nil), do: {:ok, nil}
+  defp to_decimal_or_nil(%Decimal{} = d), do: {:ok, d}
+  defp to_decimal_or_nil(n) when is_integer(n), do: {:ok, Decimal.new(n)}
+  defp to_decimal_or_nil(n) when is_float(n), do: {:ok, Decimal.from_float(n)}
+
+  defp to_decimal_or_nil(s) when is_binary(s) do
+    case String.trim(s) do
+      "" ->
+        {:ok, nil}
+
+      trimmed ->
+        case Decimal.parse(trimmed) do
+          {d, ""} -> {:ok, d}
+          _ -> :error
+        end
+    end
+  end
+
+  defp to_decimal_or_nil(_), do: :error
 
   defp cell_has_active_placement?(cell_id) when is_integer(cell_id) do
     Repo.exists?(

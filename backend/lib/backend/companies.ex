@@ -188,6 +188,21 @@ defmodule Backend.Companies do
   end
 
   @doc """
+  Production yield tolerance — the acceptable variance (percent)
+  between an MO's planned quantity and its actual produced quantity.
+  Consumed by `Backend.Production.classify_yield_variance/2` at
+  closeout and by `Backend.CustomerOrders.line_fulfilment_status/2`
+  when the CO wizard decides whether a CO line can advance to
+  ``ready_to_dispatch``.
+  """
+  def update_yield_tolerance(%Company{} = company, attrs) do
+    company
+    |> Company.yield_tolerance_changeset(attrs)
+    |> Repo.update()
+    |> broadcast_company_change("yield_tolerance_updated")
+  end
+
+  @doc """
   Replace any of the JSONB bags atomically. Caller is responsible for
   validating the shape it's writing — we just stash it.
 

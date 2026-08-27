@@ -3,6 +3,7 @@ import type { AuditActor } from "../types";
 export type ShipmentStatus =
   | "draft"
   | "ready"
+  | "partially_picked"
   | "picked_up"
   | "delivered"
   | "cancelled";
@@ -97,6 +98,17 @@ export interface Shipment {
   transport_condition_acceptable: boolean | null;
   dispatch_approved: boolean | null;
   pickup_files: ShipmentPickupFile[];
+  /** Sum of every logged pickup event qty. Zero on ``ready``
+   *  shipments; grows as events accumulate; matches ``qty`` when
+   *  the shipment reaches ``picked_up``. */
+  picked_up_qty: string;
+  /** ``qty − picked_up_qty``. What the next truck can still take. */
+  remaining_qty: string;
+  /** Chronological pickup-event timeline. One row per truck visit
+   *  with its own qty + BRCGS checklist + evidence photos. Empty
+   *  until the first event is logged. Legacy shipments picked up
+   *  before multi-event landed have a single synthesised row. */
+  pickup_events: ShipmentPickupEvent[];
   // Delivery confirmation — filled by the customer-facing team once
   // the POD comes back. Nullable until then; `delivered_at` set on
   // the transition to `picked_up → delivered`.
@@ -141,6 +153,73 @@ export interface ShipmentPickupFile {
   uploaded_at: string;
   uploaded_by: { uuid: string; name: string } | null;
   url: string;
+}
+
+export interface ShipmentPickupEvent {
+  uuid: string;
+  shipment_id: number;
+  shipment_uuid: string;
+  qty: string;
+  picked_up_at: string;
+  picked_up_by: AuditActor | null;
+  driver_name: string | null;
+  vehicle_registration: string | null;
+  consignment_note_ref: string | null;
+  /** Per-truck carrier tracking number. Frequently emailed by the
+   *  carrier AFTER the truck has left the site — editable via the
+   *  paperwork-amendment endpoint on desktop. */
+  tracking_number: string | null;
+  /** Per-truck seal number (regulatory, one per consignment). */
+  seal_number: string | null;
+  /** Loading-time temperature reading in °C. Null unless the fleet
+   *  captures it. */
+  temperature_c: string | null;
+  notes: string | null;
+  packaging_intact: boolean;
+  labels_verified: boolean;
+  vehicle_clean_suitable: boolean;
+  transport_condition_acceptable: boolean;
+  dispatch_approved: boolean;
+  /** Per-event POD stamp. Null until either staff or the customer
+   *  confirms delivery for THIS truck's load. */
+  delivered_at: string | null;
+  delivered_by: AuditActor | null;
+  recipient_signatory: string | null;
+  delivery_notes: string | null;
+  photos: ShipmentPickupFile[];
+  delivery_files: ShipmentPickupFile[];
+  inserted_at: string;
+}
+
+export interface ShipmentPickupEventPayload {
+  qty: string;
+  driver_name?: string | null;
+  vehicle_registration?: string | null;
+  consignment_note_ref?: string | null;
+  tracking_number?: string | null;
+  seal_number?: string | null;
+  temperature_c?: string | null;
+  notes?: string | null;
+  packaging_intact: boolean;
+  labels_verified: boolean;
+  vehicle_clean_suitable: boolean;
+  transport_condition_acceptable: boolean;
+  dispatch_approved: boolean;
+  pickup_file_ids: string[];
+}
+
+/** Fields editable via the per-event paperwork PATCH endpoint after
+ *  the truck has left. Mirrors ``ShipmentPickupEvent.paperwork_changeset``.
+ *  Never touches qty, checklist booleans, or photos — those are
+ *  frozen at pickup time. */
+export interface ShipmentPickupEventPaperworkPayload {
+  driver_name?: string | null;
+  vehicle_registration?: string | null;
+  consignment_note_ref?: string | null;
+  tracking_number?: string | null;
+  seal_number?: string | null;
+  temperature_c?: string | null;
+  notes?: string | null;
 }
 
 export interface ShipmentPickupChecklist {

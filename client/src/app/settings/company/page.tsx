@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
-import { getCompany } from "@/lib/company/server";
+import { getCompany, getCompanyDefaults } from "@/lib/company/server";
 import { hasPermission } from "@/lib/rbac";
 import { CompanyIdentityForm } from "./company-identity-form";
 import { CompanyLocaleForm } from "./company-locale-form";
@@ -10,6 +10,7 @@ import { CurrencyRatesForm } from "./currency-rates-form";
 import { AllowedIpsForm } from "./allowed-ips-form";
 import { NumberingFormatsForm } from "./numbering-formats-form";
 import { WarehousePickupForm } from "./warehouse-pickup-form";
+import { YieldToleranceForm } from "./yield-tolerance-form";
 import { ThreePlRateForm } from "./three-pl-rate-form";
 import { SecurityForm } from "./security-form";
 import { AlertCircle } from "lucide-react";
@@ -27,9 +28,10 @@ export default async function CompanySettingsPage() {
   }
 
   const company = await getCompany();
+  const defaults = await getCompanyDefaults();
   const canEdit = hasPermission(user, "company.edit");
 
-  if (!company) {
+  if (!company || !defaults) {
     return (
       <div className="rounded-lg border border-destructive/30 bg-destructive/[0.02] px-4 py-10 text-center">
         <AlertCircle className="mx-auto size-8 text-destructive" />
@@ -50,6 +52,11 @@ export default async function CompanySettingsPage() {
       <WorkingHoursForm company={company} canEdit={canEdit} />
       <HolidaysForm company={company} canEdit={canEdit} />
       <WarehousePickupForm company={company} canEdit={canEdit} />
+      <YieldToleranceForm
+        company={company}
+        canEdit={canEdit}
+        defaults={defaults}
+      />
       <ThreePlRateForm company={company} canEdit={canEdit} />
       <CurrencyRatesForm company={company} canEdit={canEdit} />
       <AllowedIpsForm company={company} canEdit={canEdit} />

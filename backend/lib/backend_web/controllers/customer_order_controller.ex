@@ -55,6 +55,21 @@ defmodule BackendWeb.CustomerOrderController do
   plug RequirePermission, "production.mo_create"
        when action in [:create_mo_for_line]
 
+  # Accept-short-delivery is a customer-facing commercial decision
+  # ("we agree with the customer to ship less than they ordered"),
+  # gated by the same director tier that signs the CO in the first
+  # place. Clearing the acceptance re-opens the fulfilment gate —
+  # same tier.
+  plug RequirePermission, "customer_orders.director_approve"
+       when action in [:accept_short_delivery, :clear_short_delivery_acceptance]
+
+  # Team decision on a customer-driven 3PL routing request. Approve
+  # actually applies the 3PL routing on every released lot, so the
+  # gate is the same as the direct operator path
+  # (``production.final_release``).
+  plug RequirePermission, "production.final_release"
+       when action in [:approve_routing_request, :decline_routing_request]
+
   action_fallback BackendWeb.FallbackController
 
   # ----- list / get -----------------------------------------------
@@ -151,13 +166,21 @@ defmodule BackendWeb.CustomerOrderController do
     %{project_type: project_type, warehouse_id: warehouse_id} =
       derive_mo_defaults_for_co(co, actor.company_id)
 
+    # Top-up detection: if a completed MO already exists for this
+    # line, this call is raising a fresh MO to cover the shortfall.
+    # The quantity is the OUTSTANDING delta, not the original qty
+    # ordered — otherwise the top-up would re-produce the full
+    # order and we'd immediately be in "surplus" territory instead
+    # of "satisfied".
+    mo_quantity = derive_new_mo_quantity_for_line(actor.company_id, line)
+
     attrs =
       %{
         "company_id" => actor.company_id,
         "project_type" => project_type,
         "warehouse_id" => warehouse_id,
         "item_id" => line.item_id,
-        "quantity" => line.qty_ordered,
+        "quantity" => mo_quantity,
         "due_date" => line.expected_ship_date,
         "customer_order_line_id" => line.id,
         "assigned_to_id" => actor.id,
@@ -228,15 +251,121 @@ defmodule BackendWeb.CustomerOrderController do
   # ``primary_mo`` uses the same rule. Cancelled MOs are tombstones,
   # not live production plans, so they don't block another MO being
   # created on the same line.
+  # Fresh MO on a line with no prior completes ⇒ full qty_ordered.
+  # Fresh MO after a completed under-yield ⇒ outstanding delta.
+  # ``max(delta, 0)`` guards against a completed MO that landed in
+  # the ``:over`` bucket — the wizard wouldn't offer a top-up in
+  # that case, but a directly-scripted POST could still try.
+  defp derive_new_mo_quantity_for_line(_company_id, line) do
+    delivered = Backend.CustomerOrders.qty_delivered_for_line(line.id)
+    ordered = to_decimal_ctrl(line.qty_ordered)
+
+    delta = Decimal.sub(ordered, delivered)
+
+    if Decimal.compare(delta, Decimal.new(0)) == :gt do
+      delta
+    else
+      ordered
+    end
+  end
+
+  defp to_decimal_ctrl(nil), do: Decimal.new(0)
+  defp to_decimal_ctrl(%Decimal{} = d), do: d
+  defp to_decimal_ctrl(n) when is_integer(n), do: Decimal.new(n)
+  defp to_decimal_ctrl(n) when is_float(n), do: Decimal.from_float(n)
+
+  defp to_decimal_ctrl(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> Decimal.new(0)
+    end
+  end
+
+  def accept_short_delivery(conn, %{
+        "customer_order_id" => co_uuid,
+        "line_uuid" => line_uuid,
+        "reason" => reason
+      })
+      when is_binary(reason) do
+    actor = conn.assigns.current_user
+
+    with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
+         %{} = line <- Enum.find(co.lines, &(&1.uuid == line_uuid)),
+         trimmed when byte_size(trimmed) >= 3 <- String.trim(reason) do
+      case CustomerOrders.accept_short_delivery(actor, line, trimmed) do
+        {:ok, updated} ->
+          conn
+          |> put_status(:ok)
+          |> json(%{customer_order_line: Payloads.customer_order_line(updated)})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      trimmed when is_binary(trimmed) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Reason must be at least 3 characters.",
+            %{reason: ["is too short"]}
+          )
+        )
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  def accept_short_delivery(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(
+      Errors.payload(
+        "validation_failed",
+        "Reason is required.",
+        %{reason: ["is required"]}
+      )
+    )
+  end
+
+  def clear_short_delivery_acceptance(conn, %{
+        "customer_order_id" => co_uuid,
+        "line_uuid" => line_uuid
+      }) do
+    actor = conn.assigns.current_user
+
+    with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
+         %{} = line <- Enum.find(co.lines, &(&1.uuid == line_uuid)) do
+      case CustomerOrders.clear_short_delivery_acceptance(actor, line) do
+        {:ok, updated} ->
+          conn
+          |> put_status(:ok)
+          |> json(%{customer_order_line: Payloads.customer_order_line(updated)})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp existing_live_mo_for_line(company_id, line_id) do
     import Ecto.Query
 
+    # "Live" here matches the partial index
+    # ``manufacturing_orders_live_co_line_unique`` — everything that
+    # ISN'T terminal. A completed MO is intentionally excluded so
+    # the shortfall / top-up flow can raise a fresh MO on the same
+    # CO line when the first run under-delivered.
     Backend.Repo.one(
       from mo in Backend.Production.ManufacturingOrder,
         where:
           mo.company_id == ^company_id and
             mo.customer_order_line_id == ^line_id and
-            mo.status != "cancelled",
+            mo.status not in ["completed", "cancelled"],
         order_by: [asc: mo.inserted_at, asc: mo.id],
         limit: 1
     )
@@ -782,6 +911,84 @@ defmodule BackendWeb.CustomerOrderController do
 
   defp conflict(conn, code, detail) do
     conn |> put_status(:conflict) |> json(Errors.payload(code, detail))
+  end
+
+  # ─── Customer routing request — team decision endpoints ─────────
+
+  def approve_routing_request(conn, %{"customer_order_id" => co_uuid}) do
+    actor = conn.assigns.current_user
+
+    with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
+         %Backend.ThreePL.RoutingRequest{} = req <-
+           Backend.ThreePL.Requests.get_for_co(co) do
+      case Backend.ThreePL.Requests.team_approve(actor, req) do
+        {:ok, updated} ->
+          json(conn, %{routing_request: routing_request_payload_short(updated)})
+
+        {:error, {:wrong_state, state}} ->
+          conflict(conn, "wrong_state", "Request is in state #{state}, not awaiting team review.")
+
+        {:error, {:no_capacity, info}} ->
+          conflict(
+            conn,
+            "no_capacity",
+            "3PL capacity dropped since the customer submitted. Required " <>
+              "#{Decimal.to_string(info.required_m3)} m³, free " <>
+              "#{Decimal.to_string(info.free_m3)} m³. Decline the request or free up space."
+          )
+
+        {:error, reason} ->
+          unprocessable(conn, "approve_failed", inspect(reason))
+      end
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def decline_routing_request(conn, %{
+        "customer_order_id" => co_uuid,
+        "reason" => reason
+      })
+      when is_binary(reason) do
+    actor = conn.assigns.current_user
+
+    with %{} = co <- CustomerOrders.get_for_company(actor.company_id, co_uuid),
+         %Backend.ThreePL.RoutingRequest{} = req <-
+           Backend.ThreePL.Requests.get_for_co(co) do
+      case Backend.ThreePL.Requests.team_decline(actor, req, reason) do
+        {:ok, updated} ->
+          json(conn, %{routing_request: routing_request_payload_short(updated)})
+
+        {:error, :reason_required} ->
+          unprocessable(conn, "reason_required", "Decline reason is required.")
+
+        {:error, {:wrong_state, state}} ->
+          conflict(conn, "wrong_state", "Request is in state #{state}, not awaiting team review.")
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+
+        {:error, reason} ->
+          unprocessable(conn, "decline_failed", inspect(reason))
+      end
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def decline_routing_request(conn, _params),
+    do: unprocessable(conn, "reason_required", "Decline reason is required.")
+
+  defp routing_request_payload_short(%Backend.ThreePL.RoutingRequest{} = req) do
+    %{
+      uuid: req.uuid,
+      state: req.state,
+      customer_choice: req.customer_choice,
+      team_decision_reason: req.team_decision_reason,
+      customer_chose_at: req.customer_chose_at,
+      team_reviewed_at: req.team_reviewed_at,
+      estimate_snapshot: req.estimate_snapshot
+    }
   end
 
   defp unprocessable(conn, code, detail) do

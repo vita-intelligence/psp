@@ -49,12 +49,22 @@ defmodule BackendWeb.ShipmentController do
             ]
 
   plug RequirePermission,
-       "shipments.pickup" when action in [:pickup, :upload_pickup_file, :delete_pickup_file, :dispatch_push]
+       "shipments.pickup"
+       when action in [
+              :pickup,
+              :upload_pickup_file,
+              :delete_pickup_file,
+              :dispatch_push,
+              :create_pickup_event,
+              :list_pickup_events,
+              :update_pickup_event_paperwork
+            ]
 
   plug RequirePermission,
        "shipments.confirm_delivery"
        when action in [
               :confirm_delivery,
+              :confirm_pickup_event_delivery,
               :upload_delivery_file,
               :delete_delivery_file
             ]
@@ -202,6 +212,95 @@ defmodule BackendWeb.ShipmentController do
       json(conn, %{shipment: Payloads.shipment(preloaded)})
     else
       nil -> not_found(conn, "Shipment not found.")
+      {:error, reason} -> shipment_error(conn, reason)
+    end
+  end
+
+  def list_pickup_events(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid) do
+      events = Shipments.list_pickup_events(shipment)
+      json(conn, %{events: Enum.map(events, &Payloads.shipment_pickup_event(&1, shipment))})
+    else
+      _ -> not_found(conn, "Shipment not found.")
+    end
+  end
+
+  def create_pickup_event(conn, %{"uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.drop(params, ["uuid"])
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         {:ok, {updated, event}} <- Shipments.log_pickup_event(actor, shipment, attrs) do
+      preloaded_shipment = Shipments.get_shipment(actor.company_id, updated.uuid)
+
+      conn
+      |> put_status(:created)
+      |> json(%{
+        shipment: Payloads.shipment(preloaded_shipment),
+        event: Payloads.shipment_pickup_event(event, updated)
+      })
+    else
+      nil -> not_found(conn, "Shipment not found.")
+      {:error, reason} -> shipment_error(conn, reason)
+    end
+  end
+
+  # PATCH /api/shipments/:uuid/pickup-events/:event_uuid/paperwork
+  # Amend the paperwork carried by ONE pickup event after the truck
+  # has left the site (tracking number emailed by the carrier later,
+  # seal transcription fix, temp reading from a data-logger, driver
+  # name correction). Does NOT re-validate the checklist / qty / photos
+  # — those are frozen at pickup time.
+  def update_pickup_event_paperwork(conn, %{
+        "uuid" => uuid,
+        "event_uuid" => event_uuid
+      } = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.drop(params, ["uuid", "event_uuid"])
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         %Backend.Shipments.ShipmentPickupEvent{} = event <-
+           Shipments.get_pickup_event(shipment.id, event_uuid),
+         {:ok, updated_event} <-
+           Shipments.update_pickup_event_paperwork(actor, event, attrs) do
+      preloaded_shipment = Shipments.get_shipment(actor.company_id, shipment.uuid)
+
+      json(conn, %{
+        shipment: Payloads.shipment(preloaded_shipment),
+        event: Payloads.shipment_pickup_event(updated_event, preloaded_shipment)
+      })
+    else
+      nil -> not_found(conn, "Pickup event not found.")
+      {:error, reason} -> shipment_error(conn, reason)
+    end
+  end
+
+  def confirm_pickup_event_delivery(conn, %{
+        "uuid" => uuid,
+        "event_uuid" => event_uuid
+      } = params) do
+    actor = conn.assigns.current_user
+    attrs = Map.drop(params, ["uuid", "event_uuid"])
+
+    with %Shipment{} = shipment <- Shipments.get_shipment(actor.company_id, uuid),
+         %Backend.Shipments.ShipmentPickupEvent{} = event <-
+           Shipments.get_pickup_event(shipment.id, event_uuid),
+         {:ok, {updated_event, _updated_shipment}} <-
+           Shipments.confirm_pickup_event_delivery(
+             actor,
+             event,
+             Map.put(attrs, "source", "staff")
+           ) do
+      preloaded_shipment = Shipments.get_shipment(actor.company_id, shipment.uuid)
+
+      json(conn, %{
+        shipment: Payloads.shipment(preloaded_shipment),
+        event: Payloads.shipment_pickup_event(updated_event, preloaded_shipment)
+      })
+    else
+      nil -> not_found(conn, "Pickup event not found.")
       {:error, reason} -> shipment_error(conn, reason)
     end
   end
@@ -564,6 +663,10 @@ defmodule BackendWeb.ShipmentController do
       :not_cancelable ->
         unprocessable(conn, "not_cancelable",
           "Picked-up shipments can't be cancelled.")
+
+      :pickup_events_exist ->
+        unprocessable(conn, "pickup_events_exist",
+          "This shipment already has a truck pickup logged, so cancelling would detach the audit trail from goods that have physically moved. Log the remaining pickups, or reduce the shipment quantity on the linked lot instead.")
 
       {:bad_status, got: got, expected: expected} ->
         unprocessable(conn, "bad_status",

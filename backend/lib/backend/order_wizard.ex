@@ -51,7 +51,9 @@ defmodule Backend.OrderWizard do
            :proposal_accepted, :trial_batches_in_flight, :setup, :approval,
            :production_planning, :awaiting_ingredients, :picking_ingredients,
            :in_production, :closeout,
-           :final_release, :awaiting_routing, :ready_to_dispatch, :awaiting_pickup,
+           :final_release, :awaiting_routing,
+           :awaiting_shortfall_resolution,
+           :ready_to_dispatch, :awaiting_pickup,
            :dispatched, :delivered]
   @total_phases length(@phases)
 
@@ -244,7 +246,22 @@ defmodule Backend.OrderWizard do
               # timestamps. Trial / sample MOs are excluded (R&D scaffolding
               # the customer never asked about); only project_type =
               # "production" surfaces on the customer-facing roadmap.
-              manufacturing_orders: public_mos_for_npd(snap)
+              manufacturing_orders: public_mos_for_npd(snap),
+              # Customer-driven 3PL routing state + numbers. Present
+              # only for bespoke NPD-formulation COs after at least one
+              # output lot has reached ``awaiting_release``. NPD stores
+              # this on ``PspRoutingRequest`` + surfaces on the portal's
+              # decision card (customer-facing) OR "request received"
+              # message (post-submit).
+              routing_request: routing_request_payload_for_wire(snap[:routing_request]),
+              # Multi-visit pickup progress across every shipment on
+              # this CO. Nil when the CO has no live shipments yet.
+              # NPD stores this on ``PspProductionStatus.dispatch_progress``
+              # + uses it to override the ``awaiting_pickup`` phase
+              # copy so the portal card reflects partial progress
+              # ("1 of 3 trucks loaded") instead of the generic
+              # "Awaiting carrier pickup".
+              dispatch_progress: summary.dispatch_progress
             }
 
             company = Backend.Companies.current()
@@ -283,6 +300,21 @@ defmodule Backend.OrderWizard do
   end
 
   def notify_via_mo(_), do: :ok
+
+  @doc """
+  UUID-keyed variant. Used by lot-lifecycle paths (``Output QC``,
+  ``Final Product Release``) that know the source MO by its UUID
+  string via ``stock_lot.source_ref`` — they'd otherwise have to
+  do a Repo lookup just to convert the uuid to an id.
+  """
+  def notify_via_mo_uuid(uuid) when is_binary(uuid) and byte_size(uuid) > 0 do
+    case Repo.get_by(ManufacturingOrder, uuid: uuid) do
+      %ManufacturingOrder{id: id} -> notify_cos_for_mo(id)
+      _ -> :ok
+    end
+  end
+
+  def notify_via_mo_uuid(_), do: :ok
 
   @doc """
   Compact summary of every "in-flight" CO in the company — anything
@@ -350,8 +382,79 @@ defmodule Backend.OrderWizard do
       mos_in_production:
         Enum.count(snap.mos, &(&1.status in ["scheduled", "in_progress"])),
       mos_awaiting_closeout:
-        Enum.count(snap.mos, & &1.has_output_at_production_feed?)
+        Enum.count(snap.mos, & &1.has_output_at_production_feed?),
+      # Multi-visit pickup progress. Sum of every ``partially_picked``
+      # + ``picked_up`` + ``delivered`` shipment's qty vs the events
+      # logged so far. Powers a partial-progress override on the
+      # portal's ProductionCard so a customer waiting on truck #2 of
+      # 3 sees "1 of 3 trucks loaded" instead of the generic
+      # "Awaiting carrier pickup".
+      dispatch_progress: build_dispatch_progress(snap.customer_order.id)
     }
+  end
+
+  defp build_dispatch_progress(co_id) do
+    shipments =
+      Repo.all(
+        from s in Backend.Shipments.Shipment,
+          where:
+            s.customer_order_id == ^co_id and
+              s.status in ["ready", "partially_picked", "picked_up", "delivered"],
+          select: %{
+            id: s.id,
+            qty: s.qty,
+            status: s.status
+          }
+      )
+
+    if shipments == [] do
+      nil
+    else
+      total_qty =
+        Enum.reduce(shipments, Decimal.new(0), fn s, acc ->
+          Decimal.add(acc, s.qty || Decimal.new(0))
+        end)
+
+      # Sum every event's qty across every shipment for this CO.
+      picked_qty =
+        Repo.one(
+          from(e in Backend.Shipments.ShipmentPickupEvent,
+            join: s in Backend.Shipments.Shipment,
+            on: s.id == e.shipment_id,
+            where: s.customer_order_id == ^co_id,
+            select: coalesce(sum(e.qty), 0)
+          )
+        ) || Decimal.new(0)
+
+      events_count =
+        Repo.aggregate(
+          from(e in Backend.Shipments.ShipmentPickupEvent,
+            join: s in Backend.Shipments.Shipment,
+            on: s.id == e.shipment_id,
+            where: s.customer_order_id == ^co_id
+          ),
+          :count
+        )
+
+      remaining_qty =
+        Decimal.sub(total_qty, picked_qty)
+        |> then(fn d ->
+          if Decimal.compare(d, Decimal.new(0)) == :lt, do: Decimal.new(0), else: d
+        end)
+
+      any_partial? = Enum.any?(shipments, &(&1.status == "partially_picked"))
+      all_picked_up? = Enum.all?(shipments, &(&1.status in ["picked_up", "delivered"]))
+
+      %{
+        total_qty: Decimal.to_string(total_qty, :normal),
+        picked_up_qty: Decimal.to_string(picked_qty, :normal),
+        remaining_qty: Decimal.to_string(remaining_qty, :normal),
+        events_count: events_count,
+        shipments_count: length(shipments),
+        any_partial: any_partial?,
+        all_picked_up: all_picked_up?
+      }
+    end
   end
 
   # Public-safe per-MO roadmap projection for the NPD push. Ships
@@ -744,6 +847,7 @@ defmodule Backend.OrderWizard do
     phase = derive_phase(co, line_states, all_mos)
     approvals = signers_for(co)
     invoices = invoices_for(co)
+    routing_request = load_or_create_routing_request(co, all_mos)
 
     %{
       customer_order: co,
@@ -754,6 +858,7 @@ defmodule Backend.OrderWizard do
       blockers: blockers,
       lines: line_states,
       mos: all_mos,
+      routing_request: routing_request,
       open_pos: open_pos_for(all_mos),
       invoices: invoices,
       timeline: timeline(co, all_mos, approvals),
@@ -1066,9 +1171,137 @@ defmodule Backend.OrderWizard do
       Enum.any?(live_mos, &(Map.get(&1, :output_needs_routing_count, 0) > 0)) ->
         :awaiting_routing
 
+      # Fulfilment gate. If any line is short of ordered qty by more
+      # than the company's yield tolerance, block ready-to-dispatch
+      # until either a top-up MO covers the delta OR the operator
+      # runs ``Backend.CustomerOrders.accept_short_delivery/3`` on
+      # the line (audit-logged reason, mirrored to the CO timeline).
+      Enum.any?(line_states, &line_state_short_out_of_tolerance?/1) ->
+        :awaiting_shortfall_resolution
+
       true ->
         derive_dispatch_phase(live_mos)
     end
+  end
+
+  defp line_state_short_out_of_tolerance?(line_state) do
+    case get_in(line_state, [:fulfilment, :status]) do
+      :short_out_of_tolerance -> true
+      _ -> false
+    end
+  end
+
+  # Customer-driven 3PL vs shipment routing for bespoke NPD-formulation
+  # COs. Idempotent — the ``Backend.ThreePL.Requests.create_or_get_for_co``
+  # helper spawns the row the first time we call, then returns the
+  # existing row on every subsequent snapshot build. We only bother
+  # once at least one output lot has actually reached ``awaiting_release``
+  # (otherwise there'd be nothing meaningful to show on the portal).
+  #
+  # Returns a serialisable map for the snapshot payload OR ``nil``
+  # when the CO doesn't qualify — the FE branches on presence.
+  defp load_or_create_routing_request(%CustomerOrder{} = co, all_mos) do
+    cond do
+      not Backend.ThreePL.Requests.custom_formulation?(co) ->
+        nil
+
+      not any_output_needs_routing?(all_mos) ->
+        # Nothing released yet → don't spawn the row (avoids the
+        # portal receiving a request row with all-zero snapshot).
+        # The next wizard build after Final Release lands will
+        # spawn it.
+        nil
+
+      true ->
+        # System actor — snapshot renders happen from wizard reads
+        # (no session context), so ``actor = nil``. The context
+        # module handles nil by writing ``created_by_id = nil``.
+        case Backend.ThreePL.Requests.create_or_get_for_co(nil, co) do
+          {:ok, request} -> routing_request_payload(co, request)
+          _ -> nil
+        end
+    end
+  end
+
+  defp any_output_needs_routing?(all_mos) do
+    Enum.any?(all_mos, fn mo ->
+      Map.get(mo, :output_needs_routing_count, 0) > 0
+    end)
+  end
+
+  defp routing_request_payload(%CustomerOrder{} = co, %Backend.ThreePL.RoutingRequest{} = req) do
+    live_snapshot = Backend.ThreePL.Requests.snapshot_for_co(co)
+
+    %{
+      uuid: req.uuid,
+      state: req.state,
+      customer_choice: req.customer_choice,
+      team_decision_reason: req.team_decision_reason,
+      customer_chose_at: req.customer_chose_at,
+      team_reviewed_at: req.team_reviewed_at,
+      team_reviewed_by:
+        case req.team_reviewed_by do
+          %Backend.Accounts.User{} = u -> %{id: u.id, name: u.name, email: u.email}
+          _ -> nil
+        end,
+      # Two snapshots exposed:
+      #   * ``frozen``   — the numbers the customer saw at submit.
+      #     ``nil`` before customer choice.
+      #   * ``current``  — the live numbers as of this render. PSP
+      #     team uses this to sanity-check "capacity we quoted vs
+      #     capacity we have right now".
+      frozen_snapshot: req.estimate_snapshot,
+      current_snapshot: serialize_snapshot_for_wire(live_snapshot)
+    }
+  end
+
+  defp serialize_snapshot_for_wire(snap) do
+    %{
+      "required_m3" => decimal_str(snap.required_m3),
+      "free_m3" => decimal_str(snap.free_m3),
+      "capacity_ok" => snap.capacity_ok,
+      "rate_per_m3_per_day" => decimal_str(snap.rate_per_m3_per_day),
+      "estimated_days" => snap.estimated_days,
+      "estimated_daily_charge" => decimal_str(snap.estimated_daily_charge),
+      "estimated_period_charge" => decimal_str(snap.estimated_period_charge),
+      "currency_code" => snap.currency_code
+    }
+  end
+
+  defp decimal_str(nil), do: nil
+  defp decimal_str(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+  defp decimal_str(other), do: to_string(other)
+
+  # Wire form of the routing_request block for the NPD payload.
+  # ``nil`` when the CO is standard commercial or has no released
+  # lots yet — NPD keys on presence to decide whether to render the
+  # decision card at all.
+  defp routing_request_payload_for_wire(nil), do: nil
+
+  defp routing_request_payload_for_wire(%{} = req) do
+    %{
+      uuid: req.uuid,
+      state: req.state,
+      customer_choice: req.customer_choice,
+      team_decision_reason: req.team_decision_reason,
+      customer_chose_at:
+        case req.customer_chose_at do
+          %DateTime{} = dt -> DateTime.to_iso8601(dt)
+          _ -> nil
+        end,
+      team_reviewed_at:
+        case req.team_reviewed_at do
+          %DateTime{} = dt -> DateTime.to_iso8601(dt)
+          _ -> nil
+        end,
+      team_reviewed_by:
+        case req.team_reviewed_by do
+          %{name: name} -> %{name: name}
+          _ -> nil
+        end,
+      frozen_snapshot: req.frozen_snapshot,
+      current_snapshot: req.current_snapshot
+    }
   end
 
   # Once every output lot has finished the routing decision, the
@@ -1140,11 +1373,15 @@ defmodule Backend.OrderWizard do
     # the shipment is still the live audit row for that lot; leaving
     # it out would flip the wizard back to `:ready_to_dispatch` and
     # ask the operator to create a fresh shipment.
+    #
+    # ``partially_picked`` also counts as coverage — the first truck
+    # has been logged but the shipment still owes more visits before
+    # it's fully drained.
     shipments =
       from(s in Backend.Shipments.Shipment,
         where:
           s.stock_lot_id in ^lot_ids and
-            s.status in ["draft", "ready", "picked_up", "delivered"],
+            s.status in ["draft", "ready", "partially_picked", "picked_up", "delivered"],
         select: %{stock_lot_id: s.stock_lot_id, status: s.status}
       )
       |> Repo.all()
@@ -1166,7 +1403,7 @@ defmodule Backend.OrderWizard do
       Enum.all?(shipments, &(&1.status == "delivered")) ->
         {:delivered, shipments}
 
-      # Every shipment picked_up (or a mix of picked_up + delivered)
+      # Every shipment fully picked (or a mix of picked_up + delivered)
       # → goods have physically left. Wizard's next-action for this
       # phase surfaces "Register the delivery" while any row is still
       # in transit; drops to invoicing advice once everything is
@@ -1174,7 +1411,8 @@ defmodule Backend.OrderWizard do
       Enum.all?(shipments, &(&1.status in ["picked_up", "delivered"])) ->
         {:dispatched, shipments}
 
-      # Otherwise at least one is still Ready → waiting for the truck.
+      # Otherwise at least one is still Ready or partially picked →
+      # waiting for the (next) truck.
       true ->
         {:awaiting_pickup, shipments}
     end
@@ -1211,6 +1449,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:closeout), do: "Closeout"
   defp phase_label(:final_release), do: "Release"
   defp phase_label(:awaiting_routing), do: "Routing"
+  defp phase_label(:awaiting_shortfall_resolution), do: "Shortfall resolution"
   defp phase_label(:ready_to_dispatch), do: "Shipment paperwork"
   defp phase_label(:awaiting_pickup), do: "Awaiting pickup"
   defp phase_label(:dispatched), do: "Dispatched"
@@ -2420,37 +2659,145 @@ defmodule Backend.OrderWizard do
         do: "/production/final-releases/#{target_lot_uuid}",
         else: "/customer-orders/#{co.uuid}"
 
+    # Custom-formulation COs: the decision belongs to the customer,
+    # the operator's next action depends on the routing_request
+    # state. Fall through to the standard operator per-lot picker
+    # only when the CO isn't custom.
+    if Backend.ThreePL.Requests.custom_formulation?(co) do
+      routing_request_cta_for(co, target_lot_uuid)
+    else
+      %{
+        code: "route_released_lots",
+        title:
+          "Route #{lot_count} released lot#{plural_s(lot_count)}: 3PL storage or direct shipment.",
+        detail:
+          "QA cleared these for handoff — pick the next stop per lot. 3PL storage flips ownership to the customer (we hold as bailee, m³-per-day rate accrues from the routing timestamp). Direct shipment moves the lot to a dispatch cell for pickup. Capacity is checked before we accept the choice; you'll see the free m³ for each purpose inline.",
+        primary_cta: %{
+          label: "Open routing step",
+          kind: "link",
+          href: href
+        },
+        secondary_ctas:
+          routing_mos
+          |> Enum.drop(1)
+          |> Enum.map(fn mo ->
+            lot_uuid =
+              case Map.get(mo, :output_needs_routing_lot_uuids, []) do
+                [u | _] when is_binary(u) -> u
+                _ -> nil
+              end
+
+            %{
+              label: "MO #{mo.code} — route lots",
+              kind: "link",
+              href:
+                if(lot_uuid,
+                  do: "/production/final-releases/#{lot_uuid}",
+                  else: "/customer-orders/#{co.uuid}"
+                ),
+              description:
+                "Choose 3PL or ship for the released output lot#{plural_s(Map.get(mo, :output_needs_routing_count, 0))}."
+            }
+          end)
+      }
+    end
+  end
+
+  # ``next_action`` copy tailored to the customer routing request
+  # state. Every branch links to the Final Release page — that's
+  # where the RoutingRequestCard renders the numbers + Approve /
+  # Decline buttons.
+  defp routing_request_cta_for(co, target_lot_uuid) do
+    href =
+      if target_lot_uuid,
+        do: "/production/final-releases/#{target_lot_uuid}",
+        else: "/customer-orders/#{co.uuid}"
+
+    request = Backend.ThreePL.Requests.get_for_co(co)
+
+    {title, detail, cta_label} =
+      case request do
+        %Backend.ThreePL.RoutingRequest{state: "awaiting_customer", customer_choice: nil} ->
+          {"Customer choosing routing on the portal.",
+           "This is a bespoke formulation — the customer picks 3PL storage or direct shipment on their portal. Nothing owed on our side until they submit.",
+           "Open routing card"}
+
+        %Backend.ThreePL.RoutingRequest{
+          state: "awaiting_customer",
+          team_decision_reason: reason
+        }
+        when is_binary(reason) ->
+          {"3PL declined — awaiting customer re-decision.",
+           "You declined 3PL with reason: \"#{reason}\". The customer sees this on the portal and needs to pick Direct shipment (or the situation needs to change so 3PL becomes viable).",
+           "Open routing card"}
+
+        %Backend.ThreePL.RoutingRequest{state: "awaiting_team_review"} ->
+          {"Customer requested 3PL storage — review + approve or decline.",
+           "The customer picked 3PL on the portal. Check the required space vs available 3PL capacity + the estimated charge, then Approve to route every lot to bailee custody or Decline (reason required, mirrored to the portal so the customer can re-decide).",
+           "Review 3PL request"}
+
+        %Backend.ThreePL.RoutingRequest{state: "applied_three_pl"} ->
+          {"3PL approved — lots being placed in bailee custody.",
+           "Customer's 3PL request has been approved. Every output lot has been routed to a three_pl_storage cell and the billing clock has started.",
+           "Open routing card"}
+
+        %Backend.ThreePL.RoutingRequest{state: "applied_shipment"} ->
+          {"Direct shipment — lots ready for dispatch paperwork.",
+           "Customer chose direct shipment. Every output lot has been routed to a dispatch cell; move on to the shipment paperwork.",
+           "Open routing card"}
+
+        _ ->
+          {"Awaiting customer routing decision.",
+           "Custom-formulation CO — the routing decision belongs to the customer.",
+           "Open routing card"}
+      end
+
     %{
-      code: "route_released_lots",
-      title:
-        "Route #{lot_count} released lot#{plural_s(lot_count)}: 3PL storage or direct shipment.",
-      detail:
-        "QA cleared these for handoff — pick the next stop per lot. 3PL storage flips ownership to the customer (we hold as bailee, m³-per-day rate accrues from the routing timestamp). Direct shipment moves the lot to a dispatch cell for pickup. Capacity is checked before we accept the choice; you'll see the free m³ for each purpose inline.",
+      code: "customer_routing_request",
+      title: title,
+      detail: detail,
       primary_cta: %{
-        label: "Open routing step",
+        label: cta_label,
         kind: "link",
         href: href
       },
-      secondary_ctas:
-        routing_mos
-        |> Enum.drop(1)
-        |> Enum.map(fn mo ->
-          lot_uuid =
-            case Map.get(mo, :output_needs_routing_lot_uuids, []) do
-              [u | _] when is_binary(u) -> u
-              _ -> nil
-            end
+      secondary_ctas: []
+    }
+  end
 
+  defp next_action_for(:awaiting_shortfall_resolution, co, line_states, _mos, _signers) do
+    short_lines =
+      Enum.filter(line_states, &line_state_short_out_of_tolerance?/1)
+
+    [first | rest] = short_lines
+
+    first_delta =
+      Decimal.sub(
+        first.qty_ordered || Decimal.new(0),
+        first.fulfilment.qty_delivered
+      )
+
+    %{
+      code: "resolve_shortfall",
+      title:
+        "#{length(short_lines)} line#{plural_s(length(short_lines))} short of ordered qty. Choose top-up or accept short.",
+      detail:
+        "The most recent MO closed under the company yield tolerance. Either create a top-up MO for the remaining #{Decimal.to_string(first_delta, :normal)} #{first.item_name || "units"}, or accept the short delivery with an audit-logged reason if the customer has agreed.",
+      primary_cta: %{
+        label: "Open project to resolve",
+        kind: "link",
+        href: "/customer-orders/#{co.uuid}"
+      },
+      secondary_ctas:
+        rest
+        |> Enum.take(3)
+        |> Enum.map(fn ls ->
           %{
-            label: "MO #{mo.code} — route lots",
+            label: "#{ls.item_name || "Line"} — resolve",
             kind: "link",
-            href:
-              if(lot_uuid,
-                do: "/production/final-releases/#{lot_uuid}",
-                else: "/customer-orders/#{co.uuid}"
-              ),
+            href: "/customer-orders/#{co.uuid}",
             description:
-              "Choose 3PL or ship for the released output lot#{plural_s(Map.get(mo, :output_needs_routing_count, 0))}."
+              "Short by #{Decimal.to_string(Decimal.sub(ls.qty_ordered || Decimal.new(0), ls.fulfilment.qty_delivered), :normal)}"
           }
         end)
     }
@@ -2670,7 +3017,7 @@ defmodule Backend.OrderWizard do
         from(s in Backend.Shipments.Shipment,
           where:
             s.stock_lot_id in ^ids_in_dispatch and
-              s.status in ["draft", "ready", "picked_up", "delivered"],
+              s.status in ["draft", "ready", "partially_picked", "picked_up", "delivered"],
           select: s.stock_lot_id,
           distinct: true
         )
@@ -2776,6 +3123,8 @@ defmodule Backend.OrderWizard do
         []
       end
 
+    fulfilment = line_fulfilment(line)
+
     %{
       uuid: line.uuid,
       id: line.id,
@@ -2785,8 +3134,37 @@ defmodule Backend.OrderWizard do
       mos: mos,
       primary_mo: primary_mo,
       needs_mo?: needs_mo?,
-      available_boms: available_boms
+      available_boms: available_boms,
+      fulfilment: fulfilment
     }
+  end
+
+  # Snapshot of qty_ordered vs qty_delivered vs status classification.
+  # Fed to the wizard's ready-to-dispatch gate below AND straight
+  # through to the FE fulfilment card on the project board — one
+  # source of truth, no drift between what the operator sees and
+  # what the transition path decided.
+  defp line_fulfilment(%CustomerOrderLine{} = line) do
+    tolerance = current_yield_tolerance_pct()
+    Backend.CustomerOrders.line_fulfilment_snapshot(line, tolerance)
+  end
+
+  # Fetched once per wizard build via ``Backend.Companies.current()``
+  # (multi-tenant deployments override the singleton per-request via
+  # ``Backend.Companies.put_current/1``). Falls back to 10.00% if
+  # for any reason the company row is unavailable — matches the DB
+  # default so the gate stays consistent across seed / test / prod.
+  defp current_yield_tolerance_pct do
+    case Backend.Companies.current() do
+      nil ->
+        Decimal.new("10.00")
+
+      %{production_yield_tolerance_pct: nil} ->
+        Decimal.new("10.00")
+
+      %{production_yield_tolerance_pct: %Decimal{} = d} ->
+        d
+    end
   end
 
   defp active_boms_for_item(company_id, item_id) do

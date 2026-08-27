@@ -170,7 +170,11 @@ export function ScheduleReleaseSection({
   }
 
   return (
-    <div className="rounded-lg border border-border/60 bg-card px-4 py-3">
+    // Rendered as an inline block inside the schedule edit dialog's
+    // unified card — no border/bg of its own so it reads as one
+    // continuous panel with the ops below rather than a second
+    // stacked card. The parent supplies the outer chrome.
+    <div className="px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">

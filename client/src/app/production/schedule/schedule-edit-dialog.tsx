@@ -255,7 +255,14 @@ function ScheduleEditDialogInner({
       ref={cursorAnchorRef}
       onMouseMove={onCursorMove}
       onMouseLeave={hideCursor}
-      className="max-h-[88vh] max-w-3xl overflow-hidden"
+      // Flex column layout so the body area takes the remaining
+      // height between header + footer, and long operation
+      // descriptions / SOP notes / release-blocker lists scroll
+      // inside that region instead of pushing the footer out of view.
+      // overflow-hidden here + min-h-0 on the scroll body is what
+      // makes the flex-1 child bounded (without it, the child grows
+      // to fit content and the parent's max-h loses effect).
+      className="flex max-h-[88vh] max-w-3xl flex-col overflow-hidden"
     >
       <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-lg">
         {Object.entries(cursors).map(([id, cursor]) => (
@@ -268,11 +275,15 @@ function ScheduleEditDialogInner({
         ))}
       </div>
 
-      <DialogHeader>
+      <DialogHeader className="shrink-0">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
-            <DialogTitle>{scope?.title ?? "Edit schedule"}</DialogTitle>
-            <DialogDescription>{scope?.subtitle ?? null}</DialogDescription>
+            <DialogTitle className="break-words">
+              {scope?.title ?? "Edit schedule"}
+            </DialogTitle>
+            <DialogDescription className="break-words">
+              {scope?.subtitle ?? null}
+            </DialogDescription>
           </div>
           <div className="flex items-center gap-2">
             <CollabAvatars peers={presence} />
@@ -286,21 +297,30 @@ function ScheduleEditDialogInner({
         </div>
       </DialogHeader>
 
-      {joinError && <JoinErrorBlock error={joinError} />}
+      {joinError && (
+        <div className="shrink-0">
+          <JoinErrorBlock error={joinError} />
+        </div>
+      )}
 
       {!joinError && !isCreator && creator && (
-        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200">
+        <div className="shrink-0 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200">
           <strong className="font-semibold">{creator.name}</strong> is the host
           of this edit room. Only they can save.
         </div>
       )}
 
       {!joinError && (
-        <div className="-mx-1 max-h-[58vh] space-y-4 overflow-y-auto px-1">
-          {/* Release-to-warehouse section. One per MO in scope, gated
-              to single-MO buckets (project + mo + step). */}
-          {scope?.buckets.length === 1 &&
-            scope.buckets[0].ops[0]?.manufacturing_order && (
+        <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1">
+          {/* Single-MO scope (step + mo + project-single): wrap the
+              Warehouse pickup panel + ops list inside ONE bordered
+              card so the modal reads as a single scrolling flow,
+              not two stacked panels. Multi-MO scope keeps the ops
+              in their own bordered card per bucket. */}
+          {scope &&
+          scope.buckets.length === 1 &&
+          scope.buckets[0].ops[0]?.manufacturing_order ? (
+            <div className="divide-y divide-border/60 overflow-hidden rounded-md border border-border/60 bg-card/40">
               <ScheduleReleaseSection
                 mo={scope.buckets[0].ops[0].manufacturing_order}
                 canRelease={canRelease}
@@ -311,25 +331,39 @@ function ScheduleEditDialogInner({
                   onSaved();
                 }}
               />
-            )}
-          {scope?.buckets.map((bucket) => (
-            <MoBucketCard
-              key={bucket.moId}
-              bucket={bucket}
-              segmentsByOp={state.ops}
-              fieldEditors={fieldEditors}
-              onChange={setOpSegments}
-              onFocusField={focusField}
-              onBlurField={blurField}
-              disabled={!canEdit || !isCreator || saving}
-              company={company}
-              showMoHeader={scope.kind !== "step"}
-            />
-          ))}
+              <MoBucketCard
+                bucket={scope.buckets[0]}
+                segmentsByOp={state.ops}
+                fieldEditors={fieldEditors}
+                onChange={setOpSegments}
+                onFocusField={focusField}
+                onBlurField={blurField}
+                disabled={!canEdit || !isCreator || saving}
+                company={company}
+                showMoHeader={scope.kind !== "step"}
+                bare
+              />
+            </div>
+          ) : (
+            scope?.buckets.map((bucket) => (
+              <MoBucketCard
+                key={bucket.moId}
+                bucket={bucket}
+                segmentsByOp={state.ops}
+                fieldEditors={fieldEditors}
+                onChange={setOpSegments}
+                onFocusField={focusField}
+                onBlurField={blurField}
+                disabled={!canEdit || !isCreator || saving}
+                company={company}
+                showMoHeader={scope.kind !== "step"}
+              />
+            ))
+          )}
         </div>
       )}
 
-      <DialogFooter className="flex items-center justify-between gap-2">
+      <DialogFooter className="flex shrink-0 items-center justify-between gap-2">
         <p className="text-[11px] text-muted-foreground">
           {connected
             ? dirty
@@ -370,6 +404,7 @@ function MoBucketCard({
   disabled,
   company,
   showMoHeader,
+  bare = false,
 }: {
   bucket: MoBucket;
   segmentsByOp: Record<string, SegmentRow[]>;
@@ -380,11 +415,29 @@ function MoBucketCard({
   disabled: boolean;
   company: CompanyDefaults;
   showMoHeader: boolean;
+  /** When rendered inside the unified single-MO card wrapper the
+   *  outer border/bg is owned by the wrapper — this suppresses our
+   *  own so the two sections read as one continuous panel. */
+  bare?: boolean;
 }) {
+  // Once an MO is completed or cancelled its schedule is an archived
+  // record — the operator shouldn't be able to shift segments, delete
+  // ops, or twist duration on the modal. Backend `move_mo_step` /
+  // `set_mo_step_segments` refuse too, but disabling the inputs stops
+  // the user from typing changes they'd only see rejected later.
+  const moStatus = bucket.ops[0]?.manufacturing_order?.status ?? null;
+  const isTerminalMo = moStatus === "completed" || moStatus === "cancelled";
+  const effectiveDisabled = disabled || isTerminalMo;
   return (
-    <section className="rounded-md border border-border/60 bg-card/40">
+    <section
+      className={
+        bare
+          ? "bg-transparent"
+          : "rounded-md border border-border/60 bg-card/40"
+      }
+    >
       {showMoHeader && (
-        <header className="flex items-center justify-between border-b border-border/60 px-3 py-2">
+        <header className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
           <div className="min-w-0">
             <Link
               href={`/production/manufacturing-orders/${bucket.moUuid}`}
@@ -397,9 +450,23 @@ function MoBucketCard({
               {bucket.itemName}
             </p>
           </div>
-          <span className="text-[11px] text-muted-foreground">
-            {bucket.ops.length} op{bucket.ops.length === 1 ? "" : "s"}
-          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            {isTerminalMo && (
+              <span
+                className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                title={
+                  moStatus === "completed"
+                    ? "This MO is completed — schedule is locked."
+                    : "This MO is cancelled — schedule is locked."
+                }
+              >
+                {moStatus === "completed" ? "Completed" : "Cancelled"}
+              </span>
+            )}
+            <span className="text-[11px] text-muted-foreground">
+              {bucket.ops.length} op{bucket.ops.length === 1 ? "" : "s"}
+            </span>
+          </div>
         </header>
       )}
       <ul className="divide-y divide-border/60">
@@ -412,7 +479,7 @@ function MoBucketCard({
             onChange={(next) => onChange(op.uuid, next)}
             onFocusField={onFocusField}
             onBlurField={onBlurField}
-            disabled={disabled}
+            disabled={effectiveDisabled}
             company={company}
           />
         ))}
@@ -446,6 +513,12 @@ function OperationEditor({
     if (!Number.isFinite(s) || !Number.isFinite(f) || f <= s) return acc;
     return acc + (f - s) / 1000;
   }, 0);
+
+  // Same gate MoBucketCard applies — re-derived here so the "step"
+  // scope (which skips the MO header + terminal badge) still shows
+  // the reason for the lock inline on the op row.
+  const moStatus = op.manufacturing_order?.status ?? null;
+  const isTerminalMo = moStatus === "completed" || moStatus === "cancelled";
 
   function updateRow(i: number, patch: Partial<SegmentRow>) {
     const next = segments.map((s, idx) => (idx === i ? { ...s, ...patch } : s));
@@ -523,9 +596,9 @@ function OperationEditor({
 
   return (
     <li className="px-3 py-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="break-words text-sm font-medium">
             {op.operation_description ?? `Op #${op.id}`}
           </p>
           {op.workstation_group && (
@@ -548,6 +621,13 @@ function OperationEditor({
           Work {formatDuration(workSeconds)}
         </span>
       </div>
+      {isTerminalMo && (
+        <p className="mb-2 rounded border border-border/60 bg-muted/50 px-2 py-1 text-[11px] text-muted-foreground">
+          {moStatus === "completed"
+            ? "MO is completed — segments and pauses are locked."
+            : "MO is cancelled — segments and pauses are locked."}
+        </p>
+      )}
 
       {segments.length === 0 ? (
         <p className="text-xs text-muted-foreground">

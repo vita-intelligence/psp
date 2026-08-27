@@ -45,6 +45,11 @@ const STATUS_TONE: Record<
     className:
       "border-sky-500/40 bg-sky-500/10 text-sky-800 dark:text-sky-200",
   },
+  partially_picked: {
+    label: "Partially picked",
+    className:
+      "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200",
+  },
   picked_up: {
     label: "In transit",
     className:

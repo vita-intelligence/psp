@@ -18,6 +18,7 @@ defmodule Backend.CustomerOrders.CustomerOrderLine do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Backend.Accounts.User
   alias Backend.Companies.Company
   alias Backend.CustomerOrders.CustomerOrder
   alias Backend.Items.Item
@@ -36,11 +37,22 @@ defmodule Backend.CustomerOrders.CustomerOrderLine do
     field :customer_part_no, :string
     field :notes, :string
 
+    # Escape hatch for the yield-tolerance fulfilment gate. Stamped
+    # by ``Backend.CustomerOrders.accept_short_delivery/3`` when the
+    # customer has agreed to receive a short delivery — the
+    # fulfilment classifier then treats the line as ``:satisfied``
+    # regardless of the delivered-vs-ordered gap, letting the CO
+    # advance to ready-to-dispatch. Cleared to nil if a later
+    # top-up MO closes the gap naturally (fulfilment re-derives).
+    field :short_delivery_accepted_at, :utc_datetime
+    field :short_delivery_accepted_reason, :string
+
     belongs_to :customer_order, CustomerOrder
     belongs_to :item, Item
     belongs_to :company, Company
     belongs_to :warehouse, Warehouse
     belongs_to :pricelist, Pricelist
+    belongs_to :short_delivery_accepted_by, User
 
     timestamps(type: :utc_datetime)
   end
@@ -76,5 +88,25 @@ defmodule Backend.CustomerOrders.CustomerOrderLine do
     )
     |> validate_length(:notes, max: 2000)
     |> validate_length(:customer_part_no, max: 120)
+  end
+
+  @doc """
+  Narrow changeset for the "Accept short delivery" action. Requires
+  a reason so the audit trail always answers "why did we ship
+  short?". Called from ``Backend.CustomerOrders.accept_short_delivery/3``.
+  """
+  def short_delivery_changeset(line, attrs) do
+    line
+    |> cast(attrs, [
+      :short_delivery_accepted_at,
+      :short_delivery_accepted_reason,
+      :short_delivery_accepted_by_id
+    ])
+    |> validate_required([
+      :short_delivery_accepted_at,
+      :short_delivery_accepted_reason,
+      :short_delivery_accepted_by_id
+    ])
+    |> validate_length(:short_delivery_accepted_reason, min: 3, max: 4_000)
   end
 end

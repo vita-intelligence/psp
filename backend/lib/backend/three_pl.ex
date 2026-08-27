@@ -133,6 +133,19 @@ defmodule Backend.ThreePL do
         lot_routing_snapshot(routed)
       )
 
+      # Custom-formulation COs carry a ``co_routing_request`` state
+      # machine that the customer + PSP team can advance in parallel.
+      # When the OPERATOR routes a lot directly via the per-lot
+      # picker, walk to the CO and if every produced lot is now
+      # routed the same way, flip the request row to ``applied_*``.
+      # Idempotent: no-op on standard commercial COs and on partial
+      # progress (some lots still awaiting routing).
+      Backend.ThreePL.Requests.sync_state_after_per_lot_routing(
+        actor,
+        routed,
+        choice
+      )
+
       notify_wizard(routed)
       result
     else

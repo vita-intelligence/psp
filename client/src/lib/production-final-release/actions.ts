@@ -228,3 +228,62 @@ export async function rejectAction(
     });
   }
 }
+
+/**
+ * PSP team approves the customer's 3PL routing request. Applies
+ * `routed_to_3pl` on every released lot for the CO. Requires
+ * `production.final_release`.
+ */
+export async function approveCustomerRoutingRequestAction(
+  coUuid: string,
+): Promise<{ ok: true } | ErrorResult> {
+  const t = await token();
+  if (!t) return unauthorized("approveCustomerRoutingRequestAction");
+  try {
+    await api<{ routing_request: unknown }>(
+      `/api/customer-orders/${encodeURIComponent(coUuid)}/routing-request/approve`,
+      { method: "POST", token: t },
+    );
+    revalidatePath(`/production/final-releases`);
+    revalidatePath(`/projects/${coUuid}`);
+    revalidatePath(`/customer-orders/${coUuid}`);
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "approveCustomerRoutingRequestAction",
+      fallbackDetail: "Couldn't approve the 3PL request.",
+    });
+  }
+}
+
+/**
+ * PSP team declines the customer's 3PL routing request with a
+ * reason mirrored to the portal. Bounces the state back to
+ * `awaiting_customer` so the customer re-decides.
+ */
+export async function declineCustomerRoutingRequestAction(
+  coUuid: string,
+  reason: string,
+): Promise<{ ok: true } | ErrorResult> {
+  const t = await token();
+  if (!t) return unauthorized("declineCustomerRoutingRequestAction");
+  try {
+    await api<{ routing_request: unknown }>(
+      `/api/customer-orders/${encodeURIComponent(coUuid)}/routing-request/decline`,
+      {
+        method: "POST",
+        token: t,
+        body: JSON.stringify({ reason }),
+      },
+    );
+    revalidatePath(`/production/final-releases`);
+    revalidatePath(`/projects/${coUuid}`);
+    revalidatePath(`/customer-orders/${coUuid}`);
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "declineCustomerRoutingRequestAction",
+      fallbackDetail: "Couldn't decline the 3PL request.",
+    });
+  }
+}

@@ -57,7 +57,9 @@ import type { CollabPeer, JoinError } from "@/lib/realtime/use-live-form";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { pushNavigateToMyDevicesAction } from "@/lib/devices/actions";
 import {
+  approveCustomerRoutingRequestAction,
   clearSignatureAction,
+  declineCustomerRoutingRequestAction,
   generateBmrAction,
   holdAction,
   rejectAction,
@@ -73,6 +75,7 @@ import {
   type FinalRelease,
   type FinalReleaseFileKind,
   type FinalReleaseFileRow,
+  type RoutingEstimateSnapshot,
 } from "@/lib/production-final-release/types";
 import { routeLotAction } from "@/lib/three-pl/actions";
 import type { ThreePLCapacityResponse } from "@/lib/three-pl/types";
@@ -271,6 +274,27 @@ export function FinalReleaseForm({
       <LotInfoCard release={release} />
 
       {finalized && <FinalisedBanner release={release} />}
+
+      {/* Custom-formulation CO: customer's routing preference sits
+          above the operator picker as a visual alert. Operator still
+          makes the final per-lot decision below — the alert card
+          tells them WHAT the customer asked for + the capacity /
+          price numbers, plus a shortcut "Approve" (auto-route every
+          CO lot to 3PL in one shot) and "Decline" (bounce the
+          customer back to re-pick). */}
+      {release.status === "released" && release.customer_routing_request && (
+        <CustomerRoutingRequestCard
+          release={release}
+          canReview={canRelease}
+          onReviewed={(next) => {
+            setRelease(next);
+            broadcastCommit({
+              kind: "release-updated",
+              status: next.status,
+            });
+          }}
+        />
+      )}
 
       {release.status === "released" && (
         <RoutingCard
@@ -1809,5 +1833,296 @@ function RoutingChoiceCard({
       </div>
       <p className="text-[11px] text-muted-foreground">{description}</p>
     </button>
+  );
+}
+
+// ---------------- Customer-driven routing request (custom formulations) ----------------
+
+/**
+ * Replaces the per-lot RoutingCard on custom-formulation COs. The
+ * decision belongs to the customer via the portal — this card
+ * surfaces the current request state + numbers, and lets the PSP
+ * team Approve / Decline once the customer has picked 3PL.
+ */
+function CustomerRoutingRequestCard({
+  release,
+  canReview,
+  onReviewed,
+}: {
+  release: FinalRelease;
+  canReview: boolean;
+  onReviewed: (next: FinalRelease) => void;
+}) {
+  const req = release.customer_routing_request;
+  const coUuid = release.customer_order_uuid;
+
+  if (!req || !coUuid) return null;
+
+  const state = req.request?.state ?? "awaiting_customer";
+  const snapshot: RoutingEstimateSnapshot | null =
+    req.request?.frozen_snapshot ?? req.current_snapshot;
+
+  const [pending, setPending] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [declineReason, setDeclineReason] = useState("");
+
+  // The Approve / Decline server actions return {ok:true} but don't
+  // hand back a fresh release payload — the release row itself hasn't
+  // changed, only the routing request state derived from it. Fetch
+  // the current release + push it up to the parent so the card + the
+  // rest of the page re-render immediately without a hard refresh.
+  const refetchAndPropagate = async () => {
+    const lotUuid = release.stock_lot?.uuid;
+    if (!lotUuid) return;
+    try {
+      const r = await fetch(
+        `/api/production/final-releases/by-lot/${encodeURIComponent(lotUuid)}`,
+        { cache: "no-store" },
+      );
+      if (r.ok) {
+        const data = (await r.json()) as { release: FinalRelease };
+        onReviewed(data.release);
+      }
+    } catch {
+      // Non-fatal — the server side already applied the decision.
+      // If refetch fails the next collab commit / navigation will
+      // pick up the new state.
+    }
+  };
+
+  const approve = async () => {
+    setPending(true);
+    setErrorDetail(null);
+    try {
+      const res = await approveCustomerRoutingRequestAction(coUuid);
+      if (!res.ok) {
+        setErrorDetail(res.detail);
+        return;
+      }
+      toast.success("3PL approved — lots routing to bailee custody.");
+      await refetchAndPropagate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const decline = async () => {
+    if (declineReason.trim().length < 3) {
+      setErrorDetail("Decline reason must be at least 3 characters.");
+      return;
+    }
+    setPending(true);
+    setErrorDetail(null);
+    try {
+      const res = await declineCustomerRoutingRequestAction(
+        coUuid,
+        declineReason.trim(),
+      );
+      if (!res.ok) {
+        setErrorDetail(res.detail);
+        return;
+      }
+      toast.success(
+        "3PL declined. Customer will re-decide on the portal.",
+      );
+      setDeclineOpen(false);
+      setDeclineReason("");
+      await refetchAndPropagate();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const tone =
+    state === "awaiting_team_review"
+      ? "border-amber-500/40 bg-amber-500/[0.05]"
+      : state === "applied_three_pl" || state === "applied_shipment"
+        ? "border-emerald-500/40 bg-emerald-500/[0.05]"
+        : "border-sky-500/40 bg-sky-500/[0.05]";
+
+  const stateLabel =
+    state === "awaiting_customer" && req.request?.team_decision_reason
+      ? "3PL declined — awaiting customer re-decision"
+      : state === "awaiting_customer"
+        ? "Awaiting customer routing choice"
+        : state === "awaiting_team_review"
+          ? "Customer requested 3PL — team review"
+          : state === "applied_three_pl"
+            ? "3PL applied"
+            : "Direct shipment applied";
+
+  return (
+    <Card className={cn("relative", tone)}>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Boxes className="size-4" />
+          Customer routing request
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
+          {stateLabel}
+        </div>
+
+        {req.request?.team_decision_reason &&
+          state === "awaiting_customer" && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/[0.06] px-3 py-2 text-xs">
+              <p className="font-semibold text-destructive">
+                Last decline reason
+              </p>
+              <p className="mt-0.5 text-destructive/90">
+                {req.request.team_decision_reason}
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Mirrored to the customer portal. They&apos;ll re-decide on
+                their side.
+              </p>
+            </div>
+          )}
+
+        {snapshot && (
+          <div className="grid gap-2 rounded-md border border-border/60 bg-background px-3 py-2 text-xs sm:grid-cols-3">
+            <div>
+              <p className="text-[11px] text-muted-foreground">Required</p>
+              <p className="font-mono font-semibold">
+                {snapshot.required_m3} m³
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-muted-foreground">
+                Free 3PL space
+              </p>
+              <p
+                className={cn(
+                  "font-mono font-semibold",
+                  snapshot.capacity_ok
+                    ? "text-emerald-700 dark:text-emerald-400"
+                    : "text-destructive",
+                )}
+              >
+                {snapshot.free_m3} m³
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-muted-foreground">
+                Est. charge ({snapshot.estimated_days}d)
+              </p>
+              <p className="font-mono font-semibold">
+                {snapshot.currency_code} {snapshot.estimated_period_charge}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                = {snapshot.currency_code} {snapshot.estimated_daily_charge}
+                /day
+              </p>
+            </div>
+          </div>
+        )}
+
+        {errorDetail && <ErrorBanner detail={errorDetail} />}
+
+        {state === "awaiting_team_review" && (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Customer picked 3PL storage on{" "}
+              {req.request?.customer_chose_at
+                ? new Date(req.request.customer_chose_at).toLocaleString()
+                : "the portal"}
+              . Approve to route every lot to bailee custody, or decline
+              with a reason (mirrored to the portal so the customer can
+              re-decide).
+            </p>
+
+            {declineOpen ? (
+              <div className="space-y-2 rounded-md border border-border/60 bg-background px-3 py-2">
+                <label className="text-[11px] font-medium">
+                  Decline reason (customer will see this)
+                </label>
+                <Textarea
+                  rows={3}
+                  value={declineReason}
+                  onChange={(e) => setDeclineReason(e.target.value)}
+                  placeholder="e.g. No 3PL space this month. Please pick direct shipment or check back after 15-Sep."
+                />
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setDeclineOpen(false);
+                      setDeclineReason("");
+                    }}
+                    disabled={pending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => void decline()}
+                    disabled={pending || declineReason.trim().length < 3}
+                  >
+                    {pending ? (
+                      <Loader2 className="mr-1 size-3.5 animate-spin" />
+                    ) : null}
+                    Confirm decline
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={!canReview || pending}
+                  onClick={() => setDeclineOpen(true)}
+                >
+                  Decline
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!canReview || pending || !snapshot?.capacity_ok}
+                  onClick={() => void approve()}
+                  title={
+                    snapshot?.capacity_ok
+                      ? undefined
+                      : "3PL space is currently insufficient — decline with a reason."
+                  }
+                >
+                  {pending ? (
+                    <Loader2 className="mr-1 size-3.5 animate-spin" />
+                  ) : null}
+                  Approve 3PL
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+
+        {state === "awaiting_customer" && !req.request?.team_decision_reason && (
+          <p className="text-xs text-muted-foreground">
+            The customer will make the routing decision on their portal.
+            Nothing owed on our side until they submit.
+          </p>
+        )}
+
+        {(state === "applied_three_pl" || state === "applied_shipment") && (
+          <p className="text-xs text-muted-foreground">
+            Decision applied {req.request?.team_reviewed_at
+              ? new Date(req.request.team_reviewed_at).toLocaleString()
+              : ""}
+            . Every CO output lot has been routed to a{" "}
+            {state === "applied_three_pl"
+              ? "three_pl_storage cell (billing clock started)"
+              : "dispatch cell for outgoing pickup"}
+            .
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

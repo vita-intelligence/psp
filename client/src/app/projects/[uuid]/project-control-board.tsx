@@ -30,7 +30,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -85,6 +85,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { ErrorBanner } from "@/components/forms/error-banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThread } from "@/components/comments/comment-thread";
 import { createInvoiceFromCOAction } from "@/lib/customer-invoices/actions";
@@ -125,6 +127,8 @@ import {
   submitCOAction,
 } from "@/lib/customer-orders/actions";
 import {
+  acceptShortDeliveryAction,
+  clearShortDeliveryAcceptanceAction,
   createMoForLineAction,
   transitionMOAction,
   type MOActionString,
@@ -164,6 +168,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "closeout",
   "final_release",
   "awaiting_routing",
+  "awaiting_shortfall_resolution",
   "ready_to_dispatch",
   "awaiting_pickup",
   "dispatched",
@@ -190,6 +195,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   closeout: "Closeout",
   final_release: "Release",
   awaiting_routing: "Routing",
+  awaiting_shortfall_resolution: "Shortfall",
   ready_to_dispatch: "Paperwork",
   awaiting_pickup: "Awaiting pickup",
   dispatched: "In transit",
@@ -227,6 +233,8 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
     "QA sign-off on finished product before dispatch (BRCGS § 5.6 Positive Release).",
   awaiting_routing:
     "Per released lot: 3PL bailee storage or direct shipment.",
+  awaiting_shortfall_resolution:
+    "One or more lines came in short of ordered qty by more than the company yield tolerance. Raise a top-up MO for the delta or accept a short delivery with an audit reason.",
   ready_to_dispatch:
     "Create the shipment record for each staged lot (BRCGS § 5.4.6).",
   awaiting_pickup: "Shipment paperwork is signed off — waiting for the truck.",
@@ -260,6 +268,7 @@ const PHASE_ICON: Record<
   closeout: PackageOpen,
   final_release: ShieldCheck,
   awaiting_routing: Split,
+  awaiting_shortfall_resolution: AlertTriangle,
   ready_to_dispatch: FileText,
   awaiting_pickup: Truck,
   dispatched: Truck,
@@ -1146,7 +1155,16 @@ function PhaseStepper({
     );
   }
 
-  const current = phase.index;
+  // Server ships ``phase.index`` computed against its own ``@phases``
+  // list. FE's ``PHASE_ORDER`` carries extra display-only phases
+  // (``awaiting_final_spec``) that aren't in the server enum, so
+  // any position after the divergence is off-by-one on the server
+  // index. Re-derive the current index from ``phase.key`` against
+  // OUR canonical order so the stepper highlights the right cell.
+  // Falls back to the server-provided index when the key isn't in
+  // ``PHASE_ORDER`` (unknown future phases don't crash the stepper).
+  const localIdx = PHASE_ORDER.indexOf(phase.key as OrderWizardPhaseKey);
+  const current = localIdx >= 0 ? localIdx : phase.index;
 
   return (
     <Card className="border-border/60">
@@ -1605,6 +1623,10 @@ const PHASE_EXPLAINER: Record<
   awaiting_routing: {
     title: "Choose where each released lot goes.",
     body: "Positive Release cleared the batch — now say 3PL storage (customer takes ownership, we bill per m³/day) or direct shipment (whole lot to dispatch for pickup). Per lot, capacity is checked live. Once every released lot has an answer the order rolls to Ready.",
+  },
+  awaiting_shortfall_resolution: {
+    title: "One or more lines under-yielded — resolve before dispatch.",
+    body: "The finished MO closed with an output outside the company yield tolerance. Either raise a top-up MO for the outstanding qty (server pre-fills the delta) or accept the short delivery with an audit reason (if the customer has agreed to receive less). Ready-to-dispatch unblocks the moment every short line is resolved.",
   },
   ready_to_dispatch: {
     title: "Fill in the shipment paperwork.",
@@ -2351,9 +2373,218 @@ const LineCard = memo(function LineCard({
           ))}
         </div>
       )}
+
+      <FulfilmentPanel
+        line={line}
+        prefs={prefs}
+        canManage={permissions.canManageMOs}
+        onCreateTopUp={() => onSpawnMo(line)}
+      />
     </section>
   );
 });
+
+// Fulfilment reconciliation card. Renders below the MO cards on
+// every LineCard and surfaces:
+//   * ordered / delivered / remaining
+//   * status pill (satisfied / short within tolerance / short out
+//     of tolerance / over)
+//   * escape hatches when the line is out of tolerance:
+//     "Create top-up MO" (server derives the delta) + "Accept
+//     short delivery" (opens a modal — reason required).
+function FulfilmentPanel({
+  line,
+  prefs,
+  canManage,
+  onCreateTopUp,
+}: {
+  line: OrderWizardLine;
+  prefs: CompanyDefaults;
+  canManage: boolean;
+  onCreateTopUp: () => void;
+}) {
+  const f = line.fulfilment;
+  const [acceptOpen, setAcceptOpen] = useState(false);
+
+  if (!f) return null;
+  if (f.status === "not_produced") return null;
+
+  const isShort = f.status === "short_out_of_tolerance";
+  const isOver = f.status === "over";
+  const isCleanShort = f.status === "short_within_tolerance";
+
+  const tone =
+    isShort
+      ? "border-destructive/40 bg-destructive/[0.04]"
+      : isOver
+        ? "border-amber-500/40 bg-amber-500/[0.04]"
+        : "border-emerald-500/40 bg-emerald-500/[0.04]";
+
+  const statusLabel =
+    f.status === "satisfied"
+      ? "Fulfilment satisfied"
+      : isCleanShort
+        ? "Short — within tolerance"
+        : isShort
+          ? "Short — outside tolerance"
+          : "Surplus produced — auto-reserved";
+
+  return (
+    <>
+      <div className={`border-t ${tone} px-4 py-3`}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+          <span className="font-semibold uppercase tracking-wider">
+            {statusLabel}
+          </span>
+          <span className="text-muted-foreground">
+            Delivered{" "}
+            <span className="font-mono font-medium text-foreground">
+              {formatCompanyNumber(f.qty_delivered, prefs)}
+            </span>{" "}
+            /{" "}
+            <span className="font-mono font-medium text-foreground">
+              {formatCompanyNumber(f.qty_ordered, prefs)}
+            </span>
+          </span>
+          {Number(f.qty_remaining) > 0 && (
+            <span className="text-muted-foreground">
+              Remaining{" "}
+              <span className="font-mono font-medium text-foreground">
+                {formatCompanyNumber(f.qty_remaining, prefs)}
+              </span>
+            </span>
+          )}
+        </div>
+
+        {isShort && canManage && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              onClick={onCreateTopUp}
+              className="h-8"
+            >
+              <PackagePlus className="mr-1 size-3.5" />
+              Create top-up MO
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setAcceptOpen(true)}
+              className="h-8"
+            >
+              Accept short delivery
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {acceptOpen && (
+        <AcceptShortDeliveryDialog
+          line={line}
+          onClose={() => setAcceptOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function AcceptShortDeliveryDialog({
+  line,
+  onClose,
+}: {
+  line: OrderWizardLine;
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const params = useParams<{ uuid: string }>();
+
+  function submit() {
+    setError(null);
+    const trimmed = reason.trim();
+    if (trimmed.length < 3) {
+      setError("Reason must be at least 3 characters.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await acceptShortDeliveryAction(
+        params.uuid,
+        line.uuid,
+        trimmed,
+      );
+      if (res.ok) {
+        toast.success("Short delivery accepted", {
+          description: "The line is now cleared for dispatch.",
+        });
+        onClose();
+      } else {
+        setError(res.detail);
+      }
+    });
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Accept short delivery</DialogTitle>
+          <DialogDescription>
+            Confirming that the customer has agreed to receive less
+            than the ordered qty. This unblocks ready-to-dispatch for
+            the line. The reason is audit-logged on the CO timeline.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs">
+            <p>
+              <span className="text-muted-foreground">Item:</span>{" "}
+              <span className="font-medium">{line.item_name ?? `Line #${line.id}`}</span>
+            </p>
+            <p>
+              <span className="text-muted-foreground">Ordered:</span>{" "}
+              <span className="font-mono">{line.fulfilment.qty_ordered}</span>{" · "}
+              <span className="text-muted-foreground">Delivered:</span>{" "}
+              <span className="font-mono">{line.fulfilment.qty_delivered}</span>
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="short-reason" className="text-xs">
+              Reason (audit-logged)
+            </Label>
+            <textarea
+              id="short-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={4}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              placeholder="e.g. Customer confirmed by email 27-Aug-2026 they accept 9,562 of 10,000."
+            />
+          </div>
+          {error && <ErrorBanner detail={error} />}
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onClose}
+            disabled={pending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={submit}
+            disabled={pending || reason.trim().length < 3}
+          >
+            {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
+            Accept short delivery
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function flattenMoTree(mos: OrderWizardMo[]): OrderWizardMo[] {
   return mos.flatMap((mo) => [mo, ...flattenMoTree(mo.children ?? [])]);
@@ -4804,6 +5035,8 @@ function phaseBadgeTone(
       return "sky";
     case "awaiting_routing":
       return "sky";
+    case "awaiting_shortfall_resolution":
+      return "destructive";
     case "ready_to_dispatch":
       return "sky";
     case "awaiting_pickup":

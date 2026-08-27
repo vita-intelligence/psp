@@ -53,6 +53,71 @@ export async function createMoForLineAction(
   }
 }
 
+export type AcceptShortDeliveryResult =
+  | { ok: true; customer_order_line: unknown }
+  | ErrorResult;
+
+/**
+ * Records an operator's acceptance of a short-delivered CO line
+ * with an audit reason. Flips the line's fulfilment status to
+ * satisfied and unblocks the CO's ready-to-dispatch transition.
+ * Requires ``customer_orders.director_approve`` on the caller.
+ */
+export async function acceptShortDeliveryAction(
+  coUuid: string,
+  lineUuid: string,
+  reason: string,
+): Promise<AcceptShortDeliveryResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("acceptShortDeliveryAction");
+
+  try {
+    const res = await api<{ customer_order_line: unknown }>(
+      `/api/customer-orders/${encodeURIComponent(
+        coUuid,
+      )}/lines/${encodeURIComponent(lineUuid)}/accept-short-delivery`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify({ reason }),
+      },
+    );
+    revalidatePath(`/sales/orders/${coUuid}`);
+    revalidatePath(`/projects/${coUuid}`);
+    return { ok: true, customer_order_line: res.customer_order_line };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "acceptShortDeliveryAction",
+      fallbackDetail: "Couldn't accept the short delivery.",
+    });
+  }
+}
+
+export async function clearShortDeliveryAcceptanceAction(
+  coUuid: string,
+  lineUuid: string,
+): Promise<AcceptShortDeliveryResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("clearShortDeliveryAcceptanceAction");
+
+  try {
+    const res = await api<{ customer_order_line: unknown }>(
+      `/api/customer-orders/${encodeURIComponent(
+        coUuid,
+      )}/lines/${encodeURIComponent(lineUuid)}/accept-short-delivery`,
+      { method: "DELETE", token },
+    );
+    revalidatePath(`/sales/orders/${coUuid}`);
+    revalidatePath(`/projects/${coUuid}`);
+    return { ok: true, customer_order_line: res.customer_order_line };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "clearShortDeliveryAcceptanceAction",
+      fallbackDetail: "Couldn't clear the short-delivery acceptance.",
+    });
+  }
+}
+
 export type MOActionString =
   | "request_purchases"
   | "prepare"

@@ -31,7 +31,12 @@ defmodule Backend.Shipments do
   alias Backend.Production.ManufacturingOrder
   alias Backend.RBAC
   alias Backend.Repo
-  alias Backend.Shipments.{Shipment, ShipmentPickupFile, ShipmentDeliveryFile}
+  alias Backend.Shipments.{
+    Shipment,
+    ShipmentPickupEvent,
+    ShipmentPickupFile,
+    ShipmentDeliveryFile
+  }
   alias Backend.Stock.{Lot, Movement, Placement}
   alias Backend.Warehouses.StorageCell
 
@@ -67,14 +72,22 @@ defmodule Backend.Shipments do
          :ok <- ensure_no_open_shipment(lot) do
       customer_id = derive_customer_id(lot)
       customer_order_id = derive_customer_order_id(lot)
+      customer_order_line_id = derive_customer_order_line_id(lot)
       prefill = derive_prefill_attrs(customer_id, customer_order_id)
+
+      # Cap the shipment qty at the reservation qty when the lot has
+      # been earmarked to a CO line at closeout time. This is what
+      # keeps a 11k-produced lot with a 10k CO ordered from
+      # accidentally shipping the whole thing — the extra 1k stays
+      # in the free cell as unreserved surplus.
+      qty = cap_qty_against_reservation(lot.id, customer_order_line_id, dispatch_qty)
 
       base_attrs = %{
         company_id: actor.company_id,
         stock_lot_id: lot.id,
         customer_id: customer_id,
         customer_order_id: customer_order_id,
-        qty: dispatch_qty,
+        qty: qty,
         created_by_id: actor.id,
         status: "draft"
       }
@@ -83,6 +96,23 @@ defmodule Backend.Shipments do
       |> Shipment.create_changeset(Map.merge(base_attrs, prefill))
       |> Repo.insert()
       |> tap_audit_created(actor)
+    end
+  end
+
+  defp cap_qty_against_reservation(_lot_id, nil, dispatch_qty), do: dispatch_qty
+
+  defp cap_qty_against_reservation(lot_id, line_id, dispatch_qty) do
+    reserved = Backend.CustomerOrders.reserved_qty_for(lot_id, line_id)
+
+    cond do
+      Decimal.compare(reserved, 0) == :eq ->
+        dispatch_qty
+
+      Decimal.compare(reserved, dispatch_qty) == :lt ->
+        reserved
+
+      true ->
+        dispatch_qty
     end
   end
 
@@ -317,13 +347,14 @@ defmodule Backend.Shipments do
   defp ensure_carrier_perm(actor, %Shipment{status: s}) when s in ~w(draft ready),
     do: ensure_edit(actor)
 
-  defp ensure_carrier_perm(actor, %Shipment{status: "picked_up"}),
-    do: ensure_pickup(actor)
+  defp ensure_carrier_perm(actor, %Shipment{status: s})
+       when s in ~w(partially_picked picked_up delivered),
+       do: ensure_pickup(actor)
 
   defp ensure_carrier_perm(_actor, _shipment), do: {:error, :forbidden}
 
   defp ensure_carrier_editable(%Shipment{status: s})
-       when s in ~w(draft ready picked_up),
+       when s in ~w(draft ready partially_picked picked_up delivered),
        do: :ok
 
   defp ensure_carrier_editable(_), do: {:error, :not_editable}
@@ -402,55 +433,305 @@ defmodule Backend.Shipments do
   end
 
   @doc """
-  Ready → picked_up. The truck-arrival mobile form is the eventual
-  home for driver signature + BOL photos; this stub just flags that
-  the goods left so the wizard can advance.
+  Log one truck arrival. Replaces the old "confirm the whole
+  shipment in one shot" model — a shipment now accumulates a list
+  of pickup events and auto-transitions between ``ready`` /
+  ``partially_picked`` / ``picked_up`` as the events drain the qty.
+
+  ``attrs`` shape (string OR atom keys):
+
+      %{
+        "qty" => "3000",           # required, > 0, ≤ remaining_qty
+        "driver_name" => "...",
+        "vehicle_registration" => "...",
+        "consignment_note_ref" => "...",
+        "notes" => "...",
+        "packaging_intact" => true,
+        "labels_verified" => true,
+        "vehicle_clean_suitable" => true,
+        "transport_condition_acceptable" => true,
+        "dispatch_approved" => true,
+        # Photos uploaded to the shipment prior to this call get
+        # attached to the event atomically. Every log_event needs
+        # at least one photo — BRCGS § 5.4.6 visual record.
+        "pickup_file_ids" => ["uuid1", "uuid2"]
+      }
+
+  Returns ``{:ok, {shipment, event}}`` on success or a discriminated
+  error tuple the FE / mobile can render verbatim.
   """
-  def confirm_pickup(%User{} = actor, %Shipment{} = shipment, attrs \\ %{}) do
+  def log_pickup_event(%User{} = actor, %Shipment{} = shipment, attrs \\ %{}) do
     with :ok <- ensure_pickup(actor),
-         :ok <- ensure_status(shipment, "ready"),
-         :ok <- ensure_pickup_photo(shipment) do
+         :ok <- ensure_status(shipment, ["ready", "partially_picked"]),
+         attrs <- normalise_event_attrs(actor, shipment, attrs),
+         {:ok, qty} <- parse_positive_decimal(attrs["qty"], :qty),
+         :ok <- ensure_qty_within_remaining(shipment, qty),
+         {:ok, file_ids} <- resolve_pickup_file_ids(shipment, attrs["pickup_file_ids"]),
+         :ok <- ensure_photo_count(file_ids) do
       before_state = shipment_snapshot(shipment)
 
-      pickup_attrs =
-        attrs
-        |> normalise_pickup_attrs()
-        |> Map.put("picked_up_at", DateTime.utc_now() |> DateTime.truncate(:second))
-        |> Map.put("picked_up_by_id", actor.id)
+      Repo.transaction(fn ->
+        with {:ok, event} <- insert_pickup_event(actor, shipment, attrs, qty),
+             :ok <- attach_files_to_event(shipment, event, file_ids),
+             {:ok, updated} <- refresh_shipment_after_event(actor, shipment, event, qty) do
+          {updated, event}
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, {updated, event}} ->
+          # Audit the shipment state transition. The event row itself
+          # gets its own Audit.record_created below so both the
+          # per-visit trail + the shipment-level state machine end
+          # up on the auditor's rail.
+          Audit.record_updated(
+            actor,
+            "shipment",
+            updated,
+            before_state,
+            shipment_snapshot(updated)
+          )
 
-      shipment
-      |> Shipment.pickup_changeset(pickup_attrs)
-      |> Repo.update()
-      |> tap_audit_updated(actor, before_state, "picked_up")
+          Audit.record_created(actor, "shipment_pickup_event", event, event_audit_snapshot(event))
+
+          Backend.Broadcasts.entity_changed(
+            "shipment",
+            updated.uuid,
+            updated.company_id,
+            "pickup_event_logged"
+          )
+
+          {:ok, {updated, event}}
+
+        err ->
+          err
+      end
     end
   end
 
-  # Photos are captured before the operator taps Confirm. Enforce at
-  # least one so the BRCGS visual-record requirement is met. Query the
-  # count directly to sidestep whatever preload state the caller
-  # happened to hand us.
-  defp ensure_pickup_photo(%Shipment{id: shipment_id}) do
-    count =
-      Repo.aggregate(
-        from(f in ShipmentPickupFile, where: f.shipment_id == ^shipment_id),
-        :count
-      )
+  @doc """
+  Legacy shim — kept as ``confirm_pickup`` for the mobile / API
+  callers that historically flipped ``ready → picked_up`` in one
+  shot. Delegates to :func:`log_pickup_event/3` with ``qty =
+  remaining_qty`` and pulls every un-linked photo on the shipment
+  into the new event. No behavioural change for callers that
+  really do want the "single visit takes everything" flow.
+  """
+  def confirm_pickup(%User{} = actor, %Shipment{} = shipment, attrs \\ %{}) do
+    remaining = remaining_qty(shipment)
+    orphan_files = pickup_files_without_event(shipment)
 
-    if count > 0, do: :ok, else: {:error, :pickup_photo_required}
+    attrs =
+      attrs
+      |> normalise_map_keys()
+      |> Map.put("qty", Decimal.to_string(remaining))
+      |> Map.put_new("pickup_file_ids", Enum.map(orphan_files, & &1.uuid))
+
+    log_pickup_event(actor, shipment, attrs)
+    |> case do
+      {:ok, {updated, _event}} -> {:ok, updated}
+      err -> err
+    end
   end
 
-  # Accept string- or atom-keyed maps and normalise checklist values to
-  # strict booleans so the changeset's `true`-check bites correctly
-  # (`"true"` from a form or `1` from JS would sneak past a coarse
-  # `truthy?` guard).
-  defp normalise_pickup_attrs(attrs) when is_map(attrs) do
-    stringified =
-      Enum.reduce(attrs, %{}, fn
-        {k, v}, acc when is_atom(k) -> Map.put(acc, Atom.to_string(k), v)
-        {k, v}, acc -> Map.put(acc, k, v)
-      end)
+  @doc """
+  Remaining qty = shipment.qty − sum(pickup_events.qty). Zero when
+  every event has drained the shipment. Callers use this to render
+  progress bars and default the "qty for this visit" input.
+  """
+  def remaining_qty(%Shipment{id: id, qty: qty}) do
+    picked =
+      Repo.one(
+        from(e in ShipmentPickupEvent,
+          where: e.shipment_id == ^id,
+          select: coalesce(sum(e.qty), 0)
+        )
+      ) || Decimal.new(0)
 
-    Enum.reduce(Shipment.pickup_checklist_fields(), stringified, fn field, acc ->
+    total = qty || Decimal.new(0)
+    remaining = Decimal.sub(total, picked)
+
+    if Decimal.compare(remaining, Decimal.new(0)) == :lt do
+      # Should never happen (server-side validation clamps at
+      # insert time), but be defensive so we never emit a negative
+      # remaining on the wire.
+      Decimal.new(0)
+    else
+      remaining
+    end
+  end
+
+  @doc """
+  Sum of every pickup event qty for the shipment — companion to
+  ``remaining_qty/1`` for the FE progress bar.
+  """
+  def picked_up_qty(%Shipment{id: id}) do
+    Repo.one(
+      from(e in ShipmentPickupEvent,
+        where: e.shipment_id == ^id,
+        select: coalesce(sum(e.qty), 0)
+      )
+    ) || Decimal.new(0)
+  end
+
+  @doc """
+  Ordered list of pickup events for a shipment, preloaded with
+  their photos + the actor who logged them. Feeds both the PSP
+  detail page timeline + the customer portal dispatch card list.
+  """
+  def list_pickup_events(%Shipment{id: id}) do
+    Repo.all(
+      from(e in ShipmentPickupEvent,
+        where: e.shipment_id == ^id,
+        order_by: [asc: e.picked_up_at, asc: e.id],
+        preload: [:picked_up_by, :delivered_by, :photos, :delivery_files]
+      )
+    )
+  end
+
+  @doc """
+  Fetch a single pickup event by shipment id + event uuid. Returns
+  ``nil`` when the event doesn't belong to the shipment (belt +
+  braces against a spoofed event uuid on the confirm-delivery path).
+  """
+  def get_pickup_event(shipment_id, event_uuid)
+      when is_integer(shipment_id) and is_binary(event_uuid) do
+    Repo.one(
+      from(e in ShipmentPickupEvent,
+        where: e.shipment_id == ^shipment_id and e.uuid == ^event_uuid,
+        preload: [:picked_up_by, :delivered_by, :photos, :delivery_files]
+      )
+    )
+  end
+
+  # ─── Pickup event internals ──────────────────────────────────────
+
+  defp insert_pickup_event(actor, shipment, attrs, qty) do
+    event_attrs = %{
+      "company_id" => shipment.company_id,
+      "shipment_id" => shipment.id,
+      "qty" => qty,
+      "picked_up_at" => attrs["picked_up_at"],
+      "picked_up_by_id" => actor.id,
+      "driver_name" => attrs["driver_name"],
+      "vehicle_registration" => attrs["vehicle_registration"],
+      "consignment_note_ref" => attrs["consignment_note_ref"],
+      "tracking_number" => attrs["tracking_number"],
+      "seal_number" => attrs["seal_number"],
+      "temperature_c" => attrs["temperature_c"],
+      "notes" => attrs["notes"],
+      "packaging_intact" => attrs["packaging_intact"],
+      "labels_verified" => attrs["labels_verified"],
+      "vehicle_clean_suitable" => attrs["vehicle_clean_suitable"],
+      "transport_condition_acceptable" => attrs["transport_condition_acceptable"],
+      "dispatch_approved" => attrs["dispatch_approved"],
+      "created_by_id" => actor.id,
+      "updated_by_id" => actor.id
+    }
+
+    %ShipmentPickupEvent{}
+    |> ShipmentPickupEvent.changeset(event_attrs)
+    |> Repo.insert()
+  end
+
+  defp attach_files_to_event(%Shipment{id: shipment_id}, %ShipmentPickupEvent{id: event_id}, file_uuids) do
+    if file_uuids == [] do
+      :ok
+    else
+      {n, _} =
+        from(f in ShipmentPickupFile,
+          where:
+            f.shipment_id == ^shipment_id and
+              f.uuid in ^file_uuids and
+              is_nil(f.shipment_pickup_event_id)
+        )
+        |> Repo.update_all(set: [shipment_pickup_event_id: event_id])
+
+      if n == length(file_uuids), do: :ok, else: {:error, :pickup_file_link_mismatch}
+    end
+  end
+
+  # After logging an event we re-derive the shipment status +
+  # denormalise the LATEST event's driver / vehicle / checklist onto
+  # the shipment row so existing consumers (portal, wizard, list
+  # tables) that read the shipment row directly keep working.
+  defp refresh_shipment_after_event(_actor, %Shipment{} = shipment, %ShipmentPickupEvent{} = event, _event_qty) do
+    reloaded_shipment = Repo.get!(Shipment, shipment.id)
+
+    picked_total =
+      Repo.one(
+        from(e in ShipmentPickupEvent,
+          where: e.shipment_id == ^shipment.id,
+          select: coalesce(sum(e.qty), 0)
+        )
+      ) || Decimal.new(0)
+
+    next_status =
+      cond do
+        Decimal.compare(picked_total, shipment.qty || Decimal.new(0)) in [:eq, :gt] ->
+          "picked_up"
+
+        true ->
+          "partially_picked"
+      end
+
+    reloaded_shipment
+    |> Shipment.pickup_event_summary_changeset(%{
+      "status" => next_status,
+      "picked_up_at" => event.picked_up_at,
+      "picked_up_by_id" => event.picked_up_by_id,
+      "driver_name" => event.driver_name,
+      "vehicle_registration" => event.vehicle_registration,
+      "consignment_note_ref" => event.consignment_note_ref,
+      "packaging_intact" => event.packaging_intact,
+      "labels_verified" => event.labels_verified,
+      "vehicle_clean_suitable" => event.vehicle_clean_suitable,
+      "transport_condition_acceptable" => event.transport_condition_acceptable,
+      "dispatch_approved" => event.dispatch_approved
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, updated} -> {:ok, updated}
+      {:error, %Ecto.Changeset{} = cs} -> {:error, cs}
+    end
+  end
+
+  defp normalise_event_attrs(actor, shipment, attrs) do
+    attrs
+    |> normalise_map_keys()
+    |> apply_checklist_defaults(shipment)
+    |> Map.put_new("picked_up_at", DateTime.utc_now() |> DateTime.truncate(:second))
+    |> Map.put_new("picked_up_by_id", actor.id)
+    |> coerce_checklist_values()
+  end
+
+  defp normalise_map_keys(attrs) when is_map(attrs) do
+    Enum.reduce(attrs, %{}, fn
+      {k, v}, acc when is_atom(k) -> Map.put(acc, Atom.to_string(k), v)
+      {k, v}, acc -> Map.put(acc, k, v)
+    end)
+  end
+
+  defp normalise_map_keys(_), do: %{}
+
+  # Legacy ``confirm_pickup`` callers passed the checklist on the
+  # shipment itself; back-fill missing per-event booleans from the
+  # shipment row so the shim keeps behaving identically.
+  defp apply_checklist_defaults(attrs, %Shipment{} = shipment) do
+    Enum.reduce(ShipmentPickupEvent.checklist_fields(), attrs, fn field, acc ->
+      key = Atom.to_string(field)
+
+      if Map.has_key?(acc, key) do
+        acc
+      else
+        Map.put(acc, key, Map.get(shipment, field) || false)
+      end
+    end)
+  end
+
+  defp coerce_checklist_values(attrs) do
+    Enum.reduce(ShipmentPickupEvent.checklist_fields(), attrs, fn field, acc ->
       key = Atom.to_string(field)
 
       case Map.get(acc, key) do
@@ -462,12 +743,120 @@ defmodule Backend.Shipments do
     end)
   end
 
-  defp normalise_pickup_attrs(_), do: %{}
+  defp ensure_qty_within_remaining(%Shipment{} = shipment, qty) do
+    remaining = remaining_qty(shipment)
 
-  @doc "Draft | Ready → cancelled with a reason."
+    cond do
+      Decimal.compare(remaining, Decimal.new(0)) == :eq ->
+        {:error, :nothing_left_to_pick_up}
+
+      Decimal.compare(qty, remaining) == :gt ->
+        {:error,
+         {:qty_exceeds_remaining,
+          %{qty: qty, remaining: remaining}}}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Returns the sanitised list of pickup-file uuids scoped to this
+  # shipment. Callers pass the uuids of the files uploaded during
+  # the event draft; we resolve them to make sure they belong to
+  # this shipment (belt + braces against a hostile client).
+  defp resolve_pickup_file_ids(_shipment, nil), do: {:ok, []}
+  defp resolve_pickup_file_ids(_shipment, []), do: {:ok, []}
+
+  defp resolve_pickup_file_ids(%Shipment{id: shipment_id}, uuids) when is_list(uuids) do
+    cleaned = uuids |> Enum.map(&to_string/1) |> Enum.reject(&(&1 == ""))
+
+    rows =
+      Repo.all(
+        from(f in ShipmentPickupFile,
+          where: f.shipment_id == ^shipment_id and f.uuid in ^cleaned,
+          select: f.uuid
+        )
+      )
+
+    if length(rows) == length(cleaned) do
+      {:ok, cleaned}
+    else
+      {:error, :pickup_file_not_found}
+    end
+  end
+
+  defp resolve_pickup_file_ids(_shipment, _), do: {:error, :pickup_file_not_found}
+
+  defp ensure_photo_count([]), do: {:error, :pickup_photo_required}
+  defp ensure_photo_count(_), do: :ok
+
+  defp pickup_files_without_event(%Shipment{id: id}) do
+    Repo.all(
+      from(f in ShipmentPickupFile,
+        where: f.shipment_id == ^id and is_nil(f.shipment_pickup_event_id)
+      )
+    )
+  end
+
+  defp parse_positive_decimal(nil, field), do: {:error, {:required, field}}
+  defp parse_positive_decimal(%Decimal{} = d, field), do: ensure_positive(d, field)
+
+  defp parse_positive_decimal(n, field) when is_integer(n),
+    do: ensure_positive(Decimal.new(n), field)
+
+  defp parse_positive_decimal(n, field) when is_float(n),
+    do: ensure_positive(Decimal.from_float(n), field)
+
+  defp parse_positive_decimal(s, field) when is_binary(s) do
+    case s |> String.trim() |> Decimal.parse() do
+      {d, ""} -> ensure_positive(d, field)
+      _ -> {:error, {:not_a_number, field}}
+    end
+  end
+
+  defp parse_positive_decimal(_, field), do: {:error, {:not_a_number, field}}
+
+  defp ensure_positive(%Decimal{} = d, field) do
+    if Decimal.compare(d, Decimal.new(0)) == :gt do
+      {:ok, d}
+    else
+      {:error, {:must_be_positive, field}}
+    end
+  end
+
+  defp event_audit_snapshot(%ShipmentPickupEvent{} = e) do
+    %{
+      qty: e.qty,
+      picked_up_at: e.picked_up_at,
+      picked_up_by_id: e.picked_up_by_id,
+      driver_name: e.driver_name,
+      vehicle_registration: e.vehicle_registration,
+      consignment_note_ref: e.consignment_note_ref,
+      packaging_intact: e.packaging_intact,
+      labels_verified: e.labels_verified,
+      vehicle_clean_suitable: e.vehicle_clean_suitable,
+      transport_condition_acceptable: e.transport_condition_acceptable,
+      dispatch_approved: e.dispatch_approved,
+      notes: e.notes
+    }
+  end
+
+
+  @doc """
+  Draft | Ready → cancelled with a reason.
+
+  Belt + braces: even at ``ready``, we refuse if any pickup events
+  already exist on the shipment. A shipment can technically sit at
+  ``ready`` for a moment while a lone pickup event is being logged
+  (the auto-transition to ``partially_picked`` lives inside the same
+  transaction as the event insert) — checking the events table
+  directly closes that race so we never wipe evidence of goods that
+  have physically moved.
+  """
   def cancel(%User{} = actor, %Shipment{} = shipment, reason) do
     with :ok <- ensure_edit(actor),
-         :ok <- ensure_cancelable(shipment) do
+         :ok <- ensure_cancelable(shipment),
+         :ok <- ensure_no_pickup_events(shipment) do
       before_state = shipment_snapshot(shipment)
 
       shipment
@@ -481,61 +870,261 @@ defmodule Backend.Shipments do
     end
   end
 
+  # Absolute floor on cancel: if a truck has arrived and taken even
+  # one visit's worth of goods, the shipment is no longer a paper
+  # exercise — it's a real chain of custody. Cancelling it would
+  # detach the audit trail from the physical movement. Instead the
+  # operator must reduce the shipment qty on a separate top-up flow.
+  defp ensure_no_pickup_events(%Shipment{id: id}) do
+    count =
+      Repo.aggregate(
+        from(e in ShipmentPickupEvent, where: e.shipment_id == ^id),
+        :count
+      )
+
+    if count == 0, do: :ok, else: {:error, :pickup_events_exist}
+  end
+
   @doc """
-  Picked_up → delivered. Records who confirmed the POD, when, the
-  named recipient signatory, and any notes. Photos are optional and
-  attached separately via the delivery-file endpoints before the
-  operator submits the confirmation.
+  Legacy shim — kept as ``confirm_delivery`` for the staff detail
+  page. Delegates to the per-event flow: confirms every
+  outstanding event on the shipment in one shot.
   """
   def confirm_delivery(%User{} = actor, %Shipment{} = shipment, attrs \\ %{}) do
-    with :ok <- ensure_confirm_delivery(actor),
-         :ok <- ensure_status(shipment, "picked_up") do
-      before_state = shipment_snapshot(shipment)
-
-      delivery_attrs =
-        attrs
-        |> stringify_top_keys()
-        |> Map.put("delivered_by_id", actor.id)
-        |> Map.put_new_lazy("delivered_at", fn ->
-          DateTime.utc_now() |> DateTime.truncate(:second)
-        end)
-
-      shipment
-      |> Shipment.delivery_changeset(delivery_attrs)
-      |> Repo.update()
-      |> tap_audit_updated(actor, before_state, "delivered")
+    with :ok <- ensure_confirm_delivery(actor) do
+      confirm_all_undelivered_events(actor, shipment, attrs, "staff")
     end
   end
 
   @doc """
   Portal-side variant of :func:`confirm_delivery`. Fired when the
-  customer confirms receipt on the sample detail page. The integration
-  scope on the endpoint gates who can hit this; there's no PSP
-  :class:`User` to attribute (customers don't exist in the users
-  table), so ``delivered_by_id`` stays nil and the identity we keep
-  is ``recipient_signatory`` (the customer's own name off their
-  portal profile) plus the audit row's "portal_confirmed" action tag.
-
-  Same lifecycle guard as the staff path — must currently be
-  ``picked_up`` and no perm check because the integration token
-  already proved authorisation upstream.
+  customer confirms receipt on the sample detail page. Confirms
+  every outstanding event on the shipment — same semantics as the
+  staff shim, but ``delivered_by_id`` stays nil (customers aren't
+  PSP users) and the audit row action tag is ``portal_confirmed``.
   """
   def confirm_delivery_from_portal(%Shipment{} = shipment, attrs \\ %{}) do
-    with :ok <- ensure_status(shipment, "picked_up") do
-      before_state = shipment_snapshot(shipment)
+    confirm_all_undelivered_events(nil, shipment, attrs, "portal")
+  end
 
-      delivery_attrs =
-        attrs
-        |> stringify_top_keys()
-        |> Map.put_new_lazy("delivered_at", fn ->
-          DateTime.utc_now() |> DateTime.truncate(:second)
+  @doc """
+  Per-event POD confirmation. Records the customer's / recipient's
+  signatory + timestamp against ONE pickup event, then re-derives
+  the shipment status: still ``picked_up`` if any event remains
+  undelivered, flips to ``delivered`` once every event has been
+  confirmed.
+
+  ``actor`` may be ``nil`` — that's the portal path where the
+  customer confirmed receipt themselves and there's no PSP user
+  to attribute. The audit trail keeps the signatory instead.
+
+  ``attrs`` shape (string OR atom keys):
+
+      %{
+        "recipient_signatory" => "...", # required
+        "delivery_notes" => "...",       # optional
+        "delivered_at" => datetime,       # optional, defaults to now
+        "source" => "staff" | "portal"    # tags the audit row
+      }
+  """
+  def confirm_pickup_event_delivery(actor, %ShipmentPickupEvent{} = event, attrs \\ %{}) do
+    normalised = attrs |> stringify_top_keys() |> Map.delete("source")
+
+    with :ok <- ensure_event_undelivered(event),
+         attrs <- prepare_delivery_attrs(actor, normalised) do
+      before_event = event_audit_snapshot(event)
+
+      Repo.transaction(fn ->
+        with {:ok, updated_event} <-
+               event
+               |> ShipmentPickupEvent.delivery_changeset(attrs)
+               |> Repo.update(),
+             {:ok, updated_shipment} <-
+               reproject_shipment_after_delivery(event.shipment_id) do
+          {updated_event, updated_shipment}
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, {updated_event, updated_shipment}} ->
+          Audit.record_updated(
+            actor,
+            "shipment_pickup_event",
+            updated_event,
+            before_event,
+            event_audit_snapshot(updated_event)
+          )
+
+          Backend.Broadcasts.entity_changed(
+            "shipment",
+            updated_shipment.uuid,
+            updated_shipment.company_id,
+            "delivery_confirmed"
+          )
+
+          {:ok, {updated_event, updated_shipment}}
+
+        err ->
+          err
+      end
+    end
+  end
+
+  @doc """
+  Amend paperwork on a specific pickup event AFTER the truck has
+  left. Multi-visit shipments accumulate one row of paperwork per
+  truck, and carriers often email the tracking number / seal number
+  / temperature reading only after departure — the operator wants a
+  place to type those in without re-opening the whole event.
+
+  Only paperwork fields are cast; qty / checklist / photos stay
+  immutable so the traceability rail on the event isn't rewriteable.
+  Anyone with ``shipments.edit`` on a pre-dispatch shipment OR
+  ``shipments.pickup`` on a post-dispatch shipment can amend — same
+  gate ``ensure_carrier_perm`` uses on the top-level carrier card.
+  """
+  def update_pickup_event_paperwork(actor, %ShipmentPickupEvent{} = event, attrs \\ %{}) do
+    shipment = Repo.get!(Shipment, event.shipment_id)
+
+    with :ok <- ensure_carrier_perm(actor, shipment) do
+      normalised = attrs |> stringify_top_keys() |> Map.put("updated_by_id", actor.id)
+      before_event = event_audit_snapshot(event)
+
+      event
+      |> ShipmentPickupEvent.paperwork_changeset(normalised)
+      |> Repo.update()
+      |> case do
+        {:ok, updated_event} ->
+          Audit.record_updated(
+            actor,
+            "shipment_pickup_event",
+            updated_event,
+            before_event,
+            event_audit_snapshot(updated_event)
+          )
+
+          Backend.Broadcasts.entity_changed(
+            "shipment",
+            shipment.uuid,
+            shipment.company_id,
+            "pickup_event_paperwork_updated"
+          )
+
+          {:ok, updated_event}
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          {:error, cs}
+      end
+    end
+  end
+
+  # Bulk confirm all outstanding events on a shipment (staff or
+  # portal single-visit legacy path). Each event gets its own
+  # audit row + shipment status re-projected once at the end.
+  defp confirm_all_undelivered_events(actor, %Shipment{} = shipment, attrs, source) do
+    events =
+      Repo.all(
+        from(e in ShipmentPickupEvent,
+          where: e.shipment_id == ^shipment.id and is_nil(e.delivered_at)
+        )
+      )
+
+    cond do
+      events == [] ->
+        {:error, :nothing_to_confirm}
+
+      true ->
+        prepared = prepare_delivery_attrs(actor, Map.put(attrs, "source", source))
+
+        Repo.transaction(fn ->
+          Enum.each(events, fn e ->
+            case e |> ShipmentPickupEvent.delivery_changeset(prepared) |> Repo.update() do
+              {:ok, _} -> :ok
+              {:error, cs} -> Repo.rollback(cs)
+            end
+          end)
+
+          case reproject_shipment_after_delivery(shipment.id) do
+            {:ok, updated} -> updated
+            {:error, reason} -> Repo.rollback(reason)
+          end
         end)
+        |> case do
+          {:ok, updated} ->
+            Backend.Broadcasts.entity_changed(
+              "shipment",
+              updated.uuid,
+              updated.company_id,
+              "delivery_confirmed"
+            )
+
+            {:ok, updated}
+
+          err ->
+            err
+        end
+    end
+  end
+
+  defp reproject_shipment_after_delivery(shipment_id) do
+    outstanding_events =
+      Repo.aggregate(
+        from(e in ShipmentPickupEvent,
+          where: e.shipment_id == ^shipment_id and is_nil(e.delivered_at)
+        ),
+        :count
+      )
+
+    shipment = Repo.get!(Shipment, shipment_id)
+
+    # A shipment is only fully delivered when EVERY event has a POD
+    # AND the sum of event qtys covers the shipment's total. A partial
+    # first pickup (1 000 of 9 564) confirmed as delivered must not
+    # flip the whole shipment — the remaining 8 564 units still owe
+    # truck visits, so the shipment stays on the mobile pickup queue
+    # under ``partially_picked``.
+    picked_total = picked_up_qty(shipment)
+    shipment_total = shipment.qty || Decimal.new(0)
+    qty_fully_picked? = Decimal.compare(picked_total, shipment_total) in [:eq, :gt]
+
+    if outstanding_events == 0 and qty_fully_picked? do
+      # Every event delivered → flip the shipment. The denormalised
+      # ``delivered_at`` mirrors the LATEST event's delivery stamp so
+      # the existing "when was this delivered?" reads keep working.
+      latest =
+        Repo.one(
+          from(e in ShipmentPickupEvent,
+            where: e.shipment_id == ^shipment_id,
+            order_by: [desc: e.delivered_at, desc: e.id],
+            limit: 1
+          )
+        )
 
       shipment
-      |> Shipment.portal_delivery_changeset(delivery_attrs)
+      |> Ecto.Changeset.change(%{
+        status: "delivered",
+        delivered_at: latest && latest.delivered_at,
+        delivered_by_id: latest && latest.delivered_by_id,
+        recipient_signatory: latest && latest.recipient_signatory,
+        delivery_notes: latest && latest.delivery_notes
+      })
       |> Repo.update()
-      |> tap_audit_updated(nil, before_state, "portal_confirmed_delivery")
+    else
+      {:ok, shipment}
     end
+  end
+
+  defp ensure_event_undelivered(%ShipmentPickupEvent{delivered_at: nil}), do: :ok
+  defp ensure_event_undelivered(_), do: {:error, :event_already_delivered}
+
+  defp prepare_delivery_attrs(actor, attrs) do
+    attrs
+    |> stringify_top_keys()
+    |> Map.put("delivered_by_id", actor && actor.id)
+    |> Map.put_new_lazy("delivered_at", fn ->
+      DateTime.utc_now() |> DateTime.truncate(:second)
+    end)
   end
 
   # Map may arrive with atom or string keys (server-side controller vs
@@ -682,9 +1271,16 @@ defmodule Backend.Shipments do
     cursor = Keyword.get(opts, :cursor)
     search = Keyword.get(opts, :search)
 
+    # ``partially_picked`` shipments still owe truck visits — they
+    # belong on the same queue as ``ready`` so the next truck's
+    # operator can find the shipment and log the next event. The
+    # partial index widens with the same status list (see migration
+    # 20260827190000).
     q =
       from(s in Shipment,
-        where: s.company_id == ^company_id and s.status == "ready",
+        where:
+          s.company_id == ^company_id and
+            s.status in ["ready", "partially_picked"],
         preload: [
           :customer,
           :customer_order,
@@ -790,6 +1386,7 @@ defmodule Backend.Shipments do
           :delivered_by,
           :cancelled_by,
           pickup_files: [:uploaded_by],
+          pickup_events: [:picked_up_by, photos: [:uploaded_by]],
           delivery_files: [:uploaded_by],
           stock_lot: [
             :item,
@@ -1081,9 +1678,18 @@ defmodule Backend.Shipments do
   defp ensure_editable(%Shipment{status: s}) when s in ~w(draft ready), do: :ok
   defp ensure_editable(_), do: {:error, :not_editable}
 
-  defp ensure_status(%Shipment{status: expected}, expected), do: :ok
-  defp ensure_status(%Shipment{status: got}, expected),
+  defp ensure_status(%Shipment{status: expected}, expected) when is_binary(expected), do: :ok
+
+  defp ensure_status(%Shipment{status: got}, expected) when is_binary(expected),
     do: {:error, {:bad_status, got: got, expected: expected}}
+
+  defp ensure_status(%Shipment{status: got}, expected) when is_list(expected) do
+    if got in expected do
+      :ok
+    else
+      {:error, {:bad_status, got: got, expected: expected}}
+    end
+  end
 
   defp ensure_cancelable(%Shipment{status: s}) when s in ~w(draft ready), do: :ok
   defp ensure_cancelable(_), do: {:error, :not_cancelable}
@@ -1157,6 +1763,15 @@ defmodule Backend.Shipments do
         on: col.id == mo.customer_order_line_id,
         where: mo.produced_lot_id == ^lot_id,
         select: col.customer_order_id,
+        limit: 1
+    )
+  end
+
+  defp derive_customer_order_line_id(%Lot{id: lot_id}) do
+    Repo.one(
+      from mo in ManufacturingOrder,
+        where: mo.produced_lot_id == ^lot_id,
+        select: mo.customer_order_line_id,
         limit: 1
     )
   end

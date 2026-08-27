@@ -310,6 +310,13 @@ defmodule BackendWeb.ManufacturingOrderController do
                 "Can't drag the block before the current time."
               )
 
+            {:error, :mo_terminal} ->
+              unprocessable(
+                conn,
+                "mo_terminal",
+                "This MO is already completed or cancelled — its dates are frozen and can't be moved."
+              )
+
             {:error, :must_finish_before_parent} ->
               unprocessable(
                 conn,
@@ -357,6 +364,13 @@ defmodule BackendWeb.ManufacturingOrderController do
                 conn,
                 "past_time",
                 "Can't shift the chain into the past — pick a future time."
+              )
+
+            {:error, :mo_terminal} ->
+              unprocessable(
+                conn,
+                "mo_terminal",
+                "This chain's root MO is already completed or cancelled — the chain's dates are frozen and can't be moved."
               )
 
             {:error, %Ecto.Changeset{} = cs} ->

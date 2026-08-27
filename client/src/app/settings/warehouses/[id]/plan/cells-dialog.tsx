@@ -605,6 +605,59 @@ function CellRow({
     return fallback;
   };
 
+  // Autosave-on-blur has a nasty edge: if the operator is typing
+  // ``100`` but has only got as far as ``1`` when they tab to the
+  // next field, that blur triggers an immediate save. Server sees
+  // ``1``, which shrinks the cell and gets rejected → the draft
+  // reverts, the operator loses their edit.
+  //
+  // Debounce per cell so tabbing between width / depth / height /
+  // max-weight cancels the pending save; only when focus truly
+  // leaves the cell (no field on this row is focused for ~600ms)
+  // do we flush accumulated patches as one call. Field peers still
+  // see the live typing (via ``setField``) — nothing about the
+  // collab overlay changes.
+  const pendingPatchRef = useRef<Partial<CellPatch>>({});
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPending = () => {
+    const patch = pendingPatchRef.current;
+    pendingPatchRef.current = {};
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    if (Object.keys(patch).length > 0) {
+      onPatch(patch);
+    }
+  };
+
+  const schedulePatch = (patch: Partial<CellPatch>) => {
+    pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+    }
+    pendingTimerRef.current = setTimeout(flushPending, 600);
+  };
+
+  const cancelPendingSave = () => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+  };
+
+  // Flush any pending patch when the cell row unmounts (dialog close /
+  // route change / peer commit removing this row) so a mid-typed edit
+  // doesn't silently vanish.
+  useEffect(
+    () => () => {
+      flushPending();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   const purpose = purposeMeta(cell.purpose);
 
   return (
@@ -667,10 +720,13 @@ function CellRow({
             label="Width (m)"
             value={draftFor("width_m", cell.width_m == null ? "" : String(cell.width_m))}
             onChange={(v) => setField(keyFor("width_m"), v)}
-            onFocus={() => focusField(keyFor("width_m"))}
+            onFocus={() => {
+              cancelPendingSave();
+              focusField(keyFor("width_m"));
+            }}
             onBlur={(v) => {
               blurField(keyFor("width_m"));
-              onPatch({ width_m: v.length === 0 ? null : v });
+              schedulePatch({ width_m: v.length === 0 ? null : v });
             }}
             editor={fieldEditors[keyFor("width_m")]}
           />
@@ -679,10 +735,13 @@ function CellRow({
             label="Depth (m)"
             value={draftFor("depth_m", cell.depth_m == null ? "" : String(cell.depth_m))}
             onChange={(v) => setField(keyFor("depth_m"), v)}
-            onFocus={() => focusField(keyFor("depth_m"))}
+            onFocus={() => {
+              cancelPendingSave();
+              focusField(keyFor("depth_m"));
+            }}
             onBlur={(v) => {
               blurField(keyFor("depth_m"));
-              onPatch({ depth_m: v.length === 0 ? null : v });
+              schedulePatch({ depth_m: v.length === 0 ? null : v });
             }}
             editor={fieldEditors[keyFor("depth_m")]}
           />
@@ -691,10 +750,13 @@ function CellRow({
             label="Height (m)"
             value={draftFor("height_m", cell.height_m == null ? "" : String(cell.height_m))}
             onChange={(v) => setField(keyFor("height_m"), v)}
-            onFocus={() => focusField(keyFor("height_m"))}
+            onFocus={() => {
+              cancelPendingSave();
+              focusField(keyFor("height_m"));
+            }}
             onBlur={(v) => {
               blurField(keyFor("height_m"));
-              onPatch({ height_m: v.length === 0 ? null : v });
+              schedulePatch({ height_m: v.length === 0 ? null : v });
             }}
             editor={fieldEditors[keyFor("height_m")]}
           />
@@ -708,10 +770,13 @@ function CellRow({
             cell.max_weight_kg == null ? "" : String(cell.max_weight_kg),
           )}
           onChange={(v) => setField(keyFor("max_weight_kg"), v)}
-          onFocus={() => focusField(keyFor("max_weight_kg"))}
+          onFocus={() => {
+            cancelPendingSave();
+            focusField(keyFor("max_weight_kg"));
+          }}
           onBlur={(v) => {
             blurField(keyFor("max_weight_kg"));
-            onPatch({ max_weight_kg: v.length === 0 ? null : v });
+            schedulePatch({ max_weight_kg: v.length === 0 ? null : v });
           }}
           editor={fieldEditors[keyFor("max_weight_kg")]}
         />

@@ -152,6 +152,7 @@ export function ProductionRunDetail({ initialMo, company }: Props) {
         onOpenChange={setFinishOpen}
         mo={mo}
         uomSymbol={uomSymbol}
+        company={company}
         onFinished={onFinished}
       />
     </section>
@@ -509,12 +510,14 @@ function FinishDialog({
   onOpenChange,
   mo,
   uomSymbol,
+  company,
   onFinished,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mo: ManufacturingOrder;
   uomSymbol: string;
+  company: CompanyDefaults;
   onFinished: (updated: ManufacturingOrder) => void;
 }) {
   const defaultStart = useMemo(
@@ -737,10 +740,12 @@ function FinishDialog({
               onChange={(e) => setQty(e.target.value)}
               className="h-10"
             />
-            <p className="text-[11px] text-muted-foreground">
-              Planned: {mo.quantity} {uomSymbol}. Enter the actual output
-              — drift between planned and produced is queryable later.
-            </p>
+            <YieldVarianceChip
+              planned={mo.quantity}
+              produced={qty}
+              tolerancePct={company.production_yield_tolerance_pct}
+              uomSymbol={uomSymbol}
+            />
           </div>
 
           <PacksEditor
@@ -1344,4 +1349,73 @@ function fromLocalInput(local: string): string | null {
   const d = new Date(local);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
+}
+
+function YieldVarianceChip({
+  planned,
+  produced,
+  tolerancePct,
+  uomSymbol,
+}: {
+  planned: string | number | null | undefined;
+  produced: string;
+  tolerancePct: string | number | null | undefined;
+  uomSymbol: string;
+}) {
+  const plannedNum = Number(planned ?? 0);
+  const producedNum = Number(produced);
+  const tolerance = Number(tolerancePct ?? 10);
+
+  if (!Number.isFinite(plannedNum) || plannedNum <= 0) {
+    return (
+      <p className="text-[11px] text-muted-foreground">
+        Planned: {planned ?? "—"} {uomSymbol}. Enter the actual output —
+        drift is queryable later.
+      </p>
+    );
+  }
+
+  if (!Number.isFinite(producedNum) || producedNum <= 0 || produced.trim() === "") {
+    return (
+      <p className="text-[11px] text-muted-foreground">
+        Planned: {plannedNum} {uomSymbol}. Company yield tolerance:
+        ±{tolerance}%.
+      </p>
+    );
+  }
+
+  const variancePct = ((producedNum - plannedNum) / plannedNum) * 100;
+  const absVariance = Math.abs(variancePct);
+  const isShort = variancePct < 0;
+  const outOfTolerance = absVariance > tolerance;
+  const sign = variancePct >= 0 ? "+" : "";
+
+  const tone = outOfTolerance
+    ? isShort
+      ? "border-destructive/40 bg-destructive/[0.06] text-destructive"
+      : "border-amber-500/40 bg-amber-500/[0.06] text-amber-700 dark:text-amber-400"
+    : "border-emerald-500/40 bg-emerald-500/[0.06] text-emerald-700 dark:text-emerald-400";
+
+  const label = outOfTolerance
+    ? isShort
+      ? "Below tolerance — CO dispatch will block until top-up or accept-short."
+      : "Above tolerance — surplus will be auto-reserved to the CO line."
+    : "Within tolerance — closes cleanly.";
+
+  return (
+    <div
+      className={`mt-1 rounded-md border px-2.5 py-1.5 text-[11px] ${tone}`}
+    >
+      <div className="flex items-center gap-2">
+        <span className="font-semibold">
+          {sign}
+          {variancePct.toFixed(2)}%
+        </span>
+        <span className="text-muted-foreground">
+          vs planned {plannedNum} {uomSymbol} (tolerance ±{tolerance}%)
+        </span>
+      </div>
+      <p className="mt-0.5">{label}</p>
+    </div>
+  );
 }

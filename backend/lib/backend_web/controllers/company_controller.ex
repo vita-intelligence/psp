@@ -171,6 +171,24 @@ defmodule BackendWeb.CompanyController do
     end
   end
 
+  def update_yield_tolerance(conn, params) do
+    case Companies.update_yield_tolerance(Companies.current(), params) do
+      {:ok, company} ->
+        json(conn, %{company: Payloads.company(company)})
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(
+          Errors.payload(
+            "validation_failed",
+            "Please correct the highlighted fields.",
+            Errors.changeset_fields(cs)
+          )
+        )
+    end
+  end
+
   def update_bag(conn, %{"field" => field, "value" => value})
       when field in @bag_fields do
     # Whitelist guard above (`field in @bag_fields`) restricts `field`

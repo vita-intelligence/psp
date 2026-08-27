@@ -259,10 +259,14 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
   const scale = useTimeScale();
   const editor = useScheduleEditor();
   const workingIntervals = useWorkingIntervals();
+  // Chain-level drag: refuse when the root MO is terminal. The BE
+  // `shift_mo_chain` guard would reject anyway, but disabling here
+  // avoids the operator triggering the toast on every drag attempt.
+  const isTerminal = row.status === "completed" || row.status === "cancelled";
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `project-${row.rootMoUuid}`,
-      disabled: !canEditSteps,
+      disabled: !canEditSteps || isTerminal,
     });
 
   const startMs = new Date(row.start).getTime();
@@ -305,7 +309,7 @@ function ProjectBlock({ row, canEditSteps }: ProjectBlockProps) {
       className={cn(
         "absolute z-10 select-none overflow-hidden rounded-md border-2 px-2 py-1 text-[11px] shadow-sm",
         statusColor,
-        canEditSteps ? "cursor-grab" : "cursor-pointer",
+        canEditSteps && !isTerminal ? "cursor-grab" : "cursor-pointer",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
       title={

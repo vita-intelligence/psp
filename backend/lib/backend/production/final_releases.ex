@@ -759,19 +759,23 @@ defmodule Backend.Production.FinalReleases do
          :ok <- ensure_lot_in_finished_quarantine(lot) do
       notes = Map.get(attrs, "notes") || Map.get(attrs, :notes) || release.notes
 
-      Repo.transaction(fn ->
-        with {:ok, updated} <- finalise_row(actor, release, "released", %{notes: notes}),
-             :ok <-
-               maybe_emit_release_event(lot, "released", actor, notes, %{
-                 "final_release_uuid" => updated.uuid,
-                 "releaser_id" => updated.releaser_id,
-                 "approver_id" => updated.approver_id
-               }) do
-          preload(updated)
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      result =
+        Repo.transaction(fn ->
+          with {:ok, updated} <- finalise_row(actor, release, "released", %{notes: notes}),
+               :ok <-
+                 maybe_emit_release_event(lot, "released", actor, notes, %{
+                   "final_release_uuid" => updated.uuid,
+                   "releaser_id" => updated.releaser_id,
+                   "approver_id" => updated.approver_id
+                 }) do
+            preload(updated)
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      notify_wizard_if_ok(result, lot)
+      result
     end
   end
 
@@ -790,18 +794,22 @@ defmodule Backend.Production.FinalReleases do
          {:ok, lot} <- fetch_lot(release),
          :ok <- ensure_lot_releasable(lot),
          :ok <- ensure_lot_in_finished_quarantine(lot) do
-      Repo.transaction(fn ->
-        with {:ok, updated} <-
-               finalise_row(actor, release, "on_hold", %{hold_reason: reason}),
-             :ok <-
-               maybe_emit_release_event(lot, "held", actor, reason, %{
-                 "final_release_uuid" => updated.uuid
-               }) do
-          preload(updated)
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      result =
+        Repo.transaction(fn ->
+          with {:ok, updated} <-
+                 finalise_row(actor, release, "on_hold", %{hold_reason: reason}),
+               :ok <-
+                 maybe_emit_release_event(lot, "held", actor, reason, %{
+                   "final_release_uuid" => updated.uuid
+                 }) do
+            preload(updated)
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      notify_wizard_if_ok(result, lot)
+      result
     end
   end
 
@@ -824,23 +832,46 @@ defmodule Backend.Production.FinalReleases do
       # is a different (heavier) flow: quality incident + customer
       # notifications + return-material paperwork. Force that path
       # explicitly rather than treating it as a routine reject here.
-      Repo.transaction(fn ->
-        with {:ok, updated} <-
-               finalise_row(actor, release, "rejected", %{reject_reason: reason}),
-             {:ok, _lifecycle} <-
-               Lifecycle.record_event_in_transaction(lot, "qc_failed", %{
-                 actor: actor,
-                 actor_kind: "user",
-                 reason: reason,
-                 metadata: %{"final_release_uuid" => updated.uuid}
-               }) do
-          preload(updated)
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      result =
+        Repo.transaction(fn ->
+          with {:ok, updated} <-
+                 finalise_row(actor, release, "rejected", %{reject_reason: reason}),
+               {:ok, _lifecycle} <-
+                 Lifecycle.record_event_in_transaction(lot, "qc_failed", %{
+                   actor: actor,
+                   actor_kind: "user",
+                   reason: reason,
+                   metadata: %{"final_release_uuid" => updated.uuid}
+                 }) do
+            preload(updated)
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      notify_wizard_if_ok(result, lot)
+      result
     end
   end
+
+  # Every terminal Final Release outcome (released / on_hold /
+  # rejected) flips the wizard's dispatch phase — released →
+  # ``:awaiting_routing`` (or straight to ``:ready_to_dispatch`` if
+  # the lot's already destined for direct shipment), held →
+  # ``:final_release`` sticks with a chip, rejected → the lot is
+  # out of the fulfilment chain. Every one of those transitions
+  # MUST refresh the customer portal or NPD stays stuck on the
+  # pre-release phase. Fire-and-forget so a downed NPD never blocks
+  # a QA sign-off.
+  defp notify_wizard_if_ok({:ok, _}, %Backend.Stock.Lot{
+         source_kind: "manufacturing_order",
+         source_ref: mo_uuid
+       })
+       when is_binary(mo_uuid) do
+    Backend.OrderWizard.notify_via_mo_uuid(mo_uuid)
+  end
+
+  defp notify_wizard_if_ok(_, _), do: :ok
 
   # ============================================================
   # Draft edits — freeform notes on the pending row

@@ -26,6 +26,10 @@ defmodule Backend.Shipments.ShipmentPickupFile do
 
     belongs_to :company, Company
     belongs_to :shipment, Shipment
+    # Multi-visit pickups anchor photos to the specific event they
+    # document. Nullable for legacy rows uploaded before the events
+    # table shipped; every new upload sets this.
+    belongs_to :shipment_pickup_event, Backend.Shipments.ShipmentPickupEvent
     belongs_to :uploaded_by, User
 
     timestamps(type: :utc_datetime)
@@ -38,6 +42,7 @@ defmodule Backend.Shipments.ShipmentPickupFile do
     |> cast(attrs, [
       :company_id,
       :shipment_id,
+      :shipment_pickup_event_id,
       :kind,
       :filename,
       :mime,

@@ -153,6 +153,15 @@ defmodule Backend.Production.ManufacturingOrder do
     field :actual_finish, :utc_datetime
     field :quantity_produced, :decimal
 
+    # Recorded variance between planned ``quantity`` and actual
+    # ``quantity_produced`` at closeout time, in percent
+    # (``(produced − planned) / planned × 100``). Stamped by
+    # ``Backend.Production.finish_mo_production`` — never editable
+    # from the UI. Retained separately so a later edit to the
+    # company's tolerance doesn't retroactively re-classify a
+    # historic run.
+    field :yield_variance_pct, :decimal
+
     # Operator-marked "closeout done" state. Distinct from `actual_finish`
     # (production ended) — closeout is the post-run accounting: consume
     # booked ingredients, hand output over. Stamped by
@@ -427,6 +436,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :actual_finish,
       :quantity_produced,
       :produced_lot_id,
+      :yield_variance_pct,
       :updated_by_id
     ])
     |> validate_number(:quantity_produced, greater_than_or_equal_to: 0)

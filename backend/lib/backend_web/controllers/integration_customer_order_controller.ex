@@ -598,9 +598,14 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
               }
           )
 
+        pickup_events = Backend.Shipments.list_pickup_events(ship)
+
         json(conn, %{
           dispatch: %{
             status: ship.status,
+            qty: Decimal.to_string(ship.qty || Decimal.new(0)),
+            picked_up_qty: Decimal.to_string(Backend.Shipments.picked_up_qty(ship)),
+            remaining_qty: Decimal.to_string(Backend.Shipments.remaining_qty(ship)),
             ready_at: ship.ready_at,
             picked_up_at: ship.picked_up_at,
             delivered_at: ship.delivered_at,
@@ -618,7 +623,64 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
               transport_condition_acceptable: ship.transport_condition_acceptable,
               dispatch_approved: ship.dispatch_approved
             },
-            photos: photos
+            photos: photos,
+            # Multi-visit pickup timeline. Customer-safe subset — no
+            # PSP operator ids, no internal notes. One row per truck
+            # arrival with qty + driver + timestamp + per-event
+            # delivery state (customer can confirm each visit
+            # independently via the portal). Empty on legacy
+            # single-visit shipments.
+            pickup_events:
+              Enum.map(pickup_events, fn e ->
+                %{
+                  uuid: e.uuid,
+                  qty: Decimal.to_string(e.qty),
+                  picked_up_at: e.picked_up_at,
+                  driver_name: e.driver_name,
+                  vehicle_registration: e.vehicle_registration,
+                  consignment_note_ref: e.consignment_note_ref,
+                  # Per-truck paperwork. Editable on desktop post-
+                  # departure — carriers regularly email the tracking
+                  # number after the driver has left the site.
+                  tracking_number: e.tracking_number,
+                  seal_number: e.seal_number,
+                  temperature_c: e.temperature_c && Decimal.to_string(e.temperature_c),
+                  notes: e.notes,
+                  # BRCGS § 5.4.6 checklist captured on the mobile
+                  # dispatch form for this specific truck. Ships as a
+                  # nested map to match the shipment-level checklist
+                  # shape the sample-detail portal already renders.
+                  checklist: %{
+                    packaging_intact: e.packaging_intact,
+                    labels_verified: e.labels_verified,
+                    vehicle_clean_suitable: e.vehicle_clean_suitable,
+                    transport_condition_acceptable: e.transport_condition_acceptable,
+                    dispatch_approved: e.dispatch_approved
+                  },
+                  delivered_at: e.delivered_at,
+                  recipient_signatory: e.recipient_signatory,
+                  delivery_notes: e.delivery_notes,
+                  # BRCGS § 5.4.6 evidence photos captured on the
+                  # mobile dispatch form. Customer-safe subset — no
+                  # blob paths or uploader ids leak through the wire.
+                  # Portal renders these under each event's row so
+                  # the customer sees exactly what left the site.
+                  photos:
+                    case e.photos do
+                      list when is_list(list) ->
+                        Enum.map(list, fn photo ->
+                          %{
+                            uuid: photo.uuid,
+                            filename: photo.filename,
+                            mime: photo.mime
+                          }
+                        end)
+
+                      _ ->
+                        []
+                    end
+                }
+              end)
           }
         })
     end
@@ -749,6 +811,150 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
     end
   end
 
+  @doc """
+  Portal-driven POD for ONE pickup event. Each event confirms
+  independently — the customer taps "Confirm receipt" on the
+  Tuesday truck's row without affecting Thursday's row.
+
+  Body: ``{"recipient_signatory": "...", "delivery_notes": "..."}``.
+  ``recipient_signatory`` required.
+  """
+  def confirm_event_delivery(conn, %{
+        "uuid" => co_uuid,
+        "event_uuid" => event_uuid
+      } = params) do
+    company_id = conn.assigns.current_company_id
+
+    signatory = sanitise(params["recipient_signatory"])
+    notes = sanitise(params["delivery_notes"])
+
+    if signatory in [nil, ""] do
+      conn
+      |> put_status(:unprocessable_entity)
+      |> json(%{error: "recipient_signatory_required"})
+    else
+      attrs = %{"recipient_signatory" => signatory, "source" => "portal"}
+      attrs = if notes, do: Map.put(attrs, "delivery_notes", notes), else: attrs
+
+      case resolve_shipment_for_co(company_id, co_uuid) do
+        {:error, :invalid_uuid} ->
+          conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+        {:error, :co_not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+
+        {:error, :no_dispatch} ->
+          conn |> put_status(:not_found) |> json(%{error: "no_dispatch"})
+
+        {:ok, %Shipment{} = ship} ->
+          case Shipments.get_pickup_event(ship.id, event_uuid) do
+            nil ->
+              conn |> put_status(:not_found) |> json(%{error: "event_not_found"})
+
+            %Backend.Shipments.ShipmentPickupEvent{delivered_at: nil} = event ->
+              case Shipments.confirm_pickup_event_delivery(nil, event, attrs) do
+                {:ok, {updated_event, _}} ->
+                  json(conn, %{
+                    event: %{
+                      uuid: updated_event.uuid,
+                      qty: Decimal.to_string(updated_event.qty),
+                      picked_up_at: updated_event.picked_up_at,
+                      delivered_at: updated_event.delivered_at,
+                      recipient_signatory: updated_event.recipient_signatory,
+                      delivery_notes: updated_event.delivery_notes
+                    }
+                  })
+
+                {:error, changeset} ->
+                  conn
+                  |> put_status(:unprocessable_entity)
+                  |> json(%{error: "invalid", changeset: to_changeset_errors(changeset)})
+              end
+
+            _already_delivered ->
+              conn |> put_status(:conflict) |> json(%{error: "already_delivered"})
+          end
+      end
+    end
+  end
+
+  # Portal-driven routing choice for a bespoke NPD-formulation CO.
+  # NPD relays the customer's submit here. Body:
+  #
+  #     %{"choice" => "three_pl" | "shipment"}
+  #
+  # Preconditions checked by the context module: request must exist
+  # (wizard's ``load_or_create_routing_request`` spawns it on first
+  # Final Release), current state must be ``awaiting_customer``.
+  def routing_choice(conn, %{"uuid" => uuid, "choice" => choice})
+      when choice in ["three_pl", "shipment"] do
+    company_id = conn.assigns.current_company_id
+
+    with {:ok, cast_uuid} <- cast_uuid(uuid),
+         %CustomerOrder{} = co <-
+           Repo.one(
+             from co in CustomerOrder,
+               where: co.company_id == ^company_id and co.uuid == ^cast_uuid,
+               limit: 1
+           ) do
+      case Backend.ThreePL.Requests.customer_choose(co, choice, nil) do
+        {:ok, request} ->
+          json(conn, %{routing_request: routing_request_public(request)})
+
+        {:error, :no_request} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: "no_request"})
+
+        {:error, {:wrong_state, state}} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: "wrong_state", state: state})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "invalid", changeset: to_changeset_errors(cs)})
+
+        {:error, other} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "routing_failed", reason: inspect(other)})
+      end
+    else
+      {:error, :invalid_uuid} ->
+        conn |> put_status(:bad_request) |> json(%{error: "invalid_uuid"})
+
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "customer_order_not_found"})
+    end
+  end
+
+  def routing_choice(conn, %{"choice" => _}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "bad_choice"})
+  end
+
+  def routing_choice(conn, _) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "choice_required"})
+  end
+
+  # Portal-safe echo of a routing request row.
+  defp routing_request_public(%Backend.ThreePL.RoutingRequest{} = req) do
+    %{
+      uuid: req.uuid,
+      state: req.state,
+      customer_choice: req.customer_choice,
+      team_decision_reason: req.team_decision_reason,
+      customer_chose_at: req.customer_chose_at,
+      team_reviewed_at: req.team_reviewed_at,
+      estimate_snapshot: req.estimate_snapshot
+    }
+  end
+
   defp sanitise(v) when is_binary(v) do
     trimmed = String.trim(v)
     if trimmed == "", do: nil, else: trimmed
@@ -764,10 +970,11 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
     end)
   end
 
-  # Walks CO → root MO → produced lot → live shipment (picked_up or
-  # delivered — draft/ready aren't customer-visible; the goods are
-  # still on our floor). One shipment per output lot is the model
-  # today so ``limit: 1`` is deterministic.
+  # Walks CO → root MO → produced lot → live shipment
+  # (partially_picked / picked_up / delivered — draft/ready aren't
+  # customer-visible; the goods are still on our floor). One
+  # shipment per output lot is the model today so ``limit: 1`` is
+  # deterministic.
   defp resolve_shipment_for_co(company_id, uuid) do
     with {:ok, cast_uuid} <- cast_uuid(uuid),
          %CustomerOrder{id: co_id} <- fetch_co(company_id, cast_uuid),
@@ -779,7 +986,7 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
                where:
                  s.company_id == ^company_id and
                    s.stock_lot_id == ^lot_id and
-                   s.status in ["picked_up", "delivered"],
+                   s.status in ["partially_picked", "picked_up", "delivered"],
                order_by: [desc: s.picked_up_at, desc: s.id],
                limit: 1
            ) do

@@ -885,10 +885,16 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
   const scale = useTimeScale();
   const editor = useScheduleEditor();
   const workingIntervals = useWorkingIntervals();
+  // Completed / cancelled MOs are frozen historical records — their
+  // planned_start / planned_finish are audit-tied timestamps. Dragging
+  // them would silently mutate history + break dependents scheduled
+  // against the old dates. Backend `shift_mo_schedule` also refuses,
+  // but disabling drag here avoids the operator wasting time trying.
+  const isTerminal = row.status === "completed" || row.status === "cancelled";
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `mo-${row.moUuid}`,
-      disabled: !canEditSteps,
+      disabled: !canEditSteps || isTerminal,
     });
 
   const startMs = new Date(row.start).getTime();
@@ -937,7 +943,7 @@ function MOblock({ row, canEditSteps, workstationGroups }: MOblockProps) {
       className={cn(
         "absolute z-10 select-none overflow-hidden rounded-md border-2 text-[11px] shadow-sm transition-shadow",
         statusColor,
-        canEditSteps ? "cursor-grab" : "cursor-pointer",
+        canEditSteps && !isTerminal ? "cursor-grab" : "cursor-pointer",
         isDragging && "z-30 cursor-grabbing shadow-lg",
       )}
       title={

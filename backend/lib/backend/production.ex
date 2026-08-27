@@ -2565,6 +2565,21 @@ defmodule Backend.Production do
     end
   end
 
+  # Same terminal-MO gate `shift_mo_schedule` / `shift_mo_chain` use,
+  # applied here so typing new segments into the schedule dialog is
+  # refused on completed/cancelled MOs. Planned dates on a finished
+  # MO are audit-tied history.
+  defp ensure_mo_not_terminal(mo_id) when is_integer(mo_id) do
+    case Repo.one(
+           from mo in ManufacturingOrder,
+             where: mo.id == ^mo_id,
+             select: mo.status
+         ) do
+      status when status in ["completed", "cancelled"] -> {:error, :mo_terminal}
+      _ -> :ok
+    end
+  end
+
   defp do_move_mo_step(actor, step, new_start_dt, opts) do
     mo = Repo.get!(ManufacturingOrder, step.manufacturing_order_id)
     # When the planner dropped onto a different station row the new
@@ -2653,7 +2668,8 @@ defmodule Backend.Production do
     if step_locked_by_pickup?(step) do
       {:error, :pickup_in_progress}
     else
-    with {:ok, parsed} <- parse_segment_list(segments),
+    with :ok <- ensure_mo_not_terminal(step.manufacturing_order_id),
+         {:ok, parsed} <- parse_segment_list(segments),
          :ok <- ensure_segments_fit_capacity(step, parsed) do
       [{first_start, _} | _] = parsed
       {_, last_finish} = List.last(parsed)
@@ -5716,6 +5732,13 @@ defmodule Backend.Production do
   def shift_mo_chain(%User{} = actor, %ManufacturingOrder{} = root, delta_seconds)
       when is_integer(delta_seconds) do
     cond do
+      root.status in ["completed", "cancelled"] ->
+        # Same reasoning as `shift_mo_schedule`: a terminal MO's
+        # planned dates are audit-tied history, not editable.
+        # Blocking the root also blocks the chain since the root's
+        # completion signals the whole chain has already run.
+        {:error, :mo_terminal}
+
       delta_seconds == 0 ->
         {:ok, reload_manufacturing_order(root)}
 
@@ -5816,6 +5839,14 @@ defmodule Backend.Production do
   def shift_mo_schedule(%User{} = actor, %ManufacturingOrder{} = mo, delta_seconds)
       when is_integer(delta_seconds) do
     cond do
+      mo.status in ["completed", "cancelled"] ->
+        # A finished / cancelled MO is a frozen historical record —
+        # its planned_start / planned_finish are archived timestamps
+        # that pair with the audit trail. Letting the planner drag
+        # it on the calendar would silently mutate history and shift
+        # dependents that were scheduled against the OLD dates.
+        {:error, :mo_terminal}
+
       delta_seconds == 0 ->
         {:ok, reload_manufacturing_order(mo)}
 
@@ -8726,7 +8757,51 @@ defmodule Backend.Production do
     open  = max(released_to_warehouse_at, planned_start - window)
     close = pickup_completed_at IS NULL
   """
-  def list_pickup_queue(company_id) when is_integer(company_id) do
+  @doc """
+  Retroactive self-heal for the picker queue.
+
+  Iterates every MO the picker queue would show and re-runs
+  ``maybe_auto_complete_pickup`` on each. Any MO whose ingredient
+  bookings are all delivered (kept-in-place output at production +
+  auto-delivered raw materials) gets stamped ``pickup_completed_at``
+  right here and drops out of the queue on the next read.
+
+  Called from the picker queue controller so a stuck "released but
+  pickup-collapse skipped" MO isn't wedged forever. The normal
+  code path (``release_mo_to_warehouse_fresh``) also calls
+  ``maybe_auto_complete_pickup`` — this is the safety net for:
+
+    * MOs released before the auto-collapse branch existed
+    * MOs where a raw material was only healed to production_facility
+      AFTER release (later closeout moving a leftover in-place, etc.)
+    * Any code path that stamps ``released_to_warehouse_at`` without
+      going through the full release helper.
+
+  Cheap when the queue is small; a no-op per-MO when the collapse
+  conditions aren't satisfied.
+  """
+  def self_heal_pickup_queue(%User{} = actor) when is_map(actor) do
+    from(m in ManufacturingOrder,
+      where:
+        m.company_id == ^actor.company_id and
+          is_nil(m.pickup_completed_at) and
+          m.status == "scheduled" and
+          not is_nil(m.released_to_warehouse_at) and
+          is_nil(m.pickup_started_at)
+    )
+    |> Repo.all()
+    |> Enum.each(fn mo -> maybe_auto_complete_pickup(actor, mo) end)
+
+    :ok
+  end
+
+  def list_pickup_queue(company_id, opts \\ []) when is_integer(company_id) do
+    # ``include_upcoming: true`` disables the visible_from >= now gate so
+    # the caller sees released MOs whose pickup window opens later too.
+    # Used by the mobile queue's "Show upcoming" toggle — the picker
+    # picks NOW even if the optimal window opens in a few hours. Default
+    # false keeps the everyday queue focused on ready-to-pick rows.
+    include_upcoming? = Keyword.get(opts, :include_upcoming, false)
     now_dt = now()
 
     company_default =
@@ -8802,7 +8877,10 @@ defmodule Backend.Production do
       }
     end)
     |> Enum.filter(fn %{visible_from: vf} ->
-      not is_nil(vf) and DateTime.compare(now_dt, vf) != :lt
+      cond do
+        include_upcoming? -> not is_nil(vf)
+        true -> not is_nil(vf) and DateTime.compare(now_dt, vf) != :lt
+      end
     end)
     |> Enum.sort_by(fn %{pickup_by: pb} -> pb || ~U[2099-01-01 00:00:00Z] end, DateTime)
   end
@@ -9655,55 +9733,71 @@ defmodule Backend.Production do
 
   defp do_full_qc(%User{} = actor, lot_uuid, kind, attrs)
        when kind in ["qc_passed", "output_qc_passed", "qc_failed"] do
-    with %StockLot{source_kind: "manufacturing_order"} = lot <-
+    with %StockLot{source_kind: "manufacturing_order", source_ref: mo_uuid} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid) do
-      Repo.transaction(fn ->
-        # On pass, let the QC operator correct the production's
-        # numbers before flipping the lot to `available` — measured
-        # weight, real package dims, actual qty. Any qty delta emits
-        # an adjust_up/adjust_down movement at the production-feed
-        # placement so traceability holds; the lot row + placement
-        # update atomically with the lifecycle event.
-        with :ok <- maybe_apply_qc_adjustments(actor, lot, kind, attrs),
-             reloaded <- Backend.Stock.get_for_company(actor.company_id, lot_uuid),
-             {:ok, _result} <-
-               Backend.Stock.Lifecycle.record_event(reloaded, kind, %{
-                 actor: actor,
-                 actor_kind: "user",
-                 reason: attrs["reason"] || attrs[:reason],
-                 metadata: %{}
-               }) do
-          if kind == "qc_failed" do
-            # On QC fail, propagate the regression up the chain — any
-            # MO that's booked this lot as an input can no longer
-            # satisfy its plan. Flag them as needing replan so the
-            # planner sees the downstream impact immediately.
-            propagate_replan_to_consumers(actor, reloaded)
-          end
+      result =
+        Repo.transaction(fn ->
+          # On pass, let the QC operator correct the production's
+          # numbers before flipping the lot to `available` — measured
+          # weight, real package dims, actual qty. Any qty delta emits
+          # an adjust_up/adjust_down movement at the production-feed
+          # placement so traceability holds; the lot row + placement
+          # update atomically with the lifecycle event.
+          with :ok <- maybe_apply_qc_adjustments(actor, lot, kind, attrs),
+               reloaded <- Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+               {:ok, _result} <-
+                 Backend.Stock.Lifecycle.record_event(reloaded, kind, %{
+                   actor: actor,
+                   actor_kind: "user",
+                   reason: attrs["reason"] || attrs[:reason],
+                   metadata: %{}
+                 }) do
+            if kind == "qc_failed" do
+              # On QC fail, propagate the regression up the chain — any
+              # MO that's booked this lot as an input can no longer
+              # satisfy its plan. Flag them as needing replan so the
+              # planner sees the downstream impact immediately.
+              propagate_replan_to_consumers(actor, reloaded)
+            end
 
-          if kind == "qc_passed" do
-            # On QC pass, auto-book the freshly-available output onto
-            # the parent MO that was waiting for it.
-            auto_book_output_to_parent_mo(actor, reloaded)
-          end
+            if kind == "qc_passed" do
+              # On QC pass, auto-book the freshly-available output onto
+              # the parent MO that was waiting for it.
+              auto_book_output_to_parent_mo(actor, reloaded)
+            end
 
-          if kind in ["qc_passed", "output_qc_passed"] do
-            # Trial MOs whose only remaining "closeout work" was the
-            # output lot at the production cell now qualify for
-            # `closeout_completed_at`. `maybe_stamp_closeout_completed`
-            # rechecks the whole predicate — production/sample MOs
-            # with genuine remaining work stay un-stamped.
-            maybe_stamp_closeout_completed(actor, reloaded.source_ref)
-          end
+            if kind in ["qc_passed", "output_qc_passed"] do
+              # Trial MOs whose only remaining "closeout work" was the
+              # output lot at the production cell now qualify for
+              # `closeout_completed_at`. `maybe_stamp_closeout_completed`
+              # rechecks the whole predicate — production/sample MOs
+              # with genuine remaining work stay un-stamped.
+              maybe_stamp_closeout_completed(actor, reloaded.source_ref)
+            end
 
-          Repo.preload(
-            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
-            [:item]
-          )
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+            Repo.preload(
+              Backend.Stock.get_for_company(actor.company_id, lot_uuid),
+              [:item]
+            )
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      # Wizard + NPD portal + website portal all read the CO's phase
+      # from the lot's lifecycle state. Output QC pass/fail flips
+      # ``mo_stage/1`` from ``:quality`` → ``:closeout`` (or the
+      # top-of-tree lot into ``awaiting_release`` → ``:final_release``
+      # phase), so the customer portal MUST refresh — otherwise it
+      # stays stuck on ``phase: in_production`` from the last push.
+      # Only fires on successful commit so a rolled-back QC doesn't
+      # publish a phase that never happened.
+      case result do
+        {:ok, _} -> Backend.OrderWizard.notify_via_mo_uuid(mo_uuid)
+        _ -> :ok
+      end
+
+      result
     else
       nil -> {:error, :lot_not_found}
       %StockLot{} -> {:error, :not_a_manufactured_lot}
@@ -11458,6 +11552,17 @@ defmodule Backend.Production do
       # move each placement to dest_cell so all containers land at
       # the same scanned dispatch cell. Same photo used for every
       # movement — one physical event covers the whole split.
+      #
+      # For each sibling ALSO create a "shadow" MOBooking on the
+      # primary's MO — same shape as the primary booking but with
+      # quantity 0 / consumed_at stamped. This gives the sibling an
+      # MO "home" so the return-pickup queue attributes it to the
+      # correct MO card instead of the loose bucket. Without this
+      # the operator sees the sibling lot twice: once under the
+      # primary's MO (via the primary's own booking) and once in
+      # Loose (source_kind != manufacturing_order, no booking).
+      now_dt = now()
+
       siblings =
         Enum.map(extras, fn pack ->
           {:ok, sibling_lot} = clone_lot_for_split(actor, primary_lot, pack)
@@ -11470,6 +11575,9 @@ defmodule Backend.Production do
               qty: pack.qty
             }
             |> Repo.insert()
+
+          {:ok, _shadow_booking} =
+            insert_sibling_shadow_booking(booking, sibling_lot, now_dt, pack.qty)
 
           # Move the sibling to dispatch. Skipped when dest_cell is
           # nil (keep-in-place — unusual for split but we don't
@@ -11591,6 +11699,43 @@ defmodule Backend.Production do
 
   defp positive_int(n) when is_integer(n) and n > 0, do: :ok
   defp positive_int(_), do: {:error, :not_positive}
+
+  # Shadow booking that "adopts" a sibling lot under the primary's
+  # MO. Same MO_id + item_id as the primary booking so the return-
+  # pickup queue's `ingredient_mos` bucket picks the sibling up
+  # under that MO. `quantity = 0` (nothing was booked against the
+  # sibling — it was created by the split, not planned by the MO)
+  # and `consumed_at` stamped now so downstream "still owed to a
+  # consumer" filters skip it. `note` explains the shape so future
+  # readers of the ledger know it's a split leftover, not a
+  # spurious booking.
+  defp insert_sibling_shadow_booking(
+         %ManufacturingOrderBooking{} = primary_booking,
+         %StockLot{id: sibling_lot_id, company_id: company_id},
+         now_dt,
+         %Decimal{} = sibling_qty
+       ) do
+    # quantity must satisfy the schema's greater_than: 0 check AND
+    # the DB's mo_bookings_quantity_positive constraint. Using the
+    # sibling's leftover qty gives a non-zero value that also reads
+    # sensibly on the audit ledger ("booked N kg into sibling
+    # container, consumed_at closed"). consumed_quantity stays 0
+    # because the sibling IS the leftover — nothing was consumed
+    # FROM it.
+    %ManufacturingOrderBooking{}
+    |> ManufacturingOrderBooking.changeset(%{
+      company_id: company_id,
+      manufacturing_order_id: primary_booking.manufacturing_order_id,
+      item_id: primary_booking.item_id,
+      stock_lot_id: sibling_lot_id,
+      quantity: sibling_qty,
+      consumed_quantity: Decimal.new(0),
+      status: "requested",
+      consumed_at: now_dt,
+      note: "Closeout split leftover of booking #{primary_booking.uuid}"
+    })
+    |> Repo.insert()
+  end
 
   # Clone the primary lot's identity fields into a new Lot row for
   # the sibling. Skips placements — the caller inserts the placement
@@ -11906,6 +12051,24 @@ defmodule Backend.Production do
     |> Repo.one()
   end
 
+  # Stamp `kept_at = now()` on every positive-qty placement of an
+  # output lot when the closeout decided to keep it in place at
+  # production. The release blocker on downstream MOs treats
+  # `kept_at IS NOT NULL` as equivalent to "in a warehouse cell",
+  # so this stamp is what actually clears the "0 of X is in a
+  # warehouse cell" error on release. Idempotent: re-stamping just
+  # refreshes the timestamp.
+  defp stamp_output_lot_kept_at(%StockLot{id: lot_id}) do
+    now = now()
+
+    from(p in Backend.Stock.Placement,
+      where: p.stock_lot_id == ^lot_id and p.qty > 0
+    )
+    |> Repo.update_all(set: [kept_at: now, updated_at: now])
+
+    :ok
+  end
+
   @doc """
   Move a produced output lot off the production-feed cell to a
   scanned production-dispatch cell. No consume here — production
@@ -11962,6 +12125,14 @@ defmodule Backend.Production do
               {:error, :not_reserved}
 
             reservations != [] ->
+              # Keep-in-place path (default when a downstream MO is
+              # reserving this output). Stamp `kept_at` on the lot's
+              # active placements so the downstream release blocker
+              # counts them as satisfied — otherwise `Kyrgyz PB · only
+              # 0 of X in a warehouse cell` fires and the operator is
+              # forced into a wasteful return-pickup + re-pick just to
+              # move a lot that never should have left production.
+              :ok = stamp_output_lot_kept_at(lot)
               {:ok, {:reserved, lot, reservations}}
 
             true ->
@@ -12053,7 +12224,7 @@ defmodule Backend.Production do
                updated_by_id: actor.id
              })
              |> Repo.update() do
-          {:ok, _updated} ->
+          {:ok, updated} ->
             # Self-heal the parent's auto-book stamps. Any booking on
             # the parent MO that points at THIS MO's output lots (and
             # is still lacking ``picked_at`` / ``received_at``) gets
@@ -12064,6 +12235,15 @@ defmodule Backend.Production do
             # and block ``maybe_auto_complete_pickup`` at parent's
             # release time.
             _ = heal_parent_auto_book_stamps(actor, mo)
+
+            # Closeout stamp flips ``mo_stage/1`` past ``:closeout``
+            # into ``:return_pickup`` (or ``:done`` if nothing's owed).
+            # The wizard's dispatch-phase derivation reads this + the
+            # output lot's placement to decide ``:closeout`` vs
+            # ``:final_release`` vs ``:awaiting_routing``. Without a
+            # notify here NPD's mirror + the customer portal stay
+            # stuck on the pre-closeout phase indefinitely.
+            Backend.OrderWizard.notify_via_mo(updated)
 
             :ok
 
@@ -12852,6 +13032,8 @@ defmodule Backend.Production do
              finish_dt
            ),
          {:ok, packs} <- parse_packs(Keyword.get(opts, :packs), qty) do
+      variance_pct = classify_yield_variance(mo, qty)
+
       Repo.transaction(fn ->
         with {:ok, lots} <- create_produced_lots(actor, mo, packs),
              :ok <- write_operation_times(actor, mo, op_times),
@@ -12861,6 +13043,7 @@ defmodule Backend.Production do
                  "actual_start" => start_dt,
                  "actual_finish" => finish_dt,
                  "quantity_produced" => qty,
+                 "yield_variance_pct" => variance_pct,
                  # `produced_lot_id` stays as the FIRST output lot — a
                  # convenience pointer for the singleton case. Multi-
                  # pack runs are still queryable via
@@ -12868,12 +13051,162 @@ defmodule Backend.Production do
                  "produced_lot_id" => List.first(lots).id,
                  "updated_by_id" => actor.id
                }),
-             :ok <- auto_book_output_to_parent(actor, mo_updated, lots) do
+             :ok <- auto_book_output_to_parent(actor, mo_updated, lots),
+             :ok <- maybe_reserve_surplus_for_co_line(actor, mo_updated, lots) do
           mo_updated
         else
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
+    end
+  end
+
+  # Variance as ``(produced − planned) / planned × 100``, rounded to
+  # 4dp. ``planned`` = ``mo.quantity`` (the target the operator was
+  # working towards). ``nil`` when planned is missing or zero — a
+  # divide-by-zero on a trial MO shouldn't kill the closeout.
+  @doc false
+  def classify_yield_variance(%ManufacturingOrder{quantity: nil}, _), do: nil
+
+  def classify_yield_variance(%ManufacturingOrder{quantity: planned}, produced) do
+    planned = to_dec(planned)
+    produced = to_dec(produced)
+
+    if Decimal.compare(planned, 0) == :eq do
+      nil
+    else
+      produced
+      |> Decimal.sub(planned)
+      |> Decimal.div(planned)
+      |> Decimal.mult(100)
+      |> Decimal.round(4)
+    end
+  end
+
+  # Surplus branch of the fulfilment reconciliation: after a
+  # completed MO's output lots are on the shelf, work out how much
+  # of the CO line is still owed and pin exactly that much onto the
+  # freshly-produced lots via
+  # ``Backend.CustomerOrders.create_line_reservation/2``. The
+  # dispatch flow reads those reservations to cap what it picks —
+  # anything above the CO's outstanding qty stays free stock.
+  #
+  # No-op when:
+  #   * the MO doesn't belong to a CO line (adhoc / trial / sample);
+  #   * the CO line is already fully delivered (nothing owed);
+  #   * ``produced`` didn't exceed the outstanding qty (no surplus).
+  #
+  # Reservations are inserted in lot order (biggest first, then by
+  # id) so a single-lot run gets one reservation and a multi-pack run
+  # doesn't leave a fragment of the CO's owed qty un-reserved.
+  defp maybe_reserve_surplus_for_co_line(_actor, %ManufacturingOrder{customer_order_line_id: nil}, _),
+    do: :ok
+
+  defp maybe_reserve_surplus_for_co_line(_actor, _mo, []), do: :ok
+
+  defp maybe_reserve_surplus_for_co_line(actor, %ManufacturingOrder{} = mo, lots) do
+    line = Repo.get(Backend.CustomerOrders.CustomerOrderLine, mo.customer_order_line_id)
+
+    case line do
+      nil ->
+        :ok
+
+      %{qty_ordered: ordered} ->
+        outstanding = compute_outstanding_for_line(mo, line)
+        produced_total = sum_lot_qty(lots)
+
+        cond do
+          Decimal.compare(outstanding, 0) in [:eq, :lt] ->
+            :ok
+
+          Decimal.compare(produced_total, outstanding) in [:eq, :lt] ->
+            # Under- or exactly-matched: whole output goes toward
+            # the CO. Nothing to split.
+            :ok
+
+          true ->
+            reserve_lots_up_to(actor, mo, line, ordered, lots, outstanding)
+        end
+    end
+  end
+
+  # ``ordered − delivered_by_other_completed_MOs``. Excludes the MO
+  # currently closing so its own output doesn't double-count.
+  defp compute_outstanding_for_line(%ManufacturingOrder{id: this_mo_id}, %{
+         id: line_id,
+         qty_ordered: ordered
+       }) do
+    delivered_by_others =
+      Repo.one(
+        from(m in ManufacturingOrder,
+          where:
+            m.customer_order_line_id == ^line_id and
+              m.status == "completed" and
+              m.id != ^this_mo_id,
+          select: coalesce(sum(m.quantity_produced), 0)
+        )
+      ) || Decimal.new(0)
+
+    ordered
+    |> to_dec()
+    |> Decimal.sub(to_dec(delivered_by_others))
+  end
+
+  # Insert reservations biggest-lot-first until the outstanding qty
+  # is covered. Any lot that isn't fully consumed by the CO reserve
+  # is capped at the remaining outstanding; leftovers on that lot +
+  # every subsequent lot flow through as free stock.
+  defp reserve_lots_up_to(actor, mo, line, _ordered, lots, outstanding) do
+    lots_sorted =
+      Enum.sort_by(lots, fn %StockLot{qty_received: q, id: id} -> {-Decimal.to_float(to_dec(q)), id} end)
+
+    {_remaining, result} =
+      Enum.reduce_while(lots_sorted, {outstanding, :ok}, fn lot, {remaining, _acc} ->
+        cond do
+          Decimal.compare(remaining, 0) in [:eq, :lt] ->
+            {:halt, {remaining, :ok}}
+
+          true ->
+            lot_qty = to_dec(lot.qty_received)
+            reserve_qty = if Decimal.compare(lot_qty, remaining) == :gt, do: remaining, else: lot_qty
+
+            attrs = %{
+              company_id: mo.company_id,
+              customer_order_line_id: line.id,
+              stock_lot_id: lot.id,
+              manufacturing_order_id: mo.id,
+              quantity: reserve_qty,
+              origin: "auto_surplus"
+            }
+
+            case Backend.CustomerOrders.create_line_reservation(actor, attrs) do
+              {:ok, _} ->
+                {:cont, {Decimal.sub(remaining, reserve_qty), :ok}}
+
+              {:error, reason} ->
+                {:halt, {remaining, {:error, reason}}}
+            end
+        end
+      end)
+
+    result
+  end
+
+  defp sum_lot_qty(lots),
+    do:
+      Enum.reduce(lots, Decimal.new(0), fn %StockLot{qty_received: q}, acc ->
+        Decimal.add(acc, to_dec(q))
+      end)
+
+  defp to_dec(nil), do: Decimal.new(0)
+  defp to_dec(%Decimal{} = d), do: d
+  defp to_dec(n) when is_integer(n), do: Decimal.new(n)
+  defp to_dec(n) when is_float(n), do: Decimal.from_float(n)
+
+  defp to_dec(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> Decimal.new(0)
     end
   end
 
@@ -14091,6 +14424,32 @@ defmodule Backend.Production do
         do: ["regular", "rnd"],
         else: ["regular"]
 
+    # Also treat "kept in place at production" as satisfying the
+    # release check. When an upstream MO's closeout used the
+    # `keep_in_place` route for a leftover/output lot, the
+    # placement's `kept_at` timestamp is stamped so this exact
+    # scenario is legible: the operator deliberately parked the lot
+    # at production for a downstream MO to consume directly. The
+    # release blocker otherwise forces a wasteful return-pickup +
+    # re-pick round-trip for something that's already exactly where
+    # it needs to be.
+    #
+    # Three shapes satisfy the count:
+    #   1. Placement's cell is in `allowed_purposes` (regular / rnd) —
+    #      the normal "in warehouse" case.
+    #   2. Placement has `kept_at IS NOT NULL` — closeout stamped
+    #      it because operator picked keep_in_place.
+    #   3. Legacy safety net: lot's `source_kind = "manufacturing_order"`
+    #      AND it sits at a `production_feed` cell. This is a lot that
+    #      an upstream MO produced + left at production for the
+    #      downstream consumer to grab directly. Older closeouts didn't
+    #      stamp `kept_at`, so shape (2) misses them; without shape (3)
+    #      the operator gets stuck at "0 of 543.6 is in a warehouse cell"
+    #      even though the qty is fully accessible from production.
+    #
+    # The wider `c` join (no purpose filter) exposes `c.purpose` so
+    # the CASE can distinguish shape (3) from shape (1). Non-matching
+    # cells (dispatch / quarantine / hold / rejected) contribute 0.
     mis =
       from(b in ManufacturingOrderBooking,
         join: it in Item,
@@ -14100,7 +14459,7 @@ defmodule Backend.Production do
         left_join: p in Backend.Stock.Placement,
         on: p.stock_lot_id == l.id,
         left_join: c in Backend.Warehouses.StorageCell,
-        on: c.id == p.storage_cell_id and c.purpose in ^allowed_purposes,
+        on: c.id == p.storage_cell_id,
         where:
           b.manufacturing_order_id == ^mo.id and
             b.status == "requested" and
@@ -14115,8 +14474,21 @@ defmodule Backend.Production do
             coalesce(
               sum(
                 fragment(
-                  "CASE WHEN ? IS NOT NULL THEN ? ELSE 0 END",
-                  c.id,
+                  """
+                  CASE
+                    WHEN ? = ANY(?) THEN ?
+                    WHEN ? IS NOT NULL THEN ?
+                    WHEN ? = 'production_feed' AND ? = 'manufacturing_order' THEN ?
+                    ELSE 0
+                  END
+                  """,
+                  c.purpose,
+                  ^allowed_purposes,
+                  p.qty,
+                  p.kept_at,
+                  p.qty,
+                  c.purpose,
+                  l.source_kind,
                   p.qty
                 )
               ),

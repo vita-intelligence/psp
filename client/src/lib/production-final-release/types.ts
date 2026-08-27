@@ -124,8 +124,49 @@ export interface FinalRelease {
   stock_lot: FinalReleaseLotSummary | null;
   files: FinalReleaseFileRow[];
   required_file_kinds: FinalReleaseFileKind[];
+  /** UUID of the CO that owns this lot's MO. Null for lots without
+   *  a CO linkage (opening balance / manual receive). Needed to
+   *  hit the routing-request Approve/Decline endpoints. */
+  customer_order_uuid: string | null;
+  /** Customer-driven 3PL vs shipment routing. Present only when
+   *  the CO is bespoke NPD-formulation; null on standard commercial
+   *  COs (which keep the operator per-lot picker). */
+  customer_routing_request: CustomerRoutingRequest | null;
   inserted_at: string;
   updated_at: string;
+}
+
+export type RoutingRequestState =
+  | "awaiting_customer"
+  | "awaiting_team_review"
+  | "applied_three_pl"
+  | "applied_shipment";
+
+export interface RoutingEstimateSnapshot {
+  required_m3: string;
+  free_m3: string;
+  capacity_ok: boolean;
+  rate_per_m3_per_day: string | null;
+  estimated_days: number;
+  estimated_daily_charge: string;
+  estimated_period_charge: string;
+  currency_code: string;
+}
+
+export interface CustomerRoutingRequestRow {
+  uuid: string;
+  state: RoutingRequestState;
+  customer_choice: "three_pl" | "shipment" | null;
+  team_decision_reason: string | null;
+  customer_chose_at: string | null;
+  team_reviewed_at: string | null;
+  frozen_snapshot: RoutingEstimateSnapshot | null;
+}
+
+export interface CustomerRoutingRequest {
+  is_custom_formulation: true;
+  request: CustomerRoutingRequestRow | null;
+  current_snapshot: RoutingEstimateSnapshot | null;
 }
 
 export interface FinalReleaseQueueResponse {

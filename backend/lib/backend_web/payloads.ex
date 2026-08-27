@@ -83,6 +83,9 @@ defmodule BackendWeb.Payloads do
       default_pickup_window_hours: company.default_pickup_window_hours,
       three_pl_rate_per_m3_per_day:
         decimal_to_string(company.three_pl_rate_per_m3_per_day),
+      default_three_pl_estimate_days: company.default_three_pl_estimate_days,
+      production_yield_tolerance_pct:
+        decimal_to_string(company.production_yield_tolerance_pct),
       require_mfa: company.require_mfa,
       inserted_at: company.inserted_at,
       updated_at: company.updated_at
@@ -130,7 +133,10 @@ defmodule BackendWeb.Payloads do
       generic_place_name: company.generic_place_name,
       default_pickup_window_hours: company.default_pickup_window_hours,
       three_pl_rate_per_m3_per_day:
-        decimal_to_string(company.three_pl_rate_per_m3_per_day)
+        decimal_to_string(company.three_pl_rate_per_m3_per_day),
+      default_three_pl_estimate_days: company.default_three_pl_estimate_days,
+      production_yield_tolerance_pct:
+        decimal_to_string(company.production_yield_tolerance_pct)
     }
   end
 
@@ -961,6 +967,13 @@ defmodule BackendWeb.Payloads do
 
           _ ->
             nil
+        end,
+      short_delivery_accepted_at: line.short_delivery_accepted_at,
+      short_delivery_accepted_reason: line.short_delivery_accepted_reason,
+      short_delivery_accepted_by:
+        case Map.get(line, :short_delivery_accepted_by) do
+          %Backend.Accounts.User{} = u -> %{id: u.id, name: u.name, email: u.email}
+          _ -> nil
         end,
       inserted_at: line.inserted_at,
       updated_at: line.updated_at
@@ -6137,12 +6150,123 @@ defmodule BackendWeb.Payloads do
           _ -> []
         end,
       required_file_kinds: Backend.Production.FinalReleases.required_file_kinds(),
+      # Custom-formulation COs defer the 3PL vs shipment decision to
+      # the customer via the portal. Both the CO uuid (needed to hit
+      # the Approve / Decline endpoints) and the current request
+      # state travel with the release payload so the FE can render
+      # the RoutingRequestCard without an extra fetch.
+      customer_order_uuid: final_release_customer_order_uuid(r.manufacturing_order),
+      customer_routing_request: final_release_routing_request(r.manufacturing_order),
       inserted_at: r.inserted_at,
       updated_at: r.updated_at
     }
   end
 
   def production_final_release(_), do: nil
+
+  defp final_release_customer_order_uuid(nil), do: nil
+
+  defp final_release_customer_order_uuid(%Backend.Production.ManufacturingOrder{
+         customer_order_line_id: nil
+       }),
+       do: nil
+
+  defp final_release_customer_order_uuid(%Backend.Production.ManufacturingOrder{
+         customer_order_line_id: line_id
+       })
+       when is_integer(line_id) do
+    import Ecto.Query, only: [from: 2]
+
+    Backend.Repo.one(
+      from col in Backend.CustomerOrders.CustomerOrderLine,
+        join: co in Backend.CustomerOrders.CustomerOrder,
+        on: co.id == col.customer_order_id,
+        where: col.id == ^line_id,
+        select: co.uuid,
+        limit: 1
+    )
+  end
+
+  defp final_release_routing_request(nil), do: nil
+
+  defp final_release_routing_request(%Backend.Production.ManufacturingOrder{
+         customer_order_line_id: nil
+       }),
+       do: nil
+
+  defp final_release_routing_request(%Backend.Production.ManufacturingOrder{
+         customer_order_line_id: line_id
+       })
+       when is_integer(line_id) do
+    import Ecto.Query, only: [from: 2]
+
+    co =
+      Backend.Repo.one(
+        from col in Backend.CustomerOrders.CustomerOrderLine,
+          join: co in Backend.CustomerOrders.CustomerOrder,
+          on: co.id == col.customer_order_id,
+          where: col.id == ^line_id,
+          select: co,
+          limit: 1
+      )
+
+    case co do
+      nil ->
+        nil
+
+      %Backend.CustomerOrders.CustomerOrder{} = customer_order ->
+        if Backend.ThreePL.Requests.custom_formulation?(customer_order) do
+          request = Backend.ThreePL.Requests.get_for_co(customer_order)
+          live_snapshot = Backend.ThreePL.Requests.snapshot_for_co(customer_order)
+
+          case request do
+            nil ->
+              # No request row yet — surface the custom-formulation
+              # marker so the FE hides the operator picker even
+              # before the wizard hook fires (edge: viewing a lot
+              # in awaiting_release right after Final Release
+              # signature, before the next snapshot rebuild).
+              %{
+                is_custom_formulation: true,
+                request: nil,
+                current_snapshot: serialize_snapshot_for_payload(live_snapshot)
+              }
+
+            %Backend.ThreePL.RoutingRequest{} = req ->
+              %{
+                is_custom_formulation: true,
+                request: %{
+                  uuid: req.uuid,
+                  state: req.state,
+                  customer_choice: req.customer_choice,
+                  team_decision_reason: req.team_decision_reason,
+                  customer_chose_at: req.customer_chose_at,
+                  team_reviewed_at: req.team_reviewed_at,
+                  frozen_snapshot: req.estimate_snapshot
+                },
+                current_snapshot: serialize_snapshot_for_payload(live_snapshot)
+              }
+          end
+        else
+          nil
+        end
+    end
+  end
+
+  defp serialize_snapshot_for_payload(nil), do: nil
+
+  defp serialize_snapshot_for_payload(snap) do
+    %{
+      "required_m3" => decimal_to_string(snap.required_m3),
+      "free_m3" => decimal_to_string(snap.free_m3),
+      "capacity_ok" => snap.capacity_ok,
+      "rate_per_m3_per_day" => decimal_to_string(snap.rate_per_m3_per_day),
+      "estimated_days" => snap.estimated_days,
+      "estimated_daily_charge" => decimal_to_string(snap.estimated_daily_charge),
+      "estimated_period_charge" => decimal_to_string(snap.estimated_period_charge),
+      "currency_code" => snap.currency_code
+    }
+  end
 
   def production_final_release_file(%Backend.Production.FinalReleaseFile{} = f) do
     %{
@@ -6209,6 +6333,15 @@ defmodule BackendWeb.Payloads do
       # page. Rate is the company's 3PL storage rate reused as a
       # proxy for own-stock carrying cost (see Backend.Shipments).
       dispatch_dwell: dwell,
+      # Multi-visit pickup totals + timeline. ``picked_up_qty`` +
+      # ``remaining_qty`` power the FE progress bar; ``pickup_events``
+      # renders the per-visit history with per-event checklist +
+      # photos. Standard commercial single-visit shipments end up with
+      # a single event in this list — the shape is uniform whether
+      # the truck came once or five times.
+      picked_up_qty: decimal_to_string(Backend.Shipments.picked_up_qty(s)),
+      remaining_qty: decimal_to_string(Backend.Shipments.remaining_qty(s)),
+      pickup_events: shipment_pickup_events(s),
       created_at: s.inserted_at,
       created_by: actor(s, :created_by),
       ready_at: s.ready_at,
@@ -6221,6 +6354,72 @@ defmodule BackendWeb.Payloads do
       updated_at: s.updated_at
     }
   end
+
+  defp shipment_pickup_events(%Backend.Shipments.Shipment{} = s) do
+    case s.pickup_events do
+      list when is_list(list) ->
+        Enum.map(list, &shipment_pickup_event(&1, s))
+
+      _ ->
+        # Not preloaded — do a targeted fetch. Cheaper than blanket
+        # preloading on every shipment payload path (list tables etc).
+        Backend.Shipments.list_pickup_events(s)
+        |> Enum.map(&shipment_pickup_event(&1, s))
+    end
+  end
+
+  def shipment_pickup_event(
+        %Backend.Shipments.ShipmentPickupEvent{} = e,
+        %Backend.Shipments.Shipment{} = shipment
+      ) do
+    %{
+      uuid: e.uuid,
+      shipment_id: shipment.id,
+      shipment_uuid: shipment.uuid,
+      qty: decimal_to_string(e.qty),
+      picked_up_at: e.picked_up_at,
+      picked_up_by: actor(e, :picked_up_by),
+      driver_name: e.driver_name,
+      vehicle_registration: e.vehicle_registration,
+      consignment_note_ref: e.consignment_note_ref,
+      tracking_number: e.tracking_number,
+      seal_number: e.seal_number,
+      temperature_c: decimal_to_string(e.temperature_c),
+      notes: e.notes,
+      packaging_intact: e.packaging_intact,
+      labels_verified: e.labels_verified,
+      vehicle_clean_suitable: e.vehicle_clean_suitable,
+      transport_condition_acceptable: e.transport_condition_acceptable,
+      dispatch_approved: e.dispatch_approved,
+      photos:
+        case e.photos do
+          list when is_list(list) ->
+            Enum.map(list, &shipment_pickup_file(&1, shipment))
+
+          _ ->
+            []
+        end,
+      # Per-event POD stamp. ``nil`` until the customer / staff
+      # confirms delivery for THIS event. Each event delivers
+      # independently — a Tuesday truck's POD lives here, not on
+      # the shipment row.
+      delivered_at: e.delivered_at,
+      delivered_by: actor(e, :delivered_by),
+      recipient_signatory: e.recipient_signatory,
+      delivery_notes: e.delivery_notes,
+      delivery_files:
+        case e.delivery_files do
+          list when is_list(list) ->
+            Enum.map(list, &shipment_delivery_file(&1, shipment))
+
+          _ ->
+            []
+        end,
+      inserted_at: e.inserted_at
+    }
+  end
+
+  def shipment_pickup_event(_, _), do: nil
 
   def shipment(_), do: nil
 

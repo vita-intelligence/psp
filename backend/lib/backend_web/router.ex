@@ -233,6 +233,7 @@ defmodule BackendWeb.Router do
     put "/company/security", CompanyController, :update_security
     put "/company/warehouse-pickup", CompanyController, :update_warehouse_pickup
     put "/company/three-pl-rate", CompanyController, :update_three_pl_rate
+    put "/company/yield-tolerance", CompanyController, :update_yield_tolerance
     put "/company/bag", CompanyController, :update_bag
 
     put "/company/currency-rates/auto-pull",
@@ -729,6 +730,31 @@ defmodule BackendWeb.Router do
       post "/lines/:line_uuid/create-mo",
            CustomerOrderController,
            :create_mo_for_line
+
+      # Team decision on a customer-driven 3PL routing request.
+      # Approve applies routed_to_3pl on every released lot;
+      # decline bounces state back to awaiting_customer with a
+      # reason mirrored to the portal so the customer re-decides.
+      post "/routing-request/approve",
+           CustomerOrderController,
+           :approve_routing_request
+
+      post "/routing-request/decline",
+           CustomerOrderController,
+           :decline_routing_request
+
+      # Fulfilment escape hatch: operator accepts a short delivery
+      # for a line that fell outside the yield tolerance. Reason
+      # required — the audit trail must answer "why did we ship
+      # short?". Clears with the DELETE variant so a later top-up
+      # MO can re-open the fulfilment tracking.
+      post "/lines/:line_uuid/accept-short-delivery",
+           CustomerOrderController,
+           :accept_short_delivery
+
+      delete "/lines/:line_uuid/accept-short-delivery",
+             CustomerOrderController,
+             :clear_short_delivery_acceptance
     end
 
     # My tasks — per-user actionable CTA feed across every CO in the
@@ -1154,6 +1180,29 @@ defmodule BackendWeb.Router do
       post "/:uuid/pickup-files", ShipmentController, :upload_pickup_file
       get "/:uuid/pickup-files/:file_uuid/blob", ShipmentController, :serve_pickup_file
       delete "/:uuid/pickup-files/:file_uuid", ShipmentController, :delete_pickup_file
+
+      # Multi-visit pickups. Each POST logs one truck arrival with its
+      # own qty + checklist + associated photos. Shipment status
+      # auto-transitions between ``partially_picked`` and ``picked_up``
+      # depending on remaining qty.
+      get "/:uuid/pickup-events", ShipmentController, :list_pickup_events
+      post "/:uuid/pickup-events", ShipmentController, :create_pickup_event
+
+      # Per-event delivery confirmation. Each pickup event carries
+      # its own POD stamp so a shipment split across multiple visits
+      # can have staggered deliveries.
+      post "/:uuid/pickup-events/:event_uuid/confirm-delivery",
+           ShipmentController,
+           :confirm_pickup_event_delivery
+
+      # Per-event paperwork amendment (tracking number, seal, temp,
+      # driver, plate, waybill, notes). Carriers regularly email the
+      # tracking number AFTER the truck has left, so this endpoint
+      # lets an operator amend the paperwork without re-litigating the
+      # checklist or qty.
+      patch "/:uuid/pickup-events/:event_uuid/paperwork",
+            ShipmentController,
+            :update_pickup_event_paperwork
 
       # Delivery confirmation + POD photos.
       post "/:uuid/confirm-delivery", ShipmentController, :confirm_delivery
@@ -2105,6 +2154,23 @@ defmodule BackendWeb.Router do
     post "/customer-orders/:uuid/dispatch/confirm-delivery",
          IntegrationCustomerOrderController,
          :confirm_delivery
+
+    # Per-event customer-driven POD. Each pickup event carries its
+    # own delivery state, so a shipment split across multiple
+    # visits gets a separate confirmation for each truck arrival.
+    post "/customer-orders/:uuid/dispatch/pickup-events/:event_uuid/confirm-delivery",
+         IntegrationCustomerOrderController,
+         :confirm_event_delivery
+
+    # Customer-driven 3PL vs shipment routing choice. NPD relays the
+    # portal submit here; PSP validates + fires
+    # ``Backend.ThreePL.Requests.customer_choose``. Body: ``{"choice":
+    # "three_pl" | "shipment"}``. Response echoes the updated request
+    # snapshot so NPD's ``PspRoutingRequest`` row can be upserted
+    # without a follow-up read.
+    post "/customer-orders/:uuid/routing-choice",
+         IntegrationCustomerOrderController,
+         :routing_choice
 
     # NPD proposal-created merge. Fired when a Proposal is drafted on
     # NPD spanning N spec sheets — consolidates the N R&D draft COs

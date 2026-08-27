@@ -44,11 +44,27 @@ defmodule BackendWeb.WarehousePickupController do
   # GET /api/m/pickup-queue
   # Released MOs whose visibility window has opened and whose pickup
   # isn't yet complete. Sorted by `pickup_by` ascending.
-  def queue(conn, _params) do
+  #
+  # Self-heals stuck rows first: an MO whose ingredient bookings all
+  # sit at production (kept-in-place output + auto-delivered raws)
+  # should never have reached the picker's screen. Re-runs the
+  # auto-collapse so the row falls out on the same request instead of
+  # sitting in the queue with nothing to pick.
+  def queue(conn, params) do
     actor = conn.assigns.current_user
-    entries = Production.list_pickup_queue(actor.company_id)
+    _ = Production.self_heal_pickup_queue(actor)
+    include_upcoming? = truthy_param(params["include_upcoming"])
+
+    entries =
+      Production.list_pickup_queue(actor.company_id,
+        include_upcoming: include_upcoming?
+      )
+
     json(conn, %{items: Enum.map(entries, &Payloads.pickup_queue_entry/1)})
   end
+
+  defp truthy_param(v) when v in [true, "1", "true", "yes"], do: true
+  defp truthy_param(_), do: false
 
   # GET /api/m/pickup/production-feed-cells
   # Empty production-feed cells for the confirm-transfer auto-pick.

@@ -29,6 +29,11 @@ defmodule Backend.Shipments.ShipmentDeliveryFile do
 
     belongs_to :company, Company
     belongs_to :shipment, Shipment
+    # Per-event delivery confirmation. Each pickup event carries its
+    # own POD stamp, so POD scans / docket photos anchor to the
+    # specific event they document. Nullable for legacy rows that
+    # predate multi-event.
+    belongs_to :shipment_pickup_event, Backend.Shipments.ShipmentPickupEvent
     belongs_to :uploaded_by, User
 
     timestamps(type: :utc_datetime)
@@ -41,6 +46,7 @@ defmodule Backend.Shipments.ShipmentDeliveryFile do
     |> cast(attrs, [
       :company_id,
       :shipment_id,
+      :shipment_pickup_event_id,
       :kind,
       :filename,
       :mime,

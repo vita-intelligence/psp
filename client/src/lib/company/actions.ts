@@ -109,7 +109,10 @@ export async function updateCompanySecurityAction(input: {
 }
 
 export async function updateCompanyThreePlRateAction(
-  input: { three_pl_rate_per_m3_per_day: string | null },
+  input: {
+    three_pl_rate_per_m3_per_day: string | null;
+    default_three_pl_estimate_days: number;
+  },
 ): Promise<CompanyResult> {
   const token = await getSessionToken();
   if (!token) return unauthorizedResult("updateCompanyThreePlRateAction");
@@ -130,6 +133,31 @@ export async function updateCompanyThreePlRateAction(
     return toErrorResult(err, {
       source: "updateCompanyThreePlRateAction",
       fallbackDetail: "Couldn't save the 3PL rate.",
+    });
+  }
+}
+
+export async function updateCompanyYieldToleranceAction(
+  input: { production_yield_tolerance_pct: string },
+): Promise<CompanyResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("updateCompanyYieldToleranceAction");
+
+  try {
+    const res = await api<{ company: Company }>(
+      "/api/company/yield-tolerance",
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify(input),
+      },
+    );
+    revalidatePath("/settings/company");
+    return { ok: true, company: res.company };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "updateCompanyYieldToleranceAction",
+      fallbackDetail: "Couldn't save the yield tolerance.",
     });
   }
 }

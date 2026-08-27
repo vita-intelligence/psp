@@ -72,6 +72,22 @@ defmodule Backend.Companies.Company do
     # bill customers £0.00.
     field :three_pl_rate_per_m3_per_day, :decimal
 
+    # Illustration period the customer portal uses to render the
+    # 3PL routing decision card — ``£X/day for Y days = £Z``. Ops
+    # tunes it without a code deploy; default 30 days matches
+    # standard finished-goods hold. Consumed by
+    # ``Backend.ThreePL.Requests.snapshot_for_co/1``.
+    field :default_three_pl_estimate_days, :integer, default: 30
+
+    # Company-wide acceptable production yield variance (percent).
+    # Consumed by ``Backend.Production.classify_yield_variance/2`` on
+    # MO closeout and by the CO wizard's fulfilment gate: a CO line
+    # whose delivered qty falls short of ordered qty by more than
+    # this tolerance blocks the ``ready_to_dispatch`` transition
+    # until either a top-up MO covers the delta or the operator
+    # explicitly accepts a short delivery (audit-logged).
+    field :production_yield_tolerance_pct, :decimal, default: Decimal.new("10.00")
+
     # MFA enforcement toggle. When flipped `true`, every user without
     # confirmed MFA gets `mfa_required_at` stamped so the 7-day grace
     # window starts ticking. See `Backend.Companies.update_security/2`.
@@ -336,9 +352,41 @@ defmodule Backend.Companies.Company do
   """
   def three_pl_rate_changeset(company, attrs) do
     company
-    |> cast(attrs, [:three_pl_rate_per_m3_per_day])
+    |> cast(attrs, [
+      :three_pl_rate_per_m3_per_day,
+      :default_three_pl_estimate_days
+    ])
     |> validate_number(:three_pl_rate_per_m3_per_day,
       greater_than_or_equal_to: 0
+    )
+    |> validate_number(:default_three_pl_estimate_days,
+      greater_than: 0,
+      less_than_or_equal_to: 365
+    )
+    |> check_constraint(:default_three_pl_estimate_days,
+      name: :companies_three_pl_estimate_days_positive,
+      message: "must be greater than zero"
+    )
+  end
+
+  @doc """
+  Production yield tolerance card. Percent value bounded 0..100
+  (inclusive on both ends — zero means "no tolerance, hit target
+  exactly"; 100 means "any output is acceptable"). Non-null so the
+  closeout classifier + fulfilment gate never have to handle a
+  missing value branch.
+  """
+  def yield_tolerance_changeset(company, attrs) do
+    company
+    |> cast(attrs, [:production_yield_tolerance_pct])
+    |> validate_required([:production_yield_tolerance_pct])
+    |> validate_number(:production_yield_tolerance_pct,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 100
+    )
+    |> check_constraint(:production_yield_tolerance_pct,
+      name: :companies_yield_tolerance_pct_bounded,
+      message: "must be between 0 and 100"
     )
   end
 end

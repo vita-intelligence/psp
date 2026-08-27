@@ -205,6 +205,17 @@ defmodule BackendWeb.ManufacturingOrderStepController do
           )
         )
 
+      {:error, :mo_terminal} ->
+        conn
+        |> put_status(:conflict)
+        |> json(
+          Errors.payload(
+            "mo_terminal",
+            "This MO is completed or cancelled — its planned schedule is locked.",
+            %{}
+          )
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
 

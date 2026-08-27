@@ -25,7 +25,7 @@ defmodule Backend.Shipments.Shipment do
   alias Backend.Customers.Customer
   alias Backend.Stock.Lot
 
-  @statuses ~w(draft ready picked_up delivered cancelled)
+  @statuses ~w(draft ready partially_picked picked_up delivered cancelled)
   def statuses, do: @statuses
 
   # Fields the desktop form + mobile scan flow can touch. Status is
@@ -103,6 +103,12 @@ defmodule Backend.Shipments.Shipment do
 
     has_many :pickup_files, Backend.Shipments.ShipmentPickupFile
     has_many :delivery_files, Backend.Shipments.ShipmentDeliveryFile
+
+    # Multi-visit truck pickups. Each row is one arrival with its
+    # own qty + checklist + evidence photos. Ordered oldest-first so
+    # the FE renders a natural timeline.
+    has_many :pickup_events, Backend.Shipments.ShipmentPickupEvent,
+      preload_order: [asc: :picked_up_at, asc: :id]
 
     belongs_to :company, Company
     belongs_to :stock_lot, Lot
@@ -272,6 +278,34 @@ defmodule Backend.Shipments.Shipment do
         _ -> add_error(cs, field, "must be confirmed before pickup")
       end
     end)
+  end
+
+  @doc """
+  Mirror the LATEST pickup event's fields onto the shipment row +
+  advance status. Used by ``Backend.Shipments.log_pickup_event/3``
+  after every truck visit so existing consumers that read the
+  shipment row directly (portals, list tables, wizard reads) see
+  the freshest carrier / vehicle / checklist / actor without
+  joining the events table.
+
+  Status flips to ``partially_picked`` when there's still remaining
+  qty, or ``picked_up`` once the sum of events matches
+  ``shipment.qty``.
+  """
+  def pickup_event_summary_changeset(shipment, attrs) do
+    shipment
+    |> cast(attrs, [
+      :status,
+      :picked_up_at,
+      :picked_up_by_id,
+      :driver_name,
+      :vehicle_registration,
+      :consignment_note_ref | @pickup_checklist
+    ])
+    |> validate_inclusion(:status, ["partially_picked", "picked_up"])
+    |> validate_length(:driver_name, max: 200)
+    |> validate_length(:vehicle_registration, max: 40)
+    |> validate_length(:consignment_note_ref, max: 80)
   end
 
   @doc """

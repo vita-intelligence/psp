@@ -122,6 +122,16 @@ export interface Company {
    *  £0.00 lines. String because the backend sends decimals as
    *  strings to avoid JS float rounding. */
   three_pl_rate_per_m3_per_day: string | null;
+  /** Illustration period the customer portal uses to render the
+   *  3PL routing decision card (£X/day for Y days = £Z). Default 30. */
+  default_three_pl_estimate_days: number;
+  /** Company-wide acceptable production yield variance (percent).
+   *  Consumed by MO closeout and the CO fulfilment gate: a CO line
+   *  short of ordered qty by more than this tolerance blocks
+   *  ready-to-dispatch until either a top-up MO covers the delta or
+   *  the operator accepts a short delivery. String because the
+   *  backend sends decimals as strings. */
+  production_yield_tolerance_pct: string;
   /** Admin toggle. When true, every user in the company must have MFA
    *  enrolled; un-enrolled users get a 7-day grace period from the
    *  moment the flag flipped. Login refuses without a TOTP code past
@@ -259,6 +269,11 @@ export interface CompanyDefaults {
   default_pickup_window_hours: number;
   /** 3PL rate (base-currency decimal, as string). Null when unset. */
   three_pl_rate_per_m3_per_day: string | null;
+  /** Illustration period for the customer 3PL portal card. */
+  default_three_pl_estimate_days: number;
+  /** Production yield tolerance (percent, decimal-string). Consumed
+   *  by the finish-MO variance chip + CO fulfilment gate. */
+  production_yield_tolerance_pct: string;
 }
 
 export interface Contact {
@@ -2969,6 +2984,7 @@ export type OrderWizardPhaseKey =
   | "closeout"
   | "final_release"
   | "awaiting_routing"
+  | "awaiting_shortfall_resolution"
   | "ready_to_dispatch"
   | "awaiting_pickup"
   | "dispatched"
@@ -3183,6 +3199,24 @@ export interface OrderWizardLine {
    *  line. Empty when the item has no published BOM (the row surfaces
    *  a blocker instead of a picker). */
   available_boms: OrderWizardAvailableBom[];
+  /** Live reconciliation of what's been produced against what's
+   *  ordered. Feeds the fulfilment card + drives the shortfall gate
+   *  on the wizard's ready-to-dispatch transition. */
+  fulfilment: OrderWizardLineFulfilment;
+}
+
+export type OrderWizardFulfilmentStatus =
+  | "not_produced"
+  | "satisfied"
+  | "short_within_tolerance"
+  | "short_out_of_tolerance"
+  | "over";
+
+export interface OrderWizardLineFulfilment {
+  qty_ordered: string;
+  qty_delivered: string;
+  qty_remaining: string;
+  status: OrderWizardFulfilmentStatus;
 }
 
 export interface OrderWizardOpenPo {

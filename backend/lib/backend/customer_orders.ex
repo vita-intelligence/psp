@@ -36,7 +36,8 @@ defmodule Backend.CustomerOrders do
     CustomerOrder,
     CustomerOrderApproval,
     CustomerOrderFile,
-    CustomerOrderLine
+    CustomerOrderLine,
+    LineReservation
   }
   alias Backend.ListQueries
   alias Backend.Pricelists
@@ -911,5 +912,288 @@ defmodule Backend.CustomerOrders do
       {k, v} when is_atom(k) -> {Atom.to_string(k), v}
       pair -> pair
     end)
+  end
+
+  # ─── Fulfilment reconciliation ─────────────────────────────────────
+  # Everything below is the CO-line-vs-MO-output truth machinery
+  # consumed by the wizard's ready-to-dispatch gate and by the FE
+  # fulfilment card on the project board.
+
+  alias Backend.Production.ManufacturingOrder
+
+  @doc """
+  Sum of ``quantity_produced`` from every ``completed`` MO whose
+  ``customer_order_line_id`` points at this line. Zero when no MO
+  has completed yet. Not persisted — recomputed on every call so
+  the answer is always live.
+  """
+  def qty_delivered_for_line(%CustomerOrderLine{id: line_id}),
+    do: qty_delivered_for_line(line_id)
+
+  def qty_delivered_for_line(line_id) when is_integer(line_id) do
+    Repo.one(
+      from(mo in ManufacturingOrder,
+        where:
+          mo.customer_order_line_id == ^line_id and
+            mo.status == "completed",
+        select: coalesce(sum(mo.quantity_produced), 0)
+      )
+    )
+    |> to_decimal()
+  end
+
+  @doc """
+  Classify a CO line against the company's yield tolerance.
+
+  Returns one of:
+
+    * ``:not_produced`` — nothing built yet (delivered = 0).
+    * ``:satisfied`` — delivered ≥ ordered.
+    * ``:short_within_tolerance`` — delivered < ordered, within
+      the tolerance band. Ready-to-dispatch is allowed.
+    * ``:short_out_of_tolerance`` — delivered < ordered, outside
+      tolerance. Ready-to-dispatch is blocked until either a
+      top-up MO is created or ``accept_short_delivery/3`` is
+      called by an operator with an audit reason.
+    * ``:over`` — delivered > ordered by more than the tolerance
+      band. Not a blocker; surfaces as a surplus card on the wizard.
+
+  ``tolerance_pct`` comes from ``Company.production_yield_tolerance_pct``
+  — pass it in so callers can override it in tests without touching
+  the company row.
+  """
+  @spec line_fulfilment_status(CustomerOrderLine.t(), Decimal.t() | number()) ::
+          :not_produced
+          | :satisfied
+          | :short_within_tolerance
+          | :short_out_of_tolerance
+          | :over
+  def line_fulfilment_status(%CustomerOrderLine{} = line, tolerance_pct) do
+    ordered = to_decimal(line.qty_ordered)
+    delivered = qty_delivered_for_line(line)
+    tolerance = to_decimal(tolerance_pct)
+
+    cond do
+      # Operator accepted a short delivery (customer agreed). Line is
+      # closed for fulfilment purposes even if delivered < ordered —
+      # ready-to-dispatch is unblocked. Cleared when a later top-up
+      # MO closes the gap, so the field is only load-bearing while
+      # the short still stands.
+      not is_nil(line.short_delivery_accepted_at) ->
+        :satisfied
+
+      Decimal.compare(delivered, 0) == :eq ->
+        :not_produced
+
+      Decimal.compare(delivered, ordered) in [:gt, :eq] ->
+        classify_over_or_satisfied(delivered, ordered, tolerance)
+
+      true ->
+        classify_short(delivered, ordered, tolerance)
+    end
+  end
+
+  defp classify_over_or_satisfied(delivered, ordered, tolerance) do
+    over_amount = Decimal.sub(delivered, ordered)
+    tolerance_amount = tolerance_amount_of(ordered, tolerance)
+
+    if Decimal.compare(over_amount, tolerance_amount) == :gt do
+      :over
+    else
+      :satisfied
+    end
+  end
+
+  defp classify_short(delivered, ordered, tolerance) do
+    shortfall = Decimal.sub(ordered, delivered)
+    tolerance_amount = tolerance_amount_of(ordered, tolerance)
+
+    if Decimal.compare(shortfall, tolerance_amount) == :gt do
+      :short_out_of_tolerance
+    else
+      :short_within_tolerance
+    end
+  end
+
+  # ``ordered × tolerance / 100`` — the absolute qty band around the
+  # ordered value. Rounded to 4dp so a 10.00% tolerance on 10_000
+  # gives an exact 1_000, not 999.9999…
+  defp tolerance_amount_of(ordered, tolerance) do
+    ordered
+    |> Decimal.mult(tolerance)
+    |> Decimal.div(Decimal.new(100))
+    |> Decimal.round(4)
+  end
+
+  @doc """
+  Snapshot for the FE project board — computes the pieces the
+  fulfilment card renders (ordered / delivered / remaining /
+  status). Callers pass ``tolerance_pct`` so the value shown on
+  the FE always matches whatever the wizard's decision path used.
+  """
+  def line_fulfilment_snapshot(%CustomerOrderLine{} = line, tolerance_pct) do
+    ordered = to_decimal(line.qty_ordered)
+    delivered = qty_delivered_for_line(line)
+    remaining = Decimal.max(Decimal.sub(ordered, delivered), Decimal.new(0))
+    status = line_fulfilment_status(line, tolerance_pct)
+
+    %{
+      qty_ordered: ordered,
+      qty_delivered: delivered,
+      qty_remaining: remaining,
+      status: status
+    }
+  end
+
+  # ─── Line reservations ─────────────────────────────────────────────
+
+  @doc """
+  Persist a reservation of ``qty`` of ``lot`` against ``line``.
+  Called from ``Backend.Production.finish_mo_production`` on the
+  surplus branch when the MO produced more than the CO still needs
+  — the delta is reserved for the CO line so the dispatch flow
+  caps its pull at that amount and the surplus stays free.
+  """
+  def create_line_reservation(actor, attrs) do
+    %LineReservation{}
+    |> LineReservation.changeset(
+      Map.merge(attrs, %{
+        created_by_id: actor && actor.id,
+        updated_by_id: actor && actor.id
+      })
+    )
+    |> Repo.insert()
+  end
+
+  @doc """
+  Sum of active reservations against a given lot / CO-line pair.
+  Used by the dispatch flow to cap shipment qty and by the project
+  board to show "X units reserved for this line".
+  """
+  def reserved_qty_for(lot_id, line_id) when is_integer(lot_id) and is_integer(line_id) do
+    Repo.one(
+      from(r in LineReservation,
+        where:
+          r.stock_lot_id == ^lot_id and
+            r.customer_order_line_id == ^line_id,
+        select: coalesce(sum(r.quantity), 0)
+      )
+    )
+    |> to_decimal()
+  end
+
+  @doc """
+  List active reservations for a CO line, preloaded with their lot.
+  Used by the wizard fulfilment card so the operator can see "50
+  units on lot LOT-2026-000123, 200 units on lot LOT-2026-000124".
+  """
+  def list_reservations_for_line(%CustomerOrderLine{id: id}),
+    do: list_reservations_for_line(id)
+
+  def list_reservations_for_line(line_id) when is_integer(line_id) do
+    Repo.all(
+      from(r in LineReservation,
+        where: r.customer_order_line_id == ^line_id,
+        order_by: [asc: r.inserted_at],
+        preload: [:stock_lot, :manufacturing_order]
+      )
+    )
+  end
+
+  @doc """
+  Stamp ``short_delivery_accepted_at`` on the line, flipping the
+  fulfilment status to ``:satisfied`` and unblocking the CO's
+  ready-to-dispatch transition. The reason is required — the
+  audit trail must always answer "why did we ship 9,562 instead
+  of 10,000?".
+
+  Emits an ``Audit.record_action`` row + wizard broadcast so the
+  operator sees the change reflected immediately across every
+  open tab.
+  """
+  def accept_short_delivery(%User{} = actor, %CustomerOrderLine{} = line, reason)
+      when is_binary(reason) do
+    attrs = %{
+      "short_delivery_accepted_at" => DateTime.truncate(DateTime.utc_now(), :second),
+      "short_delivery_accepted_reason" => String.trim(reason),
+      "short_delivery_accepted_by_id" => actor.id
+    }
+
+    before = short_delivery_snapshot(line)
+
+    result =
+      line
+      |> CustomerOrderLine.short_delivery_changeset(attrs)
+      |> Repo.update()
+
+    case result do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "customer_order_line",
+          updated,
+          before,
+          short_delivery_snapshot(updated)
+        )
+
+        Backend.OrderWizard.notify_co_changed(updated.customer_order_id)
+        {:ok, updated}
+
+      err ->
+        err
+    end
+  end
+
+  @doc """
+  Clear a previously-recorded short-delivery acceptance. Used when
+  a later top-up MO closes the gap naturally — the stamp is no
+  longer load-bearing and shouldn't clutter the CO timeline.
+  """
+  def clear_short_delivery_acceptance(%User{} = actor, %CustomerOrderLine{} = line) do
+    before = short_delivery_snapshot(line)
+
+    line
+    |> Ecto.Changeset.change(%{
+      short_delivery_accepted_at: nil,
+      short_delivery_accepted_reason: nil,
+      short_delivery_accepted_by_id: nil
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "customer_order_line",
+          updated,
+          before,
+          short_delivery_snapshot(updated)
+        )
+
+        Backend.OrderWizard.notify_co_changed(updated.customer_order_id)
+        {:ok, updated}
+
+      err ->
+        err
+    end
+  end
+
+  defp short_delivery_snapshot(%CustomerOrderLine{} = line) do
+    %{
+      short_delivery_accepted_at: line.short_delivery_accepted_at,
+      short_delivery_accepted_reason: line.short_delivery_accepted_reason,
+      short_delivery_accepted_by_id: line.short_delivery_accepted_by_id
+    }
+  end
+
+  defp to_decimal(nil), do: Decimal.new(0)
+  defp to_decimal(%Decimal{} = d), do: d
+  defp to_decimal(n) when is_integer(n), do: Decimal.new(n)
+  defp to_decimal(n) when is_float(n), do: Decimal.from_float(n)
+
+  defp to_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> Decimal.new(0)
+    end
   end
 end

@@ -316,10 +316,29 @@ function OperationBlock({
   conflict: boolean;
 }) {
   const editor = useScheduleEditor();
+  // Refuse to drag ops whose MO is completed or cancelled — the
+  // planned_* timestamps are frozen historical record. BE
+  // `move_mo_step` / `shift_mo_schedule` also refuse; disabling here
+  // avoids operator wasted taps + toast noise.
+  const isTerminalMo =
+    op.manufacturing_order?.status === "completed" ||
+    op.manufacturing_order?.status === "cancelled";
+  // Multi-day ops render one block per day column they span. Only
+  // the block on the op's ORIGINAL start-day gets the canonical
+  // `op-<id>` draggable id — the workspace's handleDragEnd parses
+  // that exact shape. Continuation blocks get a namespaced id that
+  // won't match the parser (they're disabled anyway) so dnd-kit
+  // doesn't see duplicate ids across the calendar grid.
+  const isContinuation = op.planned_start
+    ? !isSameUtcDay(new Date(op.planned_start), day)
+    : false;
+  const dragId = isContinuation
+    ? `op-continuation-${op.id}-${dayKey(day)}`
+    : `op-${op.id}`;
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
-      id: `op-${op.id}`,
-      disabled: !canEditSteps,
+      id: dragId,
+      disabled: !canEditSteps || isTerminalMo || isContinuation,
     });
 
   if (!op.planned_start || !op.planned_finish) return null;
@@ -399,14 +418,15 @@ function OperationBlock({
               : "border-border/70 bg-card",
         isDragging
           ? "z-30 cursor-grabbing shadow-lg"
-          : canEditSteps
+          : canEditSteps && !isTerminalMo && !isContinuation
             ? "cursor-grab hover:shadow-md"
             : "cursor-pointer hover:shadow-md",
+        isContinuation && "opacity-90",
       )}
       title={
         conflict
-          ? `${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}\nConflict: another operation on the same workstation overlaps this time.${canEditSteps ? "\nDrag to reschedule." : ""}`
-          : `${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}${canEditSteps ? "\nDrag to reschedule, click to edit." : ""}`
+          ? `${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}\nConflict: another operation on the same workstation overlaps this time.${canEditSteps && !isTerminalMo && !isContinuation ? "\nDrag to reschedule." : ""}${isTerminalMo ? "\nMO is completed / cancelled — dates are frozen." : ""}${isContinuation ? "\nContinues from an earlier day — drag from the start day to reschedule." : ""}`
+          : `${mo?.code ?? `Op #${op.id}`} — ${formatHm(start)} → ${formatHm(finish)}${canEditSteps && !isTerminalMo && !isContinuation ? "\nDrag to reschedule, click to edit." : ""}${isTerminalMo ? "\nMO is completed / cancelled — dates are frozen." : ""}${isContinuation ? "\nContinues from an earlier day — click to edit; drag from the start day to reschedule." : ""}`
       }
     >
       <span
@@ -658,16 +678,34 @@ function groupOpsByDay(
   ops: ScheduleOperation[],
   days: Date[],
 ): Map<string, ScheduleOperation[]> {
+  // Multi-day ops (long paused spans, cure/rest windows, ops that
+  // wrap past DAY_END_HOUR) must appear in EVERY day column they
+  // touch — otherwise a 26 → 31 op renders as one block on the 26
+  // and the rest of the week looks empty. Downstream `layoutForDay`
+  // clamps the block to the intersecting slice per day, so the block
+  // reads as a continuous span across columns.
   const keys = new Set(days.map(dayKey));
   const out = new Map<string, ScheduleOperation[]>();
   for (const op of ops) {
     if (!op.planned_start) continue;
     const start = new Date(op.planned_start);
-    const key = dayKey(start);
-    if (!keys.has(key)) continue;
-    const arr = out.get(key) ?? [];
-    arr.push(op);
-    out.set(key, arr);
+    const finish = op.planned_finish ? new Date(op.planned_finish) : start;
+    // Walk day-by-day from start's UTC-day floor through finish's
+    // UTC-day floor. Cap at 62 iterations as a paranoid bound — no
+    // legitimate MO step spans two months of continuous scheduled
+    // time and it protects against a malformed finish < start.
+    const cursor = startOfDayUTC(start);
+    const end = startOfDayUTC(finish);
+    for (let i = 0; i < 62; i++) {
+      const key = dayKey(cursor);
+      if (keys.has(key)) {
+        const arr = out.get(key) ?? [];
+        arr.push(op);
+        out.set(key, arr);
+      }
+      if (cursor.getTime() >= end.getTime()) break;
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
   }
   return out;
 }
