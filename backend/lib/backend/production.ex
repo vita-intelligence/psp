@@ -2207,6 +2207,12 @@ defmodule Backend.Production do
             # sample children stay in their own pool; production
             # children are unaffected.
             "project_type" => mo.project_type,
+            # Inherit the parent's NPD proposal linkage so per-order
+            # queries walk cleanly through the whole MO tree without
+            # having to also walk MO → CO_line → CO for the child.
+            # Nil-safe: children of PSP-native MOs stay nil.
+            "npd_proposal_uuid" => mo.npd_proposal_uuid,
+            "npd_formulation_uuid" => mo.npd_formulation_uuid,
             "created_by_id" => actor.id,
             "updated_by_id" => actor.id
           }

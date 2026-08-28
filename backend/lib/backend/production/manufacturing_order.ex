@@ -80,6 +80,16 @@ defmodule Backend.Production.ManufacturingOrder do
     # Nullable; only populated on NPD-driven MOs.
     field :npd_formulation_uuid, Ecto.UUID
 
+    # Denormalised NPD proposal UUID — the customer order this MO
+    # belongs to. Snapshotted from the parent CO on create so the
+    # portal / operator queries that ask "which MOs belong to this
+    # specific order?" don't have to walk MO → CO line → CO on every
+    # render (hot query on the RTG portal now that a formulation can
+    # have N orders, each with their own MO tree). Nullable for MOs
+    # created outside the NPD flow (PSP-only projects) or when the
+    # parent CO hasn't been merged from a proposal yet.
+    field :npd_proposal_uuid, Ecto.UUID
+
     # NPD ProductValidation snapshot — pushed by the
     # `/api/integration/trial-validations/sync` webhook every time
     # NPD's state machine advances. The PSP Output QC pass gate
@@ -280,6 +290,7 @@ defmodule Backend.Production.ManufacturingOrder do
       :project_type,
       :npd_trial_batch_uuid,
       :npd_formulation_uuid,
+      :npd_proposal_uuid,
       :packaging_combo_items,
       :created_by_id,
       :updated_by_id

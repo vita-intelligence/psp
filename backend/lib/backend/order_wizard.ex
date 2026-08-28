@@ -227,6 +227,13 @@ defmodule Backend.OrderWizard do
             payload = %{
               formulation_uuid: npd_uuid,
               psp_customer_order_uuid: to_string(fresh.uuid),
+              # Proposal identity so NPD's PspProductionStatus upsert
+              # can resolve ``/portal/projects/<proposal_id>`` URLs
+              # for RTG multi-order scenarios (formulation is shared
+              # across a customer's orders; proposal_uuid disambiguates).
+              # Empty string when the CO wasn't born from a merged
+              # proposal (rare, sample-only flow).
+              npd_proposal_uuid: to_string(fresh.npd_proposal_uuid || ""),
               phase: to_string(phase.key),
               phase_label: phase.label || "",
               next_action_title: summary.next_action_title || "",

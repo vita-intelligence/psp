@@ -284,6 +284,22 @@ defmodule Backend.CustomerOrders.ProposalMerge do
   end
 
   defp fresh_merge(company_id, proposal_uuid, line_specs, params) do
+    project_type = sanitize(params["npd_project_type"]) || ""
+
+    if project_type == "ready_to_go" do
+      rtg_fresh_merge(company_id, proposal_uuid, line_specs, params)
+    else
+      custom_fresh_merge(company_id, proposal_uuid, line_specs, params)
+    end
+  end
+
+  # Custom formulations are 1:1 with a project on PSP. A new proposal
+  # for the same formulation (redraft after reject, next revision, …)
+  # updates the existing CO's identity and refreshes its lines — the
+  # MO chain, comment thread, and audit history all belong to "this
+  # project" and must survive proposal churn. Same behaviour as
+  # before RTG landed; kept intact.
+  defp custom_fresh_merge(company_id, proposal_uuid, line_specs, params) do
     formulation_uuids =
       line_specs
       |> Enum.map(& &1.npd_formulation_uuid)
@@ -297,7 +313,15 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     cos =
       from(co in CustomerOrder,
         where: co.company_id == ^company_id,
-        where: co.npd_formulation_uuid in ^formulation_uuids
+        where: co.npd_formulation_uuid in ^formulation_uuids,
+        # Never adopt an RTG CO for a Custom merge — RTG rows can
+        # legitimately share a formulation_uuid with other orders and
+        # must not be captured by a stray Custom sync. Belt-and-
+        # braces: today the partial unique index also excludes
+        # RTG rows from the formulation-uuid uniqueness invariant.
+        where:
+          is_nil(co.npd_project_type) or
+            co.npd_project_type != "ready_to_go"
       )
       |> Repo.all()
       |> Map.new(&{&1.npd_formulation_uuid, &1})
@@ -324,6 +348,86 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       reassign_lines!(co.id, primary.id)
       mark_merged!(co, primary.id)
     end)
+
+    primary
+    |> apply_proposal_identity(proposal_uuid, params)
+    |> replace_lines_from_specs(line_specs)
+    |> case do
+      {:ok, updated} ->
+        Backend.OrderWizard.notify_co_changed(updated)
+        {:ok, updated}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # RTG catalog products get ordered N times. Every proposal from the
+  # storefront is an independent business object — its own CO, its
+  # own lines, its own MOs. We must NOT reuse an existing CO by
+  # ``npd_formulation_uuid`` (that would silently overwrite a prior
+  # order's proposal identity and wipe its lines, orphaning any MOs
+  # the operator had already created against them).
+  #
+  # This path insert-only for a fresh proposal. Idempotency for a
+  # re-fired push is handled upstream in ``do_merge/4`` which looks
+  # up by ``npd_proposal_uuid`` first — if the row already exists,
+  # ``refresh_existing`` runs instead of ``fresh_merge``.
+  defp rtg_fresh_merge(company_id, proposal_uuid, line_specs, params) do
+    primary_uuid = hd(line_specs).npd_formulation_uuid
+
+    # Sanity: the formulation must have been synced from NPD at least
+    # once so we know the finished-product item + display fields.
+    # A missing formulation means the storefront tried to check out
+    # before ``sync_customer_order_to_psp`` reached us for this SKU;
+    # surface the error rather than birthing a phantom CO whose
+    # identity fields would all be nil.
+    template =
+      from(co in CustomerOrder,
+        where: co.company_id == ^company_id,
+        where: co.npd_formulation_uuid == ^primary_uuid,
+        order_by: [asc: co.inserted_at],
+        limit: 1
+      )
+      |> Repo.one()
+
+    if is_nil(template) do
+      Repo.rollback({:missing_formulation, primary_uuid})
+    end
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    # Seed a fresh CO with the identity fields the formulation-sync
+    # already established (company, customer, currency, warehouse,
+    # tax rate, R&D team names, app_url). The proposal-identity
+    # attrs land in the same changeset via ``apply_proposal_identity``.
+    fresh_attrs = %{
+      company_id: template.company_id,
+      customer_id: template.customer_id,
+      currency_code: template.currency_code,
+      tax_rate: template.tax_rate,
+      discount_pct: template.discount_pct || Decimal.new(0),
+      shipping_fees: template.shipping_fees || Decimal.new(0),
+      additional_fees: template.additional_fees || Decimal.new(0),
+      default_warehouse_id: template.default_warehouse_id,
+      npd_formulation_uuid: template.npd_formulation_uuid,
+      npd_lead_scientist_name: template.npd_lead_scientist_name,
+      npd_sales_person_name: template.npd_sales_person_name,
+      npd_app_url: template.npd_app_url,
+      status: "draft",
+      sample_kind: false,
+      subtotal: Decimal.new(0),
+      discount_amount: Decimal.new(0),
+      tax_amount: Decimal.new(0),
+      grand_total: Decimal.new(0),
+      inserted_at: now,
+      updated_at: now
+    }
+
+    primary =
+      %CustomerOrder{}
+      |> Ecto.Changeset.change(fresh_attrs)
+      |> Repo.insert!()
 
     primary
     |> apply_proposal_identity(proposal_uuid, params)
@@ -579,6 +683,11 @@ defmodule Backend.CustomerOrders.ProposalMerge do
         npd_proposal_uuid: proposal_uuid,
         npd_proposal_code: sanitize(params["npd_proposal_code"]),
         npd_proposal_url: sanitize(params["npd_proposal_url"]),
+        # Project flavour from NPD. Empty string → leave as-is (the
+        # ``Enum.reject(is_nil)`` below strips nils, so this keeps
+        # legacy Custom-only rows valid before NPD started sending
+        # the field).
+        npd_project_type: sanitize(params["npd_project_type"]),
         # A merge_from_proposal claims the CO as a REAL commercial
         # order — flip ``sample_kind`` off. Without this a CO that
         # happened to exist as a sample-kit shell (created by an
@@ -665,23 +774,73 @@ defmodule Backend.CustomerOrders.ProposalMerge do
 
   defp parse_integer(_), do: nil
 
-  # Wipe existing lines on the primary and insert fresh ones from the
-  # proposal spec. Cleaner than diffing — proposals aren't edited in
-  # place today, they get regenerated end-to-end.
+  # Refresh the primary's lines from the proposal spec.
+  #
+  # Idempotent: if the existing lines match the incoming spec exactly
+  # (same item + qty + unit_price + packaging combo), it's a no-op.
+  # A raw wipe-and-reinsert was correct semantically but destructive
+  # in practice: every re-sync (label save, proposal re-broadcast,
+  # RTG order landing on the same formulation before the RTG fix)
+  # DELETEd every CO line, orphaning any MOs the operator had already
+  # created against them (FK stays as a dangling integer since the
+  # column isn't ON DELETE CASCADE — the MO survives but the ``lines``
+  # join returns empty and the FE reads "no MO yet").
+  #
+  # When the spec HAS changed (customer amended qty, picked a
+  # different combo, etc.) we still wipe and reinsert — that's a
+  # genuine spec change, not a phantom re-sync, and the operator
+  # needs the fresh line data. In that case MOs on the old lines
+  # will get orphaned as before; the amendment flow is the right
+  # place to handle that migration.
   defp replace_lines_from_specs(changeset, line_specs) do
     case Repo.update(changeset) do
       {:ok, %CustomerOrder{} = primary} ->
-        from(l in CustomerOrderLine,
-          where: l.customer_order_id == ^primary.id
-        )
-        |> Repo.delete_all()
+        existing =
+          from(l in CustomerOrderLine,
+            where: l.customer_order_id == ^primary.id,
+            order_by: [asc: l.id]
+          )
+          |> Repo.all()
 
-        Enum.each(line_specs, &insert_line_for!(primary, &1))
-        {:ok, Repo.preload(primary, :lines, force: true)}
+        if lines_match_specs?(existing, line_specs, primary) do
+          {:ok, Repo.preload(primary, :lines, force: true)}
+        else
+          from(l in CustomerOrderLine,
+            where: l.customer_order_id == ^primary.id
+          )
+          |> Repo.delete_all()
+
+          Enum.each(line_specs, &insert_line_for!(primary, &1))
+          {:ok, Repo.preload(primary, :lines, force: true)}
+        end
 
       {:error, cs} ->
         {:error, cs}
     end
+  end
+
+  # Are the existing CO lines already in sync with the incoming
+  # ``line_specs``? Compares by (item_id, qty, unit_price,
+  # packaging_combo_uuid) in positional order — same shape the
+  # merge would produce fresh. Any mismatch → not idempotent, caller
+  # falls back to wipe-and-reinsert.
+  defp lines_match_specs?(existing, specs, %CustomerOrder{} = primary) do
+    length(existing) == length(specs) and
+      Enum.zip(existing, specs)
+      |> Enum.all?(fn {line, spec} -> line_matches_spec?(line, spec, primary) end)
+  end
+
+  defp line_matches_spec?(%CustomerOrderLine{} = line, spec, %CustomerOrder{} = primary) do
+    expected_item_id = resolve_item_id(primary.company_id, spec.psp_finished_product_uuid)
+    expected_qty = to_decimal(spec.quantity, Decimal.new(1))
+    expected_price = to_decimal(spec.unit_price, Decimal.new(0))
+    expected_combo_uuid = Map.get(spec, :packaging_combo_uuid)
+
+    line.item_id == expected_item_id and
+      Decimal.equal?(line.qty_ordered || Decimal.new(0), expected_qty) and
+      Decimal.equal?(line.unit_price || Decimal.new(0), expected_price) and
+      to_string(line.npd_packaging_combo_uuid || "") ==
+        to_string(expected_combo_uuid || "")
   end
 
   defp insert_line_for!(%CustomerOrder{} = primary, spec) do

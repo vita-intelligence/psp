@@ -201,6 +201,13 @@ defmodule BackendWeb.CustomerOrderController do
       # Nil on commercial COs where the CO itself has no formulation
       # link (which is fine — the MO field is nullable).
       |> maybe_put("npd_formulation_uuid", co.npd_formulation_uuid)
+      # Denormalise the CO's proposal UUID onto the MO so per-order
+      # queries ("which MOs belong to THIS order?") avoid the
+      # MO → CO_line → CO join on every render. Hot on the RTG
+      # portal where a formulation can have N orders and each order
+      # has its own MO tree; without the field the customer's
+      # production card had to walk two large tables per row.
+      |> maybe_put("npd_proposal_uuid", co.npd_proposal_uuid)
       # Inject the customer's packaging-combo pick into the MO. Only
       # RTG orders carry ``npd_packaging_combo_items`` (populated by
       # ``proposal_merge`` on the merge_from_proposal sync when the

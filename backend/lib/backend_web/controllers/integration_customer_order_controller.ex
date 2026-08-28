@@ -58,6 +58,16 @@ defmodule BackendWeb.IntegrationCustomerOrderController do
     company_id = conn.assigns.current_company_id
 
     case NpdSync.upsert_from_npd(company_id, params) do
+      {:ok, nil} ->
+        # No-op for RTG formulations synced via the formulation-level
+        # path — their COs live per-proposal and are created by the
+        # proposal-merge endpoint instead. Return 200 so the NPD
+        # sender treats this as a successful skip rather than a
+        # transport error.
+        conn
+        |> put_status(:ok)
+        |> json(%{customer_order: nil, skipped: "rtg_multi_order"})
+
       {:ok, co} ->
         conn
         |> put_status(:ok)

@@ -53,22 +53,35 @@ defmodule Backend.CustomerOrders.NpdSync do
         placeholder = ensure_placeholder_customer(company_id)
         active_customer = resolve_customer(company_id, placeholder, params)
 
+        # Formulation-scoped lookup. Excludes:
+        #
+        # * Sample sub-COs (``sample_kind = true``) — they share the
+        #   parent's formulation_uuid but live in the samples surface;
+        #   the partial unique index scopes uniqueness accordingly.
+        # * RTG rows (``npd_project_type = "ready_to_go"``) — RTG
+        #   catalog products get ordered N times so multiple non-sample
+        #   COs can share a formulation_uuid, which would raise
+        #   ``Ecto.MultipleResultsError`` here. RTG state is synced
+        #   per-order via ``proposal_merge`` (each proposal → one CO);
+        #   the formulation-level sync path is a no-op for them.
         upsert_result =
-          case Repo.get_by(CustomerOrder,
-                 company_id: company_id,
-                 npd_formulation_uuid: npd_uuid,
-                 # Sample sub-COs share the same ``npd_formulation_uuid``
-                 # as their parent commercial CO (the trial-batch cycle
-                 # writes N sample rows per formulation). Only the main
-                 # commercial row is 1-per-formulation — the partial
-                 # unique index on ``customer_orders`` scopes uniqueness
-                 # to ``sample_kind = false``. Scope the lookup the same
-                 # way or a formulation with any trial samples raises
-                 # ``Ecto.MultipleResultsError`` here.
-                 sample_kind: false
-               ) do
+          case from(co in CustomerOrder,
+                 where:
+                   co.company_id == ^company_id and
+                     co.npd_formulation_uuid == ^npd_uuid and
+                     co.sample_kind == false and
+                     (is_nil(co.npd_project_type) or
+                        co.npd_project_type != "ready_to_go")
+               )
+               |> Repo.one() do
             nil ->
-              insert_new(company_id, active_customer, npd_uuid, params)
+              # Nothing to insert for RTG — its COs are created by the
+              # RTG proposal-merge path. Only Custom insert here.
+              if rtg?(params) do
+                {:ok, nil}
+              else
+                insert_new(company_id, active_customer, npd_uuid, params)
+              end
 
             existing ->
               update_existing(existing, active_customer, params)
@@ -78,8 +91,13 @@ defmodule Backend.CustomerOrders.NpdSync do
         # list in the same transaction so a rollback covers both. A
         # partial state (row written, payments not) would leave the
         # invoice card showing stale rows. Skipped on error — the
-        # outer transaction is about to rollback anyway.
+        # outer transaction is about to rollback anyway. RTG's
+        # no-op branch returns ``{:ok, nil}`` — skip payment mirror
+        # too (RTG payments already ride the proposal-merge path).
         case upsert_result do
+          {:ok, nil} ->
+            {:ok, nil}
+
           {:ok, co} ->
             sync_npd_payments(co, params)
             {:ok, co}
@@ -489,6 +507,15 @@ defmodule Backend.CustomerOrders.NpdSync do
   defp sanitize(""), do: nil
   defp sanitize(v) when is_binary(v), do: String.trim(v)
   defp sanitize(_), do: nil
+
+  # Does the incoming payload describe an RTG-track formulation?
+  # NPD sends ``project_type`` on the sync payload so we can decide
+  # whether to insert a new formulation-scoped CO or leave the
+  # creation to the RTG proposal-merge path.
+  defp rtg?(params) do
+    raw = sanitize(params["project_type"] || params[:project_type])
+    raw == "ready_to_go"
+  end
 
   # Sample CO title: ``"<Formulation name> · Sample #<N>"`` where N is
   # a per-formulation sequential counter (the 47th customer to order

@@ -97,6 +97,15 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     # project on both sides. Null on any CO that was created directly
     # from PSP's own new-project flow (pre-NPD or non-R&D orders).
     field :npd_formulation_uuid, Ecto.UUID
+    # Project flavour on NPD ("custom" | "ready_to_go"). Sent on
+    # every proposal-merge payload; nil on legacy rows and on non-
+    # NPD-born COs. Drives the ``fresh_merge`` branch that decides
+    # whether a new proposal reuses an existing CO (Custom, still
+    # 1:1 with the formulation today) or spawns a brand-new CO
+    # (RTG catalog products are ordered N times). Kept as a plain
+    # string rather than an ecto enum so NPD can add project types
+    # without a coordinated migration.
+    field :npd_project_type, :string
     # Denormalised R&D team + deep-link mirrored from NPD's sync
     # payload. Refreshed on every re-sync so a role reassignment on
     # NPD reaches PSP without a separate messaging channel. All three
