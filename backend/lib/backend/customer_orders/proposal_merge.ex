@@ -546,12 +546,52 @@ defmodule Backend.CustomerOrders.ProposalMerge do
           %{}
       end
 
+    # Primary-formulation display fields — NPD sends these so PSP
+    # can render the /projects card with the customer-facing product
+    # name ("Ultimate Fat Burner Drink") instead of whatever
+    # ``customer_reference`` was set to before the merge. On RTG the
+    # pre-merge value is "Ultimate Fat Burner Drink · Sample #3"
+    # (leftover from ``insert_sample_new`` in npd_sync.ex), which is
+    # what would keep showing on the operator's kanban if we didn't
+    # overwrite it. When NPD doesn't send them (legacy Custom syncs
+    # that predate this field), fall back to the existing value —
+    # never wipe a valid label with a nil.
+    display_name = sanitize(params["primary_formulation_display_name"])
+    code = sanitize(params["primary_formulation_code"])
+
+    reference =
+      cond do
+        display_name && code -> "#{display_name} (#{code})"
+        display_name -> display_name
+        code -> code
+        true -> nil
+      end
+
+    reference_attr =
+      if reference do
+        %{customer_reference: reference}
+      else
+        %{}
+      end
+
     attrs =
       %{
         npd_proposal_uuid: proposal_uuid,
         npd_proposal_code: sanitize(params["npd_proposal_code"]),
-        npd_proposal_url: sanitize(params["npd_proposal_url"])
+        npd_proposal_url: sanitize(params["npd_proposal_url"]),
+        # A merge_from_proposal claims the CO as a REAL commercial
+        # order — flip ``sample_kind`` off. Without this a CO that
+        # happened to exist as a sample-kit shell (created by an
+        # earlier ``sync_customer_order_to_psp`` on the same
+        # formulation) stays tagged as a sample, hiding the RTG /
+        # Custom product order from the /projects kanban and pinning
+        # it under the Samples surface. Merging a proposal onto a
+        # sample row promotes it — an audit reader can still see the
+        # sample origin via the timeline (which is preserved verbatim
+        # by ``timeline_attr``).
+        sample_kind: false
       }
+      |> Map.merge(reference_attr)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
       |> Map.merge(status_attr)
@@ -660,6 +700,27 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       qty_ordered: to_decimal(spec.quantity, Decimal.new(1)),
       unit_price: to_decimal(spec.unit_price, Decimal.new(0)),
       line_subtotal: to_decimal(spec.line_subtotal, Decimal.new(0)),
+      # Persist the customer's packaging combo pick so
+      # ``customer_order_controller.create_mo_for_line`` can inject it
+      # into the MO BOM. Nil on Custom orders and on any RTG payload
+      # that predates the sender's ``packaging_combo_*`` fields.
+      # Empty list on the items column is a legitimate state
+      # ("customer picked the empty / no-packaging combo") — we keep
+      # nil ONLY when the customer didn't pick a combo at all, so the
+      # MO wizard can distinguish "use default packaging" from
+      # "customer explicitly chose zero packaging".
+      npd_packaging_combo_uuid: Map.get(spec, :packaging_combo_uuid),
+      npd_packaging_combo_name:
+        case Map.get(spec, :packaging_combo_name, "") do
+          "" -> nil
+          name -> name
+        end,
+      npd_packaging_combo_items:
+        case {Map.get(spec, :packaging_combo_uuid),
+              Map.get(spec, :packaging_combo_items, [])} do
+          {nil, _} -> nil
+          {_, items} -> items
+        end,
       inserted_at: now,
       updated_at: now
     }
@@ -710,6 +771,44 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       list when is_list(list) ->
         specs =
           Enum.map(list, fn row ->
+            # NPD sends the customer's picked packaging combo alongside
+            # every line — combo uuid + name + a self-contained list of
+            # items (each ``{npd_item_uuid, psp_item_uuid, name,
+            # quantity}``). We normalise the items down to string keys
+            # so the JSONB round-trip is stable across Ecto versions
+            # (mixed atom/string keys deserialise differently on
+            # ``:map`` fields depending on the encoder).
+            combo_uuid_raw =
+              row["packaging_combo_uuid"] || row[:packaging_combo_uuid]
+
+            combo_name =
+              (row["packaging_combo_name"] || row[:packaging_combo_name] || "")
+              |> to_string()
+
+            combo_items_raw =
+              row["packaging_combo_items"] || row[:packaging_combo_items] || []
+
+            combo_items =
+              combo_items_raw
+              |> List.wrap()
+              |> Enum.map(fn item ->
+                %{
+                  "npd_item_uuid" =>
+                    to_string(item["npd_item_uuid"] || item[:npd_item_uuid] || ""),
+                  "psp_item_uuid" =>
+                    to_string(item["psp_item_uuid"] || item[:psp_item_uuid] || ""),
+                  "name" => to_string(item["name"] || item[:name] || ""),
+                  "quantity" =>
+                    (item["quantity"] || item[:quantity] || 1)
+                    |> normalise_combo_quantity()
+                }
+              end)
+              |> Enum.reject(fn i ->
+                # Drop rows that have neither a PSP nor NPD identifier
+                # — nothing MO overlay can resolve.
+                i["npd_item_uuid"] == "" and i["psp_item_uuid"] == ""
+              end)
+
             %{
               npd_formulation_uuid:
                 cast_uuid!(row["npd_formulation_uuid"] || row[:npd_formulation_uuid]),
@@ -720,7 +819,10 @@ defmodule Backend.CustomerOrders.ProposalMerge do
                 ),
               quantity: row["quantity"] || row[:quantity] || 1,
               unit_price: row["unit_price"] || row[:unit_price],
-              line_subtotal: row["line_subtotal"] || row[:line_subtotal]
+              line_subtotal: row["line_subtotal"] || row[:line_subtotal],
+              packaging_combo_uuid: maybe_cast_uuid(combo_uuid_raw),
+              packaging_combo_name: combo_name,
+              packaging_combo_items: combo_items
             }
           end)
 
@@ -765,4 +867,26 @@ defmodule Backend.CustomerOrders.ProposalMerge do
   defp to_decimal(v, _default) when is_float(v), do: Decimal.from_float(v)
   defp to_decimal(%Decimal{} = v, _default), do: v
   defp to_decimal(_, default), do: default
+
+  # Combo item quantities on NPD are positive integers (packaging is
+  # always "N units of the pack per finished unit"). Normalise to an
+  # integer so the JSONB payload has one shape regardless of whether
+  # the sender picked int, float, string, or Decimal encoding.
+  defp normalise_combo_quantity(v) when is_integer(v) and v > 0, do: v
+  defp normalise_combo_quantity(v) when is_float(v) and v > 0, do: trunc(v)
+  defp normalise_combo_quantity(v) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, _} when n > 0 -> n
+      _ -> 1
+    end
+  end
+  defp normalise_combo_quantity(%Decimal{} = v) do
+    case Decimal.to_integer(Decimal.round(v, 0, :down)) do
+      n when n > 0 -> n
+      _ -> 1
+    end
+  rescue
+    _ -> 1
+  end
+  defp normalise_combo_quantity(_), do: 1
 end

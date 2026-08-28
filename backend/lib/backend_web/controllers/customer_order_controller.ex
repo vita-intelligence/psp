@@ -201,6 +201,22 @@ defmodule BackendWeb.CustomerOrderController do
       # Nil on commercial COs where the CO itself has no formulation
       # link (which is fine — the MO field is nullable).
       |> maybe_put("npd_formulation_uuid", co.npd_formulation_uuid)
+      # Inject the customer's packaging-combo pick into the MO. Only
+      # RTG orders carry ``npd_packaging_combo_items`` (populated by
+      # ``proposal_merge`` on the merge_from_proposal sync when the
+      # storefront checkout attached a combo to the proposal line).
+      # Each item in the stored JSONB is
+      # ``{npd_item_uuid, psp_item_uuid, name, quantity}``; we
+      # resolve each to a PSP ``item_id`` (preferring the pre-baked
+      # ``psp_item_uuid`` and falling back to the NPD uuid on legacy
+      # rows) and hand the list to ``create_manufacturing_order`` as
+      # ``packaging_combo_items``. The MO overlay logic in
+      # ``production.ex`` (``packaging_overlay_active?``) then swaps
+      # the finished-product's DEFAULT packaging BOM lines for the
+      # customer's picked items. Nil on Custom orders / legacy RTG
+      # rows / commercial COs — those fall back to the default
+      # packaging BOM (the pre-existing behaviour).
+      |> maybe_put_packaging_combo_items(actor.company_id, line)
 
     case Backend.Production.create_manufacturing_order(actor, attrs) do
       {:ok, mo} ->
@@ -441,6 +457,103 @@ defmodule BackendWeb.CustomerOrderController do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # RTG packaging-combo injection.
+  #
+  # Resolves each stored combo item to a PSP ``item_id`` and hands
+  # the list to ``Production.create_manufacturing_order`` as
+  # ``packaging_combo_items`` (the same shape / same key the
+  # integration MO controller uses for trial-batch overlays — one
+  # code path handles both trials + RTG orders).
+  #
+  # Preference order for the item lookup:
+  #   1. ``psp_item_uuid`` from the stored payload — NPD pre-baked
+  #      this on the merge sync so the storefront cart's SKU maps
+  #      to the exact PSP item without a round-trip.
+  #   2. ``npd_item_uuid`` as a fallback — legacy rows synced before
+  #      NPD started stamping ``psp_item_uuid`` still resolve via
+  #      the ``Item.npd_source_uuid`` mirror column.
+  # Items that resolve to neither are silently dropped so a stale
+  # combo can't block an MO create — the operator can top-up the
+  # packaging by hand on the MO detail if needed. Empty list ⇒ no
+  # overlay applied ⇒ MO inherits the item's default packaging BOM
+  # (matches the pre-existing behaviour for lines with no combo).
+  defp maybe_put_packaging_combo_items(attrs, _company_id, %{
+         npd_packaging_combo_items: nil
+       }),
+       do: attrs
+
+  defp maybe_put_packaging_combo_items(attrs, company_id, %{
+         npd_packaging_combo_items: items
+       })
+       when is_list(items) do
+    import Ecto.Query
+
+    resolved =
+      items
+      |> Enum.map(fn row ->
+        # Both keys arrive as strings from the JSONB round-trip.
+        psp_uuid = row["psp_item_uuid"] || row[:psp_item_uuid] || ""
+        npd_uuid = row["npd_item_uuid"] || row[:npd_item_uuid] || ""
+        qty = row["quantity"] || row[:quantity] || 1
+
+        item_id =
+          cond do
+            psp_uuid != "" -> lookup_psp_item_id(company_id, psp_uuid)
+            npd_uuid != "" -> lookup_item_by_npd_source(company_id, npd_uuid)
+            true -> nil
+          end
+
+        if is_nil(item_id) do
+          nil
+        else
+          %{"item_id" => item_id, "quantity" => qty}
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    Map.put(attrs, "packaging_combo_items", resolved)
+  end
+
+  defp maybe_put_packaging_combo_items(attrs, _company_id, _line), do: attrs
+
+  defp lookup_psp_item_id(company_id, uuid) when is_binary(uuid) do
+    import Ecto.Query
+
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast_uuid} ->
+        Backend.Repo.one(
+          from i in Backend.Items.Item,
+            where: i.company_id == ^company_id,
+            where: i.uuid == ^cast_uuid,
+            select: i.id
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  defp lookup_psp_item_id(_company_id, _), do: nil
+
+  defp lookup_item_by_npd_source(company_id, uuid) when is_binary(uuid) do
+    import Ecto.Query
+
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast_uuid} ->
+        Backend.Repo.one(
+          from i in Backend.Items.Item,
+            where: i.company_id == ^company_id,
+            where: i.npd_source_uuid == ^cast_uuid,
+            select: i.id
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  defp lookup_item_by_npd_source(_company_id, _), do: nil
 
   # ----- create / update / delete ---------------------------------
 

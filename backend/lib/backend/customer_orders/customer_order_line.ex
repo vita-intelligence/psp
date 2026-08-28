@@ -47,6 +47,20 @@ defmodule Backend.CustomerOrders.CustomerOrderLine do
     field :short_delivery_accepted_at, :utc_datetime
     field :short_delivery_accepted_reason, :string
 
+    # NPD packaging-combo overlay. Populated by ``proposal_merge`` when
+    # a customer picks a specific packaging combo at checkout on an
+    # RTG SKU. Read at MO-create time by
+    # ``customer_order_controller.create_mo_for_line`` — the items get
+    # resolved to PSP ``item_id``s and passed as ``packaging_combo_items``
+    # on the MO so the packaging BOM matches what the customer actually
+    # ordered (their picked "Pouch" bottles the goods, not the SKU's
+    # default "Bottle 150ml"). Nil on Custom orders and on legacy RTG
+    # rows synced before this shipped — those fall back to the item's
+    # default packaging BOM, matching pre-existing behaviour.
+    field :npd_packaging_combo_uuid, Ecto.UUID
+    field :npd_packaging_combo_name, :string
+    field :npd_packaging_combo_items, {:array, :map}
+
     belongs_to :customer_order, CustomerOrder
     belongs_to :item, Item
     belongs_to :company, Company
@@ -71,7 +85,10 @@ defmodule Backend.CustomerOrders.CustomerOrderLine do
       :line_subtotal,
       :expected_ship_date,
       :customer_part_no,
-      :notes
+      :notes,
+      :npd_packaging_combo_uuid,
+      :npd_packaging_combo_name,
+      :npd_packaging_combo_items
     ])
     |> validate_required([
       :customer_order_id,

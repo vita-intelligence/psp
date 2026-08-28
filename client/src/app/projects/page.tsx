@@ -499,6 +499,23 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
         {title}
       </h3>
 
+      {/* Product name — sits under the customer title so an operator
+          can tell a customer's orders apart at a glance. Without this
+          three orders from the same customer collapse to three
+          identical "ImpHowr Inc" cards and the operator has to open
+          each one to figure out which product it's for. Only shows
+          when the title isn't already the product name (i.e. we're
+          on a real-customer card where the title is the customer
+          name and the product reference sits in ``customer_reference``). */}
+      {co.customer_reference && title !== co.customer_reference ? (
+        <p
+          className="mt-0.5 truncate text-xs text-muted-foreground"
+          title={co.customer_reference}
+        >
+          {co.customer_reference}
+        </p>
+      ) : null}
+
       {/* Next action */}
       {project.next_action_title && (
         <p
