@@ -1889,7 +1889,12 @@ defmodule Backend.Production do
       # The Finish dialog + parts table read item.stock_uom for the
       # "Produced quantity (kg)" label and UoM symbol — without this
       # preload the FE falls back to "ea" even for kg / pcs items.
-      item: :stock_uom,
+      # ``finished_product_spec`` piggybacks so the MO form can render
+      # a human-friendly caption under the quantity field ("0.05 packs
+      # · 3 gummies (60/pack)") — trial-batch scientists pick fractional
+      # pack quantities and the raw stock-unit number reads as
+      # nonsense without the servings_per_pack context.
+      item: [:stock_uom, :finished_product_spec],
       production_cell: [storage_location: [floor: [:warehouse]]],
       steps: [:workstation_group, :routing_step, worker_assignments: :user],
       bookings: [
@@ -9564,15 +9569,25 @@ defmodule Backend.Production do
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          %ManufacturingOrder{} = mo <- source_mo_for_lot(actor.company_id, lot) do
       cond do
-        # Only ``trial`` MOs are subject to the gate. ``sample`` MOs
-        # run pre-validated RTG products (the formulation is already
-        # in the commercial catalogue, no new validation to run) —
-        # gating them behind a validation flow that has nothing to
-        # validate strands the lot in ``received`` forever. ``trial``
-        # MOs are the R&D case the gate was actually designed for
-        # (scientist validating a new / edited formulation before
-        # QA can accept the output).
-        mo.project_type != "trial" ->
+        # Gate fires when the MO is linked to an NPD trial batch —
+        # keyed on ``npd_trial_batch_uuid`` rather than project_type
+        # so BOTH R&D ``trial`` MOs AND Custom-flow ``sample`` MOs
+        # (the trial-batch samples the scientist produces during the
+        # customer's R&D cycle) are protected. RTG sample-kit MOs
+        # carry ``project_type=sample`` too but have no linked
+        # trial batch — ``npd_trial_batch_uuid`` is NULL there —
+        # so the gate correctly stays skipped for those (the RTG
+        # SKU is already in the commercial catalogue, no new
+        # validation to run).
+        #
+        # Semi-finished child MOs (blend, encapsulation, bottling)
+        # never carry a trial_batch link either — only the top-of-
+        # tree finished-product MO does — so intermediate closeouts
+        # aren't blocked by this gate. That matches the physical
+        # workflow: the trial-batch form documents the FINISHED
+        # product's per-unit properties (weight, hardness,
+        # disintegration, organoleptic), not the blend's.
+        is_nil(mo.npd_trial_batch_uuid) ->
           :ok
 
         mo.npd_validation_status == "passed" ->
@@ -13238,27 +13253,36 @@ defmodule Backend.Production do
         :ok
 
       %ManufacturingOrder{} = parent ->
-        # Skip if the parent's bookings are locked (already scheduled
-        # or later). An operator can still book manually via the
-        # unlock flow; auto-book stays courteous.
-        case ensure_bookings_not_locked(parent) do
-          {:error, _} ->
-            :ok
-
-          :ok ->
-            result =
-              lots
-              |> Enum.reduce_while(:ok, fn lot, _acc ->
-                case insert_auto_booking(actor, parent, child, lot) do
-                  {:ok, _} -> {:cont, :ok}
-                  :skip -> {:cont, :ok}
-                  {:error, reason} -> {:halt, {:error, reason}}
-                end
-              end)
-
-            with :ok <- result do
-              maybe_auto_complete_pickup(actor, parent)
+        # NOTE: we deliberately do NOT gate this on
+        # ``ensure_bookings_not_locked(parent)``. That gate protects
+        # against operator-initiated RE-PLANS that would invalidate
+        # already-committed raw-material POs. What this function is
+        # doing is different: it's a system-initiated APPEND of a
+        # SEMI-FINISHED lot booking that the parent needs to consume
+        # the child's just-produced output. Semi-finished items don't
+        # get POs (they're manufactured in-house), so there's no PO
+        # to invalidate. Prior to removing the gate, when the parent
+        # already had ``purchasing_requested_at`` stamped (because
+        # the tree's raw-material POs had been raised via the parent
+        # first), the auto-book silently no-op'd — leaving the parent
+        # with zero bookings, the child's produced lot in
+        # ``awaiting_release`` (no downstream consumer to trigger
+        # ``qc_passed``), and the operator stuck with no way to
+        # trigger the pickup / consumption of the freshly-produced
+        # semi-finished output. Insert is idempotent via the de-dup
+        # check inside ``insert_auto_booking``.
+        result =
+          lots
+          |> Enum.reduce_while(:ok, fn lot, _acc ->
+            case insert_auto_booking(actor, parent, child, lot) do
+              {:ok, _} -> {:cont, :ok}
+              :skip -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
             end
+          end)
+
+        with :ok <- result do
+          maybe_auto_complete_pickup(actor, parent)
         end
     end
   end

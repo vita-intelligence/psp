@@ -303,72 +303,144 @@ defmodule Backend.Procurement.Shortages do
   # items don't pollute the procurement queue (those are child-MO
   # concerns).
   defp compute_requirements(company_id) do
-    # BOM-line requirements. When a packaging combo overlay is active
-    # on the MO (``packaging_combo_items IS NOT NULL``) the booking
-    # loop skips packaging BOM lines and substitutes the overlay
-    # items instead — mirror that here so packaging demand isn't
-    # double-counted. The overlay contribution is collected below
-    # from ``compute_overlay_requirements``.
-    bom_acc =
-      from(line in BOMLine,
-        join: bom in BOM,
-        on: bom.id == line.bom_id,
-        join: mo in ManufacturingOrder,
-        on: mo.bom_id == bom.id,
-        join: part in Item,
-        on: part.id == line.part_id,
+    # Requirements are computed from the MO's EFFECTIVE BOM — master
+    # BOM lines merged with any per-MO ``mo_bom_overrides`` the
+    # planner authored (added / qty_changed / removed). Prior to this
+    # rewrite we joined ``bom_lines → boms → manufacturing_orders``
+    # directly in SQL, which skipped the override layer entirely: any
+    # item ADDED manually to an MO's BOM never surfaced on the
+    # shortages page (procurement couldn't raise a PO for it), QTY
+    # changes weren't respected, and REMOVED lines still pulled
+    # phantom demand. Looping in-process via
+    # ``Production.effective_bom_lines_for_mo/1`` is authoritative
+    # — same helper the booking / pickup / closeout paths use — so
+    # the shortages page now agrees with what the operator sees on
+    # the parts tab.
+    #
+    # Packaging combo overlay handling is preserved: when the MO has
+    # a non-nil ``packaging_combo_items`` overlay, packaging BOM
+    # lines are skipped here (the overlay replaces them) and the
+    # overlay contribution is folded separately via
+    # ``fold_overlay_requirements``.
+    mos =
+      from(mo in ManufacturingOrder,
         where:
           mo.company_id == ^company_id and
             mo.status in ^@open_mo_statuses and
-            (mo.status != "draft" or not is_nil(mo.purchasing_requested_at)) and
-            part.item_type in ^@procurable_item_types and
-            (part.item_type != "packaging" or is_nil(mo.packaging_combo_items)),
-        select: %{
-          part_id: line.part_id,
-          line_qty: line.qty,
-          line_uom_id: line.unit_of_measurement_id,
-          is_fixed: line.is_fixed,
-          mo_qty: mo.quantity,
-          mo_project_type: mo.project_type,
-          # Contributing MO's explicit-request flag. When any MO
-          # sharing this ``{part, is_rnd}`` bucket has ``Request
-          # purchases`` fired, ``list_for`` keeps the row on the
-          # shortages page even if on-hand stock would otherwise
-          # net the shortage to zero — the operator asked
-          # procurement to look at it, procurement should see it.
-          mo_purchasing_requested: not is_nil(mo.purchasing_requested_at)
-        }
+            (mo.status != "draft" or not is_nil(mo.purchasing_requested_at)),
+        preload: [
+          # ``bom_overrides`` MUST preload ``part`` — ``synthesise_added_line``
+          # in ``Backend.Production.BOMOverrides`` reads ``ov.part`` and
+          # falls back to ``nil`` when the association isn't loaded.
+          # A nil ``part`` on the synth line trips the ``is_nil(part)``
+          # early-return in the reducer below, so operator-ADDED items
+          # (the whole reason for walking overrides here) get silently
+          # dropped. Same preload shape ``Production.sync_line_bookings``
+          # uses for consistency.
+          #
+          # ``:stock_uom`` on the part is needed by the count-like
+          # ceiling below — parts stocked in pcs / each / dozen / pack
+          # (or item_type=packaging) can only be booked in whole units,
+          # so per-MO fractional demand must ceil to prevent
+          # unbookable "0.05 pouches" landing on the shortages page.
+          bom_overrides: [:unit_of_measurement, part: :stock_uom],
+          bom: [lines: [:unit_of_measurement, part: :stock_uom]]
+        ]
       )
       |> Repo.all()
-      |> Enum.reduce({%{}, %{}, %{}}, fn row, {qty_acc, uom_acc, req_acc} ->
-        qty =
+
+    bom_acc =
+      Enum.reduce(mos, {%{}, %{}, %{}}, fn mo, acc ->
+        is_rnd = mo.project_type in @rnd_project_types
+        requested = not is_nil(mo.purchasing_requested_at)
+        # ``packaging_combo_items`` semantics (PSP contract, from
+        # NPD's ``_build_packaging_overlay``):
+        #   * ``nil``   → no overlay → master packaging BOM applies
+        #   * ``[]``    → active overlay, loose-bulk → SKIP master
+        #                 packaging BOM lines
+        #   * ``[...]`` → active overlay with combo → SKIP master
+        #                 packaging; overlay items folded below in
+        #                 ``fold_overlay_requirements``
+        # Any non-nil value is an "active overlay". Only MASTER
+        # packaging BOM lines get skipped when active — operator-
+        # added override packaging (synth lines with ``bom_id:
+        # nil``) survives, since the manual override represents
+        # run-specific intent orthogonal to the overlay.
+        has_overlay = is_list(mo.packaging_combo_items)
+
+        # ``effective_bom_lines_for_mo`` returns the same shape used
+        # by booking / pickup / closeout / shortages guard — master
+        # lines with qty_changed overrides applied, removed lines
+        # dropped, added lines synthesized. Preloading above keeps
+        # this loop N+1-free.
+        Backend.Production.effective_bom_lines_for_mo(mo)
+        |> Enum.reduce(acc, fn line, {qty_acc, uom_acc, req_acc} ->
+          part = Map.get(line, :part)
+
           cond do
-            row.is_fixed ->
-              row.line_qty || Decimal.new(0)
+            is_nil(part) ->
+              {qty_acc, uom_acc, req_acc}
+
+            part.item_type not in @procurable_item_types ->
+              {qty_acc, uom_acc, req_acc}
+
+            # When a packaging overlay is active, skip MASTER
+            # packaging BOM lines — the overlay replaces them and
+            # its items are folded in separately below via
+            # ``fold_overlay_requirements``. Operator-added override
+            # packaging (synth lines with ``bom_id: nil``) is kept:
+            # the manual override represents run-specific intent
+            # that lives alongside the overlay, not underneath it.
+            part.item_type == "packaging" and has_overlay and
+                not is_nil(line.bom_id) ->
+              {qty_acc, uom_acc, req_acc}
 
             true ->
-              Decimal.mult(row.line_qty || Decimal.new(0), row.mo_qty || Decimal.new(0))
+              line_qty = line.qty || Decimal.new(0)
+              mo_qty = mo.quantity || Decimal.new(0)
+
+              raw_qty =
+                if line.is_fixed do
+                  line_qty
+                else
+                  Decimal.mult(line_qty, mo_qty)
+                end
+
+              # Count-like parts (packaging or raw materials stocked
+              # in pcs / each / dozen / pack) can only be physically
+              # booked in whole units — you can't put 0.05 pouches
+              # on a PO or reserve 0.05 of a lot. Per-MO fractional
+              # demand ceils to the next integer so the shortage row
+              # shows an actionable number. Trial-batch sample MOs
+              # with fractional stock-unit quantities (e.g. 3 loose
+              # gummies = 0.05 packs on a 60/pack formulation) are
+              # the common source. Same rule NPD's
+              # ``_build_packaging_overlay`` applies to overlay rows.
+              qty =
+                if count_like_part?(part) do
+                  Decimal.round(raw_qty, 0, :ceiling)
+                else
+                  raw_qty
+                end
+
+              key = {part.id, is_rnd}
+              qty_acc = Map.update(qty_acc, key, qty, &Decimal.add(&1, qty))
+
+              uom_acc =
+                if line.unit_of_measurement_id,
+                  do: Map.put(uom_acc, key, line.unit_of_measurement_id),
+                  else: uom_acc
+
+              # ``bool_or`` semantics — any contributing MO with an
+              # explicit request flips this bucket true and it stays true.
+              req_acc =
+                if requested,
+                  do: Map.put(req_acc, key, true),
+                  else: Map.put_new(req_acc, key, false)
+
+              {qty_acc, uom_acc, req_acc}
           end
-
-        is_rnd = row.mo_project_type in @rnd_project_types
-        key = {row.part_id, is_rnd}
-        qty_acc = Map.update(qty_acc, key, qty, &Decimal.add(&1, qty))
-        # Remember the last non-nil line UoM per (part, stream). After
-        # the NPD-side base-unit normalisation lands, every line for a
-        # given part will use the same UoM (kg / L) so "last" is stable;
-        # for legacy data we pick something reasonable rather than
-        # crashing.
-        uom_acc =
-          if row.line_uom_id, do: Map.put(uom_acc, key, row.line_uom_id), else: uom_acc
-
-        # ``bool_or`` semantics — any contributing MO with an
-        # explicit request flips this bucket true and it stays true.
-        req_acc =
-          if row.mo_purchasing_requested,
-            do: Map.put(req_acc, key, true),
-            else: Map.put_new(req_acc, key, false)
-
-        {qty_acc, uom_acc, req_acc}
+        end)
       end)
 
     # Fold in packaging-combo overlay requirements. The overlay stores
@@ -378,6 +450,25 @@ defmodule Backend.Procurement.Shortages do
     # would show zero packaging demand and procurement wouldn't act.
     fold_overlay_requirements(bom_acc, company_id)
   end
+
+  # True when the part can only be booked in whole units on the
+  # shortages page — packaging items always are (a bottle / lid /
+  # pouch / label has no half-unit meaning), and raw materials
+  # stocked in a count UoM (pcs / each / ea / dozen / pack) share
+  # the same constraint. Anything with a weight / volume / length
+  # UoM (kg, g, mg, L, mL, m, cm, …) supports exact decimals and
+  # returns false. Nil-safe: an unloaded ``stock_uom`` degrades to
+  # "not count-like" — the shortage stays exact, no silent ceil.
+  @count_uom_symbols ~w(pcs each ea dozen pack)
+  defp count_like_part?(nil), do: false
+  defp count_like_part?(%Backend.Items.Item{item_type: "packaging"}), do: true
+
+  defp count_like_part?(%Backend.Items.Item{stock_uom: %{symbol: symbol}})
+       when is_binary(symbol) do
+    String.downcase(symbol) in @count_uom_symbols
+  end
+
+  defp count_like_part?(_), do: false
 
   # Second pass — walk every open MO with a non-nil ``packaging_combo_items``
   # and fold each overlay row into the same {qty, uom, req} accumulator.

@@ -56,6 +56,7 @@ import type {
   ManufacturingOrder,
   ManufacturingOrderUpsertInput,
 } from "@/lib/production/types";
+import { ServingsCaption } from "@/components/production/servings-caption";
 import { BomTrustCard } from "./mo-bom-trust-card";
 
 interface SiteOption extends SearchPickerOption {
@@ -563,6 +564,16 @@ export function ManufacturingOrderForm({
                   </span>
                 </div>
                 <FieldError messages={fieldErrors.quantity} />
+                <ServingsCaption
+                  quantity={state.quantity}
+                  servingsPerPack={mo?.item?.servings_per_pack ?? null}
+                  dosageForm={mo?.item?.dosage_form ?? null}
+                  uomSymbol={
+                    state.product?.uomSymbol ??
+                    mo?.item?.stock_uom?.symbol ??
+                    null
+                  }
+                />
               </div>
             </div>
 

@@ -17,6 +17,19 @@ export interface BOMPartSummary {
     symbol: string;
     name: string;
   } | null;
+  /** Servings (individual capsules / tablets / gummies / etc.) per
+   *  one stock unit. Null on non-finished-product items or legacy
+   *  items without a ``finished_product_spec``. Used together with
+   *  ``dosage_form`` to render a human-friendly caption under the
+   *  MO quantity field ("0.05 packs · 3 gummies (60/pack)") — trial-
+   *  batch scientists deal in individual servings but stock qty is
+   *  stored in packs, and the raw ``0.05`` reads as nonsense
+   *  without this context. */
+  servings_per_pack?: number | null;
+  /** ``capsule`` | ``tablet`` | ``powder`` | ``liquid`` | ``gummy`` |
+   *  ``other`` — drives the noun in the servings caption ("gummies",
+   *  "capsules", etc.). Null when no spec exists. */
+  dosage_form?: string | null;
 }
 
 export interface BOMUomCompact {

@@ -285,12 +285,22 @@ export function AddBomLineDialog({ mo, open, onOpenChange }: AddLineProps) {
   const [pending, startTransition] = useTransition();
   const [picked, setPicked] = useState<ItemPickerOption | null>(null);
   const [qty, setQty] = useState("");
-  const [isFixed, setIsFixed] = useState(false);
+  // Default matches the natural mental model when adding a line to
+  // a SPECIFIC MO — the operator is thinking about this run, not
+  // about a per-finished-unit rate. The qty they type IS the total
+  // for this MO. Advanced users can opt into the per-unit multiplier
+  // via the checkbox below when they genuinely want the qty to scale
+  // with ``mo.quantity``. Pre-flip the default was ``false`` (per-unit),
+  // which made a "1 pouch" input on a 0.05-pack trial-batch MO become
+  // ``1 × 0.05 = 0.05`` — physically nonsense for a count item — and
+  // required the operator to hunt for a checkbox to get the obvious
+  // behaviour.
+  const [isFixed, setIsFixed] = useState(true);
 
   function reset() {
     setPicked(null);
     setQty("");
-    setIsFixed(false);
+    setIsFixed(true);
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -351,32 +361,40 @@ export function AddBomLineDialog({ mo, open, onOpenChange }: AddLineProps) {
               emptyHint="No items match that search."
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="add-qty">
-                Per-output qty {picked?.uomSymbol ? `(${picked.uomSymbol})` : ""}
-              </Label>
-              <Input
-                id="add-qty"
-                type="number"
-                step="any"
-                min="0"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col justify-end">
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={isFixed}
-                  onChange={(e) => setIsFixed(e.target.checked)}
-                  className="h-3.5 w-3.5"
-                />
-                Fixed per batch (not multiplied by output qty)
-              </label>
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="add-qty">
+              {isFixed ? "Quantity for this MO" : "Per-output qty"}
+              {picked?.uomSymbol ? ` (${picked.uomSymbol})` : ""}
+            </Label>
+            <Input
+              id="add-qty"
+              type="number"
+              step="any"
+              min="0"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {isFixed
+                ? "The number you type is the total for this MO."
+                : "The number will be multiplied by the MO's output qty to compute the total."}
+            </p>
           </div>
+          <label className="flex items-start gap-2 rounded-md border border-border/40 bg-muted/20 px-3 py-2 text-xs">
+            <input
+              type="checkbox"
+              checked={!isFixed}
+              onChange={(e) => setIsFixed(!e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5"
+            />
+            <span>
+              <span className="font-medium">Multiply by output qty</span>{" "}
+              <span className="text-muted-foreground">
+                (advanced — for per-finished-unit BOM lines that should
+                scale with this MO's stock quantity)
+              </span>
+            </span>
+          </label>
           <DialogFooter>
             <Button
               type="button"

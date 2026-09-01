@@ -55,6 +55,7 @@ import { MOOperationsTable } from "../../manufacturing-orders/mo-operations-tabl
 import { MOChainRoadmap } from "../../manufacturing-orders/mo-chain-roadmap";
 import { MOSpecSheet } from "../../manufacturing-orders/mo-spec-sheet";
 import { NpdValidationEmbed } from "@/components/production/npd-validation-embed";
+import { ServingsCaption } from "@/components/production/servings-caption";
 
 interface Props {
   initialMo: ManufacturingOrder;
@@ -739,6 +740,12 @@ function FinishDialog({
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               className="h-10"
+            />
+            <ServingsCaption
+              quantity={qty}
+              servingsPerPack={mo.item?.servings_per_pack ?? null}
+              dosageForm={mo.item?.dosage_form ?? null}
+              uomSymbol={uomSymbol}
             />
             <YieldVarianceChip
               planned={mo.quantity}

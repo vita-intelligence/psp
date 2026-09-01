@@ -1876,6 +1876,22 @@ defmodule BackendWeb.Payloads do
   end
 
   defp maybe_item_summary(%Backend.Items.Item{} = i) do
+    # ``servings_per_pack`` + ``dosage_form`` come from the item's
+    # ``finished_product_spec`` sub-row. Both nullable — legacy items
+    # or non-finished-product items simply won't render the FE's
+    # "N servings" caption. Assoc-not-loaded degrades to nil (payload
+    # stays valid; caller just gets less context).
+    spec = Map.get(i, :finished_product_spec)
+
+    {servings_per_pack, dosage_form} =
+      case spec do
+        %Backend.Items.FinishedProductSpec{} = s ->
+          {s.servings_per_pack, s.dosage_form}
+
+        _ ->
+          {nil, nil}
+      end
+
     %{
       id: i.id,
       uuid: i.uuid,
@@ -1890,7 +1906,13 @@ defmodule BackendWeb.Payloads do
       compliance_status: Map.get(i, :compliance_status) || "draft",
       storage_tags: Map.get(i, :storage_tags) || [],
       attributes: Map.get(i, :attributes) || %{},
-      stock_uom: maybe_uom_compact(Map.get(i, :stock_uom))
+      stock_uom: maybe_uom_compact(Map.get(i, :stock_uom)),
+      # Finished-product spec bits used by the MO form to render a
+      # human-friendly quantity caption ("0.05 packs · 3 gummies").
+      # Both nullable — non-finished items or pre-spec legacy rows
+      # get nil here and the FE gracefully skips the caption.
+      servings_per_pack: servings_per_pack,
+      dosage_form: dosage_form
     }
   end
 
@@ -2898,8 +2920,17 @@ defmodule BackendWeb.Payloads do
     #      the operator picks / pre-checks / books them through the
     #      same UX as any real BOM line.
     #
-    # ``nil`` = no overlay picked → default packaging BOM lines
-    # render as before.
+    # ``packaging_combo_items`` semantics (PSP contract, from NPD's
+    # ``_build_packaging_overlay``):
+    #   * ``nil``   → no overlay → default packaging BOM applies
+    #   * ``[]``    → active overlay, loose-bulk mode → SKIP master
+    #                 packaging BOM lines (no packaging on this run)
+    #   * ``[...]`` → active overlay with combo → SKIP master
+    #                 packaging BOM lines; overlay rows render below
+    # Any non-nil value is an "active overlay". Override-ADDED
+    # packaging lines are unaffected — the master-line filter runs
+    # BEFORE ``effective_bom_lines`` layers overrides on top, so
+    # synth added packaging (bom_id=nil) survives.
     overlay_active? = is_list(overlay_items)
 
     overrides =

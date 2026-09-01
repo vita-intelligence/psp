@@ -705,7 +705,8 @@ export function QcCard({
               size="sm"
               variant="outline"
               onClick={fail}
-              disabled={pending}
+              disabled={pending || npdGate.blocked}
+              title={npdGate.blocked ? npdGate.reason : undefined}
               className={cn(
                 "border-rose-500/40 text-rose-700 hover:bg-rose-500/10 dark:text-rose-300",
                 mode === "fail" && "bg-rose-500/10",
@@ -741,6 +742,39 @@ export function QcCard({
           </div>
         </div>
       </div>
+
+      {/* Sequential-wizard nudge — screams at the operator when the
+          Pass / Fail buttons are locked because the NPD product
+          validation form hasn't reached ``passed`` yet. Renders
+          only when the gate blocks (so on production MOs, or trial
+          batches whose validation already passed, this section is
+          invisible). Positioned right below the button row so the
+          "why is this greyed out" answer is inches from the greyed
+          buttons. The bigger prompt in ``NpdValidationCard`` at the
+          top of the page carries the "Open on NPD" jump link; this
+          inline banner exists so the operator scrolled down to the
+          QC card doesn't have to scroll back up to find the answer. */}
+      {npdGate.blocked && (
+        <div className="flex items-start gap-3 rounded-lg border-2 border-amber-500/60 bg-amber-50 px-4 py-3 dark:border-amber-500/40 dark:bg-amber-950/30">
+          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+              Finish the trial batch validation form first
+            </p>
+            <p className="text-xs text-amber-800 dark:text-amber-200/90">
+              Pass and Fail are locked until the NPD product
+              validation reaches <span className="font-semibold">Passed</span>.
+              Scroll up to the &quot;Trial validation on NPD&quot;
+              card and click <span className="font-semibold">Open
+              on NPD</span> to complete the weight / hardness /
+              disintegration / organoleptic tests, then sign as
+              scientist + R&amp;D manager. This QC card unlocks
+              automatically once NPD pushes the passed status back
+              to PSP.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">
         <Spec label="Length" value={lot.package_length_mm} unit="mm" />
@@ -1165,30 +1199,38 @@ function EmptyState() {
 }
 
 /**
- * Compute whether the Output QC pass button is blocked by NPD's
- * product validation. Server-side rule (mirrored here for UX):
+ * Compute whether Output QC (both Pass and Fail) is blocked by
+ * NPD's product validation. Mirrors the server rule at
+ * `Backend.Production.guard_npd_validation_gate/2` — the guard
+ * fires for any MO with a linked NPD trial batch (`npd_trial_batch_uuid`
+ * set) regardless of whether the MO is stamped `project_type=trial`
+ * (R&D bench-scale) or `project_type=sample` (Custom-flow trial-
+ * batch sample). Both flavours produce a physical run whose
+ * output needs the ProductValidation form filled + signed on NPD
+ * before QA can accept the lot.
  *
- *   * Production + sample MOs → always open, no NPD gate applies.
- *   * Trial MO → open only when `npd_validation_status === "passed"`.
- *     Anything else (null, draft, in_progress, failed) blocks.
+ * RTG sample-kit MOs carry `project_type=sample` too but with
+ * `npd_trial_batch_uuid = NULL` — those are pre-validated
+ * commercial-catalogue runs and correctly skip the gate.
  *
- * `sample` runs a pre-validated RTG formulation from the commercial
- * catalogue — there's no new validation to trigger, so gating it
- * behind NPD's validation flow strands the lot in `received`
- * forever. `trial` MOs are the R&D case the gate was designed for
- * (scientist validating an unreleased formulation before QA
- * accepts the output).
+ * FE also blocks the Fail button (not just Pass) so the operator's
+ * mental model matches: "finish the validation form first, THEN
+ * approve or reject." The backend's Fail path today doesn't enforce
+ * the gate (an operator can always fail a broken lot via direct
+ * API), but the UX defaults to the sequential guidance the
+ * scientists rely on. If a legit "fail without validation" surfaces
+ * we can add an escape hatch — for now, the wizard's linear.
  *
- * `failed` is a distinct case: the lot has already been auto-
- * rejected by the webhook, so the pass button being disabled is
- * academic — the fail banner in `NpdValidationCard` tells the
- * operator what's next.
+ * `failed` is a distinct terminal case: the lot has already been
+ * auto-rejected by the webhook, so both buttons being locked is
+ * academic — the failure banner in `NpdValidationCard` explains
+ * what's next.
  */
 function computeNpdGate(
   mo: OutputQcEntry["mo"],
 ): { blocked: boolean; reason?: string } {
   if (!mo) return { blocked: false };
-  if (mo.project_type !== "trial") {
+  if (!mo.npd_trial_batch_uuid) {
     return { blocked: false };
   }
   const status = mo.npd_validation_status;
@@ -1205,6 +1247,6 @@ function computeNpdGate(
 
   return {
     blocked: true,
-    reason: `Waiting for NPD product validation to pass. Current status: ${label}. Open the validation on NPD to complete it.`,
+    reason: `Waiting for NPD product validation to pass. Current status: ${label}. Fill and sign the trial batch validation form on NPD before Pass / Fail unlock.`,
   };
 }

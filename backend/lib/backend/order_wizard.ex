@@ -1118,7 +1118,7 @@ defmodule Backend.OrderWizard do
        when s in ["pending_approver", "pending_director", "approved"],
        do: :approval
 
-  defp derive_phase(%CustomerOrder{status: "confirmed"}, line_states, mos) do
+  defp derive_phase(%CustomerOrder{status: "confirmed"} = co, line_states, mos) do
     # Cancelled MOs are tombstones. Every phase check below walks
     # the LIVE subset so a fully-cancelled tree falls back through
     # the "line waiting on an MO" branch to ``:production_planning``
@@ -1183,7 +1183,26 @@ defmodule Backend.OrderWizard do
       # until either a top-up MO covers the delta OR the operator
       # runs ``Backend.CustomerOrders.accept_short_delivery/3`` on
       # the line (audit-logged reason, mirrored to the CO timeline).
-      Enum.any?(line_states, &line_state_short_out_of_tolerance?/1) ->
+      #
+      # Sample-kind COs are exempt. They're internal R&D fulfilment
+      # placeholders spawned from trial batches — their line
+      # ``qty_ordered`` is stamped from
+      # ``TrialBatch.batch_size_units`` at sync time (see
+      # ``sync_sample_customer_order_to_psp`` in NPD, comment there
+      # notes "CO line is a display / audit surface, not the
+      # production spec"). The scientist's Create-MO modal can then
+      # override the actual PSP MO qty via ``size_mode = "units"``
+      # (loose gummies mode divides by ``servings_per_pack``), so
+      # a 20-pack planned batch producing 3 loose gummies lands as
+      # 0.05 packs on the MO while the CO line still reads 20 —
+      # a legitimate "over/under vs actual production is acceptable"
+      # per the sync's own docstring. Running fulfilment tolerance
+      # against that gap tags every trial-batch flow as
+      # ``:awaiting_shortfall_resolution`` even when there's no
+      # real shortfall. Excluding sample-kind COs from the gate
+      # matches the sync's intent + unblocks the wizard.
+      Enum.any?(line_states, &line_state_short_out_of_tolerance?/1) and
+          not co.sample_kind ->
         :awaiting_shortfall_resolution
 
       true ->
@@ -3510,18 +3529,38 @@ defmodule Backend.OrderWizard do
   # never resolves — mirror ``mo_parts_breakdown``'s filter so the
   # wizard sees the same coverage the parts card shows.
   defp count_under_booked_lines(%ManufacturingOrder{} = mo) do
+    # ``packaging_combo_items`` semantics (PSP contract, established
+    # by ``_build_packaging_overlay`` on the NPD side):
+    #   * ``nil``   → no overlay → master packaging BOM applies
+    #   * ``[]``    → active overlay, loose-bulk mode → SKIP master
+    #                 packaging BOM lines (no packaging on this run)
+    #   * ``[...]`` → active overlay with combo → SKIP master
+    #                 packaging BOM lines; overlay flow books the
+    #                 replacement items separately
+    # Any non-nil value counts as "overlay active". An earlier
+    # attempt to gate on ``!= []`` mis-read the contract — the
+    # trial-batch page's "loose gummies (no packaging)" toggle
+    # deliberately stamps ``[]`` to mean "skip the packaging BOM".
     overlay_active? = is_list(Map.get(mo, :packaging_combo_items))
 
+    # Walk the MO's EFFECTIVE BOM — master lines merged with per-MO
+    # ``mo_bom_overrides`` (added / qty_changed / removed). Prior to
+    # this the wizard walked ``mo.bom.lines`` directly, so any item
+    # the planner manually ADDED to an MO (via the parts-tab "Add
+    # line" affordance) was invisible to the under-booked count and
+    # the wizard advanced to ``:awaiting_pickup`` even when the
+    # added item had zero coverage. When an overlay is active only
+    # MASTER packaging lines get skipped; operator-added override
+    # packaging (synth lines with ``bom_id: nil``) still counts —
+    # the manual override represents run-specific intent that lives
+    # alongside the overlay, not underneath it.
     lines =
-      case mo.bom do
-        %{lines: lines} when is_list(lines) ->
-          if overlay_active?,
-            do: Enum.reject(lines, &packaging_bom_line?/1),
-            else: lines
-
-        _ ->
-          []
-      end
+      Backend.Production.effective_bom_lines_for_mo(mo)
+      |> then(fn ls ->
+        if overlay_active?,
+          do: Enum.reject(ls, &master_packaging_bom_line?/1),
+          else: ls
+      end)
 
     mo_qty = mo.quantity || Decimal.new(0)
 
@@ -4668,12 +4707,17 @@ defmodule Backend.OrderWizard do
 
   defp normalise_qty_to_storage_precision(other), do: other
 
-  # Packaging BOM lines from formulation stages when a packaging
-  # combo overlay is active — mirrors ``payloads.packaging_bom_line?/1``
-  # so ``count_under_booked_lines`` doesn't double-count the packaging
-  # rows the overlay flow separately books.
-  defp packaging_bom_line?(%{part: %Backend.Items.Item{item_type: "packaging"}}),
-    do: true
+  # Packaging BOM line filter used when an overlay is active. Only
+  # fires for MASTER BOM lines — synthesized ADDED override lines
+  # (``bom_id: nil``) are excluded even when they point at a
+  # packaging item. The overlay skip rule was written for "the
+  # scientist's formulation-level packaging BOM lines that the
+  # overlay is standing in for" — operator-added override packaging
+  # (a manual pouch on a specific sample MO) represents intent
+  # orthogonal to the overlay, so it must survive the filter.
+  defp master_packaging_bom_line?(%{bom_id: bom_id, part: %Backend.Items.Item{item_type: "packaging"}})
+       when not is_nil(bom_id),
+       do: true
 
-  defp packaging_bom_line?(_), do: false
+  defp master_packaging_bom_line?(_), do: false
 end

@@ -26,15 +26,17 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
   const mo = entry.mo;
   if (!mo || !mo.npd_formulation_uuid || !mo.npd_trial_batch_uuid) return null;
 
-  // Sample MOs are production runs of already-approved RTG
-  // formulations — their trial batch is a fulfilment placeholder,
-  // NOT something QA needs to validate again. The pill would render
-  // "Not started" against the placeholder batch, which reads as a
-  // gap when in fact the compliance evidence is the RTG's canonical
-  // passed validation (surfaced via the embedded validation sheet
-  // below the card). Hide the card entirely for sample MOs so
-  // operators aren't chasing a phantom NPD action.
-  if (mo.project_type === "sample") return null;
+  // Prior versions bailed on ``project_type === "sample"`` on the
+  // theory that samples are always pre-validated RTG runs. That's
+  // wrong for Custom-flow trial batches, which are ALSO stamped
+  // ``project_type=sample`` on the PSP side (per the trial-batches
+  // service in NPD) but genuinely need per-run validation before QA
+  // signs off. The correct gate is presence of
+  // ``npd_trial_batch_uuid`` — the guard above already establishes
+  // this — so we render the card for both trial and sample MOs when
+  // they're linked to a trial batch. RTG sample-kit runs (no trial
+  // batch on NPD, ``npd_trial_batch_uuid`` NULL) still hit the early
+  // return above and skip the card correctly.
 
   const base = npdBaseUrl.replace(/\/+$/, "");
   const href =
@@ -43,6 +45,10 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
 
   const status = mo.npd_validation_status;
   const failed = status === "failed";
+  const passed = status === "passed";
+  // Blocks the QC actions below — draft, in_progress, or null all
+  // read the same way to the operator (the form isn't done).
+  const blocking = !passed && !failed;
 
   return (
     <section
@@ -50,7 +56,9 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
         "rounded-xl border p-4",
         failed
           ? "border-rose-300 bg-rose-50/60 dark:border-rose-900/50 dark:bg-rose-950/20"
-          : "border-indigo-200 bg-indigo-50/60 dark:border-indigo-900/50 dark:bg-indigo-950/20",
+          : blocking
+            ? "border-2 border-amber-500/70 bg-amber-50 shadow-md ring-1 ring-amber-500/20 dark:border-amber-500/50 dark:bg-amber-950/25"
+            : "border-indigo-200 bg-indigo-50/60 dark:border-indigo-900/50 dark:bg-indigo-950/20",
       )}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -60,7 +68,9 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
               "grid size-9 place-items-center rounded-full",
               failed
                 ? "bg-rose-500/15 text-rose-700 dark:text-rose-300"
-                : "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
+                : blocking
+                  ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                  : "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
             )}
           >
             <FlaskConical className="size-5" />
@@ -72,10 +82,14 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
                   "text-sm font-semibold",
                   failed
                     ? "text-rose-900 dark:text-rose-100"
-                    : "text-indigo-900 dark:text-indigo-100",
+                    : blocking
+                      ? "text-amber-900 dark:text-amber-100"
+                      : "text-indigo-900 dark:text-indigo-100",
                 )}
               >
-                Trial validation on NPD
+                {blocking
+                  ? "Trial batch validation required"
+                  : "Trial validation on NPD"}
               </p>
               <ValidationStatusPill status={status} />
             </div>
@@ -84,20 +98,46 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
                 "text-xs",
                 failed
                   ? "text-rose-800/80 dark:text-rose-200/80"
-                  : "text-indigo-800/80 dark:text-indigo-200/80",
+                  : blocking
+                    ? "text-amber-900/90 dark:text-amber-100/90"
+                    : "text-indigo-800/80 dark:text-indigo-200/80",
               )}
             >
-              Output QC on a trial batch must be paired with an NPD
-              product validation. Opens the existing validation for
-              this batch, or creates a new one.
+              {blocking ? (
+                <>
+                  <span className="font-semibold">
+                    Pass and Fail on this QC card are locked until
+                    this validation reaches Passed.
+                  </span>{" "}
+                  Open the form on NPD, fill weight / hardness /
+                  thickness / disintegration / organoleptic tests +
+                  MRPeasy checklist, then sign as scientist and R&amp;D
+                  manager. NPD auto-pushes the passed status back to
+                  PSP and this QC card unlocks.
+                </>
+              ) : (
+                <>
+                  Output QC on a trial batch must be paired with an
+                  NPD product validation. Opens the existing
+                  validation for this batch, or creates a new one.
+                </>
+              )}
             </p>
           </div>
         </div>
 
-        <Button asChild size="sm" className="shrink-0">
+        <Button
+          asChild
+          size={blocking ? "default" : "sm"}
+          className={cn(
+            "shrink-0",
+            blocking &&
+              "bg-amber-600 text-white shadow-sm hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-400",
+          )}
+        >
           <a href={href} target="_blank" rel="noopener noreferrer">
             <ExternalLink className="size-3.5" />
-            Open on NPD
+            {blocking ? "Open validation on NPD" : "Open on NPD"}
           </a>
         </Button>
       </div>
