@@ -777,6 +777,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       |> Ecto.Changeset.put_change(:confirmed_at, now)
       |> Ecto.Changeset.put_change(:sample_kind, true)
       |> put_npd_formulation_uuid(params)
+      |> put_npd_project_type(params)
       |> put_npd_team(params)
       |> put_npd_payment(params)
       |> put_customer_delivery_address(params)
@@ -805,6 +806,7 @@ defmodule Backend.CustomerOrders.NpdSync do
       existing
       |> CustomerOrder.changeset(attrs)
       |> put_npd_formulation_uuid(params)
+      |> put_npd_project_type(params)
       |> put_npd_team(params)
       |> put_npd_payment(params)
       |> put_customer_delivery_address(params, existing.status)
@@ -923,6 +925,27 @@ defmodule Backend.CustomerOrders.NpdSync do
           {:ok, uuid} -> Ecto.Changeset.put_change(changeset, :npd_formulation_uuid, uuid)
           :error -> changeset
         end
+
+      _ ->
+        changeset
+    end
+  end
+
+  # NPD project flavour ("custom" | "ready_to_go"). Sent on both the
+  # commercial-CO sync (via ``sync_customer_order_to_psp``) and the
+  # sample-CO sync (via ``sync_sample_customer_order_to_psp``) so
+  # downstream PSP surfaces can gate on it — most visibly the
+  # output-qc "Trial batch validation required" card, which hides
+  # on RTG (RTG's FINAL-spec approval IS the recipe-validation gate,
+  # not a per-batch step). Silent no-op when the field is absent so
+  # a legacy caller (or a sync payload predating this field) doesn't
+  # wipe an existing value.
+  defp put_npd_project_type(changeset, params) do
+    raw = params["npd_project_type"] || params[:npd_project_type]
+
+    case raw do
+      s when is_binary(s) and s != "" ->
+        Ecto.Changeset.put_change(changeset, :npd_project_type, s)
 
       _ ->
         changeset
