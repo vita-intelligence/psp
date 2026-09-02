@@ -3765,14 +3765,26 @@ defmodule BackendWeb.Payloads do
             # this batch or creates a new one.
             npd_formulation_uuid: mo.npd_formulation_uuid,
             npd_trial_batch_uuid: mo.npd_trial_batch_uuid,
-            # NPD project flavour walked from the linked CO. Nil when
-            # the MO has no CO line (e.g. legacy trial batches created
-            # via the integration endpoint before customer-order
-            # linkage existed). Powers the ``NpdValidationCard`` gate:
-            # RTG projects hide the card because per-batch validation
-            # is a Custom-flow concept — the RTG's FINAL-spec approval
-            # is the recipe-validation gate.
+            # NPD project flavour walked from the linked CO. Nil
+            # when the MO has no CO line. Exposed for observability
+            # — the load-bearing gate for ``NpdValidationCard`` uses
+            # ``is_customer_sample_fulfilment`` below instead.
             npd_project_type: npd_project_type_from_mo(mo),
+            # True when the linked CO carries ``sample_kind = true``
+            # — meaning "a customer paid for a specific sample kit
+            # via the /samples fulfilment queue, this MO is producing
+            # THAT sample". Powers the ``NpdValidationCard`` hide
+            # rule: customer-paid samples don't need per-batch
+            # validation (whether Custom or RTG) because they're
+            # fulfilment production of an already-validated recipe,
+            # not R&D validation runs. Internal RTG validation
+            # trials (scientist creating a batch to prove a new RTG
+            # recipe before publishing) have NO CO link, so this is
+            # false and the card correctly shows. Nil-safe: MOs
+            # without a CO chain return false, falling through to
+            # the show-card default.
+            is_customer_sample_fulfilment:
+              customer_sample_fulfilment?(mo),
             # NPD ProductValidation snapshot pushed by the sync
             # webhook. Drives the Output QC pass button gate + the
             # status pill on the NPD validation card.
@@ -3837,6 +3849,26 @@ defmodule BackendWeb.Payloads do
     else
       _ -> nil
     end
+  end
+
+  # True when the MO's linked CO is a sample-fulfilment CO (spawned
+  # by NPD's ``sync_sample_customer_order_to_psp`` from the /samples
+  # fulfilment queue — meaning a customer paid for a specific
+  # sample kit and THIS MO is producing that sample). False for MOs
+  # with no linked CO (internal validation trials — scientist
+  # created the batch to prove a recipe) or MOs linked to a
+  # commercial CO (``sample_kind = false``).
+  #
+  # ``kind`` on the trial batch (trial vs sample) is NOT the right
+  # signal — scientists commonly pick ``trial`` on a customer-paid
+  # sample too (bench-scale run of a customer's sample kit). The
+  # CO's ``sample_kind`` flag is set once at sync time by NPD, so
+  # it stays stable across kind edits and doesn't drift.
+  defp customer_sample_fulfilment?(mo) do
+    match?(
+      %{customer_order_line: %{customer_order: %{sample_kind: true}}},
+      mo
+    )
   end
 
   # Compact projection of the finished-product spec (from NPD or PSP

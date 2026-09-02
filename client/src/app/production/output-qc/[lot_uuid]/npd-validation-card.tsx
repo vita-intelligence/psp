@@ -26,28 +26,21 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
   const mo = entry.mo;
   if (!mo || !mo.npd_formulation_uuid || !mo.npd_trial_batch_uuid) return null;
 
-  // RTG projects hide the card entirely — per-batch product
-  // validation is a Custom-flow concept; the RTG SKU's FINAL-spec
-  // approval flow IS the recipe-validation gate. Every batch on an
-  // RTG project is either an internal test of an already-validated
-  // recipe or a customer-sample fulfilment. Same rule as NPD's
-  // ValidationLink (vita-cff commit 64c2ff6): validation is not a
-  // per-batch step on RTG. `npd_project_type` walked from the linked
-  // CO on the payload builder — null on standalone/legacy MOs, in
-  // which case we fall through and show the card (Custom-safe
-  // default).
-  if (mo.npd_project_type === "ready_to_go") return null;
-
-  // Prior versions bailed on ``project_type === "sample"`` on the
-  // theory that samples are always pre-validated RTG runs. That's
-  // wrong for Custom-flow trial batches, which are ALSO stamped
-  // ``project_type=sample`` on the PSP side (per the trial-batches
-  // service in NPD) but genuinely need per-run validation before QA
-  // signs off. The correct gate for Custom flows is presence of
-  // ``npd_trial_batch_uuid`` — the guard above already establishes
-  // this — so we render the card for both trial and sample MOs when
-  // they're linked to a trial batch. The RTG bail-out above handles
-  // the RTG side cleanly regardless of whether a trial batch exists.
+  // Customer-paid sample fulfilment (MO's linked CO has
+  // ``sample_kind = true``) → hide the card. The MO is producing
+  // a specific sample kit a customer ordered via the /samples
+  // fulfilment queue — that's production of an already-validated
+  // recipe, not R&D validation. Applies to BOTH Custom + RTG
+  // (customer paid samples on either flavour skip per-batch
+  // validation the same way).
+  //
+  // Internal validation trials — scientist creates a batch on NPD
+  // to prove a new recipe (Custom trial-slot OR RTG pre-publish
+  // trial) — have no CO link, so this stays false and the card
+  // correctly shows. ``batch.kind`` is NOT the right signal:
+  // scientists commonly pick ``trial`` on customer-paid samples
+  // too (bench-scale run), so gating on kind would misfire.
+  if (mo.is_customer_sample_fulfilment) return null;
 
   const base = npdBaseUrl.replace(/\/+$/, "");
   const href =

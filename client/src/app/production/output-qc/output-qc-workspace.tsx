@@ -1233,12 +1233,14 @@ function computeNpdGate(
   if (!mo.npd_trial_batch_uuid) {
     return { blocked: false };
   }
-  // RTG projects don't do per-batch validation — the RTG's FINAL-spec
-  // approval flow is the recipe-validation gate. Every batch on RTG
-  // is either an internal test of an already-validated recipe or
-  // customer-sample fulfilment, neither of which is a per-batch
-  // validation step. Matches the ``NpdValidationCard`` render gate.
-  if (mo.npd_project_type === "ready_to_go") return { blocked: false };
+  // Customer-paid sample fulfilment doesn't gate on validation —
+  // the recipe is already validated (published RTG SKU or approved
+  // Custom FINAL); this MO is just producing the customer's sample
+  // kit. Internal validation trials keep the gate on. Matches the
+  // ``NpdValidationCard`` render rule. See the DTO comment on
+  // ``is_customer_sample_fulfilment`` for why batch ``kind`` isn't
+  // the right signal.
+  if (mo.is_customer_sample_fulfilment) return { blocked: false };
   const status = mo.npd_validation_status;
   if (status === "passed") return { blocked: false };
 

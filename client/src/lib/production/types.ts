@@ -1575,11 +1575,24 @@ export interface OutputQcEntry {
     npd_trial_batch_uuid: string | null;
     /** NPD project flavour walked from the linked CO. `"custom"` or
      *  `"ready_to_go"`; null when the MO has no linked CO (legacy
-     *  trial-batch integrations, standalone PSP MOs). Gates the
-     *  NpdValidationCard: RTG projects hide it because per-batch
-     *  validation is a Custom-flow concept — RTG's FINAL-spec
-     *  approval is the recipe-validation gate. */
+     *  trial-batch integrations, standalone PSP MOs). Informational
+     *  — the load-bearing gate for validation UX is
+     *  `is_customer_sample_fulfilment` below. */
     npd_project_type: string | null;
+    /** True when the linked CO carries `sample_kind = true` — the
+     *  MO is producing a customer-paid sample kit from the /samples
+     *  fulfilment queue. Hides the NpdValidationCard: customer-paid
+     *  samples don't need per-batch validation (whether Custom or
+     *  RTG) because they're fulfilment production of an already-
+     *  validated recipe, not R&D. Internal validation trials
+     *  (scientist creating a batch to prove a new recipe) have no
+     *  CO link — this stays false and the card correctly shows.
+     *
+     *  Batch `kind` (trial vs sample) is NOT the right signal —
+     *  scientists commonly pick `trial` on a customer-paid sample
+     *  too (bench-scale run of a customer's sample kit). This flag
+     *  is set once at sync time and stays stable across kind edits. */
+    is_customer_sample_fulfilment: boolean;
     /** NPD ProductValidation snapshot pushed by the sync webhook.
      *  For trial/sample MOs, the Output QC pass button is disabled
      *  until `npd_validation_status === "passed"`. When
