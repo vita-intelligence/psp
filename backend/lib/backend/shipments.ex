@@ -473,7 +473,8 @@ defmodule Backend.Shipments do
       Repo.transaction(fn ->
         with {:ok, event} <- insert_pickup_event(actor, shipment, attrs, qty),
              :ok <- attach_files_to_event(shipment, event, file_ids),
-             {:ok, updated} <- refresh_shipment_after_event(actor, shipment, event, qty) do
+             {:ok, updated} <-
+               refresh_shipment_after_event(actor, shipment, event, qty, attrs) do
           {updated, event}
         else
           {:error, reason} -> Repo.rollback(reason)
@@ -656,7 +657,13 @@ defmodule Backend.Shipments do
   # denormalise the LATEST event's driver / vehicle / checklist onto
   # the shipment row so existing consumers (portal, wizard, list
   # tables) that read the shipment row directly keep working.
-  defp refresh_shipment_after_event(_actor, %Shipment{} = shipment, %ShipmentPickupEvent{} = event, _event_qty) do
+  defp refresh_shipment_after_event(
+         _actor,
+         %Shipment{} = shipment,
+         %ShipmentPickupEvent{} = event,
+         _event_qty,
+         attrs
+       ) do
     reloaded_shipment = Repo.get!(Shipment, shipment.id)
 
     picked_total =
@@ -676,8 +683,14 @@ defmodule Backend.Shipments do
           "partially_picked"
       end
 
-    reloaded_shipment
-    |> Shipment.pickup_event_summary_changeset(%{
+    # ``carrier`` is a shipment-wide default (there's no per-event
+    # column) but the mobile dispatch form is the only surface that
+    # captures it — pipe the fresh value in from attrs when present so
+    # the first truck initialises the "Delivery company" field the
+    # desktop card falls back to. Subsequent visits with a different
+    # value overwrite; blank/missing attrs leave the existing value
+    # untouched.
+    base_attrs = %{
       "status" => next_status,
       "picked_up_at" => event.picked_up_at,
       "picked_up_by_id" => event.picked_up_by_id,
@@ -689,7 +702,16 @@ defmodule Backend.Shipments do
       "vehicle_clean_suitable" => event.vehicle_clean_suitable,
       "transport_condition_acceptable" => event.transport_condition_acceptable,
       "dispatch_approved" => event.dispatch_approved
-    })
+    }
+
+    summary_attrs =
+      case attrs["carrier"] do
+        v when is_binary(v) and v != "" -> Map.put(base_attrs, "carrier", v)
+        _ -> base_attrs
+      end
+
+    reloaded_shipment
+    |> Shipment.pickup_event_summary_changeset(summary_attrs)
     |> Repo.update()
     |> case do
       {:ok, updated} -> {:ok, updated}

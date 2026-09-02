@@ -193,6 +193,10 @@ export interface ShipmentPickupEvent {
 
 export interface ShipmentPickupEventPayload {
   qty: string;
+  /** Delivery company. Persisted as a shipment-wide default via the
+   *  create-pickup-event handler so the mobile form can initialise it
+   *  without a separate desktop-only PATCH. */
+  carrier?: string | null;
   driver_name?: string | null;
   vehicle_registration?: string | null;
   consignment_note_ref?: string | null;

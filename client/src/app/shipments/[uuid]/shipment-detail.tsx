@@ -77,12 +77,10 @@ import {
   markShipmentReadyAction,
   updatePickupEventPaperworkAction,
   updateShipmentAction,
-  updateShipmentCarrierDetailsAction,
 } from "@/lib/shipments/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import type {
   Shipment,
-  ShipmentCarrierEditableFields,
   ShipmentDeliveryFile,
   ShipmentEditableFields,
   ShipmentStatus,
@@ -124,14 +122,6 @@ interface FormState {
   planned_ship_at: string;
   notes: string;
   qty: string;
-  // Carrier & vehicle
-  carrier: string;
-  vehicle_registration: string;
-  driver_name: string;
-  consignment_note_ref: string;
-  tracking_number: string;
-  seal_number: string;
-  temperature_c: string;
 }
 
 // Keys owned by each edit card — used to compute per-section dirty
@@ -145,16 +135,6 @@ const SHIP_TO_KEYS = [
   "qty",
 ] as const satisfies readonly (keyof FormState)[];
 
-const CARRIER_KEYS = [
-  "carrier",
-  "vehicle_registration",
-  "driver_name",
-  "consignment_note_ref",
-  "tracking_number",
-  "seal_number",
-  "temperature_c",
-] as const satisfies readonly (keyof FormState)[];
-
 function initialFrom(s: Shipment): FormState {
   return {
     recipient_name: s.recipient_name ?? "",
@@ -163,13 +143,6 @@ function initialFrom(s: Shipment): FormState {
     planned_ship_at: s.planned_ship_at ? s.planned_ship_at.slice(0, 16) : "",
     notes: s.notes ?? "",
     qty: s.qty ?? "",
-    carrier: s.carrier ?? "",
-    vehicle_registration: s.vehicle_registration ?? "",
-    driver_name: s.driver_name ?? "",
-    consignment_note_ref: s.consignment_note_ref ?? "",
-    tracking_number: s.tracking_number ?? "",
-    seal_number: s.seal_number ?? "",
-    temperature_c: s.temperature_c ?? "",
   };
 }
 
@@ -183,18 +156,6 @@ function toEditable(state: FormState): ShipmentEditableFields {
       : null,
     notes: state.notes || null,
     qty: state.qty,
-  };
-}
-
-function toCarrierEditable(state: FormState): ShipmentCarrierEditableFields {
-  return {
-    carrier: state.carrier || null,
-    vehicle_registration: state.vehicle_registration || null,
-    driver_name: state.driver_name || null,
-    consignment_note_ref: state.consignment_note_ref || null,
-    tracking_number: state.tracking_number || null,
-    seal_number: state.seal_number || null,
-    temperature_c: state.temperature_c || null,
   };
 }
 
@@ -219,10 +180,8 @@ export function ShipmentDetail({
 }: Props) {
   const router = useRouter();
   const [editingShipTo, setEditingShipTo] = useState(false);
-  const [editingCarrier, setEditingCarrier] = useState(false);
   const [error, setError] = useState<ErrorResult | null>(null);
   const [savingShipTo, startSaveShipTo] = useTransition();
-  const [savingCarrier, startSaveCarrier] = useTransition();
   const [busy, startTransition] = useTransition();
 
   const initialState = useMemo(() => initialFrom(shipment), [shipment]);
@@ -260,7 +219,6 @@ export function ShipmentDetail({
   useEffect(() => {
     resetState(initialFrom(shipment));
     setEditingShipTo(false);
-    setEditingCarrier(false);
     setError(null);
   }, [shipment, resetState]);
 
@@ -284,16 +242,12 @@ export function ShipmentDetail({
   // ``ensure_editable`` gates on draft|ready).
   const shipToEditable =
     shipment.status === "draft" || shipment.status === "ready";
-  // Carrier & vehicle stays editable through pickup because carrier
-  // paperwork routinely needs corrections after departure. Locks at
-  // delivered / cancelled. Perm gate is state-dependent (mirrors BE
+  // Per-event paperwork stays editable through pickup because carriers
+  // routinely email tracking numbers / seal reads / temperature logs
+  // AFTER the truck departs. Perm gate is state-dependent (mirrors BE
   // ``ensure_carrier_perm``): shipments.edit pre-pickup,
   // shipments.pickup post-pickup.
-  const carrierEditable =
-    shipment.status === "draft" ||
-    shipment.status === "ready" ||
-    shipment.status === "picked_up";
-  const carrierPermHolder =
+  const paperworkPermHolder =
     shipment.status === "picked_up" ? canPickup : canEdit;
   // Terminal states — action bar hides everything except the trailing
   // Cancel button. `picked_up` used to be terminal here, but now that
@@ -305,19 +259,18 @@ export function ShipmentDetail({
 
   const original = useMemo(() => initialFrom(shipment), [shipment]);
   const dirtyShipTo = !subsetEqual(state, original, SHIP_TO_KEYS);
-  const dirtyCarrier = !subsetEqual(state, original, CARRIER_KEYS);
-  const dirty = dirtyShipTo || dirtyCarrier;
+  const dirty = dirtyShipTo;
   // Head-of-room lock. Non-heads can join + watch, but only the
   // creator (first joiner) can Save / Mark ready / Reopen / Cancel.
   // Pickup is a separate physical event — gated on canPickup, not
   // isCreator, since whoever's at the desk when the truck rolls in
   // hits the button.
   const canDrive = canEdit && isCreator;
-  // Carrier edits need head-of-room too (single source of truth for
-  // save order) AND the right per-state perm. Post-pickup a user
-  // with shipments.pickup but not shipments.edit still needs to be
-  // head — they can join first + take over head naturally.
-  const canDriveCarrier = carrierPermHolder && isCreator;
+  // Per-event paperwork edits need head-of-room (single source of
+  // truth for save order) AND the right per-state perm. Post-pickup a
+  // user with shipments.pickup but not shipments.edit still needs to
+  // be head — they can join first + take over head naturally.
+  const canEditPaperwork = paperworkPermHolder && isCreator;
 
   // Paperwork checklist mirrored by the backend's `validate_ready_prereqs`.
   // Kept in step with `Backend.Shipments.Shipment.ready_changeset/2` so a
@@ -391,34 +344,6 @@ export function ShipmentDetail({
     }
     resetState(next);
     setEditingShipTo(false);
-    setError(null);
-  };
-
-  const saveCarrier = () => {
-    setError(null);
-    startSaveCarrier(async () => {
-      const res = await updateShipmentCarrierDetailsAction(
-        shipment.uuid,
-        toCarrierEditable(state),
-      );
-      if (!res.ok) {
-        setError(res);
-        return;
-      }
-      toast.success("Carrier & vehicle saved.");
-      setEditingCarrier(false);
-      broadcastCommit({ kind: "shipment-updated" });
-      router.refresh();
-    });
-  };
-
-  const discardCarrier = () => {
-    const next: FormState = { ...state };
-    for (const k of CARRIER_KEYS) {
-      (next as unknown as Record<string, unknown>)[k] = original[k];
-    }
-    resetState(next);
-    setEditingCarrier(false);
     setError(null);
   };
 
@@ -882,42 +807,19 @@ export function ShipmentDetail({
         </CardContent>
       </Card>
 
-      {/* -------- Carrier & vehicle card --------
-           Delivery company, plate, driver, waybill, tracking, seal,
-           temperature. Editable through ``picked_up`` (BE
-           carrier-details endpoint). Pre-pickup needs shipments.edit;
-           post-pickup needs shipments.pickup. */}
-      <CarrierVehicleCard
-        shipment={shipment}
-        state={state}
-        setField={setField}
-        focusField={focusField}
-        blurField={blurField}
-        fieldEditors={fieldEditors}
-        editable={carrierEditable}
-        canEditByPerm={carrierPermHolder}
-        canDrive={canDriveCarrier}
-        editing={editingCarrier}
-        setEditing={setEditingCarrier}
-        dirty={dirtyCarrier}
-        saving={savingCarrier}
-        onSave={saveCarrier}
-        onDiscard={discardCarrier}
-        creatorName={creator?.name ?? null}
-      />
-
       {/* -------- Pickup events — per-truck paperwork + evidence -------
            Renders the whole multi-visit timeline: one card per truck
            with its qty, checklist, photos, tracking number, seal,
-           temperature, driver, plate, waybill, and delivery POD. The
-           standalone "Truck-arrival evidence" card was retired here —
-           it was designed for a one-shot shipment and duplicated the
-           per-event data below, confusing the operator into thinking
-           the checklist / photos / paperwork were shipment-wide.        */}
+           temperature, driver, plate, waybill, delivery company, and
+           delivery POD. The shipment-wide "Carrier & vehicle" card was
+           retired — its fields duplicated the per-event data below and
+           read as "general defaults" while the real source of truth is
+           each truck's own row. Operators edit paperwork via "Edit
+           paperwork" on each row. */}
       <PickupEventsCard
         shipment={shipment}
         companyDefaults={companyDefaults}
-        canEditPaperwork={canDriveCarrier}
+        canEditPaperwork={canEditPaperwork}
       />
 
       {/* -------- Delivery confirmation -------- */}
@@ -1030,12 +932,6 @@ export function ShipmentDetail({
                 {readyReady && (editingShipTo || dirtyShipTo) && (
                   <p className="text-[11px] text-muted-foreground">
                     Save your Ship-to &amp; schedule edits first.
-                  </p>
-                )}
-                {readyReady && dirtyCarrier && (
-                  <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                    Note: unsaved Carrier &amp; vehicle edits will be
-                    discarded on Mark Ready.
                   </p>
                 )}
               </div>
@@ -1441,316 +1337,13 @@ function DetailRow({
   );
 }
 
-// Standalone TruckArrivalCard removed — it aggregated a single
-// checklist / photo set across the shipment, which stopped making
-// sense when multi-visit pickup landed. All per-truck evidence
-// (checklist chips, photos, driver, plate, tracking, seal,
-// temperature) now lives inside ``PickupEventsCard`` on each row.
-
-/**
- * Carrier & vehicle paperwork — delivery company, plate, driver,
- * waybill, tracking, seal, temperature. Editable through
- * ``picked_up`` via the BE ``carrier-details`` endpoint (recipient /
- * address / qty are locked at pickup, but carrier paperwork
- * routinely needs corrections after departure — typo on the plate,
- * driver swap, tracking issued late by the carrier).
- *
- * Per-state perm gate mirrors BE ``ensure_carrier_perm``:
- * ``shipments.edit`` pre-pickup, ``shipments.pickup`` post-pickup.
- * Reuses the parent's useLiveForm state + head-of-room lock so
- * peer presence + cursors + field indicators all keep working.
- */
-function CarrierVehicleCard({
-  shipment,
-  state,
-  setField,
-  focusField,
-  blurField,
-  fieldEditors,
-  editable,
-  canEditByPerm,
-  canDrive,
-  editing,
-  setEditing,
-  dirty,
-  saving,
-  onSave,
-  onDiscard,
-  creatorName,
-}: {
-  shipment: Shipment;
-  state: FormState;
-  setField: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
-  focusField: (name: string) => void;
-  blurField: (name: string) => void;
-  fieldEditors: Record<string, CollabPeer | null>;
-  editable: boolean;
-  canEditByPerm: boolean;
-  canDrive: boolean;
-  editing: boolean;
-  setEditing: (v: boolean) => void;
-  dirty: boolean;
-  saving: boolean;
-  onSave: () => void;
-  onDiscard: () => void;
-  creatorName: string | null;
-}) {
-  const showEdit = editable && canEditByPerm;
-  const anyEvents =
-    (shipment.pickup_events?.length ?? 0) > 0 ||
-    Number(shipment.picked_up_qty ?? 0) > 0;
-  const postPickup =
-    shipment.status === "picked_up" || shipment.status === "delivered";
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <Truck className="size-4" />
-              Carrier &amp; vehicle
-            </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              {anyEvents ? (
-                <>
-                  Shipment-wide defaults for the delivery company + a
-                  fallback plate / driver / waybill for the paperwork. As
-                  each truck arrives, the mobile dispatch form logs a
-                  per-truck row on the <span className="font-semibold">Pickup progress</span> card
-                  above — that's where you enter <span className="font-semibold">this truck's</span> tracking
-                  number, seal, temperature. Edit them per row via
-                  &quot;Edit paperwork&quot;.
-                </>
-              ) : postPickup ? (
-                "The truck has left, but you can still amend delivery company, plate, driver, and waybill — anything the carrier finalises after departure. Per-truck tracking / seal / temperature live on the Pickup progress card above."
-              ) : (
-                "Delivery company, plate, driver, waybill. Fill what you know now; mobile dispatch captures the per-truck tracking / seal / temperature on arrival."
-              )}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {showEdit &&
-              (editing ? (
-                <>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={onDiscard}
-                    disabled={saving}
-                  >
-                    <X className="mr-1 size-3.5" />
-                    Discard
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={!dirty || saving || !canDrive}
-                    onClick={onSave}
-                    title={
-                      !canDrive
-                        ? `Only ${creatorName ?? "the head of the room"} can save from this room.`
-                        : undefined
-                    }
-                  >
-                    {saving && <Loader2 className="mr-2 size-4 animate-spin" />}
-                    Save
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setEditing(true)}
-                  disabled={!canDrive}
-                  title={
-                    !canDrive
-                      ? `Only ${creatorName ?? "the head of the room"} can edit from this room.`
-                      : undefined
-                  }
-                >
-                  <Pencil className="mr-1 size-3.5" />
-                  Edit
-                </Button>
-              ))}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {editing ? (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Delivery company" htmlFor="carrier">
-              <div className="relative">
-                <Input
-                  id="carrier"
-                  value={state.carrier}
-                  onChange={(e) => setField("carrier", e.target.value)}
-                  onFocus={() => focusField("carrier")}
-                  onBlur={() => blurField("carrier")}
-                  placeholder="e.g. DHL, DPD, own fleet"
-                  maxLength={200}
-                />
-                <FieldEditingIndicator peer={fieldEditors.carrier} />
-              </div>
-            </Field>
-            <Field label="Vehicle registration" htmlFor="vehicle_registration">
-              <div className="relative">
-                <Input
-                  id="vehicle_registration"
-                  value={state.vehicle_registration}
-                  onChange={(e) =>
-                    setField("vehicle_registration", e.target.value)
-                  }
-                  onFocus={() => focusField("vehicle_registration")}
-                  onBlur={() => blurField("vehicle_registration")}
-                  placeholder="e.g. AB12 CDE"
-                  maxLength={40}
-                  className="font-mono uppercase"
-                />
-                <FieldEditingIndicator
-                  peer={fieldEditors.vehicle_registration}
-                />
-              </div>
-            </Field>
-            <Field label="Driver name" htmlFor="driver_name">
-              <div className="relative">
-                <Input
-                  id="driver_name"
-                  value={state.driver_name}
-                  onChange={(e) => setField("driver_name", e.target.value)}
-                  onFocus={() => focusField("driver_name")}
-                  onBlur={() => blurField("driver_name")}
-                  placeholder="e.g. Alex Baker"
-                  maxLength={200}
-                />
-                <FieldEditingIndicator peer={fieldEditors.driver_name} />
-              </div>
-            </Field>
-            <Field label="Waybill / CN ref" htmlFor="consignment_note_ref">
-              <div className="relative">
-                <Input
-                  id="consignment_note_ref"
-                  value={state.consignment_note_ref}
-                  onChange={(e) =>
-                    setField("consignment_note_ref", e.target.value)
-                  }
-                  onFocus={() => focusField("consignment_note_ref")}
-                  onBlur={() => blurField("consignment_note_ref")}
-                  placeholder="e.g. CN-92814"
-                  maxLength={80}
-                  className="font-mono"
-                />
-                <FieldEditingIndicator
-                  peer={fieldEditors.consignment_note_ref}
-                />
-              </div>
-            </Field>
-            <Field label="Tracking number" htmlFor="tracking_number">
-              <div className="relative">
-                <Input
-                  id="tracking_number"
-                  value={state.tracking_number}
-                  onChange={(e) =>
-                    setField("tracking_number", e.target.value)
-                  }
-                  onFocus={() => focusField("tracking_number")}
-                  onBlur={() => blurField("tracking_number")}
-                  placeholder="e.g. 1Z999AA10123456784"
-                  maxLength={120}
-                  className="font-mono"
-                />
-                <FieldEditingIndicator peer={fieldEditors.tracking_number} />
-              </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Carrier&apos;s parcel-tracking reference. Flows to the
-                customer portal Dispatch card so they can self-serve
-                the courier tracker.
-              </p>
-            </Field>
-            <Field label="Seal number" htmlFor="seal_number">
-              <div className="relative">
-                <Input
-                  id="seal_number"
-                  value={state.seal_number}
-                  onChange={(e) => setField("seal_number", e.target.value)}
-                  onFocus={() => focusField("seal_number")}
-                  onBlur={() => blurField("seal_number")}
-                  placeholder="Container / trailer seal (if applicable)"
-                  maxLength={60}
-                  className="font-mono"
-                />
-                <FieldEditingIndicator peer={fieldEditors.seal_number} />
-              </div>
-            </Field>
-            <Field
-              label="Temperature (°C)"
-              htmlFor="temperature_c"
-              className="sm:col-span-2"
-            >
-              <div className="relative">
-                <Input
-                  id="temperature_c"
-                  type="number"
-                  step="0.1"
-                  value={state.temperature_c}
-                  onChange={(e) =>
-                    setField("temperature_c", e.target.value)
-                  }
-                  onFocus={() => focusField("temperature_c")}
-                  onBlur={() => blurField("temperature_c")}
-                  placeholder="Cold-chain reading at loading (optional)"
-                />
-                <FieldEditingIndicator peer={fieldEditors.temperature_c} />
-              </div>
-            </Field>
-          </div>
-        ) : (
-          <CarrierVehicleReadView shipment={shipment} />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-/** Read view for the carrier card. Same DetailRow grid the old
- *  Truck-arrival card used, but rendered as its own card body. */
-function CarrierVehicleReadView({ shipment }: { shipment: Shipment }) {
-  const temp = shipment.temperature_c
-    ? `${shipment.temperature_c} °C`
-    : "—";
-  return (
-    <div className="grid gap-3 text-sm sm:grid-cols-2">
-      <DetailRow
-        label="Delivery company"
-        value={shipment.carrier ?? "—"}
-      />
-      <DetailRow
-        label="Vehicle registration"
-        value={shipment.vehicle_registration ?? "—"}
-        mono
-      />
-      <DetailRow label="Driver name" value={shipment.driver_name ?? "—"} />
-      <DetailRow
-        label="Waybill / CN ref"
-        value={shipment.consignment_note_ref ?? "—"}
-        mono
-      />
-      <DetailRow
-        label="Tracking number"
-        value={shipment.tracking_number ?? "—"}
-        mono
-      />
-      <DetailRow
-        label="Seal number"
-        value={shipment.seal_number ?? "—"}
-        mono
-      />
-      <DetailRow label="Temperature" value={temp} />
-    </div>
-  );
-}
+// Both the standalone TruckArrivalCard AND the shipment-wide Carrier
+// & vehicle card were retired — they aggregated a single checklist /
+// paperwork set across the shipment which stopped making sense once
+// multi-visit pickup landed. All per-truck evidence (checklist chips,
+// photos, driver, plate, delivery company, tracking, seal, temperature)
+// now lives inside ``PickupEventsCard`` on each row, and is editable
+// via that row's "Edit paperwork" dialog.
 
 function ChecklistLine({
   label,

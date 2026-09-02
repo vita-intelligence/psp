@@ -298,11 +298,13 @@ defmodule Backend.Shipments.Shipment do
       :status,
       :picked_up_at,
       :picked_up_by_id,
+      :carrier,
       :driver_name,
       :vehicle_registration,
       :consignment_note_ref | @pickup_checklist
     ])
     |> validate_inclusion(:status, ["partially_picked", "picked_up"])
+    |> validate_length(:carrier, max: 200)
     |> validate_length(:driver_name, max: 200)
     |> validate_length(:vehicle_registration, max: 40)
     |> validate_length(:consignment_note_ref, max: 80)

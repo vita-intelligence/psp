@@ -217,6 +217,7 @@ export function MobileDispatchForm({ shipment }: Props) {
       // links them to the fresh event.
       const res = await logShipmentPickupEventAction(shipment.uuid, {
         qty: visitQty.trim(),
+        carrier: carrier.trim() || null,
         driver_name: driverName.trim() || null,
         vehicle_registration: vehicleReg.trim() || null,
         consignment_note_ref: consignmentNote.trim() || null,

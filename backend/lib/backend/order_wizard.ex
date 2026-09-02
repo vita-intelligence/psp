@@ -74,6 +74,32 @@ defmodule Backend.OrderWizard do
     # async so a slow / down NPD never delays the wizard-refresh
     # broadcast (which our own operators are waiting on).
     Task.start(fn -> push_production_status_to_npd(co) end)
+
+    # Cascade to parent CO when this row is a trial-batch sample /
+    # child CO. Parent's derive_phase depends on downstream
+    # child state (trial batch cycle progress, sample MO delivery,
+    # etc.) and any change here potentially advances the parent's
+    # projected phase — but without this cascade the parent's
+    # ``PspProductionStatus`` mirror on NPD only refreshes when the
+    # parent itself is touched, which leaves stale labels like
+    # "Awaiting R&D payment" long after the sample has actually
+    # delivered. Fire-and-forget on a separate task so a resolver
+    # miss (parent already gone, uuid stale) never fails the caller.
+    if not is_nil(co.parent_customer_order_uuid) do
+      parent_uuid = co.parent_customer_order_uuid
+
+      Task.start(fn ->
+        case Repo.get_by(CustomerOrder, uuid: parent_uuid) do
+          %CustomerOrder{} = parent ->
+            BackendWeb.WizardChannel.broadcast_changed(parent.uuid)
+            push_production_status_to_npd(parent)
+
+          _ ->
+            :ok
+        end
+      end)
+    end
+
     :ok
   end
 
@@ -1068,15 +1094,28 @@ defmodule Backend.OrderWizard do
       # ``:awaiting_proposal``. The rejection reason travels via
       # ``npd_timeline`` so operators can see WHY.
       "rejected" -> :awaiting_proposal
-      # Customer signed on the kiosk — the deal is closed and PSP
-      # takes ownership. Sits in its own ``:proposal_accepted``
-      # column so the sales team sees "signed, ready to kick off"
-      # as a distinct milestone before the CO moves into the normal
-      # ``:setup`` / ``:approval`` flow. The CO auto-leaves this
-      # column as soon as its own status advances past ``draft``
-      # (Submit for approval → the earlier proposal-uuid clause
-      # stops matching because it's gated on ``status: "draft"``).
-      "accepted" -> :proposal_accepted
+      # Customer signed the proposal. For RTG orders that's the
+      # terminal commercial state — the CO sits in
+      # ``:proposal_accepted`` ("Awaiting R&D payment") until an
+      # operator moves it into ``:setup`` / ``:approval`` and its
+      # own ``status`` leaves ``draft``.
+      #
+      # For Custom projects with a bundled deposit + trial-batch
+      # cycle, the proposal auto-flips to ``accepted`` as soon as
+      # every spec is signed — but the CO's own commercial state
+      # (deposit paid → trial batches running → customer confirms
+      # done → final payment approved) keeps evolving inside the
+      # ``draft`` window. Mirror the same signal ladder the
+      # ``sent`` branch uses so the kanban tracks reality; fall
+      # back to ``:proposal_accepted`` when none of the trial-
+      # batch signals are set (RTG's terminal state).
+      "accepted" ->
+        cond do
+          not is_nil(final_payment_approved_at) -> :production_planning
+          not is_nil(customer_confirmed_done_at) -> :awaiting_final_spec
+          not is_nil(deposit_paid_at) -> :trial_batches_in_flight
+          true -> :proposal_accepted
+        end
       _ -> :setup
     end
   end
@@ -1465,6 +1504,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:awaiting_sample_selection), do: "Choose samples"
   defp phase_label(:proposal_accepted), do: "Awaiting R&D payment"
   defp phase_label(:trial_batches_in_flight), do: "Trial batches"
+  defp phase_label(:awaiting_final_spec), do: "Final spec"
   defp phase_label(:merged), do: "Merged into another order"
   defp phase_label(:setup), do: "Order setup"
   defp phase_label(:approval), do: "Approval"
@@ -1627,6 +1667,23 @@ defmodule Backend.OrderWizard do
         "The customer's deposit has landed and the R&D team is producing trial samples one at a time on NPD. Each sample MO for this project shows here on the /projects kanban with a \"↳ Trial N/M\" badge. The card leaves this column once the customer signs the final specification.",
       primary_cta: %{
         label: "Open cycle on NPD",
+        kind: "link",
+        href: href
+      },
+      secondary_ctas: []
+    }
+  end
+
+  defp next_action_for(:awaiting_final_spec, co, _line_states, _mos, _signers) do
+    href = co.npd_app_url || co.npd_proposal_url || "/projects/#{co.uuid}"
+
+    %{
+      code: "awaiting_final_spec",
+      title: "Customer approved the trial — final spec is next.",
+      detail:
+        "The customer has signed off on the trial-batch cycle (either by marking a sample as satisfied or explicitly confirming they're done). The R&D team owes them a FINAL specification derived from the approved recipe; once the customer signs the FINAL, finance approves the balance invoice and the order moves into production planning.",
+      primary_cta: %{
+        label: "Open project on NPD",
         kind: "link",
         href: href
       },
