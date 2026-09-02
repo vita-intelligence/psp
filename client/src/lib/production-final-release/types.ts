@@ -100,10 +100,19 @@ export interface FinalReleaseMoSummary {
   code: string | null;
   quantity: string;
   status: string;
-  /** Stream marker — the RoutingCard uses this to hide the 3PL
-   *  option for sample kits (samples ship direct, never via 3PL
-   *  bailee). Null on older responses / non-MO releases. */
+  /** Stream marker — informational only. The RoutingCard gates on
+   *  `is_customer_sample_fulfilment` below because `project_type`
+   *  gets derived from `batch.kind` at MO create time and misfires
+   *  when the scientist picks `trial` on a customer-paid sample
+   *  (bench-scale run of the customer's kit). Null on older
+   *  responses / non-MO releases. */
   project_type?: "production" | "trial" | "sample" | null;
+  /** True when the MO's linked CO carries `sample_kind = true` —
+   *  customer paid for this specific sample kit via the /samples
+   *  fulfilment queue. Hides the 3PL card + pre-selects direct
+   *  shipment: customer sample kits ship direct via courier, never
+   *  as a bailee arrangement. Null on older responses. */
+  is_customer_sample_fulfilment?: boolean;
 }
 
 export interface FinalRelease {

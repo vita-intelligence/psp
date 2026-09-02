@@ -841,13 +841,29 @@ defmodule Backend.ThreePL do
   # ``three_pl_storage`` cell instead of ``dispatch``. The FE
   # disables the 3PL card for sample lots; this is belt-and-braces.
   defp ensure_choice_allowed_for_lot(%Lot{id: lot_id}, "three_pl") do
+    # Refuse 3PL when EITHER: (1) MO's derived project_type is
+    # "sample", OR (2) the MO's linked CO is a customer-paid sample
+    # fulfilment (``sample_kind = true``). Both flags mark the lot
+    # as a customer sample kit that ships direct — never as a
+    # bailee. The second check catches customer-paid batches where
+    # the scientist picked ``kind=trial`` at Create MO time (which
+    # would land the MO with ``project_type=trial`` and let the
+    # first check pass, exposing the same category error the FE
+    # was hitting on the routing card). Match this rule to the FE
+    # gate at ``final-release-form.tsx`` so BE + FE agree on what
+    # a customer sample kit is.
     case Repo.one(
            from mo in ManufacturingOrder,
+             left_join: col in Backend.CustomerOrders.CustomerOrderLine,
+             on: col.id == mo.customer_order_line_id,
+             left_join: co in Backend.CustomerOrders.CustomerOrder,
+             on: co.id == col.customer_order_id,
              where: fragment("?::text", mo.uuid) == fragment("(SELECT source_ref FROM stock_lots WHERE id = ? LIMIT 1)", ^lot_id),
-             select: mo.project_type,
+             select: {mo.project_type, co.sample_kind},
              limit: 1
          ) do
-      "sample" -> {:error, :three_pl_not_allowed_for_sample}
+      {"sample", _} -> {:error, :three_pl_not_allowed_for_sample}
+      {_, true} -> {:error, :three_pl_not_allowed_for_sample}
       _ -> :ok
     end
   end

@@ -1597,7 +1597,19 @@ function RoutingCard({
   // just confirms; the 3PL card is disabled below with an
   // explanation. BE also rejects a three_pl choice on sample lots
   // as belt-and-braces (see three_pl.ex ensure_choice_allowed_for_lot).
+  //
+  // Previously gated on ``project_type === "sample"`` — that's the
+  // MO field derived from ``batch.kind`` at create time, which
+  // misfires when the scientist picked ``kind=trial`` on a customer-
+  // paid sample (bench-scale run of the customer's kit). Gate now
+  // uses ``is_customer_sample_fulfilment`` (walked from the linked
+  // CO's ``sample_kind`` flag) — set once at sync time and stable
+  // across kind edits, so it correctly captures every customer-paid
+  // sample regardless of what kind the scientist chose. Falls back
+  // to the old signal for legacy payloads that don't carry the new
+  // field yet.
   const isSample =
+    release.manufacturing_order?.is_customer_sample_fulfilment === true ||
     release.manufacturing_order?.project_type === "sample";
   const [choice, setChoice] = useState<"three_pl" | "shipment" | null>(
     isSample ? "shipment" : null,

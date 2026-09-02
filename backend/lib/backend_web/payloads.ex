@@ -6217,10 +6217,25 @@ defmodule BackendWeb.Payloads do
               code: render_code(mo, "manufacturing_order"),
               quantity: decimal_to_string(mo.quantity),
               status: mo.status,
-              # Exposed so the FE routing card can hide the 3PL
-              # option for sample kits — samples ship direct, never
-              # via a 3PL bailee arrangement.
-              project_type: mo.project_type
+              # Informational — the FE routing card gates the 3PL
+              # option off ``is_customer_sample_fulfilment`` below
+              # (customer-paid samples ship direct regardless of
+              # what ``project_type`` was derived to). Kept for
+              # observability + backward compat with FE callers
+              # that haven't migrated yet.
+              project_type: mo.project_type,
+              # True when the MO's linked CO carries
+              # ``sample_kind = true`` — customer paid for this
+              # specific sample kit via the /samples fulfilment
+              # queue. Hides the 3PL card + pre-selects direct
+              # shipment on the routing UX regardless of MO's
+              # derived ``project_type`` (which is unreliable
+              # because scientists commonly picked ``trial`` on
+              # customer-paid batches pre-fix). Nil-safe: MOs
+              # without a CO chain return false. Same rule as
+              # output-qc's ``customer_sample_fulfilment?/1``.
+              is_customer_sample_fulfilment:
+                customer_sample_fulfilment?(mo)
             }
 
           _ ->

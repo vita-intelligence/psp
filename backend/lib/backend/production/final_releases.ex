@@ -930,11 +930,18 @@ defmodule Backend.Production.FinalReleases do
 
   defp preload(%FinalRelease{} = row) do
     Repo.preload(row, [
-      :manufacturing_order,
       :releaser,
       :approver,
       :finalized_by,
       :files,
+      # ``customer_order_line: [:customer_order]`` needed so the
+      # payload's ``customer_sample_fulfilment?/1`` walker can
+      # reach the CO's ``sample_kind`` flag. Without this preload
+      # the walker hits ``%Ecto.Association.NotLoaded{}`` and
+      # defaults to false, leaving the routing card's 3PL option
+      # enabled on customer-paid sample lots (which should ship
+      # direct, never via a bailee arrangement).
+      manufacturing_order: [customer_order_line: [:customer_order]],
       stock_lot: [
         :item,
         :bailee_customer,
