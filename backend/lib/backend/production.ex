@@ -9324,6 +9324,14 @@ defmodule Backend.Production do
               Repo.preload(mo, [
                 :item,
                 :pickup_completed_by,
+                # Walk MO → CO line → CO so the output-qc payload can
+                # expose ``npd_project_type`` for the "Trial batch
+                # validation required" card gate — RTG projects don't
+                # do per-batch product validation (FINAL-spec approval
+                # is the validation gate), so the card must hide on
+                # RTG. Nested-nil safe: MOs without a CO line skip
+                # the preload chain and the payload defaults to nil.
+                customer_order_line: [:customer_order],
                 steps: [:workstation_group]
               ])
           end

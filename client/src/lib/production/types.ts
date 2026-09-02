@@ -1573,6 +1573,13 @@ export interface OutputQcEntry {
      *  either open the existing validation for this batch or create
      *  a new one. Set alongside `npd_formulation_uuid`. */
     npd_trial_batch_uuid: string | null;
+    /** NPD project flavour walked from the linked CO. `"custom"` or
+     *  `"ready_to_go"`; null when the MO has no linked CO (legacy
+     *  trial-batch integrations, standalone PSP MOs). Gates the
+     *  NpdValidationCard: RTG projects hide it because per-batch
+     *  validation is a Custom-flow concept — RTG's FINAL-spec
+     *  approval is the recipe-validation gate. */
+    npd_project_type: string | null;
     /** NPD ProductValidation snapshot pushed by the sync webhook.
      *  For trial/sample MOs, the Output QC pass button is disabled
      *  until `npd_validation_status === "passed"`. When

@@ -26,17 +26,28 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
   const mo = entry.mo;
   if (!mo || !mo.npd_formulation_uuid || !mo.npd_trial_batch_uuid) return null;
 
+  // RTG projects hide the card entirely — per-batch product
+  // validation is a Custom-flow concept; the RTG SKU's FINAL-spec
+  // approval flow IS the recipe-validation gate. Every batch on an
+  // RTG project is either an internal test of an already-validated
+  // recipe or a customer-sample fulfilment. Same rule as NPD's
+  // ValidationLink (vita-cff commit 64c2ff6): validation is not a
+  // per-batch step on RTG. `npd_project_type` walked from the linked
+  // CO on the payload builder — null on standalone/legacy MOs, in
+  // which case we fall through and show the card (Custom-safe
+  // default).
+  if (mo.npd_project_type === "ready_to_go") return null;
+
   // Prior versions bailed on ``project_type === "sample"`` on the
   // theory that samples are always pre-validated RTG runs. That's
   // wrong for Custom-flow trial batches, which are ALSO stamped
   // ``project_type=sample`` on the PSP side (per the trial-batches
   // service in NPD) but genuinely need per-run validation before QA
-  // signs off. The correct gate is presence of
+  // signs off. The correct gate for Custom flows is presence of
   // ``npd_trial_batch_uuid`` — the guard above already establishes
   // this — so we render the card for both trial and sample MOs when
-  // they're linked to a trial batch. RTG sample-kit runs (no trial
-  // batch on NPD, ``npd_trial_batch_uuid`` NULL) still hit the early
-  // return above and skip the card correctly.
+  // they're linked to a trial batch. The RTG bail-out above handles
+  // the RTG side cleanly regardless of whether a trial batch exists.
 
   const base = npdBaseUrl.replace(/\/+$/, "");
   const href =

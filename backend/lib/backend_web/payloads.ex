@@ -3765,6 +3765,14 @@ defmodule BackendWeb.Payloads do
             # this batch or creates a new one.
             npd_formulation_uuid: mo.npd_formulation_uuid,
             npd_trial_batch_uuid: mo.npd_trial_batch_uuid,
+            # NPD project flavour walked from the linked CO. Nil when
+            # the MO has no CO line (e.g. legacy trial batches created
+            # via the integration endpoint before customer-order
+            # linkage existed). Powers the ``NpdValidationCard`` gate:
+            # RTG projects hide the card because per-batch validation
+            # is a Custom-flow concept — the RTG's FINAL-spec approval
+            # is the recipe-validation gate.
+            npd_project_type: npd_project_type_from_mo(mo),
             # NPD ProductValidation snapshot pushed by the sync
             # webhook. Drives the Output QC pass button gate + the
             # status pill on the NPD validation card.
@@ -3817,6 +3825,19 @@ defmodule BackendWeb.Payloads do
   end
 
   defp mo_workstation_groups(_), do: []
+
+  # Walk MO → CO line → CO to read the NPD project flavour ("custom"
+  # or "ready_to_go"). Nil-safe at each hop: MOs without a linked CO
+  # line (legacy trial-batch integrations, standalone PSP MOs) or
+  # unloaded preloads collapse to nil so the payload never crashes.
+  defp npd_project_type_from_mo(mo) do
+    with %{customer_order_line: %{customer_order: %{npd_project_type: pt}}} <-
+           mo do
+      pt
+    else
+      _ -> nil
+    end
+  end
 
   # Compact projection of the finished-product spec (from NPD or PSP
   # manual). Only the fields a QA operator would compare against the

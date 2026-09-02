@@ -1233,6 +1233,12 @@ function computeNpdGate(
   if (!mo.npd_trial_batch_uuid) {
     return { blocked: false };
   }
+  // RTG projects don't do per-batch validation — the RTG's FINAL-spec
+  // approval flow is the recipe-validation gate. Every batch on RTG
+  // is either an internal test of an already-validated recipe or
+  // customer-sample fulfilment, neither of which is a per-batch
+  // validation step. Matches the ``NpdValidationCard`` render gate.
+  if (mo.npd_project_type === "ready_to_go") return { blocked: false };
   const status = mo.npd_validation_status;
   if (status === "passed") return { blocked: false };
 
