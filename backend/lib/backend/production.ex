@@ -9705,26 +9705,40 @@ defmodule Backend.Production do
     with %StockLot{source_kind: "manufacturing_order"} = lot <-
            Backend.Stock.get_for_company(actor.company_id, lot_uuid),
          %ManufacturingOrder{} = mo <- source_mo_for_lot(actor.company_id, lot) do
+      # Preload the CO chain so we can distinguish customer-paid
+      # sample fulfilment from genuine R&D validation trials — the
+      # /samples fulfilment queue stamps ``npd_trial_batch_uuid`` on
+      # customer-sample MOs too, so trial-batch presence alone can no
+      # longer distinguish them. The linked CO's ``sample_kind``
+      # flag does.
+      mo = Repo.preload(mo, customer_order_line: [:customer_order])
+
       cond do
-        # Gate fires when the MO is linked to an NPD trial batch —
-        # keyed on ``npd_trial_batch_uuid`` rather than project_type
-        # so BOTH R&D ``trial`` MOs AND Custom-flow ``sample`` MOs
-        # (the trial-batch samples the scientist produces during the
-        # customer's R&D cycle) are protected. RTG sample-kit MOs
-        # carry ``project_type=sample`` too but have no linked
-        # trial batch — ``npd_trial_batch_uuid`` is NULL there —
-        # so the gate correctly stays skipped for those (the RTG
-        # SKU is already in the commercial catalogue, no new
-        # validation to run).
-        #
         # Semi-finished child MOs (blend, encapsulation, bottling)
-        # never carry a trial_batch link either — only the top-of-
-        # tree finished-product MO does — so intermediate closeouts
-        # aren't blocked by this gate. That matches the physical
-        # workflow: the trial-batch form documents the FINISHED
-        # product's per-unit properties (weight, hardness,
-        # disintegration, organoleptic), not the blend's.
+        # + standalone PSP MOs never carry a trial_batch link — only
+        # the top-of-tree finished-product MO does — so intermediate
+        # closeouts aren't blocked. Matches the physical workflow:
+        # the trial-batch form documents the FINISHED product's
+        # per-unit properties (weight, hardness, disintegration,
+        # organoleptic), not the blend's.
         is_nil(mo.npd_trial_batch_uuid) ->
+          :ok
+
+        # Customer-paid sample fulfilment (linked CO has
+        # ``sample_kind = true``) — customer ordered a specific
+        # sample kit of an already-validated recipe (Custom FINAL
+        # or RTG published SKU). This is product production, not
+        # R&D validation, so the gate must NOT block Output QC on
+        # it. Mirrors the ``NpdValidationCard`` render rule
+        # (``customer_sample_fulfilment?/1`` in payloads.ex) so
+        # BE + FE tell the same story.
+        #
+        # Batch ``kind`` (trial vs sample) is NOT the right
+        # signal — scientists commonly pick ``trial`` on customer-
+        # paid samples too (bench-scale run of the customer's kit)
+        # — so kind-based gating misfires. The CO's ``sample_kind``
+        # is set once at sync time by NPD and stays stable.
+        customer_sample_fulfilment_mo?(mo) ->
           :ok
 
         mo.npd_validation_status == "passed" ->
@@ -9739,6 +9753,17 @@ defmodule Backend.Production do
       # can actually see.
       _ -> :ok
     end
+  end
+
+  # True when the MO's linked CO is a sample-fulfilment CO
+  # (``sample_kind = true``). Mirrors the payload builder helper of
+  # the same shape so the release gate and the render gate use the
+  # same rule.
+  defp customer_sample_fulfilment_mo?(mo) do
+    match?(
+      %{customer_order_line: %{customer_order: %{sample_kind: true}}},
+      mo
+    )
   end
 
   defp source_mo_for_lot(company_id, %StockLot{source_ref: ref}) when is_binary(ref) do
