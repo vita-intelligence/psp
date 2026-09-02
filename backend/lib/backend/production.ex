@@ -9427,8 +9427,25 @@ defmodule Backend.Production do
       %StockLot{} ->
         mo =
           case Repo.get_by(ManufacturingOrder, uuid: lot.source_ref) do
-            nil -> nil
-            m -> Repo.preload(m, [:item, :pickup_completed_by, steps: [:workstation_group]])
+            nil ->
+              nil
+
+            m ->
+              Repo.preload(m, [
+                :item,
+                :pickup_completed_by,
+                # ``customer_order_line: [:customer_order]`` needed so
+                # the payload's ``customer_sample_fulfilment?/1``
+                # walker can reach the CO's ``sample_kind`` flag.
+                # Without this preload the walker hits
+                # ``%Ecto.Association.NotLoaded{}`` and defaults to
+                # false, leaving the "Trial batch validation required"
+                # card rendered on customer-paid sample MOs (which
+                # was the whole point of the fix). Same preload as
+                # ``list_pending_output_qc``.
+                customer_order_line: [:customer_order],
+                steps: [:workstation_group]
+              ])
           end
 
         {resolved_spec_item, resolved_spec_source} =
