@@ -503,6 +503,15 @@ defmodule BackendWeb.CustomerOrderController do
         psp_uuid = row["psp_item_uuid"] || row[:psp_item_uuid] || ""
         npd_uuid = row["npd_item_uuid"] || row[:npd_item_uuid] || ""
         qty = row["quantity"] || row[:quantity] || 1
+        # Per-item stage routing (NPD Option A). ``psp_stage_uuid``
+        # identifies which stage MO in the tree should book this
+        # item: ``nil`` (or missing) means "book at the root MO"
+        # (finished-product stage or legacy overlay without stage
+        # info); a stage uuid means "book at the MO producing that
+        # semi". ``book_packaging_overlay`` in production.ex filters
+        # against ``mo.item.uuid`` at booking time — bottle+lid on
+        # one combo can then land on two different stage MOs.
+        stage_uuid = row["psp_stage_uuid"] || row[:psp_stage_uuid]
 
         item_id =
           cond do
@@ -514,7 +523,12 @@ defmodule BackendWeb.CustomerOrderController do
         if is_nil(item_id) do
           nil
         else
-          %{"item_id" => item_id, "quantity" => qty}
+          base = %{"item_id" => item_id, "quantity" => qty}
+          if is_binary(stage_uuid) and stage_uuid != "" do
+            Map.put(base, "psp_stage_uuid", stage_uuid)
+          else
+            base
+          end
         end
       end)
       |> Enum.reject(&is_nil/1)

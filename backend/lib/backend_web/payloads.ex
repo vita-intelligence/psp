@@ -2906,32 +2906,31 @@ defmodule BackendWeb.Payloads do
   defp mo_parts_breakdown(%Backend.Production.ManufacturingOrder{
          bom: %Backend.Production.BOM{} = bom,
          quantity: mo_qty,
-         company_id: company_id,
-         packaging_combo_items: overlay_items
+         company_id: company_id
        } = mo) do
-    # ``packaging_combo_items`` non-nil = the NPD trial batch (or a
-    # future PSP-native combo picker) chose an explicit packaging
-    # combo for this MO. Overlay-active behaviour matches
-    # ``book_all_for_mo_txn``:
+    # Overlay-active behaviour matches ``book_all_for_mo_txn``:
     #
     #   1. Default packaging-typed BOM lines are hidden — the combo
     #      takes their place.
-    #   2. The combo items are appended below as synthetic parts so
-    #      the operator picks / pre-checks / books them through the
-    #      same UX as any real BOM line.
+    #   2. The subset of combo items that route to THIS MO is
+    #      appended below as synthetic parts so the operator picks /
+    #      pre-checks / books them through the same UX as any real
+    #      BOM line.
     #
-    # ``packaging_combo_items`` semantics (PSP contract, from NPD's
-    # ``_build_packaging_overlay``):
-    #   * ``nil``   → no overlay → default packaging BOM applies
-    #   * ``[]``    → active overlay, loose-bulk mode → SKIP master
-    #                 packaging BOM lines (no packaging on this run)
-    #   * ``[...]`` → active overlay with combo → SKIP master
-    #                 packaging BOM lines; overlay rows render below
-    # Any non-nil value is an "active overlay". Override-ADDED
-    # packaging lines are unaffected — the master-line filter runs
-    # BEFORE ``effective_bom_lines`` layers overrides on top, so
-    # synth added packaging (bom_id=nil) survives.
-    overlay_active? = is_list(overlay_items)
+    # Per-item stage routing (NPD Option A): each combo item may
+    # carry a ``psp_stage_uuid`` pointing at the stage MO that
+    # should book it. ``overlay_items_for_mo`` filters to items
+    # matching THIS MO's produced item — bottle on the packaging
+    # stage MO, lid on the finished stage root, etc. — so the parts
+    # table under each MO shows exactly what that MO is on the hook
+    # for, not the whole overlay list stacked under the root.
+    #
+    # Root MO with the JSONB carrying only items whose stage matches
+    # a descendant → overlay is active tree-wide but the root itself
+    # gets zero synthetic rows (correct — the operator sees the
+    # semi-input row, and the bottle appears under the child MO).
+    overlay_active? = Backend.Production.packaging_overlay_active?(mo)
+    overlay_items = Backend.Production.overlay_items_for_mo(mo)
 
     overrides =
       case Map.get(mo, :bom_overrides) do

@@ -429,10 +429,21 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
            qty when qty not in [nil, ""] <- Map.get(row, "quantity") do
         case resolve_item_id(company_id, uuid) do
           {:ok, item_id} ->
-            {:cont,
-             {:ok,
-              acc ++
-                [%{"item_id" => item_id, "quantity" => to_string(qty)}]}}
+            # Per-item stage routing (NPD Option A). ``psp_stage_uuid``
+            # identifies which stage MO in the tree should book this
+            # item: absent/nil = "root MO" (finished-product or legacy
+            # overlay), a stage uuid = "MO producing that semi".
+            # ``book_packaging_overlay`` filters against
+            # ``mo.item.uuid`` at booking time.
+            base = %{"item_id" => item_id, "quantity" => to_string(qty)}
+            stage_uuid = Map.get(row, "psp_stage_uuid")
+            resolved =
+              if is_binary(stage_uuid) and stage_uuid != "" do
+                Map.put(base, "psp_stage_uuid", stage_uuid)
+              else
+                base
+              end
+            {:cont, {:ok, acc ++ [resolved]}}
 
           {:error, :item_not_found} ->
             {:halt, {:error, {:packaging_combo_item_not_found, uuid}}}

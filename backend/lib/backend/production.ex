@@ -4512,6 +4512,16 @@ defmodule Backend.Production do
   # clear the flag if not. The lot is at ``available`` status when
   # we're called (post-QC-approve) so it counts toward coverage
   # immediately — no wait for a downstream booking step.
+  #
+  # NOTE (per-item stage routing, Option A): this query only finds
+  # ROOT MOs whose JSONB directly references the item. Child MOs
+  # receiving a routed combo item read the overlay via tree walk
+  # (``overlay_items_for_mo``), so their own ``packaging_combo_items``
+  # is nil and they're missed by this sweep. Consequence: a child
+  # MO's "Sent to procurement" badge may stay lit until another
+  # trigger re-evaluates it. Not a correctness bug (bookings + gates
+  # still work), just a delayed UI clear. Follow-up: broaden to
+  # walk each matching root's descendants and re-evaluate them too.
   defp sweep_overlay_purchasing_requested(%User{} = actor, %StockLot{item_id: item_id}) do
     mo_ids =
       from(mo in ManufacturingOrder,
@@ -5074,7 +5084,10 @@ defmodule Backend.Production do
   # so no scaling by ``mo.quantity``. Robust to malformed rows: a
   # missing / unparsable value contributes zero rather than raising.
   defp overlay_required_for_item(%ManufacturingOrder{} = mo, item_id) do
-    (mo.packaging_combo_items || [])
+    # Only rows that route to THIS MO count towards its coverage —
+    # per-stage routing means bottle on stage 2 shouldn't show up as
+    # required at the finished-stage root MO.
+    overlay_items_for_mo(mo)
     |> Enum.reduce(Decimal.new(0), fn row, acc ->
       with {:ok, rid} <- extract_int(row, "item_id"),
            true <- rid == item_id,
@@ -5302,6 +5315,10 @@ defmodule Backend.Production do
     mo =
       Repo.preload(mo, [
         :bookings,
+        # ``item`` needed so ``overlay_items_for_mo`` can compare each
+        # combo item's ``psp_stage_uuid`` to THIS MO's produced item
+        # uuid and route bottle-vs-label to the right stage MO.
+        :item,
         bom: [lines: :part],
         bom_overrides: [:unit_of_measurement, part: :stock_uom]
       ])
@@ -5322,23 +5339,114 @@ defmodule Backend.Production do
   end
 
   # ``true`` when the NPD scientist picked a packaging combo (or
-  # explicitly chose no-packaging) for this trial-batch MO. Non-nil
-  # ``packaging_combo_items`` = overlay is active, which flips two
-  # switches inside the booking loop:
+  # explicitly chose no-packaging) anywhere in the MO tree. Reads
+  # from the ROOT MO — the whole tree shares one overlay list. When
+  # active, two switches flip on every MO in the tree:
   #
-  #   1. Default packaging-typed BOM lines are skipped.
-  #   2. The overlay items (may be empty for "no packaging") are
-  #      booked in their place.
+  #   1. Default packaging-typed BOM lines are skipped (combos
+  #      entirely replace default packaging across the tree — no
+  #      double-count from a stage's manual packaging + a combo item
+  #      targeting the same stage).
+  #   2. Each MO books ONLY its own subset of combo items — those
+  #      whose ``psp_stage_uuid`` matches its produced item uuid.
+  #      Items without ``psp_stage_uuid`` route to the root MO
+  #      (finished-stage default + legacy pre-Option-A payloads).
   #
-  # Empty list is deliberate — sample MO with no combo picked
-  # produces loose bulk, which is the exact behaviour a trial MO
-  # already has today. It's how the scientist says "same recipe,
-  # skip the pack".
-  defp packaging_overlay_active?(%ManufacturingOrder{packaging_combo_items: items})
-       when is_list(items),
-       do: true
+  # Empty list is deliberate — a sample MO with no combo picked
+  # produces loose bulk, matching the trial MO's historical
+  # behaviour ("same recipe, skip the pack").
+  @doc """
+  ``true`` when the MO tree carries a packaging combo overlay
+  (i.e. the ROOT MO has ``packaging_combo_items`` set). Public so
+  the serializer in :mod:`BackendWeb.Payloads` and the MO detail
+  parts renderer can gate behaviour on the same tree-wide signal
+  the booking loop uses.
+  """
+  def packaging_overlay_active?(%ManufacturingOrder{} = mo) do
+    is_list(root_packaging_combo_items(mo))
+  end
 
-  defp packaging_overlay_active?(_mo), do: false
+  @doc """
+  Read the ROOT MO's ``packaging_combo_items``. Root = MO with no
+  parent; children walk up ``parent_mo_id`` until they hit it. The
+  JSONB overlay lives on the root only (single source of truth);
+  per-MO subsets are computed on demand via
+  :func:`overlay_items_for_mo/1`. Falls back to ``nil`` when no MO
+  in the chain carries an overlay. Public so payload serializers
+  can render the same subset the booking loop books against.
+  """
+  def root_packaging_combo_items(%ManufacturingOrder{} = mo) do
+    cond do
+      is_list(mo.packaging_combo_items) ->
+        mo.packaging_combo_items
+
+      is_nil(mo.parent_mo_id) ->
+        nil
+
+      true ->
+        case Repo.get(ManufacturingOrder, mo.parent_mo_id) do
+          nil -> nil
+          parent -> root_packaging_combo_items(parent)
+        end
+    end
+  end
+
+  @doc """
+  Filter the root overlay to combo items that should book against
+  THIS MO. Match rule:
+
+    * ``psp_stage_uuid`` present + equal to ``mo.item.uuid`` →
+      book on this MO (per-item stage routing, NPD Option A).
+    * ``psp_stage_uuid`` absent / nil → book on the ROOT MO only
+      (finished-stage default + legacy pre-Option-A payloads).
+
+  Returns ``[]`` for MOs the overlay never touches so
+  ``book_packaging_overlay`` no-ops cleanly.
+
+  Public so the MO detail parts renderer in
+  :mod:`BackendWeb.Payloads` can render the same subset the booking
+  loop books against — otherwise the FE table lists ALL combo items
+  under the root and none under the children, which drifts from
+  reality once per-item routing kicks in. Preloads ``mo.item`` when
+  the caller didn't (needs ``item.uuid`` to run the match).
+  """
+  def overlay_items_for_mo(%ManufacturingOrder{} = mo) do
+    items = root_packaging_combo_items(mo) || []
+    is_root? = is_nil(mo.parent_mo_id)
+
+    # Callers into the payloads / render paths sometimes hand us a
+    # MO without ``:item`` preloaded. Fill it once here so the match
+    # against ``psp_stage_uuid`` works whether the booking loop or
+    # the serializer is on the call stack.
+    item =
+      case mo.item do
+        %Item{} = i -> i
+        _ -> Repo.get(Item, mo.item_id)
+      end
+
+    target_uuid =
+      case item do
+        %Item{uuid: u} when is_binary(u) -> to_string(u)
+        _ -> nil
+      end
+
+    Enum.filter(items, fn row ->
+      stage_uuid = row["psp_stage_uuid"] || row[:psp_stage_uuid]
+
+      cond do
+        # Legacy / finished-stage items — book at the root only so
+        # pre-Option-A overlays keep working exactly as before.
+        is_nil(stage_uuid) or stage_uuid == "" ->
+          is_root?
+
+        is_binary(target_uuid) ->
+          to_string(stage_uuid) == target_uuid
+
+        true ->
+          false
+      end
+    end)
+  end
 
   defp book_all_for_mo_txn(actor, mo, bom_lines, strategy) do
     overlay_active? = packaging_overlay_active?(mo)
@@ -5425,7 +5533,11 @@ defmodule Backend.Production do
   # produce a partial MO than crash the booking transaction. The
   # unbooked shortage will surface on the picker screen anyway.
   defp book_packaging_overlay(actor, mo, strategy) do
-    Enum.flat_map(mo.packaging_combo_items || [], fn row ->
+    # ``overlay_items_for_mo`` returns the subset of the ROOT MO's
+    # combo items whose ``psp_stage_uuid`` matches this MO's item —
+    # so bottle+lid on the same combo can book on two different
+    # stage MOs. Items without a stage uuid land on the root only.
+    Enum.flat_map(overlay_items_for_mo(mo), fn row ->
       with {:ok, item_id} <- extract_int(row, "item_id"),
            {:ok, needed} <- extract_decimal(row, "quantity") do
         if Decimal.compare(needed, Decimal.new("0")) == :gt do
@@ -14089,6 +14201,10 @@ defmodule Backend.Production do
       |> Repo.preload([
         :bookings,
         :children,
+        # ``item`` — needed by ``overlay_items_for_mo`` to route
+        # each combo item to the MO whose ``item.uuid`` matches
+        # its ``psp_stage_uuid`` (per-item stage routing).
+        :item,
         bom: [lines: :part],
         bom_overrides: [:unit_of_measurement, part: :stock_uom]
       ])
@@ -14203,7 +14319,10 @@ defmodule Backend.Production do
   # so coverage math is a straight ``required - booked`` compare, no
   # ``× mo_qty`` scaling that used to leak repeating-decimal drift.
   defp overlay_shortage_rows(%ManufacturingOrder{} = mo, _mo_qty, bookings_by_item) do
-    Enum.flat_map(mo.packaging_combo_items || [], fn row ->
+    # Only rows targeting THIS MO block THIS MO's final release. A
+    # bottle routed to the labelling stage is stage-2's coverage
+    # problem, not the finished-stage root's.
+    Enum.flat_map(overlay_items_for_mo(mo), fn row ->
       with {:ok, item_id} <- overlay_extract_int(row, "item_id"),
            {:ok, raw_required} <- overlay_extract_decimal(row, "quantity") do
         required = normalise_qty_to_storage_precision(raw_required)
@@ -14301,6 +14420,10 @@ defmodule Backend.Production do
       |> Repo.preload([
         :bookings,
         :children,
+        # ``item`` — needed by ``overlay_items_for_mo`` to match
+        # each combo item's ``psp_stage_uuid`` against this MO's
+        # produced item uuid when the overlay routes per-stage.
+        :item,
         bom: [lines: :part],
         bom_overrides: [:unit_of_measurement, part: :stock_uom]
       ])
