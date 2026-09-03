@@ -2991,6 +2991,7 @@ export type OrderWizardPhaseKey =
   | "awaiting_routing"
   | "awaiting_shortfall_resolution"
   | "ready_to_dispatch"
+  | "in_bailee_custody"
   | "awaiting_pickup"
   | "dispatched"
   | "delivered"

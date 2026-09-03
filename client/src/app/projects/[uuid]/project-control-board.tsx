@@ -170,6 +170,7 @@ const PHASE_ORDER: OrderWizardPhaseKey[] = [
   "awaiting_routing",
   "awaiting_shortfall_resolution",
   "ready_to_dispatch",
+  "in_bailee_custody",
   "awaiting_pickup",
   "dispatched",
   "delivered",
@@ -197,6 +198,7 @@ const PHASE_LABEL: Record<OrderWizardPhaseKey, string> = {
   awaiting_routing: "Routing",
   awaiting_shortfall_resolution: "Shortfall",
   ready_to_dispatch: "Paperwork",
+  in_bailee_custody: "In bailee custody",
   awaiting_pickup: "Awaiting pickup",
   dispatched: "In transit",
   delivered: "Delivered",
@@ -237,6 +239,8 @@ const PHASE_DESCRIPTION: Record<OrderWizardPhaseKey, string> = {
     "One or more lines came in short of ordered qty by more than the company yield tolerance. Raise a top-up MO for the delta or accept a short delivery with an audit reason.",
   ready_to_dispatch:
     "Create the shipment record for each staged lot (BRCGS § 5.4.6).",
+  in_bailee_custody:
+    "Every released lot is on a 3PL storage shelf. Customer owns the goods; storage charges are accruing per m³/day. Customer triggers send-outs from their /portal/warehouse page — a Pending row lands on the mobile picker queue when they do.",
   awaiting_pickup: "Shipment paperwork is signed off — waiting for the truck.",
   dispatched:
     "Truck has left. Waiting for the POD to confirm receipt at destination.",
@@ -270,6 +274,7 @@ const PHASE_ICON: Record<
   awaiting_routing: Split,
   awaiting_shortfall_resolution: AlertTriangle,
   ready_to_dispatch: FileText,
+  in_bailee_custody: PackageOpen,
   awaiting_pickup: Truck,
   dispatched: Truck,
   delivered: CheckCircle2,
@@ -1631,6 +1636,10 @@ const PHASE_EXPLAINER: Record<
   ready_to_dispatch: {
     title: "Fill in the shipment paperwork.",
     body: "Every staged lot needs an outbound record with recipient, carrier, vehicle, driver, waybill, and evidence photo (BRCGS Issue 9 § 5.4.6). Open the CTA to create the shipment; on desktop you can push the scan to a paired phone.",
+  },
+  in_bailee_custody: {
+    title: "In bailee custody — customer holds the goods.",
+    body: "All released output lots are on our 3PL storage shelf. Customer took ownership at the routing step (BRCGS Issue 9 § 5.6 handoff); we bill them per m³/day until each unit leaves. Send-outs are customer-triggered — they hit Request dispatch on their /portal/warehouse page (Phase 2) or, once we land it, a Shopify webhook (Phase 3). A Pending row appears on the mobile picker queue when a request lands.",
   },
   awaiting_pickup: {
     title: "Waiting for the truck.",
@@ -5044,6 +5053,8 @@ function phaseBadgeTone(
       return "destructive";
     case "ready_to_dispatch":
       return "sky";
+    case "in_bailee_custody":
+      return "muted";
     case "awaiting_pickup":
       return "amber";
     case "dispatched":

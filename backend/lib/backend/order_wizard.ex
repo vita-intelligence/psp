@@ -53,7 +53,7 @@ defmodule Backend.OrderWizard do
            :in_production, :closeout,
            :final_release, :awaiting_routing,
            :awaiting_shortfall_resolution,
-           :ready_to_dispatch, :awaiting_pickup,
+           :ready_to_dispatch, :in_bailee_custody, :awaiting_pickup,
            :dispatched, :delivered]
   @total_phases length(@phases)
 
@@ -1409,20 +1409,129 @@ defmodule Backend.OrderWizard do
   # are still on our floor. The operator has to create a fresh
   # shipment for the same lot after cancelling.
   defp derive_dispatch_phase(mos) do
+    # Candidate lot ids come from every MO's output_lots. Intermediate
+    # MOs on a multi-stage tree (blending → capsule → packaging →
+    # finished) contribute lots that have since been consumed by the
+    # next stage — those lots have zero placements everywhere and
+    # aren't relevant to the dispatch phase decision. Only the lots
+    # still physically on some shelf matter here.
+    candidate_ids = collect_all_output_lot_ids(mos)
+    on_shelf_ids = collect_on_shelf_lot_ids(candidate_ids)
+    bailee_lot_ids = collect_bailee_lot_ids(candidate_ids)
+    # Persistent "was this ever a bailee CO?" flag. Reads
+    # ``Stock.Lot.ownership_kind`` directly — the flag is stamped once
+    # at routing (``Backend.ThreePL.route_released_lot``) and stays
+    # ``"bailee"`` for the life of the lot, even after the customer
+    # has pulled all the stock and placements are back to qty=0.
+    # Without this we'd fall back to the direct-ship coverage logic
+    # (which needs a live ``Shipments.Shipment`` row per lot) and
+    # bailee COs would get stuck on ``:in_bailee_custody`` forever
+    # once inventory depleted.
+    had_bailee_lots? = any_bailee_lot?(candidate_ids)
     dispatchable_lots = collect_dispatchable_lot_ids(mos)
 
-    if dispatchable_lots == [] do
-      # No lot has crossed into the dispatch cell yet (edge case: order
-      # completed via a legacy path that skipped routing). Keep the
-      # current terminal phase so we don't confuse anything downstream.
-      :ready_to_dispatch
-    else
-      case shipment_coverage(dispatchable_lots) do
-        {:not_ready, _} -> :ready_to_dispatch
-        {:awaiting_pickup, _} -> :awaiting_pickup
-        {:dispatched, _} -> :dispatched
-        {:delivered, _} -> :delivered
-      end
+    cond do
+      # Bailee flow, fully drained. The CO was routed to 3PL at
+      # release; the customer has since triggered enough portal /
+      # Shopify dispatch requests to zero every placement. The
+      # order is now fulfilled — flip to ``:dispatched`` (final for
+      # bailee — customer took possession at each pull, no separate
+      # ``:delivered`` confirmation exists).
+      had_bailee_lots? and on_shelf_ids == [] ->
+        :dispatched
+
+      # Every on-shelf output lot is on a ``three_pl_storage`` cell —
+      # the customer took ownership at routing
+      # (``Backend.ThreePL.route_released_lot`` flipped
+      # ``ownership_kind = "bailee"``) and the goods sit in bailee
+      # custody until the customer triggers a dispatch via the portal
+      # (Phase 2 of the 3PL portal integration) or a Shopify webhook
+      # (Phase 3). Nothing for the operator to do here — the
+      # ``:ready_to_dispatch`` "move to dispatch cell" CTA misfires
+      # on this state because it assumes a direct-shipment path.
+      on_shelf_ids != [] and length(bailee_lot_ids) == length(on_shelf_ids) ->
+        :in_bailee_custody
+
+      dispatchable_lots == [] ->
+        # No lot in a dispatch cell yet (either the operator hasn't
+        # walked it in, or a mixed 3PL + direct order still owes the
+        # move for the direct portion). Prompt via ``:ready_to_dispatch``.
+        :ready_to_dispatch
+
+      true ->
+        case shipment_coverage(dispatchable_lots) do
+          {:not_ready, _} -> :ready_to_dispatch
+          {:awaiting_pickup, _} -> :awaiting_pickup
+          {:dispatched, _} -> :dispatched
+          {:delivered, _} -> :delivered
+        end
+    end
+  end
+
+  defp collect_all_output_lot_ids(mos) do
+    mos
+    |> Enum.flat_map(fn mo -> mo.output_lots || [] end)
+    |> Enum.map(& &1.id)
+    |> Enum.uniq()
+  end
+
+  # Lots from ``candidate_ids`` that have ANY live placement (qty > 0)
+  # on ANY cell. Intermediate outputs consumed by downstream MOs have
+  # no live placement anywhere and drop out — leaving only the final-
+  # stage lots the wizard actually needs to route to dispatch.
+  defp collect_on_shelf_lot_ids([]), do: []
+
+  defp collect_on_shelf_lot_ids(lot_ids) when is_list(lot_ids) do
+    from(p in Backend.Stock.Placement,
+      where: p.stock_lot_id in ^lot_ids and p.qty > 0,
+      select: p.stock_lot_id,
+      distinct: true
+    )
+    |> Repo.all()
+  end
+
+  # Which of the given lots have a live placement on a
+  # ``three_pl_storage`` cell (bailee custody). Mirrors
+  # :func:`collect_dispatchable_lot_ids/1` — we can't read placements
+  # off the slim ``lot_summary`` payload the mo_state exposes, so we
+  # hit the DB for the physical location.
+  defp collect_bailee_lot_ids([]), do: []
+
+  defp collect_bailee_lot_ids(lot_ids) when is_list(lot_ids) do
+    from(p in Backend.Stock.Placement,
+      join: c in Backend.Warehouses.StorageCell,
+      on: c.id == p.storage_cell_id,
+      where:
+        p.stock_lot_id in ^lot_ids and
+          c.purpose == "three_pl_storage" and
+          p.qty > 0,
+      select: p.stock_lot_id,
+      distinct: true
+    )
+    |> Repo.all()
+  end
+
+  # Persistent "was any of these lots ever routed to bailee custody?"
+  # signal. Reads ``Stock.Lot.ownership_kind`` — the flag is stamped
+  # once by ``Backend.ThreePL.route_released_lot/3`` and stays on the
+  # row for the life of the lot. Distinct from
+  # :func:`collect_bailee_lot_ids/1`, which only counts lots currently
+  # sitting on a 3PL cell with qty > 0. We need the historical view
+  # to distinguish "bailee CO with depleted inventory" (advance to
+  # ``:dispatched``) from "never was a bailee CO, no dispatch
+  # coverage yet" (stay at ``:ready_to_dispatch``).
+  defp any_bailee_lot?([]), do: false
+
+  defp any_bailee_lot?(lot_ids) when is_list(lot_ids) do
+    from(l in Lot,
+      where: l.id in ^lot_ids and l.ownership_kind == "bailee",
+      select: 1,
+      limit: 1
+    )
+    |> Repo.one()
+    |> case do
+      nil -> false
+      _ -> true
     end
   end
 
@@ -1515,7 +1624,7 @@ defmodule Backend.OrderWizard do
       label: phase_label(phase),
       index: index,
       total: @total_phases,
-      is_terminal: phase in [:ready_to_dispatch, :cancelled]
+      is_terminal: phase in [:ready_to_dispatch, :dispatched, :delivered, :cancelled]
     }
   end
 
@@ -1541,6 +1650,7 @@ defmodule Backend.OrderWizard do
   defp phase_label(:awaiting_routing), do: "Routing"
   defp phase_label(:awaiting_shortfall_resolution), do: "Shortfall resolution"
   defp phase_label(:ready_to_dispatch), do: "Shipment paperwork"
+  defp phase_label(:in_bailee_custody), do: "In bailee custody"
   defp phase_label(:awaiting_pickup), do: "Awaiting pickup"
   defp phase_label(:dispatched), do: "Dispatched"
   defp phase_label(:delivered), do: "Delivered"
@@ -3005,6 +3115,37 @@ defmodule Backend.OrderWizard do
           }
       end
     end
+  end
+
+  defp next_action_for(:in_bailee_custody, co, _line_states, _mos, _signers) do
+    # Every released lot on this CO sits on a ``three_pl_storage``
+    # cell — customer owns the goods, we're holding them as bailee.
+    # Nothing for the operator to do until the customer triggers a
+    # dispatch (portal button in Phase 2, or a Shopify webhook in
+    # Phase 3). Storage charges accrue against
+    # ``company.three_pl_rate_per_m3_per_day`` until each unit
+    # leaves the shelf.
+    %{
+      code: "in_bailee_custody",
+      title:
+        "In bailee custody — customer will trigger send-outs.",
+      detail:
+        "All released output lots are sitting in 3PL storage. The customer sees the on-hand qty + accrued storage charges on their /portal/warehouse page and requests dispatches from there. When a request lands, a Pending row appears on the mobile picker queue; the picker walks it to the dispatch cell and the wizard advances into the shipment paperwork step.",
+      primary_cta: %{
+        label: "Open 3PL inventory",
+        kind: "link",
+        href: "/three-pl/inventory"
+      },
+      secondary_ctas: [
+        %{
+          label: "Open project",
+          kind: "link",
+          href: "/projects/#{co.uuid}",
+          description:
+            "Review the released lots + routing decisions on the project control board."
+        }
+      ]
+    }
   end
 
   defp next_action_for(:awaiting_pickup, co, _line_states, mos, _signers) do
