@@ -42,6 +42,12 @@ defmodule BackendWeb.ThreePLController do
   plug RequirePermission,
        "three_pl.dispatch_execute" when action in [:complete_dispatch]
 
+  # Bailee-flow shipment tabs on the mobile 3PL hub — same operator
+  # persona that scans the physical dispatch (`dispatch_execute`).
+  plug RequirePermission,
+       "three_pl.dispatch_execute"
+       when action in [:list_shipments_awaiting_pickup, :list_shipments_in_transit]
+
   action_fallback BackendWeb.FallbackController
 
   # ---------------------------------------------------------------
@@ -177,6 +183,27 @@ defmodule BackendWeb.ThreePLController do
       {:error, reason} ->
         dispatch_error(conn, reason)
     end
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/shipments/awaiting-pickup — Tab 2 of the mobile
+  # 3PL hub. Draft / ready shipments born from bailee lots.
+  # ---------------------------------------------------------------
+  def list_shipments_awaiting_pickup(conn, _params) do
+    actor = conn.assigns.current_user
+    rows = ThreePL.list_bailee_shipments_awaiting_pickup(actor.company_id)
+    json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/shipments/in-transit — Tab 3 of the mobile 3PL
+  # hub. Bailee shipments that have physically left the shipping
+  # bay + are waiting on delivery confirmation.
+  # ---------------------------------------------------------------
+  def list_shipments_in_transit(conn, _params) do
+    actor = conn.assigns.current_user
+    rows = ThreePL.list_bailee_shipments_in_transit(actor.company_id)
+    json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
   end
 
   # ---------------------------------------------------------------
@@ -541,6 +568,43 @@ defmodule BackendWeb.ThreePLController do
       suggested_dest_cells: []
     })
   end
+
+  # Slim wire payload for the mobile 3PL hub's Pickup + Confirm tabs.
+  # Just enough for the row card + a deep-link into the existing
+  # /m/shipments/[uuid]/dispatch mobile form.
+  defp bailee_shipment_payload(%Backend.Shipments.Shipment{} = s) do
+    lot = s.stock_lot
+    customer = s.customer || (lot && lot.bailee_customer)
+
+    %{
+      uuid: s.uuid,
+      status: s.status,
+      qty: Decimal.to_string(s.qty || Decimal.new(0), :normal),
+      picked_up_qty:
+        s.picked_up_qty && Decimal.to_string(s.picked_up_qty, :normal),
+      carrier: s.carrier,
+      tracking_number: s.tracking_number,
+      ready_at: iso_or_nil_dt(s.ready_at),
+      picked_up_at: iso_or_nil_dt(s.picked_up_at),
+      delivered_at: iso_or_nil_dt(s.delivered_at),
+      lot:
+        lot &&
+          %{
+            uuid: lot.uuid,
+            code: Payloads.render_code(lot, "stock_lot"),
+            item: lot.item && %{uuid: lot.item.uuid, name: lot.item.name},
+            unit_symbol:
+              lot.unit_of_measurement && lot.unit_of_measurement.symbol
+          },
+      customer:
+        customer && %{uuid: customer.uuid, name: customer.name}
+    }
+  end
+
+  defp iso_or_nil_dt(nil), do: nil
+  defp iso_or_nil_dt(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp iso_or_nil_dt(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
+  defp iso_or_nil_dt(_), do: nil
 
   defp suggested_dest_cell_payload(%Backend.Warehouses.StorageCell{} = c) do
     location = c.storage_location

@@ -851,6 +851,64 @@ defmodule Backend.ThreePL do
   end
 
   @doc """
+  Bailee-flow shipments in the "picker action needed" states — the
+  lot is already sitting in a dispatch cell (via ``complete_dispatch``)
+  and the outbound paperwork is waiting on either the shipping form
+  (draft) or the truck's arrival (ready). Powers the mobile 3PL
+  hub's "Pickup" tab.
+
+  Identity link: a shipment belongs to the bailee flow when its
+  ``stock_lot.ownership_kind == "bailee"`` — the flag is persistent,
+  set once by ``route_released_lot/3`` at release time.
+  """
+  def list_bailee_shipments_awaiting_pickup(company_id)
+      when is_integer(company_id) do
+    from(s in Backend.Shipments.Shipment,
+      join: l in Lot,
+      on: l.id == s.stock_lot_id,
+      where:
+        s.company_id == ^company_id and
+          s.status in ["draft", "ready"] and
+          l.ownership_kind == "bailee",
+      order_by: [asc: s.ready_at, asc: s.inserted_at, asc: s.id],
+      preload: [
+        :customer,
+        stock_lot: [
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements: [storage_cell: [storage_location: [:floor]]]
+        ]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Bailee-flow shipments that have physically left the shipping bay
+  and are now in transit — either partially picked (some qty still
+  on the floor for the next truck) or fully picked up but not yet
+  delivery-confirmed. Powers the mobile 3PL hub's "Confirm" tab.
+  """
+  def list_bailee_shipments_in_transit(company_id)
+      when is_integer(company_id) do
+    from(s in Backend.Shipments.Shipment,
+      join: l in Lot,
+      on: l.id == s.stock_lot_id,
+      where:
+        s.company_id == ^company_id and
+          s.status in ["partially_picked", "picked_up"] and
+          l.ownership_kind == "bailee",
+      order_by: [desc: s.updated_at, desc: s.id],
+      preload: [
+        :customer,
+        stock_lot: [:item, :unit_of_measurement, :bailee_customer]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Dispatch cells (`purpose = "dispatch"`) in a specific warehouse.
   Powers the mobile 3PL dispatch flow's destination-cell suggestion
   list — same warehouse constraint the completion action enforces on

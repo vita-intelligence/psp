@@ -2,6 +2,7 @@ import { api } from "../api";
 import { getSessionToken } from "../auth/server";
 import { getDeviceToken } from "../devices/server";
 import type {
+  BaileeShipmentRow,
   PendingDispatch,
   ThreePLInventoryResponse,
   ThreePLLotDetailResponse,
@@ -52,6 +53,43 @@ export async function listPendingDispatches(): Promise<PendingDispatch[]> {
   try {
     const res = await api<{ items: PendingDispatch[] }>(
       "/api/three-pl/dispatch-requests",
+      { token, cache: "no-store" },
+    );
+    return res.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Tab 2 of the mobile 3PL hub — bailee-flow shipments in the
+ *  states where the picker owes an action (fill the shipping form
+ *  or record the truck arrival). Empty on unauth. */
+export async function listBaileeShipmentsAwaitingPickup(): Promise<
+  BaileeShipmentRow[]
+> {
+  const token = await anyToken();
+  if (!token) return [];
+  try {
+    const res = await api<{ items: BaileeShipmentRow[] }>(
+      "/api/three-pl/shipments/awaiting-pickup",
+      { token, cache: "no-store" },
+    );
+    return res.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Tab 3 of the mobile 3PL hub — bailee-flow shipments in transit,
+ *  awaiting customer delivery confirmation. */
+export async function listBaileeShipmentsInTransit(): Promise<
+  BaileeShipmentRow[]
+> {
+  const token = await anyToken();
+  if (!token) return [];
+  try {
+    const res = await api<{ items: BaileeShipmentRow[] }>(
+      "/api/three-pl/shipments/in-transit",
       { token, cache: "no-store" },
     );
     return res.items;

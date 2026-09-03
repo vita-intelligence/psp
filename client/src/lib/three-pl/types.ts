@@ -128,6 +128,37 @@ export interface PendingDispatch extends ThreePLDispatchRow {
   }[];
 }
 
+/** Row payload for the mobile 3PL hub's Pickup + Confirm tabs.
+ *  Bailee-flow shipments only — identified server-side by
+ *  ``stock_lot.ownership_kind == "bailee"``. */
+export interface BaileeShipmentRow {
+  readonly uuid: string;
+  readonly status:
+    | "draft"
+    | "ready"
+    | "partially_picked"
+    | "picked_up"
+    | "delivered"
+    | "cancelled";
+  readonly qty: string;
+  readonly picked_up_qty: string | null;
+  readonly carrier: string | null;
+  readonly tracking_number: string | null;
+  readonly ready_at: string | null;
+  readonly picked_up_at: string | null;
+  readonly delivered_at: string | null;
+  readonly lot: {
+    readonly uuid: string;
+    readonly code: string | null;
+    readonly item: { readonly uuid: string; readonly name: string } | null;
+    readonly unit_symbol: string | null;
+  } | null;
+  readonly customer: {
+    readonly uuid: string;
+    readonly name: string | null;
+  } | null;
+}
+
 /** Full bundle for the /three-pl/[lot_uuid] item page. */
 export interface ThreePLLotDetailResponse {
   lot: StockLot;

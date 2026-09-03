@@ -1221,6 +1221,16 @@ defmodule BackendWeb.Router do
       get "/dispatch-requests/:uuid", ThreePLController, :get_dispatch
       post "/dispatch-requests/:uuid/complete", ThreePLController, :complete_dispatch
       post "/dispatch-requests/:uuid/cancel", ThreePLController, :cancel_dispatch
+      # Mobile 3PL hub — Pickup tab (draft/ready shipments born from
+      # bailee lots) + Confirm tab (in-transit shipments awaiting
+      # customer delivery confirmation). Same operator persona as
+      # ``complete_dispatch``.
+      get "/shipments/awaiting-pickup",
+          ThreePLController,
+          :list_shipments_awaiting_pickup
+      get "/shipments/in-transit",
+          ThreePLController,
+          :list_shipments_in_transit
       get "/inventory", ThreePLController, :inventory
       get "/lots/:lot_uuid", ThreePLController, :lot_detail
       get "/capacity/:warehouse_uuid", ThreePLController, :capacity

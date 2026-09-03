@@ -1,17 +1,64 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ChevronLeft, MapPin, Package, Truck } from "lucide-react";
+import {
+  ChevronLeft,
+  MailCheck,
+  MapPin,
+  Package,
+  ShieldCheck,
+  Truck,
+} from "lucide-react";
 import { getDeviceToken } from "@/lib/devices/server";
-import { listPendingDispatches } from "@/lib/three-pl/server";
+import {
+  listBaileeShipmentsAwaitingPickup,
+  listBaileeShipmentsInTransit,
+  listPendingDispatches,
+} from "@/lib/three-pl/server";
+import type {
+  BaileeShipmentRow,
+  PendingDispatch,
+} from "@/lib/three-pl/types";
 
 export const metadata = { title: "3PL dispatches · PSP Mobile" };
 export const dynamic = "force-dynamic";
 
-export default async function MobileThreePlDispatchesPage() {
+type Tab = "move" | "pickup" | "confirm";
+
+/**
+ * Mobile 3PL hub — a three-tab view of every bailee-flow shipment
+ * a picker touches during its lifetime. Same operator persona owns
+ * all three tabs (three_pl.dispatch_execute):
+ *
+ *   1. Move — pending 3PL Dispatch rows waiting for the picker to
+ *      walk the lot from a bailee cell into a dispatch cell. Tap →
+ *      the existing walk-flow at /m/three-pl-dispatches/[uuid].
+ *   2. Pickup — draft / ready Shipments born from that walk. Tap →
+ *      /m/shipments/[uuid]/dispatch, the standard mobile dispatch
+ *      form (carrier, driver, vehicle registration, checklist,
+ *      loading photos, seal + temperature). Same code path a
+ *      direct-ship CO's picker uses.
+ *   3. Confirm — in-transit shipments (partially_picked /
+ *      picked_up) awaiting customer delivery confirmation. Tap →
+ *      the same dispatch form to log a follow-up truck visit;
+ *      confirmation itself lands on the portal when the customer
+ *      signs off.
+ */
+export default async function MobileThreePlDispatchesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
   const token = await getDeviceToken();
   if (!token) redirect("/pair");
 
-  const items = await listPendingDispatches();
+  const [pending, awaitingPickup, inTransit] = await Promise.all([
+    listPendingDispatches(),
+    listBaileeShipmentsAwaitingPickup(),
+    listBaileeShipmentsInTransit(),
+  ]);
+
+  const { tab } = await searchParams;
+  const active = normaliseTab(tab);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -28,62 +75,311 @@ export default async function MobileThreePlDispatchesPage() {
             3PL dispatches
           </p>
           <p className="truncate text-sm font-semibold">
-            {items.length} pending
+            {pending.length + awaitingPickup.length + inTransit.length} in flight
           </p>
         </div>
       </header>
 
+      <nav
+        className="flex border-b border-border/60 text-xs"
+        aria-label="3PL flow stage"
+      >
+        <TabLink
+          tab="move"
+          active={active}
+          icon={<Truck className="size-3.5" />}
+          label="Move"
+          count={pending.length}
+        />
+        <TabLink
+          tab="pickup"
+          active={active}
+          icon={<ShieldCheck className="size-3.5" />}
+          label="Pickup"
+          count={awaitingPickup.length}
+        />
+        <TabLink
+          tab="confirm"
+          active={active}
+          icon={<MailCheck className="size-3.5" />}
+          label="Confirm"
+          count={inTransit.length}
+        />
+      </nav>
+
       <main className="flex-1 space-y-3 px-3 py-4">
-        {items.length === 0 ? (
-          <p className="text-center text-xs text-muted-foreground">
-            Nothing to pick right now. The desktop team queues 3PL dispatches
-            here when a customer wants their goods sent out.
-          </p>
-        ) : (
-          items.map((row) => (
-            <Link
-              key={row.uuid}
-              href={`/m/three-pl-dispatches/${encodeURIComponent(row.uuid)}`}
-              className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
-            >
-              <div className="flex items-center gap-2">
-                <div className="flex size-8 items-center justify-center rounded-md bg-violet-500/10 text-violet-700 dark:text-violet-300">
-                  <Truck className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">
-                    {row.qty}
-                    {row.lot?.unit_symbol
-                      ? ` ${row.lot.unit_symbol}`
-                      : ""}{" "}
-                    of {row.lot?.item?.name ?? "—"}
-                  </p>
-                  <p className="truncate text-[11px] text-muted-foreground">
-                    Held for {row.lot?.bailee_customer?.name ?? "—"}
-                    {row.reference ? ` · ref ${row.reference}` : ""}
-                  </p>
-                </div>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Package className="size-3" />
-                  <span className="font-mono">{row.lot?.code ?? "—"}</span>
-                </div>
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <MapPin className="size-3" />
-                  {sourceLabel(row.source_location, row.source_cell)}
-                </div>
-              </div>
-              {row.notes && (
-                <p className="mt-2 rounded-md bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground">
-                  {row.notes}
-                </p>
-              )}
-            </Link>
-          ))
-        )}
+        {active === "move" && <MoveTab items={pending} />}
+        {active === "pickup" && <PickupTab items={awaitingPickup} />}
+        {active === "confirm" && <ConfirmTab items={inTransit} />}
       </main>
     </div>
+  );
+}
+
+function normaliseTab(raw: string | undefined): Tab {
+  if (raw === "pickup" || raw === "confirm") return raw;
+  return "move";
+}
+
+function TabLink({
+  tab,
+  active,
+  icon,
+  label,
+  count,
+}: {
+  tab: Tab;
+  active: Tab;
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+}) {
+  const isActive = active === tab;
+  return (
+    <Link
+      href={`/m/three-pl-dispatches${tab === "move" ? "" : `?tab=${tab}`}`}
+      className={`flex flex-1 flex-col items-center gap-1 px-2 py-2.5 border-b-2 transition-colors ${
+        isActive
+          ? "border-brand text-brand"
+          : "border-transparent text-muted-foreground active:bg-muted"
+      }`}
+      role="tab"
+      aria-selected={isActive}
+    >
+      <span className="flex items-center gap-1.5 font-semibold uppercase tracking-wider">
+        {icon}
+        {label}
+      </span>
+      <span
+        className={`min-w-[1.25rem] rounded-full px-1.5 text-[10px] tabular-nums ${
+          isActive ? "bg-brand/15 text-brand" : "bg-muted text-muted-foreground"
+        }`}
+      >
+        {count}
+      </span>
+    </Link>
+  );
+}
+
+// ---------------------------------------------------------------
+// Tab 1 — Move
+// ---------------------------------------------------------------
+
+function MoveTab({ items }: { items: PendingDispatch[] }) {
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing to move right now"
+        detail="Customer-requested dispatches land here for the picker to walk into the shipping bay."
+      />
+    );
+  }
+  return (
+    <>
+      {items.map((row) => (
+        <Link
+          key={row.uuid}
+          href={`/m/three-pl-dispatches/${encodeURIComponent(row.uuid)}`}
+          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex size-8 items-center justify-center rounded-md bg-violet-500/10 text-violet-700 dark:text-violet-300">
+              <Truck className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">
+                {row.qty}
+                {row.lot?.unit_symbol ? ` ${row.lot.unit_symbol}` : ""} of{" "}
+                {row.lot?.item?.name ?? "—"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                Held for {row.lot?.bailee_customer?.name ?? "—"}
+                {row.reference ? ` · ref ${row.reference}` : ""}
+              </p>
+            </div>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <Package className="size-3" />
+              <span className="font-mono">{row.lot?.code ?? "—"}</span>
+            </div>
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <MapPin className="size-3" />
+              {sourceLabel(row.source_location, row.source_cell)}
+            </div>
+          </div>
+          {row.notes && (
+            <p className="mt-2 rounded-md bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground">
+              {row.notes}
+            </p>
+          )}
+        </Link>
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------
+// Tab 2 — Pickup
+// ---------------------------------------------------------------
+
+function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="No pickups queued"
+        detail="After you walk a bailee lot to the shipping bay, its draft shipment lands here so the truck arrival can be logged with driver / vehicle / checklist / loading photos."
+      />
+    );
+  }
+  return (
+    <>
+      {items.map((s) => (
+        <Link
+          key={s.uuid}
+          href={`/m/shipments/${encodeURIComponent(s.uuid)}/dispatch`}
+          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex size-8 items-center justify-center rounded-md bg-brand/10 text-brand">
+              <ShieldCheck className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">
+                {s.qty}
+                {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
+                {s.lot?.item?.name ?? "—"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                For {s.customer?.name ?? "—"}
+                {s.carrier ? ` · ${s.carrier}` : ""}
+              </p>
+            </div>
+            <StatusPill status={s.status} />
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <Package className="size-3" />
+              <span className="font-mono">{s.lot?.code ?? "—"}</span>
+            </div>
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <MailCheck className="size-3" />
+              {s.status === "draft"
+                ? "Fill shipping form"
+                : `Ready since ${formatShort(s.ready_at)}`}
+            </div>
+          </div>
+        </Link>
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------
+// Tab 3 — Confirm
+// ---------------------------------------------------------------
+
+function ConfirmTab({ items }: { items: BaileeShipmentRow[] }) {
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing in transit"
+        detail="Shipments the truck has already picked up appear here while we wait for the customer to confirm delivery on their portal."
+      />
+    );
+  }
+  return (
+    <>
+      {items.map((s) => {
+        const pickedUp = Number(s.picked_up_qty ?? "0");
+        const total = Number(s.qty ?? "0");
+        const percent =
+          total > 0 ? Math.min(100, Math.round((pickedUp / total) * 100)) : 0;
+        return (
+          <Link
+            key={s.uuid}
+            href={`/m/shipments/${encodeURIComponent(s.uuid)}/dispatch`}
+            className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+          >
+            <div className="flex items-center gap-2">
+              <div className="flex size-8 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                <MailCheck className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
+                  {s.qty}
+                  {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
+                  {s.lot?.item?.name ?? "—"}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  For {s.customer?.name ?? "—"}
+                  {s.tracking_number ? ` · ${s.tracking_number}` : ""}
+                </p>
+              </div>
+              <StatusPill status={s.status} />
+            </div>
+            {s.status === "partially_picked" && total > 0 && (
+              <div className="mt-2">
+                <div className="flex justify-between text-[11px] text-muted-foreground">
+                  <span>
+                    {pickedUp.toLocaleString()} of {total.toLocaleString()}{" "}
+                    picked up
+                  </span>
+                  <span className="font-medium">{percent}%</span>
+                </div>
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={
+                      percent === 100
+                        ? "h-full bg-emerald-500"
+                        : "h-full bg-brand"
+                    }
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Picked up {formatShort(s.picked_up_at) || "—"}. Customer will
+              confirm delivery on the portal.
+            </p>
+          </Link>
+        );
+      })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------
+// Shared bits
+// ---------------------------------------------------------------
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-border/60 bg-card p-4 text-center">
+      <p className="text-sm font-semibold">{title}</p>
+      <p className="mt-1 text-[11px] text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: BaileeShipmentRow["status"] }) {
+  const cls =
+    status === "draft"
+      ? "bg-muted text-muted-foreground"
+      : status === "ready"
+        ? "bg-amber-500/15 text-amber-800 dark:text-amber-200"
+        : status === "partially_picked"
+          ? "bg-brand/15 text-brand"
+          : status === "picked_up"
+            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+            : "bg-muted text-muted-foreground";
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${cls}`}
+    >
+      {status.replace(/_/g, " ")}
+    </span>
   );
 }
 
@@ -101,4 +397,18 @@ function sourceLabel(
     cell?.code?.trim() ||
     (typeof cell?.ordinal === "number" ? `Level ${cell.ordinal + 1}` : null);
   return cellPart ? `${locPart} · ${cellPart}` : locPart;
+}
+
+function formatShort(iso: string | null): string {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("en-GB", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }
