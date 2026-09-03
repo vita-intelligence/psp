@@ -297,10 +297,24 @@ defmodule Backend.ThreePL do
 
   defp ensure_lot_belongs_to_customer(lot, company_id, customer_uuid)
        when is_binary(customer_uuid) do
-    case Repo.get_by(Backend.Customers.Customer,
-           company_id: company_id,
-           uuid: customer_uuid
-         ) do
+    # Same dual-identity trap as
+    # :func:`list_bailee_lots_for_customer/2`: NPD-side callers
+    # (portal → Django proxy) pass ``Customer.id`` from Django, which
+    # PSP stores as ``npd_source_uuid`` via the sync-time
+    # ``resolve_customer`` dedupe. Match on either column so a portal
+    # dispatch request never falsely reports ``:not_owner`` when the
+    # lot is genuinely held for the caller's customer row.
+    resolved =
+      Repo.get_by(Backend.Customers.Customer,
+        company_id: company_id,
+        uuid: customer_uuid
+      ) ||
+        Repo.get_by(Backend.Customers.Customer,
+          company_id: company_id,
+          npd_source_uuid: customer_uuid
+        )
+
+    case resolved do
       %Backend.Customers.Customer{id: cid} when cid == lot.bailee_customer_id ->
         :ok
 
