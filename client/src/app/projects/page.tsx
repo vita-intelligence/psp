@@ -413,6 +413,10 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
     director_review: "Label · dir review",
     customer_approval: "Label · customer review",
     label_approved: "Label approved",
+    //: Customer opted out at the choose-path step — production
+    //: doesn't wait on any artwork; the badge just parks the
+    //: workflow as a signed-off terminal state.
+    no_label_required: "No label required",
     on_hold: "Label · on hold",
   };
   const labelPillText =

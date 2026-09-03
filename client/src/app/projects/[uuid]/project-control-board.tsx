@@ -3519,11 +3519,16 @@ function RandDTeamCard({
     director_review: "Director reviewing",
     customer_approval: "Awaiting customer approval",
     label_approved: "Label approved",
+    //: Terminal opt-out from the portal choose-path step. Production
+    //: doesn't wait on artwork; the CO ships unlabelled per the
+    //: customer's explicit request.
+    no_label_required: "No label required",
     on_hold: "On hold",
   };
   const labelPathCopy: Record<string, string> = {
     design_by_us: "Our team designs",
     design_by_customer: "Customer designs",
+    no_label: "No label required",
   };
   const labelStatusText = labelStatusCopy[labelStatus] || labelStatus || "—";
   const labelPathText = labelPath ? labelPathCopy[labelPath] || labelPath : "";
