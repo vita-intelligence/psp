@@ -575,13 +575,17 @@ defmodule BackendWeb.ThreePLController do
   defp bailee_shipment_payload(%Backend.Shipments.Shipment{} = s) do
     lot = s.stock_lot
     customer = s.customer || (lot && lot.bailee_customer)
+    # ``picked_up_qty`` is computed from the shipment's pickup_events
+    # (see Backend.Shipments.picked_up_qty/1) — not a persisted field
+    # on the Shipment schema. Compute it here so multi-visit progress
+    # renders correctly on the Confirm tab.
+    picked_up = Backend.Shipments.picked_up_qty(s)
 
     %{
       uuid: s.uuid,
       status: s.status,
       qty: Decimal.to_string(s.qty || Decimal.new(0), :normal),
-      picked_up_qty:
-        s.picked_up_qty && Decimal.to_string(s.picked_up_qty, :normal),
+      picked_up_qty: Decimal.to_string(picked_up, :normal),
       carrier: s.carrier,
       tracking_number: s.tracking_number,
       ready_at: iso_or_nil_dt(s.ready_at),
