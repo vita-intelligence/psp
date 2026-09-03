@@ -213,6 +213,7 @@ defmodule Backend.ThreePL do
         reference: Map.get(attrs, "reference"),
         notes: Map.get(attrs, "notes"),
         status: "pending",
+        source: "staff",
         requested_by_id: actor.id,
         requested_at: DateTime.utc_now() |> DateTime.truncate(:second)
       })
@@ -220,6 +221,101 @@ defmodule Backend.ThreePL do
       |> tap_audit_created_dispatch(actor)
     end
   end
+
+  @doc """
+  Portal-triggered dispatch request — the customer clicked "Request
+  dispatch" on their /portal/warehouse page. Same effect as
+  :func:`request_dispatch/2` (creates a `pending` row that a
+  warehouse picker will complete on mobile), but:
+
+    * no PSP `%User{}` actor — the request came from a customer
+    * `source = "portal"` so the mobile picker queue can badge the
+      row + downstream Phase 3 webhook logic can find it
+    * lot ownership is enforced against the ``customer_uuid`` on the
+      payload — a leaked lot_uuid to a non-owner surfaces as
+      `:not_owner`, not as a successful cross-customer dispatch
+    * `external_reference` is optional (Phase 2 leaves it nil;
+      Phase 3's Shopify webhook fills it with the Shopify order id)
+
+  `attrs`:
+
+      %{
+        "company_id" => integer,         # asserted by caller
+        "customer_uuid" => "<uuid>",
+        "lot_uuid" => "<uuid>",
+        "qty" => decimal-parseable,
+        "reference" => nil | binary,
+        "notes" => nil | binary,
+        "source" => "portal" | "shopify_webhook" | "custom_api",
+        "external_reference" => nil | binary
+      }
+
+  Returns `{:ok, %Dispatch{}}` or `{:error, reason}` — `:not_bailee`,
+  `:not_owner`, `:bad_qty`, `:no_bailee_placement`,
+  `:insufficient_qty`, `{:missing_key, key}`, or an
+  `%Ecto.Changeset{}`. Audit rail records the action against the
+  integration token's actor identity (captured at the controller
+  layer, not here).
+  """
+  def request_customer_dispatch(attrs) when is_map(attrs) do
+    with {:ok, company_id} <- fetch_int_key(attrs, "company_id"),
+         {:ok, customer_uuid} <- fetch_key(attrs, "customer_uuid"),
+         {:ok, lot_uuid} <- fetch_key(attrs, "lot_uuid"),
+         {:ok, lot} <- fetch_bailee_lot(company_id, lot_uuid),
+         :ok <- ensure_lot_belongs_to_customer(lot, company_id, customer_uuid),
+         {:ok, qty} <- parse_qty(Map.get(attrs, "qty")),
+         :ok <- ensure_bailee_qty_available(lot, qty) do
+      source = source_or_default(Map.get(attrs, "source"))
+
+      %Dispatch{}
+      |> Dispatch.request_changeset(%{
+        company_id: company_id,
+        stock_lot_id: lot.id,
+        qty: qty,
+        reference: Map.get(attrs, "reference"),
+        notes: Map.get(attrs, "notes"),
+        status: "pending",
+        source: source,
+        external_reference: Map.get(attrs, "external_reference"),
+        # No PSP User actor for portal-triggered requests. The
+        # existing changeset now allows a nil FK; audit trail
+        # attributes the row via the integration token's identity
+        # captured at the controller boundary.
+        requested_by_id: nil,
+        requested_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+      |> Repo.insert()
+    end
+  end
+
+  defp fetch_int_key(attrs, key) do
+    case Map.get(attrs, key) do
+      v when is_integer(v) -> {:ok, v}
+      _ -> {:error, {:missing_key, key}}
+    end
+  end
+
+  defp ensure_lot_belongs_to_customer(lot, company_id, customer_uuid)
+       when is_binary(customer_uuid) do
+    case Repo.get_by(Backend.Customers.Customer,
+           company_id: company_id,
+           uuid: customer_uuid
+         ) do
+      %Backend.Customers.Customer{id: cid} when cid == lot.bailee_customer_id ->
+        :ok
+
+      _ ->
+        {:error, :not_owner}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_owner}
+  end
+
+  defp source_or_default(source) when is_binary(source) do
+    if source in Dispatch.sources(), do: source, else: "portal"
+  end
+
+  defp source_or_default(_), do: "portal"
 
   defp tap_audit_created_dispatch({:ok, %Dispatch{} = row}, actor) do
     Audit.record_created(actor, "three_pl_dispatch", row, dispatch_snapshot(row))

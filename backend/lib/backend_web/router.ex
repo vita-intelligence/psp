@@ -1952,6 +1952,18 @@ defmodule BackendWeb.Router do
         IntegrationCustomerBaileeInventoryController,
         :show
 
+    # Portal-triggered dispatch requests (Phase 2 of the 3PL portal
+    # integration). Vita-CFF's ``PortalWarehouseDispatchRequestView``
+    # proxies here after enforcing ownership via
+    # ``customer_ids_for_account``; PSP re-validates ownership via the
+    # ``customer_uuid`` on the payload so a leaked lot_uuid can never
+    # dispatch a lot for a customer who doesn't own it. Creates a
+    # `pending` `three_pl_dispatches` row (source=portal) that lands
+    # on the mobile picker queue exactly like a staff-typed request.
+    post "/customer-fulfilment-requests",
+         IntegrationCustomerFulfilmentRequestController,
+         :create
+
     # Write-side
     # Push an R&D-side BOM snapshot onto the finished-product
     # item. Idempotent from a versioning POV — repeated calls

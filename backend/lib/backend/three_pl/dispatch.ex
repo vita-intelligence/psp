@@ -27,6 +27,13 @@ defmodule Backend.ThreePL.Dispatch do
   @statuses ~w(pending completed cancelled)
   def statuses, do: @statuses
 
+  # Where the request came from. Drives the mobile picker queue UI
+  # (portal / Shopify requests get a badge so the picker knows the
+  # customer is watching for a webhook back) + audit trail. Staff
+  # remains the default for legacy rows + operator-typed requests.
+  @sources ~w(staff portal shopify_webhook custom_api)
+  def sources, do: @sources
+
   schema "three_pl_dispatches" do
     field :uuid, Ecto.UUID, autogenerate: true
     field :qty, :decimal
@@ -34,6 +41,8 @@ defmodule Backend.ThreePL.Dispatch do
     field :notes, :string
     field :photo_url, :string
     field :status, :string, default: "pending"
+    field :source, :string, default: "staff"
+    field :external_reference, :string
 
     # Request half — desktop.
     field :requested_at, :utc_datetime
@@ -62,6 +71,8 @@ defmodule Backend.ThreePL.Dispatch do
       :reference,
       :notes,
       :status,
+      :source,
+      :external_reference,
       :requested_by_id,
       :requested_at
     ])
@@ -70,12 +81,14 @@ defmodule Backend.ThreePL.Dispatch do
       :stock_lot_id,
       :qty,
       :status,
-      :requested_by_id,
+      :source,
       :requested_at
     ])
     |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:source, @sources)
     |> validate_number(:qty, greater_than: 0)
     |> validate_length(:reference, max: 200)
+    |> validate_length(:external_reference, max: 200)
   end
 
   @doc """
