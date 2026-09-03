@@ -146,10 +146,23 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
   defp first_customer(_), do: nil
 
   defp fallback_customer(company_id, customer_uuid) do
-    case Backend.Repo.get_by(Backend.Customers.Customer,
-           company_id: company_id,
-           uuid: customer_uuid
-         ) do
+    # Same dual-identity trap as ``list_bailee_lots_for_customer/2`` —
+    # NPD-side callers pass ``npd_source_uuid`` (their Django
+    # ``Customer.id``) while staff-side hits carry the PSP-native
+    # ``uuid``. Try the native lookup first then fall back to
+    # npd_source_uuid so the portal's "no held stock" empty envelope
+    # still echoes back the correct customer name.
+    resolved =
+      Backend.Repo.get_by(Backend.Customers.Customer,
+        company_id: company_id,
+        uuid: customer_uuid
+      ) ||
+        Backend.Repo.get_by(Backend.Customers.Customer,
+          company_id: company_id,
+          npd_source_uuid: customer_uuid
+        )
+
+    case resolved do
       nil -> %{"uuid" => customer_uuid, "name" => nil}
       c -> %{"uuid" => c.uuid, "name" => c.name}
     end

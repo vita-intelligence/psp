@@ -3134,7 +3134,7 @@ defmodule Backend.OrderWizard do
       primary_cta: %{
         label: "Open 3PL inventory",
         kind: "link",
-        href: "/three-pl/inventory"
+        href: "/three-pl"
       },
       secondary_ctas: [
         %{

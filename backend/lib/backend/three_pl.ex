@@ -758,10 +758,27 @@ defmodule Backend.ThreePL do
   """
   def list_bailee_lots_for_customer(company_id, customer_uuid)
       when is_integer(company_id) and is_binary(customer_uuid) do
-    case Backend.Repo.get_by(Backend.Customers.Customer,
-           company_id: company_id,
-           uuid: customer_uuid
-         ) do
+    # Callers hit this from two different identity spaces:
+    #   * PSP-side lookups (staff dashboard) pass ``Customer.uuid`` —
+    #     the PSP-native UUID stamped at insert.
+    #   * NPD-side portal proxy (``PortalWarehouseStockView``) passes
+    #     Django's ``Customer.id`` (also a UUID) — which lands on the
+    #     PSP row as ``npd_source_uuid`` via the ``resolve_customer``
+    #     dedupe on the CO sync path. See ``npd_sync.ex:411``.
+    # A row is a match on either column — we try the PSP-native uuid
+    # first (fast path for staff) then fall back to npd_source_uuid so
+    # the portal request never misses.
+    customer =
+      Backend.Repo.get_by(Backend.Customers.Customer,
+        company_id: company_id,
+        uuid: customer_uuid
+      ) ||
+        Backend.Repo.get_by(Backend.Customers.Customer,
+          company_id: company_id,
+          npd_source_uuid: customer_uuid
+        )
+
+    case customer do
       nil ->
         []
 
