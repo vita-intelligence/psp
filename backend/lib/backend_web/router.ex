@@ -1943,6 +1943,15 @@ defmodule BackendWeb.Router do
     get "/hr/employees", IntegrationReadController, :list_employees
     get "/users", IntegrationReadController, :list_users
 
+    # 3PL / bailee inventory scoped to a specific customer. Powers the
+    # customer-facing warehouse-visibility page on both portals (Phase 1
+    # of the 3PL portal integration). Vita-CFF proxies this after
+    # resolving the caller's ClientAccount → Customer id union so the
+    # customer only ever sees their own held stock.
+    get "/customer-bailee-inventory/:customer_uuid",
+        IntegrationCustomerBaileeInventoryController,
+        :show
+
     # Write-side
     # Push an R&D-side BOM snapshot onto the finished-product
     # item. Idempotent from a versioning POV — repeated calls

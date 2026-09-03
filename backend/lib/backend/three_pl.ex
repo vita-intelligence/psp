@@ -647,6 +647,52 @@ defmodule Backend.ThreePL do
     |> Repo.all()
   end
 
+  @doc """
+  Bailee lots held for a specific customer, resolved by the CUSTOMER
+  UUID (not the internal id). Powers the customer-facing warehouse
+  visibility endpoint — the vita-cff portal proxies this and shows
+  each customer their own held stock + storage costs accruing.
+
+  Returns `[]` (never nil) when the customer isn't recognised or has
+  no held stock — the customer-facing surface reads a mostly-empty
+  result the same as "everything shipped", not as an error.
+
+  Same schema as `list_bailee_lots/1` so the payload shaper can be
+  shared between the staff dashboard and the integration read.
+  """
+  def list_bailee_lots_for_customer(company_id, customer_uuid)
+      when is_integer(company_id) and is_binary(customer_uuid) do
+    case Backend.Repo.get_by(Backend.Customers.Customer,
+           company_id: company_id,
+           uuid: customer_uuid
+         ) do
+      nil ->
+        []
+
+      %Backend.Customers.Customer{id: customer_id} ->
+        from(l in Lot,
+          where:
+            l.company_id == ^company_id and
+              l.ownership_kind == "bailee" and
+              l.bailee_customer_id == ^customer_id and
+              l.status not in ["disposed", "canceled", "depleted"],
+          preload: [
+            :item,
+            :unit_of_measurement,
+            :bailee_customer,
+            placements:
+              ^from(p in Placement,
+                preload: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+              )
+          ],
+          order_by: [desc: l.bailee_routed_at]
+        )
+        |> Repo.all()
+    end
+  rescue
+    Ecto.Query.CastError -> []
+  end
+
   # =====================================================================
   # Private
   # =====================================================================
