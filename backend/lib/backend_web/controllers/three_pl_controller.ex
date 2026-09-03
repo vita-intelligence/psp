@@ -46,7 +46,11 @@ defmodule BackendWeb.ThreePLController do
   # persona that scans the physical dispatch (`dispatch_execute`).
   plug RequirePermission,
        "three_pl.dispatch_execute"
-       when action in [:list_shipments_awaiting_pickup, :list_shipments_in_transit]
+       when action in [
+              :list_shipments_needing_paperwork,
+              :list_shipments_awaiting_pickup,
+              :list_shipments_in_transit
+            ]
 
   action_fallback BackendWeb.FallbackController
 
@@ -186,19 +190,31 @@ defmodule BackendWeb.ThreePLController do
   end
 
   # ---------------------------------------------------------------
-  # GET /three-pl/shipments/awaiting-pickup — Tab 2 of the mobile
-  # 3PL hub. Draft / ready shipments born from bailee lots.
+  # GET /three-pl/shipments/needing-paperwork — Tab 2 of the mobile
+  # 3PL hub. Draft shipments born from bailee lots that still owe a
+  # shipping-form review before being marked Ready.
   # ---------------------------------------------------------------
-  def list_shipments_awaiting_pickup(conn, _params) do
+  def list_shipments_needing_paperwork(conn, _params) do
     actor = conn.assigns.current_user
-    rows = ThreePL.list_bailee_shipments_awaiting_pickup(actor.company_id)
+    rows = ThreePL.list_bailee_shipments_needing_paperwork(actor.company_id)
     json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
   end
 
   # ---------------------------------------------------------------
-  # GET /three-pl/shipments/in-transit — Tab 3 of the mobile 3PL
-  # hub. Bailee shipments that have physically left the shipping
-  # bay + are waiting on delivery confirmation.
+  # GET /three-pl/shipments/awaiting-pickup — Tab 3 of the mobile
+  # 3PL hub. Ready / partially_picked shipments waiting on the
+  # next truck arrival.
+  # ---------------------------------------------------------------
+  def list_shipments_awaiting_pickup(conn, _params) do
+    actor = conn.assigns.current_user
+    rows = ThreePL.list_bailee_shipments_ready_for_pickup(actor.company_id)
+    json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/shipments/in-transit — Tab 4 of the mobile 3PL
+  # hub. Picked-up shipments waiting on the customer to confirm
+  # delivery on the portal.
   # ---------------------------------------------------------------
   def list_shipments_in_transit(conn, _params) do
     actor = conn.assigns.current_user

@@ -61,9 +61,26 @@ export async function listPendingDispatches(): Promise<PendingDispatch[]> {
   }
 }
 
-/** Tab 2 of the mobile 3PL hub — bailee-flow shipments in the
- *  states where the picker owes an action (fill the shipping form
- *  or record the truck arrival). Empty on unauth. */
+/** Tab 2 of the mobile 3PL hub — draft shipments that still owe a
+ *  shipping-form review before Mark Ready. */
+export async function listBaileeShipmentsNeedingPaperwork(): Promise<
+  BaileeShipmentRow[]
+> {
+  const token = await anyToken();
+  if (!token) return [];
+  try {
+    const res = await api<{ items: BaileeShipmentRow[] }>(
+      "/api/three-pl/shipments/needing-paperwork",
+      { token, cache: "no-store" },
+    );
+    return res.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Tab 3 of the mobile 3PL hub — ready / partially_picked
+ *  shipments waiting on truck arrival. */
 export async function listBaileeShipmentsAwaitingPickup(): Promise<
   BaileeShipmentRow[]
 > {

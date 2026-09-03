@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   ChevronLeft,
+  ClipboardList,
   MailCheck,
   MapPin,
   Package,
@@ -12,6 +13,7 @@ import { getDeviceToken } from "@/lib/devices/server";
 import {
   listBaileeShipmentsAwaitingPickup,
   listBaileeShipmentsInTransit,
+  listBaileeShipmentsNeedingPaperwork,
   listPendingDispatches,
 } from "@/lib/three-pl/server";
 import type {
@@ -22,26 +24,27 @@ import type {
 export const metadata = { title: "3PL dispatches · PSP Mobile" };
 export const dynamic = "force-dynamic";
 
-type Tab = "move" | "pickup" | "confirm";
+type Tab = "move" | "paperwork" | "pickup" | "confirm";
 
 /**
- * Mobile 3PL hub — a three-tab view of every bailee-flow shipment
- * a picker touches during its lifetime. Same operator persona owns
- * all three tabs (three_pl.dispatch_execute):
+ * Mobile 3PL hub — a four-tab view of every bailee-flow shipment a
+ * picker touches during its lifetime. Same operator persona owns
+ * all four tabs (three_pl.dispatch_execute):
  *
  *   1. Move — pending 3PL Dispatch rows waiting for the picker to
  *      walk the lot from a bailee cell into a dispatch cell. Tap →
  *      the existing walk-flow at /m/three-pl-dispatches/[uuid].
- *   2. Pickup — draft / ready Shipments born from that walk. Tap →
- *      /m/shipments/[uuid]/dispatch, the standard mobile dispatch
- *      form (carrier, driver, vehicle registration, checklist,
- *      loading photos, seal + temperature). Same code path a
- *      direct-ship CO's picker uses.
- *   3. Confirm — in-transit shipments (partially_picked /
- *      picked_up) awaiting customer delivery confirmation. Tap →
- *      the same dispatch form to log a follow-up truck visit;
- *      confirmation itself lands on the portal when the customer
- *      signs off.
+ *   2. Paperwork — draft Shipments born from that walk that still
+ *      owe a shipping-form review (recipient / address / country /
+ *      planned ship date) before being marked Ready. Tap →
+ *      /m/shipments/[uuid]/paperwork.
+ *   3. Pickup — ready / partially_picked Shipments waiting on the
+ *      truck. Tap → /m/shipments/[uuid]/dispatch, the standard
+ *      mobile pickup-event form (carrier, driver, vehicle
+ *      registration, checklist, loading photos, seal + temperature).
+ *   4. Confirm — picked_up shipments in transit, waiting on the
+ *      customer to sign delivery off on their portal. Read-only —
+ *      customer owns the next action.
  */
 export default async function MobileThreePlDispatchesPage({
   searchParams,
@@ -51,8 +54,9 @@ export default async function MobileThreePlDispatchesPage({
   const token = await getDeviceToken();
   if (!token) redirect("/pair");
 
-  const [pending, awaitingPickup, inTransit] = await Promise.all([
+  const [pending, paperwork, awaitingPickup, inTransit] = await Promise.all([
     listPendingDispatches(),
+    listBaileeShipmentsNeedingPaperwork(),
     listBaileeShipmentsAwaitingPickup(),
     listBaileeShipmentsInTransit(),
   ]);
@@ -75,7 +79,11 @@ export default async function MobileThreePlDispatchesPage({
             3PL dispatches
           </p>
           <p className="truncate text-sm font-semibold">
-            {pending.length + awaitingPickup.length + inTransit.length} in flight
+            {pending.length +
+              paperwork.length +
+              awaitingPickup.length +
+              inTransit.length}{" "}
+            in flight
           </p>
         </div>
       </header>
@@ -90,6 +98,13 @@ export default async function MobileThreePlDispatchesPage({
           icon={<Truck className="size-3.5" />}
           label="Move"
           count={pending.length}
+        />
+        <TabLink
+          tab="paperwork"
+          active={active}
+          icon={<ClipboardList className="size-3.5" />}
+          label="Paperwork"
+          count={paperwork.length}
         />
         <TabLink
           tab="pickup"
@@ -109,6 +124,7 @@ export default async function MobileThreePlDispatchesPage({
 
       <main className="flex-1 space-y-3 px-3 py-4">
         {active === "move" && <MoveTab items={pending} />}
+        {active === "paperwork" && <PaperworkTab items={paperwork} />}
         {active === "pickup" && <PickupTab items={awaitingPickup} />}
         {active === "confirm" && <ConfirmTab items={inTransit} />}
       </main>
@@ -117,7 +133,7 @@ export default async function MobileThreePlDispatchesPage({
 }
 
 function normaliseTab(raw: string | undefined): Tab {
-  if (raw === "pickup" || raw === "confirm") return raw;
+  if (raw === "paperwork" || raw === "pickup" || raw === "confirm") return raw;
   return "move";
 }
 
@@ -220,7 +236,53 @@ function MoveTab({ items }: { items: PendingDispatch[] }) {
 }
 
 // ---------------------------------------------------------------
-// Tab 2 — Pickup
+// Tab 2 — Paperwork
+// ---------------------------------------------------------------
+
+function PaperworkTab({ items }: { items: BaileeShipmentRow[] }) {
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="No paperwork owed"
+        detail="After you walk a bailee lot to the shipping bay, its draft shipment lands here so someone can review the recipient / address / planned ship date and mark it Ready."
+      />
+    );
+  }
+  return (
+    <>
+      {items.map((s) => (
+        <Link
+          key={s.uuid}
+          href={`/m/shipments/${encodeURIComponent(s.uuid)}/paperwork`}
+          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex size-8 items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
+              <ClipboardList className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">
+                {s.qty}
+                {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
+                {s.lot?.item?.name ?? "—"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                For {s.customer?.name ?? "—"}
+              </p>
+            </div>
+            <StatusPill status={s.status} />
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Fill shipping form → Mark ready for pickup.
+          </p>
+        </Link>
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------
+// Tab 3 — Pickup
 // ---------------------------------------------------------------
 
 function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
@@ -228,7 +290,7 @@ function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
     return (
       <EmptyState
         title="No pickups queued"
-        detail="After you walk a bailee lot to the shipping bay, its draft shipment lands here so the truck arrival can be logged with driver / vehicle / checklist / loading photos."
+        detail="Shipments marked Ready land here so the truck arrival can be logged with driver / vehicle / checklist / loading photos."
       />
     );
   }
@@ -264,8 +326,8 @@ function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
             </div>
             <div className="flex items-center gap-1 text-muted-foreground">
               <MailCheck className="size-3" />
-              {s.status === "draft"
-                ? "Fill shipping form"
+              {s.status === "partially_picked"
+                ? "Next truck arriving"
                 : `Ready since ${formatShort(s.ready_at)}`}
             </div>
           </div>
@@ -276,7 +338,7 @@ function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
 }
 
 // ---------------------------------------------------------------
-// Tab 3 — Confirm
+// Tab 4 — Confirm
 // ---------------------------------------------------------------
 
 function ConfirmTab({ items }: { items: BaileeShipmentRow[] }) {

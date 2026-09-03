@@ -451,12 +451,13 @@ defmodule Backend.ThreePL do
   # 3PL dispatch handoff → standard outbound shipment flow. After the
   # picker has physically walked the qty into a `dispatch` cell (via
   # ``Stock.move_placement`` above), spawn a draft Shipment against
-  # the lot so the rest of the outbound paperwork (mark-ready →
-  # pickup-event → delivery-confirm) reuses the same code path direct-
-  # ship orders travel. Without this hop the goods sit on the dispatch
-  # shelf with `Dispatch.status = "completed"` but no shipment record —
-  # the wizard reads that as "still in ready_to_dispatch" and never
-  # advances, and the customer never gets a delivery confirmation.
+  # the lot so the rest of the outbound paperwork (paperwork tab
+  # → pickup tab → confirm tab on the mobile hub) reuses the same
+  # code path direct-ship orders travel. The shipment lands in
+  # ``draft`` so the operator explicitly reviews the shipping form
+  # (recipient, address, country, planned ship date) before marking
+  # Ready — the paperwork step is an explicit tab on the mobile hub,
+  # not something auto-skipped.
   #
   # ``:already_open`` isn't an error: partial fulfilments against a
   # single lot are a legitimate flow (customer queues 500 today +
@@ -465,14 +466,9 @@ defmodule Backend.ThreePL do
   # the existing draft via its own re-derive on Ready — no data loss.
   defp spawn_outbound_shipment(%User{} = actor, %Lot{uuid: lot_uuid}) do
     case Backend.Shipments.create_from_lot(actor, lot_uuid) do
-      {:ok, _shipment} ->
-        :ok
-
-      {:error, :already_open} ->
-        :ok
-
-      {:error, _reason} = err ->
-        err
+      {:ok, _shipment} -> :ok
+      {:error, :already_open} -> :ok
+      {:error, _reason} = err -> err
     end
   end
 
@@ -851,24 +847,40 @@ defmodule Backend.ThreePL do
   end
 
   @doc """
-  Bailee-flow shipments in the "picker action needed" states — the
-  lot is already sitting in a dispatch cell (via ``complete_dispatch``)
-  and the outbound paperwork is waiting on either the shipping form
-  (draft) or the truck's arrival (ready). Powers the mobile 3PL
-  hub's "Pickup" tab.
+  Bailee-flow shipments in ``draft`` — the picker has walked the
+  goods to the shipping bay but the shipping form (recipient,
+  address, country, planned ship date) still needs a review before
+  the shipment can be marked Ready. Powers the mobile 3PL hub's
+  "Paperwork" tab.
 
   Identity link: a shipment belongs to the bailee flow when its
   ``stock_lot.ownership_kind == "bailee"`` — the flag is persistent,
   set once by ``route_released_lot/3`` at release time.
   """
-  def list_bailee_shipments_awaiting_pickup(company_id)
+  def list_bailee_shipments_needing_paperwork(company_id)
       when is_integer(company_id) do
+    bailee_shipments_by_status(company_id, ["draft"])
+  end
+
+  @doc """
+  Bailee-flow shipments already marked Ready (or partially picked)
+  and waiting on truck arrival. Powers the mobile 3PL hub's
+  "Pickup" tab — tap opens the standard
+  ``/m/shipments/[uuid]/dispatch`` truck-arrival form.
+  """
+  def list_bailee_shipments_ready_for_pickup(company_id)
+      when is_integer(company_id) do
+    bailee_shipments_by_status(company_id, ["ready", "partially_picked"])
+  end
+
+  defp bailee_shipments_by_status(company_id, statuses)
+       when is_integer(company_id) and is_list(statuses) do
     from(s in Backend.Shipments.Shipment,
       join: l in Lot,
       on: l.id == s.stock_lot_id,
       where:
         s.company_id == ^company_id and
-          s.status in ["draft", "ready"] and
+          s.status in ^statuses and
           l.ownership_kind == "bailee",
       order_by: [asc: s.ready_at, asc: s.inserted_at, asc: s.id],
       preload: [
@@ -885,10 +897,12 @@ defmodule Backend.ThreePL do
   end
 
   @doc """
-  Bailee-flow shipments that have physically left the shipping bay
-  and are now in transit — either partially picked (some qty still
-  on the floor for the next truck) or fully picked up but not yet
-  delivery-confirmed. Powers the mobile 3PL hub's "Confirm" tab.
+  Bailee-flow shipments fully picked up (all trucks logged) and now
+  in transit, waiting on the customer to confirm delivery via the
+  portal. Powers the mobile 3PL hub's "Confirm" tab.
+
+  ``partially_picked`` shipments live on the Pickup tab, not here —
+  they still owe another truck's worth of evidence.
   """
   def list_bailee_shipments_in_transit(company_id)
       when is_integer(company_id) do
@@ -897,9 +911,9 @@ defmodule Backend.ThreePL do
       on: l.id == s.stock_lot_id,
       where:
         s.company_id == ^company_id and
-          s.status in ["partially_picked", "picked_up"] and
+          s.status == "picked_up" and
           l.ownership_kind == "bailee",
-      order_by: [desc: s.updated_at, desc: s.id],
+      order_by: [desc: s.picked_up_at, desc: s.id],
       preload: [
         :customer,
         stock_lot: [:item, :unit_of_measurement, :bailee_customer]
