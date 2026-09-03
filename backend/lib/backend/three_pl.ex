@@ -820,6 +820,105 @@ defmodule Backend.ThreePL do
     Ecto.Query.CastError -> []
   end
 
+  @doc """
+  Batch lookup for pending dispatch qty per lot. Given a list of lot
+  ids, returns `%{lot_id => Decimal}` summing every `pending` Dispatch
+  row against that lot. Lots with no pending requests are absent from
+  the map (caller substitutes `Decimal.new(0)`).
+
+  Used by the portal warehouse read to expose the delta between
+  "on-hand" and "actually available to request" — a customer who
+  already queued a 100-unit dispatch shouldn't see 1500 units offered
+  as "available" when only 1400 truly are.
+  """
+  def pending_dispatch_qty_by_lot_ids(_company_id, []), do: %{}
+
+  def pending_dispatch_qty_by_lot_ids(company_id, lot_ids)
+      when is_integer(company_id) and is_list(lot_ids) do
+    from(d in Dispatch,
+      where:
+        d.company_id == ^company_id and
+          d.stock_lot_id in ^lot_ids and
+          d.status == "pending",
+      group_by: d.stock_lot_id,
+      select: {d.stock_lot_id, sum(d.qty)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
+  All dispatch requests for a customer (any status), newest first.
+  Powers the portal's "my dispatch requests" list. Uses the same
+  dual-identity customer lookup as
+  :func:`list_bailee_lots_for_customer/2`.
+
+  Options:
+
+    * `:status` — filter to `"pending"` / `"completed"` / `"cancelled"`.
+      Omit to return every row.
+    * `:lot_uuid` — narrow to a single lot (portal "view requests for
+      this lot" affordance).
+    * `:limit` — cap results (default 100).
+  """
+  def list_dispatch_requests_for_customer(company_id, customer_uuid, opts \\ [])
+
+  def list_dispatch_requests_for_customer(company_id, customer_uuid, opts)
+      when is_integer(company_id) and is_binary(customer_uuid) and is_list(opts) do
+    resolved =
+      Backend.Repo.get_by(Backend.Customers.Customer,
+        company_id: company_id,
+        uuid: customer_uuid
+      ) ||
+        Backend.Repo.get_by(Backend.Customers.Customer,
+          company_id: company_id,
+          npd_source_uuid: customer_uuid
+        )
+
+    case resolved do
+      nil ->
+        []
+
+      %Backend.Customers.Customer{id: customer_id} ->
+        status_filter = Keyword.get(opts, :status)
+        lot_uuid_filter = Keyword.get(opts, :lot_uuid)
+        limit = Keyword.get(opts, :limit, 100)
+
+        base =
+          from d in Dispatch,
+            join: l in Lot,
+            on: l.id == d.stock_lot_id,
+            where:
+              d.company_id == ^company_id and
+                l.bailee_customer_id == ^customer_id,
+            order_by: [desc: d.requested_at, desc: d.id],
+            limit: ^limit,
+            preload: [
+              stock_lot: [:item, :unit_of_measurement],
+              requested_by: [],
+              dispatched_by: []
+            ]
+
+        base =
+          if is_binary(status_filter) and status_filter in Dispatch.statuses() do
+            from [d, _l] in base, where: d.status == ^status_filter
+          else
+            base
+          end
+
+        base =
+          if is_binary(lot_uuid_filter) and lot_uuid_filter != "" do
+            from [_d, l] in base, where: l.uuid == ^lot_uuid_filter
+          else
+            base
+          end
+
+        Repo.all(base)
+    end
+  rescue
+    Ecto.Query.CastError -> []
+  end
+
   # =====================================================================
   # Private
   # =====================================================================

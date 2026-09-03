@@ -21,6 +21,8 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
         "summary": {
           "lot_count": 3,
           "total_qty_on_hand": "1450.0000",
+          "total_qty_pending_dispatch": "150.0000",
+          "total_qty_available": "1300.0000",
           "total_held_volume_m3": "0.5432",
           "total_accrued_charge": "12.34"
         },
@@ -29,6 +31,8 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
             "uuid": "…", "code": "L00042",
             "item": {"uuid": "…", "name": "…", "code": "MA01446"},
             "qty_on_hand": "1450.0000",
+            "qty_pending_dispatch": "150.0000",
+            "qty_available": "1300.0000",
             "unit_of_measurement": {"symbol": "pack"},
             "bailee_routed_at": "2026-08-15T09:00:00Z",
             "held_volume_m3": "0.5432",
@@ -65,12 +69,17 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
     lots = ThreePL.list_bailee_lots_for_customer(company_id, customer_uuid)
     rate = company.three_pl_rate_per_m3_per_day
 
-    lot_rows = Enum.map(lots, &lot_payload(&1, rate))
+    pending_by_lot =
+      ThreePL.pending_dispatch_qty_by_lot_ids(company_id, Enum.map(lots, & &1.id))
+
+    lot_rows = Enum.map(lots, &lot_payload(&1, rate, pending_by_lot))
     customer = first_customer(lots) || fallback_customer(company_id, customer_uuid)
 
     summary = %{
       lot_count: length(lot_rows),
       total_qty_on_hand: sum_field(lot_rows, "qty_on_hand"),
+      total_qty_pending_dispatch: sum_field(lot_rows, "qty_pending_dispatch"),
+      total_qty_available: sum_field(lot_rows, "qty_available"),
       total_held_volume_m3: sum_field(lot_rows, "held_volume_m3"),
       total_accrued_charge: sum_field(lot_rows, "accrued_charge")
     }
@@ -86,10 +95,19 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
 
   # ---- Payload shapers ----
 
-  defp lot_payload(lot, rate) do
+  defp lot_payload(lot, rate, pending_by_lot) do
     volume = ThreePL.lot_held_volume_m3(lot)
     charge = ThreePL.accrued_charge(lot, rate)
     qty_on_hand = sum_placement_qty(lot.placements)
+    pending = Map.get(pending_by_lot, lot.id, Decimal.new(0))
+    # Guard: pending shouldn't exceed on-hand under normal flow (the
+    # request endpoint enforces `ensure_bailee_qty_available` before
+    # inserting) but if a race or manual manipulation gets us there,
+    # clamp `available` to zero rather than expose a negative to the
+    # customer-facing surface.
+    diff = Decimal.sub(qty_on_hand, pending)
+    available =
+      if Decimal.compare(diff, Decimal.new(0)) == :lt, do: Decimal.new(0), else: diff
 
     %{
       "uuid" => lot.uuid,
@@ -100,6 +118,8 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
         "code" => Payloads.render_entity_code(lot.item, "item")
       },
       "qty_on_hand" => decimal_to_string(qty_on_hand),
+      "qty_pending_dispatch" => decimal_to_string(pending),
+      "qty_available" => decimal_to_string(available),
       "unit_of_measurement" => %{
         "symbol" => (lot.unit_of_measurement && lot.unit_of_measurement.symbol) || ""
       },

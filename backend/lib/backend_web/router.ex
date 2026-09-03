@@ -1964,6 +1964,14 @@ defmodule BackendWeb.Router do
          IntegrationCustomerFulfilmentRequestController,
          :create
 
+    # Portal-facing list of a customer's dispatch requests, any
+    # status. Sister endpoint to ``customer-bailee-inventory``, same
+    # dual-identity customer resolution. Powers the portal's
+    # ``/portal/warehouse/requests`` history page.
+    get "/customer-dispatch-requests/:customer_uuid",
+        IntegrationCustomerDispatchRequestListController,
+        :index
+
     # Write-side
     # Push an R&D-side BOM snapshot onto the finished-product
     # item. Idempotent from a versioning POV — repeated calls
