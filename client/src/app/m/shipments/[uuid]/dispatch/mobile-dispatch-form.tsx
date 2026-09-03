@@ -101,6 +101,12 @@ export function MobileDispatchForm({ shipment }: Props) {
   // partial load.
   const remainingQty = Number(shipment.remaining_qty ?? shipment.qty ?? 0);
   const [visitQty, setVisitQty] = useState<string>(String(remainingQty));
+  // Hide the "Qty on THIS truck" input when the shipment can only
+  // ride on one truck — nothing to split, so asking the operator
+  // to confirm "1 out of 1" is noise. The visitQty state still
+  // carries remainingQty into the payload; the operator just
+  // doesn't see or edit the field.
+  const isSingleTruckable = remainingQty <= 1;
   const [checks, setChecks] = useState<Record<ChecklistKey, boolean>>(
     isSubsequentVisit
       ? {
@@ -275,58 +281,75 @@ export function MobileDispatchForm({ shipment }: Props) {
       <main className="flex-1 space-y-5 px-4 py-4 pb-32">
         {/* This-visit qty. Prominent because it's the load-bearing
             decision for multi-visit pickups. Defaults to the whole
-            remaining qty so single-visit trucks just tap through. */}
-        <section className="rounded-xl border border-brand/40 bg-brand/5 p-4">
-          <Label htmlFor="visit-qty" className="text-xs font-semibold uppercase tracking-wider">
-            Qty on THIS truck
-          </Label>
-          <Input
-            id="visit-qty"
-            type="number"
-            min={1}
-            max={remainingQty}
-            step="any"
-            value={visitQty}
-            onChange={(e) => setVisitQty(e.target.value)}
-            aria-invalid={visitQtyInvalid || visitQtyOverCap}
-            className={cn(
-              "mt-1 h-14 text-2xl font-mono font-semibold text-center",
-              (visitQtyInvalid || visitQtyOverCap) &&
-                "border-destructive focus-visible:ring-destructive",
-            )}
-          />
-          {visitQtyOverCap ? (
-            <div
-              role="alert"
-              aria-live="polite"
-              className="mt-2 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/[0.06] px-2.5 py-2 text-xs font-medium text-destructive"
-            >
-              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <p>
-                Too much for this truck — only{" "}
-                <span className="font-mono font-semibold">{remainingQty}</span>{" "}
-                units are still owed on this shipment. Lower the quantity
-                to continue.
-              </p>
-            </div>
-          ) : visitQtyInvalid ? (
-            <div
-              role="alert"
-              aria-live="polite"
-              className="mt-2 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/[0.06] px-2.5 py-2 text-xs font-medium text-destructive"
-            >
-              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <p>Enter a positive quantity.</p>
-            </div>
-          ) : (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Remaining on this shipment:{" "}
-              <span className="font-mono font-semibold">{remainingQty}</span>.
-              Reduce this number if the truck is only taking part of the
-              load; the rest stays in the dispatch cell for the next visit.
+            remaining qty so single-visit trucks just tap through.
+            Hidden entirely when the shipment can only ride on one
+            truck (remainingQty <= 1) — visitQty state still
+            carries remainingQty into the submit payload. */}
+        {isSingleTruckable ? (
+          <section className="rounded-xl border border-brand/40 bg-brand/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-brand">
+              Whole shipment on this truck
             </p>
-          )}
-        </section>
+            <p className="mt-1 font-mono text-2xl font-semibold">
+              {remainingQty} {shipment.stock_lot?.unit_symbol ?? ""}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Nothing to split — this shipment fits on one visit.
+            </p>
+          </section>
+        ) : (
+          <section className="rounded-xl border border-brand/40 bg-brand/5 p-4">
+            <Label htmlFor="visit-qty" className="text-xs font-semibold uppercase tracking-wider">
+              Qty on THIS truck
+            </Label>
+            <Input
+              id="visit-qty"
+              type="number"
+              min={1}
+              max={remainingQty}
+              step="any"
+              value={visitQty}
+              onChange={(e) => setVisitQty(e.target.value)}
+              aria-invalid={visitQtyInvalid || visitQtyOverCap}
+              className={cn(
+                "mt-1 h-14 text-2xl font-mono font-semibold text-center",
+                (visitQtyInvalid || visitQtyOverCap) &&
+                  "border-destructive focus-visible:ring-destructive",
+              )}
+            />
+            {visitQtyOverCap ? (
+              <div
+                role="alert"
+                aria-live="polite"
+                className="mt-2 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/[0.06] px-2.5 py-2 text-xs font-medium text-destructive"
+              >
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <p>
+                  Too much for this truck — only{" "}
+                  <span className="font-mono font-semibold">{remainingQty}</span>{" "}
+                  units are still owed on this shipment. Lower the quantity
+                  to continue.
+                </p>
+              </div>
+            ) : visitQtyInvalid ? (
+              <div
+                role="alert"
+                aria-live="polite"
+                className="mt-2 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/[0.06] px-2.5 py-2 text-xs font-medium text-destructive"
+              >
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <p>Enter a positive quantity.</p>
+              </div>
+            ) : (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Remaining on this shipment:{" "}
+                <span className="font-mono font-semibold">{remainingQty}</span>.
+                Reduce this number if the truck is only taking part of the
+                load; the rest stays in the dispatch cell for the next visit.
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="grid grid-cols-1 gap-3">
           <div className="space-y-1.5">
