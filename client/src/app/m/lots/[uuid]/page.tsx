@@ -20,6 +20,7 @@ import { getLotForScan } from "@/lib/stock/mobile";
 import { computeLotHandlingTags } from "@/lib/stock/handling-tags";
 import type { StockLot } from "@/lib/types";
 import { FloorPlanMini } from "./move/floor-plan-mini";
+import { SendLabelToLaptopButton } from "./send-label-to-laptop-button";
 
 export const metadata = { title: "Lot · PSP Mobile" };
 
@@ -246,6 +247,21 @@ export default async function MobileLotPage({ params }: Props) {
               </p>
             </div>
           </Link>
+
+          {/* Regular stock label — phone-to-laptop print bridge.
+              Always available so the operator can (re)print at any
+              lot state — pending put-away, on a shelf, or being
+              relocated. Mirrors the goods-in wizard's Send-to-laptop
+              button one-for-one: same server action, same laptop
+              listener, different `kind` on the wire. */}
+          <SendLabelToLaptopButton
+            lotUuid={lot.uuid}
+            lotCode={lot.code ?? `#${lot.id}`}
+            itemName={lot.item?.name ?? "—"}
+            qty={String(lot.qty_on_hand ?? "")}
+            uomSymbol={lot.unit_of_measurement?.symbol ?? null}
+            supplierBatchNo={lot.supplier_batch_no ?? null}
+          />
 
           {/* Consume / Dispose actions land in follow-up slices. */}
         </section>

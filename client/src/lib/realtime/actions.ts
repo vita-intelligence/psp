@@ -57,3 +57,51 @@ export async function sendQuarantineLabelAction(
     });
   }
 }
+
+
+// Regular lot label — same phone-to-laptop bridge as the quarantine
+// pack action above, but keyed on the lot itself instead of an
+// inspection pack. Fired from the mobile lot detail page (goods that
+// have already passed inspection and are sitting on the pending-put-
+// away shelf) so the operator can print the standard stock label
+// from their laptop without walking back to it. Preview fields
+// mirror the on-page identity card so the print dialog shows what
+// the operator is about to print.
+export interface SendStockLotLabelInput {
+  lot_uuid: string;
+  lot_code: string;
+  item_name: string;
+  qty: string;
+  uom_symbol: string | null;
+  supplier_batch_no: string | null;
+}
+
+export type SendStockLotLabelResult =
+  | { ok: true }
+  | (ErrorResult & { ok: false });
+
+export async function sendStockLotLabelAction(
+  input: SendStockLotLabelInput,
+): Promise<SendStockLotLabelResult> {
+  const token = (await getDeviceToken()) ?? (await getSessionToken());
+  if (!token) {
+    return syntheticErrorResult({
+      source: "sendStockLotLabelAction",
+      code: "unauthorized",
+      detail: "Not signed in — pair the device or log in again.",
+    });
+  }
+  try {
+    await api<{ ok: true }>("/api/realtime/print-label", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ kind: "stock_lot", payload: input }),
+    });
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "sendStockLotLabelAction",
+      fallbackDetail: "Couldn't reach the laptop.",
+    });
+  }
+}

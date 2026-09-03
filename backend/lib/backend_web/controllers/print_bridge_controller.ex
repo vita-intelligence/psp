@@ -17,16 +17,21 @@ defmodule BackendWeb.PrintBridgeController do
   knows how to interpret each `kind`):
 
       {
-        "kind": "quarantine_pack",
+        "kind": "quarantine_pack" | "stock_lot",
         "payload": { … }
       }
+
+  `stock_lot` mirrors the same pattern from the mobile lot detail page
+  (post-inspection, on the pending-put-away shelf) so the operator can
+  print the regular lot label from their laptop without walking back
+  to it.
   """
 
   use BackendWeb, :controller
 
   alias BackendWeb.Endpoint
 
-  @allowed_kinds ~w(quarantine_pack)
+  @allowed_kinds ~w(quarantine_pack stock_lot)
 
   def print_label(conn, %{"kind" => kind, "payload" => payload})
       when kind in @allowed_kinds and is_map(payload) do
