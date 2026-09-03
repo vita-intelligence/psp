@@ -80,7 +80,13 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
     try {
       const fd = new FormData();
       fd.append("file", f);
-      const res = await fetch("/api/stock/movement-photos", {
+      // Mobile picker's session lives in the device-token cookie, not
+      // the desktop session cookie — hit the /api/m proxy that reads
+      // the device token. The desktop /api/stock/movement-photos
+      // 401s here because the picker phone was paired via device,
+      // not signed in. Same route the other /m flows use
+      // (see m/lots/[uuid]/move/move-flow.tsx).
+      const res = await fetch("/api/m/movement-photos", {
         method: "POST",
         body: fd,
       });
