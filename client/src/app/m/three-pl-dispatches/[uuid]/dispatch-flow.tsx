@@ -1,25 +1,15 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useCallback, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import {
-  ArrowLeft,
-  Camera,
-  CheckCircle2,
-  Loader2,
-  MapPin,
-  Package,
-  RefreshCw,
-  Truck,
-} from "lucide-react";
+import { ArrowLeft, Loader2, MapPin, Package, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorBanner } from "@/components/forms/error-banner";
 import { completeDispatchAction } from "@/lib/three-pl/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import type { PendingDispatch } from "@/lib/three-pl/types";
-import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 
@@ -29,29 +19,34 @@ type Step =
   | "confirm_pick"
   | "pick_dest_cell"
   | "walk_to_dest"
-  | "scan_dest_cell"
-  | "capture_photo"
-  | "confirm_drop";
+  | "scan_dest_cell";
 
 /**
- * Mobile 3PL dispatch pick + drop flow. Steps:
+ * Mobile 3PL dispatch pick + walk flow. The picker phone's job is
+ * to physically move a bailee lot from its three_pl_storage cell to
+ * a dispatch cell — that's it. Truck evidence (vehicle registration,
+ * driver name, checklist, seal, temperature, loading photos)
+ * belongs on the standard Shipment's pickup-event form and is
+ * captured on the desktop later, on a different day. Steps:
  *
  *   1. Scan source three_pl_storage cell (must match the pending
- *      dispatch's source cell)
- *   2. Scan lot QR (must match the dispatch's lot)
- *   3. Confirm pick — big qty number, "I've got them"
- *   4. Pick a destination dispatch cell — tap a suggestion (dispatch
- *      cells in the source warehouse) or fall through to freeform scan.
- *   5. Scan the destination dispatch cell to confirm. When a
- *      suggestion was tapped, the scanner is armed against that
- *      specific UUID + dev-skip is enabled; when the picker chose
- *      "Scan any cell", the scan is freeform and backend re-validates
- *      purpose = "dispatch" + same warehouse.
- *   6. Take photo of the packages in the destination cell
- *   7. Confirm — POST /complete which fires the Stock.Movement, flips
- *      the dispatch row to completed, AND spawns a draft Shipment so
- *      the standard shipment paperwork (mark ready → pickup event →
- *      delivery confirm) takes over from here.
+ *      dispatch's source cell).
+ *   2. Scan lot QR (must match the dispatch's lot).
+ *   3. Confirm pick — big qty number, "I've got them".
+ *   4. Pick a destination dispatch cell — tap a suggestion
+ *      (dispatch cells in the source warehouse) or fall through to
+ *      the freeform scan branch.
+ *   5. Walk to it — FloorPlanMini renders the rack, "I'm at the
+ *      cell" advances into the scan step.
+ *   6. Scan the destination dispatch cell. On confirm the flow
+ *      POSTs /complete which, in one transaction:
+ *        * fires the Stock.Movement into the dispatch cell,
+ *        * flips the Dispatch row to `completed`,
+ *        * spawns a draft Shipment against the lot.
+ *      From there the standard shipment paperwork (mark ready →
+ *      pickup event with all truck evidence → delivery confirm)
+ *      takes over on the desktop — same code path a direct-ship CO
+ *      travels.
  */
 export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
   const router = useRouter();
@@ -60,8 +55,6 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
   const [pickedDestCell, setPickedDestCell] = useState<
     PendingDispatch["suggested_dest_cells"][number] | null
   >(null);
-  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
-  const [photoUploading, setPhotoUploading] = useState(false);
   const [error, setError] = useState<ErrorResult | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -72,61 +65,23 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
   const sourceLocLabel = locationLabel(dispatch.source_location);
   const suggestions = dispatch.suggested_dest_cells ?? [];
 
-  async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setError(null);
-    setPhotoUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", f);
-      // Mobile picker's session lives in the device-token cookie, not
-      // the desktop session cookie — hit the /api/m proxy that reads
-      // the device token. The desktop /api/stock/movement-photos
-      // 401s here because the picker phone was paired via device,
-      // not signed in. Same route the other /m flows use
-      // (see m/lots/[uuid]/move/move-flow.tsx).
-      const res = await fetch("/api/m/movement-photos", {
-        method: "POST",
-        body: fd,
+  const submitMove = useCallback(
+    (toCellUuid: string) => {
+      setError(null);
+      startTransition(async () => {
+        const res = await completeDispatchAction(dispatch.uuid, {
+          to_cell_uuid: toCellUuid,
+        });
+        if (!res.ok) {
+          setError(res);
+          return;
+        }
+        toast.success("Moved to the shipping bay. Shipment paperwork queued.");
+        router.push("/m/three-pl-dispatches");
       });
-      const data = (await res.json()) as {
-        photo_url?: string;
-        detail?: string;
-      };
-      if (!res.ok || !data.photo_url) {
-        setError({
-          ok: false,
-          code: "photo_upload_failed",
-          detail: data.detail ?? "Photo upload failed.",
-          debug: { source: "DispatchFlow.onPhoto" },
-        } as ErrorResult);
-        return;
-      }
-      setPhotoUrl(data.photo_url);
-      setStep("confirm_drop");
-    } finally {
-      setPhotoUploading(false);
-      e.target.value = "";
-    }
-  }
-
-  function confirmDrop() {
-    if (!destCellUuid || !photoUrl) return;
-    setError(null);
-    startTransition(async () => {
-      const res = await completeDispatchAction(dispatch.uuid, {
-        to_cell_uuid: destCellUuid,
-        photo_url: photoUrl,
-      });
-      if (!res.ok) {
-        setError(res);
-        return;
-      }
-      toast.success("Dispatched to shipping.");
-      router.push("/m/three-pl-dispatches");
-    });
-  }
+    },
+    [dispatch.uuid, router],
+  );
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -391,104 +346,44 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
         )}
 
         {step === "scan_dest_cell" && (
-          <UuidScanStep
-            expectedUuid={pickedDestCell?.uuid ?? "*"}
-            kind="cell"
-            expectedLabel={
-              pickedDestCell
-                ? cellDisplayLabel(pickedDestCell)
-                : "Any dispatch cell in this warehouse"
-            }
-            bypassUuid={pickedDestCell?.uuid}
-            onConfirmed={() => setStep("capture_photo")}
-            onCancel={() =>
-              setStep(
+          <>
+            <UuidScanStep
+              expectedUuid={pickedDestCell?.uuid ?? "*"}
+              kind="cell"
+              expectedLabel={
                 pickedDestCell
-                  ? "walk_to_dest"
-                  : suggestions.length > 0
-                    ? "pick_dest_cell"
-                    : "confirm_pick",
-              )
-            }
-            onScanned={(uuid) => setDestCellUuid(uuid)}
-          />
-        )}
-
-        {step === "capture_photo" && (
-          <section className="space-y-3 rounded-lg border border-border/60 bg-card p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Camera className="size-4" />
-              Photo evidence
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Snap the packages sitting in the shipping cell — the
-              customer sees this photo as proof of dispatch.
-            </p>
-            <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-background p-6 text-sm font-medium active:bg-muted">
-              {photoUploading ? (
-                <>
-                  <RefreshCw className="size-5 animate-spin" />
-                  Uploading…
-                </>
-              ) : (
-                <>
-                  <Camera className="size-5" />
-                  Open camera
-                </>
-              )}
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="hidden"
-                onChange={(e) => void onPhoto(e)}
-              />
-            </label>
-            {error && <ErrorBanner detail={error.detail} code={error.code} />}
-          </section>
-        )}
-
-        {step === "confirm_drop" && photoUrl && (
-          <section className="space-y-3 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800 dark:text-emerald-200">
-              <CheckCircle2 className="size-4" />
-              Ready to record
-            </div>
-            {realPhotoUrl(photoUrl) ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img
-                src={realPhotoUrl(photoUrl)!}
-                alt="Shipping bay evidence"
-                className="mx-auto max-h-56 rounded-md border border-border/60"
-              />
-            ) : (
-              <p className="text-center text-xs italic text-muted-foreground">
-                Photo skipped (dev)
-              </p>
+                  ? cellDisplayLabel(pickedDestCell)
+                  : "Any dispatch cell in this warehouse"
+              }
+              bypassUuid={pickedDestCell?.uuid}
+              onConfirmed={() => {
+                // Freeform "Scan any cell" branch: the scanner
+                // reports the scanned uuid via onScanned; specific-
+                // uuid branch already stashed it when the picker
+                // tapped the suggestion. Either way we now have
+                // destCellUuid to submit.
+                const toCell = pickedDestCell?.uuid ?? destCellUuid;
+                if (toCell) submitMove(toCell);
+              }}
+              onCancel={() =>
+                setStep(
+                  pickedDestCell
+                    ? "walk_to_dest"
+                    : suggestions.length > 0
+                      ? "pick_dest_cell"
+                      : "confirm_pick",
+                )
+              }
+              onScanned={(uuid) => setDestCellUuid(uuid)}
+            />
+            {pending && (
+              <div className="flex items-center justify-center gap-2 rounded-lg border border-border/60 bg-card p-3 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Moving to shipping and queuing the shipment…
+              </div>
             )}
             {error && <ErrorBanner detail={error.detail} code={error.code} />}
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                disabled={pending}
-                onClick={() => {
-                  setPhotoUrl(null);
-                  setStep("capture_photo");
-                }}
-              >
-                Retake
-              </Button>
-              <Button
-                className="flex-1"
-                disabled={pending}
-                onClick={confirmDrop}
-              >
-                {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                Confirm dispatch
-              </Button>
-            </div>
-          </section>
+          </>
         )}
       </main>
     </div>
@@ -501,9 +396,7 @@ const STEPS: { key: Step; short: string }[] = [
   { key: "confirm_pick", short: "Pick" },
   { key: "pick_dest_cell", short: "Ship" },
   { key: "walk_to_dest", short: "Walk" },
-  { key: "scan_dest_cell", short: "Scan" },
-  { key: "capture_photo", short: "Photo" },
-  { key: "confirm_drop", short: "Done" },
+  { key: "scan_dest_cell", short: "Drop" },
 ];
 
 function cellDisplayLabel(c: {

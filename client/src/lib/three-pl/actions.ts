@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
+import { getDeviceToken } from "../devices/server";
 import {
   syntheticErrorResult,
   toErrorResult,
@@ -122,7 +123,10 @@ export async function completeDispatchAction(
   dispatchUuid: string,
   input: CompleteDispatchInput,
 ): Promise<CompleteDispatchResult> {
-  const token = await getSessionToken();
+  // Mobile picker flows run in a paired-phone context (device token
+  // cookie only); desktop calls run with a session cookie. Same
+  // dual-lookup pattern the shipments + warehouses actions use.
+  const token = (await getSessionToken()) ?? (await getDeviceToken());
   if (!token) return unauthorized("completeDispatchAction");
 
   try {

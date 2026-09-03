@@ -75,7 +75,11 @@ export interface RequestDispatchInput {
 
 export interface CompleteDispatchInput {
   to_cell_uuid: string;
-  photo_url: string;
+  /** Optional. The mobile picker flow no longer captures a photo at
+   *  move-time (truck evidence lives on the shipment's pickup event
+   *  instead). Left nullable so existing desktop callers that DO
+   *  attach one still round-trip. */
+  photo_url?: string | null;
 }
 
 /** Mobile picker queue row — dispatch + the lot / source cell
