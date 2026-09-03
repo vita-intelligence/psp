@@ -552,7 +552,12 @@ defmodule BackendWeb.ThreePLController do
       code: Payloads.render_code(c, "storage_cell"),
       ordinal: c.ordinal,
       location: location && (location.name || location.code),
-      floor: floor && floor.name
+      # location_uuid + floor_uuid feed the mobile FloorPlanMini so
+      # the picker sees the rack highlighted on the floor plan
+      # exactly like the lot-move / MO-pickup flows do.
+      location_uuid: location && location.uuid,
+      floor: floor && floor.name,
+      floor_uuid: floor && floor.uuid
     }
   end
 

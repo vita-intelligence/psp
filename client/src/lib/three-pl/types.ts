@@ -115,7 +115,12 @@ export interface PendingDispatch extends ThreePLDispatchRow {
     readonly code: string | null;
     readonly ordinal: number | null;
     readonly location: string | null;
+    /** Location + floor UUIDs for the mobile FloorPlanMini so the
+     *  picker sees the rack highlighted on the floor plan (parity
+     *  with the lot-move / MO-pickup flows). */
+    readonly location_uuid: string | null;
     readonly floor: string | null;
+    readonly floor_uuid: string | null;
   }[];
 }
 

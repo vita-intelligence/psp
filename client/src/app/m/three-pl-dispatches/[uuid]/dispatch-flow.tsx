@@ -21,12 +21,14 @@ import type { ErrorResult } from "@/lib/errors/server";
 import type { PendingDispatch } from "@/lib/three-pl/types";
 import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
+import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 
 type Step =
   | "scan_source_cell"
   | "scan_lot"
   | "confirm_pick"
   | "pick_dest_cell"
+  | "walk_to_dest"
   | "scan_dest_cell"
   | "capture_photo"
   | "confirm_drop";
@@ -186,9 +188,14 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
              ``pick_dest_cell`` step — hide it so the row stops showing
              a mystery "Ship" pill nobody can reach. */}
         <div className="flex items-center justify-between gap-1 text-[10px]">
-          {STEPS.filter(
-            (s) => s.key !== "pick_dest_cell" || suggestions.length > 0,
-          ).map((s, i, visibleSteps) => {
+          {STEPS.filter((s) => {
+            // Suggestion-only steps drop out when the warehouse has
+            // no dispatch cells preloaded (freeform-scan fallback).
+            if (s.key === "pick_dest_cell") return suggestions.length > 0;
+            if (s.key === "walk_to_dest")
+              return suggestions.length > 0 && !!pickedDestCell;
+            return true;
+          }).map((s, i, visibleSteps) => {
             const stepIdx = visibleSteps.findIndex((x) => x.key === step);
             const done = i < stepIdx;
             const active = s.key === step;
@@ -280,7 +287,16 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
                       onClick={() => {
                         setPickedDestCell(c);
                         setDestCellUuid(c.uuid);
-                        setStep("scan_dest_cell");
+                        // Show the floor plan next when we have the
+                        // UUIDs the FloorPlanMini needs; otherwise
+                        // skip straight to scan (rare — a cell with
+                        // no floor/location wouldn't normally be
+                        // in the suggestions list).
+                        setStep(
+                          c.floor_uuid && c.location_uuid
+                            ? "walk_to_dest"
+                            : "scan_dest_cell",
+                        );
                       }}
                       className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 bg-card p-3 text-left active:bg-muted"
                     >
@@ -304,6 +320,7 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
               type="button"
               onClick={() => {
                 setPickedDestCell(null);
+                setDestCellUuid(null);
                 setStep("scan_dest_cell");
               }}
               className="w-full rounded-lg border border-dashed border-border/60 bg-transparent p-3 text-xs text-muted-foreground active:bg-muted"
@@ -321,6 +338,52 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
           </section>
         )}
 
+        {step === "walk_to_dest" && pickedDestCell && (
+          <section className="space-y-3">
+            <div className="rounded-lg border border-border/60 bg-card p-3">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                Walk to
+              </p>
+              <p className="mt-1 text-sm font-semibold">
+                {cellDisplayLabel(pickedDestCell)}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {[pickedDestCell.floor, pickedDestCell.location]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            </div>
+
+            {pickedDestCell.floor_uuid && pickedDestCell.location_uuid && (
+              <FloorPlanMini
+                floorUuid={pickedDestCell.floor_uuid}
+                targetLocationUuid={pickedDestCell.location_uuid}
+              />
+            )}
+
+            <p className="text-xs text-muted-foreground">
+              Tap the button when you&apos;re at the cell — you&apos;ll scan
+              the QR next to confirm you&apos;re at the right shelf.
+            </p>
+
+            <Button
+              className="w-full"
+              size="lg"
+              onClick={() => setStep("scan_dest_cell")}
+            >
+              I&apos;m at the cell — scan it
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full text-muted-foreground"
+              onClick={() => setStep("pick_dest_cell")}
+            >
+              Pick a different cell
+            </Button>
+          </section>
+        )}
+
         {step === "scan_dest_cell" && (
           <UuidScanStep
             expectedUuid={pickedDestCell?.uuid ?? "*"}
@@ -333,7 +396,13 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
             bypassUuid={pickedDestCell?.uuid}
             onConfirmed={() => setStep("capture_photo")}
             onCancel={() =>
-              setStep(suggestions.length > 0 ? "pick_dest_cell" : "confirm_pick")
+              setStep(
+                pickedDestCell
+                  ? "walk_to_dest"
+                  : suggestions.length > 0
+                    ? "pick_dest_cell"
+                    : "confirm_pick",
+              )
             }
             onScanned={(uuid) => setDestCellUuid(uuid)}
           />
@@ -425,6 +494,7 @@ const STEPS: { key: Step; short: string }[] = [
   { key: "scan_lot", short: "Lot" },
   { key: "confirm_pick", short: "Pick" },
   { key: "pick_dest_cell", short: "Ship" },
+  { key: "walk_to_dest", short: "Walk" },
   { key: "scan_dest_cell", short: "Scan" },
   { key: "capture_photo", short: "Photo" },
   { key: "confirm_drop", short: "Done" },
