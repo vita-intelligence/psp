@@ -26,6 +26,7 @@ type Step =
   | "scan_source_cell"
   | "scan_lot"
   | "confirm_pick"
+  | "pick_dest_cell"
   | "scan_dest_cell"
   | "capture_photo"
   | "confirm_drop";
@@ -37,17 +38,26 @@ type Step =
  *      dispatch's source cell)
  *   2. Scan lot QR (must match the dispatch's lot)
  *   3. Confirm pick — big qty number, "I've got them"
- *   4. Walk to shipping bay → scan destination dispatch cell
- *      (freeform — backend validates purpose = "dispatch" + same
- *      warehouse)
- *   5. Take photo of the packages in the destination cell
- *   6. Confirm — POST /complete which fires the Stock.Movement and
- *      flips the dispatch row to completed atomically
+ *   4. Pick a destination dispatch cell — tap a suggestion (dispatch
+ *      cells in the source warehouse) or fall through to freeform scan.
+ *   5. Scan the destination dispatch cell to confirm. When a
+ *      suggestion was tapped, the scanner is armed against that
+ *      specific UUID + dev-skip is enabled; when the picker chose
+ *      "Scan any cell", the scan is freeform and backend re-validates
+ *      purpose = "dispatch" + same warehouse.
+ *   6. Take photo of the packages in the destination cell
+ *   7. Confirm — POST /complete which fires the Stock.Movement, flips
+ *      the dispatch row to completed, AND spawns a draft Shipment so
+ *      the standard shipment paperwork (mark ready → pickup event →
+ *      delivery confirm) takes over from here.
  */
 export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
   const router = useRouter();
   const [step, setStep] = useState<Step>("scan_source_cell");
   const [destCellUuid, setDestCellUuid] = useState<string | null>(null);
+  const [pickedDestCell, setPickedDestCell] = useState<
+    PendingDispatch["suggested_dest_cells"][number] | null
+  >(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [error, setError] = useState<ErrorResult | null>(null);
@@ -58,6 +68,7 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
   const sourceCell = dispatch.source_cell;
   const sourceCellLabel = cellLabel(sourceCell);
   const sourceLocLabel = locationLabel(dispatch.source_location);
+  const suggestions = dispatch.suggested_dest_cells ?? [];
 
   async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -170,10 +181,15 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
           )}
         </section>
 
-        {/* Progress dots */}
+        {/* Progress dots. When the warehouse has no dispatch cells
+             pre-loaded (no suggestions), the picker never visits the
+             ``pick_dest_cell`` step — hide it so the row stops showing
+             a mystery "Ship" pill nobody can reach. */}
         <div className="flex items-center justify-between gap-1 text-[10px]">
-          {STEPS.map((s, i) => {
-            const stepIdx = STEPS.findIndex((x) => x.key === step);
+          {STEPS.filter(
+            (s) => s.key !== "pick_dest_cell" || suggestions.length > 0,
+          ).map((s, i, visibleSteps) => {
+            const stepIdx = visibleSteps.findIndex((x) => x.key === step);
             const done = i < stepIdx;
             const active = s.key === step;
             return (
@@ -231,20 +247,94 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
             <Button
               className="w-full"
               size="lg"
-              onClick={() => setStep("scan_dest_cell")}
+              onClick={() =>
+                setStep(
+                  suggestions.length > 0 ? "pick_dest_cell" : "scan_dest_cell",
+                )
+              }
             >
               I&apos;ve got them — head to shipping
             </Button>
           </section>
         )}
 
+        {step === "pick_dest_cell" && (
+          <section className="space-y-3">
+            <div className="rounded-lg border border-border/60 bg-card p-3">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                Pick a shipping cell
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Tap the cell you&apos;re walking the trolley to. You&apos;ll
+                scan it next to confirm.
+              </p>
+            </div>
+            <ul className="space-y-1.5">
+              {suggestions.map((c) => {
+                const label = cellDisplayLabel(c);
+                const path = [c.floor, c.location].filter(Boolean).join(" · ");
+                return (
+                  <li key={c.uuid}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPickedDestCell(c);
+                        setDestCellUuid(c.uuid);
+                        setStep("scan_dest_cell");
+                      }}
+                      className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 bg-card p-3 text-left active:bg-muted"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{label}</p>
+                        {path && (
+                          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                            {path}
+                          </p>
+                        )}
+                      </div>
+                      <span className="shrink-0 rounded-md bg-brand/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-brand">
+                        Pick
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <button
+              type="button"
+              onClick={() => {
+                setPickedDestCell(null);
+                setStep("scan_dest_cell");
+              }}
+              className="w-full rounded-lg border border-dashed border-border/60 bg-transparent p-3 text-xs text-muted-foreground active:bg-muted"
+            >
+              None of these — scan any dispatch cell instead
+            </button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full text-muted-foreground"
+              onClick={() => setStep("confirm_pick")}
+            >
+              Back to pick
+            </Button>
+          </section>
+        )}
+
         {step === "scan_dest_cell" && (
           <UuidScanStep
-            expectedUuid="*"
+            expectedUuid={pickedDestCell?.uuid ?? "*"}
             kind="cell"
-            expectedLabel="Any dispatch cell in this warehouse"
+            expectedLabel={
+              pickedDestCell
+                ? cellDisplayLabel(pickedDestCell)
+                : "Any dispatch cell in this warehouse"
+            }
+            bypassUuid={pickedDestCell?.uuid}
             onConfirmed={() => setStep("capture_photo")}
-            onCancel={() => setStep("confirm_pick")}
+            onCancel={() =>
+              setStep(suggestions.length > 0 ? "pick_dest_cell" : "confirm_pick")
+            }
             onScanned={(uuid) => setDestCellUuid(uuid)}
           />
         )}
@@ -334,10 +424,23 @@ const STEPS: { key: Step; short: string }[] = [
   { key: "scan_source_cell", short: "Cell" },
   { key: "scan_lot", short: "Lot" },
   { key: "confirm_pick", short: "Pick" },
-  { key: "scan_dest_cell", short: "Ship" },
+  { key: "pick_dest_cell", short: "Ship" },
+  { key: "scan_dest_cell", short: "Scan" },
   { key: "capture_photo", short: "Photo" },
   { key: "confirm_drop", short: "Done" },
 ];
+
+function cellDisplayLabel(c: {
+  name: string | null;
+  code: string | null;
+  ordinal: number | null;
+}): string {
+  return (
+    c.name?.trim() ||
+    c.code?.trim() ||
+    (typeof c.ordinal === "number" ? `Level ${c.ordinal + 1}` : "Cell")
+  );
+}
 
 function ContextRow({
   icon,

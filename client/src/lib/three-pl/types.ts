@@ -104,6 +104,19 @@ export interface PendingDispatch extends ThreePLDispatchRow {
     name: string | null;
     code: string | null;
   } | null;
+  /** Dispatch cells the picker can walk this lot into, scoped to
+   *  the source cell's warehouse. Rendered as tap-to-select
+   *  suggestions on the mobile flow's destination step; tapping
+   *  opens a UuidScanStep against the chosen cell. Empty when the
+   *  warehouse has no dispatch cells configured. */
+  suggested_dest_cells: {
+    readonly uuid: string;
+    readonly name: string | null;
+    readonly code: string | null;
+    readonly ordinal: number | null;
+    readonly location: string | null;
+    readonly floor: string | null;
+  }[];
 }
 
 /** Full bundle for the /three-pl/[lot_uuid] item page. */

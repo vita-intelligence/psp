@@ -425,17 +425,19 @@ defmodule Backend.ThreePL do
           {:ok, _} ->
             now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-            dispatch
-            |> Dispatch.completion_changeset(%{
-              status: "completed",
-              photo_url: Map.get(attrs, "photo_url"),
-              dispatched_by_id: actor.id,
-              dispatched_at: now
-            })
-            |> Repo.update()
-            |> tap_audit_updated_dispatch(actor, dispatch_before)
-            |> case do
-              {:ok, updated} -> %{dispatch: updated, lot: Repo.reload!(lot)}
+            with {:ok, updated} <-
+                   dispatch
+                   |> Dispatch.completion_changeset(%{
+                     status: "completed",
+                     photo_url: Map.get(attrs, "photo_url"),
+                     dispatched_by_id: actor.id,
+                     dispatched_at: now
+                   })
+                   |> Repo.update()
+                   |> tap_audit_updated_dispatch(actor, dispatch_before),
+                 :ok <- spawn_outbound_shipment(actor, lot) do
+              %{dispatch: updated, lot: Repo.reload!(lot)}
+            else
               {:error, cs} -> Repo.rollback(cs)
             end
 
@@ -443,6 +445,34 @@ defmodule Backend.ThreePL do
             Repo.rollback(reason)
         end
       end)
+    end
+  end
+
+  # 3PL dispatch handoff → standard outbound shipment flow. After the
+  # picker has physically walked the qty into a `dispatch` cell (via
+  # ``Stock.move_placement`` above), spawn a draft Shipment against
+  # the lot so the rest of the outbound paperwork (mark-ready →
+  # pickup-event → delivery-confirm) reuses the same code path direct-
+  # ship orders travel. Without this hop the goods sit on the dispatch
+  # shelf with `Dispatch.status = "completed"` but no shipment record —
+  # the wizard reads that as "still in ready_to_dispatch" and never
+  # advances, and the customer never gets a delivery confirmation.
+  #
+  # ``:already_open`` isn't an error: partial fulfilments against a
+  # single lot are a legitimate flow (customer queues 500 today +
+  # 300 tomorrow), and the second pick lands into the existing draft.
+  # ``Backend.Shipments.create_from_lot/2`` will fold future qty into
+  # the existing draft via its own re-derive on Ready — no data loss.
+  defp spawn_outbound_shipment(%User{} = actor, %Lot{uuid: lot_uuid}) do
+    case Backend.Shipments.create_from_lot(actor, lot_uuid) do
+      {:ok, _shipment} ->
+        :ok
+
+      {:error, :already_open} ->
+        :ok
+
+      {:error, _reason} = err ->
+        err
     end
   end
 
@@ -819,6 +849,35 @@ defmodule Backend.ThreePL do
   rescue
     Ecto.Query.CastError -> []
   end
+
+  @doc """
+  Dispatch cells (`purpose = "dispatch"`) in a specific warehouse.
+  Powers the mobile 3PL dispatch flow's destination-cell suggestion
+  list — same warehouse constraint the completion action enforces on
+  submit, so operators only ever see cells the pick can legitimately
+  land in. Ordered floor → location → cell so the "walk it in" path
+  reads naturally on the phone.
+  """
+  def list_dispatch_cells_in_warehouse(company_id, warehouse_id)
+      when is_integer(company_id) and is_integer(warehouse_id) do
+    from(c in StorageCell,
+      join: loc in Backend.Warehouses.StorageLocation,
+      on: loc.id == c.storage_location_id,
+      join: f in Backend.Warehouses.Floor,
+      on: f.id == loc.floor_id,
+      where:
+        c.company_id == ^company_id and
+          c.purpose == "dispatch" and
+          loc.warehouse_id == ^warehouse_id and
+          is_nil(c.system_kind) and
+          is_nil(loc.system_kind),
+      order_by: [asc: f.name, asc: loc.name, asc: c.ordinal, asc: c.name],
+      preload: [storage_location: [:floor]]
+    )
+    |> Repo.all()
+  end
+
+  def list_dispatch_cells_in_warehouse(_company_id, _warehouse_id), do: []
 
   @doc """
   Batch lookup for pending dispatch qty per lot. Given a list of lot

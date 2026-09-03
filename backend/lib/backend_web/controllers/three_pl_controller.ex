@@ -481,6 +481,7 @@ defmodule BackendWeb.ThreePLController do
 
     cell = placement && placement.storage_cell
     location = cell && cell.storage_location
+    warehouse_id = location && location.floor && location.floor.warehouse_id
 
     Map.merge(dispatch_payload(d), %{
       lot: %{
@@ -515,12 +516,44 @@ defmodule BackendWeb.ThreePLController do
             uuid: location.uuid,
             name: location.name,
             code: location.code
-          }
+          },
+      # Dispatch cells the picker can walk this lot into. Same
+      # same-warehouse constraint ``fetch_dispatch_cell/3`` enforces
+      # on submit — the mobile UI renders these as tap-to-select
+      # suggestions above the QR scanner. Empty when the lot has no
+      # live 3PL placement (shouldn't happen for a pending dispatch)
+      # or when the warehouse has no dispatch cells configured yet.
+      suggested_dest_cells:
+        if warehouse_id do
+          ThreePL.list_dispatch_cells_in_warehouse(d.company_id, warehouse_id)
+          |> Enum.map(&suggested_dest_cell_payload/1)
+        else
+          []
+        end
     })
   end
 
   defp pending_dispatch_payload(%Backend.ThreePL.Dispatch{} = d) do
-    Map.merge(dispatch_payload(d), %{lot: nil, source_cell: nil, source_location: nil})
+    Map.merge(dispatch_payload(d), %{
+      lot: nil,
+      source_cell: nil,
+      source_location: nil,
+      suggested_dest_cells: []
+    })
+  end
+
+  defp suggested_dest_cell_payload(%Backend.Warehouses.StorageCell{} = c) do
+    location = c.storage_location
+    floor = location && location.floor
+
+    %{
+      uuid: c.uuid,
+      name: c.name,
+      code: Payloads.render_code(c, "storage_cell"),
+      ordinal: c.ordinal,
+      location: location && (location.name || location.code),
+      floor: floor && floor.name
+    }
   end
 
   defp user_summary(%Backend.Accounts.User{} = u) do
