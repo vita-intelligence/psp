@@ -169,7 +169,7 @@ function drawLabel(
   // part code · rev · source
   const partCode = lot.item?.code ?? "—";
   const rev = lot.revision || "—";
-  const source = formatSource(lot.source_kind, lot.source_ref);
+  const source = formatSource(lot.source_kind, lot.source_code, lot.source_ref);
   doc
     .font("Courier")
     .fontSize(7)
@@ -225,17 +225,33 @@ function formatQty(
 
 function formatSource(
   kind: StockLot["source_kind"] | null,
+  code: string | null,
   ref: string | null,
 ): string {
-  if (ref) return ref;
-  if (!kind) return "—";
-  const labels: Record<string, string> = {
-    purchase_order: "PO",
-    manufacturing_order: "MO",
+  // Human code from the BE resolver wins — that's a PO / MO code the
+  // operator can read off the label and match to a paperwork trail.
+  if (code) return code;
+  // Kind-only labels for non-PO/MO sources. Nothing to resolve.
+  const kindLabels: Record<string, string> = {
     opening_balance: "Opening balance",
     return: "Return",
     adjustment: "Adjustment",
     manual: "Manual",
   };
-  return labels[kind] ?? kind;
+  if (kind && kindLabels[kind]) return kindLabels[kind];
+  // Non-UUID ref → historical rows stored the human code directly
+  // (`source_ref = "PO00015"`) instead of a UUID. Pass through as-is.
+  if (ref && !UUID_RE.test(ref)) return ref;
+  // Fallback for orphan references (parent deleted) or unknown kinds:
+  // a truncated UUID beats a 36-char one but signals "look this up".
+  if (kind && ref) {
+    const short = ref.length > 8 ? `${ref.slice(0, 8)}…` : ref;
+    const label = kind === "purchase_order" ? "PO" : kind === "manufacturing_order" ? "MO" : kind;
+    return `${label} · ${short}`;
+  }
+  return "—";
 }
+
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

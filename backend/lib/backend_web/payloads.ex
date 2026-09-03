@@ -5824,6 +5824,13 @@ defmodule BackendWeb.Payloads do
       currency: l.currency,
       source_kind: l.source_kind,
       source_ref: l.source_ref,
+      # Resolved human code for the source (PO00042 / MO00127) — the
+      # label PDF + mobile detail page prefer this over the raw UUID
+      # in ``source_ref`` so operators aren't staring at 36-char
+      # gibberish. Null when the source_kind isn't PO/MO (opening
+      # balance, adjustment, manual, etc.) or when the parent row
+      # has since been deleted; the FE / label fall back sensibly.
+      source_code: resolve_source_code(l.source_kind, l.source_ref),
       supplier_batch_no: l.supplier_batch_no,
       country_of_origin: l.country_of_origin,
       revision: l.revision,
@@ -6188,6 +6195,53 @@ defmodule BackendWeb.Payloads do
   end
 
   defp mo_target_lot_code(_), do: nil
+
+  # Resolve a stock lot's ``(source_kind, source_ref)`` pair to a human-
+  # readable code (e.g. ``PO00042`` / ``MO00127``) instead of the raw
+  # source UUID. Powers the stock label PDF + the mobile lot detail
+  # so operators see "This lot came from PO00042" rather than a
+  # 36-char UUID. Falls back to ``nil`` when the referenced entity
+  # isn't found (orphan reference — parent got deleted) or when the
+  # source_kind isn't one we can resolve; the label / FE render a
+  # short-uuid fallback in that case.
+  def resolve_source_code(nil, _), do: nil
+  def resolve_source_code(_, nil), do: nil
+  def resolve_source_code("", _), do: nil
+  def resolve_source_code(_, ""), do: nil
+
+  def resolve_source_code("purchase_order", uuid) when is_binary(uuid) do
+    import Ecto.Query, only: [from: 2]
+
+    case Backend.Repo.one(
+           from p in Backend.Purchasing.PurchaseOrder,
+             where: p.uuid == ^uuid,
+             select: p.id,
+             limit: 1
+         ) do
+      nil -> nil
+      id -> render_code(%{id: id}, "purchase_order")
+    end
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  def resolve_source_code("manufacturing_order", uuid) when is_binary(uuid) do
+    import Ecto.Query, only: [from: 2]
+
+    case Backend.Repo.one(
+           from m in Backend.Production.ManufacturingOrder,
+             where: m.uuid == ^uuid,
+             select: m.id,
+             limit: 1
+         ) do
+      nil -> nil
+      id -> render_code(%{id: id}, "manufacturing_order")
+    end
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  def resolve_source_code(_kind, _ref), do: nil
 
   # ============================================================
   # Final Product Release payloads — BRCGS Issue 9 § 5.6

@@ -1935,6 +1935,11 @@ export interface StockLot {
   currency: string | null;
   source_kind: StockSourceKind | null;
   source_ref: string | null;
+  /** Human code for the source entity (`PO00042` / `MO00127`) resolved
+   *  server-side from `(source_kind, source_ref)`. Null when the source
+   *  isn't PO/MO or the referenced parent has been deleted. Renderers
+   *  prefer this over the raw UUID in `source_ref`. */
+  source_code: string | null;
   supplier_batch_no: string | null;
   country_of_origin: string | null;
   revision: string | null;
