@@ -1014,6 +1014,7 @@ defmodule Backend.OrderWizard do
            status: "draft",
            npd_proposal_uuid: proposal_uuid,
            npd_proposal_status: proposal_status,
+           npd_project_type: project_type,
            npd_customer_signed_at: customer_signed_at,
            npd_sample_allocation_status: allocation_status,
            npd_deposit_paid_at: deposit_paid_at,
@@ -1024,6 +1025,14 @@ defmodule Backend.OrderWizard do
          _mos
        )
        when not is_nil(proposal_uuid) do
+    # RTG has no trial-batch cycle — the customer pays the full order
+    # up front (deposit_percent=100 on RTG proposals) and production
+    # follows directly. The trial_batches_in_flight / awaiting_final_spec
+    # ladder below is Custom-flow only. Guarding at the top of the
+    # ``sent`` / ``accepted`` branches keeps RTG's ``deposit_paid_at``
+    # (which represents the full payment on RTG) from misrouting the
+    # CO into the fuchsia "Trial batches" column.
+    is_rtg = project_type == "ready_to_go"
     case proposal_status do
       s when s in ["draft", nil] -> :awaiting_proposal_approval
       "in_review" -> :proposal_in_review
@@ -1066,6 +1075,15 @@ defmodule Backend.OrderWizard do
         cond do
           is_nil(customer_signed_at) ->
             :awaiting_customer_signature
+
+          # RTG skips sample selection + trial batches entirely.
+          # Once the customer signs the proposal AND their full-value
+          # payment lands, production is authorised.
+          is_rtg and is_nil(deposit_paid_at) ->
+            :proposal_accepted
+
+          is_rtg ->
+            :production_planning
 
           allocation_status != "confirmed" ->
             :awaiting_sample_selection
@@ -1111,6 +1129,12 @@ defmodule Backend.OrderWizard do
       # batch signals are set (RTG's terminal state).
       "accepted" ->
         cond do
+          # RTG: deposit_paid_at represents the full order payment
+          # (deposit_percent=100). Once it lands, production is
+          # authorised — no trial-batch cycle stands between the
+          # commercial commitment and the shop floor.
+          is_rtg and not is_nil(deposit_paid_at) -> :production_planning
+          is_rtg -> :proposal_accepted
           not is_nil(final_payment_approved_at) -> :production_planning
           not is_nil(customer_confirmed_done_at) -> :awaiting_final_spec
           not is_nil(deposit_paid_at) -> :trial_batches_in_flight

@@ -625,29 +625,52 @@ defmodule Backend.CustomerOrders.ProposalMerge do
         _ -> %{}
       end
 
-    # FINAL payment approved on NPD ⇒ the customer has paid the balance
-    # and production is authorised. The CO here was born inside the NPD
-    # integration (no operator ran the PSP submit / approver-sign /
-    # director-sign / mark-confirmed wizard) so gating MO creation on
-    # PSP-side manual confirmation would strand the flow. Auto-confirm
-    # matches the sample-CO path in ``npd_sync.ex`` — same rationale.
+    # Auto-confirm the CO when NPD signals the customer has paid the
+    # order in full. Every portal-originated CO (Custom or RTG) is
+    # born inside this integration — no operator ran the PSP submit /
+    # approver-sign / director-sign / mark-confirmed wizard — so
+    # gating MO creation on PSP-side manual confirmation would strand
+    # the flow. The staff-driven wizard is the flow for COs created
+    # inside PSP directly; portal-originated orders skip it (same
+    # posture as ``npd_sync.upsert_sample_from_npd`` which also
+    # inserts at ``status = "confirmed"``).
     #
-    # Only fire when the CO isn't already in a terminal state — a manually
-    # cancelled row shouldn't get resurrected by a downstream sync, and a
-    # CO already at ``confirmed`` doesn't need the fields overwritten.
+    # Signal differs by project type:
+    #
+    #   * Custom — deposit unlocks trial batches (partial payment),
+    #     FINAL payment is the production-authorising money → gate on
+    #     ``npd_final_payment_approved_at``.
+    #   * RTG — no trial cycle, ``deposit_percent = 100`` on the
+    #     storefront proposal so the "deposit" IS the full payment.
+    #     Gate on ``npd_deposit_paid_at``; ``npd_final_payment_approved_at``
+    #     never lands because RTG doesn't invoice a final.
+    #
+    # Only fire when the CO isn't already in a terminal state — a
+    # manually cancelled row shouldn't get resurrected by a downstream
+    # sync, and a CO already at ``confirmed`` doesn't need the fields
+    # overwritten.
+    project_type_raw = sanitize(params["npd_project_type"])
+    is_rtg = project_type_raw == "ready_to_go"
+
+    settled? =
+      case {is_rtg, transition_attrs.npd_final_payment_approved_at,
+            transition_attrs.npd_deposit_paid_at} do
+        {true, _, %DateTime{}} -> true
+        {false, %DateTime{}, _} -> true
+        _ -> false
+      end
+
     auto_confirm_attrs =
-      case transition_attrs.npd_final_payment_approved_at do
-        %DateTime{} when primary.status not in ~w(confirmed cancelled) ->
-          now = DateTime.utc_now() |> DateTime.truncate(:second)
+      if settled? and primary.status not in ~w(confirmed cancelled) do
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-          %{
-            status: "confirmed",
-            submitted_at: primary.submitted_at || now,
-            confirmed_at: primary.confirmed_at || now
-          }
-
-        _ ->
-          %{}
+        %{
+          status: "confirmed",
+          submitted_at: primary.submitted_at || now,
+          confirmed_at: primary.confirmed_at || now
+        }
+      else
+        %{}
       end
 
     # Primary-formulation display fields — NPD sends these so PSP
