@@ -21,6 +21,33 @@
  *     photo_url value; only its recognisable prefix signals it was
  *     a dev bypass.
  */
+/**
+ * Sentinel string prefix stamped on `Stock.Movement.photo_url` when the
+ * dev-only Skip button is used (see :func:`DevSkipPhotoButton`). Real
+ * photo URLs always start with `/api/stock/movement-photos/…`; the
+ * sentinel is `dev-skip:<iso-timestamp>`. Callers render an <img> from
+ * `photo_url` and the sentinel is not a fetchable URL, so the browser
+ * paints its broken-image icon — hence this helper for every consuming
+ * component to normalise "no real photo" into `null`.
+ */
+export function isDevSkipPhoto(url: string | null | undefined): boolean {
+  return typeof url === "string" && url.startsWith("dev-skip:");
+}
+
+/**
+ * Returns the photo URL only if it points at a real, fetchable file.
+ * `null` / empty / dev-skip sentinel all collapse to `null` so the
+ * caller renders its "no photo" placeholder instead of a broken image.
+ */
+export function realPhotoUrl(
+  url: string | null | undefined,
+): string | null {
+  if (!url) return null;
+  if (isDevSkipPhoto(url)) return null;
+  return url;
+}
+
+
 export function DevSkipPhotoButton({
   onSkip,
   label = "Skip photo (dev only)",

@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { UserAvatar } from "@/components/users/user-avatar";
+import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 
 interface Props {
   movements: StockMovement[];
@@ -91,7 +92,10 @@ export function LotMovementTimeline({
             movement={m}
             uomSymbol={uomSymbol}
             holdingName={holdingName}
-            onOpenPhoto={() => m.photo_url && setLightbox(m.photo_url)}
+            onOpenPhoto={() => {
+              const real = realPhotoUrl(m.photo_url);
+              if (real) setLightbox(real);
+            }}
           />
         ))}
       </ol>
@@ -192,7 +196,7 @@ function Row({
               </p>
             )}
 
-          {movement.skip_photo_reason && !movement.photo_url && (
+          {movement.skip_photo_reason && !realPhotoUrl(movement.photo_url) && (
             <p className="text-[11px] text-muted-foreground">
               <span className="font-medium">Skipped photo:</span>{" "}
               {humaniseSkipReason(movement.skip_photo_reason)}
@@ -201,25 +205,28 @@ function Row({
         </div>
 
         <div className="flex items-start gap-3">
-          {movement.photo_url ? (
-            <button
-              type="button"
-              onClick={onOpenPhoto}
-              className="overflow-hidden rounded-md border border-border/60 transition-colors hover:border-foreground/30"
-              aria-label="Open photo"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={movement.photo_url}
-                alt="Movement photo"
-                className="size-12 object-cover"
-              />
-            </button>
-          ) : (
-            <span className="inline-flex size-12 items-center justify-center rounded-md border border-dashed border-border/60 text-muted-foreground/40">
-              <ImageOff className="size-4" />
-            </span>
-          )}
+          {(() => {
+            const real = realPhotoUrl(movement.photo_url);
+            return real ? (
+              <button
+                type="button"
+                onClick={onOpenPhoto}
+                className="overflow-hidden rounded-md border border-border/60 transition-colors hover:border-foreground/30"
+                aria-label="Open photo"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={real}
+                  alt="Movement photo"
+                  className="size-12 object-cover"
+                />
+              </button>
+            ) : (
+              <span className="inline-flex size-12 items-center justify-center rounded-md border border-dashed border-border/60 text-muted-foreground/40">
+                <ImageOff className="size-4" />
+              </span>
+            );
+          })()}
 
           <div className="min-w-0 text-right">
             <div className="flex items-center justify-end gap-1.5">

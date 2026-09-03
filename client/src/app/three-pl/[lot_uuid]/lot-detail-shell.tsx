@@ -33,6 +33,7 @@ import type {
   ThreePLReleaseFile,
 } from "@/lib/three-pl/types";
 import { DispatchDialog } from "../dispatch-dialog";
+import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 
 const FILE_KIND_LABEL: Record<string, string> = {
   coa: "Certificate of Analysis",
@@ -389,19 +390,22 @@ function DispatchTable({
                   )}
                 </Td>
                 <Td>
-                  {d.photo_url ? (
-                    <a
-                      href={d.photo_url}
-                      target="_blank"
-                      rel="noopener"
-                      className="inline-flex items-center gap-1 text-brand hover:underline"
-                    >
-                      <Paperclip className="size-3" />
-                      Photo
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground/60">—</span>
-                  )}
+                  {(() => {
+                    const real = realPhotoUrl(d.photo_url);
+                    return real ? (
+                      <a
+                        href={real}
+                        target="_blank"
+                        rel="noopener"
+                        className="inline-flex items-center gap-1 text-brand hover:underline"
+                      >
+                        <Paperclip className="size-3" />
+                        Photo
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground/60">—</span>
+                    );
+                  })()}
                 </Td>
               </tr>
             ))}
@@ -443,26 +447,29 @@ function ArrivalEvidenceCard({
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-[minmax(200px,240px)_1fr]">
-            {evidence.photo_url ? (
-              <a
-                href={evidence.photo_url}
-                target="_blank"
-                rel="noopener"
-                className="block overflow-hidden rounded-md border border-border/60 bg-muted/40"
-                title="Open full-size"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={evidence.photo_url}
-                  alt="Warehouse put-away evidence"
-                  className="aspect-square w-full object-cover"
-                />
-              </a>
-            ) : (
-              <div className="flex aspect-square w-full items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/20 text-[11px] text-muted-foreground">
-                No photo
-              </div>
-            )}
+            {(() => {
+              const real = realPhotoUrl(evidence.photo_url);
+              return real ? (
+                <a
+                  href={real}
+                  target="_blank"
+                  rel="noopener"
+                  className="block overflow-hidden rounded-md border border-border/60 bg-muted/40"
+                  title="Open full-size"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={real}
+                    alt="Warehouse put-away evidence"
+                    className="aspect-square w-full object-cover"
+                  />
+                </a>
+              ) : (
+                <div className="flex aspect-square w-full items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/20 text-[11px] text-muted-foreground">
+                  No photo
+                </div>
+              );
+            })()}
             <div className="space-y-2 text-xs">
               <div className="flex items-start gap-1.5">
                 <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-600" />
@@ -495,7 +502,7 @@ function ArrivalEvidenceCard({
                   "—"
                 }
               />
-              {!evidence.photo_url && evidence.skip_photo_reason && (
+              {!realPhotoUrl(evidence.photo_url) && evidence.skip_photo_reason && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px]">
                   <p className="font-medium text-amber-900 dark:text-amber-100">
                     Photo skipped

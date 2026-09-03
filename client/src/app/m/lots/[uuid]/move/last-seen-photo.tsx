@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Camera, X } from "lucide-react";
+import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 
 /**
  * Last-known photo of a lot. Rendered next to the floor-plan on
@@ -29,7 +30,8 @@ export function LastSeenPhoto({
   caption?: string;
 }) {
   const [errored, setErrored] = useState(false);
-  const empty = !url || errored;
+  const resolved = realPhotoUrl(url);
+  const empty = !resolved || errored;
 
   if (empty) {
     return (
@@ -45,7 +47,7 @@ export function LastSeenPhoto({
 
   return (
     <a
-      href={url}
+      href={resolved!}
       target="_blank"
       rel="noreferrer"
       className="block w-full overflow-hidden rounded-md border border-border/60 bg-muted"
@@ -53,7 +55,7 @@ export function LastSeenPhoto({
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={url}
+        src={resolved!}
         alt={caption ?? "Last known photo of this lot"}
         className="block h-44 w-full object-cover"
         onError={() => setErrored(true)}

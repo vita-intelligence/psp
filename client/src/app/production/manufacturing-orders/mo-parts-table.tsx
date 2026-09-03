@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import Link from "next/link";
+import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 import {
   ChevronDown,
   ChevronRight,
@@ -836,22 +837,25 @@ function BookingRow({
               the shelf during confirm-transfer. Surfacing it here so
               the production team recognises the box on the trolley
               before starting the run. */}
-          {booking.stock_lot?.last_photo_url && (
-            <a
-              href={booking.stock_lot.last_photo_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0"
-              title="Pickup photo — click to enlarge"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={booking.stock_lot.last_photo_url}
-                alt={`Pickup photo of ${booking.stock_lot.code ?? "lot"}`}
-                className="size-8 rounded object-cover ring-1 ring-border/60 transition hover:ring-brand/70"
-              />
-            </a>
-          )}
+          {(() => {
+            const real = realPhotoUrl(booking.stock_lot?.last_photo_url);
+            return real ? (
+              <a
+                href={real}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0"
+                title="Pickup photo — click to enlarge"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={real}
+                  alt={`Pickup photo of ${booking.stock_lot?.code ?? "lot"}`}
+                  className="size-8 rounded object-cover ring-1 ring-border/60 transition hover:ring-brand/70"
+                />
+              </a>
+            ) : null;
+          })()}
           {booking.stock_lot?.uuid && booking.stock_lot?.code ? (
             <Link
               href={`/stock/lots/${booking.stock_lot.uuid}`}

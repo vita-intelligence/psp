@@ -30,6 +30,7 @@ import {
   type FormatPrefs,
 } from "@/lib/format/company";
 import { UserAvatar } from "@/components/users/user-avatar";
+import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 
 export function LotReturnPicksCard({
   picks,
@@ -226,21 +227,24 @@ function PickStamp({
             {formatCompanyDate(at, prefs)}
           </p>
         </div>
-        {photoUrl && (
-          <button
-            type="button"
-            onClick={() => onOpenPhoto(photoUrl)}
-            className="overflow-hidden rounded border border-border/60 hover:border-foreground/30"
-            aria-label="Open photo"
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={photoUrl}
-              alt="Photo"
-              className="size-9 object-cover"
-            />
-          </button>
-        )}
+        {(() => {
+          const real = realPhotoUrl(photoUrl);
+          return real ? (
+            <button
+              type="button"
+              onClick={() => onOpenPhoto(real)}
+              className="overflow-hidden rounded border border-border/60 hover:border-foreground/30"
+              aria-label="Open photo"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={real}
+                alt="Photo"
+                className="size-9 object-cover"
+              />
+            </button>
+          ) : null;
+        })()}
       </div>
     </div>
   );

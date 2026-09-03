@@ -19,6 +19,7 @@ import { ErrorBanner } from "@/components/forms/error-banner";
 import { completeDispatchAction } from "@/lib/three-pl/actions";
 import type { ErrorResult } from "@/lib/errors/server";
 import type { PendingDispatch } from "@/lib/three-pl/types";
+import { realPhotoUrl } from "@/components/dev-skip-photo-button";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 
 type Step =
@@ -288,12 +289,18 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
               <CheckCircle2 className="size-4" />
               Ready to record
             </div>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={photoUrl}
-              alt="Shipping bay evidence"
-              className="mx-auto max-h-56 rounded-md border border-border/60"
-            />
+            {realPhotoUrl(photoUrl) ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={realPhotoUrl(photoUrl)!}
+                alt="Shipping bay evidence"
+                className="mx-auto max-h-56 rounded-md border border-border/60"
+              />
+            ) : (
+              <p className="text-center text-xs italic text-muted-foreground">
+                Photo skipped (dev)
+              </p>
+            )}
             {error && <ErrorBanner detail={error.detail} code={error.code} />}
             <div className="flex gap-2">
               <Button
