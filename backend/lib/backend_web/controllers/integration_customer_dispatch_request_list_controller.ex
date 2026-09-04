@@ -269,12 +269,25 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
   end
 
   # -----------------------------------------------------------------
-  # Shipment enrichment — one query per page, matched by lot_id. The
-  # ThreePL flow is 1:1 (a bailee dispatch spawns one outbound
-  # shipment) so grouping by lot_id + picking the most recent non-
-  # cancelled row is enough. Preloads pickup_events with photos so
-  # the portal can render driver / vehicle / checklist / thumbnails
-  # without a second round-trip.
+  # Shipment enrichment — one query per page, matched by lot_id +
+  # dispatch timestamp so a lot that's had many dispatches over its
+  # lifetime doesn't accidentally cross-wire a pending request to a
+  # prior completed shipment.
+  #
+  # Multiple dispatches per lot (a bailee customer requesting stock
+  # in waves) all point at the SAME lot_id, so grouping by lot alone
+  # would hand every dispatch the newest shipment — including
+  # pending / cancelled ones that never had a shipment spawned yet.
+  # That in turn leaked the "Mark as delivered" button onto rows
+  # that were still waiting to be walked.
+  #
+  # Fix: sort shipments oldest-first per lot, then match each
+  # dispatch to the earliest shipment whose ``inserted_at`` sits at
+  # or after the dispatch's ``dispatched_at`` (with a small
+  # tolerance for microsecond truncation between the two writes,
+  # which land inside the same transaction). Pending / cancelled
+  # dispatches (no ``dispatched_at``) don't match anything and get
+  # ``shipment: nil`` in the payload.
   # -----------------------------------------------------------------
 
   defp load_shipments_for(_company_id, []), do: %{}
@@ -290,7 +303,7 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
         s.company_id == ^company_id and
           s.stock_lot_id in ^lot_ids and
           s.status != "cancelled",
-      order_by: [desc: s.inserted_at, desc: s.id],
+      order_by: [asc: s.inserted_at, asc: s.id],
       preload: [
         pickup_events: [:photos, :picked_up_by],
         pickup_files: []
@@ -300,11 +313,45 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
     |> Enum.group_by(& &1.stock_lot_id)
   end
 
+  # Match a dispatch to the shipment spawned by IT specifically:
+  # oldest shipment on the same lot whose insert time is at or
+  # after the dispatch walked out. Nil for pending / cancelled
+  # dispatches — they either don't have a shipment yet or their
+  # shipment got cancelled + filtered out upstream. Arg order is
+  # ``(shipments, dispatched_at)`` so the pipe call reads
+  # naturally after the lot lookup.
+  defp find_matching_shipment([], _dispatched_at), do: nil
+  defp find_matching_shipment(_shipments, nil), do: nil
+
+  defp find_matching_shipment(shipments, %DateTime{} = dispatched_at)
+       when is_list(shipments) do
+    threshold = DateTime.add(dispatched_at, -5, :second)
+
+    Enum.find(shipments, fn s ->
+      case s.inserted_at do
+        %DateTime{} = ts -> DateTime.compare(ts, threshold) != :lt
+        _ -> false
+      end
+    end)
+  end
+
+  defp find_matching_shipment(_, _), do: nil
+
   # ---- Payload shapers ----
 
   defp request_payload(%Dispatch{} = d, shipments_by_lot) do
     lot = d.stock_lot
-    linked = shipments_by_lot |> Map.get(d.stock_lot_id, []) |> List.first()
+    # Only completed / return_pending dispatches actually spawned a
+    # shipment. Pending + cancelled ones never walked, so linking
+    # them to a sibling dispatch's shipment would be wrong.
+    linked =
+      if d.status in ["completed", "return_pending"] do
+        shipments_by_lot
+        |> Map.get(d.stock_lot_id, [])
+        |> find_matching_shipment(d.dispatched_at)
+      else
+        nil
+      end
 
     %{
       "uuid" => d.uuid,
