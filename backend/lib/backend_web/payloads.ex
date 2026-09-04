@@ -6448,6 +6448,8 @@ defmodule BackendWeb.Payloads do
       status: s.status,
       qty: decimal_to_string(s.qty),
       recipient_name: s.recipient_name,
+      recipient_email: s.recipient_email,
+      recipient_phone: s.recipient_phone,
       ship_to_address: s.ship_to_address,
       ship_to_country: s.ship_to_country,
       carrier: s.carrier,

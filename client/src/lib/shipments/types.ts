@@ -42,6 +42,13 @@ export interface Shipment {
   status: ShipmentStatus;
   qty: string;
   recipient_name: string | null;
+  /** Courier hand-off contact — post offices refuse the parcel
+   *  without both. Prefilled from the portal dispatch snapshot when
+   *  the shipment was spawned from a customer request; the mobile
+   *  paperwork form is where the operator fills them for staff-typed
+   *  dispatches. */
+  recipient_email: string | null;
+  recipient_phone: string | null;
   ship_to_address: string | null;
   ship_to_country: string | null;
   carrier: string | null;
@@ -250,6 +257,8 @@ export interface ShipmentListResponse {
 export interface ShipmentEditableFields {
   customer_id?: number | null;
   recipient_name?: string | null;
+  recipient_email?: string | null;
+  recipient_phone?: string | null;
   ship_to_address?: string | null;
   ship_to_country?: string | null;
   carrier?: string | null;
