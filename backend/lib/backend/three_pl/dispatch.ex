@@ -128,6 +128,39 @@ defmodule Backend.ThreePL.Dispatch do
     |> validate_length(:ship_to_email, max: 200)
     |> validate_length(:ship_to_phone, max: 60)
     |> upcase_country()
+    |> require_ship_to_for_portal_source()
+  end
+
+  # Portal-sourced dispatches carry a customer-typed ship-to snapshot
+  # that MUST land on the outbound shipment: the courier hands the
+  # parcel over to a person at an address in a country and refuses
+  # the drop without an email + phone. Staff-typed desktop dispatches
+  # skip this — the operator picks up ship-to from the CO defaults on
+  # the paperwork form later.
+  defp require_ship_to_for_portal_source(changeset) do
+    case get_field(changeset, :source) do
+      "portal" ->
+        changeset
+        |> validate_required(
+          [
+            :ship_to_name,
+            :ship_to_address,
+            :ship_to_country,
+            :ship_to_email,
+            :ship_to_phone
+          ],
+          message: "is required for portal dispatch"
+        )
+        |> validate_format(
+          :ship_to_email,
+          ~r/^[^@\s]+@[^@\s]+\.[^@\s]+$/,
+          message: "must be a valid email"
+        )
+        |> validate_length(:ship_to_phone, min: 6)
+
+      _ ->
+        changeset
+    end
   end
 
   defp upcase_country(changeset) do
