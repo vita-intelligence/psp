@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getSessionToken } from "@/lib/auth/server";
 import { getShipment } from "@/lib/shipments/server";
@@ -33,7 +34,10 @@ export default async function MobileShipmentPaperworkPage({
     );
   }
 
-  const shipment = await getShipment(uuid);
+  const [shipment, defaults] = await Promise.all([
+    getShipment(uuid),
+    getCompanyDefaults(),
+  ]);
   if (!shipment) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center">
@@ -45,5 +49,5 @@ export default async function MobileShipmentPaperworkPage({
     );
   }
 
-  return <MobilePaperworkForm shipment={shipment} />;
+  return <MobilePaperworkForm shipment={shipment} prefs={defaults} />;
 }

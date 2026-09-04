@@ -19,11 +19,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { DateField } from "@/components/forms/date-field";
 import {
   markShipmentReadyAction,
   updateShipmentAction,
 } from "@/lib/shipments/actions";
 import type { Shipment } from "@/lib/shipments/types";
+import type { CompanyDefaults } from "@/lib/types";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -43,7 +45,13 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
  * lives on the truck-arrival dispatch form because those are per-
  * visit facts, not shipment defaults.
  */
-export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
+export function MobilePaperworkForm({
+  shipment,
+  prefs,
+}: {
+  shipment: Shipment;
+  prefs: CompanyDefaults | null;
+}) {
   const router = useRouter();
   const [recipient, setRecipient] = useState(shipment.recipient_name ?? "");
   const [email, setEmail] = useState(shipment.recipient_email ?? "");
@@ -52,11 +60,11 @@ export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
   const [country, setCountry] = useState<string | null>(
     shipment.ship_to_country ?? null,
   );
-  const [shipDate, setShipDate] = useState(
+  const [shipDate, setShipDate] = useState<string | null>(
+    // ISO ``yyyy-mm-dd`` slice matches what DateField round-trips.
     shipment.planned_ship_at
-      ? // <input type="date"> expects yyyy-mm-dd
-        shipment.planned_ship_at.slice(0, 10)
-      : "",
+      ? shipment.planned_ship_at.slice(0, 10)
+      : null,
   );
   const [notes, setNotes] = useState(shipment.notes ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +78,7 @@ export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
     if (!email.trim() || !EMAIL_RE.test(email.trim()))
       m.push(email.trim() ? "Valid email" : "Recipient email");
     if (!phone.trim() || phone.trim().length < 6) m.push("Recipient phone");
-    if (!shipDate.trim()) m.push("Planned ship date");
+    if (!shipDate) m.push("Planned ship date");
     return m;
   }, [recipient, address, country, email, phone, shipDate]);
 
@@ -90,7 +98,7 @@ export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
         recipient_phone: phone.trim(),
         ship_to_address: address.trim(),
         ship_to_country: (country ?? "").trim().toUpperCase(),
-        // <input type="date"> emits yyyy-mm-dd; anchor at noon UTC
+        // DateField emits ``yyyy-mm-dd``; anchor at noon UTC
         // (matches derive_prefill_attrs on the backend).
         planned_ship_at: `${shipDate}T12:00:00Z`,
         notes: notes.trim() || null,
@@ -263,20 +271,17 @@ export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
         >
           <div className="space-y-1.5">
             <RequiredLabel htmlFor="ship-date">Planned ship date</RequiredLabel>
-            {/* iOS Safari refuses to shrink ``<input type="date">``
-                below its intrinsic ``mm/dd/yyyy`` content width, so
-                the whole form gets pushed into horizontal scroll on
-                narrow phones. Neutralising the native styling with
-                ``appearance-none`` + an explicit ``max-w-full``
-                (and ``block`` on top of the shadcn defaults) lets
-                ``w-full`` win. */}
-            <Input
+            {/* Custom picker (bottom-sheet calendar) — native
+                ``<input type="date">`` on iOS refuses to shrink
+                below its intrinsic ``mm/dd/yyyy`` content width
+                and blows the form into horizontal scroll. */}
+            <DateField
               id="ship-date"
-              type="date"
               value={shipDate}
-              onChange={(e) => setShipDate(e.target.value)}
-              required
-              className="block h-12 w-full max-w-full appearance-none text-base"
+              onChange={setShipDate}
+              prefs={prefs}
+              placeholder="Pick a date…"
+              className="h-12 text-base"
             />
           </div>
 
