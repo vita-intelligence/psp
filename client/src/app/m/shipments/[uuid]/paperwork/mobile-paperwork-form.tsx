@@ -117,7 +117,11 @@ export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
   const unit = shipment.stock_lot?.unit_symbol ?? "";
 
   return (
-    <div className="flex min-h-dvh flex-col">
+    // ``overflow-x-clip`` (not ``-hidden``) so the sticky header +
+    // footer keep working — hidden establishes a scroll container
+    // that kills position: sticky descendants. Belt-and-braces
+    // for the ``<input type="date">`` iOS quirk below.
+    <div className="flex min-h-dvh flex-col overflow-x-clip">
       <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-2.5 backdrop-blur">
         <button
           type="button"
@@ -259,13 +263,20 @@ export function MobilePaperworkForm({ shipment }: { shipment: Shipment }) {
         >
           <div className="space-y-1.5">
             <RequiredLabel htmlFor="ship-date">Planned ship date</RequiredLabel>
+            {/* iOS Safari refuses to shrink ``<input type="date">``
+                below its intrinsic ``mm/dd/yyyy`` content width, so
+                the whole form gets pushed into horizontal scroll on
+                narrow phones. Neutralising the native styling with
+                ``appearance-none`` + an explicit ``max-w-full``
+                (and ``block`` on top of the shadcn defaults) lets
+                ``w-full`` win. */}
             <Input
               id="ship-date"
               type="date"
               value={shipDate}
               onChange={(e) => setShipDate(e.target.value)}
               required
-              className="h-12 text-base"
+              className="block h-12 w-full max-w-full appearance-none text-base"
             />
           </div>
 
