@@ -106,6 +106,16 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     # string rather than an ecto enum so NPD can add project types
     # without a coordinated migration.
     field :npd_project_type, :string
+    # Reorder discriminator — true when the CO was created by a
+    # customer re-buying a signed Custom formulation via the portal
+    # Reorder flow. Stamped from NPD's proposal-merge payload
+    # (``npd_is_reorder``). Distinguishes reorder-COs from bespoke
+    # Custom-COs (both have ``npd_project_type = "custom"``), which
+    # matters at unmerge time: reorder-COs get hard-deleted on
+    # proposal reject / delete because they have no life independent
+    # of the proposal, matching RTG behaviour. Bespoke Custom-COs
+    # keep the standard unmerge-and-preserve semantic.
+    field :is_reorder, :boolean, default: false
     # Denormalised R&D team + deep-link mirrored from NPD's sync
     # payload. Refreshed on every re-sync so a role reassignment on
     # NPD reaches PSP without a separate messaging channel. All three

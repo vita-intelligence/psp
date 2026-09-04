@@ -138,46 +138,148 @@ defmodule Backend.CustomerOrders.ProposalMerge do
               where: co.merged_into_id == ^primary.id
           )
 
-        # Snapshot the primary's timeline BEFORE any mutation and
-        # build the unmerge event once. Both the primary (which
-        # keeps its own history + the new event) and every secondary
-        # (which inherits the whole primary timeline so each split-
-        # back project shows the full lifecycle: formulation drafted
-        # → spec approved → merged → proposal transitions → rejected
-        # → unmerged) get the same audit anchor. Without this, an
-        # audit reader looking at a split-back R&D project would see
-        # an empty timeline and no evidence that the project ever
-        # rode a proposal, which is exactly the trail
-        # BRCGS/ISO auditors look for.
-        pre_unmerge_timeline = primary.npd_timeline || []
-        unmerge_event = build_unmerge_event(primary)
-        inherited_timeline = pre_unmerge_timeline ++ [unmerge_event]
-
-        Enum.each(secondaries, fn co ->
-          restore_comments_to!(co.id)
-          clear_merged_into!(co)
-          write_timeline!(co, inherited_timeline)
-        end)
-
-        wipe_proposal_identity!(primary, unmerge_event)
-        delete_primary_lines!(primary.id)
-
-        # Refresh so the notify carries clean fields; the wizard
-        # projection reads from these to snap the primary back to
-        # ``:r_and_d``.
-        primary = Repo.get!(CustomerOrder, primary.id)
-        Backend.OrderWizard.notify_co_changed(primary)
-
-        Enum.each(secondaries, fn co ->
-          Backend.OrderWizard.notify_co_changed(Repo.get!(CustomerOrder, co.id))
-        end)
-
-        {:ok,
-         %{
-           primary_uuid: primary.uuid,
-           unmerged_secondaries: Enum.map(secondaries, & &1.uuid)
-         }}
+        if fresh_per_proposal?(primary) and no_downstream_state?(primary) do
+          hard_delete_fresh_co!(primary, secondaries)
+        else
+          preserve_and_split!(primary, secondaries)
+        end
     end
+  end
+
+  # Safety net for the hard-delete branch. Rejection normally hits
+  # while the CO is still at ``:awaiting_customer_signature`` — no
+  # MOs, no shipments, no invoices, no releases. But if any of those
+  # downstream artefacts exist (rare, but possible via out-of-band
+  # API paths or a manual staff-side delete after production has
+  # started), fall back to the preserve-and-split path so we never
+  # cascade-nuke shop-floor state or orphan an MO. Reads a couple of
+  # scalar counts — cheap and idempotent.
+  defp no_downstream_state?(%CustomerOrder{id: co_id}) do
+    import Ecto.Query
+
+    mo_count =
+      Repo.aggregate(
+        from(mo in Backend.Production.ManufacturingOrder,
+          join: col in Backend.CustomerOrders.CustomerOrderLine,
+          on: col.id == mo.customer_order_line_id,
+          where: col.customer_order_id == ^co_id
+        ),
+        :count,
+        :id
+      )
+
+    shipment_count =
+      Repo.aggregate(
+        from(s in Backend.Shipments.Shipment, where: s.customer_order_id == ^co_id),
+        :count,
+        :id
+      )
+
+    invoice_count =
+      Repo.aggregate(
+        from(i in Backend.CustomerInvoices.CustomerInvoice,
+          where: i.customer_order_id == ^co_id
+        ),
+        :count,
+        :id
+      )
+
+    mo_count == 0 and shipment_count == 0 and invoice_count == 0
+  end
+
+  # A fresh-per-proposal CO exists only because a proposal exists.
+  # Reject / delete the proposal ⇒ the CO must vanish too, otherwise
+  # the /projects kanban ends up cluttered with rows that carry no
+  # proposal identity, no lines, and no meaningful next action. Two
+  # populations qualify:
+  #
+  #   * RTG storefront orders — ``npd_project_type = "ready_to_go"``.
+  #     Each proposal spawns its own CO via ``rtg_fresh_merge``.
+  #   * Portal Reorder — ``is_reorder = true`` on a CO whose
+  #     ``npd_project_type = "custom"``. Same fresh-per-proposal
+  #     shape; the discriminator is the ``is_reorder`` column NPD
+  #     sends via ``npd_is_reorder`` in the merge payload.
+  #
+  # Bespoke Custom-COs stay preserved: their CO row IS the project
+  # workspace and predates the proposal, so a rejected proposal
+  # must not delete the R&D history.
+  defp fresh_per_proposal?(%CustomerOrder{} = co) do
+    co.npd_project_type == "ready_to_go" or co.is_reorder == true
+  end
+
+  # RTG / Reorder path: drop the CO row (and any orphan lines +
+  # merged-in siblings) entirely. Comments are re-homed to any
+  # secondaries first so the audit trail isn't cascade-nuked; if
+  # there are no secondaries (the usual case for fresh-per-proposal),
+  # the comments follow the CO into deletion via
+  # ``on_delete: :delete_all`` on the FK.
+  defp hard_delete_fresh_co!(%CustomerOrder{} = primary, secondaries) do
+    Enum.each(secondaries, fn co ->
+      restore_comments_to!(co.id)
+      clear_merged_into!(co)
+      Backend.OrderWizard.notify_co_changed(Repo.get!(CustomerOrder, co.id))
+    end)
+
+    # Broadcast BEFORE deletion so listeners get one last "co changed
+    # / soon to vanish" event with the still-populated row. The
+    # OrderWizard projection tolerates a following NotFound on refetch.
+    Backend.OrderWizard.notify_co_changed(primary)
+
+    delete_primary_lines!(primary.id)
+    Repo.delete!(primary)
+
+    {:ok,
+     %{
+       primary_uuid: primary.uuid,
+       deleted: true,
+       unmerged_secondaries: Enum.map(secondaries, & &1.uuid)
+     }}
+  end
+
+  # Custom path (historical behaviour): the CO IS the project; keep
+  # it, wipe the proposal identity, and split any merged-in
+  # secondaries back into standalone R&D rows.
+  defp preserve_and_split!(%CustomerOrder{} = primary, secondaries) do
+    # Snapshot the primary's timeline BEFORE any mutation and
+    # build the unmerge event once. Both the primary (which
+    # keeps its own history + the new event) and every secondary
+    # (which inherits the whole primary timeline so each split-
+    # back project shows the full lifecycle: formulation drafted
+    # → spec approved → merged → proposal transitions → rejected
+    # → unmerged) get the same audit anchor. Without this, an
+    # audit reader looking at a split-back R&D project would see
+    # an empty timeline and no evidence that the project ever
+    # rode a proposal, which is exactly the trail
+    # BRCGS/ISO auditors look for.
+    pre_unmerge_timeline = primary.npd_timeline || []
+    unmerge_event = build_unmerge_event(primary)
+    inherited_timeline = pre_unmerge_timeline ++ [unmerge_event]
+
+    Enum.each(secondaries, fn co ->
+      restore_comments_to!(co.id)
+      clear_merged_into!(co)
+      write_timeline!(co, inherited_timeline)
+    end)
+
+    wipe_proposal_identity!(primary, unmerge_event)
+    delete_primary_lines!(primary.id)
+
+    # Refresh so the notify carries clean fields; the wizard
+    # projection reads from these to snap the primary back to
+    # ``:r_and_d``.
+    primary = Repo.get!(CustomerOrder, primary.id)
+    Backend.OrderWizard.notify_co_changed(primary)
+
+    Enum.each(secondaries, fn co ->
+      Backend.OrderWizard.notify_co_changed(Repo.get!(CustomerOrder, co.id))
+    end)
+
+    {:ok,
+     %{
+       primary_uuid: primary.uuid,
+       deleted: false,
+       unmerged_secondaries: Enum.map(secondaries, & &1.uuid)
+     }}
   end
 
   # Build the timeline entry that records the unmerge itself.
@@ -285,11 +387,26 @@ defmodule Backend.CustomerOrders.ProposalMerge do
 
   defp fresh_merge(company_id, proposal_uuid, line_specs, params) do
     project_type = sanitize(params["npd_project_type"]) || ""
+    is_reorder = params["npd_is_reorder"] == true
 
-    if project_type == "ready_to_go" do
-      rtg_fresh_merge(company_id, proposal_uuid, line_specs, params)
-    else
-      custom_fresh_merge(company_id, proposal_uuid, line_specs, params)
+    cond do
+      project_type == "ready_to_go" ->
+        rtg_fresh_merge(company_id, proposal_uuid, line_specs, params)
+
+      # Reorder = a Custom formulation re-bought by a customer via
+      # the portal. project_type stays "custom" (so all downstream
+      # switches on it keep working), but the CO independence rule
+      # mirrors RTG — each reorder is its own PSP CO keyed by the
+      # proposal uuid, never adopts an existing formulation-scoped
+      # CO. Template lookup uses ``npd_source_formulation_uuid``
+      # because the reorder's own Formulation was never synced to
+      # PSP (the sync only fires from save_version, which the
+      # reorder shell skips).
+      is_reorder ->
+        rtg_fresh_merge(company_id, proposal_uuid, line_specs, params)
+
+      true ->
+        custom_fresh_merge(company_id, proposal_uuid, line_specs, params)
     end
   end
 
@@ -382,6 +499,14 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     # before ``sync_customer_order_to_psp`` reached us for this SKU;
     # surface the error rather than birthing a phantom CO whose
     # identity fields would all be nil.
+    #
+    # Reorders route through this function too but their own
+    # Formulation was never save_version'd (the reorder shell inherits
+    # the source's approved snapshot without triggering the sync),
+    # so the primary_uuid lookup misses. Fall back to the source
+    # formulation uuid the payload carries — the source is always a
+    # Custom formulation with a live CO on PSP (1:1 by
+    # ``npd_formulation_uuid``).
     template =
       from(co in CustomerOrder,
         where: co.company_id == ^company_id,
@@ -391,11 +516,48 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       )
       |> Repo.one()
 
+    source_uuid_raw = sanitize(params["npd_source_formulation_uuid"])
+
+    template =
+      cond do
+        not is_nil(template) ->
+          template
+
+        is_binary(source_uuid_raw) and source_uuid_raw != "" ->
+          from(co in CustomerOrder,
+            where: co.company_id == ^company_id,
+            where: co.npd_formulation_uuid == ^source_uuid_raw,
+            order_by: [asc: co.inserted_at],
+            limit: 1
+          )
+          |> Repo.one()
+
+        true ->
+          nil
+      end
+
     if is_nil(template) do
       Repo.rollback({:missing_formulation, primary_uuid})
     end
 
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    # For reorders the new CO carries the REORDER formulation's own
+    # uuid (the ``primary_uuid`` — a fresh Formulation minted per
+    # reorder on NPD) so the ``(company_id, npd_formulation_uuid)``
+    # unique index doesn't collide across sibling reorders. Non-
+    # reorder RTG orders keep the historical behaviour of stamping
+    # the SKU's formulation uuid: RTG rows are excluded from that
+    # unique index by the ``project_type <> 'ready_to_go'`` WHERE
+    # clause, so sharing the uuid across N orders is legal there.
+    is_reorder = params["npd_is_reorder"] == true
+
+    formulation_uuid_for_new_co =
+      if is_reorder do
+        primary_uuid
+      else
+        template.npd_formulation_uuid
+      end
 
     # Seed a fresh CO with the identity fields the formulation-sync
     # already established (company, customer, currency, warehouse,
@@ -410,7 +572,7 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       shipping_fees: template.shipping_fees || Decimal.new(0),
       additional_fees: template.additional_fees || Decimal.new(0),
       default_warehouse_id: template.default_warehouse_id,
-      npd_formulation_uuid: template.npd_formulation_uuid,
+      npd_formulation_uuid: formulation_uuid_for_new_co,
       npd_lead_scientist_name: template.npd_lead_scientist_name,
       npd_sales_person_name: template.npd_sales_person_name,
       npd_app_url: template.npd_app_url,
@@ -711,6 +873,12 @@ defmodule Backend.CustomerOrders.ProposalMerge do
         # legacy Custom-only rows valid before NPD started sending
         # the field).
         npd_project_type: sanitize(params["npd_project_type"]),
+        # Reorder flag from NPD — decides whether ``do_unmerge`` hard-
+        # deletes the CO on rejection (reorders + RTG) or preserves
+        # it (bespoke Custom). Always coerced to a real boolean so
+        # missing / non-boolean values from legacy payloads land as
+        # false.
+        is_reorder: params["npd_is_reorder"] == true,
         # A merge_from_proposal claims the CO as a REAL commercial
         # order — flip ``sample_kind`` off. Without this a CO that
         # happened to exist as a sample-kit shell (created by an
