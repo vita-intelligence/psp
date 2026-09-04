@@ -1972,6 +1972,143 @@ defmodule Backend.Stock do
 
   def issue_from_placement(_actor, _uuid, _attrs), do: {:error, :bad_args}
 
+  @doc """
+  Ship-out — physical departure of `qty` units from `placement` when
+  a truck picks up a shipment. Decrements the placement (deletes the
+  row if it hits zero), writes a `Stock.Movement` with kind
+  `ship_out`, and fires the depletion lifecycle event when the lot's
+  total on-site qty drops to zero.
+
+  Callers pass:
+
+    * `placement` — the source dispatch-cell placement (already
+      loaded + belongs to the same company + lot).
+    * `qty` — decimal, how much left with this truck.
+    * `opts` — keyword list:
+      * `:reason` — human-readable string for the audit row.
+      * `:reference_kind` / `:reference_ref` — link back to the
+        shipment / pickup event for the audit trail.
+      * `:occurred_at` — DateTime, defaults to now (truncated to
+        the second).
+      * `:transaction?` — set `false` when the caller is already
+        inside a `Repo.transaction/1`. Defaults `true`.
+
+  Placement qty is clamped so a bad caller can't drive it negative;
+  when `qty` exceeds `placement.qty` the placement is drained to
+  zero and the movement records only what was actually there. That
+  matches the compliance rule — never invent stock we don't have —
+  but the caller (a picker event that overshot) still succeeds so
+  the truck arrival doesn't half-record on the mobile side.
+
+  Returns `{:ok, %{placement: updated, movement: movement}}` or
+  `{:error, reason}`.
+  """
+  def ship_out_from_placement(%Backend.Accounts.User{} = actor, %Placement{} = placement, qty, opts \\ []) do
+    reason = Keyword.get(opts, :reason, "Shipment pickup")
+    reference_kind = Keyword.get(opts, :reference_kind)
+    reference_ref = Keyword.get(opts, :reference_ref)
+    occurred_at =
+      Keyword.get(opts, :occurred_at) ||
+        DateTime.utc_now() |> DateTime.truncate(:second)
+
+    wrap? = Keyword.get(opts, :transaction?, true)
+
+    op = fn ->
+      case do_ship_out_from_placement(
+             actor,
+             placement,
+             qty,
+             reason,
+             reference_kind,
+             reference_ref,
+             occurred_at
+           ) do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end
+
+    if wrap? do
+      Repo.transaction(op)
+    else
+      # Caller already owns the transaction — return the raw
+      # {:ok, result} / {:error, reason} shape without a nested
+      # rollback wrapper.
+      do_ship_out_from_placement(
+        actor,
+        placement,
+        qty,
+        reason,
+        reference_kind,
+        reference_ref,
+        occurred_at
+      )
+    end
+  end
+
+  defp do_ship_out_from_placement(
+         actor,
+         %Placement{} = placement,
+         qty,
+         reason,
+         reference_kind,
+         reference_ref,
+         occurred_at
+       ) do
+    lot = Repo.get!(Lot, placement.stock_lot_id)
+
+    with {:ok, locked} <- lock_placement(placement) do
+      # Clamp — never drive the placement below zero. A picker event
+      # that reported more than the placement holds is a compliance
+      # smell (leftover uncounted stock somewhere) but we still let
+      # the event succeed so the truck arrival isn't half-recorded.
+      current = locked.qty || Decimal.new(0)
+      decrement =
+        if Decimal.compare(qty, current) == :gt, do: current, else: qty
+
+      new_qty = Decimal.sub(current, decrement)
+      delta = Decimal.negate(decrement)
+
+      with {:ok, updated_placement} <- write_adjusted_placement(locked, new_qty),
+           {:ok, movement} <-
+             %Movement{}
+             |> Movement.changeset(%{
+               "company_id" => lot.company_id,
+               "stock_lot_id" => lot.id,
+               "from_cell_id" => locked.storage_cell_id,
+               "to_cell_id" => nil,
+               "delta_qty" => delta,
+               "kind" => "ship_out",
+               "reason" => reason,
+               "reference_kind" => reference_kind,
+               "reference_ref" => reference_ref,
+               "actor_id" => actor.id,
+               "occurred_at" => occurred_at
+             })
+             |> Repo.insert(),
+           {:ok, _} <- maybe_emit_depletion_event(actor, lot, occurred_at) do
+        Backend.Audit.record_updated(
+          actor,
+          "stock_lot_placement",
+          updated_placement,
+          %{qty: current, storage_cell_id: locked.storage_cell_id},
+          %{qty: updated_placement.qty, storage_cell_id: updated_placement.storage_cell_id}
+        )
+
+        Backend.Audit.record_created(actor, "stock_movement", movement, %{
+          kind: movement.kind,
+          delta_qty: movement.delta_qty,
+          from_cell_id: movement.from_cell_id,
+          reference_kind: movement.reference_kind,
+          reference_ref: movement.reference_ref,
+          reason: movement.reason
+        })
+
+        {:ok, %{placement: updated_placement, movement: movement}}
+      end
+    end
+  end
+
   # After decrementing, if the lot has zero qty across ALL placements
   # emit the `consumed_to_zero` lifecycle event so the projected status
   # flips to `depleted`. Idempotent — if the lot is already depleted

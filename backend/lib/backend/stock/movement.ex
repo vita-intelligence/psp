@@ -19,7 +19,14 @@ defmodule Backend.Stock.Movement do
   # MO-internal pick → confirm → consume ceremony bound to a specific
   # production step. Both decrement placement qty and require a
   # source cell.
-  @kinds ~w(receive move consume adjust_up adjust_down dispose return auto_route issue)
+  #
+  # `ship_out` covers goods physically leaving the site with a truck
+  # (fired by a shipment pickup event). Semantically distinct from
+  # `dispose` (destruction) and `consume` (production draw) — the
+  # goods still exist, they're just off-premises now. Decrements the
+  # source dispatch-cell placement + writes the audit row so the
+  # on-site count stays honest.
+  @kinds ~w(receive move consume adjust_up adjust_down dispose return auto_route issue ship_out)
   @reference_kinds ~w(purchase_order manufacturing_order sales_order transfer_order stock_take adjustment lifecycle_event)
 
   def kinds, do: @kinds
@@ -115,6 +122,12 @@ defmodule Backend.Stock.Movement do
 
       "issue" when is_nil(from_id) ->
         add_error(changeset, :from_cell_id, "issue movements require a source cell")
+
+      "ship_out" when is_nil(from_id) ->
+        add_error(changeset, :from_cell_id, "ship_out movements require a source cell")
+
+      "ship_out" when not is_nil(to_id) ->
+        add_error(changeset, :to_cell_id, "ship_out movements leave the site — no destination cell")
 
       "move" when is_nil(from_id) or is_nil(to_id) ->
         add_error(changeset, :kind, "move movements need both from + to cells")

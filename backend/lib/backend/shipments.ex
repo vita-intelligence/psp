@@ -496,6 +496,7 @@ defmodule Backend.Shipments do
       Repo.transaction(fn ->
         with {:ok, event} <- insert_pickup_event(actor, shipment, attrs, qty),
              :ok <- attach_files_to_event(shipment, event, file_ids),
+             :ok <- ship_out_dispatch_cell(actor, shipment, event, qty),
              {:ok, updated} <-
                refresh_shipment_after_event(actor, shipment, event, qty, attrs) do
           {updated, event}
@@ -675,6 +676,66 @@ defmodule Backend.Shipments do
       if n == length(file_uuids), do: :ok, else: {:error, :pickup_file_link_mismatch}
     end
   end
+
+  # Physical departure — decrement the dispatch-cell placement that
+  # holds the shipment's staged goods by the truck's ``qty`` and
+  # write the ``ship_out`` audit movement. Fires inside the
+  # ``log_pickup_event`` transaction so a placement write failure
+  # rolls the event back.
+  #
+  # Legacy / edge cases silently skip (returns ``:ok``):
+  #   * no dispatch-cell placement — the goods left the site before
+  #     ship_out was wired up, or the shipment is direct-ship and
+  #     never used a dispatch cell.
+  #   * placement.qty is zero — same shape, previous pickup already
+  #     drained it (multi-visit with a fresh event after a drain).
+  #
+  # The Stock helper clamps ``qty`` to the placement's actual value,
+  # so an event that overshoots (leftover from an untracked prior
+  # pickup) doesn't drive the placement negative — the on-site count
+  # gets honest instead of compounding the error.
+  defp ship_out_dispatch_cell(actor, %Shipment{} = shipment, %ShipmentPickupEvent{} = event, qty) do
+    lot =
+      Repo.preload(
+        Repo.get!(Backend.Stock.Lot, shipment.stock_lot_id),
+        placements: [:storage_cell]
+      )
+
+    case find_dispatch_placement(lot) do
+      {:ok, placement} ->
+        case Backend.Stock.ship_out_from_placement(actor, placement, qty,
+               reason: "Shipment pickup",
+               reference_kind: "sales_order",
+               reference_ref: shipment.uuid,
+               occurred_at: event.picked_up_at,
+               transaction?: false
+             ) do
+          {:ok, _} -> :ok
+          {:error, _} = err -> err
+        end
+
+      {:error, :not_in_dispatch} ->
+        # Legacy / direct-ship without a dispatch cell — nothing
+        # physical to decrement here. Not an error.
+        :ok
+    end
+  end
+
+  defp find_dispatch_placement(%Backend.Stock.Lot{placements: placements})
+       when is_list(placements) do
+    match =
+      Enum.find(placements, fn p ->
+        p.storage_cell && p.storage_cell.purpose == "dispatch" &&
+          p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+
+    case match do
+      %Placement{} = p -> {:ok, p}
+      _ -> {:error, :not_in_dispatch}
+    end
+  end
+
+  defp find_dispatch_placement(_), do: {:error, :not_in_dispatch}
 
   # After logging an event we re-derive the shipment status +
   # denormalise the LATEST event's driver / vehicle / checklist onto
