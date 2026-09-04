@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getSessionToken } from "@/lib/auth/server";
 import {
@@ -45,12 +46,16 @@ export default async function MobileInspectionPage({
       ? rawLines.split(",").map((s) => s.trim()).filter(Boolean)
       : [];
 
-  // Bulk SSR fetch — inspection + viewer in parallel. The inspection
-  // payload carries the parent PO uuid (preloaded), so we kick off the
-  // PO fetch on the next tick once we have it.
-  const [inspection, viewer] = await Promise.all([
+  // Bulk SSR fetch — inspection + viewer + company defaults in
+  // parallel. The inspection payload carries the parent PO uuid
+  // (preloaded), so we kick off the PO fetch on the next tick once
+  // we have it. Company defaults feed date formatting on the
+  // wizard's `<DateField>`s (delivery date + per-pack manufactured
+  // / expiry) per the CLAUDE.md rule.
+  const [inspection, viewer, defaults] = await Promise.all([
     getInspection(uuid),
     getInspectionViewer(),
+    getCompanyDefaults(),
   ]);
   if (!inspection || !viewer) notFound();
   if (!inspection.purchase_order_uuid) notFound();
@@ -64,6 +69,7 @@ export default async function MobileInspectionPage({
       purchaseOrder={purchaseOrder}
       viewer={viewer}
       initialSelectedLineUuids={initialSelectedLineUuids}
+      prefs={defaults}
     />
   );
 }

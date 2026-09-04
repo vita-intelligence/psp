@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  createContext,
   memo,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -47,6 +49,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CountryPicker } from "@/components/forms/country-picker";
+import { DateField } from "@/components/forms/date-field";
 import { DimensionMmInput } from "@/components/forms/dimension-mm-input";
 import { PackBoxPreview } from "@/components/packaging/pack-box-preview";
 import { ErrorBanner } from "@/components/forms/error-banner";
@@ -81,7 +84,12 @@ import type {
 } from "@/lib/goods-in/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { formatCompanyNumber } from "@/lib/format/company";
-import type { PurchaseOrder, PurchaseOrderLine, User } from "@/lib/types";
+import type {
+  CompanyDefaults,
+  PurchaseOrder,
+  PurchaseOrderLine,
+  User,
+} from "@/lib/types";
 
 /* ============ check-key registries ============ */
 
@@ -237,7 +245,18 @@ interface Props {
    *  so the wizard skips straight to the picked items. Ignored when
    *  the inspection already has saved items (resume takes priority). */
   initialSelectedLineUuids?: string[];
+  /** Company defaults from ``/settings/company`` — used by
+   *  ``<DateField>`` inside the delivery step + per-pack manufactured
+   *  / expiry fields so date labels respect the tenant's date format
+   *  (dd/MM/yyyy vs MM/dd/yyyy etc). See CLAUDE.md formatting rule. */
+  prefs: CompanyDefaults | null;
 }
+
+// Context so per-pack `<DateField>`s can read company format prefs
+// without prop-drilling through PackEditor → PackInput. Memoised
+// components can subscribe independently via useContext without
+// breaking their memo guards.
+const PrefsContext = createContext<CompanyDefaults | null>(null);
 
 /**
  * The mobile Goods-In Inspection wizard. Walks the operator through
@@ -257,6 +276,7 @@ export function MobileInspectionWizard({
   purchaseOrder,
   viewer,
   initialSelectedLineUuids,
+  prefs,
 }: Props) {
   const router = useRouter();
   const [inspection, setInspection] = useState(initial);
@@ -1028,6 +1048,7 @@ export function MobileInspectionWizard({
   /* ============ render ============ */
 
   return (
+    <PrefsContext.Provider value={prefs}>
     <div className="flex min-h-dvh flex-col bg-background">
       {/* sticky top header */}
       <header
@@ -1308,6 +1329,7 @@ export function MobileInspectionWizard({
         </AlertDialogContent>
       </AlertDialog>
     </div>
+    </PrefsContext.Provider>
   );
 
   /* ============ per-step panels ============ */
@@ -1323,16 +1345,16 @@ export function MobileInspectionWizard({
                 label="Delivery date"
                 required
                 input={
-                  <Input
-                    type="date"
-                    value={delivery.delivery_date}
-                    onChange={(e) =>
+                  <DateField
+                    value={delivery.delivery_date || null}
+                    onChange={(iso) =>
                       setDelivery({
                         ...delivery,
-                        delivery_date: e.target.value,
+                        delivery_date: iso ?? "",
                       })
                     }
-                    data-testid="delivery-date"
+                    prefs={prefs}
+                    placeholder="Pick a date…"
                   />
                 }
               />
@@ -2744,6 +2766,7 @@ const PackInput = memo(function PackInput({
    *  on the lines step is what actually enforces it. */
   required?: boolean;
 }) {
+  const prefs = useContext(PrefsContext);
   return (
     <label className="block space-y-0.5">
       <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -2754,21 +2777,35 @@ const PackInput = memo(function PackInput({
           </span>
         )}
       </span>
-      <Input
-        type={mode === "date" ? "date" : "text"}
-        inputMode={
-          mode === "integer"
-            ? "numeric"
-            : mode === "decimal"
-              ? "decimal"
-              : undefined
-        }
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        aria-label={label}
-        className={cn("h-9 text-sm", mono && "font-mono")}
-      />
+      {mode === "date" ? (
+        // Custom bottom-sheet calendar. Native <input type="date">
+        // on iOS refuses to shrink below its intrinsic mm/dd/yyyy
+        // content width and pushes the whole pack row into
+        // horizontal scroll on narrow phones.
+        <DateField
+          value={value || null}
+          onChange={(iso) => onChange(iso ?? "")}
+          prefs={prefs}
+          placeholder={placeholder ?? "Pick a date…"}
+          className="h-9 text-sm"
+        />
+      ) : (
+        <Input
+          type="text"
+          inputMode={
+            mode === "integer"
+              ? "numeric"
+              : mode === "decimal"
+                ? "decimal"
+                : undefined
+          }
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          aria-label={label}
+          className={cn("h-9 text-sm", mono && "font-mono")}
+        />
+      )}
       {helper && (
         <span className="block text-[10px] leading-tight text-muted-foreground/80">
           {helper}
