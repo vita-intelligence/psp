@@ -483,17 +483,37 @@ defmodule Backend.ThreePL do
     # Explicit qty override — the dispatch row is the source of
     # truth for what the customer requested, so the shipment's qty
     # must exactly match ``dispatch.qty`` rather than the raw
-    # dispatch-cell placement total. That placement can accumulate
-    # leftover units from prior fully picked-up shipments (pickup
-    # events don't currently decrement dispatch-cell placements),
-    # which would silently inflate the truck-arrival form.
-    case Backend.Shipments.create_from_lot(actor, lot_uuid, qty: dispatch.qty) do
+    # dispatch-cell placement total.
+    #
+    # ``allow_multiple: true`` — a bailee lot can carry many open
+    # 3PL dispatches at once (Shopify-style burst, or a customer
+    # queueing multiple orders). Each dispatch spawns its OWN
+    # shipment so ship-to + tracking + POD stay 1:1 with the
+    # customer order. Without this flag ``create_from_lot`` returns
+    # ``:already_open`` for every walk after the first, silently
+    # orphaning the walked stock in the dispatch cell.
+    case Backend.Shipments.create_from_lot(actor, lot_uuid,
+           qty: dispatch.qty,
+           allow_multiple: true
+         ) do
       {:ok, shipment} ->
         # Customer-supplied ship-to details from the portal
         # ``Request dispatch`` dialog override the CO / customer
         # fallback that ``create_from_lot`` prefilled. Empty /
         # nil fields on the dispatch fall through untouched.
         _ = apply_dispatch_ship_to_overrides(actor, shipment, dispatch)
+
+        # Persist the explicit 1:1 link. Portal payload enrichment
+        # prefers this FK over timestamp-based matching — otherwise a
+        # Shopify burst (10+ walks in the same second) all resolve to
+        # the earliest shipment on the lot and every sibling
+        # customer's row inherits the wrong pickup evidence + a live
+        # "Mark as delivered" button.
+        _ =
+          dispatch
+          |> Ecto.Changeset.change(shipment_id: shipment.id)
+          |> Repo.update()
+
         :ok
 
       {:error, :already_open} ->

@@ -22,6 +22,7 @@ defmodule Backend.ThreePL.Dispatch do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
+  alias Backend.Shipments.Shipment
   alias Backend.Stock.Lot
   alias Backend.Warehouses.StorageCell
 
@@ -81,6 +82,12 @@ defmodule Backend.ThreePL.Dispatch do
     # cancel-and-return flow knows where to walk the goods back to.
     # See ``Backend.ThreePL.cancel_shipment_and_return_lot/2``.
     belongs_to :return_target_cell, StorageCell, foreign_key: :return_target_cell_id
+    # Explicit link to the outbound shipment spawned by this dispatch.
+    # Populated by ``Backend.ThreePL.spawn_outbound_shipment/3`` on
+    # successful walk-out. The portal payload enrichment prefers this
+    # FK over timestamp-based matching, which collided when multiple
+    # dispatches walked within the same second (Shopify bursts).
+    belongs_to :shipment, Shipment
 
     timestamps(type: :utc_datetime)
   end
@@ -182,7 +189,8 @@ defmodule Backend.ThreePL.Dispatch do
       :photo_url,
       :dispatched_by_id,
       :dispatched_at,
-      :return_target_cell_id
+      :return_target_cell_id,
+      :shipment_id
     ])
     |> validate_required([:status, :dispatched_by_id, :dispatched_at])
     |> validate_inclusion(:status, ~w(completed cancelled))

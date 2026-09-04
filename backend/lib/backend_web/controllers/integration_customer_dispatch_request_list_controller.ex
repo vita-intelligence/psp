@@ -167,8 +167,8 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
 
   defp respond_with_refreshed(conn, company_id, %Dispatch{} = dispatch) do
     reloaded = Repo.preload(dispatch, stock_lot: [:item, :unit_of_measurement])
-    shipments_by_lot = load_shipments_for(company_id, [reloaded])
-    json(conn, %{request: request_payload(reloaded, shipments_by_lot)})
+    shipments_index = load_shipments_for(company_id, [reloaded])
+    json(conn, %{request: request_payload(reloaded, shipments_index)})
   end
 
   defp not_found_dispatch(conn) do
@@ -181,6 +181,24 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
     Repo.get_by(Dispatch, company_id: company_id, uuid: request_uuid)
   rescue
     Ecto.Query.CastError -> nil
+  end
+
+  # Explicit FK first (populated on every walk-out since the
+  # ``shipment_id`` migration). Falls back to the newest non-cancelled
+  # shipment on the lot for legacy pre-FK rows. The FK path is critical
+  # for Shopify-burst customers — without it, photo streaming +
+  # confirm-delivery both punch through to a SIBLING customer's
+  # shipment because every dispatch on the lot resolves to the same
+  # newest row.
+  defp fetch_shipment_for_dispatch(company_id, %Dispatch{shipment_id: shipment_id})
+       when is_integer(shipment_id) do
+    Repo.one(
+      from s in Shipment,
+        where:
+          s.company_id == ^company_id and
+            s.id == ^shipment_id and
+            s.status != "cancelled"
+    )
   end
 
   defp fetch_shipment_for_dispatch(company_id, %Dispatch{stock_lot_id: lot_id}) do
@@ -254,8 +272,8 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
         opts
       )
 
-    shipments_by_lot = load_shipments_for(company_id, rows)
-    request_rows = Enum.map(rows, &request_payload(&1, shipments_by_lot))
+    shipments_index = load_shipments_for(company_id, rows)
+    request_rows = Enum.map(rows, &request_payload(&1, shipments_index))
 
     counts = ThreePL.dispatch_request_counts_for_customer(company_id, customer_uuid)
     customer = first_customer(rows) || fallback_customer(company_id, customer_uuid)
@@ -290,7 +308,7 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
   # ``shipment: nil`` in the payload.
   # -----------------------------------------------------------------
 
-  defp load_shipments_for(_company_id, []), do: %{}
+  defp load_shipments_for(_company_id, []), do: %{shipments_by_lot: %{}, shipments_by_id: %{}}
 
   defp load_shipments_for(company_id, dispatches) do
     lot_ids =
@@ -298,19 +316,24 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
       |> Enum.map(& &1.stock_lot_id)
       |> Enum.uniq()
 
-    from(s in Shipment,
-      where:
-        s.company_id == ^company_id and
-          s.stock_lot_id in ^lot_ids and
-          s.status != "cancelled",
-      order_by: [asc: s.inserted_at, asc: s.id],
-      preload: [
-        pickup_events: [:photos, :picked_up_by],
-        pickup_files: []
-      ]
-    )
-    |> Repo.all()
-    |> Enum.group_by(& &1.stock_lot_id)
+    shipments =
+      from(s in Shipment,
+        where:
+          s.company_id == ^company_id and
+            s.stock_lot_id in ^lot_ids and
+            s.status != "cancelled",
+        order_by: [asc: s.inserted_at, asc: s.id],
+        preload: [
+          pickup_events: [:photos, :picked_up_by],
+          pickup_files: []
+        ]
+      )
+      |> Repo.all()
+
+    %{
+      shipments_by_lot: Enum.group_by(shipments, & &1.stock_lot_id),
+      shipments_by_id: Map.new(shipments, &{&1.id, &1})
+    }
   end
 
   # Match a dispatch to the shipment spawned by IT specifically:
@@ -339,18 +362,30 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
 
   # ---- Payload shapers ----
 
-  defp request_payload(%Dispatch{} = d, shipments_by_lot) do
+  defp request_payload(%Dispatch{} = d, shipments_index) do
     lot = d.stock_lot
     # Only completed / return_pending dispatches actually spawned a
     # shipment. Pending + cancelled ones never walked, so linking
     # them to a sibling dispatch's shipment would be wrong.
     linked =
-      if d.status in ["completed", "return_pending"] do
-        shipments_by_lot
-        |> Map.get(d.stock_lot_id, [])
-        |> find_matching_shipment(d.dispatched_at)
-      else
-        nil
+      cond do
+        d.status not in ["completed", "return_pending"] ->
+          nil
+
+        # Explicit FK — populated on every walk-out since the
+        # ``shipment_id`` migration. In a Shopify burst (10+ walks
+        # in the same second) the FK is the ONLY reliable way to
+        # tell each dispatch apart; timestamp matching collides.
+        is_integer(d.shipment_id) ->
+          Map.get(shipments_index.shipments_by_id, d.shipment_id)
+
+        # Legacy fallback for pre-FK rows. Same behaviour as before:
+        # oldest shipment on the lot whose insert time is at or
+        # after the dispatch's ``dispatched_at``.
+        true ->
+          shipments_index.shipments_by_lot
+          |> Map.get(d.stock_lot_id, [])
+          |> find_matching_shipment(d.dispatched_at)
       end
 
     %{

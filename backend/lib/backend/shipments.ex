@@ -70,7 +70,7 @@ defmodule Backend.Shipments do
     with :ok <- ensure_edit(actor),
          {:ok, lot} <- fetch_lot(actor.company_id, lot_uuid),
          {:ok, resolved_qty} <- resolve_shipment_qty(lot, opts),
-         :ok <- ensure_no_open_shipment(lot) do
+         :ok <- maybe_ensure_no_open_shipment(lot, opts) do
       customer_id = derive_customer_id(lot)
       customer_order_id = derive_customer_order_id(lot)
       customer_order_line_id = derive_customer_order_line_id(lot)
@@ -119,6 +119,25 @@ defmodule Backend.Shipments do
 
       _ ->
         find_dispatch_placement_qty(lot)
+    end
+  end
+
+  # Direct-ship (staff-typed) flow can only have ONE open shipment
+  # per lot at a time — the operator picks up the whole released
+  # batch in one go, or amends a draft that's already open. That
+  # invariant matches the ``ensure_no_open_shipment`` gate.
+  #
+  # 3PL bailee flow is different: each portal-triggered dispatch is
+  # a separate customer order with its own ship-to, requested qty,
+  # + downstream POD. A Shopify burst of 50 orders needs 50
+  # shipments, not 1 rolled-up mega-shipment. The
+  # ``spawn_outbound_shipment`` path in ``Backend.ThreePL`` passes
+  # ``allow_multiple: true`` to bypass the "one open" gate.
+  defp maybe_ensure_no_open_shipment(lot, opts) do
+    if Keyword.get(opts, :allow_multiple, false) do
+      :ok
+    else
+      ensure_no_open_shipment(lot)
     end
   end
 
