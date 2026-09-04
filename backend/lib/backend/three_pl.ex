@@ -654,6 +654,14 @@ defmodule Backend.ThreePL do
   Payload preloads the lot + the ``return_target_cell`` so the
   mobile FE can render the "walk to" step with FloorPlanMini
   highlighting the exact rack.
+
+  For dispatches completed BEFORE the return_target_cell_id column
+  landed (see migration ``20260904100000``) we lazily backfill the
+  target by looking at the lot's Stock.Movement history — the last
+  move whose ``to_cell.purpose == "dispatch"`` remembers the source
+  3PL cell as ``from_cell``. Silent-degrade if no such row exists;
+  the mobile FE then falls back to freeform-scan any 3PL cell in
+  the warehouse.
   """
   def list_pending_returns(company_id) when is_integer(company_id) do
     from(d in Dispatch,
@@ -671,6 +679,7 @@ defmodule Backend.ThreePL do
       ]
     )
     |> Repo.all()
+    |> Enum.map(&maybe_backfill_return_target/1)
   end
 
   @doc """
@@ -696,9 +705,54 @@ defmodule Backend.ThreePL do
       ]
     )
     |> Repo.one()
+    |> maybe_backfill_return_target()
   rescue
     Ecto.Query.CastError -> nil
   end
+
+  # Fallback for dispatches completed before
+  # ``20260904100000_add_return_target_to_three_pl_dispatches``
+  # landed the return_target_cell_id column: walk the lot's
+  # Stock.Movement history and pick the source of the most recent
+  # 3PL → dispatch move. Attaches the derived cell to the struct
+  # so the payload shaper sees it as if it had been stored.
+  defp maybe_backfill_return_target(nil), do: nil
+
+  defp maybe_backfill_return_target(%Dispatch{return_target_cell: %_{}} = d), do: d
+
+  defp maybe_backfill_return_target(%Dispatch{return_target_cell_id: id} = d)
+       when is_integer(id) do
+    d
+  end
+
+  defp maybe_backfill_return_target(%Dispatch{stock_lot: %Lot{id: lot_id}} = d) do
+    derived =
+      Repo.one(
+        from m in Backend.Stock.Movement,
+          join: from_cell in StorageCell,
+          on: from_cell.id == m.from_cell_id,
+          join: to_cell in StorageCell,
+          on: to_cell.id == m.to_cell_id,
+          where:
+            m.stock_lot_id == ^lot_id and
+              m.kind == "move" and
+              from_cell.purpose == "three_pl_storage" and
+              to_cell.purpose == "dispatch",
+          order_by: [desc: m.occurred_at, desc: m.id],
+          limit: 1,
+          preload: [from_cell: [storage_location: [floor: [:warehouse]]]]
+      )
+
+    case derived do
+      %Backend.Stock.Movement{from_cell: cell} when not is_nil(cell) ->
+        %Dispatch{d | return_target_cell: cell, return_target_cell_id: cell.id}
+
+      _ ->
+        d
+    end
+  end
+
+  defp maybe_backfill_return_target(other), do: other
 
   @doc """
   Mobile execution — walk the lot back from its current dispatch
