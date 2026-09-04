@@ -8,6 +8,7 @@ import {
   Package,
   ShieldCheck,
   Truck,
+  Undo2,
 } from "lucide-react";
 import { getDeviceToken } from "@/lib/devices/server";
 import {
@@ -15,16 +16,19 @@ import {
   listBaileeShipmentsInTransit,
   listBaileeShipmentsNeedingPaperwork,
   listPendingDispatches,
+  listPendingReturns,
 } from "@/lib/three-pl/server";
 import type {
   BaileeShipmentRow,
   PendingDispatch,
+  PendingReturn,
 } from "@/lib/three-pl/types";
+import { CancelRowButton } from "./cancel-row-button";
 
 export const metadata = { title: "3PL dispatches · PSP Mobile" };
 export const dynamic = "force-dynamic";
 
-type Tab = "move" | "paperwork" | "pickup" | "confirm";
+type Tab = "move" | "paperwork" | "pickup" | "confirm" | "return";
 
 /**
  * Mobile 3PL hub — a four-tab view of every bailee-flow shipment a
@@ -54,12 +58,14 @@ export default async function MobileThreePlDispatchesPage({
   const token = await getDeviceToken();
   if (!token) redirect("/pair");
 
-  const [pending, paperwork, awaitingPickup, inTransit] = await Promise.all([
-    listPendingDispatches(),
-    listBaileeShipmentsNeedingPaperwork(),
-    listBaileeShipmentsAwaitingPickup(),
-    listBaileeShipmentsInTransit(),
-  ]);
+  const [pending, paperwork, awaitingPickup, inTransit, returns] =
+    await Promise.all([
+      listPendingDispatches(),
+      listBaileeShipmentsNeedingPaperwork(),
+      listBaileeShipmentsAwaitingPickup(),
+      listBaileeShipmentsInTransit(),
+      listPendingReturns(),
+    ]);
 
   const { tab } = await searchParams;
   const active = normaliseTab(tab);
@@ -82,7 +88,8 @@ export default async function MobileThreePlDispatchesPage({
             {pending.length +
               paperwork.length +
               awaitingPickup.length +
-              inTransit.length}{" "}
+              inTransit.length +
+              returns.length}{" "}
             in flight
           </p>
         </div>
@@ -95,30 +102,37 @@ export default async function MobileThreePlDispatchesPage({
         <TabLink
           tab="move"
           active={active}
-          icon={<Truck className="size-3.5" />}
+          icon={<Truck />}
           label="Move"
           count={pending.length}
         />
         <TabLink
           tab="paperwork"
           active={active}
-          icon={<ClipboardList className="size-3.5" />}
+          icon={<ClipboardList />}
           label="Paperwork"
           count={paperwork.length}
         />
         <TabLink
           tab="pickup"
           active={active}
-          icon={<ShieldCheck className="size-3.5" />}
+          icon={<ShieldCheck />}
           label="Pickup"
           count={awaitingPickup.length}
         />
         <TabLink
           tab="confirm"
           active={active}
-          icon={<MailCheck className="size-3.5" />}
+          icon={<MailCheck />}
           label="Confirm"
           count={inTransit.length}
+        />
+        <TabLink
+          tab="return"
+          active={active}
+          icon={<Undo2 />}
+          label="Return"
+          count={returns.length}
         />
       </nav>
 
@@ -127,13 +141,20 @@ export default async function MobileThreePlDispatchesPage({
         {active === "paperwork" && <PaperworkTab items={paperwork} />}
         {active === "pickup" && <PickupTab items={awaitingPickup} />}
         {active === "confirm" && <ConfirmTab items={inTransit} />}
+        {active === "return" && <ReturnTab items={returns} />}
       </main>
     </div>
   );
 }
 
 function normaliseTab(raw: string | undefined): Tab {
-  if (raw === "paperwork" || raw === "pickup" || raw === "confirm") return raw;
+  if (
+    raw === "paperwork" ||
+    raw === "pickup" ||
+    raw === "confirm" ||
+    raw === "return"
+  )
+    return raw;
   return "move";
 }
 
@@ -154,25 +175,26 @@ function TabLink({
   return (
     <Link
       href={`/m/three-pl-dispatches${tab === "move" ? "" : `?tab=${tab}`}`}
-      className={`flex flex-1 flex-col items-center gap-1 px-2 py-2.5 border-b-2 transition-colors ${
+      className={`relative flex flex-1 items-center justify-center px-2 py-3 border-b-2 transition-colors ${
         isActive
           ? "border-brand text-brand"
           : "border-transparent text-muted-foreground active:bg-muted"
       }`}
       role="tab"
       aria-selected={isActive}
+      aria-label={`${label} (${count})`}
+      title={label}
     >
-      <span className="flex items-center gap-1.5 font-semibold uppercase tracking-wider">
-        {icon}
-        {label}
-      </span>
-      <span
-        className={`min-w-[1.25rem] rounded-full px-1.5 text-[10px] tabular-nums ${
-          isActive ? "bg-brand/15 text-brand" : "bg-muted text-muted-foreground"
-        }`}
-      >
-        {count}
-      </span>
+      <span className="[&_svg]:size-5">{icon}</span>
+      {count > 0 && (
+        <span
+          className={`absolute -top-0.5 right-1 min-w-[1.1rem] rounded-full border border-background px-1 text-[9px] font-semibold leading-4 tabular-nums text-center ${
+            isActive ? "bg-brand text-brand-foreground" : "bg-muted-foreground/60 text-background"
+          }`}
+        >
+          {count}
+        </span>
+      )}
     </Link>
   );
 }
@@ -193,43 +215,47 @@ function MoveTab({ items }: { items: PendingDispatch[] }) {
   return (
     <>
       {items.map((row) => (
-        <Link
-          key={row.uuid}
-          href={`/m/three-pl-dispatches/${encodeURIComponent(row.uuid)}`}
-          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex size-8 items-center justify-center rounded-md bg-violet-500/10 text-violet-700 dark:text-violet-300">
-              <Truck className="size-4" />
+        <div key={row.uuid} className="rounded-lg border border-border/60 bg-card">
+          <Link
+            href={`/m/three-pl-dispatches/${encodeURIComponent(row.uuid)}`}
+            className="block p-3 active:bg-muted"
+          >
+            <div className="flex items-center gap-2">
+              <div className="flex size-8 items-center justify-center rounded-md bg-violet-500/10 text-violet-700 dark:text-violet-300">
+                <Truck className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
+                  {row.qty}
+                  {row.lot?.unit_symbol ? ` ${row.lot.unit_symbol}` : ""} of{" "}
+                  {row.lot?.item?.name ?? "—"}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  Held for {row.lot?.bailee_customer?.name ?? "—"}
+                  {row.reference ? ` · ref ${row.reference}` : ""}
+                </p>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {row.qty}
-                {row.lot?.unit_symbol ? ` ${row.lot.unit_symbol}` : ""} of{" "}
-                {row.lot?.item?.name ?? "—"}
+            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Package className="size-3" />
+                <span className="font-mono">{row.lot?.code ?? "—"}</span>
+              </div>
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <MapPin className="size-3" />
+                {sourceLabel(row.source_location, row.source_cell)}
+              </div>
+            </div>
+            {row.notes && (
+              <p className="mt-2 rounded-md bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground">
+                {row.notes}
               </p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                Held for {row.lot?.bailee_customer?.name ?? "—"}
-                {row.reference ? ` · ref ${row.reference}` : ""}
-              </p>
-            </div>
+            )}
+          </Link>
+          <div className="flex justify-end border-t border-border/60 p-2">
+            <CancelRowButton kind="dispatch" uuid={row.uuid} />
           </div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <Package className="size-3" />
-              <span className="font-mono">{row.lot?.code ?? "—"}</span>
-            </div>
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <MapPin className="size-3" />
-              {sourceLabel(row.source_location, row.source_cell)}
-            </div>
-          </div>
-          {row.notes && (
-            <p className="mt-2 rounded-md bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground">
-              {row.notes}
-            </p>
-          )}
-        </Link>
+        </div>
       ))}
     </>
   );
@@ -251,31 +277,35 @@ function PaperworkTab({ items }: { items: BaileeShipmentRow[] }) {
   return (
     <>
       {items.map((s) => (
-        <Link
-          key={s.uuid}
-          href={`/m/shipments/${encodeURIComponent(s.uuid)}/paperwork`}
-          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex size-8 items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
-              <ClipboardList className="size-4" />
+        <div key={s.uuid} className="rounded-lg border border-border/60 bg-card">
+          <Link
+            href={`/m/shipments/${encodeURIComponent(s.uuid)}/paperwork`}
+            className="block p-3 active:bg-muted"
+          >
+            <div className="flex items-center gap-2">
+              <div className="flex size-8 items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                <ClipboardList className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
+                  {s.qty}
+                  {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
+                  {s.lot?.item?.name ?? "—"}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  For {s.customer?.name ?? "—"}
+                </p>
+              </div>
+              <StatusPill status={s.status} />
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {s.qty}
-                {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
-                {s.lot?.item?.name ?? "—"}
-              </p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                For {s.customer?.name ?? "—"}
-              </p>
-            </div>
-            <StatusPill status={s.status} />
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Fill shipping form → Mark ready for pickup.
+            </p>
+          </Link>
+          <div className="flex justify-end border-t border-border/60 p-2">
+            <CancelRowButton kind="shipment" uuid={s.uuid} />
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            Fill shipping form → Mark ready for pickup.
-          </p>
-        </Link>
+        </div>
       ))}
     </>
   );
@@ -297,41 +327,45 @@ function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
   return (
     <>
       {items.map((s) => (
-        <Link
-          key={s.uuid}
-          href={`/m/shipments/${encodeURIComponent(s.uuid)}/dispatch`}
-          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex size-8 items-center justify-center rounded-md bg-brand/10 text-brand">
-              <ShieldCheck className="size-4" />
+        <div key={s.uuid} className="rounded-lg border border-border/60 bg-card">
+          <Link
+            href={`/m/shipments/${encodeURIComponent(s.uuid)}/dispatch`}
+            className="block p-3 active:bg-muted"
+          >
+            <div className="flex items-center gap-2">
+              <div className="flex size-8 items-center justify-center rounded-md bg-brand/10 text-brand">
+                <ShieldCheck className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
+                  {s.qty}
+                  {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
+                  {s.lot?.item?.name ?? "—"}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  For {s.customer?.name ?? "—"}
+                  {s.carrier ? ` · ${s.carrier}` : ""}
+                </p>
+              </div>
+              <StatusPill status={s.status} />
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {s.qty}
-                {s.lot?.unit_symbol ? ` ${s.lot.unit_symbol}` : ""} of{" "}
-                {s.lot?.item?.name ?? "—"}
-              </p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                For {s.customer?.name ?? "—"}
-                {s.carrier ? ` · ${s.carrier}` : ""}
-              </p>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Package className="size-3" />
+                <span className="font-mono">{s.lot?.code ?? "—"}</span>
+              </div>
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <MailCheck className="size-3" />
+                {s.status === "partially_picked"
+                  ? "Next truck arriving"
+                  : `Ready since ${formatShort(s.ready_at)}`}
+              </div>
             </div>
-            <StatusPill status={s.status} />
+          </Link>
+          <div className="flex justify-end border-t border-border/60 p-2">
+            <CancelRowButton kind="shipment" uuid={s.uuid} />
           </div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <Package className="size-3" />
-              <span className="font-mono">{s.lot?.code ?? "—"}</span>
-            </div>
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <MailCheck className="size-3" />
-              {s.status === "partially_picked"
-                ? "Next truck arriving"
-                : `Ready since ${formatShort(s.ready_at)}`}
-            </div>
-          </div>
-        </Link>
+        </div>
       ))}
     </>
   );
@@ -408,6 +442,64 @@ function ConfirmTab({ items }: { items: BaileeShipmentRow[] }) {
           </Link>
         );
       })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------
+// Tab 5 — Return
+// ---------------------------------------------------------------
+
+function ReturnTab({ items }: { items: PendingReturn[] }) {
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing to return"
+        detail="When a Paperwork or Pickup shipment gets cancelled, its lot lands here so the picker can walk it back to bailee custody."
+      />
+    );
+  }
+  return (
+    <>
+      {items.map((row) => (
+        <Link
+          key={row.uuid}
+          href={`/m/three-pl-returns/${encodeURIComponent(row.uuid)}`}
+          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex size-8 items-center justify-center rounded-md bg-orange-500/10 text-orange-700 dark:text-orange-300">
+              <Undo2 className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">
+                {row.qty}
+                {row.lot?.unit_symbol ? ` ${row.lot.unit_symbol}` : ""} of{" "}
+                {row.lot?.item?.name ?? "—"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                Return to {row.lot?.bailee_customer?.name ?? "—"}&apos;s
+                bailee stock
+              </p>
+            </div>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <MapPin className="size-3" />
+              From {sourceLabel(row.source_location, row.source_cell)}
+            </div>
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <Undo2 className="size-3" />
+              Back to{" "}
+              {row.return_target
+                ? row.return_target.name ??
+                  row.return_target.code ??
+                  "3PL cell"
+                : "any 3PL cell"}
+            </div>
+          </div>
+        </Link>
+      ))}
     </>
   );
 }

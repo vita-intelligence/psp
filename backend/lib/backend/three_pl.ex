@@ -438,7 +438,11 @@ defmodule Backend.ThreePL do
                      status: "completed",
                      photo_url: Map.get(attrs, "photo_url"),
                      dispatched_by_id: actor.id,
-                     dispatched_at: now
+                     dispatched_at: now,
+                     # Remember where the picker took this from so a
+                     # subsequent cancel-and-return knows the target
+                     # for the walk-back without guessing.
+                     return_target_cell_id: from_placement.storage_cell.id
                    })
                    |> Repo.update()
                    |> tap_audit_updated_dispatch(actor, dispatch_before),
@@ -594,6 +598,218 @@ defmodule Backend.ThreePL do
       })
       |> Repo.update()
       |> tap_audit_updated_dispatch(actor, before_state)
+    end
+  end
+
+  @doc """
+  Cancel-and-return handoff for a bailee-flow Shipment. Fires when
+  the operator taps Cancel on a Paperwork / Pickup row — the goods
+  are still on the dispatch shelf and owe a walk back to bailee
+  custody.
+
+  Steps in one transaction:
+
+    1. Look up the completed Dispatch that spawned this Shipment
+       (matched by ``stock_lot_id`` — bailee lots ship 1:1 with a
+       Dispatch, and the completed row is the latest).
+    2. Cancel the Shipment via ``Backend.Shipments.cancel/3``.
+    3. Flip the Dispatch to ``return_pending`` so the mobile
+       Return tab surfaces the walk-back task.
+
+  Returns ``{:ok, %{shipment: cancelled_shipment, dispatch: dispatch}}``
+  or ``{:error, reason}``. ``:no_bailee_dispatch`` when the lot's
+  ownership_kind isn't bailee (never came from a 3PL flow — can't
+  return to bailee custody). ``:no_completed_dispatch`` when the
+  shipment has no linked Dispatch in ``completed`` state (would
+  happen if someone cancelled the dispatch itself after the walk-
+  out, which shouldn't normally be possible via the API).
+  """
+  def cancel_shipment_and_return_lot(%User{} = actor, shipment_uuid, reason \\ "cancelled from mobile hub")
+      when is_binary(shipment_uuid) and is_binary(reason) do
+    with :ok <- ensure_permission_dispatch_execute(actor),
+         {:ok, shipment} <- fetch_shipment(actor.company_id, shipment_uuid),
+         {:ok, dispatch} <- fetch_completed_dispatch_for_lot(actor.company_id, shipment.stock_lot_id) do
+      dispatch_before = dispatch_snapshot(dispatch)
+
+      Repo.transaction(fn ->
+        with {:ok, cancelled} <- Backend.Shipments.cancel(actor, shipment, reason),
+             {:ok, updated} <-
+               dispatch
+               |> Dispatch.return_pending_changeset()
+               |> Repo.update()
+               |> tap_audit_updated_dispatch(actor, dispatch_before) do
+          %{shipment: cancelled, dispatch: updated}
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Return-tasks queue for the mobile Return tab — dispatches whose
+  linked shipment was cancelled and whose lot still needs to be
+  physically walked back to bailee custody.
+
+  Payload preloads the lot + the ``return_target_cell`` so the
+  mobile FE can render the "walk to" step with FloorPlanMini
+  highlighting the exact rack.
+  """
+  def list_pending_returns(company_id) when is_integer(company_id) do
+    from(d in Dispatch,
+      where: d.company_id == ^company_id and d.status == "return_pending",
+      order_by: [asc: d.dispatched_at, asc: d.id],
+      preload: [
+        :requested_by,
+        stock_lot: [
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+        ],
+        return_target_cell: [storage_location: [floor: [:warehouse]]]
+      ]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Fetch a single ``return_pending`` dispatch for the mobile scan
+  flow. Same preload shape as :func:`list_pending_returns/1`.
+  """
+  def get_pending_return(company_id, dispatch_uuid)
+      when is_integer(company_id) and is_binary(dispatch_uuid) do
+    from(d in Dispatch,
+      where:
+        d.company_id == ^company_id and
+          d.uuid == ^dispatch_uuid and
+          d.status == "return_pending",
+      preload: [
+        :requested_by,
+        stock_lot: [
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+        ],
+        return_target_cell: [storage_location: [floor: [:warehouse]]]
+      ]
+    )
+    |> Repo.one()
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  @doc """
+  Mobile execution — walk the lot back from its current dispatch
+  cell into the original 3PL cell captured on the dispatch. Physical
+  move + status flip to ``cancelled`` in one transaction.
+  """
+  def complete_return(%User{} = actor, dispatch_uuid, attrs)
+      when is_binary(dispatch_uuid) and is_map(attrs) do
+    with :ok <- ensure_permission_dispatch_execute(actor),
+         %Dispatch{} = dispatch <- get_pending_return(actor.company_id, dispatch_uuid),
+         %Lot{} = lot <- dispatch.stock_lot,
+         {:ok, from_placement} <- find_dispatch_placement(lot),
+         {:ok, to_cell} <- fetch_return_target_cell(actor.company_id, dispatch, attrs["to_cell_uuid"]) do
+      dispatch_before = dispatch_snapshot(dispatch)
+
+      Repo.transaction(fn ->
+        move_attrs = %{
+          "to_cell_uuid" => to_cell.uuid,
+          "from_cell_uuid" => from_placement.storage_cell.uuid,
+          "qty" => Decimal.to_string(dispatch.qty),
+          "reason" => "3PL return"
+        }
+
+        case Stock.move_placement(actor, lot.uuid, move_attrs) do
+          {:ok, _} ->
+            case dispatch
+                 |> Dispatch.return_completed_changeset()
+                 |> Repo.update()
+                 |> tap_audit_updated_dispatch(actor, dispatch_before) do
+              {:ok, updated} -> %{dispatch: updated, lot: Repo.reload!(lot)}
+              {:error, cs} -> Repo.rollback(cs)
+            end
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end)
+    else
+      nil -> {:error, :not_pending_return}
+      err -> err
+    end
+  end
+
+  # Where the lot currently sits — a placement in a ``dispatch`` cell
+  # with qty > 0. Mirror of :func:`find_bailee_placement/1` but for
+  # the reverse trip.
+  defp find_dispatch_placement(%Lot{placements: placements}) when is_list(placements) do
+    match =
+      Enum.find(placements, fn p ->
+        p.storage_cell && p.storage_cell.purpose == "dispatch" &&
+          p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+
+    case match do
+      %Placement{} = p -> {:ok, p}
+      _ -> {:error, :no_dispatch_placement}
+    end
+  end
+
+  defp find_dispatch_placement(_), do: {:error, :no_dispatch_placement}
+
+  # Destination is either the operator-scanned cell (validated to be
+  # a 3PL cell in the source warehouse) OR the original 3PL cell we
+  # remembered at complete_dispatch time. Prefer the scanned uuid so
+  # the operator can amend if the target cell got repurposed.
+  defp fetch_return_target_cell(company_id, dispatch, scanned_uuid)
+       when is_binary(scanned_uuid) do
+    case Repo.one(
+           from c in StorageCell,
+             where:
+               c.uuid == ^scanned_uuid and
+                 c.company_id == ^company_id and
+                 c.purpose == "three_pl_storage",
+             preload: [storage_location: [:floor]]
+         ) do
+      %StorageCell{} = c -> {:ok, c}
+      _ -> {:error, :bad_return_cell}
+    end
+  end
+
+  defp fetch_return_target_cell(_company_id, %Dispatch{return_target_cell: %StorageCell{} = c}, _) do
+    {:ok, c}
+  end
+
+  defp fetch_return_target_cell(_company_id, _dispatch, _),
+    do: {:error, :bad_return_cell}
+
+  defp fetch_shipment(company_id, shipment_uuid) do
+    case Repo.get_by(Backend.Shipments.Shipment,
+           company_id: company_id,
+           uuid: shipment_uuid
+         ) do
+      %Backend.Shipments.Shipment{} = s -> {:ok, s}
+      _ -> {:error, :shipment_not_found}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :shipment_not_found}
+  end
+
+  defp fetch_completed_dispatch_for_lot(company_id, lot_id) do
+    case Repo.one(
+           from d in Dispatch,
+             where:
+               d.company_id == ^company_id and
+                 d.stock_lot_id == ^lot_id and
+                 d.status == "completed",
+             order_by: [desc: d.dispatched_at, desc: d.id],
+             limit: 1
+         ) do
+      %Dispatch{} = d -> {:ok, d}
+      _ -> {:error, :no_completed_dispatch}
     end
   end
 

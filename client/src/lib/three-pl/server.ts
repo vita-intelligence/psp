@@ -4,6 +4,7 @@ import { getDeviceToken } from "../devices/server";
 import type {
   BaileeShipmentRow,
   PendingDispatch,
+  PendingReturn,
   ThreePLInventoryResponse,
   ThreePLLotDetailResponse,
 } from "./types";
@@ -112,6 +113,40 @@ export async function listBaileeShipmentsInTransit(): Promise<
     return res.items;
   } catch {
     return [];
+  }
+}
+
+/** Tab 5 of the mobile 3PL hub — return tasks (dispatches whose
+ *  shipment was cancelled and now owe a walk-back to bailee). */
+export async function listPendingReturns(): Promise<PendingReturn[]> {
+  const token = await anyToken();
+  if (!token) return [];
+  try {
+    const res = await api<{ items: PendingReturn[] }>(
+      "/api/three-pl/returns",
+      { token, cache: "no-store" },
+    );
+    return res.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Single return task — the mobile scan flow lands here after
+ *  tapping a row on the Return tab. */
+export async function getPendingReturn(
+  uuid: string,
+): Promise<PendingReturn | null> {
+  const token = await anyToken();
+  if (!token) return null;
+  try {
+    const res = await api<{ dispatch: PendingReturn }>(
+      `/api/three-pl/returns/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return res.dispatch;
+  } catch {
+    return null;
   }
 }
 

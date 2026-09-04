@@ -49,7 +49,11 @@ defmodule BackendWeb.ThreePLController do
        when action in [
               :list_shipments_needing_paperwork,
               :list_shipments_awaiting_pickup,
-              :list_shipments_in_transit
+              :list_shipments_in_transit,
+              :list_pending_returns,
+              :get_pending_return,
+              :complete_return,
+              :cancel_shipment_and_return
             ]
 
   action_fallback BackendWeb.FallbackController
@@ -190,6 +194,81 @@ defmodule BackendWeb.ThreePLController do
   end
 
   # ---------------------------------------------------------------
+  # POST /three-pl/shipments/:uuid/cancel-and-return — Cancel from
+  # Paperwork/Pickup. Cancels the shipment + flips the source
+  # dispatch to ``return_pending`` so the picker sees a walk-back
+  # task on the Return tab.
+  # ---------------------------------------------------------------
+  def cancel_shipment_and_return(conn, %{"uuid" => shipment_uuid} = params) do
+    actor = conn.assigns.current_user
+    reason = trimmed_or_default(params["reason"], "cancelled from mobile hub")
+
+    case ThreePL.cancel_shipment_and_return_lot(actor, shipment_uuid, reason) do
+      {:ok, %{dispatch: d}} ->
+        preloaded = Repo.preload(d, [:requested_by, :dispatched_by])
+        json(conn, %{dispatch: dispatch_payload(preloaded)})
+
+      {:error, reason} ->
+        dispatch_error(conn, reason)
+    end
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/returns — Tab 5 of the mobile 3PL hub. Dispatches
+  # in ``return_pending`` state that owe a walk from the dispatch
+  # cell back to the original 3PL cell.
+  # ---------------------------------------------------------------
+  def list_pending_returns(conn, _params) do
+    actor = conn.assigns.current_user
+    rows = ThreePL.list_pending_returns(actor.company_id)
+    json(conn, %{items: Enum.map(rows, &pending_return_payload/1)})
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/returns/:uuid — Single return task for the mobile
+  # scan flow.
+  # ---------------------------------------------------------------
+  def get_pending_return(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case ThreePL.get_pending_return(actor.company_id, uuid) do
+      nil ->
+        not_found(conn, "Return task not found (already completed or cancelled?).")
+
+      dispatch ->
+        json(conn, %{dispatch: pending_return_payload(dispatch)})
+    end
+  end
+
+  # ---------------------------------------------------------------
+  # POST /three-pl/returns/:uuid/complete — Mobile finishes the
+  # walk-back. Physical move + status flip in one transaction.
+  # ---------------------------------------------------------------
+  def complete_return(conn, %{"uuid" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case ThreePL.complete_return(actor, uuid, params) do
+      {:ok, %{lot: lot, dispatch: d}} ->
+        preloaded = preload_for_payload(lot)
+
+        json(conn, %{
+          lot: Payloads.stock_lot(preloaded),
+          dispatch: dispatch_payload(Repo.preload(d, [:requested_by, :dispatched_by]))
+        })
+
+      {:error, reason} ->
+        dispatch_error(conn, reason)
+    end
+  end
+
+  defp trimmed_or_default(v, default) when is_binary(v) do
+    trimmed = String.trim(v)
+    if trimmed == "", do: default, else: trimmed
+  end
+
+  defp trimmed_or_default(_v, default), do: default
+
+  # ---------------------------------------------------------------
   # GET /three-pl/shipments/needing-paperwork — Tab 2 of the mobile
   # 3PL hub. Draft shipments born from bailee lots that still owe a
   # shipping-form review before being marked Ready.
@@ -277,6 +356,25 @@ defmodule BackendWeb.ThreePLController do
       :bad_dispatch_cell ->
         unprocessable(conn, "bad_dispatch_cell",
           "The scanned destination isn't a dispatch cell in this warehouse.")
+
+      :shipment_not_found ->
+        not_found(conn, "Shipment not found.")
+
+      :no_completed_dispatch ->
+        unprocessable(conn, "no_completed_dispatch",
+          "No completed 3PL dispatch found for this shipment's lot.")
+
+      :not_pending_return ->
+        unprocessable(conn, "not_pending_return",
+          "This return task isn't in ``return_pending`` state any more.")
+
+      :no_dispatch_placement ->
+        unprocessable(conn, "no_dispatch_placement",
+          "The lot isn't currently sitting in a dispatch cell.")
+
+      :bad_return_cell ->
+        unprocessable(conn, "bad_return_cell",
+          "The scanned destination isn't a three_pl_storage cell in this warehouse.")
 
       {:missing_key, key} ->
         unprocessable(conn, "missing_field", "#{key} is required.")
@@ -625,6 +723,70 @@ defmodule BackendWeb.ThreePLController do
   defp iso_or_nil_dt(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp iso_or_nil_dt(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
   defp iso_or_nil_dt(_), do: nil
+
+  # Payload for the mobile Return tab / return-scan flow. Reverse
+  # of pending_dispatch_payload — source = current dispatch cell
+  # (where the lot is now), destination = the original 3PL cell we
+  # captured at complete_dispatch time.
+  defp pending_return_payload(%Backend.ThreePL.Dispatch{stock_lot: lot} = d) do
+    dispatch_placement =
+      Enum.find(lot.placements || [], fn p ->
+        p.storage_cell && p.storage_cell.purpose == "dispatch" &&
+          p.qty && Decimal.compare(p.qty, Decimal.new(0)) == :gt
+      end)
+
+    src_cell = dispatch_placement && dispatch_placement.storage_cell
+    src_loc = src_cell && src_cell.storage_location
+    dest_cell = d.return_target_cell
+    dest_loc = dest_cell && dest_cell.storage_location
+    dest_floor = dest_loc && dest_loc.floor
+
+    Map.merge(dispatch_payload(d), %{
+      lot: %{
+        id: lot.id,
+        uuid: lot.uuid,
+        code: Payloads.render_code(lot, "stock_lot"),
+        supplier_batch_no: lot.supplier_batch_no,
+        item: lot.item && %{id: lot.item.id, uuid: lot.item.uuid, name: lot.item.name},
+        bailee_customer:
+          lot.bailee_customer &&
+            %{
+              id: lot.bailee_customer.id,
+              uuid: lot.bailee_customer.uuid,
+              name: lot.bailee_customer.name
+            },
+        unit_symbol: lot.unit_of_measurement && lot.unit_of_measurement.symbol
+      },
+      source_cell:
+        src_cell &&
+          %{
+            id: src_cell.id,
+            uuid: src_cell.uuid,
+            name: src_cell.name,
+            ordinal: src_cell.ordinal,
+            code: Payloads.render_code(src_cell, "storage_cell"),
+            purpose: src_cell.purpose
+          },
+      source_location:
+        src_loc &&
+          %{id: src_loc.id, uuid: src_loc.uuid, name: src_loc.name, code: src_loc.code},
+      # Return target — the original 3PL cell. Nullable for legacy
+      # pre-migration dispatches; the mobile fallback lets the
+      # picker scan any 3PL cell if the target's missing.
+      return_target:
+        dest_cell &&
+          %{
+            uuid: dest_cell.uuid,
+            name: dest_cell.name,
+            code: Payloads.render_code(dest_cell, "storage_cell"),
+            ordinal: dest_cell.ordinal,
+            location: dest_loc && (dest_loc.name || dest_loc.code),
+            location_uuid: dest_loc && dest_loc.uuid,
+            floor: dest_floor && dest_floor.name,
+            floor_uuid: dest_floor && dest_floor.uuid
+          }
+    })
+  end
 
   defp suggested_dest_cell_payload(%Backend.Warehouses.StorageCell{} = c) do
     location = c.storage_location

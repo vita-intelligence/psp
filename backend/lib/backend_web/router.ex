@@ -1235,6 +1235,18 @@ defmodule BackendWeb.Router do
       get "/shipments/in-transit",
           ThreePLController,
           :list_shipments_in_transit
+      # Cancel-and-return handoff — operator taps Cancel on
+      # Paperwork/Pickup, backend cancels the shipment + flips the
+      # source dispatch to return_pending so the picker sees a
+      # walk-back task on the Return tab.
+      post "/shipments/:uuid/cancel-and-return",
+           ThreePLController,
+           :cancel_shipment_and_return
+      # Mobile 3PL Return tab — dispatches that need walking back
+      # from a dispatch cell into their original 3PL cell.
+      get "/returns", ThreePLController, :list_pending_returns
+      get "/returns/:uuid", ThreePLController, :get_pending_return
+      post "/returns/:uuid/complete", ThreePLController, :complete_return
       get "/inventory", ThreePLController, :inventory
       get "/lots/:lot_uuid", ThreePLController, :lot_detail
       get "/capacity/:warehouse_uuid", ThreePLController, :capacity

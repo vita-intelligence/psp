@@ -41,7 +41,11 @@ export interface ThreePLCapacityResponse {
   };
 }
 
-export type DispatchStatus = "pending" | "completed" | "cancelled";
+export type DispatchStatus =
+  | "pending"
+  | "completed"
+  | "return_pending"
+  | "cancelled";
 
 export interface ThreePLDispatchRow {
   uuid: string;
@@ -126,6 +130,27 @@ export interface PendingDispatch extends ThreePLDispatchRow {
     readonly floor: string | null;
     readonly floor_uuid: string | null;
   }[];
+}
+
+/** Return-task payload — used by the Return tab (list) + the mobile
+ *  return-scan flow. Same shape as PendingDispatch but with a
+ *  ``return_target`` block instead of ``suggested_dest_cells``: the
+ *  destination is fixed (the original 3PL cell captured at
+ *  complete_dispatch time). */
+export interface PendingReturn extends ThreePLDispatchRow {
+  lot: PendingDispatch["lot"];
+  source_cell: PendingDispatch["source_cell"];
+  source_location: PendingDispatch["source_location"];
+  return_target: {
+    readonly uuid: string;
+    readonly name: string | null;
+    readonly code: string | null;
+    readonly ordinal: number | null;
+    readonly location: string | null;
+    readonly location_uuid: string | null;
+    readonly floor: string | null;
+    readonly floor_uuid: string | null;
+  } | null;
 }
 
 /** Row payload for the mobile 3PL hub's Pickup + Confirm tabs.

@@ -283,14 +283,34 @@ defmodule Backend.Mobile do
     |> Kernel.min(@cap)
   end
 
-  # 3PL dispatch queue — pending dispatch rows for this tenant. Direct
-  # mirror of `Backend.ThreePl.list_pending_dispatches/1`'s WHERE.
+  # 3PL hub badge — every row across the picker's four action tabs:
+  # Move (pending Dispatch) + Paperwork (draft Shipment on bailee lot)
+  # + Pickup (ready / partially_picked Shipment on bailee lot). The
+  # Confirm tab is intentionally excluded — those shipments are in
+  # transit awaiting a customer-portal action, nothing the picker
+  # owes. Returned as ONE integer so the mobile home tile shows the
+  # sum, not a per-tab breakdown.
   defp count_three_pl_dispatches(company_id) do
-    from(d in Backend.ThreePL.Dispatch,
-      where: d.company_id == ^company_id and d.status == "pending",
-      select: %{one: 1}
-    )
-    |> capped_count()
+    pending =
+      from(d in Backend.ThreePL.Dispatch,
+        where: d.company_id == ^company_id and d.status == "pending",
+        select: %{one: 1}
+      )
+      |> capped_count()
+
+    paperwork_plus_pickup =
+      from(s in Backend.Shipments.Shipment,
+        join: l in Backend.Stock.Lot,
+        on: l.id == s.stock_lot_id,
+        where:
+          s.company_id == ^company_id and
+            s.status in ["draft", "ready", "partially_picked"] and
+            l.ownership_kind == "bailee",
+        select: %{one: 1}
+      )
+      |> capped_count()
+
+    Kernel.min(@cap, pending + paperwork_plus_pickup)
   end
 
   # Dispatch pickup queue — shipments the coordinator has marked

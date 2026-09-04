@@ -23,8 +23,16 @@ defmodule Backend.ThreePL.Dispatch do
   alias Backend.Accounts.User
   alias Backend.Companies.Company
   alias Backend.Stock.Lot
+  alias Backend.Warehouses.StorageCell
 
-  @statuses ~w(pending completed cancelled)
+  # Extended lifecycle:
+  #   pending        — desktop request queued, picker owes the walk out
+  #   completed      — walked, lot in a dispatch cell, Shipment exists
+  #   return_pending — the shipment was cancelled, picker owes a walk
+  #                    back from the dispatch cell to the original 3PL cell
+  #   cancelled      — end of life (either cancelled before the walk-out
+  #                    or after the walk-back completed)
+  @statuses ~w(pending completed return_pending cancelled)
   def statuses, do: @statuses
 
   # Where the request came from. Drives the mobile picker queue UI
@@ -64,6 +72,10 @@ defmodule Backend.ThreePL.Dispatch do
     belongs_to :stock_lot, Lot
     belongs_to :requested_by, User, foreign_key: :requested_by_id
     belongs_to :dispatched_by, User, foreign_key: :dispatched_by_id
+    # Original 3PL cell captured at ``complete_dispatch`` time so the
+    # cancel-and-return flow knows where to walk the goods back to.
+    # See ``Backend.ThreePL.cancel_shipment_and_return_lot/2``.
+    belongs_to :return_target_cell, StorageCell, foreign_key: :return_target_cell_id
 
     timestamps(type: :utc_datetime)
   end
@@ -127,10 +139,32 @@ defmodule Backend.ThreePL.Dispatch do
       :status,
       :photo_url,
       :dispatched_by_id,
-      :dispatched_at
+      :dispatched_at,
+      :return_target_cell_id
     ])
     |> validate_required([:status, :dispatched_by_id, :dispatched_at])
     |> validate_inclusion(:status, ~w(completed cancelled))
     |> validate_length(:photo_url, max: 500)
+  end
+
+  @doc """
+  Completed → return_pending. Fires when the operator cancels a
+  shipment that came from this dispatch — the goods are still in
+  the dispatch cell and owe a walk back to bailee custody.
+  """
+  def return_pending_changeset(row) do
+    row
+    |> change(%{status: "return_pending"})
+    |> validate_inclusion(:status, @statuses)
+  end
+
+  @doc """
+  Return_pending → cancelled. Fires when the picker completes the
+  walk-back from the dispatch cell into the original 3PL cell.
+  """
+  def return_completed_changeset(row) do
+    row
+    |> change(%{status: "cancelled"})
+    |> validate_inclusion(:status, @statuses)
   end
 end

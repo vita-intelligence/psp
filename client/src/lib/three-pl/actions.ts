@@ -151,7 +151,10 @@ export async function completeDispatchAction(
 export async function cancelDispatchAction(
   dispatchUuid: string,
 ): Promise<CancelDispatchResult> {
-  const token = await getSessionToken();
+  // Same dual-token dance as completeDispatchAction — the mobile
+  // 3PL hub's Cancel button runs on the paired-phone device
+  // context, not a desktop session.
+  const token = (await getSessionToken()) ?? (await getDeviceToken());
   if (!token) return unauthorized("cancelDispatchAction");
 
   try {
@@ -166,6 +169,68 @@ export async function cancelDispatchAction(
     return toErrorResult(err, {
       source: "cancelDispatchAction",
       fallbackDetail: "Couldn't cancel the dispatch.",
+    });
+  }
+}
+
+/**
+ * Cancel-and-return handoff — the picker taps Cancel on a
+ * Paperwork or Pickup row. Backend cancels the shipment + flips
+ * the source dispatch to ``return_pending`` so the walk-back
+ * task lands on the Return tab.
+ */
+export async function cancelShipmentAndReturnAction(
+  shipmentUuid: string,
+  reason?: string,
+): Promise<CancelDispatchResult> {
+  const token = (await getSessionToken()) ?? (await getDeviceToken());
+  if (!token) return unauthorized("cancelShipmentAndReturnAction");
+
+  try {
+    const res = await api<{ dispatch: ThreePLDispatchRow }>(
+      `/api/three-pl/shipments/${encodeURIComponent(shipmentUuid)}/cancel-and-return`,
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify(reason ? { reason } : {}),
+      },
+    );
+    revalidatePath("/three-pl");
+    revalidatePath("/m");
+    revalidatePath(`/shipments/${shipmentUuid}`);
+    return { ok: true, dispatch: res.dispatch };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "cancelShipmentAndReturnAction",
+      fallbackDetail: "Couldn't cancel the shipment.",
+    });
+  }
+}
+
+/**
+ * Mobile — finish the return walk-back. Backend physically moves
+ * the lot from the current dispatch cell into the scanned 3PL
+ * cell + flips dispatch.status to ``cancelled`` in one txn.
+ */
+export async function completeReturnAction(
+  dispatchUuid: string,
+  input: { to_cell_uuid: string },
+): Promise<CompleteDispatchResult> {
+  const token = (await getSessionToken()) ?? (await getDeviceToken());
+  if (!token) return unauthorized("completeReturnAction");
+
+  try {
+    const res = await api<{ lot: StockLot; dispatch: ThreePLDispatchRow }>(
+      `/api/three-pl/returns/${encodeURIComponent(dispatchUuid)}/complete`,
+      { method: "POST", token, body: JSON.stringify(input) },
+    );
+    revalidatePath("/three-pl");
+    revalidatePath("/m");
+    return { ok: true, lot: res.lot, dispatch: res.dispatch };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "completeReturnAction",
+      fallbackDetail: "Couldn't complete the return.",
     });
   }
 }
