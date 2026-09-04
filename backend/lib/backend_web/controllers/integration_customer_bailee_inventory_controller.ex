@@ -204,13 +204,18 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
   defp location_snapshot([]), do: nil
 
   defp location_snapshot(placements) do
-    # Placements with qty > 0 are the "still on the shelf" slice; a
-    # zero-qty placement is a historical put-away row that survives
-    # in the table but shouldn't drive the display. Pick the first
-    # live one — bailee lots typically sit on a single 3PL cell.
+    # Only bailee-custody placements represent "held for you" stock.
+    # Dispatch-cell placements are already committed to an outbound
+    # shipment (the picker walked them to the shipping bay) and
+    # shouldn't drive the location display — otherwise a partial
+    # dispatch flips the customer's card from "on rack A" to "on
+    # dispatch bay" mid-flow. Zero-qty placements are historical
+    # put-away rows that survive in the table but shouldn't drive
+    # the display either.
     live =
       Enum.find(placements, fn p ->
-        Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt
+        bailee_placement?(p) and
+          Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt
       end)
 
     case live do
@@ -261,13 +266,27 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
     Ecto.Query.CastError -> %{"uuid" => customer_uuid, "name" => nil}
   end
 
+  # Customer-facing "on hand" only counts what's still in bailee
+  # custody. A completed dispatch walks goods from a three_pl_storage
+  # cell to a dispatch cell — those units are already committed to
+  # an outbound shipment and shouldn't be re-requestable, so they
+  # drop out of this sum. Matches the filter
+  # ``Backend.ThreePL.lot_held_volume_m3/1`` already applies to the
+  # volume / accrued-charge computations.
   defp sum_placement_qty(placements) when is_list(placements) do
     Enum.reduce(placements, Decimal.new(0), fn p, acc ->
-      Decimal.add(acc, p.qty || Decimal.new(0))
+      if bailee_placement?(p) do
+        Decimal.add(acc, p.qty || Decimal.new(0))
+      else
+        acc
+      end
     end)
   end
 
   defp sum_placement_qty(_), do: Decimal.new(0)
+
+  defp bailee_placement?(%{storage_cell: %{purpose: "three_pl_storage"}}), do: true
+  defp bailee_placement?(_), do: false
 
   defp decimal_to_string(nil), do: nil
   defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d, :normal)
