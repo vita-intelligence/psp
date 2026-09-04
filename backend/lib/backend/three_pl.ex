@@ -480,7 +480,14 @@ defmodule Backend.ThreePL do
   # ``Backend.Shipments.create_from_lot/2`` will fold future qty into
   # the existing draft via its own re-derive on Ready — no data loss.
   defp spawn_outbound_shipment(%User{} = actor, %Lot{uuid: lot_uuid}, %Dispatch{} = dispatch) do
-    case Backend.Shipments.create_from_lot(actor, lot_uuid) do
+    # Explicit qty override — the dispatch row is the source of
+    # truth for what the customer requested, so the shipment's qty
+    # must exactly match ``dispatch.qty`` rather than the raw
+    # dispatch-cell placement total. That placement can accumulate
+    # leftover units from prior fully picked-up shipments (pickup
+    # events don't currently decrement dispatch-cell placements),
+    # which would silently inflate the truck-arrival form.
+    case Backend.Shipments.create_from_lot(actor, lot_uuid, qty: dispatch.qty) do
       {:ok, shipment} ->
         # Customer-supplied ship-to details from the portal
         # ``Request dispatch`` dialog override the CO / customer

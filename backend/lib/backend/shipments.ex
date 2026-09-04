@@ -65,10 +65,11 @@ defmodule Backend.Shipments do
   `:lot_not_found`, `:lot_not_in_dispatch`, `:already_open`, or a
   `%Ecto.Changeset{}`.
   """
-  def create_from_lot(%User{} = actor, lot_uuid) when is_binary(lot_uuid) do
+  def create_from_lot(%User{} = actor, lot_uuid, opts \\ [])
+      when is_binary(lot_uuid) and is_list(opts) do
     with :ok <- ensure_edit(actor),
          {:ok, lot} <- fetch_lot(actor.company_id, lot_uuid),
-         {:ok, dispatch_qty} <- find_dispatch_placement_qty(lot),
+         {:ok, resolved_qty} <- resolve_shipment_qty(lot, opts),
          :ok <- ensure_no_open_shipment(lot) do
       customer_id = derive_customer_id(lot)
       customer_order_id = derive_customer_order_id(lot)
@@ -80,7 +81,7 @@ defmodule Backend.Shipments do
       # keeps a 11k-produced lot with a 10k CO ordered from
       # accidentally shipping the whole thing — the extra 1k stays
       # in the free cell as unreserved surplus.
-      qty = cap_qty_against_reservation(lot.id, customer_order_line_id, dispatch_qty)
+      qty = cap_qty_against_reservation(lot.id, customer_order_line_id, resolved_qty)
 
       base_attrs = %{
         company_id: actor.company_id,
@@ -96,6 +97,28 @@ defmodule Backend.Shipments do
       |> Shipment.create_changeset(Map.merge(base_attrs, prefill))
       |> Repo.insert()
       |> tap_audit_created(actor)
+    end
+  end
+
+  # Callers with a specific in-hand qty (bailee 3PL dispatches carry
+  # the customer's request qty on the ``Dispatch`` row) pass
+  # ``:qty`` explicitly — that overrides the dispatch-cell placement
+  # lookup. Without this override the placement total is used, which
+  # is wrong when the dispatch cell still holds leftover units from
+  # a prior fully-picked-up shipment (the pickup event doesn't
+  # currently decrement dispatch-cell placements). Direct-ship flow
+  # keeps the placement-derived default by not passing ``:qty``.
+  defp resolve_shipment_qty(lot, opts) do
+    case Keyword.get(opts, :qty) do
+      %Decimal{} = qty ->
+        if Decimal.compare(qty, Decimal.new(0)) == :gt do
+          {:ok, qty}
+        else
+          {:error, :bad_qty}
+        end
+
+      _ ->
+        find_dispatch_placement_qty(lot)
     end
   end
 
