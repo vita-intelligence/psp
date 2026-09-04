@@ -1,3 +1,4 @@
+import os from "node:os";
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getCompanyDefaults } from "@/lib/company/server";
@@ -49,14 +50,21 @@ export async function GET(
   // exposes it on ``req.nextUrl``) — the old ``x-forwarded-proto``
   // sniff fell back to "http" in dev where PSP runs on ``https``
   // via ``--experimental-https``, so the QR resolved to a URL that
-  // 404'd in the browser. Now it inherits whatever the operator
-  // is actually on (localhost:3010, maksyms-macbook-pro.local:3010,
-  // etc.) automatically.
+  // 404'd in the browser.
+  //
+  // Host: the laptop opens PSP at ``localhost:3010`` but the phone
+  // scanning the printed label can't resolve ``localhost`` (that's
+  // the phone itself). Swap loopback hosts for the machine's
+  // Bonjour name (``os.hostname()`` → ``something.local`` on macOS
+  // dev) so the same URL works from anything on the LAN. In prod
+  // the ``Host`` header is a real domain and the loopback check
+  // short-circuits.
   const proto =
     hdrs.get("x-forwarded-proto") ||
     req.nextUrl.protocol.replace(":", "") ||
     "https";
-  const host = hdrs.get("x-forwarded-host") || hdrs.get("host") || req.nextUrl.host;
+  const rawHost = hdrs.get("x-forwarded-host") || hdrs.get("host") || req.nextUrl.host;
+  const host = lanReachableHost(rawHost);
   const scanUrl = `${proto}://${host}/scan/three-pl/${uuid}`;
 
   const pdf = await renderThreePlLabelPdf({
@@ -83,4 +91,35 @@ function parseCopies(raw: string | null): number {
   const n = Number(raw);
   if (!Number.isFinite(n)) return 1;
   return Math.max(1, Math.min(100, Math.floor(n)));
+}
+
+// Loopback hosts (``localhost``, ``127.0.0.1``, ``[::1]``) only
+// resolve to the machine that issued the request — a phone scanning
+// a QR that encodes ``http://localhost:3010/...`` hits its own
+// loopback and 404s. In dev we swap for the Mac's Bonjour name so
+// anything on the same LAN can follow the QR. In prod the ``Host``
+// header is a real domain (or a proxy-forwarded one) and we return
+// it unchanged.
+function lanReachableHost(host: string): string {
+  const loopback = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i;
+  if (!loopback.test(host)) return host;
+  const port = host.match(/:(\d+)$/)?.[1];
+  const bonjour = normaliseBonjour(os.hostname());
+  return port ? `${bonjour}:${port}` : bonjour;
+}
+
+function normaliseBonjour(hostname: string): string {
+  // Explicit override wins — set ``PSP_LAN_HOST=host:port`` (or
+  // just ``host``) in ``.env.local`` for setups where Bonjour
+  // isn't the right answer (dev tunnels, custom /etc/hosts, etc.).
+  const override = process.env.PSP_LAN_HOST?.trim();
+  if (override) return override;
+  // On macOS ``os.hostname()`` can return the DHCP-side suffix
+  // (``Maksyms-MBP.lan``) rather than the Bonjour LocalHostName
+  // (``Maksyms-MBP.local``). The DHCP form isn't resolvable from
+  // most other devices on the LAN; the Bonjour form is. Strip any
+  // suffix and force ``.local`` so a phone scanning the QR can
+  // always follow it.
+  const short = hostname.trim().replace(/\.$/, "").split(".")[0] || hostname;
+  return `${short}.local`;
 }

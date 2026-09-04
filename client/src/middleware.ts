@@ -26,7 +26,13 @@ const PUBLIC_PATHS = [
 // session cookie. The phone never logs in as a session — it's only
 // paired — so /m and any future mobile-only routes accept whichever
 // cookie is present.
-const DEVICE_PATHS = ["/m"];
+//
+// ``/scan`` is the QR resolver — a paired phone scanning a printed
+// label MUST be able to reach it directly without getting bounced
+// to /m by the mobile-lock rule below. The resolver's page then
+// redirects to the correct /m/... stage screen for the current
+// dispatch lifecycle.
+const DEVICE_PATHS = ["/m", "/scan"];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
