@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getDispatchAnyState } from "@/lib/three-pl/server";
-import type { PendingDispatch, DispatchStatus } from "@/lib/three-pl/types";
+import type { DispatchAnyState, DispatchStatus } from "@/lib/three-pl/types";
 
 export const metadata = { title: "3PL scan · PSP" };
 export const dynamic = "force-dynamic";
@@ -72,7 +72,7 @@ export default async function ScanThreePlDispatchPage({
   );
 }
 
-async function resolveTarget(dispatch: PendingDispatch): Promise<string | null> {
+async function resolveTarget(dispatch: DispatchAnyState): Promise<string | null> {
   switch (dispatch.status) {
     case "pending":
       // Picker owes the outbound walk-out.
@@ -82,13 +82,24 @@ async function resolveTarget(dispatch: PendingDispatch): Promise<string | null> 
       // Picker owes the walk-back.
       return `/m/three-pl-returns/${encodeURIComponent(dispatch.uuid)}`;
 
-    case "completed":
-      // Goods are in the shipping bay — the outbound Shipment owns
-      // the next step. Land on the hub's Paperwork tab so the picker
-      // sees where THIS order sits (Paperwork / Pickup / Confirm)
-      // among their queue. Cheap + doesn't require a shipment lookup
-      // by lot uuid.
-      return "/m/three-pl-dispatches?tab=paperwork";
+    case "completed": {
+      // Goods are in the shipping bay — jump the picker to the
+      // exact shipment page that owes the next action.
+      const s = dispatch.shipment;
+      if (!s) return "/m/three-pl-dispatches?tab=paperwork";
+      switch (s.status) {
+        case "draft":
+          return `/m/shipments/${encodeURIComponent(s.uuid)}/paperwork`;
+        case "ready":
+        case "partially_picked":
+          return `/m/shipments/${encodeURIComponent(s.uuid)}/dispatch`;
+        case "picked_up":
+        case "delivered":
+          return "/m/three-pl-dispatches?tab=confirm";
+        default:
+          return "/m/three-pl-dispatches?tab=paperwork";
+      }
+    }
 
     default:
       return null;

@@ -77,7 +77,10 @@ export function DispatchFlow({ dispatch }: { dispatch: PendingDispatch }) {
           return;
         }
         toast.success("Moved to the shipping bay. Shipment paperwork queued.");
-        router.push("/m/three-pl-dispatches");
+        // Hard-nav so the RSC payload for the hub reloads — the
+        // just-moved row would otherwise linger on Move because
+        // Next's router cache reuses the pre-move tree.
+        window.location.assign("/m/three-pl-dispatches?tab=paperwork");
       });
     },
     [dispatch.uuid, router],

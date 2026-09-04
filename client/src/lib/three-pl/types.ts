@@ -132,6 +132,24 @@ export interface PendingDispatch extends ThreePLDispatchRow {
   }[];
 }
 
+/** Extended payload from GET /three-pl/dispatches/:uuid — same
+ *  shape as PendingDispatch but with a slim shipment summary so
+ *  the scan resolver can route completed dispatches to the exact
+ *  /m/shipments/:uuid/paperwork | dispatch page instead of the
+ *  generic hub tab. */
+export interface DispatchAnyState extends PendingDispatch {
+  readonly shipment: {
+    readonly uuid: string;
+    readonly status:
+      | "draft"
+      | "ready"
+      | "partially_picked"
+      | "picked_up"
+      | "delivered"
+      | "cancelled";
+  } | null;
+}
+
 /** Return-task payload — used by the Return tab (list) + the mobile
  *  return-scan flow. Same shape as PendingDispatch but with a
  *  ``return_target`` block instead of ``suggested_dest_cells``: the

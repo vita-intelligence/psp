@@ -48,7 +48,13 @@ export function CancelRowButton({ kind, uuid }: { kind: Kind; uuid: string }) {
       } else {
         toast.success("Cancelled. Walk the lot back on the Return tab.");
       }
-      router.refresh();
+      // Hard-nav so the RSC payload rebuilds — router.refresh
+      // alone doesn't always evict the cached tab tree in Next 15.
+      window.location.assign(
+        kind === "dispatch"
+          ? "/m/three-pl-dispatches"
+          : "/m/three-pl-dispatches?tab=return",
+      );
     });
   }
 

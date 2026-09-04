@@ -3,6 +3,7 @@ import { getSessionToken } from "../auth/server";
 import { getDeviceToken } from "../devices/server";
 import type {
   BaileeShipmentRow,
+  DispatchAnyState,
   PendingDispatch,
   PendingReturn,
   ThreePLInventoryResponse,
@@ -170,14 +171,16 @@ export async function getPendingDispatch(
 
 /** Fetch a dispatch regardless of lifecycle state — powers the
  *  printable-label endpoint (a dispatch might need re-printing
- *  at any stage) and the scan-to-open resolver. */
+ *  at any stage) and the scan-to-open resolver. Includes a slim
+ *  linked-shipment summary so the resolver can route completed
+ *  dispatches to the exact /m/shipments/:uuid page. */
 export async function getDispatchAnyState(
   uuid: string,
-): Promise<PendingDispatch | null> {
+): Promise<DispatchAnyState | null> {
   const token = await anyToken();
   if (!token) return null;
   try {
-    const res = await api<{ dispatch: PendingDispatch }>(
+    const res = await api<{ dispatch: DispatchAnyState }>(
       `/api/three-pl/dispatches/${encodeURIComponent(uuid)}`,
       { token, cache: "no-store" },
     );

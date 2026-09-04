@@ -206,9 +206,37 @@ defmodule BackendWeb.ThreePLController do
         not_found(conn, "Dispatch not found.")
 
       dispatch ->
-        json(conn, %{dispatch: pending_dispatch_payload(dispatch)})
+        # Include the linked outbound shipment so the /scan/three-pl/
+        # resolver can send the picker to the exact
+        # /m/shipments/:uuid/paperwork | dispatch page instead of the
+        # generic hub tab.
+        json(conn, %{
+          dispatch:
+            Map.merge(pending_dispatch_payload(dispatch), %{
+              shipment: shipment_summary_for_dispatch(actor.company_id, dispatch)
+            })
+        })
     end
   end
+
+  defp shipment_summary_for_dispatch(_company_id, %{stock_lot: nil}), do: nil
+
+  defp shipment_summary_for_dispatch(company_id, %{stock_lot: %{id: lot_id}}) do
+    import Ecto.Query
+
+    Backend.Repo.one(
+      from s in Backend.Shipments.Shipment,
+        where:
+          s.company_id == ^company_id and
+            s.stock_lot_id == ^lot_id and
+            s.status != "cancelled",
+        order_by: [desc: s.updated_at, desc: s.id],
+        limit: 1,
+        select: %{uuid: s.uuid, status: s.status}
+    )
+  end
+
+  defp shipment_summary_for_dispatch(_, _), do: nil
 
   # ---------------------------------------------------------------
   # POST /three-pl/shipments/:uuid/cancel-and-return — Cancel from

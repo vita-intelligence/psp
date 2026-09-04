@@ -73,7 +73,10 @@ export function ReturnFlow({ dispatch }: { dispatch: PendingReturn }) {
           return;
         }
         toast.success("Returned to bailee custody.");
-        router.push("/m/three-pl-dispatches?tab=return");
+        // Hard-nav so the RSC payload for the hub reloads from
+        // scratch — router.push alone reuses the cached tree and
+        // the just-completed row would linger on the Return tab.
+        window.location.assign("/m/three-pl-dispatches?tab=return");
       });
     },
     [dispatch.uuid, router],

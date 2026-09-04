@@ -44,8 +44,19 @@ export async function GET(
   // phone lands on the current-stage screen without the printed
   // label needing to know today what stage the order will be on
   // tomorrow.
-  const proto = hdrs.get("x-forwarded-proto") || "http";
-  const host = hdrs.get("x-forwarded-host") || hdrs.get("host") || "";
+  //
+  // Scheme comes from the incoming request itself (``next/server``
+  // exposes it on ``req.nextUrl``) — the old ``x-forwarded-proto``
+  // sniff fell back to "http" in dev where PSP runs on ``https``
+  // via ``--experimental-https``, so the QR resolved to a URL that
+  // 404'd in the browser. Now it inherits whatever the operator
+  // is actually on (localhost:3010, maksyms-macbook-pro.local:3010,
+  // etc.) automatically.
+  const proto =
+    hdrs.get("x-forwarded-proto") ||
+    req.nextUrl.protocol.replace(":", "") ||
+    "https";
+  const host = hdrs.get("x-forwarded-host") || hdrs.get("host") || req.nextUrl.host;
   const scanUrl = `${proto}://${host}/scan/three-pl/${uuid}`;
 
   const pdf = await renderThreePlLabelPdf({
