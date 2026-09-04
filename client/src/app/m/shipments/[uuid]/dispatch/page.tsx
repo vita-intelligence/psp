@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { getCompanyDefaults } from "@/lib/company/server";
 import { getDeviceToken } from "@/lib/devices/server";
 import { getSessionToken } from "@/lib/auth/server";
 import { getShipment } from "@/lib/shipments/server";
@@ -30,7 +31,10 @@ export default async function MobileDispatchPage({
     redirect(`/login?next=%2Fm%2Fshipments%2F${encodeURIComponent(uuid)}%2Fdispatch`);
   }
 
-  const shipment = await getShipment(uuid);
+  const [shipment, defaults] = await Promise.all([
+    getShipment(uuid),
+    getCompanyDefaults(),
+  ]);
   if (!shipment) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center">
@@ -42,5 +46,5 @@ export default async function MobileDispatchPage({
     );
   }
 
-  return <MobileDispatchForm shipment={shipment} />;
+  return <MobileDispatchForm shipment={shipment} prefs={defaults} />;
 }

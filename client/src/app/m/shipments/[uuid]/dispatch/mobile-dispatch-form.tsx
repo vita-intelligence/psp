@@ -6,10 +6,16 @@ import {
   AlertTriangle,
   ArrowLeft,
   Camera,
+  Check,
   CheckCircle2,
+  Clock,
+  ImageIcon,
   Loader2,
+  MailCheck,
+  Package,
   Trash2,
   Truck,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,15 +23,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
+import { formatCompanyDate } from "@/lib/format/company";
 import { logShipmentPickupEventAction } from "@/lib/shipments/actions";
 import type {
   Shipment,
   ShipmentPickupChecklist,
+  ShipmentPickupEvent,
   ShipmentPickupFile,
 } from "@/lib/shipments/types";
+import type { CompanyDefaults } from "@/lib/types";
 
 interface Props {
   shipment: Shipment;
+  prefs: CompanyDefaults | null;
 }
 
 type ChecklistKey = Exclude<
@@ -67,7 +77,25 @@ const CHECKLIST: ChecklistItem[] = [
   },
 ];
 
-export function MobileDispatchForm({ shipment }: Props) {
+/**
+ * Entry point rendered by the page. The dispatch flow is closed once
+ * the shipment has been fully picked up — no more trucks are coming
+ * and the next action lives with the customer (delivery confirmation
+ * on their portal). Render a read-only summary of what happened
+ * instead of the "log a new pickup event" form; the form was showing
+ * up on the Confirm tab and misleading operators into filling it in
+ * a second time. Split into two components so each keeps a stable
+ * hook order (React rules-of-hooks).
+ */
+export function MobileDispatchForm(props: Props) {
+  const { shipment } = props;
+  if (shipment.status === "picked_up" || shipment.status === "delivered") {
+    return <DispatchSummary shipment={shipment} prefs={props.prefs} />;
+  }
+  return <MobileDispatchFormInner {...props} />;
+}
+
+function MobileDispatchFormInner({ shipment }: Props) {
   const router = useRouter();
   // Each truck visit is a fresh check — a new driver, a new vehicle, a
   // new load with its own condition. Anything denormalised onto the
@@ -592,4 +620,368 @@ export function MobileDispatchForm({ shipment }: Props) {
       </footer>
     </div>
   );
+}
+
+// ---------------------------------------------------------------
+// Read-only summary — rendered from the Confirm tab (envelope) when
+// the shipment is already fully picked up. Shows every field the
+// operator captured during the pickup flow (per-visit) so a phone
+// tap on the row goes to "what already happened" instead of "log a
+// new event." Delivery confirmation still lives with the customer.
+// ---------------------------------------------------------------
+
+function DispatchSummary({
+  shipment,
+  prefs,
+}: {
+  shipment: Shipment;
+  prefs: CompanyDefaults | null;
+}) {
+  const router = useRouter();
+  const itemName = shipment.stock_lot?.item?.name ?? null;
+  const lotCode = shipment.stock_lot?.code ?? null;
+  const customer = shipment.customer?.name ?? null;
+  const unit = shipment.stock_lot?.unit_symbol ?? "";
+  const isDelivered = shipment.status === "delivered";
+  const events = [...(shipment.pickup_events ?? [])].sort((a, b) =>
+    a.picked_up_at < b.picked_up_at ? -1 : 1,
+  );
+
+  return (
+    <div className="flex min-h-dvh flex-col bg-background">
+      <header className="sticky top-0 z-10 border-b border-border/60 bg-background/95 backdrop-blur">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-9"
+            onClick={() => router.push("/m/three-pl-dispatches?tab=confirm")}
+            aria-label="Back to 3PL hub"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <div className="flex-1 min-w-0">
+            <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Dispatch summary
+            </p>
+            <p className="truncate text-sm font-semibold leading-tight">
+              {shipment.qty}
+              {unit ? ` ${unit}` : ""} · {itemName ?? "—"}
+            </p>
+          </div>
+          {isDelivered ? (
+            <CheckCircle2 className="size-5 shrink-0 text-emerald-600" />
+          ) : (
+            <MailCheck className="size-5 shrink-0 text-brand" />
+          )}
+        </div>
+      </header>
+
+      <main className="flex-1 space-y-4 px-4 pt-4 pb-10">
+        {/* Status banner — explains WHY the form isn't here anymore. */}
+        <section
+          className={cn(
+            "flex items-start gap-2 rounded-lg border p-3 text-xs leading-snug",
+            isDelivered
+              ? "border-emerald-500/40 bg-emerald-500/[0.06] text-emerald-900 dark:text-emerald-200"
+              : "border-brand/40 bg-brand/[0.06] text-foreground",
+          )}
+        >
+          {isDelivered ? (
+            <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+          ) : (
+            <MailCheck className="mt-0.5 size-4 shrink-0 text-brand" />
+          )}
+          <p>
+            {isDelivered
+              ? "Delivered. The customer confirmed receipt on their portal."
+              : "In transit. Waiting for the customer to confirm delivery on their portal — no more action needed on our side."}
+          </p>
+        </section>
+
+        {/* Order card — shipment identity in one glance. */}
+        <section className="rounded-lg border border-border/60 bg-card p-3">
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Customer
+              </p>
+              <p className="mt-0.5 truncate text-sm">{customer ?? "—"}</p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Lot
+              </p>
+              <p className="mt-0.5 truncate font-mono text-xs">{lotCode ?? "—"}</p>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 border-t border-border/60 pt-3 text-xs">
+            <SummaryCell
+              icon={<Package className="size-3.5" />}
+              label="Picked up"
+              value={`${shipment.picked_up_qty}${unit ? ` ${unit}` : ""} of ${shipment.qty}${unit ? ` ${unit}` : ""}`}
+            />
+            <SummaryCell
+              icon={<Clock className="size-3.5" />}
+              label="First left site"
+              value={formatDateTime(shipment.picked_up_at, prefs)}
+            />
+          </div>
+        </section>
+
+        {/* Ship-to snapshot — the paperwork the operator confirmed. */}
+        <SectionCard title="Ship to">
+          <SummaryRow label="Recipient" value={shipment.recipient_name} />
+          <SummaryRow
+            label="Address"
+            value={shipment.ship_to_address}
+            multiline
+          />
+          <SummaryRow label="Country" value={shipment.ship_to_country} />
+          <SummaryRow label="Email" value={shipment.recipient_email} />
+          <SummaryRow label="Phone" value={shipment.recipient_phone} />
+        </SectionCard>
+
+        {/* Per-visit timeline — always at least one event for a
+            fully picked-up shipment. Renders each truck separately so
+            partial-pickup shipments show every leg. */}
+        {events.length === 0 ? (
+          <SectionCard title="Pickup">
+            <p className="text-xs text-muted-foreground">
+              No pickup event was recorded on this shipment.
+            </p>
+          </SectionCard>
+        ) : (
+          events.map((event, idx) => (
+            <PickupEventCard
+              key={event.uuid}
+              index={idx}
+              total={events.length}
+              event={event}
+              prefs={prefs}
+              unit={unit}
+            />
+          ))
+        )}
+      </main>
+    </div>
+  );
+}
+
+function PickupEventCard({
+  index,
+  total,
+  event,
+  prefs,
+  unit,
+}: {
+  index: number;
+  total: number;
+  event: ShipmentPickupEvent;
+  prefs: CompanyDefaults | null;
+  unit: string;
+}) {
+  const isMulti = total > 1;
+  const title = isMulti ? `Truck ${index + 1} of ${total}` : "Pickup event";
+  return (
+    <SectionCard title={title}>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <SummaryCell
+          icon={<Package className="size-3.5" />}
+          label="Quantity on truck"
+          value={`${event.qty}${unit ? ` ${unit}` : ""}`}
+        />
+        <SummaryCell
+          icon={<Clock className="size-3.5" />}
+          label="Left site"
+          value={formatDateTime(event.picked_up_at, prefs)}
+        />
+      </div>
+      <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+        <SummaryRow label="Carrier" value={carrierFor(event)} />
+        <SummaryRow label="Driver" value={event.driver_name} />
+        <SummaryRow label="Vehicle" value={event.vehicle_registration} mono />
+        <SummaryRow label="CN ref" value={event.consignment_note_ref} mono />
+        <SummaryRow label="Tracking" value={event.tracking_number} mono />
+        <SummaryRow label="Seal" value={event.seal_number} mono />
+        <SummaryRow
+          label="Temperature"
+          value={event.temperature_c ? `${event.temperature_c} °C` : null}
+        />
+        {event.picked_up_by?.name && (
+          <SummaryRow label="Operator" value={event.picked_up_by.name} />
+        )}
+      </div>
+      <div className="mt-3 space-y-1 border-t border-border/60 pt-3">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Truck-arrival checklist
+        </p>
+        <ChecklistLine label="Packaging intact" ok={event.packaging_intact} />
+        <ChecklistLine
+          label="Correct labels verified"
+          ok={event.labels_verified}
+        />
+        <ChecklistLine
+          label="Vehicle clean & suitable"
+          ok={event.vehicle_clean_suitable}
+        />
+        <ChecklistLine
+          label="Transport condition acceptable"
+          ok={event.transport_condition_acceptable}
+        />
+        <ChecklistLine label="Dispatch approved" ok={event.dispatch_approved} />
+      </div>
+      {event.notes && (
+        <div className="mt-3 border-t border-border/60 pt-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Notes
+          </p>
+          <p className="mt-1 whitespace-pre-line text-xs leading-snug">
+            {event.notes}
+          </p>
+        </div>
+      )}
+      {event.photos.length > 0 && (
+        <div className="mt-3 border-t border-border/60 pt-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Loading photos ({event.photos.length})
+          </p>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            {event.photos.map((photo) => (
+              <a
+                key={photo.uuid}
+                href={photo.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group relative aspect-square overflow-hidden rounded-md border border-border/60 bg-muted"
+                title={photo.filename}
+              >
+                {photo.mime.startsWith("image/") ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={photo.url}
+                    alt={photo.filename}
+                    className="size-full object-cover transition-opacity group-active:opacity-80"
+                  />
+                ) : (
+                  <div className="flex size-full items-center justify-center text-muted-foreground">
+                    <ImageIcon className="size-6" aria-hidden />
+                  </div>
+                )}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function SectionCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-lg border border-border/60 bg-card p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {title}
+      </p>
+      <div className="mt-2 space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function SummaryRow({
+  label,
+  value,
+  mono,
+  multiline,
+}: {
+  label: string;
+  value: string | null;
+  mono?: boolean;
+  multiline?: boolean;
+}) {
+  const trimmed = value?.trim();
+  return (
+    <div className="grid grid-cols-[6.5rem_1fr] items-start gap-2">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p
+        className={cn(
+          "min-w-0 text-xs leading-snug",
+          mono && "font-mono",
+          !trimmed && "italic text-muted-foreground",
+          multiline ? "whitespace-pre-line" : "truncate",
+        )}
+      >
+        {trimmed || "—"}
+      </p>
+    </div>
+  );
+}
+
+function SummaryCell({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span aria-hidden>{icon}</span>
+        {label}
+      </p>
+      <p className="mt-0.5 truncate text-sm font-medium">{value}</p>
+    </div>
+  );
+}
+
+function ChecklistLine({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      {ok ? (
+        <Check className="size-3.5 shrink-0 text-emerald-600" aria-hidden />
+      ) : (
+        <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      )}
+      <span className={cn(!ok && "text-muted-foreground line-through")}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function carrierFor(event: ShipmentPickupEvent): string | null {
+  // Carrier isn't on ShipmentPickupEvent directly — the shipment-level
+  // field is persisted from the latest event. Kept as a helper here
+  // so the row degrades gracefully instead of showing "—" when the
+  // event is missing the denormalised copy.
+  return (event as unknown as { carrier?: string | null }).carrier ?? null;
+}
+
+function formatDateTime(
+  iso: string | null,
+  prefs: CompanyDefaults | null,
+): string {
+  if (!iso) return "—";
+  const date = formatCompanyDate(iso, prefs);
+  // Time-of-day is more useful on a shipment log than the timezone.
+  // Formatting locally so operators see "wall clock" rather than
+  // whatever ISO the server sent. en-GB matches PSP's UK default.
+  try {
+    const t = new Date(iso).toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${date} · ${t}`;
+  } catch {
+    return date;
+  }
 }
