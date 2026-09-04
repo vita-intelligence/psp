@@ -158,6 +158,12 @@ export interface PendingReturn extends ThreePLDispatchRow {
  *  ``stock_lot.ownership_kind == "bailee"``. */
 export interface BaileeShipmentRow {
   readonly uuid: string;
+  /** UUID of the Dispatch that spawned this shipment — powers the
+   *  per-row "Print label" affordance on Paperwork / Pickup /
+   *  Confirm. Nullable when the linked Dispatch predates the
+   *  return_target migration (rare — most bailee shipments have
+   *  a matching Dispatch row). */
+  readonly dispatch_uuid: string | null;
   readonly status:
     | "draft"
     | "ready"

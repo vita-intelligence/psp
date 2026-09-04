@@ -80,6 +80,51 @@ export type SendStockLotLabelResult =
   | { ok: true }
   | (ErrorResult & { ok: false });
 
+// 3PL dispatch label — the customer-scoped sticky the picker
+// puts on the parcel at Move time and follows through every
+// subsequent stage. Print bridge payload mirrors the row card
+// so the laptop print dialog shows a preview.
+export interface SendThreePlDispatchLabelInput {
+  dispatch_uuid: string;
+  customer_name: string | null;
+  item_name: string | null;
+  lot_code: string | null;
+  qty: string;
+  uom_symbol: string | null;
+  reference: string | null;
+}
+
+export type SendThreePlDispatchLabelResult =
+  | { ok: true }
+  | (ErrorResult & { ok: false });
+
+export async function sendThreePlDispatchLabelAction(
+  input: SendThreePlDispatchLabelInput,
+): Promise<SendThreePlDispatchLabelResult> {
+  const token = (await getDeviceToken()) ?? (await getSessionToken());
+  if (!token) {
+    return syntheticErrorResult({
+      source: "sendThreePlDispatchLabelAction",
+      code: "unauthorized",
+      detail: "Not signed in — pair the device or log in again.",
+    });
+  }
+  try {
+    await api<{ ok: true }>("/api/realtime/print-label", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ kind: "three_pl_dispatch", payload: input }),
+    });
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "sendThreePlDispatchLabelAction",
+      fallbackDetail: "Couldn't reach the laptop.",
+    });
+  }
+}
+
+
 export async function sendStockLotLabelAction(
   input: SendStockLotLabelInput,
 ): Promise<SendStockLotLabelResult> {

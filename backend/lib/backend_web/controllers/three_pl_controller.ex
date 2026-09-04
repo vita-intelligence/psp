@@ -53,7 +53,8 @@ defmodule BackendWeb.ThreePLController do
               :list_pending_returns,
               :get_pending_return,
               :complete_return,
-              :cancel_shipment_and_return
+              :cancel_shipment_and_return,
+              :get_dispatch_any_state
             ]
 
   action_fallback BackendWeb.FallbackController
@@ -190,6 +191,22 @@ defmodule BackendWeb.ThreePLController do
 
       {:error, reason} ->
         dispatch_error(conn, reason)
+    end
+  end
+
+  # ---------------------------------------------------------------
+  # GET /three-pl/dispatches/:uuid — any status. Powers the
+  # printable-label route + the /scan/three-pl/:uuid resolver.
+  # ---------------------------------------------------------------
+  def get_dispatch_any_state(conn, %{"uuid" => uuid}) do
+    actor = conn.assigns.current_user
+
+    case ThreePL.get_dispatch_any_state(actor.company_id, uuid) do
+      nil ->
+        not_found(conn, "Dispatch not found.")
+
+      dispatch ->
+        json(conn, %{dispatch: pending_dispatch_payload(dispatch)})
     end
   end
 
@@ -694,9 +711,14 @@ defmodule BackendWeb.ThreePLController do
     # on the Shipment schema. Compute it here so multi-visit progress
     # renders correctly on the Confirm tab.
     picked_up = Backend.Shipments.picked_up_qty(s)
+    # UUID of the Dispatch that spawned this shipment — powers the
+    # per-row "Print label" affordance on Paperwork / Pickup / Confirm
+    # tabs. Same printable label the picker used at Move time.
+    dispatch_uuid = latest_dispatch_uuid_for_lot(s.company_id, s.stock_lot_id)
 
     %{
       uuid: s.uuid,
+      dispatch_uuid: dispatch_uuid,
       status: s.status,
       qty: Decimal.to_string(s.qty || Decimal.new(0), :normal),
       picked_up_qty: Decimal.to_string(picked_up, :normal),
@@ -718,6 +740,23 @@ defmodule BackendWeb.ThreePLController do
         customer && %{uuid: customer.uuid, name: customer.name}
     }
   end
+
+  defp latest_dispatch_uuid_for_lot(company_id, lot_id) when is_integer(lot_id) do
+    import Ecto.Query
+
+    Backend.Repo.one(
+      from d in Backend.ThreePL.Dispatch,
+        where:
+          d.company_id == ^company_id and
+            d.stock_lot_id == ^lot_id and
+            d.status in ["pending", "completed", "return_pending"],
+        order_by: [desc: d.dispatched_at, desc: d.requested_at, desc: d.id],
+        limit: 1,
+        select: d.uuid
+    )
+  end
+
+  defp latest_dispatch_uuid_for_lot(_, _), do: nil
 
   defp iso_or_nil_dt(nil), do: nil
   defp iso_or_nil_dt(%DateTime{} = dt), do: DateTime.to_iso8601(dt)

@@ -1247,6 +1247,10 @@ defmodule BackendWeb.Router do
       get "/returns", ThreePLController, :list_pending_returns
       get "/returns/:uuid", ThreePLController, :get_pending_return
       post "/returns/:uuid/complete", ThreePLController, :complete_return
+      # Any-state dispatch fetch — powers the printable label route
+      # + the /scan/three-pl/:uuid resolver. Returns a
+      # PendingDispatch-shaped payload regardless of dispatch.status.
+      get "/dispatches/:uuid", ThreePLController, :get_dispatch_any_state
       get "/inventory", ThreePLController, :inventory
       get "/lots/:lot_uuid", ThreePLController, :lot_detail
       get "/capacity/:warehouse_uuid", ThreePLController, :capacity

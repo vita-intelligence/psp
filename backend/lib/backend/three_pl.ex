@@ -581,6 +581,33 @@ defmodule Backend.ThreePL do
   end
 
   @doc """
+  Look up a dispatch by uuid regardless of status — powers the
+  printable-label endpoint (which needs to reprint at any stage in
+  the lifecycle) and the ``/scan/three-pl/:uuid`` resolver.
+  """
+  def get_dispatch_any_state(company_id, dispatch_uuid)
+      when is_integer(company_id) and is_binary(dispatch_uuid) do
+    import Ecto.Query
+
+    from(d in Dispatch,
+      where: d.company_id == ^company_id and d.uuid == ^dispatch_uuid,
+      preload: [
+        :requested_by,
+        stock_lot: [
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+        ],
+        return_target_cell: [storage_location: [floor: [:warehouse]]]
+      ]
+    )
+    |> Repo.one()
+  rescue
+    Ecto.Query.CastError -> nil
+  end
+
+  @doc """
   Cancel a pending dispatch — desktop only. Just flips status to
   `cancelled` so the picker queue drops it. Rejects if the row has
   already been completed.

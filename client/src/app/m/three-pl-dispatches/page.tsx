@@ -24,6 +24,7 @@ import type {
   PendingReturn,
 } from "@/lib/three-pl/types";
 import { CancelRowButton } from "./cancel-row-button";
+import { SendLabelToLaptopButton } from "./send-label-button";
 
 export const metadata = { title: "3PL dispatches · PSP Mobile" };
 export const dynamic = "force-dynamic";
@@ -252,7 +253,16 @@ function MoveTab({ items }: { items: PendingDispatch[] }) {
               </p>
             )}
           </Link>
-          <div className="flex justify-end border-t border-border/60 p-2">
+          <div className="flex items-center justify-end gap-2 border-t border-border/60 p-2">
+            <SendLabelToLaptopButton
+              dispatch_uuid={row.uuid}
+              customer_name={row.lot?.bailee_customer?.name ?? null}
+              item_name={row.lot?.item?.name ?? null}
+              lot_code={row.lot?.code ?? null}
+              qty={row.qty}
+              uom_symbol={row.lot?.unit_symbol ?? null}
+              reference={row.reference ?? null}
+            />
             <CancelRowButton kind="dispatch" uuid={row.uuid} />
           </div>
         </div>
@@ -302,7 +312,18 @@ function PaperworkTab({ items }: { items: BaileeShipmentRow[] }) {
               Fill shipping form → Mark ready for pickup.
             </p>
           </Link>
-          <div className="flex justify-end border-t border-border/60 p-2">
+          <div className="flex items-center justify-end gap-2 border-t border-border/60 p-2">
+            {s.dispatch_uuid && (
+              <SendLabelToLaptopButton
+                dispatch_uuid={s.dispatch_uuid}
+                customer_name={s.customer?.name ?? null}
+                item_name={s.lot?.item?.name ?? null}
+                lot_code={s.lot?.code ?? null}
+                qty={s.qty}
+                uom_symbol={s.lot?.unit_symbol ?? null}
+                reference={null}
+              />
+            )}
             <CancelRowButton kind="shipment" uuid={s.uuid} />
           </div>
         </div>
@@ -362,7 +383,18 @@ function PickupTab({ items }: { items: BaileeShipmentRow[] }) {
               </div>
             </div>
           </Link>
-          <div className="flex justify-end border-t border-border/60 p-2">
+          <div className="flex items-center justify-end gap-2 border-t border-border/60 p-2">
+            {s.dispatch_uuid && (
+              <SendLabelToLaptopButton
+                dispatch_uuid={s.dispatch_uuid}
+                customer_name={s.customer?.name ?? null}
+                item_name={s.lot?.item?.name ?? null}
+                lot_code={s.lot?.code ?? null}
+                qty={s.qty}
+                uom_symbol={s.lot?.unit_symbol ?? null}
+                reference={null}
+              />
+            )}
             <CancelRowButton kind="shipment" uuid={s.uuid} />
           </div>
         </div>
@@ -392,10 +424,9 @@ function ConfirmTab({ items }: { items: BaileeShipmentRow[] }) {
         const percent =
           total > 0 ? Math.min(100, Math.round((pickedUp / total) * 100)) : 0;
         return (
-          <Link
-            key={s.uuid}
+          <div key={s.uuid} className="rounded-lg border border-border/60 bg-card"><Link
             href={`/m/shipments/${encodeURIComponent(s.uuid)}/dispatch`}
-            className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
+            className="block p-3 active:bg-muted"
           >
             <div className="flex items-center gap-2">
               <div className="flex size-8 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
@@ -440,6 +471,20 @@ function ConfirmTab({ items }: { items: BaileeShipmentRow[] }) {
               confirm delivery on the portal.
             </p>
           </Link>
+            {s.dispatch_uuid && (
+              <div className="flex justify-end border-t border-border/60 p-2">
+                <SendLabelToLaptopButton
+                  dispatch_uuid={s.dispatch_uuid}
+                  customer_name={s.customer?.name ?? null}
+                  item_name={s.lot?.item?.name ?? null}
+                  lot_code={s.lot?.code ?? null}
+                  qty={s.qty}
+                  uom_symbol={s.lot?.unit_symbol ?? null}
+                  reference={null}
+                />
+              </div>
+            )}
+          </div>
         );
       })}
     </>
@@ -462,43 +507,55 @@ function ReturnTab({ items }: { items: PendingReturn[] }) {
   return (
     <>
       {items.map((row) => (
-        <Link
-          key={row.uuid}
-          href={`/m/three-pl-returns/${encodeURIComponent(row.uuid)}`}
-          className="block rounded-lg border border-border/60 bg-card p-3 active:bg-muted"
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex size-8 items-center justify-center rounded-md bg-orange-500/10 text-orange-700 dark:text-orange-300">
-              <Undo2 className="size-4" />
+        <div key={row.uuid} className="rounded-lg border border-border/60 bg-card">
+          <Link
+            href={`/m/three-pl-returns/${encodeURIComponent(row.uuid)}`}
+            className="block p-3 active:bg-muted"
+          >
+            <div className="flex items-center gap-2">
+              <div className="flex size-8 items-center justify-center rounded-md bg-orange-500/10 text-orange-700 dark:text-orange-300">
+                <Undo2 className="size-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">
+                  {row.qty}
+                  {row.lot?.unit_symbol ? ` ${row.lot.unit_symbol}` : ""} of{" "}
+                  {row.lot?.item?.name ?? "—"}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  Return to {row.lot?.bailee_customer?.name ?? "—"}&apos;s
+                  bailee stock
+                </p>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">
-                {row.qty}
-                {row.lot?.unit_symbol ? ` ${row.lot.unit_symbol}` : ""} of{" "}
-                {row.lot?.item?.name ?? "—"}
-              </p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                Return to {row.lot?.bailee_customer?.name ?? "—"}&apos;s
-                bailee stock
-              </p>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <MapPin className="size-3" />
+                From {sourceLabel(row.source_location, row.source_cell)}
+              </div>
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Undo2 className="size-3" />
+                Back to{" "}
+                {row.return_target
+                  ? row.return_target.name ??
+                    row.return_target.code ??
+                    "3PL cell"
+                  : "any 3PL cell"}
+              </div>
             </div>
+          </Link>
+          <div className="flex justify-end border-t border-border/60 p-2">
+            <SendLabelToLaptopButton
+              dispatch_uuid={row.uuid}
+              customer_name={row.lot?.bailee_customer?.name ?? null}
+              item_name={row.lot?.item?.name ?? null}
+              lot_code={row.lot?.code ?? null}
+              qty={row.qty}
+              uom_symbol={row.lot?.unit_symbol ?? null}
+              reference={row.reference ?? null}
+            />
           </div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <MapPin className="size-3" />
-              From {sourceLabel(row.source_location, row.source_cell)}
-            </div>
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <Undo2 className="size-3" />
-              Back to{" "}
-              {row.return_target
-                ? row.return_target.name ??
-                  row.return_target.code ??
-                  "3PL cell"
-                : "any 3PL cell"}
-            </div>
-          </div>
-        </Link>
+        </div>
       ))}
     </>
   );

@@ -17,21 +17,24 @@ defmodule BackendWeb.PrintBridgeController do
   knows how to interpret each `kind`):
 
       {
-        "kind": "quarantine_pack" | "stock_lot",
+        "kind": "quarantine_pack" | "stock_lot" | "three_pl_dispatch",
         "payload": { … }
       }
 
-  `stock_lot` mirrors the same pattern from the mobile lot detail page
-  (post-inspection, on the pending-put-away shelf) so the operator can
-  print the regular lot label from their laptop without walking back
-  to it.
+  ``stock_lot`` — regular lot label from the mobile lot detail page
+  (post-inspection, on the pending-put-away shelf).
+
+  ``three_pl_dispatch`` — customer-scoped 3PL order label that
+  travels with the parcel from Move → Paperwork → Pickup → Confirm
+  → Return. QR encodes ``/scan/three-pl/<dispatch_uuid>`` so a
+  scan from any paired phone lands on the current lifecycle stage.
   """
 
   use BackendWeb, :controller
 
   alias BackendWeb.Endpoint
 
-  @allowed_kinds ~w(quarantine_pack stock_lot)
+  @allowed_kinds ~w(quarantine_pack stock_lot three_pl_dispatch)
 
   def print_label(conn, %{"kind" => kind, "payload" => payload})
       when kind in @allowed_kinds and is_map(payload) do

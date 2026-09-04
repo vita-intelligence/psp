@@ -167,3 +167,22 @@ export async function getPendingDispatch(
     return null;
   }
 }
+
+/** Fetch a dispatch regardless of lifecycle state — powers the
+ *  printable-label endpoint (a dispatch might need re-printing
+ *  at any stage) and the scan-to-open resolver. */
+export async function getDispatchAnyState(
+  uuid: string,
+): Promise<PendingDispatch | null> {
+  const token = await anyToken();
+  if (!token) return null;
+  try {
+    const res = await api<{ dispatch: PendingDispatch }>(
+      `/api/three-pl/dispatches/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return res.dispatch;
+  } catch {
+    return null;
+  }
+}
