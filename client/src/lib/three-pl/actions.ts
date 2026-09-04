@@ -76,6 +76,7 @@ export async function routeLotAction(
     );
     revalidatePath("/three-pl");
     revalidatePath("/m");
+    revalidatePath("/m/three-pl-dispatches");
     return { ok: true, lot };
   } catch (err) {
     return toErrorResult(err, {
@@ -136,6 +137,7 @@ export async function completeDispatchAction(
     );
     revalidatePath("/three-pl");
     revalidatePath("/m");
+    revalidatePath("/m/three-pl-dispatches");
     return { ok: true, lot: res.lot, dispatch: res.dispatch };
   } catch (err) {
     return toErrorResult(err, {
@@ -164,6 +166,7 @@ export async function cancelDispatchAction(
     );
     revalidatePath("/three-pl");
     revalidatePath("/m");
+    revalidatePath("/m/three-pl-dispatches");
     return { ok: true, dispatch: res.dispatch };
   } catch (err) {
     return toErrorResult(err, {
@@ -197,6 +200,7 @@ export async function cancelShipmentAndReturnAction(
     );
     revalidatePath("/three-pl");
     revalidatePath("/m");
+    revalidatePath("/m/three-pl-dispatches");
     revalidatePath(`/shipments/${shipmentUuid}`);
     return { ok: true, dispatch: res.dispatch };
   } catch (err) {
@@ -226,6 +230,7 @@ export async function completeReturnAction(
     );
     revalidatePath("/three-pl");
     revalidatePath("/m");
+    revalidatePath("/m/three-pl-dispatches");
     return { ok: true, lot: res.lot, dispatch: res.dispatch };
   } catch (err) {
     return toErrorResult(err, {

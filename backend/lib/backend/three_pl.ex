@@ -631,20 +631,61 @@ defmodule Backend.ThreePL do
          {:ok, dispatch} <- fetch_completed_dispatch_for_lot(actor.company_id, shipment.stock_lot_id) do
       dispatch_before = dispatch_snapshot(dispatch)
 
-      Repo.transaction(fn ->
-        with {:ok, cancelled} <- Backend.Shipments.cancel(actor, shipment, reason),
-             {:ok, updated} <-
-               dispatch
-               |> Dispatch.return_pending_changeset()
-               |> Repo.update()
-               |> tap_audit_updated_dispatch(actor, dispatch_before) do
-          %{shipment: cancelled, dispatch: updated}
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      result =
+        Repo.transaction(fn ->
+          with {:ok, cancelled} <- Backend.Shipments.cancel(actor, shipment, reason),
+               {:ok, updated} <-
+                 dispatch
+                 |> Dispatch.return_pending_changeset()
+                 |> Repo.update()
+                 |> tap_audit_updated_dispatch(actor, dispatch_before) do
+            %{shipment: cancelled, dispatch: updated}
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
+
+      # Kick the wizard so the projects kanban re-derives the phase.
+      # ``derive_dispatch_phase`` treats a lot in a dispatch cell
+      # with no live shipment as ``:ready_to_dispatch`` (which reads
+      # to the operator as "owe another move"); once the return
+      # walk-back completes it flips back to ``:in_bailee_custody``.
+      case result do
+        {:ok, _} ->
+          _ = notify_co_changed_for_lot(dispatch.stock_lot_id)
+          result
+
+        _ ->
+          result
+      end
     end
   end
+
+  # Best-effort CO wizard notification for every CO whose MO tree
+  # produced this lot. Silent-degrade posture — a missing CO doesn't
+  # fail the caller, and Task.start swallows notify failures under
+  # the hood.
+  defp notify_co_changed_for_lot(%Lot{id: lot_id}), do: notify_co_changed_for_lot(lot_id)
+
+  defp notify_co_changed_for_lot(lot_id) when is_integer(lot_id) do
+    co_ids =
+      from(mo in Backend.Production.ManufacturingOrder,
+        join: col in Backend.CustomerOrders.CustomerOrderLine,
+        on: col.id == mo.customer_order_line_id,
+        where: mo.produced_lot_id == ^lot_id,
+        distinct: col.customer_order_id,
+        select: col.customer_order_id
+      )
+      |> Repo.all()
+
+    Enum.each(co_ids, fn co_id ->
+      _ = Backend.OrderWizard.notify_co_changed(co_id)
+    end)
+
+    :ok
+  end
+
+  defp notify_co_changed_for_lot(_), do: :ok
 
   @doc """
   Return-tasks queue for the mobile Return tab — dispatches whose
@@ -768,28 +809,40 @@ defmodule Backend.ThreePL do
          {:ok, to_cell} <- fetch_return_target_cell(actor.company_id, dispatch, attrs["to_cell_uuid"]) do
       dispatch_before = dispatch_snapshot(dispatch)
 
-      Repo.transaction(fn ->
-        move_attrs = %{
-          "to_cell_uuid" => to_cell.uuid,
-          "from_cell_uuid" => from_placement.storage_cell.uuid,
-          "qty" => Decimal.to_string(dispatch.qty),
-          "reason" => "3PL return"
-        }
+      result =
+        Repo.transaction(fn ->
+          move_attrs = %{
+            "to_cell_uuid" => to_cell.uuid,
+            "from_cell_uuid" => from_placement.storage_cell.uuid,
+            "qty" => Decimal.to_string(dispatch.qty),
+            "reason" => "3PL return"
+          }
 
-        case Stock.move_placement(actor, lot.uuid, move_attrs) do
-          {:ok, _} ->
-            case dispatch
-                 |> Dispatch.return_completed_changeset()
-                 |> Repo.update()
-                 |> tap_audit_updated_dispatch(actor, dispatch_before) do
-              {:ok, updated} -> %{dispatch: updated, lot: Repo.reload!(lot)}
-              {:error, cs} -> Repo.rollback(cs)
-            end
+          case Stock.move_placement(actor, lot.uuid, move_attrs) do
+            {:ok, _} ->
+              case dispatch
+                   |> Dispatch.return_completed_changeset()
+                   |> Repo.update()
+                   |> tap_audit_updated_dispatch(actor, dispatch_before) do
+                {:ok, updated} -> %{dispatch: updated, lot: Repo.reload!(lot)}
+                {:error, cs} -> Repo.rollback(cs)
+              end
 
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
-      end)
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
+
+      # Re-trigger wizard notification so the projects kanban flips
+      # this CO back to :in_bailee_custody (the lot is on a 3PL cell
+      # again + still ownership_kind = "bailee"). Fire-and-forget so
+      # a slow NPD push never delays the picker's UI. Outside the
+      # transaction — the CO update is a read that happens on the
+      # NPD side, not a write we need atomic with the physical move.
+      case result do
+        {:ok, _} -> _ = notify_co_changed_for_lot(lot); result
+        _ -> result
+      end
     else
       nil -> {:error, :not_pending_return}
       err -> err
