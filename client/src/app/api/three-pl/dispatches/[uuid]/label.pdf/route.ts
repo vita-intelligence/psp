@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
@@ -114,12 +115,31 @@ function normaliseBonjour(hostname: string): string {
   // isn't the right answer (dev tunnels, custom /etc/hosts, etc.).
   const override = process.env.PSP_LAN_HOST?.trim();
   if (override) return override;
-  // On macOS ``os.hostname()`` can return the DHCP-side suffix
-  // (``Maksyms-MBP.lan``) rather than the Bonjour LocalHostName
-  // (``Maksyms-MBP.local``). The DHCP form isn't resolvable from
-  // most other devices on the LAN; the Bonjour form is. Strip any
-  // suffix and force ``.local`` so a phone scanning the QR can
-  // always follow it.
+  // On macOS ``os.hostname()`` returns the DHCP-side name
+  // (``Maksyms-MBP.lan``) — but Bonjour publishes a different
+  // LocalHostName (``Maksyms-MacBook-Pro.local``) that phones on
+  // the same LAN actually resolve. Ask ``scutil`` for the real
+  // Bonjour name and cache it for the process lifetime. Fall
+  // back to stripping the DHCP suffix if scutil isn't available.
+  const bonjour = macBonjourName();
+  if (bonjour) return `${bonjour}.local`;
   const short = hostname.trim().replace(/\.$/, "").split(".")[0] || hostname;
   return `${short}.local`;
+}
+
+let macBonjourCache: string | null | undefined;
+function macBonjourName(): string | null {
+  if (macBonjourCache !== undefined) return macBonjourCache;
+  macBonjourCache = null;
+  if (process.platform !== "darwin") return macBonjourCache;
+  try {
+    const out = execFileSync("/usr/sbin/scutil", ["--get", "LocalHostName"], {
+      encoding: "utf8",
+      timeout: 500,
+    }).trim();
+    if (out) macBonjourCache = out;
+  } catch {
+    // Not fatal — caller falls back to the DHCP-name-with-.local trick.
+  }
+  return macBonjourCache;
 }
