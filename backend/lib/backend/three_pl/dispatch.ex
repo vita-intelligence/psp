@@ -62,6 +62,11 @@ defmodule Backend.ThreePL.Dispatch do
     field :ship_to_name, :string
     field :ship_to_address, :string
     field :ship_to_country, :string
+    # Contact details required by couriers at hand-off — the post
+    # office refuses the drop without both. Captured at portal
+    # request time + carried through onto the outbound Shipment.
+    field :ship_to_email, :string
+    field :ship_to_phone, :string
 
     # Request half — desktop.
     field :requested_at, :utc_datetime
@@ -100,7 +105,9 @@ defmodule Backend.ThreePL.Dispatch do
       :requested_at,
       :ship_to_name,
       :ship_to_address,
-      :ship_to_country
+      :ship_to_country,
+      :ship_to_email,
+      :ship_to_phone
     ])
     |> validate_required([
       :company_id,
@@ -118,6 +125,8 @@ defmodule Backend.ThreePL.Dispatch do
     |> validate_length(:ship_to_name, max: 200)
     |> validate_length(:ship_to_address, max: 500)
     |> validate_length(:ship_to_country, is: 2)
+    |> validate_length(:ship_to_email, max: 200)
+    |> validate_length(:ship_to_phone, max: 60)
     |> upcase_country()
   end
 

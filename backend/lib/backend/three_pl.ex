@@ -289,7 +289,11 @@ defmodule Backend.ThreePL do
         # ``create_from_lot``.
         ship_to_name: Map.get(attrs, "ship_to_name"),
         ship_to_address: Map.get(attrs, "ship_to_address"),
-        ship_to_country: Map.get(attrs, "ship_to_country")
+        ship_to_country: Map.get(attrs, "ship_to_country"),
+        # Courier hand-off contact — required by the post office at
+        # drop time. Carried through onto the outbound Shipment.
+        ship_to_email: Map.get(attrs, "ship_to_email"),
+        ship_to_phone: Map.get(attrs, "ship_to_phone")
       })
       |> Repo.insert()
     end
@@ -499,6 +503,8 @@ defmodule Backend.ThreePL do
       |> maybe_put(:recipient_name, d.ship_to_name)
       |> maybe_put(:ship_to_address, d.ship_to_address)
       |> maybe_put(:ship_to_country, d.ship_to_country)
+      |> maybe_put(:recipient_email, d.ship_to_email)
+      |> maybe_put(:recipient_phone, d.ship_to_phone)
 
     if map_size(overrides) == 0 do
       :ok

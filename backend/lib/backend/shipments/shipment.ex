@@ -35,6 +35,8 @@ defmodule Backend.Shipments.Shipment do
     customer_id
     customer_order_id
     recipient_name
+    recipient_email
+    recipient_phone
     ship_to_address
     ship_to_country
     carrier
@@ -57,6 +59,12 @@ defmodule Backend.Shipments.Shipment do
     field :recipient_name, :string
     field :ship_to_address, :string
     field :ship_to_country, :string
+    # Courier hand-off contact — post offices refuse the drop when
+    # either is missing on the label. Populated from the portal
+    # dispatch request via ``spawn_outbound_shipment`` and editable
+    # on the mobile Paperwork form.
+    field :recipient_email, :string
+    field :recipient_phone, :string
 
     field :carrier, :string
     field :vehicle_registration, :string
@@ -144,6 +152,8 @@ defmodule Backend.Shipments.Shipment do
       # still overwrite any of these via the desktop form before
       # marking Ready.
       :recipient_name,
+      :recipient_email,
+      :recipient_phone,
       :ship_to_address,
       :ship_to_country,
       :planned_ship_at
@@ -165,6 +175,8 @@ defmodule Backend.Shipments.Shipment do
     |> cast(attrs, @editable_fields)
     |> validate_number(:qty, greater_than: 0)
     |> validate_length(:recipient_name, max: 200)
+    |> validate_length(:recipient_email, max: 200)
+    |> validate_length(:recipient_phone, max: 60)
     |> validate_length(:ship_to_address, max: 2000)
     |> validate_length(:ship_to_country, is: 2)
     |> validate_length(:carrier, max: 200)

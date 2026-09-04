@@ -56,7 +56,9 @@ defmodule BackendWeb.IntegrationCustomerFulfilmentRequestController do
         # asked for on the portal dialog.
         "ship_to_name" => params["ship_to_name"],
         "ship_to_address" => params["ship_to_address"],
-        "ship_to_country" => params["ship_to_country"]
+        "ship_to_country" => params["ship_to_country"],
+        "ship_to_email" => params["ship_to_email"],
+        "ship_to_phone" => params["ship_to_phone"]
       }
 
     case ThreePL.request_customer_dispatch(attrs) do
