@@ -282,7 +282,14 @@ defmodule Backend.ThreePL do
         # attributes the row via the integration token's identity
         # captured at the controller boundary.
         requested_by_id: nil,
-        requested_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        requested_at: DateTime.utc_now() |> DateTime.truncate(:second),
+        # Customer-provided delivery target from the portal dialog.
+        # Nil-safe — desktop-typed requests skip these fields and
+        # the shipment falls back to the CO / customer defaults on
+        # ``create_from_lot``.
+        ship_to_name: Map.get(attrs, "ship_to_name"),
+        ship_to_address: Map.get(attrs, "ship_to_address"),
+        ship_to_country: Map.get(attrs, "ship_to_country")
       })
       |> Repo.insert()
     end
@@ -435,7 +442,7 @@ defmodule Backend.ThreePL do
                    })
                    |> Repo.update()
                    |> tap_audit_updated_dispatch(actor, dispatch_before),
-                 :ok <- spawn_outbound_shipment(actor, lot) do
+                 :ok <- spawn_outbound_shipment(actor, lot, dispatch) do
               %{dispatch: updated, lot: Repo.reload!(lot)}
             else
               {:error, cs} -> Repo.rollback(cs)
@@ -464,13 +471,48 @@ defmodule Backend.ThreePL do
   # 300 tomorrow), and the second pick lands into the existing draft.
   # ``Backend.Shipments.create_from_lot/2`` will fold future qty into
   # the existing draft via its own re-derive on Ready — no data loss.
-  defp spawn_outbound_shipment(%User{} = actor, %Lot{uuid: lot_uuid}) do
+  defp spawn_outbound_shipment(%User{} = actor, %Lot{uuid: lot_uuid}, %Dispatch{} = dispatch) do
     case Backend.Shipments.create_from_lot(actor, lot_uuid) do
-      {:ok, _shipment} -> :ok
-      {:error, :already_open} -> :ok
-      {:error, _reason} = err -> err
+      {:ok, shipment} ->
+        # Customer-supplied ship-to details from the portal
+        # ``Request dispatch`` dialog override the CO / customer
+        # fallback that ``create_from_lot`` prefilled. Empty /
+        # nil fields on the dispatch fall through untouched.
+        _ = apply_dispatch_ship_to_overrides(actor, shipment, dispatch)
+        :ok
+
+      {:error, :already_open} ->
+        :ok
+
+      {:error, _reason} = err ->
+        err
     end
   end
+
+  defp apply_dispatch_ship_to_overrides(%User{} = actor, shipment, %Dispatch{} = d) do
+    overrides =
+      %{}
+      |> maybe_put(:recipient_name, d.ship_to_name)
+      |> maybe_put(:ship_to_address, d.ship_to_address)
+      |> maybe_put(:ship_to_country, d.ship_to_country)
+
+    if map_size(overrides) == 0 do
+      :ok
+    else
+      case Backend.Shipments.update(actor, shipment, overrides) do
+        {:ok, _} -> :ok
+        # Update failures are non-fatal: the shipment still exists in
+        # draft with the CO / customer defaults, and the mobile
+        # Paperwork form lets the operator amend by hand.
+        {:error, _} -> :ok
+      end
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, val) when is_binary(val), do: Map.put(map, key, val)
+  defp maybe_put(map, _key, _), do: map
 
   @doc """
   Every dispatch on `lot`, newest first. Includes pending, completed,

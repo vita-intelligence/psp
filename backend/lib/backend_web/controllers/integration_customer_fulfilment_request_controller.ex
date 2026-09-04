@@ -49,7 +49,14 @@ defmodule BackendWeb.IntegrationCustomerFulfilmentRequestController do
         "reference" => params["reference"],
         "notes" => params["notes"],
         "source" => params["source"],
-        "external_reference" => params["external_reference"]
+        "external_reference" => params["external_reference"],
+        # Portal-supplied ship-to snapshot — carried through
+        # onto the outbound Shipment so the mobile Paperwork
+        # form opens with the address the customer actually
+        # asked for on the portal dialog.
+        "ship_to_name" => params["ship_to_name"],
+        "ship_to_address" => params["ship_to_address"],
+        "ship_to_country" => params["ship_to_country"]
       }
 
     case ThreePL.request_customer_dispatch(attrs) do

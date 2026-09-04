@@ -44,6 +44,17 @@ defmodule Backend.ThreePL.Dispatch do
     field :source, :string, default: "staff"
     field :external_reference, :string
 
+    # Customer-supplied ship-to snapshot captured at portal
+    # ``Request dispatch`` time. Nullable — desktop-typed requests
+    # leave these nil and the outbound Shipment falls back to the
+    # customer / CO delivery address. When set, ``spawn_outbound_shipment``
+    # hands them straight to ``Backend.Shipments.create_from_lot``
+    # so the mobile Paperwork form opens with the address the
+    # customer actually asked for.
+    field :ship_to_name, :string
+    field :ship_to_address, :string
+    field :ship_to_country, :string
+
     # Request half — desktop.
     field :requested_at, :utc_datetime
     # Completion half — mobile.
@@ -74,7 +85,10 @@ defmodule Backend.ThreePL.Dispatch do
       :source,
       :external_reference,
       :requested_by_id,
-      :requested_at
+      :requested_at,
+      :ship_to_name,
+      :ship_to_address,
+      :ship_to_country
     ])
     |> validate_required([
       :company_id,
@@ -89,6 +103,17 @@ defmodule Backend.ThreePL.Dispatch do
     |> validate_number(:qty, greater_than: 0)
     |> validate_length(:reference, max: 200)
     |> validate_length(:external_reference, max: 200)
+    |> validate_length(:ship_to_name, max: 200)
+    |> validate_length(:ship_to_address, max: 500)
+    |> validate_length(:ship_to_country, is: 2)
+    |> upcase_country()
+  end
+
+  defp upcase_country(changeset) do
+    case get_change(changeset, :ship_to_country) do
+      c when is_binary(c) -> put_change(changeset, :ship_to_country, String.upcase(c))
+      _ -> changeset
+    end
   end
 
   @doc """
