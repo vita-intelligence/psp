@@ -3,6 +3,17 @@
 import { useCallback, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Textarea } from "@/components/ui/textarea";
+import {
   AlertTriangle,
   ArrowLeft,
   Camera,
@@ -24,7 +35,10 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate } from "@/lib/format/company";
-import { logShipmentPickupEventAction } from "@/lib/shipments/actions";
+import {
+  confirmShipmentDeliveryAction,
+  logShipmentPickupEventAction,
+} from "@/lib/shipments/actions";
 import type {
   Shipment,
   ShipmentPickupChecklist,
@@ -647,6 +661,41 @@ function DispatchSummary({
     a.picked_up_at < b.picked_up_at ? -1 : 1,
   );
 
+  // Mark-as-delivered dialog + submit state. Only rendered when the
+  // shipment is `picked_up` (customer's court in the normal flow,
+  // but staff can confirm on the customer's behalf when the customer
+  // signs on paper at the door or emails a POD photo).
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [signatory, setSignatory] = useState(
+    shipment.customer?.contact_name ?? "",
+  );
+  const [deliveryNotes, setDeliveryNotes] = useState("");
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirming, startConfirm] = useTransition();
+
+  function runConfirm() {
+    const trimmedSig = signatory.trim();
+    if (!trimmedSig) {
+      setConfirmError("Please enter who signed for the delivery.");
+      return;
+    }
+    setConfirmError(null);
+    startConfirm(async () => {
+      const res = await confirmShipmentDeliveryAction(shipment.uuid, {
+        recipient_signatory: trimmedSig,
+        delivery_notes: deliveryNotes.trim() || null,
+      });
+      if (!res.ok) {
+        setConfirmError(res.detail);
+        return;
+      }
+      setConfirmOpen(false);
+      toast.success("Marked as delivered.");
+      router.push("/m/three-pl-dispatches?tab=confirm");
+      router.refresh();
+    });
+  }
+
   return (
     <div className="flex min-h-dvh flex-col bg-background">
       <header className="sticky top-0 z-10 border-b border-border/60 bg-background/95 backdrop-blur">
@@ -764,6 +813,111 @@ function DispatchSummary({
           ))
         )}
       </main>
+
+      {!isDelivered && (
+        <footer
+          className="sticky bottom-0 border-t border-border/60 bg-background/95 px-4 py-3 backdrop-blur"
+          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+        >
+          <Button
+            type="button"
+            size="lg"
+            variant="outline"
+            onClick={() => {
+              setConfirmError(null);
+              setConfirmOpen(true);
+            }}
+            className="h-12 w-full text-base"
+          >
+            <CheckCircle2 className="mr-2 size-4 text-emerald-600" />
+            Mark as delivered
+          </Button>
+        </footer>
+      )}
+
+      {/* Confirmation dialog — a "sudden tap" on the footer button
+          opens this modal rather than firing the mutation. Enter the
+          recipient signatory + optional delivery notes, then Confirm
+          fires ``confirmShipmentDeliveryAction`` which flips the
+          shipment to ``delivered`` on the backend. */}
+      <AlertDialog
+        open={confirmOpen}
+        onOpenChange={(next) => {
+          if (confirming) return;
+          setConfirmOpen(next);
+          if (!next) setConfirmError(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="size-5 text-emerald-600" />
+              Mark this shipment as delivered?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This flips the shipment to <strong>delivered</strong> for the
+              customer. Enter who signed for the parcel + any notes from the
+              handover. You can&rsquo;t undo this from here — a mistake needs
+              a desktop correction.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm-signatory">
+                Signed by <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="confirm-signatory"
+                value={signatory}
+                onChange={(e) => setSignatory(e.target.value)}
+                placeholder="e.g. Anna Kowalski"
+                autoComplete="name"
+                className="h-11 text-base"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm-notes" className="text-xs">
+                Notes{" "}
+                <span className="font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              </Label>
+              <Textarea
+                id="confirm-notes"
+                value={deliveryNotes}
+                onChange={(e) => setDeliveryNotes(e.target.value)}
+                rows={2}
+                placeholder="Anything worth recording — damage on arrival, partial receipt, etc."
+                className="text-base"
+              />
+            </div>
+            {confirmError ? (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/[0.06] px-3 py-2 text-xs font-medium text-destructive">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <p>{confirmError}</p>
+              </div>
+            ) : null}
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={confirming}>
+              Go back
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                runConfirm();
+              }}
+              disabled={confirming}
+              className="gap-2"
+            >
+              {confirming && <Loader2 className="size-4 animate-spin" />}
+              Confirm delivery
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

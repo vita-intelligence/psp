@@ -2010,6 +2010,15 @@ defmodule BackendWeb.Router do
         IntegrationCustomerDispatchRequestListController,
         :photo
 
+    # Customer-driven POD for a 3PL bailee shipment. Flips the
+    # ``picked_up`` shipment linked to the dispatch to ``delivered``.
+    # Body carries ``customer_uuid`` (ownership scope) +
+    # ``recipient_signatory`` + optional ``delivery_notes``. Portal
+    # proxies this behind the customer's session cookie.
+    post "/customer-dispatch-requests/:request_uuid/confirm-delivery",
+         IntegrationCustomerDispatchRequestListController,
+         :confirm_delivery
+
     # Write-side
     # Push an R&D-side BOM snapshot onto the finished-product
     # item. Idempotent from a versioning POV — repeated calls

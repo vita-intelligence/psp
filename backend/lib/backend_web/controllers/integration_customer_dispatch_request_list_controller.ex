@@ -48,28 +48,26 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
   action_fallback BackendWeb.FallbackController
 
   @doc """
-  `GET /api/integration/customer-dispatch-requests/:request_uuid/pickup-photos/:file_uuid`
+  `GET /api/integration/customer-dispatch-requests/:request_uuid/pickup-photos/:file_uuid?customer_uuid=...`
 
   Streams a pickup-loading photo to the portal proxy. Auth guardrails:
 
     * Integration pipeline already asserts a valid company token and
       pins `current_company_id`.
-    * The request UUID must belong to that company and to a bailee
-      dispatch. The linked shipment's `stock_lot_id` must match the
-      photo's parent shipment `stock_lot_id`, so a customer can't
-      swap in another company's file uuid and get it back.
-
-  The Django proxy performs the customer ownership check on top of
-  this — the customer's `customer_uuid` is not passed here on the
-  path because the token-authed integration pipeline is trusted to
-  scope by company. Layered defence: even without the proxy check,
-  a bad file uuid can only reach a row whose lot belongs to the
-  same company, and only via a dispatch UUID the caller also holds.
+    * ``customer_uuid`` query param (required) is verified against
+      the linked lot's ``bailee_customer_id`` via the dual-uuid
+      resolver — this is the customer-ownership check that prevents
+      customer A from swapping in customer B's file uuid within the
+      same company.
+    * The linked shipment's ``stock_lot_id`` must match the photo's
+      parent shipment — same lot, same customer, same file.
   """
-  def photo(conn, %{"request_uuid" => request_uuid, "file_uuid" => file_uuid}) do
+  def photo(conn, %{"request_uuid" => request_uuid, "file_uuid" => file_uuid} = params) do
     company_id = conn.assigns.current_company_id
+    customer_uuid = params["customer_uuid"]
 
     with %Dispatch{} = dispatch <- fetch_dispatch(company_id, request_uuid),
+         :ok <- ensure_customer_owns_dispatch(company_id, customer_uuid, dispatch),
          %Shipment{id: shipment_id} <- fetch_shipment_for_dispatch(company_id, dispatch),
          %Backend.Shipments.ShipmentPickupFile{} = file <-
            Backend.Shipments.get_pickup_file(shipment_id, file_uuid),
@@ -90,6 +88,95 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
     end
   end
 
+  @doc """
+  `POST /api/integration/customer-dispatch-requests/:request_uuid/confirm-delivery`
+
+  Customer confirms receipt of a picked-up shipment. Body:
+
+      {
+        "customer_uuid": "…",           # required — ownership scope
+        "recipient_signatory": "…",     # required — signer's name
+        "delivery_notes": "…"           # optional
+      }
+
+  Verifies:
+    * dispatch belongs to the caller's company
+    * dispatch's lot's bailee_customer matches ``customer_uuid``
+      (via dual-uuid resolver)
+    * a non-cancelled shipment exists for the same lot
+
+  Delegates to ``Backend.Shipments.confirm_delivery_from_portal/2``
+  which confirms every outstanding pickup event on the shipment and
+  reprojects status to ``delivered``. Idempotent — replaying against
+  an already-delivered shipment returns the current snapshot.
+
+  Returns the refreshed dispatch-request payload so the caller can
+  re-render without a follow-up list fetch.
+  """
+  def confirm_delivery(conn, %{"request_uuid" => request_uuid} = params) do
+    company_id = conn.assigns.current_company_id
+    customer_uuid = params["customer_uuid"]
+    signatory = String.trim(to_string(params["recipient_signatory"] || ""))
+    notes = params["delivery_notes"]
+
+    # Resolve ownership + dispatch up front so success + idempotent
+    # replays share the same "return the refreshed row" path without
+    # relying on ``with`` bindings leaking into ``else``.
+    case fetch_dispatch(company_id, request_uuid) do
+      nil ->
+        not_found_dispatch(conn)
+
+      %Dispatch{} = dispatch ->
+        with :ok <- ensure_customer_owns_dispatch(company_id, customer_uuid, dispatch),
+             %Shipment{} = shipment <- fetch_shipment_for_dispatch(company_id, dispatch),
+             :ok <- ensure_signatory(signatory) do
+          case Backend.Shipments.confirm_delivery_from_portal(shipment, %{
+                 "recipient_signatory" => signatory,
+                 "delivery_notes" => notes
+               }) do
+            {:ok, _result} ->
+              respond_with_refreshed(conn, company_id, dispatch)
+
+            # Idempotency — a portal double-tap or a stale refresh
+            # after the customer already confirmed shouldn't error.
+            {:error, :already_delivered} ->
+              respond_with_refreshed(conn, company_id, dispatch)
+
+            {:error, reason} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "confirm_failed", detail: inspect(reason)})
+          end
+        else
+          {:error, :missing_signatory} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "missing_signatory", detail: "Please enter who received the parcel."})
+
+          {:error, :not_owner} ->
+            not_found_dispatch(conn)
+
+          nil ->
+            not_found_dispatch(conn)
+
+          _ ->
+            not_found_dispatch(conn)
+        end
+    end
+  end
+
+  defp respond_with_refreshed(conn, company_id, %Dispatch{} = dispatch) do
+    reloaded = Repo.preload(dispatch, stock_lot: [:item, :unit_of_measurement])
+    shipments_by_lot = load_shipments_for(company_id, [reloaded])
+    json(conn, %{request: request_payload(reloaded, shipments_by_lot)})
+  end
+
+  defp not_found_dispatch(conn) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "not_found", detail: "Dispatch request not found."})
+  end
+
   defp fetch_dispatch(company_id, request_uuid) when is_binary(request_uuid) do
     Repo.get_by(Dispatch, company_id: company_id, uuid: request_uuid)
   rescue
@@ -107,6 +194,47 @@ defmodule BackendWeb.IntegrationCustomerDispatchRequestListController do
         limit: 1
     )
   end
+
+  # Customer ownership: the dispatch's lot must belong to a
+  # bailee_customer whose PSP-native uuid OR npd_source_uuid matches
+  # the caller-supplied ``customer_uuid``. Same dual-uuid resolver
+  # ``list_bailee_lots_for_customer`` uses so the check accepts both
+  # PSP-side callers (native uuid) and NPD-side portal proxy calls
+  # (Django Customer.id via npd_source_uuid).
+  defp ensure_customer_owns_dispatch(_company_id, uuid, _dispatch)
+       when not is_binary(uuid) or uuid == "",
+       do: {:error, :not_owner}
+
+  defp ensure_customer_owns_dispatch(company_id, customer_uuid, %Dispatch{stock_lot_id: lot_id}) do
+    lot = Repo.get(Backend.Stock.Lot, lot_id)
+    if lot == nil, do: {:error, :not_owner}, else: check_bailee_customer(company_id, customer_uuid, lot.bailee_customer_id)
+  rescue
+    Ecto.Query.CastError -> {:error, :not_owner}
+  end
+
+  defp check_bailee_customer(_company_id, _customer_uuid, nil), do: {:error, :not_owner}
+
+  defp check_bailee_customer(company_id, customer_uuid, bailee_customer_id) do
+    resolved =
+      Repo.get_by(Backend.Customers.Customer,
+        company_id: company_id,
+        uuid: customer_uuid
+      ) ||
+        Repo.get_by(Backend.Customers.Customer,
+          company_id: company_id,
+          npd_source_uuid: customer_uuid
+        )
+
+    case resolved do
+      %Backend.Customers.Customer{id: id} when id == bailee_customer_id -> :ok
+      _ -> {:error, :not_owner}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_owner}
+  end
+
+  defp ensure_signatory(""), do: {:error, :missing_signatory}
+  defp ensure_signatory(_), do: :ok
 
   def index(conn, %{"customer_uuid" => customer_uuid} = params) do
     company_id = conn.assigns.current_company_id
