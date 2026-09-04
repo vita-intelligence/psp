@@ -543,24 +543,63 @@ defmodule Backend.ThreePL do
   Pending dispatches across the whole company — feeds the mobile
   picker queue. Preloaded so the FE renders lot + customer + volume
   without a second round-trip.
-  """
-  def list_pending_dispatches(company_id) when is_integer(company_id) do
-    import Ecto.Query
 
-    from(d in Dispatch,
-      where: d.company_id == ^company_id and d.status == "pending",
-      order_by: [asc: d.requested_at, asc: d.id],
-      preload: [
-        :requested_by,
-        stock_lot: [
-          :item,
-          :unit_of_measurement,
-          :bailee_customer,
-          placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
-        ]
+  ## Options
+
+    * `:q` — case-insensitive substring; matches on item name, lot
+      code, bailee customer name, and the operator's own `reference`.
+    * `:cursor` — opaque, from a previous call's `next_cursor`.
+    * `:limit` — 1..100, default 25.
+
+  Returns `{items, next_cursor}` — `next_cursor` is nil when the last
+  page is served.
+  """
+  def list_pending_dispatches(company_id, opts \\ []) when is_integer(company_id) do
+    q = string_opt(opts[:q])
+    cursor = decode_cursor(opts[:cursor])
+    limit = clamp_limit(opts[:limit])
+
+    base =
+      from d in Dispatch,
+        as: :dispatch,
+        join: l in Lot,
+        on: l.id == d.stock_lot_id,
+        as: :lot,
+        left_join: item in assoc(l, :item),
+        as: :item,
+        left_join: bc in assoc(l, :bailee_customer),
+        as: :bailee_customer,
+        where: d.company_id == ^company_id and d.status == "pending",
+        order_by: [asc: d.requested_at, asc: d.id]
+
+    base
+    |> apply_pending_dispatch_search(q)
+    |> apply_cursor_asc_dispatch_ts(cursor, :requested_at)
+    |> preload([
+      :requested_by,
+      stock_lot: [
+        :item,
+        :unit_of_measurement,
+        :bailee_customer,
+        placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
       ]
-    )
-    |> Repo.all()
+    ])
+    |> paginate_rows(limit, fn last ->
+      encode_cursor(last.requested_at, last.id)
+    end)
+  end
+
+  defp apply_pending_dispatch_search(query, nil), do: query
+
+  defp apply_pending_dispatch_search(query, q) do
+    like = "%" <> q <> "%"
+
+    from [dispatch: d, lot: l, item: item, bailee_customer: bc] in query,
+      where:
+        ilike(coalesce(item.name, ""), ^like) or
+          ilike(coalesce(l.code, ""), ^like) or
+          ilike(coalesce(d.reference, ""), ^like) or
+          ilike(coalesce(bc.name, ""), ^like)
   end
 
   @doc "Look up a single pending dispatch by uuid, scoped to company."
@@ -737,11 +776,29 @@ defmodule Backend.ThreePL do
   the mobile FE then falls back to freeform-scan any 3PL cell in
   the warehouse.
   """
-  def list_pending_returns(company_id) when is_integer(company_id) do
-    from(d in Dispatch,
-      where: d.company_id == ^company_id and d.status == "return_pending",
-      order_by: [asc: d.dispatched_at, asc: d.id],
-      preload: [
+  def list_pending_returns(company_id, opts \\ []) when is_integer(company_id) do
+    q = string_opt(opts[:q])
+    cursor = decode_cursor(opts[:cursor])
+    limit = clamp_limit(opts[:limit])
+
+    base =
+      from d in Dispatch,
+        as: :dispatch,
+        join: l in Lot,
+        on: l.id == d.stock_lot_id,
+        as: :lot,
+        left_join: item in assoc(l, :item),
+        as: :item,
+        left_join: bc in assoc(l, :bailee_customer),
+        as: :bailee_customer,
+        where: d.company_id == ^company_id and d.status == "return_pending",
+        order_by: [asc: d.dispatched_at, asc: d.id]
+
+    {rows, next_cursor} =
+      base
+      |> apply_pending_dispatch_search(q)
+      |> apply_cursor_asc_dispatch_ts(cursor, :dispatched_at)
+      |> preload([
         :requested_by,
         stock_lot: [
           :item,
@@ -750,10 +807,12 @@ defmodule Backend.ThreePL do
           placements: [storage_cell: [storage_location: [floor: [:warehouse]]]]
         ],
         return_target_cell: [storage_location: [floor: [:warehouse]]]
-      ]
-    )
-    |> Repo.all()
-    |> Enum.map(&maybe_backfill_return_target/1)
+      ])
+      |> paginate_rows(limit, fn last ->
+        encode_cursor(last.dispatched_at, last.id)
+      end)
+
+    {Enum.map(rows, &maybe_backfill_return_target/1), next_cursor}
   end
 
   @doc """
@@ -1255,9 +1314,9 @@ defmodule Backend.ThreePL do
   ``stock_lot.ownership_kind == "bailee"`` — the flag is persistent,
   set once by ``route_released_lot/3`` at release time.
   """
-  def list_bailee_shipments_needing_paperwork(company_id)
+  def list_bailee_shipments_needing_paperwork(company_id, opts \\ [])
       when is_integer(company_id) do
-    bailee_shipments_by_status(company_id, ["draft"])
+    bailee_shipments_by_status(company_id, ["draft"], opts)
   end
 
   @doc """
@@ -1266,32 +1325,67 @@ defmodule Backend.ThreePL do
   "Pickup" tab — tap opens the standard
   ``/m/shipments/[uuid]/dispatch`` truck-arrival form.
   """
-  def list_bailee_shipments_ready_for_pickup(company_id)
+  def list_bailee_shipments_ready_for_pickup(company_id, opts \\ [])
       when is_integer(company_id) do
-    bailee_shipments_by_status(company_id, ["ready", "partially_picked"])
+    bailee_shipments_by_status(company_id, ["ready", "partially_picked"], opts)
   end
 
-  defp bailee_shipments_by_status(company_id, statuses)
+  # Shared cursor + search pathway for the Paperwork / Pickup tabs.
+  # Ordered ascending on ``inserted_at`` (falls back to id on ties) —
+  # ``ready_at`` was in the previous order but it's null for drafts,
+  # which made keyset cursors unreliable. Insertion order still lands
+  # oldest-first (FIFO for pickers) without the null trap.
+  defp bailee_shipments_by_status(company_id, statuses, opts)
        when is_integer(company_id) and is_list(statuses) do
-    from(s in Backend.Shipments.Shipment,
-      join: l in Lot,
-      on: l.id == s.stock_lot_id,
-      where:
-        s.company_id == ^company_id and
-          s.status in ^statuses and
-          l.ownership_kind == "bailee",
-      order_by: [asc: s.ready_at, asc: s.inserted_at, asc: s.id],
-      preload: [
-        :customer,
-        stock_lot: [
-          :item,
-          :unit_of_measurement,
-          :bailee_customer,
-          placements: [storage_cell: [storage_location: [:floor]]]
-        ]
+    q = string_opt(opts[:q])
+    cursor = decode_cursor(opts[:cursor])
+    limit = clamp_limit(opts[:limit])
+
+    base =
+      from s in Backend.Shipments.Shipment,
+        as: :shipment,
+        join: l in Lot,
+        on: l.id == s.stock_lot_id,
+        as: :lot,
+        left_join: item in assoc(l, :item),
+        as: :item,
+        left_join: cust in assoc(s, :customer),
+        as: :customer,
+        where:
+          s.company_id == ^company_id and
+            s.status in ^statuses and
+            l.ownership_kind == "bailee",
+        order_by: [asc: s.inserted_at, asc: s.id]
+
+    base
+    |> apply_bailee_shipment_search(q)
+    |> apply_cursor_asc_shipment_ts(cursor, :inserted_at)
+    |> preload([
+      :customer,
+      stock_lot: [
+        :item,
+        :unit_of_measurement,
+        :bailee_customer,
+        placements: [storage_cell: [storage_location: [:floor]]]
       ]
-    )
-    |> Repo.all()
+    ])
+    |> paginate_rows(limit, fn last ->
+      encode_cursor(last.inserted_at, last.id)
+    end)
+  end
+
+  defp apply_bailee_shipment_search(query, nil), do: query
+
+  defp apply_bailee_shipment_search(query, q) do
+    like = "%" <> q <> "%"
+
+    from [shipment: s, lot: l, item: item, customer: cust] in query,
+      where:
+        ilike(coalesce(item.name, ""), ^like) or
+          ilike(coalesce(l.code, ""), ^like) or
+          ilike(coalesce(cust.name, ""), ^like) or
+          ilike(coalesce(s.recipient_name, ""), ^like) or
+          ilike(coalesce(s.tracking_number, ""), ^like)
   end
 
   @doc """
@@ -1302,22 +1396,38 @@ defmodule Backend.ThreePL do
   ``partially_picked`` shipments live on the Pickup tab, not here —
   they still owe another truck's worth of evidence.
   """
-  def list_bailee_shipments_in_transit(company_id)
+  def list_bailee_shipments_in_transit(company_id, opts \\ [])
       when is_integer(company_id) do
-    from(s in Backend.Shipments.Shipment,
-      join: l in Lot,
-      on: l.id == s.stock_lot_id,
-      where:
-        s.company_id == ^company_id and
-          s.status == "picked_up" and
-          l.ownership_kind == "bailee",
-      order_by: [desc: s.picked_up_at, desc: s.id],
-      preload: [
-        :customer,
-        stock_lot: [:item, :unit_of_measurement, :bailee_customer]
-      ]
-    )
-    |> Repo.all()
+    q = string_opt(opts[:q])
+    cursor = decode_cursor(opts[:cursor])
+    limit = clamp_limit(opts[:limit])
+
+    base =
+      from s in Backend.Shipments.Shipment,
+        as: :shipment,
+        join: l in Lot,
+        on: l.id == s.stock_lot_id,
+        as: :lot,
+        left_join: item in assoc(l, :item),
+        as: :item,
+        left_join: cust in assoc(s, :customer),
+        as: :customer,
+        where:
+          s.company_id == ^company_id and
+            s.status == "picked_up" and
+            l.ownership_kind == "bailee",
+        order_by: [desc: s.picked_up_at, desc: s.id]
+
+    base
+    |> apply_bailee_shipment_search(q)
+    |> apply_cursor_desc_shipment_ts(cursor, :picked_up_at)
+    |> preload([
+      :customer,
+      stock_lot: [:item, :unit_of_measurement, :bailee_customer]
+    ])
+    |> paginate_rows(limit, fn last ->
+      encode_cursor(last.picked_up_at, last.id)
+    end)
   end
 
   @doc """
@@ -1851,4 +1961,129 @@ defmodule Backend.ThreePL do
   defp decimal_or_zero(nil), do: Decimal.new(0)
   defp decimal_or_zero(%Decimal{} = d), do: d
   defp decimal_or_zero(n) when is_integer(n) or is_float(n), do: Decimal.new("#{n}")
+
+  # -----------------------------------------------------------------
+  # Keyset pagination helpers — shared by every mobile 3PL hub list
+  # so pagination behaviour (page size, cursor shape, over-fetch by
+  # one) stays uniform across tabs. Cursor is a base64 of
+  # "{iso_datetime}|{id}" so the client treats it as opaque.
+  # -----------------------------------------------------------------
+
+  @default_page_size 25
+  @max_page_size 100
+
+  defp string_opt(nil), do: nil
+  defp string_opt(""), do: nil
+
+  defp string_opt(s) when is_binary(s) do
+    trimmed = String.trim(s)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp string_opt(_), do: nil
+
+  defp clamp_limit(nil), do: @default_page_size
+  defp clamp_limit(""), do: @default_page_size
+
+  defp clamp_limit(n) when is_integer(n) and n > 0,
+    do: min(n, @max_page_size)
+
+  defp clamp_limit(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, _} when n > 0 -> min(n, @max_page_size)
+      _ -> @default_page_size
+    end
+  end
+
+  defp clamp_limit(_), do: @default_page_size
+
+  defp encode_cursor(nil, _), do: nil
+  defp encode_cursor(_, nil), do: nil
+
+  defp encode_cursor(%DateTime{} = dt, id) when is_integer(id) do
+    Base.url_encode64("#{DateTime.to_iso8601(dt)}|#{id}", padding: false)
+  end
+
+  defp encode_cursor(%NaiveDateTime{} = ndt, id) when is_integer(id) do
+    Base.url_encode64("#{NaiveDateTime.to_iso8601(ndt)}|#{id}", padding: false)
+  end
+
+  defp decode_cursor(nil), do: nil
+  defp decode_cursor(""), do: nil
+
+  defp decode_cursor(b64) when is_binary(b64) do
+    with {:ok, raw} <- Base.url_decode64(b64, padding: false),
+         [ts_str, id_str] <- String.split(raw, "|", parts: 2),
+         {:ok, dt, _} <- parse_cursor_datetime(ts_str),
+         {id, _} <- Integer.parse(id_str) do
+      {dt, id}
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode_cursor(_), do: nil
+
+  # DateTime.from_iso8601 handles the "+00:00" suffix; NaiveDateTime.from_iso8601
+  # covers the raw form we may get out of encoded rows persisted as naive.
+  defp parse_cursor_datetime(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, offset} ->
+        {:ok, dt, offset}
+
+      _ ->
+        case NaiveDateTime.from_iso8601(s) do
+          {:ok, ndt} -> {:ok, DateTime.from_naive!(ndt, "Etc/UTC"), 0}
+          _ -> :error
+        end
+    end
+  end
+
+  # Ascending cursor for a query whose ORDER BY is
+  # ``[asc: dispatch.<ts>, asc: dispatch.id]``. Selects rows strictly
+  # after the cursor's (timestamp, id) tuple.
+  defp apply_cursor_asc_dispatch_ts(query, nil, _field), do: query
+
+  defp apply_cursor_asc_dispatch_ts(query, {ts, id}, field) do
+    from [dispatch: d] in query,
+      where:
+        field(d, ^field) > ^ts or
+          (field(d, ^field) == ^ts and d.id > ^id)
+  end
+
+  defp apply_cursor_asc_shipment_ts(query, nil, _field), do: query
+
+  defp apply_cursor_asc_shipment_ts(query, {ts, id}, field) do
+    from [shipment: s] in query,
+      where:
+        field(s, ^field) > ^ts or
+          (field(s, ^field) == ^ts and s.id > ^id)
+  end
+
+  defp apply_cursor_desc_shipment_ts(query, nil, _field), do: query
+
+  defp apply_cursor_desc_shipment_ts(query, {ts, id}, field) do
+    from [shipment: s] in query,
+      where:
+        field(s, ^field) < ^ts or
+          (field(s, ^field) == ^ts and s.id < ^id)
+  end
+
+  # Fetch ``limit + 1`` rows; when we get more than ``limit`` back,
+  # drop the extra + encode ``next_cursor`` from the row we kept as
+  # the last one. Callers see a clean ``{items, next_cursor}`` tuple.
+  defp paginate_rows(query, limit, cursor_fn) do
+    rows =
+      query
+      |> limit(^(limit + 1))
+      |> Repo.all()
+
+    if length(rows) > limit do
+      kept = Enum.take(rows, limit)
+      last = List.last(kept)
+      {kept, cursor_fn.(last)}
+    else
+      {rows, nil}
+    end
+  end
 end

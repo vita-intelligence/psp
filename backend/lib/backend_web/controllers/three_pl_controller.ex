@@ -152,11 +152,16 @@ defmodule BackendWeb.ThreePLController do
 
   # ---------------------------------------------------------------
   # GET /three-pl/dispatch-requests
+  # Query: ?q=&cursor=&limit=
   # ---------------------------------------------------------------
-  def list_pending_dispatches(conn, _params) do
+  def list_pending_dispatches(conn, params) do
     actor = conn.assigns.current_user
-    rows = ThreePL.list_pending_dispatches(actor.company_id)
-    json(conn, %{items: Enum.map(rows, &pending_dispatch_payload/1)})
+    {rows, next_cursor} = ThreePL.list_pending_dispatches(actor.company_id, list_opts(params))
+
+    json(conn, %{
+      items: Enum.map(rows, &pending_dispatch_payload/1),
+      next_cursor: next_cursor
+    })
   end
 
   # ---------------------------------------------------------------
@@ -263,10 +268,14 @@ defmodule BackendWeb.ThreePLController do
   # in ``return_pending`` state that owe a walk from the dispatch
   # cell back to the original 3PL cell.
   # ---------------------------------------------------------------
-  def list_pending_returns(conn, _params) do
+  def list_pending_returns(conn, params) do
     actor = conn.assigns.current_user
-    rows = ThreePL.list_pending_returns(actor.company_id)
-    json(conn, %{items: Enum.map(rows, &pending_return_payload/1)})
+    {rows, next_cursor} = ThreePL.list_pending_returns(actor.company_id, list_opts(params))
+
+    json(conn, %{
+      items: Enum.map(rows, &pending_return_payload/1),
+      next_cursor: next_cursor
+    })
   end
 
   # ---------------------------------------------------------------
@@ -318,10 +327,16 @@ defmodule BackendWeb.ThreePLController do
   # 3PL hub. Draft shipments born from bailee lots that still owe a
   # shipping-form review before being marked Ready.
   # ---------------------------------------------------------------
-  def list_shipments_needing_paperwork(conn, _params) do
+  def list_shipments_needing_paperwork(conn, params) do
     actor = conn.assigns.current_user
-    rows = ThreePL.list_bailee_shipments_needing_paperwork(actor.company_id)
-    json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
+
+    {rows, next_cursor} =
+      ThreePL.list_bailee_shipments_needing_paperwork(actor.company_id, list_opts(params))
+
+    json(conn, %{
+      items: Enum.map(rows, &bailee_shipment_payload/1),
+      next_cursor: next_cursor
+    })
   end
 
   # ---------------------------------------------------------------
@@ -329,10 +344,16 @@ defmodule BackendWeb.ThreePLController do
   # 3PL hub. Ready / partially_picked shipments waiting on the
   # next truck arrival.
   # ---------------------------------------------------------------
-  def list_shipments_awaiting_pickup(conn, _params) do
+  def list_shipments_awaiting_pickup(conn, params) do
     actor = conn.assigns.current_user
-    rows = ThreePL.list_bailee_shipments_ready_for_pickup(actor.company_id)
-    json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
+
+    {rows, next_cursor} =
+      ThreePL.list_bailee_shipments_ready_for_pickup(actor.company_id, list_opts(params))
+
+    json(conn, %{
+      items: Enum.map(rows, &bailee_shipment_payload/1),
+      next_cursor: next_cursor
+    })
   end
 
   # ---------------------------------------------------------------
@@ -340,11 +361,29 @@ defmodule BackendWeb.ThreePLController do
   # hub. Picked-up shipments waiting on the customer to confirm
   # delivery on the portal.
   # ---------------------------------------------------------------
-  def list_shipments_in_transit(conn, _params) do
+  def list_shipments_in_transit(conn, params) do
     actor = conn.assigns.current_user
-    rows = ThreePL.list_bailee_shipments_in_transit(actor.company_id)
-    json(conn, %{items: Enum.map(rows, &bailee_shipment_payload/1)})
+
+    {rows, next_cursor} =
+      ThreePL.list_bailee_shipments_in_transit(actor.company_id, list_opts(params))
+
+    json(conn, %{
+      items: Enum.map(rows, &bailee_shipment_payload/1),
+      next_cursor: next_cursor
+    })
   end
+
+  # Extract q / cursor / limit from a params map. Kept here so every
+  # list_* action pulls the same shape without repeating itself.
+  defp list_opts(params) when is_map(params) do
+    [
+      q: params["q"],
+      cursor: params["cursor"],
+      limit: params["limit"]
+    ]
+  end
+
+  defp list_opts(_), do: []
 
   # ---------------------------------------------------------------
   # POST /three-pl/dispatch-requests/:uuid/cancel

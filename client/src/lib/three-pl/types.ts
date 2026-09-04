@@ -3,6 +3,30 @@ import type { StockLot } from "../types";
 /** The two exits from the customer-order wizard's post-release step. */
 export type RoutingChoice = "three_pl" | "shipment";
 
+/**
+ * Response envelope for the mobile 3PL hub's paginated list
+ * endpoints. Every tab's fetch (Move / Paperwork / Pickup / Confirm /
+ * Return) uses this shape so the client's infinite-scroll hook is
+ * generic across tabs.
+ */
+export interface ThreePLListPage<T> {
+  items: T[];
+  /** Opaque; pass back as `?cursor=` to fetch the next slice.
+   *  ``null`` when there is no next page. */
+  next_cursor: string | null;
+}
+
+export interface ThreePLListParams {
+  /** Case-insensitive substring; server matches item name, lot code,
+   *  bailee-customer name, and the operator's `reference`
+   *  (or `recipient_name` / `tracking_number` on shipment rows). */
+  q?: string | null;
+  /** Opaque cursor from a previous page. */
+  cursor?: string | null;
+  /** 1..100, default 25. */
+  limit?: number | null;
+}
+
 export interface ThreePLInventoryRow {
   /** Full lot payload; carries item, placements, and the bailee_customer
    *  snapshot needed to render the tab row. */

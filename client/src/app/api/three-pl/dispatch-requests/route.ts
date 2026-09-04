@@ -43,7 +43,7 @@ export async function POST(req: Request) {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   const t = await token();
   if (!t) {
     return NextResponse.json(
@@ -53,7 +53,19 @@ export async function GET() {
   }
 
   try {
-    const data = await api("/api/three-pl/dispatch-requests", { token: t });
+    // Forward the mobile hub's search + keyset-cursor query params so
+    // infinite scroll works. Whitelist keys so a misbehaving caller
+    // can't slip arbitrary params through to Phoenix.
+    const src = new URL(req.url).searchParams;
+    const dst = new URLSearchParams();
+    for (const key of ["q", "cursor", "limit"]) {
+      const v = src.get(key);
+      if (v) dst.set(key, v);
+    }
+    const qs = dst.toString();
+    const url =
+      "/api/three-pl/dispatch-requests" + (qs ? `?${qs}` : "");
+    const data = await api(url, { token: t });
     return NextResponse.json(data);
   } catch (err) {
     const { payload, status } = toJsonError(err, {

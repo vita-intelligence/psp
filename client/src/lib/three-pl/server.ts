@@ -7,8 +7,32 @@ import type {
   PendingDispatch,
   PendingReturn,
   ThreePLInventoryResponse,
+  ThreePLListPage,
+  ThreePLListParams,
   ThreePLLotDetailResponse,
 } from "./types";
+
+// Query-string builder for the paginated list endpoints — keeps the
+// param serialisation (drop nils, trim empty strings) consistent so
+// the server's cursor stays deterministic per (q, limit) combo.
+function listQuery(params: ThreePLListParams | undefined): string {
+  if (!params) return "";
+  const search = new URLSearchParams();
+  const q = params.q?.trim();
+  if (q) search.set("q", q);
+  if (params.cursor) search.set("cursor", params.cursor);
+  if (params.limit) search.set("limit", String(params.limit));
+  const s = search.toString();
+  return s ? `?${s}` : "";
+}
+
+// Empty-page fallback for the silent-degrade path (no token, network
+// hiccup). Keeps the tab renderers unconditional — an unauthenticated
+// or offline mobile just gets an empty list, not a stack trace.
+const EMPTY_PAGE: ThreePLListPage<never> = {
+  items: [],
+  next_cursor: null,
+};
 
 async function anyToken(): Promise<string | null> {
   return (await getSessionToken()) ?? (await getDeviceToken());
@@ -47,89 +71,89 @@ export async function getThreePLLotDetail(
   }
 }
 
-/** Pending dispatches for the mobile picker queue — takes either a
- *  device token (mobile flow) or a session token (desktop lookup). */
-export async function listPendingDispatches(): Promise<PendingDispatch[]> {
+/** Pending dispatches for the mobile picker queue — paginated with
+ *  optional case-insensitive search across item name / lot code /
+ *  bailee customer / operator reference. */
+export async function listPendingDispatches(
+  params?: ThreePLListParams,
+): Promise<ThreePLListPage<PendingDispatch>> {
   const token = await anyToken();
-  if (!token) return [];
+  if (!token) return EMPTY_PAGE;
   try {
-    const res = await api<{ items: PendingDispatch[] }>(
-      "/api/three-pl/dispatch-requests",
+    return await api<ThreePLListPage<PendingDispatch>>(
+      `/api/three-pl/dispatch-requests${listQuery(params)}`,
       { token, cache: "no-store" },
     );
-    return res.items;
   } catch {
-    return [];
+    return EMPTY_PAGE;
   }
 }
 
 /** Tab 2 of the mobile 3PL hub — draft shipments that still owe a
  *  shipping-form review before Mark Ready. */
-export async function listBaileeShipmentsNeedingPaperwork(): Promise<
-  BaileeShipmentRow[]
-> {
+export async function listBaileeShipmentsNeedingPaperwork(
+  params?: ThreePLListParams,
+): Promise<ThreePLListPage<BaileeShipmentRow>> {
   const token = await anyToken();
-  if (!token) return [];
+  if (!token) return EMPTY_PAGE;
   try {
-    const res = await api<{ items: BaileeShipmentRow[] }>(
-      "/api/three-pl/shipments/needing-paperwork",
+    return await api<ThreePLListPage<BaileeShipmentRow>>(
+      `/api/three-pl/shipments/needing-paperwork${listQuery(params)}`,
       { token, cache: "no-store" },
     );
-    return res.items;
   } catch {
-    return [];
+    return EMPTY_PAGE;
   }
 }
 
 /** Tab 3 of the mobile 3PL hub — ready / partially_picked
  *  shipments waiting on truck arrival. */
-export async function listBaileeShipmentsAwaitingPickup(): Promise<
-  BaileeShipmentRow[]
-> {
+export async function listBaileeShipmentsAwaitingPickup(
+  params?: ThreePLListParams,
+): Promise<ThreePLListPage<BaileeShipmentRow>> {
   const token = await anyToken();
-  if (!token) return [];
+  if (!token) return EMPTY_PAGE;
   try {
-    const res = await api<{ items: BaileeShipmentRow[] }>(
-      "/api/three-pl/shipments/awaiting-pickup",
+    return await api<ThreePLListPage<BaileeShipmentRow>>(
+      `/api/three-pl/shipments/awaiting-pickup${listQuery(params)}`,
       { token, cache: "no-store" },
     );
-    return res.items;
   } catch {
-    return [];
+    return EMPTY_PAGE;
   }
 }
 
-/** Tab 3 of the mobile 3PL hub — bailee-flow shipments in transit,
+/** Tab 4 of the mobile 3PL hub — bailee-flow shipments in transit,
  *  awaiting customer delivery confirmation. */
-export async function listBaileeShipmentsInTransit(): Promise<
-  BaileeShipmentRow[]
-> {
+export async function listBaileeShipmentsInTransit(
+  params?: ThreePLListParams,
+): Promise<ThreePLListPage<BaileeShipmentRow>> {
   const token = await anyToken();
-  if (!token) return [];
+  if (!token) return EMPTY_PAGE;
   try {
-    const res = await api<{ items: BaileeShipmentRow[] }>(
-      "/api/three-pl/shipments/in-transit",
+    return await api<ThreePLListPage<BaileeShipmentRow>>(
+      `/api/three-pl/shipments/in-transit${listQuery(params)}`,
       { token, cache: "no-store" },
     );
-    return res.items;
   } catch {
-    return [];
+    return EMPTY_PAGE;
   }
 }
 
 /** Tab 5 of the mobile 3PL hub — return tasks (dispatches whose
  *  shipment was cancelled and now owe a walk-back to bailee). */
-export async function listPendingReturns(): Promise<PendingReturn[]> {
+export async function listPendingReturns(
+  params?: ThreePLListParams,
+): Promise<ThreePLListPage<PendingReturn>> {
   const token = await anyToken();
-  if (!token) return [];
+  if (!token) return EMPTY_PAGE;
   try {
-    const res = await api<{ items: PendingReturn[] }>(
-      "/api/three-pl/returns",
+    return await api<ThreePLListPage<PendingReturn>>(
+      `/api/three-pl/returns${listQuery(params)}`,
       { token, cache: "no-store" },
     );
-    return res.items;
   } catch {
-    return [];
+    return EMPTY_PAGE;
   }
 }
 
