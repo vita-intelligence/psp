@@ -1253,8 +1253,8 @@ defmodule Backend.ThreePL do
   Same schema as `list_bailee_lots/1` so the payload shaper can be
   shared between the staff dashboard and the integration read.
   """
-  def list_bailee_lots_for_customer(company_id, customer_uuid)
-      when is_integer(company_id) and is_binary(customer_uuid) do
+  def list_bailee_lots_for_customer(company_id, customer_uuid, opts \\ [])
+      when is_integer(company_id) and is_binary(customer_uuid) and is_list(opts) do
     # Callers hit this from two different identity spaces:
     #   * PSP-side lookups (staff dashboard) pass ``Customer.uuid`` —
     #     the PSP-native UUID stamped at insert.
@@ -1265,42 +1265,118 @@ defmodule Backend.ThreePL do
     # A row is a match on either column — we try the PSP-native uuid
     # first (fast path for staff) then fall back to npd_source_uuid so
     # the portal request never misses.
-    customer =
-      Backend.Repo.get_by(Backend.Customers.Customer,
-        company_id: company_id,
-        uuid: customer_uuid
-      ) ||
-        Backend.Repo.get_by(Backend.Customers.Customer,
-          company_id: company_id,
-          npd_source_uuid: customer_uuid
-        )
+    customer = resolve_customer(company_id, customer_uuid)
 
     case customer do
       nil ->
-        []
+        {[], nil}
 
       %Backend.Customers.Customer{id: customer_id} ->
-        from(l in Lot,
-          where:
-            l.company_id == ^company_id and
-              l.ownership_kind == "bailee" and
-              l.bailee_customer_id == ^customer_id and
-              l.status not in ["disposed", "canceled", "depleted"],
-          preload: [
-            :item,
-            :unit_of_measurement,
-            :bailee_customer,
-            placements:
-              ^from(p in Placement,
-                preload: [storage_cell: [storage_location: [floor: [:warehouse]]]]
-              )
-          ],
-          order_by: [desc: l.bailee_routed_at]
-        )
-        |> Repo.all()
+        q = string_opt(opts[:q])
+        cursor = decode_cursor(opts[:cursor])
+        limit = clamp_limit(opts[:limit])
+
+        base =
+          from l in Lot,
+            as: :lot,
+            left_join: item in assoc(l, :item),
+            as: :item,
+            where:
+              l.company_id == ^company_id and
+                l.ownership_kind == "bailee" and
+                l.bailee_customer_id == ^customer_id and
+                l.status not in ["disposed", "canceled", "depleted"],
+            order_by: [desc: l.bailee_routed_at, desc: l.id]
+
+        base
+        |> apply_bailee_lot_search(q)
+        |> apply_cursor_desc_lot_ts(cursor, :bailee_routed_at)
+        |> preload([
+          :item,
+          :unit_of_measurement,
+          :bailee_customer,
+          placements:
+            ^from(p in Placement,
+              preload: [storage_cell: [storage_location: [floor: [:warehouse]]]]
+            )
+        ])
+        |> paginate_rows(limit, fn last ->
+          encode_cursor(last.bailee_routed_at, last.id)
+        end)
     end
   rescue
-    Ecto.Query.CastError -> []
+    Ecto.Query.CastError -> {[], nil}
+  end
+
+  defp apply_bailee_lot_search(query, nil), do: query
+
+  defp apply_bailee_lot_search(query, q) do
+    like = "%" <> q <> "%"
+
+    from [lot: l, item: item] in query,
+      where:
+        ilike(coalesce(item.name, ""), ^like) or
+          ilike(coalesce(l.code, ""), ^like) or
+          ilike(coalesce(l.supplier_batch_no, ""), ^like)
+  end
+
+  defp apply_cursor_desc_lot_ts(query, nil, _field), do: query
+
+  defp apply_cursor_desc_lot_ts(query, {ts, id}, field) do
+    from [lot: l] in query,
+      where:
+        field(l, ^field) < ^ts or
+          (field(l, ^field) == ^ts and l.id < ^id)
+  end
+
+  @doc """
+  Aggregate rollup for the portal warehouse summary tiles. Sums qty,
+  volume, and accrued charge across every bailee lot held for the
+  customer regardless of the caller's paginated slice. Ships alongside
+  the paginated list so the customer sees "you have 300 units on hand
+  total" even when they've only scrolled through the first 25.
+  """
+  def bailee_lots_summary_for_customer(company_id, customer_uuid)
+      when is_integer(company_id) and is_binary(customer_uuid) do
+    case resolve_customer(company_id, customer_uuid) do
+      nil ->
+        %{lot_count: 0, lots: []}
+
+      %Backend.Customers.Customer{id: customer_id} ->
+        lots =
+          from(l in Lot,
+            where:
+              l.company_id == ^company_id and
+                l.ownership_kind == "bailee" and
+                l.bailee_customer_id == ^customer_id and
+                l.status not in ["disposed", "canceled", "depleted"],
+            preload: [
+              :unit_of_measurement,
+              placements:
+                ^from(p in Placement,
+                  preload: [
+                    storage_cell: [storage_location: [floor: [:warehouse]]]
+                  ]
+                )
+            ]
+          )
+          |> Repo.all()
+
+        %{lot_count: length(lots), lots: lots}
+    end
+  rescue
+    Ecto.Query.CastError -> %{lot_count: 0, lots: []}
+  end
+
+  defp resolve_customer(company_id, customer_uuid) do
+    Backend.Repo.get_by(Backend.Customers.Customer,
+      company_id: company_id,
+      uuid: customer_uuid
+    ) ||
+      Backend.Repo.get_by(Backend.Customers.Customer,
+        company_id: company_id,
+        npd_source_uuid: customer_uuid
+      )
   end
 
   @doc """
@@ -1504,58 +1580,125 @@ defmodule Backend.ThreePL do
 
   def list_dispatch_requests_for_customer(company_id, customer_uuid, opts)
       when is_integer(company_id) and is_binary(customer_uuid) and is_list(opts) do
-    resolved =
-      Backend.Repo.get_by(Backend.Customers.Customer,
-        company_id: company_id,
-        uuid: customer_uuid
-      ) ||
-        Backend.Repo.get_by(Backend.Customers.Customer,
-          company_id: company_id,
-          npd_source_uuid: customer_uuid
-        )
-
-    case resolved do
+    case resolve_customer(company_id, customer_uuid) do
       nil ->
-        []
+        {[], nil}
 
       %Backend.Customers.Customer{id: customer_id} ->
         status_filter = Keyword.get(opts, :status)
         lot_uuid_filter = Keyword.get(opts, :lot_uuid)
-        limit = Keyword.get(opts, :limit, 100)
+        q = string_opt(opts[:q])
+        cursor = decode_cursor(opts[:cursor])
+        limit = clamp_limit(opts[:limit])
 
         base =
           from d in Dispatch,
+            as: :dispatch,
+            join: l in Lot,
+            on: l.id == d.stock_lot_id,
+            as: :lot,
+            left_join: item in assoc(l, :item),
+            as: :item,
+            where:
+              d.company_id == ^company_id and
+                l.bailee_customer_id == ^customer_id,
+            order_by: [desc: d.requested_at, desc: d.id]
+
+        base
+        |> apply_customer_dispatch_status(status_filter)
+        |> apply_customer_dispatch_lot_filter(lot_uuid_filter)
+        |> apply_customer_dispatch_search(q)
+        |> apply_cursor_desc_dispatch_ts(cursor, :requested_at)
+        |> preload([
+          stock_lot: [:item, :unit_of_measurement],
+          requested_by: [],
+          dispatched_by: []
+        ])
+        |> paginate_rows(limit, fn last ->
+          encode_cursor(last.requested_at, last.id)
+        end)
+    end
+  rescue
+    Ecto.Query.CastError -> {[], nil}
+  end
+
+  @doc """
+  Status counts for the portal `/warehouse/requests` header pills.
+  Cheap SELECT — one grouped count per customer — so the summary
+  stays accurate even when the customer has scrolled through only
+  the first slice of results.
+  """
+  def dispatch_request_counts_for_customer(company_id, customer_uuid)
+      when is_integer(company_id) and is_binary(customer_uuid) do
+    case resolve_customer(company_id, customer_uuid) do
+      nil ->
+        %{total: 0, pending: 0, completed: 0, cancelled: 0, return_pending: 0}
+
+      %Backend.Customers.Customer{id: customer_id} ->
+        rows =
+          from(d in Dispatch,
             join: l in Lot,
             on: l.id == d.stock_lot_id,
             where:
               d.company_id == ^company_id and
                 l.bailee_customer_id == ^customer_id,
-            order_by: [desc: d.requested_at, desc: d.id],
-            limit: ^limit,
-            preload: [
-              stock_lot: [:item, :unit_of_measurement],
-              requested_by: [],
-              dispatched_by: []
-            ]
+            group_by: d.status,
+            select: {d.status, count(d.id)}
+          )
+          |> Repo.all()
+          |> Map.new()
 
-        base =
-          if is_binary(status_filter) and status_filter in Dispatch.statuses() do
-            from [d, _l] in base, where: d.status == ^status_filter
-          else
-            base
-          end
-
-        base =
-          if is_binary(lot_uuid_filter) and lot_uuid_filter != "" do
-            from [_d, l] in base, where: l.uuid == ^lot_uuid_filter
-          else
-            base
-          end
-
-        Repo.all(base)
+        %{
+          total: Enum.reduce(rows, 0, fn {_s, n}, acc -> acc + n end),
+          pending: Map.get(rows, "pending", 0),
+          completed: Map.get(rows, "completed", 0),
+          cancelled: Map.get(rows, "cancelled", 0),
+          return_pending: Map.get(rows, "return_pending", 0)
+        }
     end
   rescue
-    Ecto.Query.CastError -> []
+    Ecto.Query.CastError ->
+      %{total: 0, pending: 0, completed: 0, cancelled: 0, return_pending: 0}
+  end
+
+  defp apply_customer_dispatch_status(query, status)
+       when is_binary(status) do
+    if status in Dispatch.statuses() do
+      from [dispatch: d] in query, where: d.status == ^status
+    else
+      query
+    end
+  end
+
+  defp apply_customer_dispatch_status(query, _), do: query
+
+  defp apply_customer_dispatch_lot_filter(query, lot_uuid)
+       when is_binary(lot_uuid) and lot_uuid != "" do
+    from [lot: l] in query, where: l.uuid == ^lot_uuid
+  end
+
+  defp apply_customer_dispatch_lot_filter(query, _), do: query
+
+  defp apply_customer_dispatch_search(query, nil), do: query
+
+  defp apply_customer_dispatch_search(query, q) do
+    like = "%" <> q <> "%"
+
+    from [dispatch: d, lot: l, item: item] in query,
+      where:
+        ilike(coalesce(item.name, ""), ^like) or
+          ilike(coalesce(l.code, ""), ^like) or
+          ilike(coalesce(d.reference, ""), ^like) or
+          ilike(coalesce(d.notes, ""), ^like)
+  end
+
+  defp apply_cursor_desc_dispatch_ts(query, nil, _field), do: query
+
+  defp apply_cursor_desc_dispatch_ts(query, {ts, id}, field) do
+    from [dispatch: d] in query,
+      where:
+        field(d, ^field) < ^ts or
+          (field(d, ^field) == ^ts and d.id < ^id)
   end
 
   # =====================================================================

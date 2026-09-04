@@ -2002,6 +2002,14 @@ defmodule BackendWeb.Router do
         IntegrationCustomerDispatchRequestListController,
         :index
 
+    # Streams a pickup loading photo attached to the outbound
+    # shipment linked to the given dispatch request. Portal proxies
+    # this behind their session cookie so customers can see the
+    # evidence photos taken at truck-arrival time.
+    get "/customer-dispatch-requests/:request_uuid/pickup-photos/:file_uuid",
+        IntegrationCustomerDispatchRequestListController,
+        :photo
+
     # Write-side
     # Push an R&D-side BOM snapshot onto the finished-product
     # item. Idempotent from a versioning POV — repeated calls

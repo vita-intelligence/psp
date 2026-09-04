@@ -62,35 +62,106 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
 
   action_fallback BackendWeb.FallbackController
 
-  def show(conn, %{"customer_uuid" => customer_uuid}) do
+  def show(conn, %{"customer_uuid" => customer_uuid} = params) do
     company_id = conn.assigns.current_company_id
     company = Companies.get!(company_id)
-
-    lots = ThreePL.list_bailee_lots_for_customer(company_id, customer_uuid)
     rate = company.three_pl_rate_per_m3_per_day
+
+    # Paginated slice for the visible list.
+    {lots, next_cursor} =
+      ThreePL.list_bailee_lots_for_customer(
+        company_id,
+        customer_uuid,
+        list_opts(params)
+      )
 
     pending_by_lot =
       ThreePL.pending_dispatch_qty_by_lot_ids(company_id, Enum.map(lots, & &1.id))
 
     lot_rows = Enum.map(lots, &lot_payload(&1, rate, pending_by_lot))
-    customer = first_customer(lots) || fallback_customer(company_id, customer_uuid)
 
-    summary = %{
-      lot_count: length(lot_rows),
-      total_qty_on_hand: sum_field(lot_rows, "qty_on_hand"),
-      total_qty_pending_dispatch: sum_field(lot_rows, "qty_pending_dispatch"),
-      total_qty_available: sum_field(lot_rows, "qty_available"),
-      total_held_volume_m3: sum_field(lot_rows, "held_volume_m3"),
-      total_accrued_charge: sum_field(lot_rows, "accrued_charge")
-    }
+    # Unpaginated summary — rolled up across ALL of the customer's
+    # held stock so the "total held volume / accrued charge" tiles
+    # stay accurate as they scroll through pages of individual lots.
+    %{lot_count: total_lot_count, lots: all_lots} =
+      ThreePL.bailee_lots_summary_for_customer(company_id, customer_uuid)
+
+    all_pending_by_lot =
+      ThreePL.pending_dispatch_qty_by_lot_ids(
+        company_id,
+        Enum.map(all_lots, & &1.id)
+      )
+
+    summary =
+      Enum.reduce(
+        all_lots,
+        %{
+          lot_count: total_lot_count,
+          total_qty_on_hand: Decimal.new(0),
+          total_qty_pending_dispatch: Decimal.new(0),
+          total_qty_available: Decimal.new(0),
+          total_held_volume_m3: Decimal.new(0),
+          total_accrued_charge: Decimal.new(0)
+        },
+        fn lot, acc ->
+          qty = sum_placement_qty(lot.placements)
+          pending = Map.get(all_pending_by_lot, lot.id, Decimal.new(0))
+          diff = Decimal.sub(qty, pending)
+          available =
+            if Decimal.compare(diff, Decimal.new(0)) == :lt,
+              do: Decimal.new(0),
+              else: diff
+
+          vol = ThreePL.lot_held_volume_m3(lot)
+          charge = ThreePL.accrued_charge(lot, rate)
+
+          %{
+            acc
+            | total_qty_on_hand: Decimal.add(acc.total_qty_on_hand, qty),
+              total_qty_pending_dispatch:
+                Decimal.add(acc.total_qty_pending_dispatch, pending),
+              total_qty_available:
+                Decimal.add(acc.total_qty_available, available),
+              total_held_volume_m3:
+                Decimal.add(acc.total_held_volume_m3, vol || Decimal.new(0)),
+              total_accrued_charge:
+                Decimal.add(acc.total_accrued_charge, charge || Decimal.new(0))
+          }
+        end
+      )
+      |> stringify_summary()
+
+    customer = first_customer(lots) || fallback_customer(company_id, customer_uuid)
 
     json(conn, %{
       customer: customer,
       currency: company.currency_code || "GBP",
       rate_per_m3_per_day: decimal_to_string(rate),
       summary: summary,
-      lots: lot_rows
+      lots: lot_rows,
+      next_cursor: next_cursor
     })
+  end
+
+  defp list_opts(params) when is_map(params) do
+    [q: params["q"], cursor: params["cursor"], limit: params["limit"]]
+  end
+
+  defp list_opts(_), do: []
+
+  defp stringify_summary(sum) do
+    %{
+      lot_count: sum.lot_count,
+      total_qty_on_hand: Decimal.to_string(sum.total_qty_on_hand, :normal),
+      total_qty_pending_dispatch:
+        Decimal.to_string(sum.total_qty_pending_dispatch, :normal),
+      total_qty_available:
+        Decimal.to_string(sum.total_qty_available, :normal),
+      total_held_volume_m3:
+        Decimal.to_string(sum.total_held_volume_m3, :normal),
+      total_accrued_charge:
+        Decimal.to_string(sum.total_accrued_charge, :normal)
+    }
   end
 
   # ---- Payload shapers ----
@@ -197,23 +268,6 @@ defmodule BackendWeb.IntegrationCustomerBaileeInventoryController do
   end
 
   defp sum_placement_qty(_), do: Decimal.new(0)
-
-  defp sum_field(rows, key) do
-    rows
-    |> Enum.reduce(Decimal.new(0), fn row, acc ->
-      case Map.get(row, key) do
-        s when is_binary(s) ->
-          case Decimal.parse(s) do
-            {d, _} -> Decimal.add(acc, d)
-            _ -> acc
-          end
-
-        _ ->
-          acc
-      end
-    end)
-    |> Decimal.to_string(:normal)
-  end
 
   defp decimal_to_string(nil), do: nil
   defp decimal_to_string(%Decimal{} = d), do: Decimal.to_string(d, :normal)
