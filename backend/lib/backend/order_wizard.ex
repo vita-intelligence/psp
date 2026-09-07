@@ -1415,7 +1415,19 @@ defmodule Backend.OrderWizard do
     # next stage — those lots have zero placements everywhere and
     # aren't relevant to the dispatch phase decision. Only the lots
     # still physically on some shelf matter here.
-    candidate_ids = collect_all_output_lot_ids(mos)
+    # Only the ROOT MO's output lots (finished goods) drive the
+    # dispatch phase. Intermediate-stage MOs on a multi-stage chain
+    # (blending → capsule → packaging → finished) also produce lots,
+    # but those are R&D-shelf semis / leftovers whose on-hand state
+    # is irrelevant to whether the customer's finished goods have
+    # shipped. Filtering to root-only stops a leftover intermediate
+    # (e.g. 1 unit of "Capsules in Packaging" sitting on rnd after
+    # the final 60s pack was picked to a shipment) from flipping
+    # ``on_shelf_ids`` non-empty and freezing the wizard at
+    # ``:ready_to_dispatch``.
+    root_mos = Enum.filter(mos, &is_nil(Map.get(&1, :parent_mo_id)))
+    dispatch_mos = if root_mos == [], do: mos, else: root_mos
+    candidate_ids = collect_all_output_lot_ids(dispatch_mos)
     on_shelf_ids = collect_on_shelf_lot_ids(candidate_ids)
     bailee_lot_ids = collect_bailee_lot_ids(candidate_ids)
     # Persistent "was this ever a bailee CO?" flag. Reads
@@ -1439,6 +1451,26 @@ defmodule Backend.OrderWizard do
       # ``:delivered`` confirmation exists).
       had_bailee_lots? and on_shelf_ids == [] ->
         :dispatched
+
+      # Direct-ship flow, fully drained. Symmetrical to the bailee
+      # branch above: every output lot has zero placement qty (walked
+      # out on a shipment) and this CO never sat in bailee custody.
+      # Historically the ``dispatchable_lots == []`` branch below
+      # caught this and returned ``:ready_to_dispatch`` because the
+      # lots are no longer on the dispatch cell — but that's the
+      # opposite of the truth. Consult the shipment coverage against
+      # the historical output lots so ``:delivered`` / ``:dispatched``
+      # correctly advance past the "ready to ship" freeze. Falls
+      # through to the old branch when there's no shipment paperwork
+      # at all (broken state — operator hasn't logged the pickup yet
+      # even though physical goods are gone).
+      not had_bailee_lots? and candidate_ids != [] and on_shelf_ids == [] ->
+        case shipment_coverage(candidate_ids) do
+          {:delivered, _} -> :delivered
+          {:dispatched, _} -> :dispatched
+          {:awaiting_pickup, _} -> :awaiting_pickup
+          {:not_ready, _} -> :ready_to_dispatch
+        end
 
       # Every on-shelf output lot is on a ``three_pl_storage`` cell —
       # the customer took ownership at routing
@@ -3635,6 +3667,11 @@ defmodule Backend.OrderWizard do
       quantity: mo.quantity,
       item_name: mo.item && mo.item.name,
       customer_order_line_id: mo.customer_order_line_id,
+      # Emitted so ``derive_dispatch_phase`` can filter to root MOs
+      # (nil parent) — intermediate-stage MOs on multi-stage chains
+      # produce R&D-shelf semis whose on-hand state must not gate
+      # the finished-goods dispatch phase.
+      parent_mo_id: mo.parent_mo_id,
       bookings_total: length(mo.bookings),
       placeholder_count: length(placeholder_bookings),
       placeholder_awaiting_qc_count: placeholder_breakdown.awaiting_qc,
