@@ -4955,14 +4955,14 @@ defmodule Backend.OrderWizard do
 
   # Round a qty Decimal to Decimal(20,10) storage precision.
   # Mirrors Backend.Production.normalise_qty_to_storage_precision/1 —
-  # the wizard's under-booked classifier compares
-  # ``Decimal.mult(bom.qty, mo.quantity)`` (up to 20 dec of math)
-  # against bookings that live at Decimal(20,10). Without this a
-  # 2.5e-11 kg picoscale residue flips the row to under-booked,
-  # rolling the whole order back into "Awaiting ingredients" on the
-  # /projects wizard even though every real lot is fully booked.
+  # Round to the tenant-wide 5 dp quantity precision (pharmaceutical
+  # standard — see memory feedback_psp_quantity_precision). Every
+  # under-booked classifier comparing ``Decimal.mult(bom.qty,
+  # mo.quantity)`` against bookings normalises through the same 5 dp
+  # so a picoscale residue doesn't roll a real MO back into
+  # "Awaiting ingredients" on the /projects wizard.
   defp normalise_qty_to_storage_precision(%Decimal{} = d),
-    do: Decimal.round(d, 10, :half_up)
+    do: Decimal.round(d, 5, :half_up)
 
   defp normalise_qty_to_storage_precision(other), do: other
 

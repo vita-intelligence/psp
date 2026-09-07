@@ -1440,13 +1440,15 @@ defmodule BackendWeb.Payloads do
   defp decimal_to_string(nil), do: nil
   defp decimal_to_string(v), do: to_string(v)
 
-  # Round a qty Decimal down to Decimal(20,10) storage precision.
-  # Any digit past position 10 is sub-storage noise (a picoscale
-  # residue of BOM.qty x MO.quantity) — carrying it into the FE
-  # subtraction lights the row up as short by 2.5e-11 kg and pops
-  # an add-booking modal for a qty the operator can't book.
+  # Round a qty Decimal to the tenant-wide 5 dp quantity precision
+  # (pharmaceutical standard — see memory feedback_psp_quantity_precision).
+  # Every quantity on the manufacturing path (placement, booking, MO
+  # qty, BOM line, shortage math) normalises through 5 dp so a
+  # booking created via the fractional-cascade path (loose-bulk trial
+  # / sample flow) can be compared against a physical placement
+  # without a phantom sub-storage-precision residue.
   defp normalise_qty_to_storage_precision(%Decimal{} = d),
-    do: Decimal.round(d, 10, :half_up)
+    do: Decimal.round(d, 5, :half_up)
 
   defp normalise_qty_to_storage_precision(other), do: other
 
@@ -3017,14 +3019,32 @@ defmodule BackendWeb.Payloads do
       Enum.reduce(lines, {[], Decimal.new("0")}, fn line, {acc_parts, acc_total} ->
         unit_cost = Map.get(costs, line.part_id)
 
-        required_qty =
+        # Loose-bulk guard (matches
+        # ``Backend.Production.maybe_spawn_unbooked_child`` +
+        # ``mo_item_shortage``): when the root overlay is ``[]``, the
+        # scientist explicitly asked for N loose finished units via
+        # NPD's "individual capsules" mode, so the required qty here
+        # must stay fractional (0.13 pcs) instead of ceiling to 1 pc.
+        # Rounding here re-inflated the parts table's REQUIRED column
+        # and the FE's ``required - booked`` gap even though the
+        # spawning / booking layers computed correctly.
+        loose_bulk? =
+          Backend.Production.packaging_overlay_active?(mo) and
+            Backend.Production.root_packaging_combo_items(mo) == []
+
+        raw_required =
           cond do
             line.is_fixed -> line.qty
             is_nil(line.qty) -> nil
             is_nil(mo_qty) -> nil
             true -> Decimal.mult(line.qty, mo_qty)
           end
-          |> Backend.Production.normalise_count_qty(line)
+
+        required_qty =
+          raw_required
+          |> then(fn q ->
+            if loose_bulk?, do: q, else: Backend.Production.normalise_count_qty(q, line)
+          end)
           # Bookings, shortages and the qty input on the FE all live at
           # Decimal(20,10) storage precision. Round the pure-math
           # BOM.qty x MO.quantity result to the same precision so the
@@ -6856,10 +6876,26 @@ defmodule BackendWeb.Payloads do
 
   defp production_final_release_lot_summary(_), do: nil
 
-  defp production_final_release_lot_placement([%Backend.Stock.Placement{} = p | _]) do
-    cell = p.storage_cell
+  # Ignore zero-qty residues — they're book-keeping ghosts (e.g. a
+  # cell the lot briefly passed through) that mask the real physical
+  # placement. The backend's ``ensure_lot_in_finished_quarantine``
+  # guard uses ``p.qty > 0`` for the same reason; mirroring that
+  # filter here so the FE's "currently sitting in X" chip matches
+  # the release guard's decision. Falling back to the raw first
+  # placement only when every row is zero-qty keeps the empty-list
+  # branch semantically identical to the old behaviour.
+  defp production_final_release_lot_placement(list) when is_list(list) do
+    active =
+      Enum.filter(list, fn
+        %Backend.Stock.Placement{qty: q} when not is_nil(q) ->
+          Decimal.compare(q, Decimal.new(0)) == :gt
 
-    if match?(%Backend.Warehouses.StorageCell{}, cell) do
+        _ ->
+          false
+      end)
+
+    with %Backend.Stock.Placement{} = p <- List.first(active) || List.first(list),
+         %Backend.Warehouses.StorageCell{} = cell <- p.storage_cell do
       loc = cell.storage_location
       floor = loc && loc.floor
       warehouse = floor && floor.warehouse
@@ -6892,7 +6928,7 @@ defmodule BackendWeb.Payloads do
           end
       }
     else
-      nil
+      _ -> nil
     end
   end
 

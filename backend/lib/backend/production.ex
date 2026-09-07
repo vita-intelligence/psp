@@ -2151,12 +2151,36 @@ defmodule Backend.Production do
       %Item{item_type: "semi_finished"} = part ->
         per_output = line.qty || Decimal.new(0)
 
+        # Loose-bulk mode (root overlay = [], set by NPD's Create-MO
+        # modal when the scientist picks "individual capsules N"):
+        # the physical output is N loose finished units, no packaging.
+        # ``normalise_count_qty`` ceils fractional count qtys to whole
+        # units to protect supply on a legitimate "0.025 bottles for a
+        # 3-cap sample of a 120-cap bottle" ask — but that rounding
+        # is exactly what turns "produce 3 loose caps" (root qty =
+        # 0.05 packs) into 1 whole packaging unit → 60 caps at the
+        # capsule stage → 60-cap of powder consumed. The customer
+        # asked for 3, not 60.
+        #
+        # When the overlay is an empty list we're deliberately not
+        # producing packs at all, so skip the ceiling and let the
+        # fractional qty cascade — intermediate MOs land at the exact
+        # ratio the finished root needs, and the raw material stage
+        # scales to N caps of powder.
+        loose_bulk? =
+          packaging_overlay_active?(mo) and root_packaging_combo_items(mo) == []
+
         required =
           if line.is_fixed do
             per_output
           else
             raw = Decimal.mult(per_output, mo.quantity || Decimal.new(0))
-            normalise_count_qty(raw, line)
+
+            if loose_bulk? do
+              raw
+            else
+              normalise_count_qty(raw, line)
+            end
           end
           |> normalise_qty_to_storage_precision()
 
@@ -5044,6 +5068,17 @@ defmodule Backend.Production do
     # shortages.
     line = Enum.find(effective_bom_lines_for_mo(mo), fn l -> l.part_id == item_id end)
 
+    # Same loose-bulk guard as ``maybe_spawn_unbooked_child`` — when
+    # the tree's root overlay is ``[]`` (NPD's "individual capsules
+    # N" mode), skip the count-qty ceiling so the shortage math
+    # reflects the exact fractional demand instead of rounding a
+    # 0.05-pack ingredient requirement up to 1 whole pack.
+    # Without this, the intermediate MO (spawned correctly at 0.05
+    # by the fix above) is still reported as under-booked because
+    # the parent's required side ceilings to 1.
+    loose_bulk? =
+      packaging_overlay_active?(mo) and root_packaging_combo_items(mo) == []
+
     bom_required =
       case line do
         nil ->
@@ -5054,7 +5089,7 @@ defmodule Backend.Production do
 
         %BOMLine{qty: q} = ln ->
           raw = Decimal.mult(q || Decimal.new(0), mo.quantity || Decimal.new(0))
-          normalise_count_qty(raw, ln)
+          if loose_bulk?, do: raw, else: normalise_count_qty(raw, ln)
       end
 
     overlay_required = overlay_required_for_item(mo, item_id)
@@ -7017,16 +7052,16 @@ defmodule Backend.Production do
   defp to_decimal(s) when is_binary(s), do: Decimal.new(s)
   defp to_decimal(_), do: Decimal.new(0)
 
-  # Round a qty Decimal to Decimal(20,10) storage precision. Coverage
-  # gates compare BOM.qty x MO.quantity (up to 20 dec of math) against
-  # bookings/pending qtys that live at Decimal(20,10). Without this,
-  # a required of 0.00648806392476 vs coverage of 0.0064880639
-  # trips ``Decimal.compare == :gt`` on a 2.5e-11 residue — the row
-  # reports as under-booked, ``under_booked_count`` goes up, and the
-  # planner is offered "Request purchases" for a qty they can't
-  # actually buy or book.
+  # Round a qty Decimal to the tenant-wide 5 dp quantity precision
+  # (pharmaceutical standard — see memory feedback_psp_quantity_precision).
+  # Coverage / shortage / booking math all normalise through 5 dp so
+  # a required of 0.00648806392476 vs coverage of 0.00648806 stops
+  # tripping ``Decimal.compare == :gt`` on a picoscale residue.
+  # Placements (14,4) widen to (14,5) via the pending column-type
+  # migration; keeping the rounding at 5 dp today means every new
+  # write already matches the target precision.
   defp normalise_qty_to_storage_precision(%Decimal{} = d),
-    do: Decimal.round(d, 10, :half_up)
+    do: Decimal.round(d, 5, :half_up)
 
   defp normalise_qty_to_storage_precision(other), do: other
 
@@ -14704,7 +14739,17 @@ defmodule Backend.Production do
         booked = to_decimal(row.booked_qty)
         in_wh = to_decimal(row.in_warehouse_qty)
 
-        if Decimal.compare(in_wh, booked) == :lt do
+        # Compare on the tenant-wide 5 dp quantity precision
+        # (pharmaceutical standard — see memory
+        # feedback_psp_quantity_precision). Bookings and placements
+        # both round to 5 dp so a fractional loose-bulk booking
+        # doesn't fail the release check on a sub-precision residue
+        # — a 6th-decimal difference isn't a real shortfall, it's
+        # arithmetic noise below the tenant's chosen precision.
+        booked_5dp = Decimal.round(booked, 5, :half_up)
+        in_wh_5dp = Decimal.round(in_wh, 5, :half_up)
+
+        if Decimal.compare(in_wh_5dp, booked_5dp) == :lt do
           [
             row
             |> Map.update!(:booked_qty, &decimal_to_string/1)
