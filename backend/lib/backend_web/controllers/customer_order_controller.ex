@@ -496,13 +496,23 @@ defmodule BackendWeb.CustomerOrderController do
        when is_list(items) do
     import Ecto.Query
 
+    # ``book_packaging_overlay`` expects each combo row's ``quantity``
+    # to be the ABSOLUTE TOTAL for the whole MO (NPD's trial-batch
+    # integration pre-computes ``per_pack × total_packs``). RTG's CO-
+    # line rows store the per-unit-of-output ratio (typically 1
+    # bottle / 1 cap / 1 label per finished pack) so we scale by the
+    # target MO quantity here, matching that contract. Without this
+    # step a 7500-bottle RTG order books 1 bottle + 1 cap + 1 label
+    # and the picker screen shows a 7499-unit phantom shortage.
+    mo_qty = coerce_decimal(attrs["quantity"]) || Decimal.new(0)
+
     resolved =
       items
       |> Enum.map(fn row ->
         # Both keys arrive as strings from the JSONB round-trip.
         psp_uuid = row["psp_item_uuid"] || row[:psp_item_uuid] || ""
         npd_uuid = row["npd_item_uuid"] || row[:npd_item_uuid] || ""
-        qty = row["quantity"] || row[:quantity] || 1
+        per_unit = coerce_decimal(row["quantity"] || row[:quantity] || 1) || Decimal.new(1)
         # Per-item stage routing (NPD Option A). ``psp_stage_uuid``
         # identifies which stage MO in the tree should book this
         # item: ``nil`` (or missing) means "book at the root MO"
@@ -523,7 +533,8 @@ defmodule BackendWeb.CustomerOrderController do
         if is_nil(item_id) do
           nil
         else
-          base = %{"item_id" => item_id, "quantity" => qty}
+          total = Decimal.mult(per_unit, mo_qty)
+          base = %{"item_id" => item_id, "quantity" => total}
           if is_binary(stage_uuid) and stage_uuid != "" do
             Map.put(base, "psp_stage_uuid", stage_uuid)
           else
@@ -535,6 +546,19 @@ defmodule BackendWeb.CustomerOrderController do
 
     Map.put(attrs, "packaging_combo_items", resolved)
   end
+
+  defp coerce_decimal(%Decimal{} = d), do: d
+  defp coerce_decimal(i) when is_integer(i), do: Decimal.new(i)
+  defp coerce_decimal(f) when is_float(f), do: Decimal.from_float(f)
+
+  defp coerce_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> nil
+    end
+  end
+
+  defp coerce_decimal(_), do: nil
 
   defp maybe_put_packaging_combo_items(attrs, _company_id, _line), do: attrs
 

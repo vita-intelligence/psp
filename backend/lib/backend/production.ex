@@ -2050,6 +2050,16 @@ defmodule Backend.Production do
       # the operator only knows the part, not which recipe to pick.
       |> maybe_resolve_bom(actor)
       |> maybe_resolve_routing(actor)
+      # Pull the customer's packaging pick from the linked CO line.
+      # RTG orders carry the combo on the CO line as
+      # ``npd_packaging_combo_items``; without this step the generic
+      # ``ManufacturingOrderController.create/2`` (the "Create MO"
+      # button on the wizard) skips packaging entirely and the
+      # finished-product MO ends up with no bottle/cap/label
+      # bookings. The CO-scoped ``CustomerOrderController`` already
+      # ran this via ``maybe_put_packaging_combo_items``; hoisting
+      # it here means both entry points behave the same.
+      |> maybe_resolve_packaging_combo_from_co_line(actor)
 
     with :ok <-
            ensure_mo_site_valid_for_project_type(
@@ -3871,6 +3881,138 @@ defmodule Backend.Production do
           rid -> Map.put(attrs, "routing_id", rid)
         end
     end
+  end
+
+  # RTG orders carry the customer's packaging pick on the CO line as
+  # ``npd_packaging_combo_items`` (stamped by the NPD → PSP proposal
+  # merge sync). When the wizard creates an MO for that line, the
+  # combo has to land on the MO as ``packaging_combo_items`` so
+  # ``packaging_overlay_active?`` swaps the default packaging BOM
+  # for the customer's chosen bottle / cap / label. Without this,
+  # ``manufacturing_order_controller.create/2`` (the "Create MO"
+  # button on the wizard) creates a root MO with nil overlay and
+  # the finished-product MO ends up with zero packaging bookings.
+  # Custom orders / commercial COs / MOs without a CO line all
+  # skip: nothing to inject, existing behaviour preserved.
+  defp maybe_resolve_packaging_combo_from_co_line(attrs, %User{} = actor) do
+    cond do
+      # Caller already passed a resolved list — respect it (that's
+      # how CustomerOrderController + the integration/trial-batch
+      # controllers thread the overlay explicitly).
+      Map.has_key?(attrs, "packaging_combo_items") ->
+        attrs
+
+      is_nil(attrs["customer_order_line_id"]) ->
+        attrs
+
+      true ->
+        import Ecto.Query
+
+        line =
+          Backend.Repo.one(
+            from l in Backend.CustomerOrders.CustomerOrderLine,
+              where: l.id == ^attrs["customer_order_line_id"]
+          )
+
+        cond do
+          is_nil(line) ->
+            attrs
+
+          not is_list(line.npd_packaging_combo_items) or
+              line.npd_packaging_combo_items == [] ->
+            attrs
+
+          true ->
+            # ``book_packaging_overlay`` treats each combo row's
+            # ``quantity`` as the ABSOLUTE TOTAL for the whole MO
+            # (NPD's trial-batch path pre-computes ``per_pack ×
+            # total_packs``). RTG's CO-line combo items store the
+            # per-unit-of-output ratio (typically 1 per finished
+            # bottle) so we have to scale them by the target MO
+            # quantity here to match that contract. Without this
+            # step a 7500-bottle RTG order books 1 bottle + 1 cap +
+            # 1 label at the pickup screen and shows an eye-catching
+            # 7499-unit shortage on the operator's picker board.
+            mo_qty = parse_decimal(attrs["quantity"]) || Decimal.new(0)
+            resolved = resolve_combo_items(actor.company_id, line.npd_packaging_combo_items)
+
+            scaled =
+              Enum.map(resolved, fn row ->
+                per_unit = Map.get(row, "quantity") || Decimal.new(1)
+                per_unit_dec = parse_decimal(per_unit) || Decimal.new(1)
+                total = Decimal.mult(per_unit_dec, mo_qty)
+                Map.put(row, "quantity", total)
+              end)
+
+            Map.put(attrs, "packaging_combo_items", scaled)
+        end
+    end
+  end
+
+  # Loose Decimal coercion used by the packaging-combo scaler. Accepts
+  # a Decimal / int / float / numeric string. Anything else returns
+  # nil so the caller can fall back cleanly rather than crash a whole
+  # MO create on a malformed quantity.
+  defp parse_decimal(%Decimal{} = d), do: d
+  defp parse_decimal(i) when is_integer(i), do: Decimal.new(i)
+  defp parse_decimal(f) when is_float(f), do: Decimal.from_float(f)
+
+  defp parse_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> nil
+    end
+  end
+
+  defp parse_decimal(_), do: nil
+
+  defp resolve_combo_items(company_id, items) when is_list(items) do
+    import Ecto.Query
+
+    items
+    |> Enum.map(fn row ->
+      # NPD's merge_from_proposal sync pre-bakes ``psp_item_uuid`` on
+      # every RTG combo item, so a straight ``Item.uuid`` lookup is
+      # the only path we exercise in prod. ``npd_item_uuid`` is kept
+      # in the JSONB for observability but there's no PSP-side column
+      # to look items up by it — customer_order_controller's
+      # ``lookup_item_by_npd_source`` targets ``Item.npd_source_uuid``
+      # which does not exist (only Customer carries that field), so
+      # the fallback would raise. Items that don't have a resolved
+      # ``psp_item_uuid`` are silently dropped and the operator can
+      # top-up the packaging on the MO detail if needed.
+      psp_uuid = row["psp_item_uuid"] || row[:psp_item_uuid] || ""
+      qty = row["quantity"] || row[:quantity] || 1
+      stage_uuid = row["psp_stage_uuid"] || row[:psp_stage_uuid]
+
+      item_id =
+        if is_binary(psp_uuid) and psp_uuid != "" do
+          case Ecto.UUID.cast(psp_uuid) do
+            {:ok, u} ->
+              Backend.Repo.one(
+                from i in Backend.Items.Item,
+                  where: i.company_id == ^company_id and i.uuid == ^u,
+                  select: i.id
+              )
+
+            _ ->
+              nil
+          end
+        end
+
+      if is_nil(item_id) do
+        nil
+      else
+        base = %{"item_id" => item_id, "quantity" => qty}
+
+        if is_binary(stage_uuid) and stage_uuid != "" do
+          Map.put(base, "psp_stage_uuid", stage_uuid)
+        else
+          base
+        end
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp maybe_resolve_routing_for_update(attrs, %User{} = actor, %ManufacturingOrder{} = mo) do
