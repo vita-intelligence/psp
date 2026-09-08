@@ -27,20 +27,28 @@ export function NpdValidationCard({ entry, npdBaseUrl }: Props) {
   if (!mo || !mo.npd_formulation_uuid || !mo.npd_trial_batch_uuid) return null;
 
   // Customer-paid sample fulfilment (MO's linked CO has
-  // ``sample_kind = true``) → hide the card. The MO is producing
-  // a specific sample kit a customer ordered via the /samples
-  // fulfilment queue — that's production of an already-validated
-  // recipe, not R&D validation. Applies to BOTH Custom + RTG
-  // (customer paid samples on either flavour skip per-batch
-  // validation the same way).
+  // ``sample_kind = true``) is only "fulfilment of an already-
+  // validated recipe" for RTG — the RTG catalogue template is
+  // director-approved once and every downstream order runs the
+  // same locked recipe, so the per-batch validation form doesn't
+  // add anything. For CUSTOM projects the recipe is bespoke and
+  // the sample IS the R&D validation run — the scientist has to
+  // fill weight / hardness / disintegration / organoleptic tests
+  // on NPD before the final product can be approved, or we're
+  // approving a lot with no validation trail. Gate on the CO's
+  // ``npd_project_type`` so Custom sample-kind MOs still show
+  // the card. RTG sample-kind MOs (fulfilling a paid catalogue
+  // sample after publish) continue to skip validation as before.
   //
-  // Internal validation trials — scientist creates a batch on NPD
-  // to prove a new recipe (Custom trial-slot OR RTG pre-publish
-  // trial) — have no CO link, so this stays false and the card
-  // correctly shows. ``batch.kind`` is NOT the right signal:
-  // scientists commonly pick ``trial`` on customer-paid samples
-  // too (bench-scale run), so gating on kind would misfire.
-  if (mo.is_customer_sample_fulfilment) return null;
+  // Internal validation trials (scientist creating a batch on
+  // NPD's trial-batches page with no CO link) have
+  // ``is_customer_sample_fulfilment = false`` so they always
+  // show. ``batch.kind`` is NOT the right signal: scientists
+  // commonly pick ``trial`` on customer-paid samples too
+  // (bench-scale run), so gating on kind would misfire.
+  const isRtgSampleFulfilment =
+    mo.is_customer_sample_fulfilment && mo.npd_project_type === "ready_to_go";
+  if (isRtgSampleFulfilment) return null;
 
   const base = npdBaseUrl.replace(/\/+$/, "");
   const href =

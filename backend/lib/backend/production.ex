@@ -9971,20 +9971,23 @@ defmodule Backend.Production do
           :ok
 
         # Customer-paid sample fulfilment (linked CO has
-        # ``sample_kind = true``) — customer ordered a specific
-        # sample kit of an already-validated recipe (Custom FINAL
-        # or RTG published SKU). This is product production, not
-        # R&D validation, so the gate must NOT block Output QC on
-        # it. Mirrors the ``NpdValidationCard`` render rule
-        # (``customer_sample_fulfilment?/1`` in payloads.ex) so
-        # BE + FE tell the same story.
+        # ``sample_kind = true``) is only "fulfilment of an
+        # already-validated recipe" for RTG — the RTG catalogue
+        # template is director-approved once and every downstream
+        # customer sample runs the same locked recipe. Custom
+        # projects are bespoke: the customer paying for the sample
+        # kit IS the R&D validation run, so weight / hardness /
+        # disintegration / organoleptic tests still have to be
+        # captured on NPD before we release the lot. Mirrors the
+        # ``NpdValidationCard`` render rule on the FE.
         #
         # Batch ``kind`` (trial vs sample) is NOT the right
         # signal — scientists commonly pick ``trial`` on customer-
         # paid samples too (bench-scale run of the customer's kit)
         # — so kind-based gating misfires. The CO's ``sample_kind``
-        # is set once at sync time by NPD and stays stable.
-        customer_sample_fulfilment_mo?(mo) ->
+        # + ``npd_project_type`` are set once at sync time and
+        # stay stable.
+        rtg_customer_sample_fulfilment_mo?(mo) ->
           :ok
 
         mo.npd_validation_status == "passed" ->
@@ -10002,12 +10005,35 @@ defmodule Backend.Production do
   end
 
   # True when the MO's linked CO is a sample-fulfilment CO
-  # (``sample_kind = true``). Mirrors the payload builder helper of
-  # the same shape so the release gate and the render gate use the
-  # same rule.
+  # (``sample_kind = true``). Kept for observability / payloads —
+  # do NOT use directly for the validation-gate decision; that
+  # gate must ALSO check RTG so Custom sample-fulfilment MOs still
+  # capture the trial-batch form. See
+  # ``rtg_customer_sample_fulfilment_mo?/1`` below.
   defp customer_sample_fulfilment_mo?(mo) do
     match?(
       %{customer_order_line: %{customer_order: %{sample_kind: true}}},
+      mo
+    )
+  end
+
+  # True only when the CO is a sample-fulfilment CO on an RTG
+  # project — the ONLY shape where the validation gate can safely
+  # release: RTG's catalogue template is director-approved once so
+  # every customer sample kit runs an already-validated recipe.
+  # Custom sample kits, by contrast, ARE the R&D validation run and
+  # must still go through NPD's per-batch validation form before
+  # the lot can leave Output QC.
+  defp rtg_customer_sample_fulfilment_mo?(mo) do
+    match?(
+      %{
+        customer_order_line: %{
+          customer_order: %{
+            sample_kind: true,
+            npd_project_type: "ready_to_go"
+          }
+        }
+      },
       mo
     )
   end

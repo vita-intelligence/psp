@@ -1233,14 +1233,18 @@ function computeNpdGate(
   if (!mo.npd_trial_batch_uuid) {
     return { blocked: false };
   }
-  // Customer-paid sample fulfilment doesn't gate on validation —
-  // the recipe is already validated (published RTG SKU or approved
-  // Custom FINAL); this MO is just producing the customer's sample
-  // kit. Internal validation trials keep the gate on. Matches the
-  // ``NpdValidationCard`` render rule. See the DTO comment on
-  // ``is_customer_sample_fulfilment`` for why batch ``kind`` isn't
-  // the right signal.
-  if (mo.is_customer_sample_fulfilment) return { blocked: false };
+  // Customer-paid sample fulfilment only skips the validation gate
+  // for RTG — the RTG catalogue template is director-approved once
+  // and every downstream customer sample runs the same locked
+  // recipe. Custom projects are bespoke: the customer paying for
+  // the sample kit IS the R&D validation run, so weight / hardness
+  // / disintegration / organoleptic tests still have to be
+  // captured on NPD before Pass or Fail unlock. Mirrors the
+  // ``NpdValidationCard`` render rule + the server-side gate
+  // ``rtg_customer_sample_fulfilment_mo?/1`` in production.ex.
+  const isRtgSampleFulfilment =
+    mo.is_customer_sample_fulfilment && mo.npd_project_type === "ready_to_go";
+  if (isRtgSampleFulfilment) return { blocked: false };
   const status = mo.npd_validation_status;
   if (status === "passed") return { blocked: false };
 
