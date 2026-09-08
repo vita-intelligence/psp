@@ -1445,12 +1445,23 @@ defmodule Backend.OrderWizard do
     cond do
       # Bailee flow, fully drained. The CO was routed to 3PL at
       # release; the customer has since triggered enough portal /
-      # Shopify dispatch requests to zero every placement. The
-      # order is now fulfilled — flip to ``:dispatched`` (final for
-      # bailee — customer took possession at each pull, no separate
-      # ``:delivered`` confirmation exists).
+      # Shopify dispatch requests to zero every placement. Each
+      # dispatch spawns its own shipment (per-dispatch FK — see the
+      # 2026-09-04 burst-test fix) and the portal's "Mark as
+      # delivered" CTA flips those shipments to ``status =
+      # "delivered"`` via ``confirm_delivery_from_portal``. So we
+      # DO have a per-shipment delivered signal for bailee — check
+      # ``shipment_coverage`` to advance the wizard past
+      # ``:dispatched`` when every shipment has been confirmed
+      # received. Earlier code returned ``:dispatched``
+      # unconditionally, which left drained bailee orders stuck in
+      # the /projects "In transit" column even after every portal
+      # dispatch was marked delivered.
       had_bailee_lots? and on_shelf_ids == [] ->
-        :dispatched
+        case shipment_coverage(candidate_ids) do
+          {:delivered, _} -> :delivered
+          _ -> :dispatched
+        end
 
       # Direct-ship flow, fully drained. Symmetrical to the bailee
       # branch above: every output lot has zero placement qty (walked

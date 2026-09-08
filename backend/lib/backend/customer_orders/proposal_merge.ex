@@ -1142,7 +1142,18 @@ defmodule Backend.CustomerOrders.ProposalMerge do
               combo_items_raw
               |> List.wrap()
               |> Enum.map(fn item ->
-                %{
+                # NPD's per-item stage routing (``Option A``) lives on
+                # each combo item as ``psp_stage_uuid``: the semi-
+                # finished item uuid of the stage MO the packaging
+                # item should be booked at (e.g. bottle → bottling
+                # stage, cap → capping stage). Empty / missing means
+                # "book at the root MO" (finished-product stage, or
+                # legacy pre-Option-A combos). Without persisting
+                # this field the whole combo silently falls back to
+                # the root MO overlay and every packaging item lands
+                # on the finished-product MO instead of splitting
+                # across the tree.
+                base = %{
                   "npd_item_uuid" =>
                     to_string(item["npd_item_uuid"] || item[:npd_item_uuid] || ""),
                   "psp_item_uuid" =>
@@ -1152,6 +1163,15 @@ defmodule Backend.CustomerOrders.ProposalMerge do
                     (item["quantity"] || item[:quantity] || 1)
                     |> normalise_combo_quantity()
                 }
+
+                stage_uuid =
+                  to_string(item["psp_stage_uuid"] || item[:psp_stage_uuid] || "")
+
+                if stage_uuid == "" do
+                  base
+                else
+                  Map.put(base, "psp_stage_uuid", stage_uuid)
+                end
               end)
               |> Enum.reject(fn i ->
                 # Drop rows that have neither a PSP nor NPD identifier
