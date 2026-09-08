@@ -79,7 +79,17 @@ export function formatCompanyNumber(
 
   const decimal = prefs?.decimal_separator || ".";
   const thousands = prefs?.thousands_separator || ",";
-  const maxFrac = opts.maxFractionDigits ?? 4;
+  // Pharmaceutical standard is 5 decimal places — the canonical
+  // precision every persisted qty in this system uses (BOM lines,
+  // stock placements, MO bookings, goods-in received qty). Rendering
+  // at 4dp truncates the 5th digit, which flows back into the
+  // operator's mental model: they see "32.0643 remaining" for a
+  // 32.06435-ordered PO line, punch the same digits into the pack
+  // qty, and the reconciled receive is short by 0.00005. Bumping the
+  // default to 5 aligns display with storage. Trailing zeros are
+  // still trimmed below so a whole number renders as "5" not
+  // "5.00000".
+  const maxFrac = opts.maxFractionDigits ?? 5;
   const minFrac = Math.min(opts.minFractionDigits ?? 0, maxFrac);
 
   // Trim trailing zeros first so "5.0000" → "5" (unless minFrac
