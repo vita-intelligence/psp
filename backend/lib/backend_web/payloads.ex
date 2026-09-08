@@ -794,6 +794,24 @@ defmodule BackendWeb.Payloads do
       npd_spec_approved_at: co.npd_spec_approved_at,
       npd_spec_customer_signed_at: co.npd_spec_customer_signed_at,
       npd_spec_customer_signed_by_name: co.npd_spec_customer_signed_by_name,
+      # Newer proposal-scoped FINAL-spec mirror. Populated by
+      # ``proposal_merge`` when the customer signs the per-proposal
+      # FINAL sheet (the field family the Trust Card should prefer —
+      # ``npd_spec_customer_signed_at`` above only lands when a
+      # director-approval sync fires and is nil until a follow-up
+      # sync path stamps the customer signature into it). Sending
+      # both lets the FE fall back cleanly for the pre-merge legacy
+      # rows without a schema migration.
+      npd_final_spec_uuid: co.npd_final_spec_uuid,
+      npd_final_spec_signed_at: co.npd_final_spec_signed_at,
+      npd_final_spec_status: co.npd_final_spec_status,
+      # Project flavour so the Trust Card can loosen the spec-drift
+      # check for RTG — RTG's per-proposal signed FINAL sheets all
+      # share ONE canonical formulation, so a BOM whose provenance
+      # points at an earlier order's signed spec (e.g. ORDER-1) is
+      # not really drifting from a CO on ORDER-2 as long as the
+      # recipe hasn't changed. Custom keeps the strict uuid check.
+      npd_project_type: co.npd_project_type,
       bundled_specs: bundled_specs(co),
       npd_proposal_uuid: co.npd_proposal_uuid,
       npd_proposal_code: co.npd_proposal_code,
@@ -2040,7 +2058,11 @@ defmodule BackendWeb.Payloads do
           npd_spec_director_name: co.npd_spec_director_name,
           npd_spec_approved_at: co.npd_spec_approved_at,
           npd_spec_customer_signed_at: co.npd_spec_customer_signed_at,
-          npd_spec_customer_signed_by_name: co.npd_spec_customer_signed_by_name
+          npd_spec_customer_signed_by_name: co.npd_spec_customer_signed_by_name,
+          npd_final_spec_uuid: co.npd_final_spec_uuid,
+          npd_final_spec_signed_at: co.npd_final_spec_signed_at,
+          npd_final_spec_status: co.npd_final_spec_status,
+          npd_project_type: co.npd_project_type
         },
         limit: 1
 

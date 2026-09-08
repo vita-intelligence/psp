@@ -99,6 +99,20 @@ export interface MoLinkedCustomerOrder {
   npd_spec_approved_at: string | null;
   npd_spec_customer_signed_at: string | null;
   npd_spec_customer_signed_by_name: string | null;
+  /** Newer proposal-scoped FINAL spec identity + customer signature.
+   *  Populated by ``proposal_merge`` when the customer signs the
+   *  per-proposal FINAL sheet (RTG multi-order + Custom flows both
+   *  land here). The Trust Card prefers this over the legacy
+   *  ``npd_spec_customer_signed_at`` because the latter is stamped by
+   *  a director-approval sync that runs before the customer has
+   *  signed anything, so it stays nil in normal flows. */
+  npd_final_spec_uuid: string | null;
+  npd_final_spec_signed_at: string | null;
+  npd_final_spec_status: string | null;
+  /** ``"custom"`` / ``"ready_to_go"`` / null. RTG's per-proposal
+   *  signed FINALs share one canonical formulation, so the Trust
+   *  Card skips the exact-spec-uuid drift check for RTG. */
+  npd_project_type: string | null;
 }
 
 export interface BOMSummary {

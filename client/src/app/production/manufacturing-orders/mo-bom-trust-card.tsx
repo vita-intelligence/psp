@@ -37,13 +37,35 @@ export function BomTrustCard({ bom, co, company }: Props) {
   if (!bom || (!bom.npd_synced_at && !bom.npd_spec_sheet_uuid)) return null;
   if (!co) return null;
 
-  const signedAt = co.npd_spec_customer_signed_at;
+  // Prefer the newer proposal-scoped FINAL-spec mirror
+  // (``npd_final_spec_*``): it's stamped when the customer actually
+  // signs the per-proposal FINAL, which is what the Trust Card is
+  // trying to represent. RTG multi-order requires this — each order
+  // has its own signed FINAL, and the legacy ``npd_spec_*`` family
+  // is populated by a director-approval sync where customer_signed_at
+  // is still nil, so the card was rendering "Customer hasn't signed"
+  // on RTG orders even after the customer clearly signed on the
+  // portal. Falls back to the legacy fields for pre-merge rows.
+  const signedAt =
+    co.npd_final_spec_signed_at ?? co.npd_spec_customer_signed_at;
   const signedBy = co.npd_spec_customer_signed_by_name;
-  const specUuid = co.npd_spec_sheet_uuid;
+  const specUuid = co.npd_final_spec_uuid ?? co.npd_spec_sheet_uuid;
   const specUrl = co.npd_spec_sheet_url;
   const bomSyncedAt = bom.npd_synced_at;
 
+  // RTG multi-order: every RTG proposal spawns a fresh per-order
+  // FINAL spec sheet, but the underlying recipe (and therefore the
+  // synced BOM) is shared across every order of the same formulation.
+  // The BOM's ``npd_spec_sheet_uuid`` will point at whichever
+  // customer-signed spec triggered the most recent sync — usually the
+  // FIRST customer's, so ORDER-2's Trust Card would false-positive
+  // "BOM/spec drift" even though the recipe is identical. Skip the
+  // exact-uuid drift check for RTG; ``bomSyncedAfterSignature`` below
+  // still catches real drift (BOM re-synced with a newer recipe AFTER
+  // the customer signed).
+  const isRtg = co.npd_project_type === "ready_to_go";
   const specMismatch =
+    !isRtg &&
     !!bom.npd_spec_sheet_uuid &&
     !!specUuid &&
     bom.npd_spec_sheet_uuid !== specUuid;
