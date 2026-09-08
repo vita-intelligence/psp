@@ -86,6 +86,12 @@ defmodule BackendWeb.ManufacturingOrderController do
         |> put_status(:created)
         |> json(%{mo: Payloads.manufacturing_order(mo)})
 
+      # Structured error from the BOM booking step — carries the
+      # offending item + suggested minimum batch qty. See
+      # ``Backend.Production.book_one_bom_line`` for the shape.
+      {:error, {:trace_quantity_too_small, meta}} when is_map(meta) ->
+        trace_quantity_error(conn, meta)
+
       {:error, code} when is_atom(code) ->
         creation_error(conn, code)
 
@@ -1813,6 +1819,57 @@ defmodule BackendWeb.ManufacturingOrderController do
   end
 
   # ----- helpers ---------------------------------------------------
+
+  # Trace-quantity refusal — the recipe needs some of an ingredient
+  # but the scaled amount at the current batch size rounds to zero at
+  # the persisted 5-dp precision. Give the operator a specific, honest
+  # message: which item is affected, and the smallest batch size that
+  # would clear the threshold.
+  defp trace_quantity_error(conn, meta) do
+    item_name = Map.get(meta, :item_name) || "an ingredient"
+    per_output = Map.get(meta, :per_output_qty)
+    current = Map.get(meta, :current_batch_qty)
+    min_batch = Map.get(meta, :min_batch_qty)
+
+    to_str = fn
+      %Decimal{} = d -> Decimal.to_string(Decimal.normalize(d), :normal)
+      other when is_binary(other) -> other
+      other -> to_string(other)
+    end
+
+    detail_parts = [
+      "Batch too small for #{item_name}.",
+      if(per_output && current,
+        do:
+          "Recipe uses #{to_str.(per_output)} per unit; current batch of #{to_str.(current)} rounds to zero at 5-decimal precision, so the ingredient can't be booked.",
+        else: nil
+      ),
+      if(min_batch,
+        do:
+          "Scale the batch to at least #{to_str.(min_batch)} to make every ingredient bookable.",
+        else:
+          "Scale the batch up until every ingredient's scaled quantity is at least 0.00001."
+      )
+    ]
+
+    detail =
+      detail_parts
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+
+    unprocessable(
+      conn,
+      "trace_quantity_too_small",
+      detail,
+      %{
+        item_name: item_name,
+        item_id: Map.get(meta, :item_id),
+        per_output_qty: per_output && to_str.(per_output),
+        current_batch_qty: current && to_str.(current),
+        min_batch_qty: min_batch && to_str.(min_batch)
+      }
+    )
+  end
 
   defp creation_error(conn, code) do
     case code do

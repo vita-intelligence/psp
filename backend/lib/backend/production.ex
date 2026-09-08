@@ -2263,8 +2263,25 @@ defmodule Backend.Production do
           {:ok, child} ->
             :ok = snapshot_mo_steps(actor, child)
             Audit.record_created(actor, "manufacturing_order", child, mo_snapshot(child))
-            {:ok, _} = book_all_for_mo(actor, child, strategy: :fefo)
-            cascade_unbooked_children(actor, child, depth + 1)
+
+            # Book the child. A structured booking failure (e.g. a
+            # trace-quantity refusal from a semi-finished's BOM line
+            # that rounds to zero at 5 dp) has to unwind the whole
+            # MO chain — parent MO + siblings included — otherwise the
+            # caller gets a committed root MO paired with a missing
+            # sub-tree. The old hard match ``{:ok, _} = ...`` blew up
+            # with a MatchError, PSP returned 500, and the NPD proxy
+            # reported the generic "Couldn't reach PSP" copy. Rolling
+            # back the outer create_manufacturing_order transaction
+            # preserves the same failure semantics as a top-level BOM
+            # line hitting the guard.
+            case book_all_for_mo(actor, child, strategy: :fefo) do
+              {:ok, _} ->
+                cascade_unbooked_children(actor, child, depth + 1)
+
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
 
           {:error, _cs} ->
             :ok
@@ -5684,12 +5701,64 @@ defmodule Backend.Production do
         Decimal.mult(per_output_qty, mo.quantity || Decimal.new(0))
       end
 
-    needed = Decimal.sub(line_total, already)
+    # Round the raw shortfall to the persisted 5 dp precision every
+    # quantity column in the system uses (pharmaceutical standard, see
+    # the 2026-09-07 normalise-quantity migration). Bench-scale trial
+    # MOs multiply BOM ratios into ``needed`` values below 0.00001 —
+    # the DB column truncates those to 0.00000 on insert, which trips
+    # the ``mo_bookings_quantity_positive`` CHECK and takes the whole
+    # create-MO transaction down with it (NPD saw a 500 propagated as
+    # "Couldn't reach PSP").
+    needed_raw = Decimal.sub(line_total, already)
+    needed = Decimal.round(needed_raw, 5)
 
-    if Decimal.compare(needed, Decimal.new("0")) != :gt do
-      []
-    else
-      allocate_for_item(actor, mo, line.part_id, needed, strategy)
+    cond do
+      # Line has nothing owed — already fully booked, or recipe uses
+      # zero of it at this scale. Nothing to do.
+      Decimal.compare(needed_raw, Decimal.new("0")) != :gt ->
+        []
+
+      # Recipe legitimately needs SOME of this ingredient, but the
+      # amount rounds to zero at 5 dp. Silently skipping would ship
+      # a batch missing an ingredient — refusing here tells the
+      # operator to scale the batch up until every line clears the
+      # 0.00001 threshold. ``Repo.rollback`` propagates through
+      # ``book_all_for_mo_txn``'s Repo.transaction wrapper so the MO
+      # row + reserved lot + snapshot steps also unwind.
+      Decimal.compare(needed, Decimal.new("0")) != :gt ->
+        item_name =
+          case Repo.get(Backend.Items.Item, line.part_id) do
+            %Backend.Items.Item{name: n} when is_binary(n) -> n
+            _ -> "item #{line.part_id}"
+          end
+
+        # Minimum MO quantity that yields a bookable amount (>= 0.00001)
+        # at this BOM ratio: ``per_output_qty × min_qty >= 0.00001``.
+        # Only meaningful when the ratio itself is positive; a zero
+        # per-unit qty on a scaling line means the recipe is malformed
+        # and the min-batch answer would be undefined.
+        min_batch_qty =
+          if Decimal.compare(per_output_qty, Decimal.new("0")) == :gt do
+            Decimal.new("0.00001")
+            |> Decimal.div(per_output_qty)
+            |> Decimal.round(5, :up)
+          else
+            nil
+          end
+
+        Repo.rollback(
+          {:trace_quantity_too_small,
+           %{
+             item_name: item_name,
+             item_id: line.part_id,
+             per_output_qty: per_output_qty,
+             current_batch_qty: mo.quantity,
+             min_batch_qty: min_batch_qty
+           }}
+        )
+
+      true ->
+        allocate_for_item(actor, mo, line.part_id, needed, strategy)
     end
   end
 

@@ -204,6 +204,36 @@ defmodule BackendWeb.IntegrationManufacturingOrderController do
             offender_item_ids: offender_item_ids
           })
 
+        # Structured trace-quantity refusal from the BOM booking step —
+        # the batch is too small for the recipe's smallest ingredient
+        # to be persisted at 5 dp. Surface the item name + the minimum
+        # batch size so NPD can render an actionable message instead
+        # of "Couldn't reach PSP". See
+        # ``Backend.Production.book_one_bom_line`` for the shape.
+        {:error, {:trace_quantity_too_small, meta}} when is_map(meta) ->
+          to_s = fn
+            %Decimal{} = d -> Decimal.to_string(Decimal.normalize(d), :normal)
+            other when is_nil(other) -> nil
+            other -> to_string(other)
+          end
+
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "trace_quantity_too_small",
+            detail:
+              "Batch too small for '#{meta[:item_name]}'. Recipe uses " <>
+                "#{to_s.(meta[:per_output_qty])} per unit; the current batch of " <>
+                "#{to_s.(meta[:current_batch_qty])} rounds this ingredient to zero at " <>
+                "5-decimal precision so it can't be booked. Scale the batch to at " <>
+                "least #{to_s.(meta[:min_batch_qty])} and try again.",
+            item_name: meta[:item_name],
+            item_id: meta[:item_id],
+            per_output_qty: to_s.(meta[:per_output_qty]),
+            current_batch_qty: to_s.(meta[:current_batch_qty]),
+            min_batch_qty: to_s.(meta[:min_batch_qty])
+          })
+
         {:error, reason} ->
           conn
           |> put_status(:unprocessable_entity)
