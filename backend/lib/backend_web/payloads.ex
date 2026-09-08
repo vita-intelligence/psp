@@ -6794,6 +6794,14 @@ defmodule BackendWeb.Payloads do
     floor = location && location.floor
     warehouse = floor && floor.warehouse
 
+    # Last put-away / move photo for this lot — same lookup the
+    # production pickup flow uses so the dispatch operator can eyeball
+    # the pallet before walking to the cell. Nil-safe on unphotographed
+    # lots; the FE renders a placeholder tile in that case.
+    last_photo_url =
+      Backend.Stock.last_photo_url_by_lot_ids(lot.company_id, [lot.id])
+      |> Map.get(lot.id)
+
     %{
       id: lot.id,
       uuid: lot.uuid,
@@ -6805,6 +6813,11 @@ defmodule BackendWeb.Payloads do
       item: shipment_item_summary(lot.item),
       unit_symbol: lot.unit_of_measurement && lot.unit_of_measurement.symbol,
       bailee_customer: shipment_customer(lot.bailee_customer),
+      # Mirror of the production pickup ``last_photo_url`` — powers
+      # the "Last known photo of this lot" tile on the mobile
+      # dispatch form so the truck operator can visually confirm the
+      # pallet without needing to scan every cell in the row.
+      last_photo_url: last_photo_url,
       placement:
         cell &&
           %{
@@ -6812,8 +6825,15 @@ defmodule BackendWeb.Payloads do
             cell_name: cell.name,
             cell_code: render_code(cell, "storage_cell"),
             cell_purpose: cell.purpose,
+            # UUID variants so the mobile dispatch form can hand
+            # ``floor_uuid`` + ``location_uuid`` straight to the
+            # shared ``FloorPlanMini`` renderer (same component the
+            # production pickup flow uses). Names alone can't
+            # target the SVG highlight; the widget keys on uuids.
+            location_uuid: location && location.uuid,
             location_name: location && location.name,
             location_code: location && location.code,
+            floor_uuid: floor && floor.uuid,
             floor_name: floor && floor.name,
             warehouse_name: warehouse && warehouse.name
           }

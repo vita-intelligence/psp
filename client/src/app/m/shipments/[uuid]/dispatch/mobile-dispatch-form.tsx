@@ -46,6 +46,8 @@ import type {
   ShipmentPickupFile,
 } from "@/lib/shipments/types";
 import type { CompanyDefaults } from "@/lib/types";
+import { FloorPlanMini } from "../../../lots/[uuid]/move/floor-plan-mini";
+import { LastSeenPhotoCard } from "../../../lots/[uuid]/move/last-seen-photo";
 
 interface Props {
   shipment: Shipment;
@@ -321,6 +323,72 @@ function MobileDispatchFormInner({ shipment }: Props) {
       </header>
 
       <main className="flex-1 space-y-5 px-4 py-4 pb-32">
+        {/* Walk-to-lot visuals — floor plan with the dispatch cell
+            highlighted + last known photo of the pallet. Same widgets
+            the production pickup flow renders on its "Walk to the
+            lot" step, so the truck operator gets the identical
+            "here's where and here's what it looks like" reference
+            without having to scan every rack. Renders only when the
+            lot has an active placement AND we know its floor + cell —
+            legacy shipments with detached lots or unplaced stock
+            skip the section rather than showing an empty widget. */}
+        {shipment.stock_lot?.placement?.floor_uuid &&
+        shipment.stock_lot.placement.cell_uuid ? (
+          (() => {
+            const p = shipment.stock_lot.placement;
+            // Mirror the production pickup convention
+            // (``DirectionsBody`` in m/pickup/pickup-flow.tsx L730-742):
+            // prefer the operator-typed short code / name over the DB
+            // numbering render (e.g. "CELL00195" / "SL00089") which is
+            // useless for wayfinding. ``location_code`` is the schema's
+            // human-typed short code (e.g. "A-01"); ``location_name``
+            // is the longer human label ("Rack A"). ``cell_name`` is
+            // the shelf label ("Level 2"); ``cell_code`` is the
+            // numbering render and must never leak into a wayfinding
+            // caption.
+            const locationLabel =
+                p.location_code?.trim() ||
+                p.location_name?.trim() ||
+                null;
+            const cellLabel = p.cell_name?.trim() || null;
+            return (
+              <section className="space-y-3">
+                <div className="rounded-lg border border-border/60 bg-card p-3">
+                  <p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Where to find it
+                  </p>
+                  <FloorPlanMini
+                    floorUuid={p.floor_uuid!}
+                    targetLocationUuid={p.cell_uuid}
+                  />
+                  <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                    <span className="font-semibold">
+                      {p.warehouse_name ?? "—"}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {p.floor_name ?? "—"}
+                      {locationLabel ? ` · ${locationLabel}` : ""}
+                    </span>
+                    {cellLabel ? (
+                      <span className="ml-auto font-mono text-[11px] font-semibold">
+                        {cellLabel}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <LastSeenPhotoCard
+                  url={shipment.stock_lot.last_photo_url ?? null}
+                  caption={
+                    itemName && lotCode
+                      ? `${itemName} · ${lotCode}`
+                      : (itemName ?? lotCode ?? undefined)
+                  }
+                />
+              </section>
+            );
+          })()
+        ) : null}
+
         {/* This-visit qty. Prominent because it's the load-bearing
             decision for multi-visit pickups. Defaults to the whole
             remaining qty so single-visit trucks just tap through.

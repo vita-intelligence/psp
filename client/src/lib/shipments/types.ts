@@ -24,13 +24,24 @@ export interface ShipmentLotSummary {
   } | null;
   unit_symbol: string | null;
   bailee_customer: { id: number; uuid: string; name: string } | null;
+  /** Last put-away / move photo for this lot. Powers the "Last known
+   *  photo of this lot" tile on the mobile dispatch pickup form so
+   *  the truck operator can visually confirm the pallet before
+   *  walking to it. ``null`` when the lot has never been photographed
+   *  (older lots pre-photo-workflow, or moved via a legacy API). */
+  last_photo_url: string | null;
   placement: {
     cell_uuid: string;
     cell_name: string | null;
     cell_code: string | null;
     cell_purpose: string;
+    /** UUID variants so mobile flows can hand these directly to the
+     *  shared ``FloorPlanMini`` renderer, which keys on uuids for its
+     *  SVG target-cell highlight. Names alone can't drive the widget. */
+    location_uuid: string | null;
     location_name: string | null;
     location_code: string | null;
+    floor_uuid: string | null;
     floor_name: string | null;
     warehouse_name: string | null;
   } | null;
