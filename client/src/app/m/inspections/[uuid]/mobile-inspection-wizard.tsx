@@ -3307,33 +3307,38 @@ function ReadOnlySummary({
         <QcEditableItems
           inspection={inspection}
           lines={lines}
-          onSaved={async () => {
-            // The QC-edit endpoint returns the updated item, not the
-            // whole inspection. Simplest correct thing: re-fetch the
-            // inspection so every downstream card sees fresh data
-            // (packs, packaging_condition, notes, decision, ...).
-            // ``getInspection`` is not available from the client, so
-            // we hit the same API the wizard's initial hydration
-            // uses and swap in the response.
-            try {
-              const res = await fetch(
-                `/api/goods-in-inspections/${encodeURIComponent(
-                  inspection.uuid,
-                )}`,
-                { cache: "no-store" },
+          onSaved={(updatedItems) => {
+            // ``qcEditItemAction`` already returns the freshly-saved
+            // ``inspection_item`` (with new packs, qty_received,
+            // decision, notes). Splice each one into the local
+            // ``inspection.items`` array so the read-mode summary
+            // updates immediately — no page refresh, no round-trip.
+            //
+            // Prior implementation refetched from
+            // ``/api/goods-in-inspections/[uuid]`` on the client, but
+            // that path is only served by Phoenix (not by a Next.js
+            // API route in this app), so the fetch 404'd and the
+            // parent state stayed on the stale pre-edit snapshot
+            // until a full page reload. Splicing the response
+            // avoids the fake round-trip entirely.
+            if (updatedItems.length === 0) return;
+            const byLineUuid = new Map(
+              updatedItems.map((it) => [it.purchase_order_line_uuid, it]),
+            );
+            const nextItems = inspection.items.map((existing) => {
+              const replacement = byLineUuid.get(
+                existing.purchase_order_line_uuid,
               );
-              if (res.ok) {
-                const body = (await res.json()) as {
-                  goods_in_inspection: Inspection;
-                };
-                if (body.goods_in_inspection) {
-                  onInspectionChange(body.goods_in_inspection);
-                }
+              if (replacement) {
+                byLineUuid.delete(existing.purchase_order_line_uuid);
+                return replacement;
               }
-            } catch {
-              /* silent — worst case the UI still shows pre-save data,
-                 which the operator can force-refresh */
+              return existing;
+            });
+            for (const stillNew of byLineUuid.values()) {
+              nextItems.push(stillNew);
             }
+            onInspectionChange({ ...inspection, items: nextItems });
           }}
         />
       ) : (
@@ -3599,11 +3604,11 @@ function QcEditableItems({
 }: {
   inspection: Inspection;
   lines: PurchaseOrderLine[];
-  /** Fires after every successful save so the parent
-   *  ``ApproverPanel`` can refresh the underlying inspection
-   *  snapshot — otherwise the read-mode UI still shows the
-   *  pre-edit values. */
-  onSaved: () => void;
+  /** Fires after every successful save with the list of freshly
+   *  updated ``InspectionItem``s returned by the QC-edit endpoint.
+   *  The parent splices them into ``inspection.items`` so the
+   *  read-mode UI reflects the change without a page reload. */
+  onSaved: (updatedItems: InspectionItem[]) => void;
 }) {
   const [mode, setMode] = useState<"read" | "edit">("read");
   const [drafts, setDrafts] = useState<Record<string, QcItemDraft>>({});
@@ -3682,6 +3687,7 @@ function QcEditableItems({
     // out of the loop so React can batch, and the parent's onSaved()
     // ends up firing exactly once after the last write lands.
     const snapshot = currentDrafts;
+    const savedItems: InspectionItem[] = [];
     for (const lineUuid of dirtyLineUuids) {
       const draft = snapshot[lineUuid];
       if (!draft) continue;
@@ -3698,11 +3704,12 @@ function QcEditableItems({
         setSaving(false);
         return;
       }
+      if (res.item) savedItems.push(res.item);
     }
     setDrafts({});
     setMode("read");
     setSaving(false);
-    onSaved();
+    onSaved(savedItems);
   }
 
   function cancelEdit() {
@@ -3735,36 +3742,48 @@ function QcEditableItems({
         )}
       </div>
 
-      <ul className="space-y-2">
-        {Array.from(rowsByLine.entries()).map(([lineUuid, { line, item }]) => {
-          const draft = currentDrafts[lineUuid];
-          const base = baseDrafts[lineUuid];
-          if (!draft || !base) return null;
-          const lineDirty = !sameQcDraft(base, draft);
-          if (mode === "edit") {
+      <ul className="space-y-4">
+        {Array.from(rowsByLine.entries()).map(
+          ([lineUuid, { line, item }], idx) => {
+            const draft = currentDrafts[lineUuid];
+            const base = baseDrafts[lineUuid];
+            if (!draft || !base) return null;
+            const lineDirty = !sameQcDraft(base, draft);
+            if (mode === "edit") {
+              return (
+                <QcPerLineEditor
+                  key={lineUuid}
+                  line={line}
+                  item={item}
+                  draft={draft}
+                  dirty={lineDirty}
+                  index={idx}
+                  total={rowsByLine.size}
+                  onChange={(patch) => updateDraft(lineUuid, patch)}
+                  onPackChange={(tempId, patch) =>
+                    updatePack(lineUuid, tempId, patch)
+                  }
+                  onResetLine={() =>
+                    setDrafts((prev) => {
+                      const next = { ...prev };
+                      delete next[lineUuid];
+                      return next;
+                    })
+                  }
+                />
+              );
+            }
             return (
-              <QcPerLineEditor
+              <PerLineReview
                 key={lineUuid}
                 line={line}
                 item={item}
-                draft={draft}
-                dirty={lineDirty}
-                onChange={(patch) => updateDraft(lineUuid, patch)}
-                onPackChange={(tempId, patch) =>
-                  updatePack(lineUuid, tempId, patch)
-                }
-                onResetLine={() =>
-                  setDrafts((prev) => {
-                    const next = { ...prev };
-                    delete next[lineUuid];
-                    return next;
-                  })
-                }
+                index={idx}
+                total={rowsByLine.size}
               />
             );
-          }
-          return <PerLineReview key={lineUuid} line={line} item={item} />;
-        })}
+          },
+        )}
       </ul>
 
       {mode === "edit" && (
@@ -3840,6 +3859,8 @@ function QcPerLineEditor({
   item,
   draft,
   dirty,
+  index,
+  total,
   onChange,
   onPackChange,
   onResetLine,
@@ -3848,6 +3869,8 @@ function QcPerLineEditor({
   item: InspectionItem | undefined;
   draft: QcItemDraft;
   dirty: boolean;
+  index?: number;
+  total?: number;
   onChange: (patch: Partial<QcItemDraft>) => void;
   onPackChange: (tempId: string, patch: Partial<PackDraft>) => void;
   onResetLine: () => void;
@@ -3856,42 +3879,59 @@ function QcPerLineEditor({
     line.item?.stock_uom?.symbol ??
     line.item?.stock_uom?.code ??
     null;
+  const showCounter = typeof index === "number" && typeof total === "number";
 
   return (
     <li
       className={cn(
-        "space-y-3 rounded-md border p-3",
-        dirty
-          ? "border-brand/40 bg-brand/[0.04]"
-          : "border-border/40 bg-background/60",
+        "overflow-hidden rounded-xl border-2 bg-card shadow-sm",
+        dirty ? "border-brand/60 ring-2 ring-brand/20" : "border-border",
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <p className="truncate text-sm font-medium">
-            {itemNameFor(line)}
-          </p>
-          {line.vendor_part_no && (
-            <p className="font-mono text-[10px] text-muted-foreground">
-              {line.vendor_part_no}
-            </p>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            Received {item?.qty_received ?? "—"}
-            {line.qty_ordered ? ` of ${line.qty_ordered}` : ""}
-            {uomSymbol ? ` ${uomSymbol}` : ""}
-          </p>
-        </div>
-        {dirty && (
-          <button
-            type="button"
-            className="shrink-0 text-[10px] font-medium text-brand hover:underline"
-            onClick={onResetLine}
-          >
-            Reset
-          </button>
-        )}
-      </div>
+      <div className="flex">
+        <div
+          className={cn("w-1.5 shrink-0", dirty ? "bg-brand" : "bg-border")}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1 space-y-3 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1 space-y-1">
+              {showCounter && (
+                <p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <span>Item {(index ?? 0) + 1} of {total}</span>
+                  {dirty && (
+                    <span className="rounded-full bg-brand/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-brand">
+                      Edited
+                    </span>
+                  )}
+                </p>
+              )}
+              <p className="break-words text-base font-semibold leading-tight">
+                {itemNameFor(line)}
+              </p>
+              {line.vendor_part_no && (
+                <p className="font-mono text-[10px] text-muted-foreground">
+                  {line.vendor_part_no}
+                </p>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                <span className="font-mono">
+                  {item?.qty_received ?? "—"}
+                  {line.qty_ordered ? ` / ${line.qty_ordered}` : ""}
+                </span>
+                {uomSymbol ? ` ${uomSymbol}` : ""} received
+              </p>
+            </div>
+            {dirty && (
+              <button
+                type="button"
+                className="shrink-0 rounded-md border border-brand/40 bg-brand/10 px-2 py-1 text-[10px] font-semibold text-brand transition-colors hover:bg-brand/20"
+                onClick={onResetLine}
+              >
+                Reset
+              </button>
+            )}
+          </div>
 
       <div className="space-y-2">
         <div>
@@ -3984,24 +4024,26 @@ function QcPerLineEditor({
         </div>
       </div>
 
-      {draft.packs.length > 0 && (
-        <div className="space-y-2 rounded-md border border-border/30 bg-muted/20 p-2">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Packs · {draft.packs.length}
-          </p>
-          <ul className="space-y-2">
-            {draft.packs.map((pack, idx) => (
-              <QcPackEditor
-                key={pack.tempId}
-                pack={pack}
-                index={idx}
-                uomSymbol={uomSymbol}
-                onChange={(patch) => onPackChange(pack.tempId, patch)}
-              />
-            ))}
-          </ul>
+          {draft.packs.length > 0 && (
+            <div className="rounded-lg border border-border/60 bg-muted/30">
+              <p className="border-b border-border/60 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Packs · {draft.packs.length}
+              </p>
+              <ul className="divide-y divide-border/50">
+                {draft.packs.map((pack, idx) => (
+                  <QcPackEditor
+                    key={pack.tempId}
+                    pack={pack}
+                    index={idx}
+                    uomSymbol={uomSymbol}
+                    onChange={(patch) => onPackChange(pack.tempId, patch)}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </li>
   );
 }
@@ -4041,9 +4083,23 @@ function QcPackEditor({
       <p className="text-[11px] font-semibold">Pack {index + 1}</p>
       <div className="grid grid-cols-2 gap-2">
         <PackInput
-          label={`Qty${uomSymbol ? ` (${uomSymbol})` : ""}`}
+          label={`Qty received${uomSymbol ? ` (${uomSymbol})` : ""}`}
           value={pack.qty}
-          onChange={(v) => onChange({ qty: v })}
+          onChange={(v) => {
+            // Auto-mirror ``units_per_package`` to ``qty`` when the
+            // two were in lockstep before the edit — the common
+            // "one drum per row" case that the operator flow seeds
+            // by default. Without this mirror, editing qty here
+            // silently drifts units_per_package to a stale value:
+            // e.g. operator captured 64 kg → both fields = 64. QC
+            // corrects qty to 67 kg → qty_received flips to 67 but
+            // units_per_package stays at 64, which is nonsensical
+            // for a single-drum pack. Advanced multi-unit-per-pack
+            // rows (qty=125, upp=25) are left alone because the two
+            // fields weren't equal to begin with.
+            const wasLinked = pack.qty === pack.units_per_package;
+            onChange(wasLinked ? { qty: v, units_per_package: v } : { qty: v });
+          }}
           mode="decimal"
           mono
         />
@@ -4144,119 +4200,164 @@ function QcPackEditor({
 function PerLineReview({
   line,
   item,
+  index,
+  total,
 }: {
   line: PurchaseOrderLine;
   item: InspectionItem | undefined;
+  index?: number;
+  total?: number;
 }) {
   const decision = item?.material_decision ?? null;
   const uomSymbol =
     line.item?.stock_uom?.symbol ??
     line.item?.stock_uom?.code ??
     null;
-  const decisionTone =
+  const decisionChip =
     decision === "accept"
-      ? "text-emerald-600"
+      ? "bg-emerald-500/15 text-emerald-700 ring-emerald-500/40 dark:text-emerald-300"
       : decision === "reject"
-        ? "text-destructive"
+        ? "bg-destructive/15 text-destructive ring-destructive/40"
         : decision === "hold"
-          ? "text-amber-600"
-          : "text-muted-foreground";
+          ? "bg-amber-500/15 text-amber-700 ring-amber-500/40 dark:text-amber-300"
+          : "bg-muted text-muted-foreground ring-border";
+  const accentStripe =
+    decision === "accept"
+      ? "bg-emerald-500"
+      : decision === "reject"
+        ? "bg-destructive"
+        : decision === "hold"
+          ? "bg-amber-500"
+          : "bg-border";
   const packagingNote =
     item?.packaging_condition_notes?.trim() || null;
   const decisionReason =
     item?.material_decision_reason?.trim() || null;
+  const showCounter = typeof index === "number" && typeof total === "number";
 
   return (
-    <li className="space-y-2 rounded-md border border-border/40 bg-background/60 p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <p className="truncate text-sm font-medium">
-            {itemNameFor(line)}
-          </p>
-          {line.vendor_part_no && (
-            <p className="font-mono text-[10px] text-muted-foreground">
-              {line.vendor_part_no}
-            </p>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            Received {item?.qty_received ?? "—"}
-            {line.qty_ordered ? ` of ${line.qty_ordered}` : ""}
-            {uomSymbol ? ` ${uomSymbol}` : ""}
-          </p>
-        </div>
-        <span
-          className={cn(
-            "shrink-0 rounded-md bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase",
-            decisionTone,
-          )}
-        >
-          {decision ?? "—"}
-        </span>
-      </div>
+    <li className="overflow-hidden rounded-xl border-2 border-border bg-card shadow-sm">
+      <div className="flex">
+        {/* Left accent stripe encodes the decision at a glance so
+            the QC reviewer can scan a long list without reading
+            each chip label. */}
+        <div className={cn("w-1.5 shrink-0", accentStripe)} aria-hidden />
+        <div className="min-w-0 flex-1 space-y-3 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1 space-y-1">
+              {showCounter && (
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Item {(index ?? 0) + 1} of {total}
+                </p>
+              )}
+              <p className="break-words text-base font-semibold leading-tight">
+                {itemNameFor(line)}
+              </p>
+              {line.vendor_part_no && (
+                <p className="font-mono text-[10px] text-muted-foreground">
+                  {line.vendor_part_no}
+                </p>
+              )}
+            </div>
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ring-1",
+                decisionChip,
+              )}
+            >
+              {decision ?? "—"}
+            </span>
+          </div>
 
-      {item?.packaging_condition && (
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-          <span
-            className={cn(
-              "rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase",
-              item.packaging_condition === "good"
-                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                : "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-border/60 pt-2.5">
+            <div className="min-w-0">
+              <p className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                Received
+              </p>
+              <p className="font-mono text-lg font-semibold leading-none">
+                {item?.qty_received ?? "—"}
+                {line.qty_ordered ? (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {" "}
+                    / {line.qty_ordered}
+                  </span>
+                ) : null}
+                {uomSymbol ? (
+                  <span className="ml-1 text-xs font-normal text-muted-foreground">
+                    {uomSymbol}
+                  </span>
+                ) : null}
+              </p>
+            </div>
+            {item?.packaging_condition && (
+              <div className="min-w-0">
+                <p className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                  Packaging
+                </p>
+                <p
+                  className={cn(
+                    "text-xs font-semibold capitalize",
+                    item.packaging_condition === "good"
+                      ? "text-emerald-700 dark:text-emerald-300"
+                      : "text-amber-700 dark:text-amber-300",
+                  )}
+                >
+                  {item.packaging_condition}
+                </p>
+              </div>
             )}
-          >
-            Packaging: {item.packaging_condition}
-          </span>
-        </div>
-      )}
+          </div>
 
-      {(packagingNote || decisionReason) && (
-        <div className="space-y-1.5">
-          {packagingNote && (
-            <div className="flex items-start gap-1.5 rounded border border-amber-200/60 bg-amber-50/60 p-1.5 dark:border-amber-800/40 dark:bg-amber-950/30">
-              <MessageSquare className="mt-0.5 size-3 shrink-0 text-amber-700 dark:text-amber-300" />
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <p className="text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
-                  Packaging condition note
-                </p>
-                <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
-                  {packagingNote}
-                </p>
-              </div>
+          {(packagingNote || decisionReason) && (
+            <div className="space-y-1.5">
+              {packagingNote && (
+                <div className="flex items-start gap-1.5 rounded border border-amber-200/60 bg-amber-50/60 p-2 dark:border-amber-800/40 dark:bg-amber-950/30">
+                  <MessageSquare className="mt-0.5 size-3 shrink-0 text-amber-700 dark:text-amber-300" />
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                      Packaging note
+                    </p>
+                    <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
+                      {packagingNote}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {decisionReason && (
+                <div className="flex items-start gap-1.5 rounded border border-border/60 bg-muted/40 p-2">
+                  <MessageSquare className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Decision reason
+                    </p>
+                    <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
+                      {decisionReason}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
-          {decisionReason && (
-            <div className="flex items-start gap-1.5 rounded border border-border/60 bg-muted/40 p-1.5">
-              <MessageSquare className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Material decision reason
-                </p>
-                <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
-                  {decisionReason}
-                </p>
-              </div>
+
+          {item?.packs && item.packs.length > 0 && (
+            <div className="rounded-lg border border-border/60 bg-muted/30">
+              <p className="border-b border-border/60 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Packs · {item.packs.length}
+              </p>
+              <ul className="divide-y divide-border/50">
+                {item.packs.map((pack, idx) => (
+                  <PackReviewCard
+                    key={idx}
+                    pack={pack}
+                    index={idx}
+                    uomSymbol={uomSymbol}
+                  />
+                ))}
+              </ul>
             </div>
           )}
         </div>
-      )}
-
-      {item?.packs && item.packs.length > 0 && (
-        <div className="space-y-1.5 rounded-md border border-border/30 bg-muted/20 p-2">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Packs · {item.packs.length}
-          </p>
-          <ul className="space-y-1.5">
-            {item.packs.map((pack, idx) => (
-              <PackReviewCard
-                key={idx}
-                pack={pack}
-                index={idx}
-                uomSymbol={uomSymbol}
-              />
-            ))}
-          </ul>
-        </div>
-      )}
+      </div>
     </li>
   );
 }
@@ -4282,12 +4383,16 @@ function PackReviewCard({
       : null;
 
   return (
-    <li className="space-y-1.5 rounded border border-border/40 bg-background/60 p-2">
-      <p className="text-[11px] font-semibold">
-        Pack {index + 1}
-        <span className="ml-2 font-mono text-[10px] font-normal text-muted-foreground">
+    <li className="space-y-1.5 px-2.5 py-2">
+      <p className="flex items-baseline justify-between gap-2 text-[11px] font-semibold">
+        <span>Pack {index + 1}</span>
+        <span className="font-mono text-[11px] font-semibold tabular-nums text-foreground">
           {String(pack.qty ?? "—")}
-          {uomSymbol ? ` ${uomSymbol}` : ""}
+          {uomSymbol ? (
+            <span className="ml-0.5 text-[10px] font-normal text-muted-foreground">
+              {uomSymbol}
+            </span>
+          ) : null}
         </span>
       </p>
       <dl className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
