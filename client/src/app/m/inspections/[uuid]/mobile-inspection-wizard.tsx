@@ -1278,14 +1278,38 @@ export function MobileInspectionWizard({
       {/* Over-receipt confirm — see `computeOverReceipts` above. The
           server accepts over-receipts (physical count trumps PO), but
           we ask the operator to confirm here so a mistyped qty
-          doesn't sail through with no brake. */}
+          doesn't sail through with no brake.
+
+          Layout: capped at the visible viewport height (``dvh`` so
+          the mobile browser chrome doesn't clip the footer off) and
+          split into three tracks — auto header, ``1fr`` scrollable
+          body, auto footer. Without this the row list grows
+          unbounded and pushes the "Confirm" / "Go back" buttons past
+          the bottom of the screen on any PO with more than 4-5
+          over-received lines. */}
       <AlertDialog
         open={overReceiptConfirm !== null}
         onOpenChange={(open) => {
           if (!open) setOverReceiptConfirm(null);
         }}
       >
-        <AlertDialogContent>
+        {/* Override shadcn's default center-position + intrinsic
+            height with an explicit top-anchored + bottom-anchored
+            box. ``!`` prefixes force these to beat the base classes
+            (base has ``top-[50%]`` + ``translate-y-[-50%]`` which
+            centers the dialog on its OWN height — meaning if the
+            content grew past 100vh the dialog would spill both top
+            AND bottom equally, exactly what the operator was
+            seeing). Pinning top: 1rem, bottom: 1rem forces the
+            dialog to fit in the visible viewport with a small
+            margin, no matter how many rows the list carries.
+            Inline ``style`` supplies a ``dvh``-based max-height as
+            a belt-and-braces cap for browsers that shrink the
+            visual viewport as the URL bar hides. */}
+        <AlertDialogContent
+          className="!top-4 !bottom-4 !translate-y-0 !max-h-[calc(100vh-2rem)] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
+          style={{ maxHeight: "calc(100dvh - 2rem)" }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <AlertTriangle className="size-5 text-amber-600" />
@@ -1299,26 +1323,33 @@ export function MobileInspectionWizard({
             </AlertDialogDescription>
           </AlertDialogHeader>
           {overReceiptConfirm && (
-            <ul className="space-y-2 text-sm">
-              {overReceiptConfirm.map((row) => (
-                <li
-                  key={row.lineUuid}
-                  className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
-                >
-                  <p className="font-medium">{row.itemName}</p>
-                  <p className="text-xs text-muted-foreground">
-                    Ordered {formatCompanyNumber(row.ordered, null)} ·
-                    already received{" "}
-                    {formatCompanyNumber(row.alreadyReceived, null)} ·
-                    this delivery{" "}
-                    {formatCompanyNumber(row.receivingNow, null)}
-                  </p>
-                  <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
-                    Over by {formatCompanyNumber(row.overBy, null)}
-                  </p>
-                </li>
-              ))}
-            </ul>
+            // ``min-h-0`` on this grid child lets it shrink below its
+            // intrinsic content size; without it the ``overflow-y-auto``
+            // never kicks in and the list overflows the parent.
+            // ``-mx-2 px-2`` keeps the scrollbar in the padded region
+            // so it doesn't sit flush against the border.
+            <div className="-mx-2 min-h-0 overflow-y-auto px-2">
+              <ul className="space-y-2 text-sm">
+                {overReceiptConfirm.map((row) => (
+                  <li
+                    key={row.lineUuid}
+                    className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+                  >
+                    <p className="font-medium">{row.itemName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Ordered {formatCompanyNumber(row.ordered, null)} ·
+                      already received{" "}
+                      {formatCompanyNumber(row.alreadyReceived, null)} ·
+                      this delivery{" "}
+                      {formatCompanyNumber(row.receivingNow, null)}
+                    </p>
+                    <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                      Over by {formatCompanyNumber(row.overBy, null)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           <AlertDialogFooter>
             <AlertDialogCancel>Go back and fix</AlertDialogCancel>
