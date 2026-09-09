@@ -1334,14 +1334,18 @@ export function MobileInspectionWizard({
         <AlertDialogContent
           className="grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
           style={{
-            // All four anchors set + ``width: auto`` + ``height:
+            // Tailwind v4 gotcha: ``translate-x-*`` and
+            // ``translate-y-*`` use the modern ``translate`` CSS
+            // property directly, NOT ``transform: translate()``.
+            // ``transform: none`` alone doesn't override them —
+            // have to zero the ``translate`` shorthand too.
+            // Applies for scale + rotate individually as well;
+            // clearing all three keeps the zoom-in-95 animation
+            // from re-applying a scale mid-transition.
+            //
+            // All four anchors + ``width: auto`` + ``height:
             // auto`` = size computed from anchors, dialog fills
-            // viewport minus 1rem margins. Without the explicit
-            // ``width/height: auto`` the base's ``w-full`` sets
-            // ``width: 100%`` which forces the browser to pick
-            // ONE horizontal anchor (``left``) and ignore
-            // ``right`` — element ends up at top-left with its
-            // intrinsic content size instead of stretching.
+            // viewport minus 1rem margins.
             top: "1rem",
             bottom: "1rem",
             left: "1rem",
@@ -1349,6 +1353,9 @@ export function MobileInspectionWizard({
             width: "auto",
             height: "auto",
             transform: "none",
+            translate: "none",
+            scale: "none",
+            rotate: "none",
             maxWidth: "min(calc(100vw - 2rem), 32rem)",
             maxHeight: "calc(100dvh - 2rem)",
             // Recenter horizontally within the max-width cap so
