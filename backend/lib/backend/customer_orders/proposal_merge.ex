@@ -795,16 +795,16 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       end
 
     # Auto-confirm the CO when NPD signals the customer has paid the
-    # order in full. Every portal-originated CO (Custom or RTG) is
-    # born inside this integration — no operator ran the PSP submit /
-    # approver-sign / director-sign / mark-confirmed wizard — so
-    # gating MO creation on PSP-side manual confirmation would strand
-    # the flow. The staff-driven wizard is the flow for COs created
-    # inside PSP directly; portal-originated orders skip it (same
-    # posture as ``npd_sync.upsert_sample_from_npd`` which also
-    # inserts at ``status = "confirmed"``).
+    # order in full. Every portal-originated CO (Custom or RTG or
+    # reorder) is born inside this integration — no operator ran the
+    # PSP submit / approver-sign / director-sign / mark-confirmed
+    # wizard — so gating MO creation on PSP-side manual confirmation
+    # would strand the flow. The staff-driven wizard is the flow for
+    # COs created inside PSP directly; portal-originated orders skip
+    # it (same posture as ``npd_sync.upsert_sample_from_npd`` which
+    # also inserts at ``status = "confirmed"``).
     #
-    # Signal differs by project type:
+    # Signal differs by shape (payment structure, not project_type):
     #
     #   * Custom — deposit unlocks trial batches (partial payment),
     #     FINAL payment is the production-authorising money → gate on
@@ -813,6 +813,15 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     #     storefront proposal so the "deposit" IS the full payment.
     #     Gate on ``npd_deposit_paid_at``; ``npd_final_payment_approved_at``
     #     never lands because RTG doesn't invoice a final.
+    #   * Reorder — stored as Custom (``project_type = "custom"``,
+    #     ``is_reorder = true``) but commercially like RTG. The reorder
+    #     reuses the ORIGINAL customer order's already-signed FINAL
+    #     spec, so there's no trial-batch cycle to run and no final
+    #     invoice to approve — the deposit invoice IS the whole
+    #     invoice. Gate the same way RTG does, else the CO would
+    #     stay at ``draft`` forever after payment lands and the MO-
+    #     create surface would keep flashing "Finish the approval &
+    #     confirmation step above before spawning MOs."
     #
     # Only fire when the CO isn't already in a terminal state — a
     # manually cancelled row shouldn't get resurrected by a downstream
@@ -820,9 +829,11 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     # overwritten.
     project_type_raw = sanitize(params["npd_project_type"])
     is_rtg = project_type_raw == "ready_to_go"
+    is_reorder = params["npd_is_reorder"] == true
+    settle_on_deposit? = is_rtg or is_reorder
 
     settled? =
-      case {is_rtg, transition_attrs.npd_final_payment_approved_at,
+      case {settle_on_deposit?, transition_attrs.npd_final_payment_approved_at,
             transition_attrs.npd_deposit_paid_at} do
         {true, _, %DateTime{}} -> true
         {false, %DateTime{}, _} -> true
