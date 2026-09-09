@@ -1334,13 +1334,29 @@ export function MobileInspectionWizard({
         <AlertDialogContent
           className="grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
           style={{
+            // All four anchors set + ``width: auto`` + ``height:
+            // auto`` = size computed from anchors, dialog fills
+            // viewport minus 1rem margins. Without the explicit
+            // ``width/height: auto`` the base's ``w-full`` sets
+            // ``width: 100%`` which forces the browser to pick
+            // ONE horizontal anchor (``left``) and ignore
+            // ``right`` — element ends up at top-left with its
+            // intrinsic content size instead of stretching.
             top: "1rem",
             bottom: "1rem",
             left: "1rem",
             right: "1rem",
+            width: "auto",
+            height: "auto",
             transform: "none",
+            maxWidth: "min(calc(100vw - 2rem), 32rem)",
             maxHeight: "calc(100dvh - 2rem)",
-            maxWidth: "calc(100vw - 2rem)",
+            // Recenter horizontally within the max-width cap so
+            // wider screens don't leave the dialog stuck to the
+            // left edge. Vertical stays anchored top/bottom for
+            // maximum height headroom.
+            marginLeft: "auto",
+            marginRight: "auto",
           }}
         >
           <AlertDialogHeader>
