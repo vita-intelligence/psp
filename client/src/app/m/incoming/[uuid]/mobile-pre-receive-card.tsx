@@ -117,20 +117,43 @@ export function MobilePreReceiveCard({
   // Aggregate counters across all lines so the operator can spot
   // partial-receive state at a glance ("3 of 5 already in") without
   // scanning every row.
-  const { totalReceived, totalOrdered, hasPartial, isFullyReceived } = useMemo(() => {
+  //
+  // ``isFullyReceived`` MUST be a per-line check, not an algebraic
+  // total comparison. Vendors routinely over-ship tiny lines to
+  // round up to a pack size — those over-receipts algebraically
+  // mask a genuine shortfall on another line and would flip this
+  // flag to true even though procurement is still owed material.
+  // Mirror the server's ``compute_po_status_from_lines``: a PO is
+  // fully received IFF every line's ``qty_received >= qty_ordered``.
+  // Any line short → not fully received.
+  const {
+    totalReceived,
+    totalOrdered,
+    hasPartial,
+    isFullyReceived,
+    anyReceived,
+  } = useMemo(() => {
     let received = 0;
     let ordered = 0;
+    let anyLineReceived = false;
+    let allLinesCovered = po.lines.length > 0;
     for (const l of po.lines) {
-      received += Number(l.qty_received) || 0;
-      ordered += Number(l.qty_ordered) || 0;
+      const r = Number(l.qty_received) || 0;
+      const o = Number(l.qty_ordered) || 0;
+      received += r;
+      ordered += o;
+      if (r > 0) anyLineReceived = true;
+      if (r < o) allLinesCovered = false;
     }
     return {
       totalReceived: received,
       totalOrdered: ordered,
-      hasPartial: received > 0 && received < ordered,
-      isFullyReceived: ordered > 0 && received >= ordered,
+      anyReceived: anyLineReceived,
+      isFullyReceived: allLinesCovered,
+      hasPartial: anyLineReceived && !allLinesCovered,
     };
   }, [po.lines]);
+  void anyReceived;
 
   // Which lines the operator sees on the truck. Pre-checked to every
   // remaining-qty line so the "whole truckload" case is one tap. This
