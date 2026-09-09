@@ -485,7 +485,14 @@ defmodule Backend.GoodsIn do
       item_snapshot(item)
     )
 
-    {:ok, item}
+    # Preload ``purchase_order_line`` so the response payload can emit
+    # ``purchase_order_line_uuid`` — the mobile QC review FE keys on
+    # this field to splice the updated item back into its local
+    # ``inspection.items`` state. Without the preload,
+    # ``maybe_po_line_uuid/1`` returns nil and the FE can't find the
+    # row to replace, so the read view stays on pre-edit data until
+    # a full page refresh.
+    {:ok, Repo.preload(item, :purchase_order_line)}
   end
 
   defp after_qc_edit(other, _actor, _before), do: other
