@@ -431,14 +431,23 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       from(co in CustomerOrder,
         where: co.company_id == ^company_id,
         where: co.npd_formulation_uuid in ^formulation_uuids,
-        # Never adopt an RTG CO for a Custom merge — RTG rows can
-        # legitimately share a formulation_uuid with other orders and
-        # must not be captured by a stray Custom sync. Belt-and-
-        # braces: today the partial unique index also excludes
-        # RTG rows from the formulation-uuid uniqueness invariant.
+        # Never adopt an RTG CO or a reorder CO for a Custom merge.
+        # Both are per-proposal (not per-formulation) COs whose
+        # relationship to formulation_uuid isn't 1:1 the way
+        # bespoke Custom's is — RTG rows can legitimately share a
+        # formulation_uuid across the SKU's N orders; reorders
+        # each mint a fresh Formulation on NPD but the reorder
+        # shell can plausibly re-use a source uuid in some legacy
+        # payloads and we don't want a bespoke Custom sync to
+        # capture that reorder CO by accident. Belt-and-braces:
+        # today the partial unique index also excludes RTG rows
+        # from the formulation-uuid uniqueness invariant; adding
+        # ``is_reorder = false`` here keeps the reorder posture
+        # aligned even if the index ever changes.
         where:
-          is_nil(co.npd_project_type) or
-            co.npd_project_type != "ready_to_go"
+          (is_nil(co.npd_project_type) or
+             co.npd_project_type != "ready_to_go") and
+            co.is_reorder == false
       )
       |> Repo.all()
       |> Map.new(&{&1.npd_formulation_uuid, &1})

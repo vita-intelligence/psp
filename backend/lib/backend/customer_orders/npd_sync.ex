@@ -64,12 +64,20 @@ defmodule Backend.CustomerOrders.NpdSync do
         #   ``Ecto.MultipleResultsError`` here. RTG state is synced
         #   per-order via ``proposal_merge`` (each proposal → one CO);
         #   the formulation-level sync path is a no-op for them.
+        # * Reorder rows (``is_reorder = true``) — reorders are also
+        #   per-proposal COs synced through ``proposal_merge``; the
+        #   reorder shell explicitly skips ``save_version`` on NPD so
+        #   this formulation-scoped path should never adopt one.
+        #   Excluded belt-and-braces so a hypothetical NPD-side race
+        #   (formulation sync arriving before the reorder proposal
+        #   merge lands) can't capture the wrong CO here either.
         upsert_result =
           case from(co in CustomerOrder,
                  where:
                    co.company_id == ^company_id and
                      co.npd_formulation_uuid == ^npd_uuid and
                      co.sample_kind == false and
+                     co.is_reorder == false and
                      (is_nil(co.npd_project_type) or
                         co.npd_project_type != "ready_to_go")
                )
