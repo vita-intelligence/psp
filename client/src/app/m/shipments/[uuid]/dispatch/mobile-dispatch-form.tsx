@@ -333,7 +333,7 @@ function MobileDispatchFormInner({ shipment }: Props) {
             legacy shipments with detached lots or unplaced stock
             skip the section rather than showing an empty widget. */}
         {shipment.stock_lot?.placement?.floor_uuid &&
-        shipment.stock_lot.placement.cell_uuid ? (
+        shipment.stock_lot.placement.location_uuid ? (
           (() => {
             const p = shipment.stock_lot.placement;
             // Mirror the production pickup convention
@@ -359,7 +359,7 @@ function MobileDispatchFormInner({ shipment }: Props) {
                   </p>
                   <FloorPlanMini
                     floorUuid={p.floor_uuid!}
-                    targetLocationUuid={p.cell_uuid}
+                    targetLocationUuid={p.location_uuid!}
                   />
                   <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
                     <span className="font-semibold">

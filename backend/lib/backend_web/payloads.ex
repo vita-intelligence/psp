@@ -6791,17 +6791,26 @@ defmodule BackendWeb.Payloads do
   defp shipment_customer_order(_), do: nil
 
   defp shipment_lot_summary(%Backend.Stock.Lot{} = lot) do
-    placement =
+    # Lots can straddle multiple cells (e.g. after 3PL complete_dispatch
+    # some qty still sits in three_pl_storage while the shipped qty is
+    # staged in a dispatch-purpose cell). Prefer the dispatch-purpose
+    # placement so FloorPlanMini highlights the actual pickup cell for
+    # the truck operator; fall back to any qty>0 placement otherwise.
+    with_qty =
       case lot.placements do
         list when is_list(list) ->
-          Enum.find(list, fn p ->
+          Enum.filter(list, fn p ->
             p.storage_cell && p.qty &&
               Decimal.compare(p.qty, Decimal.new(0)) == :gt
           end)
 
         _ ->
-          nil
+          []
       end
+
+    placement =
+      Enum.find(with_qty, fn p -> p.storage_cell.purpose == "dispatch" end) ||
+        List.first(with_qty)
 
     cell = placement && placement.storage_cell
     location = cell && cell.storage_location
