@@ -1313,19 +1313,21 @@ export function MobileInspectionWizard({
       >
         {/* Override shadcn's default center-position + intrinsic
             height with an explicit top-anchored + bottom-anchored
-            box. ``!`` prefixes force these to beat the base classes
-            (base has ``top-[50%]`` + ``translate-y-[-50%]`` which
-            centers the dialog on its OWN height — meaning if the
-            content grew past 100vh the dialog would spill both top
-            AND bottom equally, exactly what the operator was
-            seeing). Pinning top: 1rem, bottom: 1rem forces the
-            dialog to fit in the visible viewport with a small
-            margin, no matter how many rows the list carries.
-            Inline ``style`` supplies a ``dvh``-based max-height as
-            a belt-and-braces cap for browsers that shrink the
+            box. Trailing ``!`` on each override forces
+            ``!important`` in Tailwind v4 (v3 used a leading ``!``
+            prefix — the syntax flipped in v4 and prefix-`!` classes
+            silently no-op). Base has ``top-[50%]`` +
+            ``translate-y-[-50%]`` which centers the dialog on its
+            OWN height — if content grows past 100vh the dialog
+            spills both top AND bottom equally, which was the bug.
+            Pinning top: 1rem, bottom: 1rem forces the dialog to
+            fit in the visible viewport with a small margin, no
+            matter how many rows the list carries. Inline
+            ``style`` supplies a ``dvh``-based max-height as a
+            belt-and-braces cap for browsers that shrink the
             visual viewport as the URL bar hides. */}
         <AlertDialogContent
-          className="!top-4 !bottom-4 !translate-y-0 !max-h-[calc(100vh-2rem)] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
+          className="top-4! bottom-4! translate-y-0! max-h-[calc(100vh-2rem)]! grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
           style={{ maxHeight: "calc(100dvh - 2rem)" }}
         >
           <AlertDialogHeader>
