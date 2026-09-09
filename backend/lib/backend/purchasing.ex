@@ -1992,119 +1992,460 @@ defmodule Backend.Purchasing do
   defp fetch_line_item(%PurchaseOrderLine{item_id: id}), do: Repo.get(Backend.Items.Item, id)
 
   @doc """
-  Apply a qty-received delta to a PO line + its corresponding stock
-  lot after a QC edit changed an inspection item's qty. Called from
-  ``Backend.GoodsIn.qc_edit_item_decision`` — MUST run inside the
-  caller's transaction because the line + lot + PO status changes
-  have to land atomically with the inspection-item write.
+  Full pack ↔ lot reconciliation after a QC edit rewrote an inspection
+  item's pack list. Called from ``Backend.GoodsIn.qc_edit_item_decision``
+  — MUST run inside the caller's transaction because the line + lot +
+  booking + PO status changes have to land atomically with the
+  inspection-item write.
 
-  ``delta`` is ``new_item_qty - old_item_qty``. Positive means QC
-  discovered more physical stock than the operator recorded (e.g.
-  operator typed 64 kg, QC re-weighed and it's actually 67 kg);
-  negative means QC found less (over-count / re-weigh short). Zero
-  is a no-op — the caller pre-checks and skips.
+  Handles every kind of QC edit on the pack list:
 
-  Reconciliation steps:
-    1. ``PurchaseOrderLine.qty_received`` += delta (clamped at 0).
-    2. If exactly ONE stock lot exists for the (inspection, PO line)
-       combo, its ``qty_received`` also gets the delta so the on-shelf
-       balance stays honest. Multi-lot lines (one pack per lot at
-       receive-time) are left alone — a bare qty delta can't tell us
-       which lot to adjust; QC would need to re-work the pack list.
-    3. Recompute the PO's status from all its lines. If it changed
-       (e.g. the delta pushed the last short line over its ordered
-       qty → PO flips ``partially_received`` → ``received``), emit
-       the transition + broadcast so the FE catches up.
+    * ``qty changed`` on an existing pack → sync the matching lot's
+      ``qty_received`` + all its pack-shape fields (batch, dates,
+      dims, weight, upp, stack factor, country). If the qty went
+      DOWN below any active booking on that lot, shrink bookings
+      newest-first (respecting ``consumed_quantity`` — refuses the
+      edit if the delta would invalidate already-picked material).
 
-  Returns ``:ok`` on success, or ``{:error, reason}`` if the line /
-  lot changesets fail. Called inside a transaction, so an error
-  should be propagated as a ``Repo.rollback`` by the caller.
+    * ``pack added`` → mint a new stock lot for the extra pack via
+      ``Backend.Stock.receive_lot`` + route it through the standard
+      quarantine step, exactly like the operator flow does at receipt
+      time. The new lot inherits the inspection FK so QC approval's
+      fan-out picks it up automatically.
+
+    * ``pack removed`` → cancel the trailing lot (positional match).
+      Deletes any pending bookings first and demotes their MOs to
+      ``needs_replan``; refuses the edit if the lot has ever been
+      consumed (traceability invariant).
+
+  Pack ↔ lot matching is POSITIONAL — the FE preserves pack order
+  between operator sign-off and QC edit (see ``hydratePacks`` in
+  ``mobile-inspection-wizard.tsx``), so ``new_packs[i]`` always
+  corresponds to the i-th lot ordered by ``inserted_at`` for this
+  ``(inspection, po_line)`` pair. Reordering isn't a supported QC
+  edit — do a cancel/re-do instead.
+
+  After per-lot reconciliation, ``PurchaseOrderLine.qty_received``
+  gets the item-level delta ``sum(new_packs) - sum(old_packs)`` and
+  the PO status is recomputed / transitioned if the delta flipped it
+  (partially_received → received, etc.).
+
+  Returns ``:ok`` on success, or ``{:error, reason}`` if any lot /
+  line / booking changeset fails. Called inside a transaction, so an
+  error should be propagated as a ``Repo.rollback`` by the caller.
   """
   def reconcile_line_after_qc_edit(
         %User{} = actor,
-        po_line_id,
-        inspection_id,
-        %Decimal{} = delta
+        %Backend.GoodsIn.Inspection{} = inspection,
+        %PurchaseOrderLine{} = line,
+        old_packs,
+        new_packs
       )
-      when is_integer(po_line_id) and is_integer(inspection_id) do
-    if Decimal.equal?(delta, Decimal.new(0)) do
-      :ok
-    else
-      apply_qc_delta(actor, po_line_id, inspection_id, delta)
+      when is_list(old_packs) and is_list(new_packs) do
+    old_sum = sum_pack_qtys(old_packs)
+    new_sum = sum_pack_qtys(new_packs)
+    delta = Decimal.sub(new_sum, old_sum)
+
+    with :ok <- reconcile_lots_from_packs(actor, inspection, line, new_packs),
+         {:ok, updated_line} <- bump_line_qty_received(line, delta) do
+      recompute_po_status_after_line_change(actor, updated_line)
     end
   end
 
-  defp apply_qc_delta(actor, po_line_id, inspection_id, delta) do
-    case Repo.get(PurchaseOrderLine, po_line_id) do
-      nil ->
-        :ok
+  # Iterate packs and their matching lots in inserted_at order.
+  # New pack, no lot → mint. Existing lot, no pack → cancel. Both →
+  # sync qty + pack-shape fields. Order matters: mint first (so a
+  # matching cancel doesn't leave the PO line qty temporarily short),
+  # cancel last (so any downstream demote runs on the actual removed
+  # rows).
+  defp reconcile_lots_from_packs(
+         %User{} = actor,
+         %Backend.GoodsIn.Inspection{} = inspection,
+         %PurchaseOrderLine{} = line,
+         new_packs
+       ) do
+    existing_lots =
+      Repo.all(
+        from(l in Backend.Stock.Lot,
+          where:
+            l.goods_in_inspection_id == ^inspection.id and
+              l.item_id == ^line.item_id,
+          order_by: [asc: l.inserted_at, asc: l.id]
+        )
+      )
 
-      %PurchaseOrderLine{} = line ->
-        with {:ok, updated_line} <- bump_line_qty_received(line, delta),
-             :ok <- maybe_bump_single_lot(inspection_id, po_line_id, delta) do
-          recompute_po_status_after_line_change(actor, updated_line)
+    max_len = max(length(new_packs), length(existing_lots))
+
+    Enum.reduce_while(0..(max_len - 1)//1, :ok, fn i, _acc ->
+      pack = Enum.at(new_packs, i)
+      lot = Enum.at(existing_lots, i)
+
+      result =
+        cond do
+          not is_nil(pack) and not is_nil(lot) ->
+            sync_lot_to_pack(actor, lot, pack)
+
+          not is_nil(pack) and is_nil(lot) ->
+            mint_lot_for_added_pack(actor, inspection, line, pack)
+
+          is_nil(pack) and not is_nil(lot) ->
+            cancel_lot_for_removed_pack(actor, lot)
+
+          true ->
+            :ok
+        end
+
+      case result do
+        :ok -> {:cont, :ok}
+        {:ok, _} -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # Sync an existing quarantine lot to its updated pack — refresh the
+  # qty AND the pack-shape fields QC may have corrected (batch, dates,
+  # dims). If the qty dropped and there are already bookings on the
+  # lot (rare pre-QC-approval; defensive for future flows), shrink
+  # them newest-first respecting ``consumed_quantity``.
+  defp sync_lot_to_pack(%User{} = actor, %Backend.Stock.Lot{} = lot, pack) do
+    new_qty = decode_pack_qty(pack, lot.qty_received || Decimal.new(0))
+    old_qty = lot.qty_received || Decimal.new(0)
+
+    shrink_result =
+      if Decimal.compare(new_qty, old_qty) == :lt do
+        shrink_bookings_to_lot_qty(actor, lot, new_qty)
+      else
+        :ok
+      end
+
+    case shrink_result do
+      :ok ->
+        attrs = pack_to_lot_attrs(pack, new_qty)
+
+        lot
+        |> Backend.Stock.Lot.changeset(attrs)
+        |> Repo.update()
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Mint a fresh lot for a QC-added pack. Uses the same ``receive_lot``
+  # + ``routed_to_quarantine`` handshake the operator flow runs at PO
+  # receive time (see ``receive_packs_for_line`` above). The new lot
+  # is tagged with the inspection FK so the approver's fan-out picks
+  # it up alongside the operator's original lots.
+  defp mint_lot_for_added_pack(
+         %User{} = actor,
+         %Backend.GoodsIn.Inspection{} = inspection,
+         %PurchaseOrderLine{} = line,
+         pack
+       ) do
+    po = fetch_po_for_inspection(inspection)
+    warehouse_id = po.default_warehouse_id
+    source_ref = render_po_code(po)
+
+    pack_normalised = normalise_pack_shape(pack)
+
+    lot_attrs =
+      build_lot_attrs(
+        po,
+        line,
+        pack_normalised,
+        nil,
+        source_ref,
+        warehouse_id,
+        inspection.id
+      )
+
+    with {:ok, lot} <- Backend.Stock.receive_lot(actor, po.company_id, lot_attrs),
+         {:ok, _} <-
+           Backend.Stock.Lifecycle.record_event_in_transaction(
+             lot,
+             "routed_to_quarantine",
+             %{
+               actor: actor,
+               actor_kind: "system",
+               reason: "QC edit added a pack — quarantine by default",
+               metadata: %{
+                 "po_line_id" => line.id,
+                 "po_id" => po.id,
+                 "source_ref" => source_ref
+               }
+             }
+           ) do
+      :ok
+    end
+  end
+
+  # Cancel a lot whose corresponding pack QC removed from the
+  # inspection. Refuses when any booking on the lot has already
+  # consumed some qty — that would break traceability (consumed
+  # material can't retroactively vanish). Otherwise deletes pending
+  # bookings, demotes their MOs to ``needs_replan``, and emits the
+  # ``canceled`` lifecycle event.
+  defp cancel_lot_for_removed_pack(%User{} = actor, %Backend.Stock.Lot{} = lot) do
+    bookings =
+      Repo.all(
+        from(b in Backend.Production.ManufacturingOrderBooking,
+          where: b.stock_lot_id == ^lot.id
+        )
+      )
+
+    consumed_bookings =
+      Enum.filter(bookings, fn b ->
+        Decimal.compare(b.consumed_quantity || Decimal.new(0), Decimal.new(0)) == :gt
+      end)
+
+    cond do
+      consumed_bookings != [] ->
+        {:error, {:cannot_remove_pack_consumed_material, lot.id}}
+
+      true ->
+        affected_mo_ids =
+          bookings |> Enum.map(& &1.manufacturing_order_id) |> Enum.uniq()
+
+        Enum.each(bookings, fn b -> Repo.delete!(b) end)
+
+        case Backend.Stock.Lifecycle.record_event_in_transaction(
+               lot,
+               "canceled",
+               %{
+                 actor: actor,
+                 actor_kind: "user",
+                 reason: "QC edit removed the corresponding pack"
+               }
+             ) do
+          {:ok, _} ->
+            if affected_mo_ids != [] do
+              Backend.Production.demote_mos_for_broken_bookings(
+                actor,
+                affected_mo_ids,
+                "Lot #{lot.id} canceled by QC edit"
+              )
+            end
+
+            :ok
+
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end
 
-  defp bump_line_qty_received(%PurchaseOrderLine{} = line, %Decimal{} = delta) do
-    new_qty =
-      line.qty_received
-      |> Kernel.||(Decimal.new(0))
-      |> Decimal.add(delta)
-      |> clamp_non_negative()
+  # Walk bookings on ``lot`` newest-first, deducting from each until
+  # the total booked ≤ ``new_qty``. Bookings with ``consumed_quantity``
+  # can only shrink down to their consumed floor — a fully-consumed
+  # booking is immutable (traceability). If the shrinkable headroom
+  # across all bookings can't cover the excess, refuses the QC edit
+  # so the operator has to fix the underlying inconsistency.
+  defp shrink_bookings_to_lot_qty(
+         %User{} = actor,
+         %Backend.Stock.Lot{} = lot,
+         %Decimal{} = new_qty
+       ) do
+    bookings =
+      Repo.all(
+        from(b in Backend.Production.ManufacturingOrderBooking,
+          where: b.stock_lot_id == ^lot.id,
+          order_by: [desc: b.inserted_at, desc: b.id]
+        )
+      )
 
-    line
-    |> PurchaseOrderLine.changeset(%{"qty_received" => new_qty})
-    |> Repo.update()
+    total_booked =
+      Enum.reduce(bookings, Decimal.new(0), fn b, acc ->
+        Decimal.add(acc, b.quantity || Decimal.new(0))
+      end)
+
+    if Decimal.compare(total_booked, new_qty) != :gt do
+      :ok
+    else
+      excess = Decimal.sub(total_booked, new_qty)
+      do_shrink_bookings(actor, bookings, excess, MapSet.new())
+    end
+  end
+
+  defp do_shrink_bookings(_actor, [], excess, mo_ids) do
+    if Decimal.compare(excess, Decimal.new(0)) == :gt do
+      {:error, :cannot_shrink_below_consumed}
+    else
+      # Nothing to demote when no MOs were touched.
+      MapSet.to_list(mo_ids)
+      |> case do
+        [] -> :ok
+        _ -> :ok
+      end
+    end
+  end
+
+  defp do_shrink_bookings(actor, [booking | rest], excess, mo_ids) do
+    consumed = booking.consumed_quantity || Decimal.new(0)
+    available = Decimal.sub(booking.quantity || Decimal.new(0), consumed)
+
+    shrink_by =
+      cond do
+        Decimal.compare(available, Decimal.new(0)) != :gt -> Decimal.new(0)
+        Decimal.compare(excess, available) == :gt -> available
+        true -> excess
+      end
+
+    cond do
+      Decimal.compare(shrink_by, Decimal.new(0)) != :gt ->
+        # This booking is fully consumed / has nothing to give — skip.
+        do_shrink_bookings(actor, rest, excess, mo_ids)
+
+      true ->
+        new_qty = Decimal.sub(booking.quantity, shrink_by)
+        next_ids = MapSet.put(mo_ids, booking.manufacturing_order_id)
+
+        result =
+          if Decimal.equal?(new_qty, Decimal.new(0)) do
+            Repo.delete(booking)
+          else
+            booking
+            |> Backend.Production.ManufacturingOrderBooking.changeset(%{
+              "quantity" => new_qty
+            })
+            |> Repo.update()
+          end
+
+        case result do
+          {:ok, _} ->
+            remaining = Decimal.sub(excess, shrink_by)
+
+            if Decimal.compare(remaining, Decimal.new(0)) == :gt do
+              do_shrink_bookings(actor, rest, remaining, next_ids)
+            else
+              # Demote every touched MO — its coverage may now be short.
+              MapSet.to_list(next_ids)
+              |> case do
+                [] ->
+                  :ok
+
+                ids ->
+                  Backend.Production.demote_mos_for_broken_bookings(
+                    actor,
+                    ids,
+                    "Lot #{booking.stock_lot_id} qty reduced by QC edit"
+                  )
+
+                  :ok
+              end
+            end
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  # Extract pack qty as a Decimal. Falls back to the lot's current qty
+  # if the pack didn't ship a qty (defensive — the FE always sends one).
+  defp decode_pack_qty(pack, fallback) when is_map(pack) do
+    raw = pack["qty"] || pack[:qty]
+    parse_pack_decimal(raw, fallback)
+  end
+
+  defp parse_pack_decimal(%Decimal{} = d, _fallback), do: d
+
+  defp parse_pack_decimal(v, _fallback) when is_binary(v) do
+    case v |> String.trim() |> Decimal.parse() do
+      {dec, ""} -> dec
+      _ -> Decimal.new(0)
+    end
+  end
+
+  defp parse_pack_decimal(v, _fallback) when is_integer(v), do: Decimal.new(v)
+
+  defp parse_pack_decimal(v, _fallback) when is_float(v) do
+    Decimal.from_float(v)
+  end
+
+  defp parse_pack_decimal(_, fallback), do: fallback
+
+  # Sum a pack list's qty values. Robust against string / int / decimal
+  # / missing shapes so callers don't have to pre-normalise.
+  defp sum_pack_qtys(packs) when is_list(packs) do
+    Enum.reduce(packs, Decimal.new(0), fn pack, acc ->
+      Decimal.add(acc, decode_pack_qty(pack, Decimal.new(0)))
+    end)
+  end
+
+  defp sum_pack_qtys(_), do: Decimal.new(0)
+
+  # Build the attrs map for ``Backend.Stock.Lot.changeset`` from an
+  # InspectionItem pack shape. Pack fields the changeset knows about
+  # are copied through; anything the pack doesn't carry gets dropped
+  # so the changeset falls back to whatever the row currently holds
+  # (preserves e.g. ``source_kind`` on an existing lot).
+  defp pack_to_lot_attrs(pack, new_qty) when is_map(pack) do
+    %{
+      "qty_received" => Decimal.to_string(new_qty),
+      "supplier_batch_no" => pack["supplier_batch_no"],
+      "country_of_origin" => pack["country_of_origin"],
+      "manufactured_at" => pack["manufactured_at"],
+      "expiry_at" => pack["expiry_at"],
+      "revision" => pack["revision"],
+      "package_length_mm" => pack["package_length_mm"],
+      "package_width_mm" => pack["package_width_mm"],
+      "package_height_mm" => pack["package_height_mm"],
+      "package_weight_kg" => pack["package_weight_kg"],
+      "units_per_package" => pack["units_per_package"],
+      "stack_factor" => pack["stack_factor"]
+    }
+    |> Enum.reject(fn {_, v} -> is_nil(v) end)
+    |> Map.new()
+  end
+
+  # Normalise a raw inspection pack (string-keyed map from JSONB /
+  # controller params) to the atom-keyed shape ``build_lot_attrs``
+  # expects. Everything the lot needs comes through; anything extra
+  # (tempIds, computed fields) gets dropped silently.
+  defp normalise_pack_shape(pack) when is_map(pack) do
+    %{
+      qty: decode_pack_qty(pack, Decimal.new(0)),
+      supplier_batch_no: pack["supplier_batch_no"] || pack[:supplier_batch_no],
+      country_of_origin: pack["country_of_origin"] || pack[:country_of_origin],
+      manufactured_at: pack["manufactured_at"] || pack[:manufactured_at],
+      expiry_at: pack["expiry_at"] || pack[:expiry_at],
+      revision: pack["revision"] || pack[:revision],
+      package_length_mm: pack["package_length_mm"] || pack[:package_length_mm],
+      package_width_mm: pack["package_width_mm"] || pack[:package_width_mm],
+      package_height_mm: pack["package_height_mm"] || pack[:package_height_mm],
+      package_weight_kg: pack["package_weight_kg"] || pack[:package_weight_kg],
+      units_per_package:
+        pack["units_per_package"] || pack[:units_per_package] || 1,
+      stack_factor: pack["stack_factor"] || pack[:stack_factor] || 1
+    }
+  end
+
+  defp fetch_po_for_inspection(%Backend.GoodsIn.Inspection{purchase_order: %PurchaseOrder{} = po}),
+    do: po
+
+  defp fetch_po_for_inspection(%Backend.GoodsIn.Inspection{purchase_order_id: po_id}) do
+    Repo.get!(PurchaseOrder, po_id)
+  end
+
+  defp bump_line_qty_received(%PurchaseOrderLine{} = line, %Decimal{} = delta) do
+    if Decimal.equal?(delta, Decimal.new(0)) do
+      {:ok, line}
+    else
+      new_qty =
+        line.qty_received
+        |> Kernel.||(Decimal.new(0))
+        |> Decimal.add(delta)
+        |> clamp_non_negative()
+
+      line
+      |> PurchaseOrderLine.changeset(%{"qty_received" => new_qty})
+      |> Repo.update()
+    end
   end
 
   defp clamp_non_negative(%Decimal{} = d) do
     if Decimal.compare(d, Decimal.new(0)) == :lt, do: Decimal.new(0), else: d
-  end
-
-  # Adjust the lot's on-shelf qty when a QC edit alters the pack size.
-  # Only touched when exactly ONE lot exists for this (inspection, PO
-  # line) — the common case of "one pack = one lot" that the receive
-  # flow creates by default. Multi-lot lines can't be delta-adjusted
-  # safely without knowing which pack the qty came from.
-  defp maybe_bump_single_lot(inspection_id, po_line_id, %Decimal{} = delta) do
-    line = Repo.get(PurchaseOrderLine, po_line_id)
-    item_id = line && line.item_id
-
-    if is_nil(item_id) do
-      :ok
-    else
-      lots =
-        Repo.all(
-          from(l in Backend.Stock.Lot,
-            where:
-              l.goods_in_inspection_id == ^inspection_id and
-                l.item_id == ^item_id
-          )
-        )
-
-      case lots do
-        [%Backend.Stock.Lot{} = lot] ->
-          new_qty =
-            lot.qty_received
-            |> Kernel.||(Decimal.new(0))
-            |> Decimal.add(delta)
-            |> clamp_non_negative()
-
-          case lot
-               |> Backend.Stock.Lot.changeset(%{"qty_received" => new_qty})
-               |> Repo.update() do
-            {:ok, _} -> :ok
-            {:error, _} = err -> err
-          end
-
-        _ ->
-          # Zero or many — leave lots alone; the delta at line level
-          # still gets applied so the PO status recompute is correct.
-          :ok
-      end
-    end
   end
 
   defp recompute_po_status_after_line_change(%User{} = actor, %PurchaseOrderLine{} = line) do

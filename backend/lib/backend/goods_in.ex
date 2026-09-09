@@ -440,15 +440,34 @@ defmodule Backend.GoodsIn do
         {:error, :not_editable}
 
       %InspectionItem{} = item ->
-        # Wrap the item write + downstream PO / lot reconciliation in
-        # a single transaction so a stale ``qty_received`` on the PO
-        # line can't survive a partial failure. Operator sign-off
-        # ADDs pack qtys to the line; QC edits change the pack qty
-        # afterwards, so without this reconciliation the line stays
-        # stuck at the operator's original number (bug: PO stays
-        # ``partially_received`` even after QC corrects the qty
-        # upward past ``qty_ordered``).
-        old_qty = item.qty_received || Decimal.new(0)
+        # Wrap the item write + downstream lot / booking / PO
+        # reconciliation in a single transaction so a stale
+        # ``qty_received`` on the PO line, a stale ``qty_received`` on
+        # a stock lot, or an orphaned booking on a lot QC decided to
+        # cancel can't survive a partial failure.
+        #
+        # QC edits can now do three things to the pack list — the
+        # reconciler handles all three:
+        #   1. Change qty / other fields on an existing pack →
+        #      corresponding lot's fields sync in place. If qty
+        #      dropped below an active booking on that lot, bookings
+        #      shrink newest-first respecting ``consumed_quantity``.
+        #   2. Add a pack → a fresh lot is minted via the standard
+        #      ``receive_lot`` + ``routed_to_quarantine`` handshake,
+        #      wearing this inspection's FK.
+        #   3. Remove a pack → the trailing lot is canceled. Refuses
+        #      when the lot has any consumed material (traceability
+        #      invariant).
+        old_packs = item.packs || []
+        # After ``reconcile_qty_from_packs`` the changeset attrs have
+        # the canonical pack list under either "packs" (string key,
+        # from the FE) or :packs (atom key, from internal callers).
+        new_packs =
+          attrs["packs"] ||
+            attrs[:packs] ||
+            item.packs ||
+            []
+
         before_snapshot = item_snapshot(item)
 
         result =
@@ -457,14 +476,13 @@ defmodule Backend.GoodsIn do
                    item
                    |> InspectionItem.changeset(attrs)
                    |> Repo.update(),
-                 new_qty = updated.qty_received || Decimal.new(0),
-                 delta = Decimal.sub(new_qty, old_qty),
                  :ok <-
                    Backend.Purchasing.reconcile_line_after_qc_edit(
                      actor,
-                     line.id,
-                     i.id,
-                     delta
+                     i,
+                     line,
+                     old_packs,
+                     new_packs
                    ) do
               Audit.record_updated(
                 actor,
@@ -474,6 +492,9 @@ defmodule Backend.GoodsIn do
                 item_snapshot(updated)
               )
 
+              old_qty = item.qty_received || Decimal.new(0)
+              new_qty = updated.qty_received || Decimal.new(0)
+              delta = Decimal.sub(new_qty, old_qty)
               {Repo.preload(updated, :purchase_order_line), delta}
             else
               {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
