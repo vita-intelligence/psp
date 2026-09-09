@@ -413,27 +413,15 @@ defmodule Backend.Procurement.Shortages do
         dependent_mos: Map.get(dependent_mos, {item_id, is_rnd}, [])
       }
     end)
-    # Keep a row when there's genuine shortage (procurement MUST buy)
-    # OR when an operator explicitly requested purchases AND there's
-    # still an outstanding gap between required and booked (they want
-    # procurement's eyes on the unbooked portion even if on-hand
-    # stock nets the shortage). The FE decides "book from stock" vs
-    # "raise PO" from the per-row on_hand / expecting numbers.
-    #
-    # ``outstanding = required > booked`` — filters out lines already
-    # fully booked on the explicit-request MO, so a mix of booked +
-    # unbooked lines only surfaces the unbooked ones.
+    # Keep only rows procurement genuinely has to buy: net shortage
+    # after on-hand + open POs must be positive. If on-hand covers the
+    # requirement (even partially-booked lines with plenty of free
+    # stock elsewhere), procurement has nothing to do — the operator
+    # can book from stock on the MO parts tab. Surfacing "covered but
+    # unbooked" rows here spammed the shortages queue with items that
+    # never needed a PO.
     |> Enum.reject(fn row ->
-      shortage_positive =
-        Decimal.compare(Decimal.new(row.shortage_qty), Decimal.new(0)) == :gt
-
-      outstanding =
-        Decimal.compare(
-          Decimal.new(row.required_qty),
-          Decimal.new(row.booked_qty)
-        ) == :gt
-
-      not (shortage_positive or (row.explicit_request and outstanding))
+      Decimal.compare(Decimal.new(row.shortage_qty), Decimal.new(0)) != :gt
     end)
     |> Enum.sort_by(fn row -> Decimal.to_float(Decimal.new(row.shortage_qty)) end, :desc)
   end
