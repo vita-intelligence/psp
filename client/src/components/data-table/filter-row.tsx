@@ -5,15 +5,24 @@
 // keyed to the column's `filterKind`. Always visible, matches the
 // MRPEasy / Airtable "every column has a search box" convention.
 //
-// Debounces text inputs at 300ms so typing doesn't fire a query per
-// keystroke. Range / date inputs commit on blur so partial values
-// aren't misread. Selects commit immediately.
+// Commit UX matches the toolbar's ``FiltersMenu`` (toolbar.tsx L390+)
+// exactly: a local draft state, plus a footer row with ``[Reset]
+// [Apply]`` — Apply disabled until the drafts differ from what the
+// server is filtered by. Text cells also apply on Enter. No debounce
+// — the parent DataTable docstring explicitly rules out per-keystroke
+// refetches (data-table.tsx L54: "Search + filters never fire on
+// every keystroke. They commit on Enter / explicit Apply only").
+//
+// Range / date / select / boolean inputs also stage drafts and only
+// commit through the row-level Apply — one shared button = one click
+// = one refetch, regardless of how many columns the user has staged.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, RotateCcw, X } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -27,58 +36,186 @@ interface Props<T> {
   onChange: (field: string, value: ColumnFilterValue | null) => void;
 }
 
+// Draft map — one entry per field the user has staged a change for.
+// A `null` slot means "clear this field on Apply"; a value means
+// "replace the applied value with this on Apply". Missing key means
+// no draft for that field (input shows the applied value).
+type Drafts = Record<string, ColumnFilterValue | null>;
+
 export function FilterRow<T>({ columns, values, onChange }: Props<T>) {
-  return (
-    <TableRow className="border-b-2 border-border/60 bg-muted/30 hover:bg-muted/30">
-      {columns.map((col) => (
-        <TableCell
-          key={col.id}
-          className={cn(
-            "px-2 py-1.5",
-            col.align === "right" && "text-right",
-            col.align === "center" && "text-center",
-          )}
-        >
-          {col.filterKind && col.filterField ? (
-            <FilterCell
-              column={col}
-              value={values[col.filterField] ?? null}
-              onChange={(v) => onChange(col.filterField!, v)}
-            />
-          ) : null}
-        </TableCell>
-      ))}
-    </TableRow>
+  const [drafts, setDrafts] = useState<Drafts>({});
+
+  // Whenever the applied `values` catch up with a draft (round-trip
+  // completed), drop that draft so the dirty ring / Apply button
+  // reset without the user seeing a phantom "still unapplied" state.
+  useEffect(() => {
+    setDrafts((prev) => {
+      let changed = false;
+      const next: Drafts = {};
+      for (const [k, draft] of Object.entries(prev)) {
+        const applied = values[k] ?? null;
+        if (equalFilterValue(draft, applied)) {
+          changed = true; // drop key
+        } else {
+          next[k] = draft;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [values]);
+
+  const setDraft = useCallback(
+    (field: string, next: ColumnFilterValue | null) => {
+      setDrafts((prev) => ({ ...prev, [field]: next }));
+    },
+    [],
   );
+
+  const dirtyKeys = useMemo(() => Object.keys(drafts), [drafts]);
+  const isDirty = dirtyKeys.length > 0;
+  const hasApplied = Object.values(values).some((v) => v != null);
+
+  const apply = useCallback(() => {
+    // Read the current draft map, THEN fire parent updates. Doing
+    // this in a plain function (not inside a setState updater) is
+    // what avoids the "setState during render" warning — commit
+    // fan-out happens synchronously against a stable snapshot.
+    const snapshot = drafts;
+    for (const [field, next] of Object.entries(snapshot)) {
+      onChange(field, next);
+    }
+    setDrafts({});
+  }, [drafts, onChange]);
+
+  const reset = useCallback(() => {
+    // Clear every currently-applied filter across the row. Matches
+    // the FiltersMenu Reset copy — one click, everything back to
+    // "no filters". Drafts also cleared so the input reverts.
+    for (const field of Object.keys(values)) {
+      onChange(field, null);
+    }
+    setDrafts({});
+  }, [values, onChange]);
+
+  const filterableColumnCount = columns.filter(
+    (c) => c.filterKind && c.filterField,
+  ).length;
+
+  return (
+    <>
+      <TableRow className="border-b border-border/60 bg-muted/30 hover:bg-muted/30">
+        {columns.map((col) => (
+          <TableCell
+            key={col.id}
+            className={cn(
+              "px-2 py-1.5",
+              col.align === "right" && "text-right",
+              col.align === "center" && "text-center",
+            )}
+          >
+            {col.filterKind && col.filterField ? (
+              <FilterCell
+                column={col}
+                applied={values[col.filterField] ?? null}
+                draft={drafts[col.filterField]}
+                onDraft={(next) => setDraft(col.filterField!, next)}
+                onEnterCommit={apply}
+              />
+            ) : null}
+          </TableCell>
+        ))}
+      </TableRow>
+      {filterableColumnCount > 0 && (isDirty || hasApplied) && (
+        // Footer row matches ``FiltersMenu`` (toolbar.tsx L518-541):
+        // Reset on the left when there's anything to reset; Apply on
+        // the right, disabled until there's a staged change. Same
+        // visual weight so the muscle memory carries between the
+        // toolbar popover and the column filter row.
+        <TableRow className="border-b-2 border-border/60 bg-muted/20 hover:bg-muted/20">
+          <TableCell colSpan={columns.length} className="px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              {hasApplied ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={reset}
+                  className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <RotateCcw className="mr-1.5 size-3" />
+                  Reset
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Button
+                type="button"
+                size="sm"
+                onClick={apply}
+                disabled={!isDirty}
+                className="h-7 text-xs"
+              >
+                Apply
+              </Button>
+            </div>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+}
+
+// True when two ColumnFilterValue-shaped objects (or nulls) encode
+// the same filter. Used to detect "draft caught up with applied"
+// after a round-trip so the dirty state resets cleanly.
+function equalFilterValue(
+  a: ColumnFilterValue | null,
+  b: ColumnFilterValue | null,
+): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a == null && b == null;
+  if (a.op !== b.op) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function FilterCell<T>({
   column,
-  value,
-  onChange,
+  applied,
+  draft,
+  onDraft,
+  onEnterCommit,
 }: {
   column: DataTableColumn<T>;
-  value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  applied: ColumnFilterValue | null;
+  draft: ColumnFilterValue | null | undefined;
+  onDraft: (next: ColumnFilterValue | null) => void;
+  onEnterCommit: () => void;
 }) {
+  // `undefined` draft means "user hasn't staged anything for this
+  // cell yet — show the applied value". Any other draft value (incl.
+  // explicit null for "will clear on apply") wins over applied.
+  const shown = draft === undefined ? applied : draft;
+  const placeholder = column.filterPlaceholder ?? column.header.toLowerCase();
+
   switch (column.filterKind) {
     case "text":
       return (
         <TextFilterInput
-          value={value}
-          onChange={onChange}
-          placeholder={column.filterPlaceholder ?? column.header.toLowerCase()}
+          value={shown}
+          onDraft={onDraft}
+          placeholder={placeholder}
+          onEnterCommit={onEnterCommit}
         />
       );
     case "number-range":
-      return <NumberRangeInput value={value} onChange={onChange} />;
+      return <NumberRangeInput value={shown} onDraft={onDraft} />;
     case "date-range":
-      return <DateRangeInput value={value} onChange={onChange} />;
+      return <DateRangeInput value={shown} onDraft={onDraft} />;
     case "select":
       return (
         <SelectInput
-          value={value}
-          onChange={onChange}
+          value={shown}
+          onDraft={onDraft}
           options={column.filterOptions ?? []}
           placeholder={column.header}
         />
@@ -86,8 +223,8 @@ function FilterCell<T>({
     case "multi-select":
       return (
         <MultiSelectInput
-          value={value}
-          onChange={onChange}
+          value={shown}
+          onDraft={onDraft}
           options={column.filterOptions ?? []}
           placeholder={column.header}
         />
@@ -95,8 +232,8 @@ function FilterCell<T>({
     case "boolean":
       return (
         <BooleanInput
-          value={value}
-          onChange={onChange}
+          value={shown}
+          onDraft={onDraft}
           placeholder={column.header}
         />
       );
@@ -105,52 +242,45 @@ function FilterCell<T>({
   }
 }
 
-// ── Text — 300ms debounce ─────────────────────────────────────────
+// ── Text — draft on every keystroke, commit on Enter / Apply ──────
 
 function TextFilterInput({
   value,
-  onChange,
+  onDraft,
   placeholder,
+  onEnterCommit,
 }: {
   value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  onDraft: (next: ColumnFilterValue | null) => void;
   placeholder: string;
+  onEnterCommit: () => void;
 }) {
-  const initial =
-    value && "value" in value && typeof value.value === "string" ? value.value : "";
-  const [local, setLocal] = useState(initial);
-  useEffect(() => setLocal(initial), [initial]);
-
-  const debounceRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (local === initial) return;
-    if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      const trimmed = local.trim();
-      onChange(trimmed ? { op: "contains", value: trimmed } : null);
-    }, 300);
-    return () => {
-      if (debounceRef.current !== null)
-        window.clearTimeout(debounceRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [local]);
+  const text =
+    value && "value" in value && typeof value.value === "string"
+      ? value.value
+      : "";
 
   return (
     <div className="relative">
       <Input
-        value={local}
-        onChange={(e) => setLocal(e.target.value)}
+        value={text}
+        onChange={(e) => {
+          const v = e.target.value;
+          onDraft(v.trim() ? { op: "contains", value: v } : null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onEnterCommit();
+          }
+        }}
         placeholder={placeholder}
         className="h-7 pr-6 text-xs"
       />
-      {local && (
+      {text && (
         <button
           type="button"
-          onClick={() => {
-            setLocal("");
-            onChange(null);
-          }}
+          onClick={() => onDraft(null)}
           aria-label="Clear"
           className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
         >
@@ -161,35 +291,25 @@ function TextFilterInput({
   );
 }
 
-// ── Number range — commit on blur ─────────────────────────────────
+// ── Number range — draft on every keystroke ───────────────────────
 
 function NumberRangeInput({
   value,
-  onChange,
+  onDraft,
 }: {
   value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  onDraft: (next: ColumnFilterValue | null) => void;
 }) {
   const range =
     value && value.op === "range" && ("min" in value || "max" in value)
       ? (value as { op: "range"; min?: number; max?: number })
       : { op: "range" as const, min: undefined, max: undefined };
-  const [minStr, setMinStr] = useState(
-    range.min !== undefined ? String(range.min) : "",
-  );
-  const [maxStr, setMaxStr] = useState(
-    range.max !== undefined ? String(range.max) : "",
-  );
+  const minStr = range.min !== undefined ? String(range.min) : "";
+  const maxStr = range.max !== undefined ? String(range.max) : "";
 
-  useEffect(() => {
-    setMinStr(range.min !== undefined ? String(range.min) : "");
-    setMaxStr(range.max !== undefined ? String(range.max) : "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
-
-  function commit() {
-    const min = minStr.trim() === "" ? undefined : Number(minStr);
-    const max = maxStr.trim() === "" ? undefined : Number(maxStr);
+  function emit(nextMinStr: string, nextMaxStr: string) {
+    const min = nextMinStr.trim() === "" ? undefined : Number(nextMinStr);
+    const max = nextMaxStr.trim() === "" ? undefined : Number(nextMaxStr);
     if (
       (min !== undefined && Number.isNaN(min)) ||
       (max !== undefined && Number.isNaN(max))
@@ -197,9 +317,9 @@ function NumberRangeInput({
       return;
     }
     if (min === undefined && max === undefined) {
-      onChange(null);
+      onDraft(null);
     } else {
-      onChange({
+      onDraft({
         op: "range",
         ...(min !== undefined ? { min } : {}),
         ...(max !== undefined ? { max } : {}),
@@ -213,9 +333,7 @@ function NumberRangeInput({
         type="number"
         inputMode="decimal"
         value={minStr}
-        onChange={(e) => setMinStr(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => e.key === "Enter" && commit()}
+        onChange={(e) => emit(e.target.value, maxStr)}
         placeholder="min"
         className="h-7 min-w-0 flex-1 text-xs"
       />
@@ -224,9 +342,7 @@ function NumberRangeInput({
         type="number"
         inputMode="decimal"
         value={maxStr}
-        onChange={(e) => setMaxStr(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => e.key === "Enter" && commit()}
+        onChange={(e) => emit(minStr, e.target.value)}
         placeholder="max"
         className="h-7 min-w-0 flex-1 text-xs"
       />
@@ -234,33 +350,27 @@ function NumberRangeInput({
   );
 }
 
-// ── Date range — native date inputs, commit on change ─────────────
+// ── Date range — draft on every change ────────────────────────────
 
 function DateRangeInput({
   value,
-  onChange,
+  onDraft,
 }: {
   value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  onDraft: (next: ColumnFilterValue | null) => void;
 }) {
   const range =
     value && value.op === "range" && ("from" in value || "to" in value)
       ? (value as { op: "range"; from?: string; to?: string })
       : { op: "range" as const, from: undefined, to: undefined };
-  const [from, setFrom] = useState(range.from ?? "");
-  const [to, setTo] = useState(range.to ?? "");
-
-  useEffect(() => {
-    setFrom(range.from ?? "");
-    setTo(range.to ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  const from = range.from ?? "";
+  const to = range.to ?? "";
 
   function emit(nextFrom: string, nextTo: string) {
     if (!nextFrom && !nextTo) {
-      onChange(null);
+      onDraft(null);
     } else {
-      onChange({
+      onDraft({
         op: "range",
         ...(nextFrom ? { from: nextFrom } : {}),
         ...(nextTo ? { to: nextTo } : {}),
@@ -273,20 +383,14 @@ function DateRangeInput({
       <Input
         type="date"
         value={from}
-        onChange={(e) => {
-          setFrom(e.target.value);
-          emit(e.target.value, to);
-        }}
+        onChange={(e) => emit(e.target.value, to)}
         className="h-7 min-w-0 flex-1 text-xs"
       />
       <span className="text-[10px] text-muted-foreground">–</span>
       <Input
         type="date"
         value={to}
-        onChange={(e) => {
-          setTo(e.target.value);
-          emit(from, e.target.value);
-        }}
+        onChange={(e) => emit(from, e.target.value)}
         className="h-7 min-w-0 flex-1 text-xs"
       />
     </div>
@@ -297,12 +401,12 @@ function DateRangeInput({
 
 function SelectInput({
   value,
-  onChange,
+  onDraft,
   options,
   placeholder,
 }: {
   value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  onDraft: (next: ColumnFilterValue | null) => void;
   options: Array<{ label: string; value: string | number | boolean }>;
   placeholder: string;
 }) {
@@ -334,12 +438,9 @@ function SelectInput({
           </button>
         </PopoverTrigger>
         {activeLabel && (
-          // Sibling — sitting outside the trigger button so we don't
-          // nest <button> in <button>. Absolute-positioned over the
-          // right edge of the trigger.
           <button
             type="button"
-            onClick={() => onChange(null)}
+            onClick={() => onDraft(null)}
             aria-label="Clear"
             className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
           >
@@ -355,7 +456,7 @@ function SelectInput({
                   key={String(opt.value)}
                   type="button"
                   onClick={() => {
-                    onChange(isActive ? null : { op: "eq", value: opt.value });
+                    onDraft(isActive ? null : { op: "eq", value: opt.value });
                     setOpen(false);
                   }}
                   className={cn(
@@ -383,12 +484,12 @@ function SelectInput({
 
 function MultiSelectInput({
   value,
-  onChange,
+  onDraft,
   options,
   placeholder,
 }: {
   value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  onDraft: (next: ColumnFilterValue | null) => void;
   options: Array<{ label: string; value: string | number | boolean }>;
   placeholder: string;
 }) {
@@ -403,9 +504,9 @@ function MultiSelectInput({
     if (next.has(k)) next.delete(k);
     else next.add(k);
     if (next.size === 0) {
-      onChange(null);
+      onDraft(null);
     } else {
-      onChange({ op: "in", value: Array.from(next) });
+      onDraft({ op: "in", value: Array.from(next) });
     }
   }
 
@@ -433,7 +534,7 @@ function MultiSelectInput({
         {activeCount > 0 && (
           <button
             type="button"
-            onClick={() => onChange(null)}
+            onClick={() => onDraft(null)}
             aria-label="Clear"
             className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground"
           >
@@ -479,11 +580,11 @@ function MultiSelectInput({
 
 function BooleanInput({
   value,
-  onChange,
+  onDraft,
   placeholder,
 }: {
   value: ColumnFilterValue | null;
-  onChange: (v: ColumnFilterValue | null) => void;
+  onDraft: (next: ColumnFilterValue | null) => void;
   placeholder: string;
 }) {
   const active = value && value.op === "eq" ? (value.value as boolean) : null;
@@ -495,9 +596,9 @@ function BooleanInput({
       type="button"
       onClick={() => {
         // Cycle: null → true → false → null
-        if (active === null) onChange({ op: "eq", value: true });
-        else if (active === true) onChange({ op: "eq", value: false });
-        else onChange(null);
+        if (active === null) onDraft({ op: "eq", value: true });
+        else if (active === true) onDraft({ op: "eq", value: false });
+        else onDraft(null);
       }}
       className={cn(
         "flex h-7 w-full items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-muted",

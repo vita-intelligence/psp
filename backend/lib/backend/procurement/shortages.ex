@@ -61,6 +61,7 @@ defmodule Backend.Procurement.Shortages do
       rows
       |> apply_search(opts[:search])
       |> apply_filters(opts[:filters] || %{})
+      |> apply_column_filters(opts[:column_filter] || %{})
       |> apply_sort(opts[:sort])
 
     limit = clamp_limit(opts[:limit])
@@ -129,6 +130,149 @@ defmodule Backend.Procurement.Shortages do
         acc
     end)
   end
+
+  # Per-column filters shipped by the FE ``FilterRow``. Shape:
+  # ``%{"<field>" => %{"op" => "contains" | "eq" | "range", ...}}``.
+  # Fields not in this allow-list are silently ignored so a
+  # malformed / dev-tools-typed request can't error the page.
+  defp apply_column_filters(rows, cf) when is_map(cf) and map_size(cf) == 0, do: rows
+  defp apply_column_filters(rows, cf) when is_map(cf) do
+    Enum.reduce(cf, rows, fn {field, spec}, acc ->
+      apply_column_filter(acc, field, spec)
+    end)
+  end
+
+  defp apply_column_filters(rows, _), do: rows
+
+  # ── Text: contains ────────────────────────────────────────────────
+  defp apply_column_filter(rows, "item_name", %{"op" => "contains", "value" => q})
+       when is_binary(q) and q != "" do
+    needle = String.downcase(String.trim(q))
+    Enum.filter(rows, fn r ->
+      name = (r.item && r.item.name) || ""
+      String.contains?(String.downcase(name), needle)
+    end)
+  end
+
+  # Matches the "Waiting MOs" column — filter shortage rows to those
+  # whose ``dependent_mos`` list has ANY MO whose ``code`` or
+  # ``item_name`` contains the search text. Case-insensitive.
+  # Answers the "I want to find the shortage for MO00219" workflow.
+  defp apply_column_filter(rows, "mo_code", %{"op" => "contains", "value" => q})
+       when is_binary(q) and q != "" do
+    needle = String.downcase(String.trim(q))
+    Enum.filter(rows, fn r ->
+      Enum.any?(r.dependent_mos || [], fn mo ->
+        code = String.downcase(to_string(mo[:code] || mo["code"] || ""))
+        name = String.downcase(to_string(mo[:item_name] || mo["item_name"] || ""))
+        String.contains?(code, needle) or String.contains?(name, needle)
+      end)
+    end)
+  end
+
+  defp apply_column_filter(rows, "uom", %{"op" => "contains", "value" => q})
+       when is_binary(q) and q != "" do
+    needle = String.downcase(String.trim(q))
+    Enum.filter(rows, fn r ->
+      sym = String.downcase(to_string(r[:line_uom][:symbol] || (r.item && r.item.stock_uom && r.item.stock_uom.symbol) || ""))
+      String.contains?(sym, needle)
+    end)
+  end
+
+  # ── Select: eq ────────────────────────────────────────────────────
+  defp apply_column_filter(rows, "item_type", %{"op" => "eq", "value" => v})
+       when is_binary(v) and v != "" do
+    Enum.filter(rows, fn r -> r.item && r.item.item_type == v end)
+  end
+
+  # ── Number-range: min / max on Decimal-shaped qty columns ─────────
+  @qty_field_keys %{
+    "required_qty" => :required_qty,
+    "booked_qty" => :booked_qty,
+    "expecting_qty" => :expecting_qty,
+    "on_hand_qty" => :on_hand_qty,
+    "shortage_qty" => :shortage_qty
+  }
+  defp apply_column_filter(rows, field, %{"op" => "range"} = spec)
+       when is_map_key(@qty_field_keys, field) do
+    key = Map.fetch!(@qty_field_keys, field)
+    min_dec = parse_decimal(spec["min"])
+    max_dec = parse_decimal(spec["max"])
+    if is_nil(min_dec) and is_nil(max_dec) do
+      rows
+    else
+      Enum.filter(rows, fn r ->
+        v = Decimal.new(Map.get(r, key, "0"))
+        (is_nil(min_dec) or Decimal.compare(v, min_dec) != :lt) and
+          (is_nil(max_dec) or Decimal.compare(v, max_dec) != :gt)
+      end)
+    end
+  end
+
+  # ── Date-range: earliest planned_start across dependent MOs ───────
+  defp apply_column_filter(rows, "earliest_planned", %{"op" => "range"} = spec) do
+    from_d = parse_date(spec["from"])
+    to_d = parse_date(spec["to"])
+    if is_nil(from_d) and is_nil(to_d) do
+      rows
+    else
+      Enum.filter(rows, fn r ->
+        earliest =
+          (r.dependent_mos || [])
+          |> Enum.map(fn mo -> mo[:planned_start] || mo["planned_start"] end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.map(&to_date/1)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.sort(Date)
+          |> List.first()
+
+        case earliest do
+          nil -> false
+          d ->
+            (is_nil(from_d) or Date.compare(d, from_d) != :lt) and
+              (is_nil(to_d) or Date.compare(d, to_d) != :gt)
+        end
+      end)
+    end
+  end
+
+  # Unknown field or unsupported op → pass through unchanged so a
+  # stale FE / dev-tools-typed filter doesn't error the page.
+  defp apply_column_filter(rows, _field, _spec), do: rows
+
+  defp parse_decimal(nil), do: nil
+  defp parse_decimal(""), do: nil
+  defp parse_decimal(v) when is_number(v), do: Decimal.new(to_string(v))
+  defp parse_decimal(v) when is_binary(v) do
+    case Decimal.parse(v) do
+      {d, _} -> d
+      :error -> nil
+    end
+  end
+
+  defp parse_date(nil), do: nil
+  defp parse_date(""), do: nil
+  defp parse_date(v) when is_binary(v) do
+    case Date.from_iso8601(v) do
+      {:ok, d} -> d
+      _ -> nil
+    end
+  end
+
+  defp to_date(%Date{} = d), do: d
+  defp to_date(%DateTime{} = dt), do: DateTime.to_date(dt)
+  defp to_date(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_date(ndt)
+  defp to_date(v) when is_binary(v) do
+    case DateTime.from_iso8601(v) do
+      {:ok, dt, _} -> DateTime.to_date(dt)
+      _ ->
+        case Date.from_iso8601(v) do
+          {:ok, d} -> d
+          _ -> nil
+        end
+    end
+  end
+  defp to_date(_), do: nil
 
   defp apply_sort(rows, nil), do: rows
 

@@ -22,6 +22,12 @@ defmodule BackendWeb.ProcurementShortagesController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       filters: params["filter"] || %{},
+      # Per-column filter map — nested-bracket URL params decoded by
+      # Plug into ``%{"<field>" => %{"op" => ..., "value" | "min" |
+      # "max" | "from" | "to" => ...}}``. Shape mirrors the FE
+      # ``serializeColumnFilters`` helper; the shortages service
+      # allow-lists the fields it accepts.
+      column_filter: params["column_filter"] || %{},
       search: params["search"]
     ]
 
