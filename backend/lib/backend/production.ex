@@ -5765,30 +5765,43 @@ defmodule Backend.Production do
         Decimal.mult(per_output_qty, mo.quantity || Decimal.new(0))
       end
 
-    # Round the raw shortfall to the persisted 5 dp precision every
-    # quantity column in the system uses (pharmaceutical standard, see
-    # the 2026-09-07 normalise-quantity migration). Bench-scale trial
-    # MOs multiply BOM ratios into ``needed`` values below 0.00001 —
-    # the DB column truncates those to 0.00000 on insert, which trips
-    # the ``mo_bookings_quantity_positive`` CHECK and takes the whole
-    # create-MO transaction down with it (NPD saw a 500 propagated as
-    # "Couldn't reach PSP").
-    needed_raw = Decimal.sub(line_total, already)
-    needed = Decimal.round(needed_raw, 5)
+    # Pharmaceutical 5 dp precision — the tenant-wide standard for
+    # every quantity column (see 2026-09-07 normalise-quantity
+    # migration). Normalise ``line_total`` to 5 dp FIRST so all the
+    # arithmetic below happens at 5 dp uniformly. Bookings are stored
+    # at 5 dp, so subtracting a 5 dp ``already`` from a full-precision
+    # ``line_total`` produces sub-5 dp noise on the shortfall that then
+    # trips guards downstream — even when the line is physically
+    # fully covered at 5 dp.
+    line_total_raw = line_total
+    line_total = Decimal.round(line_total_raw, 5)
+    needed = Decimal.sub(line_total, already)
 
     cond do
-      # Line has nothing owed — already fully booked, or recipe uses
-      # zero of it at this scale. Nothing to do.
-      Decimal.compare(needed_raw, Decimal.new("0")) != :gt ->
+      # Line effectively covered at 5 dp. Two cases:
+      #   * The recipe truly wants zero of this item at this scale
+      #     (``line_total_raw <= 0``) — recipe uses none.
+      #   * The line has already been booked and the residual shortfall
+      #     rounds to zero at 5 dp — nothing left to top up.
+      # Both are "nothing to do". Skip silently.
+      Decimal.compare(needed, Decimal.new("0")) != :gt and
+          (Decimal.compare(line_total_raw, Decimal.new("0")) != :gt or
+             Decimal.compare(already, Decimal.new("0")) == :gt) ->
         []
 
-      # Recipe legitimately needs SOME of this ingredient, but the
-      # amount rounds to zero at 5 dp. Silently skipping would ship
-      # a batch missing an ingredient — refusing here tells the
-      # operator to scale the batch up until every line clears the
-      # 0.00001 threshold. ``Repo.rollback`` propagates through
-      # ``book_all_for_mo_txn``'s Repo.transaction wrapper so the MO
-      # row + reserved lot + snapshot steps also unwind.
+      # Recipe legitimately wants SOME of this ingredient (raw amount
+      # > 0) but at the current MO scale it rounds to zero at 5 dp
+      # AND nothing has been booked for this line yet. Silently
+      # skipping would ship a batch missing an ingredient — refuse
+      # loud so the operator scales the batch up.
+      #
+      # The ``already > 0`` guard on the skip branch above is
+      # load-bearing: a MO that's already booked 5.00000 kg of a line
+      # whose full-precision required is 5.00000003 kg is physically
+      # covered — the 0.00000003 kg residual is just sub-5 dp noise
+      # from ``line.qty × mo.quantity`` and must NOT trip this loud
+      # refuse (would false-positive book_all_for_mo on any topup
+      # attempt).
       Decimal.compare(needed, Decimal.new("0")) != :gt ->
         item_name =
           case Repo.get(Backend.Items.Item, line.part_id) do
