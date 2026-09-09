@@ -1991,6 +1991,166 @@ defmodule Backend.Purchasing do
   defp fetch_line_item(%PurchaseOrderLine{item: %Backend.Items.Item{} = i}), do: i
   defp fetch_line_item(%PurchaseOrderLine{item_id: id}), do: Repo.get(Backend.Items.Item, id)
 
+  @doc """
+  Apply a qty-received delta to a PO line + its corresponding stock
+  lot after a QC edit changed an inspection item's qty. Called from
+  ``Backend.GoodsIn.qc_edit_item_decision`` — MUST run inside the
+  caller's transaction because the line + lot + PO status changes
+  have to land atomically with the inspection-item write.
+
+  ``delta`` is ``new_item_qty - old_item_qty``. Positive means QC
+  discovered more physical stock than the operator recorded (e.g.
+  operator typed 64 kg, QC re-weighed and it's actually 67 kg);
+  negative means QC found less (over-count / re-weigh short). Zero
+  is a no-op — the caller pre-checks and skips.
+
+  Reconciliation steps:
+    1. ``PurchaseOrderLine.qty_received`` += delta (clamped at 0).
+    2. If exactly ONE stock lot exists for the (inspection, PO line)
+       combo, its ``qty_received`` also gets the delta so the on-shelf
+       balance stays honest. Multi-lot lines (one pack per lot at
+       receive-time) are left alone — a bare qty delta can't tell us
+       which lot to adjust; QC would need to re-work the pack list.
+    3. Recompute the PO's status from all its lines. If it changed
+       (e.g. the delta pushed the last short line over its ordered
+       qty → PO flips ``partially_received`` → ``received``), emit
+       the transition + broadcast so the FE catches up.
+
+  Returns ``:ok`` on success, or ``{:error, reason}`` if the line /
+  lot changesets fail. Called inside a transaction, so an error
+  should be propagated as a ``Repo.rollback`` by the caller.
+  """
+  def reconcile_line_after_qc_edit(
+        %User{} = actor,
+        po_line_id,
+        inspection_id,
+        %Decimal{} = delta
+      )
+      when is_integer(po_line_id) and is_integer(inspection_id) do
+    if Decimal.equal?(delta, Decimal.new(0)) do
+      :ok
+    else
+      apply_qc_delta(actor, po_line_id, inspection_id, delta)
+    end
+  end
+
+  defp apply_qc_delta(actor, po_line_id, inspection_id, delta) do
+    case Repo.get(PurchaseOrderLine, po_line_id) do
+      nil ->
+        :ok
+
+      %PurchaseOrderLine{} = line ->
+        with {:ok, updated_line} <- bump_line_qty_received(line, delta),
+             :ok <- maybe_bump_single_lot(inspection_id, po_line_id, delta) do
+          recompute_po_status_after_line_change(actor, updated_line)
+        end
+    end
+  end
+
+  defp bump_line_qty_received(%PurchaseOrderLine{} = line, %Decimal{} = delta) do
+    new_qty =
+      line.qty_received
+      |> Kernel.||(Decimal.new(0))
+      |> Decimal.add(delta)
+      |> clamp_non_negative()
+
+    line
+    |> PurchaseOrderLine.changeset(%{"qty_received" => new_qty})
+    |> Repo.update()
+  end
+
+  defp clamp_non_negative(%Decimal{} = d) do
+    if Decimal.compare(d, Decimal.new(0)) == :lt, do: Decimal.new(0), else: d
+  end
+
+  # Adjust the lot's on-shelf qty when a QC edit alters the pack size.
+  # Only touched when exactly ONE lot exists for this (inspection, PO
+  # line) — the common case of "one pack = one lot" that the receive
+  # flow creates by default. Multi-lot lines can't be delta-adjusted
+  # safely without knowing which pack the qty came from.
+  defp maybe_bump_single_lot(inspection_id, po_line_id, %Decimal{} = delta) do
+    line = Repo.get(PurchaseOrderLine, po_line_id)
+    item_id = line && line.item_id
+
+    if is_nil(item_id) do
+      :ok
+    else
+      lots =
+        Repo.all(
+          from(l in Backend.Stock.Lot,
+            where:
+              l.goods_in_inspection_id == ^inspection_id and
+                l.item_id == ^item_id
+          )
+        )
+
+      case lots do
+        [%Backend.Stock.Lot{} = lot] ->
+          new_qty =
+            lot.qty_received
+            |> Kernel.||(Decimal.new(0))
+            |> Decimal.add(delta)
+            |> clamp_non_negative()
+
+          case lot
+               |> Backend.Stock.Lot.changeset(%{"qty_received" => new_qty})
+               |> Repo.update() do
+            {:ok, _} -> :ok
+            {:error, _} = err -> err
+          end
+
+        _ ->
+          # Zero or many — leave lots alone; the delta at line level
+          # still gets applied so the PO status recompute is correct.
+          :ok
+      end
+    end
+  end
+
+  defp recompute_po_status_after_line_change(%User{} = actor, %PurchaseOrderLine{} = line) do
+    po = Repo.get!(PurchaseOrder, line.purchase_order_id) |> Repo.preload(:lines)
+    new_status = compute_po_status_from_lines(po)
+
+    if new_status == po.status do
+      :ok
+    else
+      received_by_attr =
+        if new_status in ["received", "partially_received"] and
+             is_nil(po.received_by_id) do
+          %{"received_by_id" => actor.id}
+        else
+          %{}
+        end
+
+      received_at_attr =
+        if new_status == "received" do
+          %{"received_at" => DateTime.utc_now() |> DateTime.truncate(:second)}
+        else
+          %{}
+        end
+
+      attrs =
+        %{"status" => new_status, "updated_by_id" => actor.id}
+        |> Map.merge(received_by_attr)
+        |> Map.merge(received_at_attr)
+
+      case transition_db(actor, po, attrs) do
+        {:ok, _transitioned} ->
+          Backend.Broadcasts.entity_changed(
+            "purchase-order",
+            po.uuid,
+            po.company_id,
+            new_status
+          )
+
+          :ok
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
   defp compute_po_status_from_lines(%PurchaseOrder{lines: lines}) do
     cond do
       Enum.all?(lines, fn l ->

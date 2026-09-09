@@ -440,12 +440,45 @@ defmodule Backend.GoodsIn do
         {:error, :not_editable}
 
       %InspectionItem{} = item ->
+        # Wrap the item write + downstream PO / lot reconciliation in
+        # a single transaction so a stale ``qty_received`` on the PO
+        # line can't survive a partial failure. Operator sign-off
+        # ADDs pack qtys to the line; QC edits change the pack qty
+        # afterwards, so without this reconciliation the line stays
+        # stuck at the operator's original number (bug: PO stays
+        # ``partially_received`` even after QC corrects the qty
+        # upward past ``qty_ordered``).
+        old_qty = item.qty_received || Decimal.new(0)
         before_snapshot = item_snapshot(item)
 
-        item
-        |> InspectionItem.changeset(attrs)
-        |> Repo.update()
-        |> after_qc_edit(actor, before_snapshot)
+        Repo.transaction(fn ->
+          with {:ok, updated} <-
+                 item
+                 |> InspectionItem.changeset(attrs)
+                 |> Repo.update(),
+               new_qty = updated.qty_received || Decimal.new(0),
+               delta = Decimal.sub(new_qty, old_qty),
+               :ok <-
+                 Backend.Purchasing.reconcile_line_after_qc_edit(
+                   actor,
+                   line.id,
+                   i.id,
+                   delta
+                 ) do
+            Audit.record_updated(
+              actor,
+              "goods_in_inspection_item",
+              updated,
+              before_snapshot,
+              item_snapshot(updated)
+            )
+
+            Repo.preload(updated, :purchase_order_line)
+          else
+            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
     end
   end
 
@@ -470,32 +503,6 @@ defmodule Backend.GoodsIn do
   end
 
   defp after_item_write(other, _actor, _kind), do: other
-
-  # QC-edit audit — separate helper because the payload we want on
-  # the audit event is a full before/after diff, not just the
-  # material_decision + qty_received the operator-write path
-  # records. A regulator asking "did QC alter the operator's numbers
-  # before approving?" needs to see the exact deltas per pack.
-  defp after_qc_edit({:ok, item}, actor, before_snapshot) do
-    Audit.record_updated(
-      actor,
-      "goods_in_inspection_item",
-      item,
-      before_snapshot,
-      item_snapshot(item)
-    )
-
-    # Preload ``purchase_order_line`` so the response payload can emit
-    # ``purchase_order_line_uuid`` — the mobile QC review FE keys on
-    # this field to splice the updated item back into its local
-    # ``inspection.items`` state. Without the preload,
-    # ``maybe_po_line_uuid/1`` returns nil and the FE can't find the
-    # row to replace, so the read view stays on pre-edit data until
-    # a full page refresh.
-    {:ok, Repo.preload(item, :purchase_order_line)}
-  end
-
-  defp after_qc_edit(other, _actor, _before), do: other
 
   # Everything the operator + QC can touch on an item, serialised for
   # the audit event's before/after diff. Kept in one place so both
