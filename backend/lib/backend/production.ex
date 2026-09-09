@@ -4645,11 +4645,6 @@ defmodule Backend.Production do
         # a sample MO. Fire the overlay sweep so those MOs' badges
         # clear on the same trigger as the BOM path.
         sweep_overlay_purchasing_requested(actor, lot)
-        # Auto-book path — see comment on the two-branch version
-        # below. A lot arriving without a PO line link (manual
-        # putaway, hand-created lot for R&D use) still counts as
-        # available stock that a waiting MO can consume.
-        try_book_open_mos_needing_item(actor, lot)
         {:ok, %{upgraded: 0, lot_qty_used: Decimal.new(0)}}
 
       po_line_id ->
@@ -4689,51 +4684,44 @@ defmodule Backend.Production do
           # procurement" badge clears automatically.
           sweep_overlay_purchasing_requested(actor, lot)
 
-          # And the load-bearing self-heal path — the whole reason
-          # this branch was silently broken before: after placeholder
-          # bookings drain into real lots for the MO(s) that pre-
-          # reserved this PO line, ANY OTHER open MO whose BOM has
-          # this item may still be sitting with unbooked lines. The
-          # planner on those MOs didn't go through Request purchases →
-          # PO → placeholder — maybe they created the MO knowing a
-          # standing PO was already on the way, maybe the goods arrived
-          # via a different channel, maybe they were about to click
-          # Request purchases when the delivery landed. Either way, the
-          # freshly-available stock should get booked against their
-          # unbooked lines automatically so the wizard's
-          # "Click Request purchases" prompt disappears without the
-          # operator having to hunt for a manual button.
-          try_book_open_mos_needing_item(actor, lot)
-
           {:ok, summary}
         end
     end
   end
 
-  # Sweep every open MO whose BOM references ``lot.item_id`` and
-  # try to book the newly-available stock against its unbooked
-  # lines. Complements ``upgrade_placeholder_bookings_for_lot``:
-  # the placeholder-upgrade path handles the specific
-  # "planner reserved this exact PO line" case, this sweep covers
-  # every other route by which fresh stock could satisfy an MO
-  # that's been waiting.
-  #
-  # Called at the end of ``upgrade_placeholder_bookings_for_lot`` so
-  # placeholder-driven bookings for the same lot land first (they
-  # already have prior claim on the qty), then the sweep books
-  # whatever's left of the lot against other MOs FEFO.
-  #
-  # Idempotent per MO — ``book_all_for_mo`` only fills unbooked
-  # lines, leaving existing bookings intact. Silent-degrade on
-  # per-MO failure so a booking guard trip on one MO (trace-
-  # quantity, missing UoM, RBAC, etc.) doesn't halt the QC-pass
-  # callback for the physical lot the operator is trying to put
-  # away.
-  defp try_book_open_mos_needing_item(%User{} = actor, %StockLot{
-         item_id: item_id,
-         company_id: company_id
-       })
-       when is_integer(item_id) and is_integer(company_id) do
+  @doc """
+  Sweep every open MO whose BOM references ``lot.item_id`` and
+  try to book the newly-available stock against its unbooked
+  lines. Complements ``upgrade_placeholder_bookings_for_lot``:
+  the placeholder-upgrade path handles the specific
+  "planner reserved this exact PO line" case, this sweep covers
+  every other route by which fresh stock could satisfy an MO
+  that's been waiting.
+
+  **MUST be called OUTSIDE any enclosing ``Repo.transaction``.**
+  ``book_all_for_mo`` opens its own transaction; if it fails via
+  ``Repo.rollback`` (trace-quantity guard, missing UoM, etc.)
+  while nested inside another transaction the savepoint interaction
+  corrupts the outer transaction and every subsequent query fails
+  with ``transaction rolling back``. An earlier version of this
+  sweep was called INSIDE ``upgrade_placeholder_bookings_for_lot``
+  (itself called from ``fan_out_lot_events`` inside the
+  ``sign_quality_approver`` transaction) — a single trace-quantity
+  trip on any candidate MO poisoned the sign-quality write.
+
+  Public function so callers can invoke it from a post-commit
+  hook (see ``sign_quality_approver`` and its ``tap``).
+
+  Idempotent per MO — ``book_all_for_mo`` only fills unbooked
+  lines, leaves existing bookings intact. Silent-degrade on
+  per-MO failure so a per-MO guard trip doesn't stop the sweep
+  from continuing to the next candidate.
+  """
+  def try_book_open_mos_needing_item(%User{} = actor, %StockLot{
+        item_id: item_id,
+        company_id: company_id
+      })
+      when is_integer(item_id) and is_integer(company_id) do
     # Candidate MOs: open status, same tenant, at least one BOM line
     # for this item. Distinct because a single BOM can reference the
     # same item across multiple stages.
@@ -4763,7 +4751,7 @@ defmodule Backend.Production do
     end)
   end
 
-  defp try_book_open_mos_needing_item(_actor, _lot), do: :ok
+  def try_book_open_mos_needing_item(_actor, _lot), do: :ok
 
   # For any MO with ``purchasing_requested_at`` set whose
   # ``packaging_combo_items`` overlay references the received lot's

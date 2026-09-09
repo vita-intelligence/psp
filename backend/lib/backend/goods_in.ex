@@ -871,6 +871,33 @@ defmodule Backend.GoodsIn do
             "approver_signed"
           )
 
+          # Post-commit auto-book sweep. Any lot flipped to
+          # ``available`` by ``fan_out_lot_events`` inside the
+          # transaction now becomes candidate stock for open MOs
+          # with unbooked lines needing this item. We MUST run
+          # this OUTSIDE the sign-quality transaction: each MO's
+          # ``book_all_for_mo`` opens its own transaction, and a
+          # nested trace-quantity trip savepoint-poisoned the
+          # outer transaction in the previous inline version.
+          #
+          # Silent-degrade — a booking failure here can't undo
+          # the operator's QC sign-off (which already committed);
+          # worst case the operator sees the "Click Request
+          # purchases" nudge until a subsequent trigger books
+          # from newly-available stock.
+          try do
+            Stock.list_lots_for_inspection(insp.id)
+            |> Enum.each(fn lot ->
+              if lot.status == "available" do
+                Backend.Production.try_book_open_mos_needing_item(actor, lot)
+              end
+            end)
+          rescue
+            _ -> :ok
+          catch
+            :exit, _ -> :ok
+          end
+
         _ ->
           :ok
       end)
