@@ -451,34 +451,74 @@ defmodule Backend.GoodsIn do
         old_qty = item.qty_received || Decimal.new(0)
         before_snapshot = item_snapshot(item)
 
-        Repo.transaction(fn ->
-          with {:ok, updated} <-
-                 item
-                 |> InspectionItem.changeset(attrs)
-                 |> Repo.update(),
-               new_qty = updated.qty_received || Decimal.new(0),
-               delta = Decimal.sub(new_qty, old_qty),
-               :ok <-
-                 Backend.Purchasing.reconcile_line_after_qc_edit(
-                   actor,
-                   line.id,
-                   i.id,
-                   delta
-                 ) do
-            Audit.record_updated(
-              actor,
-              "goods_in_inspection_item",
-              updated,
-              before_snapshot,
-              item_snapshot(updated)
-            )
+        result =
+          Repo.transaction(fn ->
+            with {:ok, updated} <-
+                   item
+                   |> InspectionItem.changeset(attrs)
+                   |> Repo.update(),
+                 new_qty = updated.qty_received || Decimal.new(0),
+                 delta = Decimal.sub(new_qty, old_qty),
+                 :ok <-
+                   Backend.Purchasing.reconcile_line_after_qc_edit(
+                     actor,
+                     line.id,
+                     i.id,
+                     delta
+                   ) do
+              Audit.record_updated(
+                actor,
+                "goods_in_inspection_item",
+                updated,
+                before_snapshot,
+                item_snapshot(updated)
+              )
 
-            Repo.preload(updated, :purchase_order_line)
-          else
-            {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
-            {:error, reason} -> Repo.rollback(reason)
-          end
-        end)
+              {Repo.preload(updated, :purchase_order_line), delta}
+            else
+              {:error, %Ecto.Changeset{} = cs} -> Repo.rollback(cs)
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end)
+
+        # Post-commit auto-book sweep — top up any MO that was
+        # partially booked against this lot because the operator's
+        # original qty was short of the BOM requirement. QC has
+        # since surfaced additional physical stock on the lot (delta
+        # > 0 → ``reconcile_line_after_qc_edit`` bumped the lot's
+        # ``qty_received``), which is now free stock that
+        # ``book_all_for_mo`` can allocate. MUST run OUTSIDE the
+        # transaction because ``book_all_for_mo`` opens its own
+        # transaction; a nested trace-quantity rollback would
+        # savepoint-poison the outer one.
+        #
+        # Silent-degrade — a booking failure can't undo the QC edit
+        # that already committed; worst case the planner sees the
+        # under-booked line on the wizard until they re-run the
+        # allocator manually.
+        case result do
+          {:ok, {updated, %Decimal{} = delta}} ->
+            if Decimal.compare(delta, Decimal.new(0)) == :gt do
+              try do
+                Stock.list_lots_for_inspection(i.id)
+                |> Enum.filter(fn lot ->
+                  lot.status == "available" and lot.item_id == line.item_id
+                end)
+                |> Enum.each(fn lot ->
+                  Backend.Production.try_book_open_mos_needing_item(actor, lot)
+                end)
+              rescue
+                _ -> :ok
+              catch
+                :exit, _ -> :ok
+              end
+            end
+
+            {:ok, updated}
+
+          {:error, _} = err ->
+            err
+        end
     end
   end
 
