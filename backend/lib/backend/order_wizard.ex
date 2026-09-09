@@ -1019,7 +1019,8 @@ defmodule Backend.OrderWizard do
            npd_sample_allocation_status: allocation_status,
            npd_deposit_paid_at: deposit_paid_at,
            npd_customer_confirmed_done_at: customer_confirmed_done_at,
-           npd_final_payment_approved_at: final_payment_approved_at
+           npd_final_payment_approved_at: final_payment_approved_at,
+           is_reorder: is_reorder
          },
          _line_states,
          _mos
@@ -1033,6 +1034,19 @@ defmodule Backend.OrderWizard do
     # (which represents the full payment on RTG) from misrouting the
     # CO into the fuchsia "Trial batches" column.
     is_rtg = project_type == "ready_to_go"
+    # Reorders reuse an already-signed FINAL spec from the original
+    # customer order — no R&D happens, no trial batches run, no
+    # per-line sample allocation is required. Commercially they
+    # behave like RTG: customer signs the proposal, pays once
+    # (single invoice, no split), production is authorised. So
+    # they share every RTG shortcut below via ``skip_rd_gates``.
+    # Reorders are still stored as ``npd_project_type = "custom"``
+    # + ``is_reorder = true`` (the reorder-CO branch of
+    # ``proposal_merge`` uses the Custom shape for its 1:1
+    # formulation link), so this reorder flag is the ONLY signal
+    # that separates them from bespoke Custom projects at this
+    # phase-gate layer.
+    skip_rd_gates = is_rtg or is_reorder == true
     case proposal_status do
       s when s in ["draft", nil] -> :awaiting_proposal_approval
       "in_review" -> :proposal_in_review
@@ -1076,13 +1090,13 @@ defmodule Backend.OrderWizard do
           is_nil(customer_signed_at) ->
             :awaiting_customer_signature
 
-          # RTG skips sample selection + trial batches entirely.
-          # Once the customer signs the proposal AND their full-value
-          # payment lands, production is authorised.
-          is_rtg and is_nil(deposit_paid_at) ->
+          # RTG + reorder skip sample selection + trial batches
+          # entirely. Once the customer signs the proposal AND
+          # their payment lands, production is authorised.
+          skip_rd_gates and is_nil(deposit_paid_at) ->
             :proposal_accepted
 
-          is_rtg ->
+          skip_rd_gates ->
             :production_planning
 
           allocation_status != "confirmed" ->
@@ -1129,12 +1143,20 @@ defmodule Backend.OrderWizard do
       # batch signals are set (RTG's terminal state).
       "accepted" ->
         cond do
-          # RTG: deposit_paid_at represents the full order payment
-          # (deposit_percent=100). Once it lands, production is
-          # authorised — no trial-batch cycle stands between the
-          # commercial commitment and the shop floor.
-          is_rtg and not is_nil(deposit_paid_at) -> :production_planning
-          is_rtg -> :proposal_accepted
+          # RTG + reorder: ``deposit_paid_at`` represents the full
+          # order payment (deposit_percent=100 on both flavours —
+          # reorders inherit RTG's single-invoice shape via the
+          # reorder-CO branch of ``proposal_merge``). Once it
+          # lands, production is authorised — no trial-batch cycle
+          # stands between the commercial commitment and the shop
+          # floor. Reorders in particular reuse the ORIGINAL
+          # customer order's already-signed FINAL spec, so the
+          # ``final_payment_approved_at`` / ``customer_confirmed_done_at``
+          # gates below are irrelevant to them and would trap the
+          # CO in :trial_batches_in_flight forever if we let it
+          # fall through.
+          skip_rd_gates and not is_nil(deposit_paid_at) -> :production_planning
+          skip_rd_gates -> :proposal_accepted
           not is_nil(final_payment_approved_at) -> :production_planning
           not is_nil(customer_confirmed_done_at) -> :awaiting_final_spec
           not is_nil(deposit_paid_at) -> :trial_batches_in_flight
