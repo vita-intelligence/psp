@@ -354,9 +354,23 @@ function IncomingCard({
   const po = row.purchase_order;
   const badge = computeBadge(po.expected_delivery_date, todayIso, tomorrowIso);
   const lineCount = po.lines.length;
-  const remainingSum = po.lines
-    .reduce((acc, l) => acc + Number(l.remaining || "0"), 0)
-    .toLocaleString(undefined, { maximumFractionDigits: 2 });
+  // Sum ONLY the lines that are genuinely short. A slightly over-
+  // received line has negative ``remaining``; summing algebraically
+  // let a small over-receipt on one line partially cancel a real
+  // shortfall on another and surfaced a misleading "-0.53 units
+  // remaining" chip on POs whose vendor delivered the full order
+  // but on line-by-line. Clamping each line to ``max(0, remaining)``
+  // means the chip shows what procurement is still owed — nothing
+  // less, nothing weirder. Zero-sum result hides the chip entirely
+  // (Line 401's truthiness check now depends on a numeric > 0
+  // rather than the presence of any digits in the formatted string).
+  const remainingNumeric = po.lines.reduce(
+    (acc, l) => acc + Math.max(Number(l.remaining || "0"), 0),
+    0,
+  );
+  const remainingSum = remainingNumeric.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  });
 
   return (
     <li>
@@ -397,7 +411,7 @@ function IncomingCard({
               <Package2 className="size-3" />
               {lineCount} {lineCount === 1 ? "item" : "items"}
             </span>
-            {remainingSum && (
+            {remainingNumeric > 0 && (
               <span>{remainingSum} units remaining</span>
             )}
             {po.default_warehouse?.name && (
