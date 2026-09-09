@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Printer } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ExternalLink, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,6 +35,15 @@ type PrintBridgeEvent =
       payload: ThreePlDispatchPayload;
       actor: { uuid: string; name: string };
     };
+
+// Distinct event from ``print_label`` — the laptop navigates instead
+// of printing. Same broadcast channel so the listener can subscribe
+// once and dispatch by event name.
+interface OpenUrlEvent {
+  path: string;
+  title: string;
+  actor: { uuid: string; name: string };
+}
 
 interface ThreePlDispatchPayload {
   dispatch_uuid: string;
@@ -85,6 +95,7 @@ interface Props {
  */
 export function PrintBridgeListener({ viewer }: Props) {
   const [event, setEvent] = useState<PrintBridgeEvent | null>(null);
+  const [openUrlEvent, setOpenUrlEvent] = useState<OpenUrlEvent | null>(null);
   const channelRef = useRef<{ leave: () => void } | null>(null);
 
   useEffect(() => {
@@ -105,6 +116,9 @@ export function PrintBridgeListener({ viewer }: Props) {
       channel.on("print_label", (raw: PrintBridgeEvent) => {
         setEvent(raw);
       });
+      channel.on("open_url", (raw: OpenUrlEvent) => {
+        setOpenUrlEvent(raw);
+      });
       channel.join();
       channelRef.current = channel;
     })();
@@ -119,15 +133,90 @@ export function PrintBridgeListener({ viewer }: Props) {
   const handleClose = useCallback((open: boolean) => {
     if (!open) setEvent(null);
   }, []);
+  const handleOpenUrlClose = useCallback((open: boolean) => {
+    if (!open) setOpenUrlEvent(null);
+  }, []);
 
-  if (!event) return null;
-  if (event.kind === "stock_lot") {
-    return <StockLotLabelDialog event={event} onOpenChange={handleClose} />;
+  return (
+    <>
+      {event && event.kind === "stock_lot" && (
+        <StockLotLabelDialog event={event} onOpenChange={handleClose} />
+      )}
+      {event && event.kind === "three_pl_dispatch" && (
+        <ThreePlLabelDialog event={event} onOpenChange={handleClose} />
+      )}
+      {event && event.kind === "quarantine_pack" && (
+        <QuarantineLabelDialog event={event} onOpenChange={handleClose} />
+      )}
+      {openUrlEvent && (
+        <OpenUrlDialog
+          event={openUrlEvent}
+          onOpenChange={handleOpenUrlClose}
+        />
+      )}
+    </>
+  );
+}
+
+// "Open on desktop" bridge dialog — sibling of the print dialogs.
+// Naming the actor + target on the confirmation is important because
+// the operator might be sitting away from their laptop; a silent
+// redirect would be jarring for anyone else standing in front of the
+// screen. Single-button ("Open") flow so the interaction is one
+// click if the operator's already back at the desk.
+function OpenUrlDialog({
+  event,
+  onOpenChange,
+}: {
+  event: OpenUrlEvent;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const router = useRouter();
+  const { path, title, actor } = event;
+
+  function onOpen() {
+    router.push(path);
+    onOpenChange(false);
   }
-  if (event.kind === "three_pl_dispatch") {
-    return <ThreePlLabelDialog event={event} onOpenChange={handleClose} />;
-  }
-  return <QuarantineLabelDialog event={event} onOpenChange={handleClose} />;
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ExternalLink className="size-4 text-brand" />
+            Open on desktop
+          </DialogTitle>
+          <DialogDescription>
+            From <span className="font-medium">{actor.name}</span> on the
+            phone. Their mobile view sent you here — tap Open to jump
+            straight to the page.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm">
+          {title && <p className="font-medium">{title}</p>}
+          <p
+            className={
+              title
+                ? "mt-1 font-mono text-xs text-muted-foreground"
+                : "font-mono text-xs text-muted-foreground"
+            }
+            title={path}
+          >
+            {path}
+          </p>
+        </div>
+
+        <DialogFooter className="sm:justify-stretch">
+          <Button type="button" size="lg" className="w-full" onClick={onOpen}>
+            <ExternalLink className="mr-1.5 size-4" />
+            Open
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function ThreePlLabelDialog({

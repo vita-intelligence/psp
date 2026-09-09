@@ -20,12 +20,21 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Copy,
+  ExternalLink,
   Image as ImageIcon,
+  Layers,
   Loader2,
+  MessageSquare,
+  Monitor,
+  Pencil,
   Plus,
   Printer,
+  RotateCcw,
+  Save,
   ShieldCheck,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -64,13 +73,17 @@ import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
 import {
   deleteInspectionAction,
   deleteInspectionFileAction,
+  qcEditItemAction,
   signOperatorAction,
   signQualityAction,
   updateInspectionAction,
   uploadInspectionFileAction,
   upsertItemAction,
 } from "@/lib/goods-in/actions";
-import { sendQuarantineLabelAction } from "@/lib/realtime/actions";
+import {
+  sendOpenUrlAction,
+  sendQuarantineLabelAction,
+} from "@/lib/realtime/actions";
 import type {
   Inspection,
   InspectionFile,
@@ -1172,11 +1185,16 @@ export function MobileInspectionWizard({
             reason={approverReason}
             onReason={setApproverReason}
             onSignatureChange={setApproverSignature}
+            onInspectionChange={setInspection}
           />
         ) : inspection.status === "draft" ? (
           renderStep()
         ) : (
-          <ReadOnlySummary inspection={inspection} lines={lines} />
+          <ReadOnlySummary
+            inspection={inspection}
+            lines={lines}
+            onInspectionChange={null}
+          />
         )}
 
         <FileGallery
@@ -3090,6 +3108,7 @@ function ApproverPanel({
   reason,
   onReason,
   onSignatureChange,
+  onInspectionChange,
 }: {
   inspection: Inspection;
   lines: PurchaseOrderLine[];
@@ -3099,6 +3118,10 @@ function ApproverPanel({
   reason: string;
   onReason: (r: string) => void;
   onSignatureChange: (s: string | null) => void;
+  /** Threaded through to ``QcEditableItems`` so inline QC edits
+   *  refresh the local inspection snapshot without a page reload.
+   *  ``null`` on read-only fallbacks. */
+  onInspectionChange: ((next: Inspection) => void) | null;
 }) {
   // Surface dual-role explicitly when the same user is about to sign
   // both ends. Allowed by our regulatory framework but worth flagging
@@ -3129,7 +3152,16 @@ function ApproverPanel({
         )}
       </header>
 
-      <ReadOnlySummary inspection={inspection} lines={lines} />
+      <OpenOnDesktopHandoff
+        inspectionUuid={inspection.uuid}
+        inspectionCode={`Inspection #${inspection.id}`}
+      />
+
+      <ReadOnlySummary
+        inspection={inspection}
+        lines={lines}
+        onInspectionChange={onInspectionChange}
+      />
 
       <div className="space-y-2">
         <Label className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -3181,9 +3213,14 @@ function ApproverPanel({
 function ReadOnlySummary({
   inspection,
   lines,
+  onInspectionChange,
 }: {
   inspection: Inspection;
   lines: PurchaseOrderLine[];
+  /** When provided, the per-line block flips into the editable QC
+   *  surface. ``null`` renders the plain read-only summary — used
+   *  for terminal-state inspections where nothing should mutate. */
+  onInspectionChange: ((next: Inspection) => void) | null;
 }) {
   const sections: Array<{ key: SectionKey; title: string; checks: CheckRow[] }> = [
     { key: "vehicle_inspection", title: "Vehicle inspection", checks: VEHICLE_CHECKS },
@@ -3228,28 +3265,60 @@ function ReadOnlySummary({
           bag={inspection[key] ?? {}}
         />
       ))}
-      <div className="rounded-lg border border-border/60 bg-card p-3">
-        <p className="text-xs uppercase tracking-wider text-muted-foreground">
-          Per-line decisions
-        </p>
-        <ul className="mt-1 space-y-1.5 text-xs">
-          {lines.map((line) => {
-            const dec = inspection.items.find((it) =>
-              lineMatchesItem(it, line),
-            );
-            return (
-              <li key={line.uuid} className="flex items-start gap-2">
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {itemNameFor(line)}
-                </span>
-                <span className="text-muted-foreground">
-                  {dec?.qty_received ?? "—"} · {dec?.material_decision ?? "—"}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+      {onInspectionChange && inspection.status === "submitted" ? (
+        <QcEditableItems
+          inspection={inspection}
+          lines={lines}
+          onSaved={async () => {
+            // The QC-edit endpoint returns the updated item, not the
+            // whole inspection. Simplest correct thing: re-fetch the
+            // inspection so every downstream card sees fresh data
+            // (packs, packaging_condition, notes, decision, ...).
+            // ``getInspection`` is not available from the client, so
+            // we hit the same API the wizard's initial hydration
+            // uses and swap in the response.
+            try {
+              const res = await fetch(
+                `/api/goods-in-inspections/${encodeURIComponent(
+                  inspection.uuid,
+                )}`,
+                { cache: "no-store" },
+              );
+              if (res.ok) {
+                const body = (await res.json()) as {
+                  goods_in_inspection: Inspection;
+                };
+                if (body.goods_in_inspection) {
+                  onInspectionChange(body.goods_in_inspection);
+                }
+              }
+            } catch {
+              /* silent — worst case the UI still shows pre-save data,
+                 which the operator can force-refresh */
+            }
+          }}
+        />
+      ) : (
+        <div className="rounded-lg border border-border/60 bg-card p-3">
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">
+            Per-line decisions
+          </p>
+          <ul className="mt-2 space-y-2">
+            {lines.map((line) => {
+              const dec = inspection.items.find((it) =>
+                lineMatchesItem(it, line),
+              );
+              return (
+                <PerLineReview
+                  key={line.uuid}
+                  line={line}
+                  item={dec}
+                />
+              );
+            })}
+          </ul>
+        </div>
+      )}
       <ReadOnlyQuarantineLabels inspection={inspection} lines={lines} />
     </div>
   );
@@ -3295,6 +3364,977 @@ function ReadOnlyQuarantineLabels({
   );
 }
 
+// Mobile-side handoff so the QC reviewer can jump to the desktop
+// detail page (/procurement/inspections/:uuid), which has the full
+// edit surface for correcting operator entries in place.
+//
+// Same phone→laptop bridge the print-label CTAs use everywhere else
+// in the wizard: POST to ``/api/realtime/open-url``, backend
+// broadcasts an ``open_url`` event on the actor's ``user:<uuid>``
+// channel, and the ``<PrintBridgeListener />`` mounted on the laptop
+// pops an "Open on desktop" confirmation dialog with a single Open
+// button. One tap on the phone, one tap on the laptop — no
+// copy-paste, no re-typing of URLs.
+//
+// Copy-link is retained as a fallback so an operator whose laptop
+// isn't signed in still has a manual escape hatch (paste into an
+// email to themselves, hop to a different machine, etc.).
+function OpenOnDesktopHandoff({
+  inspectionUuid,
+  inspectionCode,
+}: {
+  inspectionUuid: string;
+  inspectionCode: string;
+}) {
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [origin, setOrigin] = useState("");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setOrigin(window.location.origin);
+    }
+  }, []);
+
+  const desktopPath = `/procurement/inspections/${inspectionUuid}`;
+  const desktopUrl = origin ? `${origin}${desktopPath}` : desktopPath;
+
+  async function handleSendToLaptop() {
+    setSending(true);
+    setError(null);
+    setSent(false);
+    const res = await sendOpenUrlAction({
+      path: desktopPath,
+      title: `QC review · ${inspectionCode}`,
+    });
+    setSending(false);
+    if (res.ok) {
+      setSent(true);
+      window.setTimeout(() => setSent(false), 3500);
+    } else {
+      setError(res.detail ?? "Couldn't reach the laptop.");
+    }
+  }
+
+  async function copyUrl() {
+    try {
+      await navigator.clipboard.writeText(desktopUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard blocked — user can long-press the visible URL */
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-indigo-500/30 bg-indigo-50/60 p-3 text-[11px] dark:border-indigo-500/40 dark:bg-indigo-950/30">
+      <div className="flex items-start gap-2">
+        <Monitor className="mt-0.5 size-3.5 shrink-0 text-indigo-700 dark:text-indigo-300" />
+        <p className="min-w-0 flex-1 text-indigo-900 dark:text-indigo-100">
+          Need to correct a field before signing? Push this to your
+          desktop — the laptop pops an Open dialog with the full editable
+          view. Fix what&apos;s wrong, then come back here to sign.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant="default"
+          className="h-8 gap-1.5 text-[11px]"
+          onClick={handleSendToLaptop}
+          disabled={sending}
+        >
+          {sending ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : sent ? (
+            <Check className="size-3 text-emerald-300" />
+          ) : (
+            <Monitor className="size-3" />
+          )}
+          {sending ? "Sending…" : sent ? "Sent — check your laptop" : "Push to laptop"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1.5 text-[11px]"
+          onClick={copyUrl}
+        >
+          {copied ? (
+            <Check className="size-3 text-emerald-600" />
+          ) : (
+            <Copy className="size-3" />
+          )}
+          {copied ? "Copied" : "Copy link"}
+        </Button>
+      </div>
+      {error && (
+        <p className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-1 text-[10px] text-destructive">
+          {error} You can copy the link instead.
+        </p>
+      )}
+      <p
+        className="truncate rounded border border-indigo-500/20 bg-white/70 px-1.5 py-1 font-mono text-[10px] text-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-100"
+        title={desktopUrl}
+      >
+        {desktopUrl}
+      </p>
+    </div>
+  );
+}
+
+// ── Mobile QC edit surface ──────────────────────────────────────
+//
+// QC edits happen on both the desktop detail page AND right here
+// in the phone-side review because the reviewer often isn't near
+// their laptop when they're standing in the warehouse next to the
+// pallet. Same backend path in both cases: ``qcEditItemAction``
+// hits ``/api/goods-in-inspections/<uuid>/items/<line>/qc-edit``,
+// which is status-gated to ``submitted`` and permission-gated to
+// ``goods_in.approve`` server-side.
+//
+// Draft-per-line state lives in ``QcEditableItems``, keyed on the
+// PO line uuid because that's what the endpoint uses. On save we
+// iterate dirty lines and fire one PATCH each; a failure on any
+// line stops the loop so partial writes can't drift the record.
+// Reuses the operator's ``PackDraft`` shape + ``packDraftToWire``
+// converter — they already handle every field the QC reviewer can
+// touch, and staying on one draft shape keeps the wire payloads
+// consistent between operator-write and QC-write.
+
+interface QcItemDraft {
+  material_decision: MaterialDecision;
+  packaging_condition: PackagingCondition | "";
+  packaging_condition_notes: string;
+  material_decision_reason: string;
+  packs: PackDraft[];
+}
+
+function itemToQcDraft(item: InspectionItem | undefined): QcItemDraft {
+  return {
+    material_decision: item?.material_decision ?? "accept",
+    packaging_condition: item?.packaging_condition ?? "",
+    packaging_condition_notes: item?.packaging_condition_notes ?? "",
+    material_decision_reason: item?.material_decision_reason ?? "",
+    packs: hydratePacks(item),
+  };
+}
+
+function qcDraftToWire(d: QcItemDraft) {
+  // Sum pack qtys to keep qty_received honest on the wire — same
+  // rule the operator's upsert follows. BE-side
+  // ``reconcile_qty_from_packs`` will re-run this, so it's belt-
+  // and-braces here.
+  const totalQty = d.packs.reduce((acc, p) => {
+    const n = Number(p.qty);
+    return Number.isFinite(n) ? acc + n : acc;
+  }, 0);
+  return {
+    qty_received: String(totalQty),
+    packaging_condition:
+      d.packaging_condition === "" ? undefined : d.packaging_condition,
+    packaging_condition_notes:
+      d.packaging_condition_notes.trim() || null,
+    material_decision: d.material_decision,
+    material_decision_reason:
+      d.material_decision_reason.trim() || null,
+    packs: d.packs.map(packDraftToWire),
+  };
+}
+
+// Draft equality — same shape as the desktop editor. ``JSON.stringify``
+// is safe because the shape is only strings + arrays of strings.
+function sameQcDraft(a: QcItemDraft, b: QcItemDraft): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// Owner of the QC-edit mode + draft state. Rendered inside
+// ``ReadOnlySummary`` in place of the direct per-line loop, so the
+// summary component doesn't have to know anything about editability.
+function QcEditableItems({
+  inspection,
+  lines,
+  onSaved,
+}: {
+  inspection: Inspection;
+  lines: PurchaseOrderLine[];
+  /** Fires after every successful save so the parent
+   *  ``ApproverPanel`` can refresh the underlying inspection
+   *  snapshot — otherwise the read-mode UI still shows the
+   *  pre-edit values. */
+  onSaved: () => void;
+}) {
+  const [mode, setMode] = useState<"read" | "edit">("read");
+  const [drafts, setDrafts] = useState<Record<string, QcItemDraft>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // ``lineByUuid`` keyed by PO line uuid — the endpoint URL is
+  // ``/items/<line_uuid>/qc-edit``. Item.uuid is a red herring here.
+  const rowsByLine = useMemo(() => {
+    const map = new Map<
+      string,
+      { line: PurchaseOrderLine; item: InspectionItem | undefined }
+    >();
+    for (const line of lines) {
+      const item = inspection.items.find((it) => lineMatchesItem(it, line));
+      map.set(line.uuid, { line, item });
+    }
+    return map;
+  }, [lines, inspection.items]);
+
+  // Base drafts are always what the server currently says — used
+  // both to seed ``drafts`` at Edit-toggle time and to diff for
+  // dirty-tracking so ``Save`` can skip untouched lines.
+  const baseDrafts = useMemo(() => {
+    const out: Record<string, QcItemDraft> = {};
+    for (const [lineUuid, { item }] of rowsByLine.entries()) {
+      out[lineUuid] = itemToQcDraft(item);
+    }
+    return out;
+  }, [rowsByLine]);
+
+  const currentDrafts: Record<string, QcItemDraft> = useMemo(() => {
+    if (mode === "read") return baseDrafts;
+    return { ...baseDrafts, ...drafts };
+  }, [mode, baseDrafts, drafts]);
+
+  const dirtyLineUuids = useMemo(() => {
+    const out: string[] = [];
+    for (const [lineUuid, draft] of Object.entries(currentDrafts)) {
+      const base = baseDrafts[lineUuid];
+      if (base && !sameQcDraft(base, draft)) out.push(lineUuid);
+    }
+    return out;
+  }, [currentDrafts, baseDrafts]);
+
+  const isDirty = dirtyLineUuids.length > 0;
+
+  function updateDraft(lineUuid: string, patch: Partial<QcItemDraft>) {
+    setDrafts((prev) => {
+      const base = prev[lineUuid] ?? baseDrafts[lineUuid];
+      if (!base) return prev;
+      return { ...prev, [lineUuid]: { ...base, ...patch } };
+    });
+  }
+
+  function updatePack(
+    lineUuid: string,
+    tempId: string,
+    patch: Partial<PackDraft>,
+  ) {
+    setDrafts((prev) => {
+      const base = prev[lineUuid] ?? baseDrafts[lineUuid];
+      if (!base) return prev;
+      const packs = base.packs.map((p) =>
+        p.tempId === tempId ? { ...p, ...patch } : p,
+      );
+      return { ...prev, [lineUuid]: { ...base, packs } };
+    });
+  }
+
+  async function save() {
+    if (dirtyLineUuids.length === 0) return;
+    setSaving(true);
+    setError(null);
+    // Read from closure snapshot, THEN fan out — keeps state updates
+    // out of the loop so React can batch, and the parent's onSaved()
+    // ends up firing exactly once after the last write lands.
+    const snapshot = currentDrafts;
+    for (const lineUuid of dirtyLineUuids) {
+      const draft = snapshot[lineUuid];
+      if (!draft) continue;
+      const res = await qcEditItemAction(
+        inspection.uuid,
+        lineUuid,
+        qcDraftToWire(draft),
+      );
+      if (!res.ok) {
+        setError(
+          res.detail ??
+            "Couldn't save your correction. Nothing changed on the server yet — try again.",
+        );
+        setSaving(false);
+        return;
+      }
+    }
+    setDrafts({});
+    setMode("read");
+    setSaving(false);
+    onSaved();
+  }
+
+  function cancelEdit() {
+    setDrafts({});
+    setError(null);
+    setMode("read");
+  }
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-card p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-wider text-muted-foreground">
+          Per-line decisions
+        </p>
+        {mode === "read" ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-[11px]"
+            onClick={() => setMode("edit")}
+          >
+            <Pencil className="size-3" />
+            Edit fields
+          </Button>
+        ) : (
+          <span className="text-[10px] uppercase tracking-wider text-brand">
+            Editing — Save to commit
+          </span>
+        )}
+      </div>
+
+      <ul className="space-y-2">
+        {Array.from(rowsByLine.entries()).map(([lineUuid, { line, item }]) => {
+          const draft = currentDrafts[lineUuid];
+          const base = baseDrafts[lineUuid];
+          if (!draft || !base) return null;
+          const lineDirty = !sameQcDraft(base, draft);
+          if (mode === "edit") {
+            return (
+              <QcPerLineEditor
+                key={lineUuid}
+                line={line}
+                item={item}
+                draft={draft}
+                dirty={lineDirty}
+                onChange={(patch) => updateDraft(lineUuid, patch)}
+                onPackChange={(tempId, patch) =>
+                  updatePack(lineUuid, tempId, patch)
+                }
+                onResetLine={() =>
+                  setDrafts((prev) => {
+                    const next = { ...prev };
+                    delete next[lineUuid];
+                    return next;
+                  })
+                }
+              />
+            );
+          }
+          return <PerLineReview key={lineUuid} line={line} item={item} />;
+        })}
+      </ul>
+
+      {mode === "edit" && (
+        <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+          {isDirty && (
+            <p className="text-[11px] text-muted-foreground">
+              {dirtyLineUuids.length === 1
+                ? "1 line changed"
+                : `${dirtyLineUuids.length} lines changed`}
+              {" "}
+              — these will be saved with your name on the audit trail.
+            </p>
+          )}
+          {error && (
+            <p className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive">
+              {error}
+            </p>
+          )}
+          <div className="grid grid-cols-3 gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-10 gap-1 text-[11px]"
+              onClick={() => setDrafts({})}
+              disabled={saving || !isDirty}
+            >
+              <RotateCcw className="size-3" />
+              Discard
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-10 gap-1 text-[11px]"
+              onClick={cancelEdit}
+              disabled={saving}
+            >
+              <X className="size-3" />
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-10 gap-1 text-[11px]"
+              onClick={save}
+              disabled={!isDirty || saving}
+            >
+              {saving ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Save className="size-3" />
+              )}
+              Save
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Editable version of PerLineReview — same visual anchors but every
+// field is a control (native <select> for enums so mobile users get
+// the OS-native picker, native <input type="date"> for dates so the
+// picker calendar shows up, plain <Input> for text/number so we
+// keep the visual language consistent with the rest of the wizard).
+//
+// Named ``QcPerLineEditor`` to avoid collision with the operator's
+// pack-composition editor further down the file.
+function QcPerLineEditor({
+  line,
+  item,
+  draft,
+  dirty,
+  onChange,
+  onPackChange,
+  onResetLine,
+}: {
+  line: PurchaseOrderLine;
+  item: InspectionItem | undefined;
+  draft: QcItemDraft;
+  dirty: boolean;
+  onChange: (patch: Partial<QcItemDraft>) => void;
+  onPackChange: (tempId: string, patch: Partial<PackDraft>) => void;
+  onResetLine: () => void;
+}) {
+  const uomSymbol =
+    line.item?.stock_uom?.symbol ??
+    line.item?.stock_uom?.code ??
+    null;
+
+  return (
+    <li
+      className={cn(
+        "space-y-3 rounded-md border p-3",
+        dirty
+          ? "border-brand/40 bg-brand/[0.04]"
+          : "border-border/40 bg-background/60",
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <p className="truncate text-sm font-medium">
+            {itemNameFor(line)}
+          </p>
+          {line.vendor_part_no && (
+            <p className="font-mono text-[10px] text-muted-foreground">
+              {line.vendor_part_no}
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Received {item?.qty_received ?? "—"}
+            {line.qty_ordered ? ` of ${line.qty_ordered}` : ""}
+            {uomSymbol ? ` ${uomSymbol}` : ""}
+          </p>
+        </div>
+        {dirty && (
+          <button
+            type="button"
+            className="shrink-0 text-[10px] font-medium text-brand hover:underline"
+            onClick={onResetLine}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Material decision
+          </p>
+          <div className="grid grid-cols-3 gap-1.5" role="radiogroup">
+            {(["accept", "hold", "reject"] as const).map((d) => (
+              <Button
+                key={d}
+                type="button"
+                size="sm"
+                variant={draft.material_decision === d ? "default" : "outline"}
+                onClick={() => onChange({ material_decision: d })}
+                className="h-10 text-[11px]"
+              >
+                {d}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Packaging condition
+          </p>
+          <div className="grid grid-cols-3 gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant={draft.packaging_condition === "" ? "default" : "outline"}
+              onClick={() => onChange({ packaging_condition: "" })}
+              className="h-10 text-[11px] text-muted-foreground"
+            >
+              —
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={
+                draft.packaging_condition === "good" ? "default" : "outline"
+              }
+              onClick={() => onChange({ packaging_condition: "good" })}
+              className="h-10 text-[11px]"
+            >
+              Good
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={
+                draft.packaging_condition === "damaged" ? "default" : "outline"
+              }
+              onClick={() => onChange({ packaging_condition: "damaged" })}
+              className="h-10 text-[11px]"
+            >
+              Damaged
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Packaging condition note
+          </p>
+          <Textarea
+            rows={2}
+            value={draft.packaging_condition_notes}
+            onChange={(e) =>
+              onChange({ packaging_condition_notes: e.target.value })
+            }
+            placeholder="Optional observation the operator recorded"
+            className="text-xs"
+          />
+        </div>
+
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Material decision reason
+          </p>
+          <Textarea
+            rows={2}
+            value={draft.material_decision_reason}
+            onChange={(e) =>
+              onChange({ material_decision_reason: e.target.value })
+            }
+            placeholder="Required if you're holding or rejecting the line"
+            className="text-xs"
+          />
+        </div>
+      </div>
+
+      {draft.packs.length > 0 && (
+        <div className="space-y-2 rounded-md border border-border/30 bg-muted/20 p-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Packs · {draft.packs.length}
+          </p>
+          <ul className="space-y-2">
+            {draft.packs.map((pack, idx) => (
+              <QcPackEditor
+                key={pack.tempId}
+                pack={pack}
+                index={idx}
+                uomSymbol={uomSymbol}
+                onChange={(patch) => onPackChange(pack.tempId, patch)}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
+  );
+}
+
+// Per-pack QC edit surface. Renamed from ``PackEditor`` to avoid a
+// name clash with the operator's pack-composition editor further
+// down the file (which handles add/remove of packs during initial
+// receiving, not per-field corrections).
+//
+// Reuses the operator flow's field primitives directly instead of
+// re-inventing them:
+//
+//   * ``PackInput`` (below, used by the operator's PackEditor) —
+//     wraps ``DateField`` for date mode so the native iOS date
+//     input's fixed intrinsic width doesn't horizontal-scroll the
+//     pack row. Also renders the shared ``* required``-shaped label
+//     format so the QC surface reads identically to the goods-in
+//     step immediately upstream.
+//   * ``CountryPicker`` — the shared bottom-sheet picker used
+//     everywhere else in the app (goods-in receiving, catalogue
+//     item forms, PO lines, …) so operators pick from the same
+//     ISO 3166 list with the same UX, not a free-text ISO code
+//     input that anyone can typo.
+function QcPackEditor({
+  pack,
+  index,
+  uomSymbol,
+  onChange,
+}: {
+  pack: PackDraft;
+  index: number;
+  uomSymbol: string | null;
+  onChange: (patch: Partial<PackDraft>) => void;
+}) {
+  return (
+    <li className="space-y-2 rounded border border-border/40 bg-background/60 p-2">
+      <p className="text-[11px] font-semibold">Pack {index + 1}</p>
+      <div className="grid grid-cols-2 gap-2">
+        <PackInput
+          label={`Qty${uomSymbol ? ` (${uomSymbol})` : ""}`}
+          value={pack.qty}
+          onChange={(v) => onChange({ qty: v })}
+          mode="decimal"
+          mono
+        />
+        <PackInput
+          label="Length (mm)"
+          value={pack.package_length_mm}
+          onChange={(v) => onChange({ package_length_mm: v })}
+          mode="integer"
+          mono
+        />
+        <PackInput
+          label="Width (mm)"
+          value={pack.package_width_mm}
+          onChange={(v) => onChange({ package_width_mm: v })}
+          mode="integer"
+          mono
+        />
+        <PackInput
+          label="Height (mm)"
+          value={pack.package_height_mm}
+          onChange={(v) => onChange({ package_height_mm: v })}
+          mode="integer"
+          mono
+        />
+        <PackInput
+          label="Weight (kg)"
+          value={pack.package_weight_kg}
+          onChange={(v) => onChange({ package_weight_kg: v })}
+          mode="decimal"
+          mono
+        />
+        <PackInput
+          label="Units per pack"
+          value={pack.units_per_package}
+          onChange={(v) => onChange({ units_per_package: v })}
+          mode="decimal"
+          mono
+        />
+        <PackInput
+          label="Stack factor"
+          value={pack.stack_factor}
+          onChange={(v) => onChange({ stack_factor: v })}
+          mode="integer"
+          mono
+        />
+        <PackInput
+          label="Batch"
+          value={pack.supplier_batch_no}
+          onChange={(v) => onChange({ supplier_batch_no: v })}
+          mode="text"
+          mono
+        />
+        <label className="block space-y-0.5">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Country of origin
+          </span>
+          <CountryPicker
+            value={pack.country_of_origin || null}
+            onChange={(code) => onChange({ country_of_origin: code ?? "" })}
+            placeholder="Pick country…"
+            compact
+          />
+        </label>
+        <PackInput
+          label="Revision"
+          value={pack.revision}
+          onChange={(v) => onChange({ revision: v })}
+          mode="text"
+          mono
+        />
+        <PackInput
+          label="Manufactured"
+          value={pack.manufactured_at}
+          onChange={(v) => onChange({ manufactured_at: v })}
+          mode="date"
+        />
+        <PackInput
+          label="Expiry / best before"
+          value={pack.expiry_at}
+          onChange={(v) => onChange({ expiry_at: v })}
+          mode="date"
+        />
+      </div>
+    </li>
+  );
+}
+
+// One line's review card on the mobile QC summary — shows the item
+// name, quantity + material decision, packaging condition, notes,
+// and a full per-pack breakdown so the reviewer can cross-check
+// every field the operator captured (dimensions, weight, stack
+// factor, batch, country of origin, manufactured / expiry dates,
+// revision). Previous shape only surfaced ``qty · decision`` and
+// silently dropped everything else, so QC couldn't verify that
+// the operator's typed dimensions matched the physical pallet, or
+// that the stack factor was safe for the storage cell it was going
+// to. Now every field is a labeled data point.
+function PerLineReview({
+  line,
+  item,
+}: {
+  line: PurchaseOrderLine;
+  item: InspectionItem | undefined;
+}) {
+  const decision = item?.material_decision ?? null;
+  const uomSymbol =
+    line.item?.stock_uom?.symbol ??
+    line.item?.stock_uom?.code ??
+    null;
+  const decisionTone =
+    decision === "accept"
+      ? "text-emerald-600"
+      : decision === "reject"
+        ? "text-destructive"
+        : decision === "hold"
+          ? "text-amber-600"
+          : "text-muted-foreground";
+  const packagingNote =
+    item?.packaging_condition_notes?.trim() || null;
+  const decisionReason =
+    item?.material_decision_reason?.trim() || null;
+
+  return (
+    <li className="space-y-2 rounded-md border border-border/40 bg-background/60 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <p className="truncate text-sm font-medium">
+            {itemNameFor(line)}
+          </p>
+          {line.vendor_part_no && (
+            <p className="font-mono text-[10px] text-muted-foreground">
+              {line.vendor_part_no}
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Received {item?.qty_received ?? "—"}
+            {line.qty_ordered ? ` of ${line.qty_ordered}` : ""}
+            {uomSymbol ? ` ${uomSymbol}` : ""}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-md bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase",
+            decisionTone,
+          )}
+        >
+          {decision ?? "—"}
+        </span>
+      </div>
+
+      {item?.packaging_condition && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span
+            className={cn(
+              "rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase",
+              item.packaging_condition === "good"
+                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                : "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+            )}
+          >
+            Packaging: {item.packaging_condition}
+          </span>
+        </div>
+      )}
+
+      {(packagingNote || decisionReason) && (
+        <div className="space-y-1.5">
+          {packagingNote && (
+            <div className="flex items-start gap-1.5 rounded border border-amber-200/60 bg-amber-50/60 p-1.5 dark:border-amber-800/40 dark:bg-amber-950/30">
+              <MessageSquare className="mt-0.5 size-3 shrink-0 text-amber-700 dark:text-amber-300" />
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                  Packaging condition note
+                </p>
+                <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
+                  {packagingNote}
+                </p>
+              </div>
+            </div>
+          )}
+          {decisionReason && (
+            <div className="flex items-start gap-1.5 rounded border border-border/60 bg-muted/40 p-1.5">
+              <MessageSquare className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Material decision reason
+                </p>
+                <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
+                  {decisionReason}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {item?.packs && item.packs.length > 0 && (
+        <div className="space-y-1.5 rounded-md border border-border/30 bg-muted/20 p-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Packs · {item.packs.length}
+          </p>
+          <ul className="space-y-1.5">
+            {item.packs.map((pack, idx) => (
+              <PackReviewCard
+                key={idx}
+                pack={pack}
+                index={idx}
+                uomSymbol={uomSymbol}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function PackReviewCard({
+  pack,
+  index,
+  uomSymbol,
+}: {
+  pack: InspectionItemPack;
+  index: number;
+  uomSymbol: string | null;
+}) {
+  const dims =
+    pack.package_length_mm ||
+    pack.package_width_mm ||
+    pack.package_height_mm
+      ? `${pack.package_length_mm ?? "—"}×${pack.package_width_mm ?? "—"}×${pack.package_height_mm ?? "—"}`
+      : null;
+  const stackFactor =
+    pack.stack_factor != null
+      ? `${pack.stack_factor}${pack.stack_factor === 1 ? " (no vertical stacking)" : ""}`
+      : null;
+
+  return (
+    <li className="space-y-1.5 rounded border border-border/40 bg-background/60 p-2">
+      <p className="text-[11px] font-semibold">
+        Pack {index + 1}
+        <span className="ml-2 font-mono text-[10px] font-normal text-muted-foreground">
+          {String(pack.qty ?? "—")}
+          {uomSymbol ? ` ${uomSymbol}` : ""}
+        </span>
+      </p>
+      <dl className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
+        <ReviewField label="Dimensions (mm)" value={dims} mono />
+        <ReviewField
+          label="Weight (kg)"
+          value={
+            pack.package_weight_kg != null &&
+            String(pack.package_weight_kg) !== ""
+              ? String(pack.package_weight_kg)
+              : null
+          }
+          mono
+        />
+        <ReviewField
+          label="Units per pack"
+          value={
+            pack.units_per_package != null
+              ? String(pack.units_per_package)
+              : null
+          }
+          mono
+        />
+        <ReviewField
+          label="Stack factor"
+          value={stackFactor}
+          icon={<Layers className="size-2.5 shrink-0 text-muted-foreground" />}
+        />
+        <ReviewField label="Batch" value={pack.supplier_batch_no ?? null} mono />
+        <ReviewField
+          label="Country of origin"
+          value={pack.country_of_origin ?? null}
+          mono
+        />
+        <ReviewField
+          label="Manufactured"
+          value={pack.manufactured_at ?? null}
+          mono
+        />
+        <ReviewField
+          label="Expiry / best before"
+          value={pack.expiry_at ?? null}
+          mono
+        />
+        <ReviewField label="Revision" value={pack.revision ?? null} mono />
+      </dl>
+    </li>
+  );
+}
+
+function ReviewField({
+  label,
+  value,
+  mono,
+  icon,
+}: {
+  label: string;
+  value: string | null;
+  mono?: boolean;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0 space-y-0.5">
+      <dt className="flex items-center gap-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
+        {icon}
+        <span>{label}</span>
+      </dt>
+      <dd
+        className={cn(
+          "truncate",
+          value == null
+            ? "text-[10px] text-muted-foreground/60"
+            : cn(
+                "text-[10px] font-medium text-foreground",
+                mono && "font-mono",
+              ),
+        )}
+        title={value ?? undefined}
+      >
+        {value ?? "— not recorded"}
+      </dd>
+    </div>
+  );
+}
+
 function SummarySection({
   title,
   checks,
@@ -3309,26 +4349,54 @@ function SummarySection({
       <p className="text-xs uppercase tracking-wider text-muted-foreground">
         {title}
       </p>
-      <ul className="mt-1 space-y-1 text-xs">
+      <ul className="mt-1 space-y-1.5 text-xs">
         {checks.map((c) => {
           const row = bag[c.key];
+          // Trim so a whitespace-only note doesn't spuriously flag
+          // this row as "operator left a comment". Applies for pass
+          // AND fail — a "Yes" answer can still carry an observation
+          // the QC reviewer needs to see.
+          const noteText = row?.notes?.trim() || null;
           return (
-            <li key={c.key} className="flex items-start gap-2">
-              <span className="min-w-0 flex-1">{c.label}</span>
-              <span
-                className={cn(
-                  "shrink-0 text-[10px] font-medium",
-                  row?.passed === true && "text-emerald-600",
-                  row?.passed === false && "text-destructive",
-                  row == null && "text-muted-foreground",
-                )}
-              >
-                {row?.passed === true
-                  ? "Yes"
-                  : row?.passed === false
-                    ? "No"
-                    : "—"}
-              </span>
+            <li
+              key={c.key}
+              className={cn(
+                "space-y-1 rounded-md border p-2",
+                noteText
+                  ? "border-amber-500/40 bg-amber-50/50 dark:bg-amber-950/20"
+                  : "border-transparent",
+              )}
+            >
+              <div className="flex items-start gap-2">
+                <span className="min-w-0 flex-1">{c.label}</span>
+                <span
+                  className={cn(
+                    "shrink-0 text-[10px] font-medium",
+                    row?.passed === true && "text-emerald-600",
+                    row?.passed === false && "text-destructive",
+                    row == null && "text-muted-foreground",
+                  )}
+                >
+                  {row?.passed === true
+                    ? "Yes"
+                    : row?.passed === false
+                      ? "No"
+                      : "—"}
+                </span>
+              </div>
+              {noteText && (
+                <div className="flex items-start gap-1.5 rounded border border-amber-200/60 bg-white/70 p-1.5 dark:border-amber-800/40 dark:bg-amber-950/30">
+                  <MessageSquare className="mt-0.5 size-3 shrink-0 text-amber-700 dark:text-amber-300" />
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                      Operator note
+                    </p>
+                    <p className="whitespace-pre-wrap text-[11px] text-foreground/90">
+                      {noteText}
+                    </p>
+                  </div>
+                </div>
+              )}
             </li>
           );
         })}

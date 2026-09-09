@@ -6,7 +6,10 @@ import {
   FileWarning,
   ImageIcon,
   Info,
+  Layers,
+  MessageSquare,
   Microscope,
+  Package,
   PackageCheck,
   Paperclip,
   Printer,
@@ -40,6 +43,7 @@ import type {
 import type { PurchaseOrder, PurchaseOrderLine } from "@/lib/types";
 import { ProcurementSubnav } from "../../procurement-subnav";
 import { SendToDeviceButton } from "@/components/realtime/send-to-device-button";
+import { QcLinesEditor } from "./qc-lines-editor";
 
 export const metadata = { title: "Inspection · Procurement · PSP" };
 
@@ -174,9 +178,17 @@ export default async function ProcurementInspectionDetailPage({
             prefs={prefs}
           />
 
-          <LinesCard
+          <QcLinesEditor
             inspection={inspection}
             purchaseOrder={purchaseOrder}
+            // QC edits are only meaningful in the awaiting-QC window
+            // (operator has signed, QC hasn't). Approved / hold /
+            // rejected inspections are terminal — the audit trail
+            // freezes there. Draft inspections belong to the operator.
+            viewerCanEdit={
+              inspection.status === "submitted" &&
+              hasPermission(user, "goods_in.approve")
+            }
           />
 
           <SignaturesCard inspection={inspection} prefs={prefs} />
@@ -412,226 +424,6 @@ function SummaryCard({
         </Field>
       </dl>
     </section>
-  );
-}
-
-function LinesCard({
-  inspection,
-  purchaseOrder,
-}: {
-  inspection: Inspection;
-  purchaseOrder: PurchaseOrder | null;
-}) {
-  const lineByUuid = new Map<string, PurchaseOrderLine>();
-  for (const line of purchaseOrder?.lines ?? []) {
-    lineByUuid.set(line.uuid, line);
-  }
-
-  const items: Array<{ item: InspectionItem; line: PurchaseOrderLine | null }> =
-    inspection.items.map((it) => ({
-      item: it,
-      line: it.purchase_order_line_uuid
-        ? lineByUuid.get(it.purchase_order_line_uuid) ?? null
-        : null,
-    }));
-
-  return (
-    <section className="rounded-lg border border-border/60 bg-card p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-        <PackageCheck className="size-4" />
-        Per-line decisions
-      </h2>
-      {items.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          No per-line decisions recorded yet.
-        </p>
-      ) : (
-        <ul className="space-y-2">
-          {items.map(({ item, line }) => (
-            <li
-              key={item.uuid}
-              className="space-y-2 rounded-md border border-border/40 px-3 py-2.5"
-            >
-              <div className="flex flex-wrap items-start gap-3">
-                <div className="min-w-0 flex-1 space-y-0.5">
-                  {line?.item?.uuid ? (
-                    <Link
-                      href={`/production/items/${line.item.uuid}`}
-                      className="block truncate text-sm font-medium underline-offset-2 hover:underline"
-                    >
-                      {line.item.name}
-                    </Link>
-                  ) : (
-                    <p className="truncate text-sm font-medium">
-                      {line?.item?.name ?? "Unknown item"}
-                    </p>
-                  )}
-                  {line?.vendor_part_no && (
-                    <p className="font-mono text-[11px] text-muted-foreground">
-                      {line.vendor_part_no}
-                    </p>
-                  )}
-                  <p className="text-[11px] text-muted-foreground">
-                    Received {item.qty_received}
-                    {line?.qty_ordered ? ` of ${line.qty_ordered}` : ""}
-                  </p>
-                  {item.packaging_condition && (
-                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                      <Badge
-                        tone={
-                          item.packaging_condition === "good"
-                            ? "emerald"
-                            : "amber"
-                        }
-                      >
-                        Packaging:{" "}
-                        {PACKAGING_CONDITION_LABEL[item.packaging_condition]}
-                      </Badge>
-                      {item.packaging_condition_notes && (
-                        <span className="text-[11px] text-muted-foreground">
-                          {item.packaging_condition_notes}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {item.material_decision_reason && (
-                    <p className="pt-1 text-xs text-muted-foreground">
-                      {item.material_decision_reason}
-                    </p>
-                  )}
-                </div>
-                <Badge tone={MATERIAL_DECISION_TONE[item.material_decision]}>
-                  {MATERIAL_DECISION_LABEL[item.material_decision]}
-                </Badge>
-              </div>
-
-              {item.packs && item.packs.length > 0 && line && (
-                <PacksTable
-                  inspectionUuid={inspection.uuid}
-                  lineUuid={line.uuid}
-                  packs={item.packs}
-                  uomSymbol={
-                    line.item?.stock_uom?.symbol ??
-                    line.item?.stock_uom?.code ??
-                    null
-                  }
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-// Per-pack rollup with a direct print link. Operators sometimes miss
-// the wizard's quarantine-label step on the dock tablet and need to
-// re-print from their desk — this surfaces the same PDF endpoint the
-// mobile bridge fires, just without the realtime hop (the laptop is
-// already the print target).
-function PacksTable({
-  inspectionUuid,
-  lineUuid,
-  packs,
-  uomSymbol,
-}: {
-  inspectionUuid: string;
-  lineUuid: string;
-  packs: NonNullable<InspectionItem["packs"]>;
-  uomSymbol: string | null;
-}) {
-  return (
-    <div className="rounded-md border border-border/30 bg-muted/20 px-2.5 py-2">
-      <div className="mb-1 flex items-center justify-between">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Packs · {packs.length}
-        </p>
-        <p className="text-[10px] text-muted-foreground">
-          Quarantine label per pack
-        </p>
-      </div>
-      <ul className="divide-y divide-border/30">
-        {packs.map((pack, idx) => {
-          const href =
-            `/api/m/inspections/${encodeURIComponent(inspectionUuid)}` +
-            `/quarantine-label.pdf?line_uuid=${encodeURIComponent(lineUuid)}` +
-            `&pack_index=${idx}&copies=1`;
-          return (
-            <li
-              key={idx}
-              className="flex items-center justify-between gap-3 py-1.5 text-xs"
-            >
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <p className="font-medium">
-                  Pack {idx + 1} ·{" "}
-                  <span className="font-mono">{String(pack.qty ?? "")}</span>
-                  {uomSymbol ? ` ${uomSymbol}` : ""}
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  <span className="font-mono">
-                    {pack.package_length_mm}×{pack.package_width_mm}×
-                    {pack.package_height_mm}
-                  </span>{" "}
-                  mm · {String(pack.package_weight_kg ?? "")} kg
-                  {pack.units_per_package
-                    ? ` · ${pack.units_per_package}/pack`
-                    : ""}
-                  {pack.supplier_batch_no
-                    ? ` · Batch ${pack.supplier_batch_no}`
-                    : ""}
-                </p>
-                {(pack.manufactured_at ||
-                  pack.expiry_at ||
-                  pack.country_of_origin ||
-                  pack.revision) && (
-                  <p className="text-[11px] text-muted-foreground">
-                    {pack.manufactured_at ? (
-                      <>
-                        Mfd <span className="font-mono">{pack.manufactured_at}</span>
-                      </>
-                    ) : null}
-                    {pack.expiry_at ? (
-                      <>
-                        {pack.manufactured_at ? " · " : ""}
-                        Exp <span className="font-mono">{pack.expiry_at}</span>
-                      </>
-                    ) : null}
-                    {pack.country_of_origin ? (
-                      <>
-                        {pack.manufactured_at || pack.expiry_at ? " · " : ""}
-                        Origin{" "}
-                        <span className="font-mono">{pack.country_of_origin}</span>
-                      </>
-                    ) : null}
-                    {pack.revision ? (
-                      <>
-                        {pack.manufactured_at ||
-                        pack.expiry_at ||
-                        pack.country_of_origin
-                          ? " · "
-                          : ""}
-                        Rev <span className="font-mono">{pack.revision}</span>
-                      </>
-                    ) : null}
-                  </p>
-                )}
-              </div>
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] font-medium hover:bg-muted"
-                title="Print quarantine label for this pack"
-              >
-                <Printer className="size-3" />
-                Print
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
   );
 }
 
@@ -907,20 +699,36 @@ function SectionCard({
         <ul className="space-y-1.5">
           {checks.map((c) => {
             const entry = bag[c.key];
+            // Trim so a leading/trailing whitespace-only note doesn't
+            // spuriously trigger the "operator left a comment" block.
+            const noteText = entry?.notes?.trim() || null;
+            const hasNote = !!noteText;
             return (
               <li
                 key={c.key}
-                className="flex items-start justify-between gap-3 rounded-md border border-border/40 px-3 py-2"
+                className={`space-y-2 rounded-md border px-3 py-2 ${
+                  hasNote
+                    ? "border-amber-500/40 bg-amber-50/50 dark:bg-amber-950/20"
+                    : "border-border/40"
+                }`}
               >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">{c.label}</p>
-                  {entry?.notes && (
-                    <p className="pt-1 text-[11px] text-muted-foreground">
-                      {entry.notes}
-                    </p>
-                  )}
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 flex-1 text-sm">{c.label}</p>
+                  <CheckBadge entry={entry} />
                 </div>
-                <CheckBadge entry={entry} />
+                {hasNote && (
+                  <div className="flex items-start gap-1.5 rounded border border-amber-200/60 bg-white/70 p-2 dark:border-amber-800/40 dark:bg-amber-950/30">
+                    <MessageSquare className="mt-0.5 size-3 shrink-0 text-amber-700 dark:text-amber-300" />
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                        Operator note
+                      </p>
+                      <p className="whitespace-pre-wrap text-xs text-foreground/90">
+                        {noteText}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </li>
             );
           })}

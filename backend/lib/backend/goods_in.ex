@@ -385,6 +385,72 @@ defmodule Backend.GoodsIn do
 
   def upsert_item_decision(_, %Inspection{}, _, _), do: {:error, :not_editable}
 
+  @doc """
+  QC-side edit of a per-line decision after the operator has signed
+  (``inspection.status == "submitted"``) but BEFORE QC has signed
+  themselves. Same payload shape as ``upsert_item_decision``; the
+  distinct entrypoint exists so the caller-side permission gate
+  (``goods_in.approve``) + status guard (``submitted``) can't be
+  bypassed by an inspector accidentally hitting the wrong endpoint,
+  and so the audit trail records the QC-side edit as its own event
+  rather than piggy-backing on the operator's original write.
+
+  Refuses when:
+    * ``status = "draft"`` — operator still owns the write; use
+      ``upsert_item_decision``.
+    * ``status`` in ``["approved", "hold", "rejected"]`` — terminal;
+      no writes past QC sign-off (audit-trail invariant).
+
+  Captures a before/after snapshot on the audit event so the QC
+  reviewer's correction is fully traceable — a future audit query
+  can answer "what did the operator originally record vs what did
+  QC change it to?" per line.
+  """
+  def qc_edit_item_decision(
+        %User{} = actor,
+        %Inspection{status: "submitted"} = i,
+        %PurchaseOrderLine{} = line,
+        attrs
+      ) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.merge(%{
+        "company_id" => i.company_id,
+        "goods_in_inspection_id" => i.id,
+        "purchase_order_line_id" => line.id
+      })
+      |> reconcile_qty_from_packs()
+
+    existing =
+      Repo.one(
+        from(it in InspectionItem,
+          where:
+            it.goods_in_inspection_id == ^i.id and
+              it.purchase_order_line_id == ^line.id
+        )
+      )
+
+    # QC can only correct an item that already exists — the operator
+    # must have entered it before signing. Creating a new item from
+    # the QC surface is a workflow the FE doesn't support and would
+    # sidestep the "one operator, one signature" invariant.
+    case existing do
+      nil ->
+        {:error, :not_editable}
+
+      %InspectionItem{} = item ->
+        before_snapshot = item_snapshot(item)
+
+        item
+        |> InspectionItem.changeset(attrs)
+        |> Repo.update()
+        |> after_qc_edit(actor, before_snapshot)
+    end
+  end
+
+  def qc_edit_item_decision(_, %Inspection{}, _, _), do: {:error, :not_editable}
+
   defp after_item_write({:ok, item}, actor, "created") do
     Audit.record_created(actor, "goods_in_inspection_item", item, %{
       material_decision: item.material_decision,
@@ -404,6 +470,39 @@ defmodule Backend.GoodsIn do
   end
 
   defp after_item_write(other, _actor, _kind), do: other
+
+  # QC-edit audit — separate helper because the payload we want on
+  # the audit event is a full before/after diff, not just the
+  # material_decision + qty_received the operator-write path
+  # records. A regulator asking "did QC alter the operator's numbers
+  # before approving?" needs to see the exact deltas per pack.
+  defp after_qc_edit({:ok, item}, actor, before_snapshot) do
+    Audit.record_updated(
+      actor,
+      "goods_in_inspection_item",
+      item,
+      before_snapshot,
+      item_snapshot(item)
+    )
+
+    {:ok, item}
+  end
+
+  defp after_qc_edit(other, _actor, _before), do: other
+
+  # Everything the operator + QC can touch on an item, serialised for
+  # the audit event's before/after diff. Kept in one place so both
+  # snapshots are guaranteed to have identical shape.
+  defp item_snapshot(%InspectionItem{} = item) do
+    %{
+      qty_received: item.qty_received,
+      material_decision: item.material_decision,
+      material_decision_reason: item.material_decision_reason,
+      packaging_condition: item.packaging_condition,
+      packaging_condition_notes: item.packaging_condition_notes,
+      packs: item.packs
+    }
+  end
 
   # When the FE sends a non-empty `packs` list we own the qty_received
   # number — sum the packs and overwrite whatever the client claimed.

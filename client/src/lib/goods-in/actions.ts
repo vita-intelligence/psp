@@ -154,6 +154,48 @@ export async function upsertItemAction(
   }
 }
 
+/**
+ * QC-side correction to a per-line decision AFTER the operator has
+ * signed. Same payload shape as ``upsertItemAction`` but hits a
+ * dedicated backend endpoint that:
+ *
+ *   * Requires the caller to hold ``goods_in.approve`` (not just
+ *     ``goods_in.inspect``).
+ *   * Only accepts writes when the inspection is in the
+ *     ``submitted`` state — draft is the operator's own writable
+ *     surface, and the terminal states (approved / hold / rejected)
+ *     lock the audit trail.
+ *   * Records a full before/after snapshot on the audit event so the
+ *     regulator's "did QC alter what the operator recorded?" query
+ *     is trivially answerable.
+ *
+ * Used by the desktop sign-off page (/procurement/inspections/[uuid])
+ * to correct dimensions, stack factor, country of origin, batch
+ * codes, etc. without bouncing the whole inspection back to the
+ * operator for a single-field mistake.
+ */
+export async function qcEditItemAction(
+  inspectionUuid: string,
+  lineUuid: string,
+  attrs: InspectionItemUpsertInput,
+): Promise<InspectionItemResult> {
+  const token = await activeToken();
+  if (!token) return unauthorizedResult("qcEditItemAction");
+  try {
+    const res = await api<{ inspection_item: InspectionItem }>(
+      `/api/goods-in-inspections/${encodeURIComponent(inspectionUuid)}/items/${encodeURIComponent(lineUuid)}/qc-edit`,
+      { method: "POST", token, body: JSON.stringify(attrs) },
+    );
+    revalidateInspection(inspectionUuid);
+    return { ok: true, item: res.inspection_item };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "qcEditItemAction",
+      fallbackDetail: "Couldn't save your correction.",
+    });
+  }
+}
+
 export async function signOperatorAction(
   uuid: string,
   signatureImage: string,

@@ -150,3 +150,64 @@ export async function sendStockLotLabelAction(
     });
   }
 }
+
+
+/** Phone → laptop navigate bridge input. Mirrors
+ *  ``BackendWeb.PrintBridgeController.open_url/2``. */
+export interface SendOpenUrlInput {
+  /** Absolute same-origin path — validated server-side (must start
+   *  with ``/``, no ``://``, no ``..``, no protocol-relative ``//``).
+   *  Passing anything else returns ``unsafe_path``. */
+  path: string;
+  /** Optional short human label surfaced on the laptop's confirmation
+   *  dialog so the user recognises what's about to open. Truncated to
+   *  120 chars server-side. */
+  title?: string;
+}
+
+export type SendOpenUrlResult =
+  | { ok: true }
+  | (ErrorResult & { ok: false });
+
+/**
+ * Phone → laptop URL bridge. Broadcasts an ``open_url`` event on the
+ * actor's ``user:<uuid>`` channel; the laptop's PrintBridgeListener
+ * catches it and pops a "From <actor>: open <title>?" dialog with a
+ * single Open button that navigates the current laptop tab.
+ *
+ * Used by the mobile QC review to bounce the reviewer to the desktop
+ * inspection detail page — that's where the editable QC surface
+ * lives, so a single-field correction doesn't require typing on the
+ * phone or copy-pasting a URL.
+ *
+ * Returns ``ok: true`` whether or not the laptop is currently
+ * connected (Phoenix.PubSub is fire-and-forget). The mobile FE
+ * should still surface a "Sent — check your desktop" toast and
+ * offer a copy-link fallback for the "laptop isn't logged in"
+ * case.
+ */
+export async function sendOpenUrlAction(
+  input: SendOpenUrlInput,
+): Promise<SendOpenUrlResult> {
+  const token = (await getDeviceToken()) ?? (await getSessionToken());
+  if (!token) {
+    return syntheticErrorResult({
+      source: "sendOpenUrlAction",
+      code: "unauthorized",
+      detail: "Not signed in — pair the device or log in again.",
+    });
+  }
+  try {
+    await api<{ ok: true }>("/api/realtime/open-url", {
+      method: "POST",
+      token,
+      body: JSON.stringify(input),
+    });
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "sendOpenUrlAction",
+      fallbackDetail: "Couldn't reach the laptop.",
+    });
+  }
+}

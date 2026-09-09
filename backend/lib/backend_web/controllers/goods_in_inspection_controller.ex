@@ -38,7 +38,7 @@ defmodule BackendWeb.GoodsInInspectionController do
             ]
 
   plug RequirePermission, "goods_in.approve"
-       when action in [:sign_quality]
+       when action in [:sign_quality, :qc_edit_item]
 
   action_fallback BackendWeb.FallbackController
 
@@ -292,6 +292,46 @@ defmodule BackendWeb.GoodsInInspectionController do
 
       {:error, :not_editable} ->
         conflict(conn, "not_editable", "Inspection is no longer in draft.")
+
+      {:error, %Ecto.Changeset{} = cs} ->
+        changeset_error(conn, cs)
+    end
+  end
+
+  @doc """
+  QC-side edit of a per-line decision AFTER the operator has signed.
+  Same payload shape as ``upsert_item``; distinct endpoint so the
+  permission gate (``goods_in.approve``) and the status guard
+  (``submitted``) live in one place, and so the audit trail records
+  the QC-side edit as a separate action from the operator's original
+  entry.
+
+  Refuses when the inspection is terminal (approved / hold / rejected)
+  or still in draft (the operator still owns it — use ``upsert_item``).
+  """
+  def qc_edit_item(conn, %{"goods_in_inspection_id" => uuid, "line_uuid" => line_uuid} = params) do
+    actor = conn.assigns.current_user
+
+    with %{} = inspection <- GoodsIn.get(actor.company_id, uuid),
+         %{} = line <- fetch_po_line(inspection.purchase_order_id, line_uuid),
+         {:ok, item} <-
+           GoodsIn.qc_edit_item_decision(
+             actor,
+             inspection,
+             line,
+             Map.drop(params, ["goods_in_inspection_id", "line_uuid"])
+           ) do
+      json(conn, %{inspection_item: Payloads.goods_in_inspection_item(item)})
+    else
+      nil ->
+        {:error, :not_found}
+
+      {:error, :not_editable} ->
+        conflict(
+          conn,
+          "not_editable",
+          "Inspection is not in the awaiting-QC state — QC edits are only allowed after operator sign-off and before QC sign-off."
+        )
 
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)

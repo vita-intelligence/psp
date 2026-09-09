@@ -197,6 +197,11 @@ defmodule BackendWeb.Router do
     # Phone → laptop print bridge. Lands a `print_label` push on the
     # actor's `user:<uuid>` channel.
     post "/realtime/print-label", PrintBridgeController, :print_label
+    # Phone → laptop navigate bridge. Lands an `open_url` push on the
+    # same `user:<uuid>` channel so the mobile QC review can bounce
+    # the operator to the desktop detail page (with the editable
+    # surface) in a single tap.
+    post "/realtime/open-url", PrintBridgeController, :open_url
     # Entity-agnostic comment-file streamer. Public URLs stamped into
     # CommentFile payloads point here; the controller re-derives the
     # RBAC gate from the parent comment's entity_type at fetch time.
@@ -1310,6 +1315,15 @@ defmodule BackendWeb.Router do
 
     scope "/goods-in-inspections/:goods_in_inspection_id" do
       post "/items/:line_uuid", GoodsInInspectionController, :upsert_item
+      # QC edits AFTER the operator has signed — same shape as
+      # ``upsert_item`` but scoped to ``status = submitted`` and gated
+      # on ``goods_in.approve``. Lets the QC reviewer correct dimensions
+      # / stack factor / country of origin / batch etc. on the desktop
+      # sign-off page before signing, instead of bouncing the whole
+      # inspection back to the operator for a single-field mistake.
+      post "/items/:line_uuid/qc-edit",
+           GoodsInInspectionController,
+           :qc_edit_item
       post "/sign-operator", GoodsInInspectionController, :sign_operator
       post "/sign-quality", GoodsInInspectionController, :sign_quality
 
