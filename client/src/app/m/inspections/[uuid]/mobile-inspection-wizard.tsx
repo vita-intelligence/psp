@@ -1312,23 +1312,36 @@ export function MobileInspectionWizard({
         }}
       >
         {/* Override shadcn's default center-position + intrinsic
-            height with an explicit top-anchored + bottom-anchored
-            box. Trailing ``!`` on each override forces
-            ``!important`` in Tailwind v4 (v3 used a leading ``!``
-            prefix — the syntax flipped in v4 and prefix-`!` classes
-            silently no-op). Base has ``top-[50%]`` +
-            ``translate-y-[-50%]`` which centers the dialog on its
-            OWN height — if content grows past 100vh the dialog
-            spills both top AND bottom equally, which was the bug.
-            Pinning top: 1rem, bottom: 1rem forces the dialog to
-            fit in the visible viewport with a small margin, no
-            matter how many rows the list carries. Inline
-            ``style`` supplies a ``dvh``-based max-height as a
-            belt-and-braces cap for browsers that shrink the
-            visual viewport as the URL bar hides. */}
+            height with inline ``style`` props so we don't depend
+            on Tailwind's important-modifier resolution at all —
+            two attempts with the modifier failed (v3 leading-``!``
+            was invalid in this v4 project; v4 trailing-``!`` still
+            didn't beat the base for reasons that weren't worth
+            debugging further). Inline styles have higher CSS
+            specificity than any external stylesheet rule without
+            ``!important``, and shadcn's base doesn't use
+            ``!important`` on positioning, so this cleanly wins.
+
+            All four ``top/bottom/left/right`` anchored to 1rem and
+            ``transform: none`` set explicitly — that neuters the
+            base's ``translate-x/y-[-50%]`` and the mid-animation
+            ``zoom-in-95`` transform (which is what fought the
+            previous inline-transform attempt). ``fixed``
+            positioning with all four anchors set = element fills
+            viewport minus 1rem margins, height + width auto-
+            computed. Guaranteed inside the viewport regardless of
+            content size. */}
         <AlertDialogContent
-          className="top-4! bottom-4! translate-y-0! max-h-[calc(100vh-2rem)]! grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
-          style={{ maxHeight: "calc(100dvh - 2rem)" }}
+          className="grid grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden"
+          style={{
+            top: "1rem",
+            bottom: "1rem",
+            left: "1rem",
+            right: "1rem",
+            transform: "none",
+            maxHeight: "calc(100dvh - 2rem)",
+            maxWidth: "calc(100vw - 2rem)",
+          }}
         >
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
