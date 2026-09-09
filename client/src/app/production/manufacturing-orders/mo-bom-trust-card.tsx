@@ -50,6 +50,20 @@ export function BomTrustCard({ bom, co, company }: Props) {
   const specUrl = co.npd_spec_sheet_url;
   const bomSyncedAt = bom.npd_synced_at;
 
+  // Reorder shortcut: the portal Reorder flow mints a fresh
+  // Formulation on NPD (with ``version_number`` restarting at 1)
+  // but points its ProposalLine at the SOURCE formulation's
+  // already-signed FINAL spec (whose ``version_number`` reflects
+  // wherever the source recipe stood at sign-time — commonly 4+).
+  // The version equality check below would compare source's v4 to
+  // reorder's own v1 and false-positive "drift — recipe was edited
+  // after signature" on every reorder MO, even though the reorder
+  // shell locks the recipe as a copy of source and drift is
+  // impossible by construction. Bypass the check entirely for
+  // reorders; the operator's "same recipe as the original" mental
+  // model IS what the code shows.
+  const isReorder = co.is_reorder === true;
+
   // Version-based drift detection: the customer signed against a
   // specific formulation version (``npd_final_spec_formulation_version_id``);
   // the BOM carries its own ``npd_formulation_version_id``. Equal
@@ -70,8 +84,12 @@ export function BomTrustCard({ bom, co, company }: Props) {
   const signedVersion = co.npd_final_spec_formulation_version_id;
   const bomVersion = bom.npd_formulation_version_id;
   const versionMismatch =
-    !!signedVersion && !!bomVersion && signedVersion !== bomVersion;
+    !isReorder &&
+    !!signedVersion &&
+    !!bomVersion &&
+    signedVersion !== bomVersion;
   const bomSyncedAfterSignatureLegacy =
+    !isReorder &&
     !signedVersion &&
     !!bomSyncedAt &&
     !!signedAt &&

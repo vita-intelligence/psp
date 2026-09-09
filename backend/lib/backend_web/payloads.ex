@@ -2064,7 +2064,19 @@ defmodule BackendWeb.Payloads do
           npd_final_spec_status: co.npd_final_spec_status,
           npd_final_spec_formulation_version_id:
             co.npd_final_spec_formulation_version_id,
-          npd_project_type: co.npd_project_type
+          npd_project_type: co.npd_project_type,
+          # Reorder posture — used by the FE MO Trust Card to skip
+          # drift detection entirely. Reorders reuse the SOURCE
+          # formulation's already-signed FINAL spec via ProposalLine
+          # link, but each reorder mints its own fresh Formulation
+          # (with version_number restarting at 1). The signed
+          # FINAL's version (4 on the source) never matches the
+          # reorder's own version (1) — the version equality check
+          # would false-positive drift on every reorder MO. The
+          # reorder shell locks the recipe as a copy of source, so
+          # drift is impossible by definition; simplest correct
+          # thing is to bypass the check.
+          is_reorder: co.is_reorder
         },
         limit: 1
 

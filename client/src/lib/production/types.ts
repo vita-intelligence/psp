@@ -122,6 +122,17 @@ export interface MoLinkedCustomerOrder {
    *  signed FINALs share one canonical formulation, so the Trust
    *  Card skips the exact-spec-uuid drift check for RTG. */
   npd_project_type: string | null;
+  /** True when this CO was created by the portal Reorder flow.
+   *  Reorders reuse the source formulation's already-signed FINAL
+   *  via ``ProposalLine.specification_sheet`` link, but the reorder
+   *  itself is a fresh Formulation whose ``version_number`` starts
+   *  at 1 — meaning the signed FINAL's version (e.g. 4) never
+   *  matches the reorder's own version and the equality-based
+   *  drift check would false-positive on every reorder MO. The
+   *  reorder shell locks the recipe as a copy of source so drift
+   *  is impossible by definition; Trust Card gates on this to
+   *  bypass the check entirely for reorders. */
+  is_reorder: boolean | null;
 }
 
 export interface BOMSummary {
