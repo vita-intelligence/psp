@@ -2108,9 +2108,18 @@ defmodule Backend.Purchasing do
   # dims). If the qty dropped and there are already bookings on the
   # lot (rare pre-QC-approval; defensive for future flows), shrink
   # them newest-first respecting ``consumed_quantity``.
+  #
+  # Also propagates the qty delta to the lot's active placement(s) so
+  # ``on_hand_qty`` (sum of placements) stays in lockstep with
+  # ``lot.qty_received``. Without this the "broken bookings" detector
+  # in ``Backend.Production.list_broken_bookings_for/1`` false-flags
+  # the MO booking as over-allocated: the lot row says 67 kg but the
+  # cell row still says 64 kg, so ``total_booked > on_hand`` even
+  # though physically everything reconciles.
   defp sync_lot_to_pack(%User{} = actor, %Backend.Stock.Lot{} = lot, pack) do
     new_qty = decode_pack_qty(pack, lot.qty_received || Decimal.new(0))
     old_qty = lot.qty_received || Decimal.new(0)
+    delta = Decimal.sub(new_qty, old_qty)
 
     shrink_result =
       if Decimal.compare(new_qty, old_qty) == :lt do
@@ -2119,16 +2128,81 @@ defmodule Backend.Purchasing do
         :ok
       end
 
-    case shrink_result do
-      :ok ->
-        attrs = pack_to_lot_attrs(pack, new_qty)
+    with :ok <- shrink_result,
+         {:ok, updated_lot} <-
+           lot
+           |> Backend.Stock.Lot.changeset(pack_to_lot_attrs(pack, new_qty))
+           |> Repo.update(),
+         :ok <- apply_placement_delta(actor, updated_lot, delta) do
+      {:ok, updated_lot}
+    end
+  end
 
-        lot
-        |> Backend.Stock.Lot.changeset(attrs)
-        |> Repo.update()
+  # Apply a lot-level qty delta to the lot's placements + emit an
+  # ``adjust_up`` / ``adjust_down`` stock movement for the audit trail.
+  # Zero delta is a no-op; the caller pre-filters but this stays
+  # defensive so future callers can pass an unfiltered delta.
+  defp apply_placement_delta(%User{} = actor, %Backend.Stock.Lot{} = lot, %Decimal{} = delta) do
+    if Decimal.equal?(delta, Decimal.new(0)) do
+      :ok
+    else
+      # Grab the "primary" placement — the one that carries the bulk
+      # of the qty. For a fresh receive there's a single placement in
+      # the warehouse's Unregistered/Quarantine cell; for multi-cell
+      # lots the largest-qty placement wins. That matches how the
+      # operator would physically re-count: adjust the biggest pile
+      # first, add / subtract the delta there.
+      primary =
+        Repo.all(
+          from(p in Backend.Stock.Placement,
+            where: p.stock_lot_id == ^lot.id,
+            order_by: [desc: p.qty, asc: p.id]
+          )
+        )
+        |> Enum.find(fn p ->
+          Decimal.compare(p.qty || Decimal.new(0), Decimal.new(0)) == :gt
+        end)
 
-      {:error, _} = err ->
-        err
+      case primary do
+        nil ->
+          # No positive placement to adjust against — a lot in this
+          # state can't hold physical stock, so a QC delta doesn't
+          # have a home. Skip silently rather than block the QC edit.
+          :ok
+
+        %Backend.Stock.Placement{} = placement ->
+          new_qty =
+            placement.qty
+            |> Kernel.||(Decimal.new(0))
+            |> Decimal.add(delta)
+            |> clamp_non_negative()
+
+          now = DateTime.utc_now() |> DateTime.truncate(:second)
+          kind = if Decimal.negative?(delta), do: "adjust_down", else: "adjust_up"
+
+          with {:ok, _updated_placement} <-
+                 placement
+                 |> Backend.Stock.Placement.changeset(%{"qty" => new_qty})
+                 |> Repo.update(),
+               {:ok, _movement} <-
+                 %Backend.Stock.Movement{}
+                 |> Backend.Stock.Movement.changeset(%{
+                   "company_id" => lot.company_id,
+                   "stock_lot_id" => lot.id,
+                   "from_cell_id" =>
+                     if(Decimal.negative?(delta), do: placement.storage_cell_id),
+                   "to_cell_id" =>
+                     if(Decimal.negative?(delta), do: nil, else: placement.storage_cell_id),
+                   "delta_qty" => delta,
+                   "kind" => kind,
+                   "reason" => "QC edit re-weighed the pack",
+                   "actor_id" => actor.id,
+                   "occurred_at" => now
+                 })
+                 |> Repo.insert() do
+            :ok
+          end
+      end
     end
   end
 
