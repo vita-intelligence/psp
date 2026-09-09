@@ -2062,6 +2062,8 @@ defmodule BackendWeb.Payloads do
           npd_final_spec_uuid: co.npd_final_spec_uuid,
           npd_final_spec_signed_at: co.npd_final_spec_signed_at,
           npd_final_spec_status: co.npd_final_spec_status,
+          npd_final_spec_formulation_version_id:
+            co.npd_final_spec_formulation_version_id,
           npd_project_type: co.npd_project_type
         },
         limit: 1

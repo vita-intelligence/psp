@@ -20,15 +20,13 @@ interface Props {
  * Provenance / trust card the operator sees when picking a BOM on
  * the Create-MO form. Three verdicts:
  *
- *   * Green  — BOM's `npd_spec_sheet_uuid` matches the CO's
- *     currently-signed spec AND the BOM was synced before the
- *     customer signed. "Compliant."
+ *   * Green  — BOM's formulation version matches the version the
+ *     customer signed against. "Compliant."
  *   * Amber  — CO has no customer signature yet on the spec.
  *     "Customer hasn't approved yet." (Still legal to proceed for
  *     trial / sample MOs; caller decides whether to hide the card.)
- *   * Red    — BOM was re-synced AFTER the customer's signature, or
- *     the BOM's spec uuid doesn't match the CO's current spec.
- *     "Drift — customer signed a different BOM."
+ *   * Red    — BOM's formulation version differs from the signed
+ *     version. "Drift — recipe changed after customer signature."
  *
  * Renders nothing when the BOM has no NPD provenance (BOM authored
  * directly on PSP) OR there is no linked CO (bare item, no project).
@@ -49,40 +47,46 @@ export function BomTrustCard({ bom, co, company }: Props) {
   const signedAt =
     co.npd_final_spec_signed_at ?? co.npd_spec_customer_signed_at;
   const signedBy = co.npd_spec_customer_signed_by_name;
-  const specUuid = co.npd_final_spec_uuid ?? co.npd_spec_sheet_uuid;
   const specUrl = co.npd_spec_sheet_url;
   const bomSyncedAt = bom.npd_synced_at;
 
-  // RTG multi-order: every RTG proposal spawns a fresh per-order
-  // FINAL spec sheet, but the underlying recipe (and therefore the
-  // synced BOM) is shared across every order of the same formulation.
-  // The BOM's ``npd_spec_sheet_uuid`` will point at whichever
-  // customer-signed spec triggered the most recent sync — usually the
-  // FIRST customer's, so ORDER-2's Trust Card would false-positive
-  // "BOM/spec drift" even though the recipe is identical. Skip the
-  // exact-uuid drift check for RTG; ``bomSyncedAfterSignature`` below
-  // still catches real drift (BOM re-synced with a newer recipe AFTER
-  // the customer signed).
-  const isRtg = co.npd_project_type === "ready_to_go";
-  const specMismatch =
-    !isRtg &&
-    !!bom.npd_spec_sheet_uuid &&
-    !!specUuid &&
-    bom.npd_spec_sheet_uuid !== specUuid;
-
-  const bomSyncedAfterSignature =
-    !!bomSyncedAt && !!signedAt && bomSyncedAt > signedAt;
+  // Version-based drift detection: the customer signed against a
+  // specific formulation version (``npd_final_spec_formulation_version_id``);
+  // the BOM carries its own ``npd_formulation_version_id``. Equal
+  // versions ⇒ same recipe ⇒ no drift, regardless of when the BOM
+  // was last re-pushed. Different versions ⇒ recipe was edited
+  // after the signature ⇒ the operator needs to know.
+  //
+  // Previous implementation compared ``bom.npd_synced_at`` vs
+  // ``co.npd_final_spec_signed_at`` — every BOM re-push after sign
+  // (SPOU refresh, provenance metadata update, packaging fix, etc.)
+  // false-positived as drift even though the recipe was byte-for-
+  // byte the version the customer approved.
+  //
+  // ``signedVersion`` is null on legacy CO rows written before the
+  // field existed; in that case we fall back to the old timestamp
+  // check so those rows still get some drift protection (worst
+  // case: false-positive drift on a legacy row, same as today).
+  const signedVersion = co.npd_final_spec_formulation_version_id;
+  const bomVersion = bom.npd_formulation_version_id;
+  const versionMismatch =
+    !!signedVersion && !!bomVersion && signedVersion !== bomVersion;
+  const bomSyncedAfterSignatureLegacy =
+    !signedVersion &&
+    !!bomSyncedAt &&
+    !!signedAt &&
+    bomSyncedAt > signedAt;
 
   let verdict: "compliant" | "unsigned" | "drift" = "compliant";
   let reason: string | null = null;
 
-  if (specMismatch) {
+  if (versionMismatch) {
     verdict = "drift";
-    reason = "BOM was pulled from a different spec than the one on this project.";
-  } else if (bomSyncedAfterSignature) {
+    reason = `Customer signed formulation v${signedVersion}; this BOM is on v${bomVersion}. The recipe was edited after signature.`;
+  } else if (bomSyncedAfterSignatureLegacy) {
     verdict = "drift";
     reason =
-      "BOM was re-synced from NPD after the customer signature — they signed a different version.";
+      "BOM was re-synced from NPD after the customer signature. Confirm the recipe still matches what they signed.";
   } else if (!signedAt) {
     verdict = "unsigned";
     reason = "Customer hasn't signed the spec sheet yet.";

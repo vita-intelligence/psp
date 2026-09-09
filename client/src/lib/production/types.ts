@@ -109,6 +109,15 @@ export interface MoLinkedCustomerOrder {
   npd_final_spec_uuid: string | null;
   npd_final_spec_signed_at: string | null;
   npd_final_spec_status: string | null;
+  /** ``formulation_version.version_number`` of the FINAL spec the
+   *  customer signed. Compared against ``bom.npd_formulation_version_id``
+   *  on the MO Trust Card so drift is detected by recipe-version
+   *  equality rather than timestamp inequality — a re-push that
+   *  refreshes SPOU or provenance metadata for the same recipe
+   *  version doesn't flip the card to red. Nullable for legacy CO
+   *  rows written before this field existed; the Trust Card falls
+   *  back to timestamp comparison when null. */
+  npd_final_spec_formulation_version_id: string | null;
   /** ``"custom"`` / ``"ready_to_go"`` / null. RTG's per-proposal
    *  signed FINALs share one canonical formulation, so the Trust
    *  Card skips the exact-spec-uuid drift check for RTG. */

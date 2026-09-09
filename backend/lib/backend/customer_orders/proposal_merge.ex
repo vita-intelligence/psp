@@ -725,6 +725,13 @@ defmodule Backend.CustomerOrders.ProposalMerge do
         parse_datetime(params["npd_final_spec_signed_at"]),
       npd_final_spec_rejected_at:
         parse_datetime(params["npd_final_spec_rejected_at"]),
+      # Version-number the customer signed against — surfaced in the
+      # linked-CO payload so the MO Trust Card can compare it to the
+      # BOM's ``npd_formulation_version_id`` and only flag drift when
+      # the recipe versions differ. Prevents false-positive drift on
+      # every BOM re-push that doesn't change the recipe.
+      npd_final_spec_formulation_version_id:
+        sanitize(params["npd_final_spec_formulation_version_id"]),
       npd_final_payment_approved_at:
         parse_datetime(params["npd_final_payment_approved_at"]),
       # Label-design workflow mirror. NPD is authoritative and

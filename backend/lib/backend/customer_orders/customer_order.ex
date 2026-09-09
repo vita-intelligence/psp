@@ -221,6 +221,13 @@ defmodule Backend.CustomerOrders.CustomerOrder do
     field :npd_final_spec_status, :string
     field :npd_final_spec_signed_at, :utc_datetime
     field :npd_final_spec_rejected_at, :utc_datetime
+    # ``formulation_version.version_number`` of the FINAL spec the
+    # customer signed. Compared against ``bom.npd_formulation_version_id``
+    # on the MO Trust Card so "BOM/spec drift" is detected by
+    # recipe-version equality, not by timestamp inequality. Legacy
+    # rows are null → FE falls back to timestamp comparison for
+    # backwards compat.
+    field :npd_final_spec_formulation_version_id, :string
     # Finance approving the FINAL invoice is what promotes the CO
     # from `:awaiting_final_spec` to `:needs_mo_creation` — the
     # customer has paid, production is authorised.
