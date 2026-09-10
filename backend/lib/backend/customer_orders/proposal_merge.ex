@@ -765,7 +765,16 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       npd_label_pdf_url:
         sanitize(params["npd_label_pdf_url"]),
       npd_label_url:
-        sanitize(params["npd_label_url"])
+        sanitize(params["npd_label_url"]),
+      # Header image for /projects card banner + detail hero. NPD
+      # picks (approved-label preview → product photo → empty) so
+      # PSP renders a single URL without needing to reason about
+      # freshness. Scoped by proposal upstream so RTG multi-order
+      # doesn't inherit a prior order's approved artwork on a fresh
+      # card. Nil overwrites so a customer / staff rollback that
+      # revokes label approval clears the banner cleanly.
+      npd_header_image_url:
+        sanitize(params["header_image_url"] || params["npd_header_image_url"])
     }
 
     # Full audit event log — NPD is authoritative and replaces the
