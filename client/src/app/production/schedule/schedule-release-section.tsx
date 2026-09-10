@@ -56,9 +56,16 @@ type ProjectedState =
   | "not_released"
   | "released"
   | "picking_in_progress"
-  | "handed_off";
+  | "handed_off"
+  | "done"
+  | "cancelled";
 
 function projectState(mo: ScheduleOperationMOSummary): ProjectedState {
+  // Terminal statuses win — a completed MO shouldn't render "At
+  // production" (misleading; the run is finished). Same for
+  // cancelled runs which are audit history, not live work.
+  if (mo.status === "completed") return "done";
+  if (mo.status === "cancelled") return "cancelled";
   if (mo.pickup_completed_at) return "handed_off";
   if (mo.pickup_started_at) return "picking_in_progress";
   if (mo.released_to_warehouse_at) return "released";
@@ -550,6 +557,22 @@ function UnderBookedLineRow({ line }: { line: UnderBookedLine }) {
 }
 
 function StatusPill({ state }: { state: ProjectedState }) {
+  if (state === "done") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+        <CheckCircle2 className="size-2.5" />
+        Done
+      </span>
+    );
+  }
+  if (state === "cancelled") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <CheckCircle2 className="size-2.5" />
+        Cancelled
+      </span>
+    );
+  }
   if (state === "released") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
@@ -568,9 +591,9 @@ function StatusPill({ state }: { state: ProjectedState }) {
   }
   if (state === "handed_off") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
         <PackageCheck className="size-2.5" />
-        At production
+        In production
       </span>
     );
   }

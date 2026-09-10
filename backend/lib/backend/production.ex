@@ -6647,13 +6647,23 @@ defmodule Backend.Production do
 
   defp wsg_reservations(wsg_id, exclude_step_id, %DateTime{} = from_dt)
        when is_integer(wsg_id) do
+    # Only OPEN MOs count as reservations on the workstation.
+    # Completed / cancelled MOs may still carry ``planned_start`` +
+    # ``planned_finish`` on their steps (audit history), but they're
+    # not physically occupying the machine any more — treating them
+    # as capacity blockers refuses legitimate re-schedules like
+    # "we finished the previous run early, drop the next one on the
+    # same day". Same status filter the calendar's op-blocks use.
     base =
       from(s in ManufacturingOrderStep,
+        join: mo in ManufacturingOrder,
+        on: mo.id == s.manufacturing_order_id,
         where:
           s.workstation_group_id == ^wsg_id and
             not is_nil(s.planned_start) and
             not is_nil(s.planned_finish) and
-            s.planned_finish > ^from_dt,
+            s.planned_finish > ^from_dt and
+            mo.status not in ["completed", "cancelled"],
         select: {s.planned_start, s.planned_finish}
       )
 
