@@ -1636,9 +1636,12 @@ export function ScheduleWorkspace({
           <div className="flex min-h-0 flex-1">
             <ScheduleBacklog
               items={data?.backlog ?? []}
-              scheduledItems={moRows.filter(
-                (r) => r.status !== "completed" && r.status !== "cancelled",
-              )}
+              // Range-agnostic scheduled MOs from the BE — the
+              // ``operations`` array above is date-scoped and drops
+              // MOs whose ops sit outside the visible window (e.g. a
+              // mis-scheduled run stretched into 2030). The tab must
+              // surface those anyway so the planner can jump to them.
+              scheduledItems={data?.scheduled_summary ?? []}
               focusMoUuid={focusMoUuid}
               onFocusMo={focusMo}
               canEdit={canEditSteps}

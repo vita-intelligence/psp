@@ -18,15 +18,17 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { formatCompanyDate } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
-import type { BacklogMO } from "@/lib/production/types";
-import type { MORow } from "./schedule-view-mo";
+import type {
+  BacklogMO,
+  ScheduledSummaryRow,
+} from "@/lib/production/types";
 
 interface Props {
   items: BacklogMO[];
-  /** MOs that are already on the calendar and not yet finished —
-   *  drives the "On calendar" tab. Comes from the workspace which
-   *  filters completed / cancelled rows out upstream. */
-  scheduledItems: MORow[];
+  /** Range-agnostic list from the BE — every non-terminal MO at this
+   *  site with at least one scheduled step, whether or not that step
+   *  falls inside the currently visible calendar window. */
+  scheduledItems: ScheduledSummaryRow[];
   focusMoUuid: string | null;
   onFocusMo: (uuid: string) => void;
   canEdit: boolean;
@@ -98,15 +100,15 @@ export function ScheduleBacklog({
   const scheduledSorted = useMemo(() => {
     const rows = [...scheduledItems];
     rows.sort((a, b) => {
-      const ta = a.start ? new Date(a.start).getTime() : Infinity;
-      const tb = b.start ? new Date(b.start).getTime() : Infinity;
+      const ta = a.first_start ? new Date(a.first_start).getTime() : Infinity;
+      const tb = b.first_start ? new Date(b.first_start).getTime() : Infinity;
       return ta - tb;
     });
     const q = query.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) => {
-      const code = (r.moCode ?? "").toLowerCase();
-      const name = (r.itemName ?? "").toLowerCase();
+      const code = (r.code ?? "").toLowerCase();
+      const name = (r.item_name ?? "").toLowerCase();
       return code.includes(q) || name.includes(q);
     });
   }, [scheduledItems, query]);
@@ -264,7 +266,7 @@ function renderScheduled({
   onFocusMo,
   company,
 }: {
-  rows: MORow[];
+  rows: ScheduledSummaryRow[];
   totalCount: number;
   focusMoUuid: string | null;
   onFocusMo: (uuid: string) => void;
@@ -273,8 +275,8 @@ function renderScheduled({
   if (totalCount === 0) {
     return (
       <div className="rounded-md border border-dashed border-border/60 bg-card/50 px-3 py-6 text-center text-[11px] text-muted-foreground">
-        Nothing on the calendar for this site + range yet. Drag a
-        backlog row onto the timeline to schedule one.
+        Nothing on the calendar for this site yet. Drag a backlog row
+        onto the timeline to schedule one.
       </div>
     );
   }
@@ -291,10 +293,10 @@ function renderScheduled({
     <ul className="space-y-1">
       {rows.map((row) => (
         <ScheduledMORow
-          key={row.moId}
+          key={row.id}
           row={row}
-          focused={focusMoUuid === row.moUuid}
-          onFocus={() => onFocusMo(row.moUuid)}
+          focused={focusMoUuid === row.uuid}
+          onFocus={() => onFocusMo(row.uuid)}
           company={company}
         />
       ))}
@@ -325,16 +327,19 @@ function ScheduledMORow({
   onFocus,
   company,
 }: {
-  row: MORow;
+  row: ScheduledSummaryRow;
   focused: boolean;
   onFocus: () => void;
   company: CompanyDefaults;
 }) {
-  const startLabel = row.start ? formatCompanyDate(row.start, company) : "—";
+  const startLabel = row.first_start
+    ? formatCompanyDate(row.first_start, company)
+    : "—";
   const statusChip = STATUS_CHIP[row.status] ?? {
     label: row.status,
     className: "bg-muted text-muted-foreground",
   };
+  const itemName = row.item_name ?? "—";
   return (
     <li>
       <button
@@ -357,7 +362,7 @@ function ScheduledMORow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate font-mono text-[10px] font-semibold">
-              {row.moCode ?? `MO #${row.moId}`}
+              {row.code ?? `MO #${row.id}`}
             </span>
             <span
               className={cn(
@@ -368,17 +373,16 @@ function ScheduledMORow({
               {statusChip.label}
             </span>
           </div>
-          <p className="truncate text-[11px]" title={row.itemName}>
-            {row.itemName}
+          <p className="truncate text-[11px]" title={itemName}>
+            {itemName}
           </p>
           <p className="flex items-center gap-1 text-[10px] text-muted-foreground">
             <CalendarClock className="size-2.5" />
             <span>{startLabel}</span>
             <span className="opacity-60">·</span>
             <span>
-              {row.qty} {" "}
-              {row.steps.length} step
-              {row.steps.length === 1 ? "" : "s"}
+              {row.qty ?? ""} {row.step_count} step
+              {row.step_count === 1 ? "" : "s"}
             </span>
           </p>
         </div>

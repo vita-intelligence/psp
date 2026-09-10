@@ -712,6 +712,24 @@ export interface ProductionScheduleResponse {
   operations: ScheduleOperation[];
   working_windows: ScheduleGroupWindows[];
   backlog: BacklogMO[];
+  /** Range-agnostic list of MOs at this site that have at least one
+   *  scheduled step and aren't yet terminal. Drives the "On calendar"
+   *  tab on the schedule left rail — the operations list above is
+   *  date-scoped, but the tab needs to surface MOs regardless of
+   *  whether their ops sit inside the visible window. */
+  scheduled_summary: ScheduledSummaryRow[];
+}
+
+export interface ScheduledSummaryRow {
+  id: number;
+  uuid: string;
+  code: string | null;
+  item_name: string | null;
+  status: string;
+  qty: string | null;
+  first_start: string | null;
+  last_finish: string | null;
+  step_count: number;
 }
 
 export interface ManufacturingOrderSiteSummary {

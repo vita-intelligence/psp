@@ -7265,8 +7265,18 @@ defmodule Backend.Production do
   def list_under_booked_lines_for([]), do: []
 
   def list_under_booked_lines_for(mo_ids) when is_list(mo_ids) do
+    # Terminal MOs (``completed`` / ``cancelled``) always report every
+    # line as short because ``ensure_all_lines_fully_booked`` only
+    # credits ``requested`` bookings — post-run bookings are all
+    # ``consumed`` and don't count. Filter those out at the source so
+    # the schedule banner + release-issues card don't spuriously flag
+    # already-finished work as "under-booked". The gate callers
+    # (approve / prepare / release / re-book) never pass terminal MOs
+    # here, so this filter is a pure display-layer cleanup.
     from(mo in ManufacturingOrder,
-      where: mo.id in ^mo_ids,
+      where:
+        mo.id in ^mo_ids and
+          mo.status not in ["completed", "cancelled"],
       preload: [:bookings, :children, bom: [lines: :part]]
     )
     |> Repo.all()
@@ -7291,8 +7301,15 @@ defmodule Backend.Production do
   def list_lines_awaiting_child_output_for([]), do: []
 
   def list_lines_awaiting_child_output_for(mo_ids) when is_list(mo_ids) do
+    # Same terminal-MO filter as ``list_under_booked_lines_for``: a
+    # completed MO's bookings are ``consumed``, so the "does every
+    # line have a real lot booking?" check always fails for them.
+    # Filtering here keeps the schedule / release-issues banner
+    # honest instead of flagging finished work as blocked.
     from(mo in ManufacturingOrder,
-      where: mo.id in ^mo_ids,
+      where:
+        mo.id in ^mo_ids and
+          mo.status not in ["completed", "cancelled"],
       preload: [:bookings, :children, bom: [lines: :part]]
     )
     |> Repo.all()
@@ -7317,9 +7334,15 @@ defmodule Backend.Production do
   def list_bookings_with_lot_off_warehouse_for([]), do: []
 
   def list_bookings_with_lot_off_warehouse_for(mo_ids) when is_list(mo_ids) do
+    # Terminal MOs already consumed their bookings — the "lot off
+    # warehouse" check is meaningful only for MOs still waiting to
+    # run. Skipping them keeps the schedule-banner tally in step with
+    # the other release-issue counters.
     mos =
       from(mo in ManufacturingOrder,
-        where: mo.id in ^mo_ids
+        where:
+          mo.id in ^mo_ids and
+            mo.status not in ["completed", "cancelled"]
       )
       |> Repo.all()
 
@@ -7391,6 +7414,60 @@ defmodule Backend.Production do
       ]
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Lightweight summary of every MO at ``warehouse`` that has at least
+  one scheduled step (``planned_start IS NOT NULL``) and hasn't
+  finished yet. Drives the "On calendar" tab on the schedule left
+  rail — that tab needs to surface MOs regardless of the currently
+  visible date range, so the planner can jump to work scheduled far
+  outside the calendar window (e.g. a mis-planned MO stretched into
+  2029).
+
+  Distinct from ``list_schedule_operations`` because that endpoint
+  is date-range scoped by design (the calendar renders one page of
+  time at a time). This one intentionally ignores the range and
+  returns one row per MO with min/max planned bounds so the FE can
+  render + jump to any of them.
+
+  Returns a list of maps with ``id, uuid, code, item_name, status,
+  qty, first_start, last_finish, step_count``. Terminal statuses
+  (completed / cancelled) are excluded — they show up in audit
+  reports, not the "still needs attention" tab.
+  """
+  def list_scheduled_summary_for_site(%User{} = actor, %Warehouse{} = warehouse) do
+    from(s in ManufacturingOrderStep,
+      join: mo in ManufacturingOrder,
+      on: mo.id == s.manufacturing_order_id,
+      left_join: it in Item,
+      on: it.id == mo.item_id,
+      where:
+        s.company_id == ^actor.company_id and
+          mo.warehouse_id == ^warehouse.id and
+          mo.status in ["approved", "scheduled", "prepared", "in_progress", "draft"] and
+          not is_nil(s.planned_start),
+      group_by: [mo.id, mo.uuid, mo.status, mo.quantity, it.name],
+      select: %{
+        id: mo.id,
+        uuid: mo.uuid,
+        item_name: it.name,
+        status: mo.status,
+        qty: mo.quantity,
+        first_start: min(s.planned_start),
+        last_finish: max(s.planned_finish),
+        step_count: count(s.id)
+      },
+      order_by: [asc: min(s.planned_start)]
+    )
+    |> Repo.all()
+    |> then(fn rows ->
+      company = %Backend.Companies.Company{id: actor.company_id}
+      Enum.map(rows, fn row ->
+        code = Backend.Numbering.render(row.id, company, "manufacturing_order")
+        Map.put(row, :code, code)
+      end)
+    end)
   end
 
   @doc """

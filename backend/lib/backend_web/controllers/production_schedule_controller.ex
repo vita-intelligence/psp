@@ -43,6 +43,7 @@ defmodule BackendWeb.ProductionScheduleController do
         Production.resolve_working_windows(groups, warehouse, company, from_date, to_date)
 
       backlog = Production.list_backlog_manufacturing_orders(actor, warehouse)
+      scheduled_summary = Production.list_scheduled_summary_for_site(actor, warehouse)
 
       json(conn, %{
         warehouse: %{
@@ -56,7 +57,15 @@ defmodule BackendWeb.ProductionScheduleController do
         workstation_groups: Enum.map(groups, &Payloads.workstation_group_summary/1),
         operations: Enum.map(operations, &Payloads.schedule_operation/1),
         working_windows: Enum.map(working_windows, &windows_payload/1),
-        backlog: Enum.map(backlog, &Payloads.backlog_mo/1)
+        backlog: Enum.map(backlog, &Payloads.backlog_mo/1),
+        # Every non-terminal MO with at least one scheduled step at
+        # this site, regardless of the currently visible date range.
+        # Drives the "On calendar" tab in the schedule left rail so
+        # the planner can jump to MOs whose ops sit far outside the
+        # calendar's paginated window (e.g. mis-scheduled work
+        # stretched into a future year).
+        scheduled_summary:
+          Enum.map(scheduled_summary, &scheduled_summary_payload/1)
       })
     else
       {:error, :warehouse_required} ->
@@ -75,6 +84,23 @@ defmodule BackendWeb.ProductionScheduleController do
           "Pass from=YYYY-MM-DD and to=YYYY-MM-DD with from ≤ to."
         )
     end
+  end
+
+  # Range-agnostic MO summary for the schedule left rail. Fields kept
+  # in the FE-facing snake_case shape the schedule workspace already
+  # consumes for backlog + operations.
+  defp scheduled_summary_payload(row) do
+    %{
+      id: row.id,
+      uuid: row.uuid,
+      code: row.code,
+      item_name: row.item_name,
+      status: row.status,
+      qty: row.qty && Decimal.to_string(row.qty),
+      first_start: row.first_start,
+      last_finish: row.last_finish,
+      step_count: row.step_count
+    }
   end
 
   defp windows_payload(%{group_id: id, days: days}) do
