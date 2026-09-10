@@ -36,6 +36,7 @@ interface Props {
   zoom: ZoomLevel;
   anchor: Date;
   canEditSteps: boolean;
+  focusMoUuid?: string | null;
 }
 
 export const CALENDAR_HOUR_HEIGHT_PX = 56;
@@ -48,7 +49,13 @@ const TIME_GUTTER_PX = 64;
 
 export const CALENDAR_DAY_DROPPABLE_PREFIX = "calendar-day-";
 
-export function CalendarView({ data, zoom, anchor, canEditSteps }: Props) {
+export function CalendarView({
+  data,
+  zoom,
+  anchor,
+  canEditSteps,
+  focusMoUuid: _focusMoUuid,
+}: Props) {
   if (zoom === "month") {
     return <MonthCalendar data={data} anchor={anchor} />;
   }

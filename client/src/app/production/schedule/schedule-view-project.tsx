@@ -169,9 +169,15 @@ interface ProjectViewProps {
   data: ProductionScheduleResponse;
   rows: ProjectRow[];
   canEditSteps: boolean;
+  focusMoUuid?: string | null;
 }
 
-export function ProjectView({ data, rows, canEditSteps }: ProjectViewProps) {
+export function ProjectView({
+  data,
+  rows,
+  canEditSteps,
+  focusMoUuid,
+}: ProjectViewProps) {
   const scale = useTimeScale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -214,16 +220,26 @@ export function ProjectView({ data, rows, canEditSteps }: ProjectViewProps) {
         </Legend>
       }
     >
-      {rows.map((row) => (
-        <CalendarRow
-          key={row.rootMoId}
-          height={PROJECT_ROW_HEIGHT_PX}
-          labelWidth={LABEL_GUTTER_PX}
-          label={<ProjectRowLabel row={row} />}
-        >
-          <ProjectBlock row={row} canEditSteps={canEditSteps} />
-        </CalendarRow>
-      ))}
+      {rows.map((row) => {
+        // Emphasise the project row when the focused MO is the root
+        // OR any MO in the chain — a customer landing here from a
+        // sub-MO deep-link should still see their project highlighted.
+        const isFocused =
+          !!focusMoUuid &&
+          (row.rootMoUuid === focusMoUuid ||
+            row.ops.some((op) => op.manufacturing_order?.uuid === focusMoUuid));
+        return (
+          <CalendarRow
+            key={row.rootMoId}
+            height={PROJECT_ROW_HEIGHT_PX}
+            labelWidth={LABEL_GUTTER_PX}
+            label={<ProjectRowLabel row={row} />}
+            emphasise={isFocused}
+          >
+            <ProjectBlock row={row} canEditSteps={canEditSteps} />
+          </CalendarRow>
+        );
+      })}
     </CalendarShell>
   );
 }

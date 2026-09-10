@@ -752,6 +752,7 @@ export function CalendarRow({
   label,
   contentRef,
   contentClassName,
+  emphasise,
   children,
 }: {
   labelWidth?: number;
@@ -759,24 +760,42 @@ export function CalendarRow({
   label: React.ReactNode;
   contentRef?: React.RefCallback<HTMLDivElement>;
   contentClassName?: string;
+  /** Adds a subtle brand tint + left border so the row stands out
+   *  when the workspace is focused on a specific MO via ``?mo=<uuid>``.
+   *  The label side inherits the tint too so the pairing is visible
+   *  regardless of horizontal scroll. */
+  emphasise?: boolean;
   children?: React.ReactNode;
 }) {
   const scale = useTimeScale();
   return (
-    <div className="flex border-b border-border/60" style={{ height }}>
+    <div
+      className={cn(
+        "flex border-b border-border/60",
+        emphasise && "shadow-[inset_3px_0_0_0_var(--brand,#7c3aed)]",
+      )}
+      style={{ height }}
+    >
       {/* z-50 so the sticky label always covers the NOW line +
           past-zone (z-40) when the user scrolls horizontally and
           the NOW container's anchored position drifts into the
           left gutter. */}
       <div
-        className="sticky left-0 z-50 shrink-0 border-r border-border/60 bg-card shadow-[1px_0_0_0_rgba(0,0,0,0.06)]"
+        className={cn(
+          "sticky left-0 z-50 shrink-0 border-r border-border/60 shadow-[1px_0_0_0_rgba(0,0,0,0.06)]",
+          emphasise ? "bg-brand/5" : "bg-card",
+        )}
         style={{ width: labelWidth }}
       >
         {label}
       </div>
       <div
         ref={contentRef}
-        className={cn("relative shrink-0", contentClassName)}
+        className={cn(
+          "relative shrink-0",
+          emphasise && "bg-brand/[0.04]",
+          contentClassName,
+        )}
         style={{ width: scale.rangeWidthPx, height }}
       >
         {children}
@@ -793,9 +812,10 @@ interface MOViewProps {
   data: ProductionScheduleResponse;
   rows: MORow[];
   canEditSteps: boolean;
+  focusMoUuid?: string | null;
 }
 
-export function MOView({ data, rows, canEditSteps }: MOViewProps) {
+export function MOView({ data, rows, canEditSteps, focusMoUuid }: MOViewProps) {
   const scale = useTimeScale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -845,6 +865,7 @@ export function MOView({ data, rows, canEditSteps }: MOViewProps) {
           key={row.moId}
           height={ROW_HEIGHT_PX}
           label={<MORowLabel row={row} />}
+          emphasise={!!focusMoUuid && row.moUuid === focusMoUuid}
         >
           <MOblock
             row={row}

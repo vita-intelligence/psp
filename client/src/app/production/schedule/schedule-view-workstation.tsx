@@ -29,9 +29,14 @@ import {
 interface WorkstationViewProps {
   data: ProductionScheduleResponse;
   canEditSteps: boolean;
+  focusMoUuid?: string | null;
 }
 
-export function WorkstationView({ data, canEditSteps }: WorkstationViewProps) {
+export function WorkstationView({
+  data,
+  canEditSteps,
+  focusMoUuid,
+}: WorkstationViewProps) {
   const scale = useTimeScale();
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -111,6 +116,13 @@ export function WorkstationView({ data, canEditSteps }: WorkstationViewProps) {
         const opsHere = data.operations.filter(
           (op) => op.workstation_group_id === group.id,
         );
+        // Emphasise every WSG row that carries at least one op of
+        // the focused MO — a single MO can span multiple stages, so
+        // highlighting all of them helps the planner track the whole
+        // chain across the workstation view.
+        const hasFocused =
+          !!focusMoUuid &&
+          opsHere.some((op) => op.manufacturing_order?.uuid === focusMoUuid);
         return (
           <WSGRow
             key={group.id}
@@ -118,6 +130,8 @@ export function WorkstationView({ data, canEditSteps }: WorkstationViewProps) {
             opsHere={opsHere}
             conflictIds={conflictIds}
             canEditSteps={canEditSteps}
+            emphasise={hasFocused}
+            focusMoUuid={focusMoUuid ?? null}
           />
         );
       })}
@@ -130,15 +144,25 @@ interface WSGRowProps {
   opsHere: ScheduleOperation[];
   conflictIds: Set<number>;
   canEditSteps: boolean;
+  emphasise?: boolean;
+  focusMoUuid?: string | null;
 }
 
-function WSGRow({ group, opsHere, conflictIds, canEditSteps }: WSGRowProps) {
+function WSGRow({
+  group,
+  opsHere,
+  conflictIds,
+  canEditSteps,
+  emphasise,
+  focusMoUuid,
+}: WSGRowProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `wsg-${group.id}` });
 
   return (
     <CalendarRow
       labelWidth={LABEL_GUTTER_PX}
       height={ROW_HEIGHT_PX}
+      emphasise={emphasise}
       label={
         <div className="flex h-full items-center gap-2 px-3">
           {group.color && (
@@ -166,6 +190,10 @@ function WSGRow({ group, opsHere, conflictIds, canEditSteps }: WSGRowProps) {
           conflict={conflictIds.has(op.id)}
           canEditSteps={canEditSteps}
           groupColor={group.color}
+          focused={
+            !!focusMoUuid &&
+            op.manufacturing_order?.uuid === focusMoUuid
+          }
         />
       ))}
     </CalendarRow>
@@ -177,6 +205,7 @@ interface OperationBlockProps {
   conflict: boolean;
   canEditSteps: boolean;
   groupColor: string | null;
+  focused?: boolean;
 }
 
 function OperationBlock({
@@ -184,6 +213,7 @@ function OperationBlock({
   conflict,
   canEditSteps,
   groupColor,
+  focused,
 }: OperationBlockProps) {
   const scale = useTimeScale();
   const editor = useScheduleEditor();
@@ -255,6 +285,7 @@ function OperationBlock({
             : mo?.status === "in_progress"
               ? "border-amber-500 bg-amber-100/70 text-foreground hover:shadow-md dark:bg-amber-950/30"
               : "border-border/70 bg-card text-foreground hover:shadow-md",
+        focused && !conflict && "ring-2 ring-brand ring-offset-1",
       )}
       title={
         canEditSteps

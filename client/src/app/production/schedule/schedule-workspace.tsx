@@ -8,7 +8,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -17,10 +17,12 @@ import {
   CalendarSearch,
   ChevronLeft,
   ChevronRight,
+  Crosshair,
   Factory,
   GitBranch,
   Loader2,
   Settings2,
+  X,
 } from "lucide-react";
 import {
   DndContext,
@@ -138,6 +140,15 @@ export function ScheduleWorkspace({
   company,
 }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // ``?mo=<uuid>`` is the deep-link the /projects board + release
+  // section drop the planner into when they click "Open schedule".
+  // The workspace uses it to (a) render a persistent "jump to this
+  // MO" pill so the planner never has to hand-scroll years-worth of
+  // calendar to find operations that got pushed forward, and (b)
+  // highlight that MO's rows across every view so it's visually
+  // trackable while dragging blocks around.
+  const focusMoUuid = searchParams.get("mo");
   const [siteId, setSiteId] = useState<number>(sites[0]?.id ?? 0);
   const [view, setView] = useState<ScheduleView>("mo");
   const [zoom, setZoom] = useState<ZoomLevel>("week");
@@ -188,6 +199,12 @@ export function ScheduleWorkspace({
     setView(readStoredView());
     setZoom(readStoredZoom());
   }, []);
+
+  // Auto-jump ref lives up here so ``clearFocusMo`` (declared below,
+  // as a plain function) can null it out — declaring it further down
+  // would put ``clearFocusMo`` before its dependency in emitted order.
+  // The effect that consumes ``focusedMo`` runs AFTER the memo below.
+  const autoJumpedRef = useRef<string | null>(null);
 
   function chooseView(v: ScheduleView) {
     setView(v);
@@ -1085,6 +1102,40 @@ export function ScheduleWorkspace({
         }
       }
 
+      // Cross-workstation guard — the planner just dragged this op
+      // onto a DIFFERENT workstation group than the one it was
+      // routed to (e.g. a bottling operation dropped on the
+      // labelling row). The routing knows nothing about a formal
+      // "operation type" enum, so we can't hard-block the move
+      // (some cross-drops are legitimate — moving between two
+      // bottling lines, say), but we can catch the "obviously
+      // wrong workstation" case with a confirmation prompt. If the
+      // planner cancels, the drop rolls back before we hit the
+      // server action or update local state — no toast, no revert
+      // dance, feels like the block "snapped back".
+      if (data && newWsgId !== op.workstation_group_id && newWsgId != null) {
+        const targetGroup = data.workstation_groups.find(
+          (g) => g.id === newWsgId,
+        );
+        const sourceGroup = data.workstation_groups.find(
+          (g) => g.id === op.workstation_group_id,
+        );
+        const targetName = targetGroup?.name ?? `Workstation #${newWsgId}`;
+        const sourceName = sourceGroup?.name ?? "its routed workstation";
+        const opLabel = op.operation_description || "This operation";
+        // eslint-disable-next-line no-alert -- native confirm is
+        // the correct blocking primitive for a drop confirmation;
+        // a shadcn AlertDialog would require refactoring dnd-kit's
+        // synchronous drop pipeline into async state, and the
+        // planner sees this only when the drop is suspicious.
+        const ok = window.confirm(
+          `${opLabel} was routed to "${sourceName}".\n\n` +
+            `Move it to "${targetName}" anyway?\n\n` +
+            `This is a different workstation type — double-check it can actually do the work.`,
+        );
+        if (!ok) return;
+      }
+
       const moUuid = op.manufacturing_order?.uuid;
       if (!moUuid) return;
 
@@ -1282,6 +1333,116 @@ export function ScheduleWorkspace({
     setAnchor(new Date());
   }
 
+  // Span of the focused MO's operations across every scheduled step,
+  // regardless of whether they're currently visible. When the URL
+  // carries ``?mo=<uuid>``, the workspace uses these bounds to (a)
+  // decide if a "jump" is even useful (skipped when the MO is
+  // already fully in view), (b) auto-widen the zoom when the span
+  // exceeds the current preset, and (c) label the pill with the MO
+  // code + step-count summary. ``null`` when the MO isn't in the
+  // current site's data (planner opened the schedule for a
+  // different site than the one that owns the MO).
+  const focusedMo = useMemo(() => {
+    if (!focusMoUuid || !data) return null;
+    const ops = data.operations.filter(
+      (o) => o.manufacturing_order?.uuid === focusMoUuid,
+    );
+    if (ops.length === 0) return null;
+    let minStart = Infinity;
+    let maxFinish = -Infinity;
+    for (const op of ops) {
+      if (op.planned_start) {
+        const t = new Date(op.planned_start).getTime();
+        if (t < minStart) minStart = t;
+      }
+      if (op.planned_finish) {
+        const t = new Date(op.planned_finish).getTime();
+        if (t > maxFinish) maxFinish = t;
+      }
+    }
+    if (!Number.isFinite(minStart) || !Number.isFinite(maxFinish)) return null;
+    const mo = ops[0].manufacturing_order;
+    return {
+      code: mo?.code ?? null,
+      uuid: focusMoUuid,
+      minStart: new Date(minStart),
+      maxFinish: new Date(maxFinish),
+      stepCount: ops.length,
+    };
+  }, [focusMoUuid, data]);
+
+  // Jump the calendar so the focused MO's first operation is visible.
+  // Two-part move: pick the zoom that comfortably fits the MO's full
+  // span (so subsequent "next / prev" pages don't skip past the
+  // trailing ops), snap the anchor to the earliest op's date, then
+  // scroll horizontally to the first op after the DOM updates.
+  //
+  // The horizontal scroll runs in a ``useEffect`` further down that
+  // watches ``pendingScrollToMs`` — setting state during render is
+  // the only way to sequence "anchor update → new scale → scroll"
+  // without racing dnd-kit's own render pass.
+  const [pendingScrollToMs, setPendingScrollToMs] = useState<number | null>(
+    null,
+  );
+  function jumpToFocusedMo() {
+    if (!focusedMo) return;
+    const spanMs = focusedMo.maxFinish.getTime() - focusedMo.minStart.getTime();
+    const dayMs = 24 * 60 * 60 * 1000;
+    // Pick the tightest zoom that fits the whole span. Falls through
+    // to Month for anything wider than 14 days — that's the widest
+    // preset we have, and 3-year MOs will still overflow but the
+    // planner can page through with Prev/Next without skipping ops.
+    const nextZoom: ZoomLevel =
+      spanMs <= dayMs * 0.9
+        ? "day"
+        : spanMs <= dayMs * 13
+          ? "week"
+          : "month";
+    if (nextZoom !== zoom) chooseZoom(nextZoom);
+    setAnchor(focusedMo.minStart);
+    setPendingScrollToMs(focusedMo.minStart.getTime());
+  }
+
+  // Horizontal scroll deferred until the anchor's new scale has
+  // rendered. ``data-schedule-scroll`` is the canvas the calendar
+  // views render into (see ``CalendarShell`` in schedule-view-mo).
+  useEffect(() => {
+    if (pendingScrollToMs == null) return;
+    // rAF gives the new scale time to lay out; without it the
+    // ``pxAt`` we compute below is against the OLD rangeStart.
+    const raf = window.requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLDivElement>(
+        "[data-schedule-scroll]",
+      );
+      if (el) {
+        const targetPx = scale.pxAt(new Date(pendingScrollToMs));
+        el.scrollLeft = Math.max(0, targetPx - 48);
+      }
+      setPendingScrollToMs(null);
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [pendingScrollToMs, scale]);
+
+  // First-load jump when the URL landed the planner on ``?mo=<uuid>``
+  // and the MO's data has arrived. Runs exactly once per focused-MO
+  // key so the planner can freely scroll away afterwards without the
+  // schedule snapping them back on every re-render.
+  useEffect(() => {
+    if (!focusedMo) return;
+    if (autoJumpedRef.current === focusedMo.uuid) return;
+    autoJumpedRef.current = focusedMo.uuid;
+    jumpToFocusedMo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedMo?.uuid]);
+
+  function clearFocusMo() {
+    autoJumpedRef.current = null;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("mo");
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "?", { scroll: false });
+  }
+
   return (
     <DndContext
       sensors={sensors}
@@ -1330,6 +1491,56 @@ export function ScheduleWorkspace({
 
             <ViewPicker view={view} onChange={chooseView} />
             <ZoomPicker zoom={zoom} onChange={chooseZoom} />
+
+            {/* Jump-to-MO pill — visible whenever the URL carries
+                ``?mo=<uuid>``. The planner arrived here from a
+                deep-link (project board, release section, backlog
+                row, etc.) and needs a one-click way back to the
+                focused MO after zooming / scrolling / paginating
+                away. Also carries an ``x`` to drop the focus if the
+                planner is done tracking that MO. */}
+            {focusMoUuid && focusedMo ? (
+              <div className="ml-2 flex items-center gap-0.5 rounded-md border border-brand/40 bg-brand/10 pl-2 pr-0.5 py-0.5 text-[11px] text-brand">
+                <Crosshair className="size-3" />
+                <span className="ml-1 font-mono font-semibold">
+                  {focusedMo.code ?? focusedMo.uuid.slice(0, 8)}
+                </span>
+                <span className="ml-1 text-[10px] opacity-70">
+                  ({focusedMo.stepCount} step
+                  {focusedMo.stepCount === 1 ? "" : "s"})
+                </span>
+                <button
+                  type="button"
+                  onClick={jumpToFocusedMo}
+                  className="ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider hover:bg-brand/20"
+                  title="Jump to this MO's first operation"
+                >
+                  Jump
+                </button>
+                <button
+                  type="button"
+                  onClick={clearFocusMo}
+                  className="rounded p-0.5 hover:bg-brand/20"
+                  title="Clear focus"
+                  aria-label="Clear focus"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ) : focusMoUuid ? (
+              <div className="ml-2 flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-800 dark:text-amber-300">
+                <AlertTriangle className="size-3" />
+                <span>MO not on this site or unscheduled</span>
+                <button
+                  type="button"
+                  onClick={clearFocusMo}
+                  className="ml-1 rounded p-0.5 hover:bg-amber-500/20"
+                  aria-label="Clear focus"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ) : null}
 
             <div className="ml-auto flex items-center gap-1">
               <Button
@@ -1448,6 +1659,7 @@ export function ScheduleWorkspace({
                       data={data}
                       rows={moRows}
                       canEditSteps={canEditSteps}
+                      focusMoUuid={focusMoUuid}
                     />
                   )}
                   {view === "workstation" &&
@@ -1457,6 +1669,7 @@ export function ScheduleWorkspace({
                       <WorkstationView
                         data={data}
                         canEditSteps={canEditSteps}
+                        focusMoUuid={focusMoUuid}
                       />
                     ))}
                   {view === "project" && (
@@ -1464,6 +1677,7 @@ export function ScheduleWorkspace({
                       data={data}
                       rows={projectRows}
                       canEditSteps={canEditSteps}
+                      focusMoUuid={focusMoUuid}
                     />
                   )}
                   {view === "calendar" && (
@@ -1472,6 +1686,7 @@ export function ScheduleWorkspace({
                       zoom={zoom}
                       anchor={anchor}
                       canEditSteps={canEditSteps}
+                      focusMoUuid={focusMoUuid}
                     />
                   )}
 
