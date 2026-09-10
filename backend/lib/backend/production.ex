@@ -2732,8 +2732,7 @@ defmodule Backend.Production do
     else
     with :ok <- ensure_mo_not_terminal(step.manufacturing_order_id),
          {:ok, parsed} <- parse_segment_list(segments),
-         :ok <- ensure_segments_fit_capacity(step, parsed),
-         :ok <- ensure_segments_cover_routing_duration(step, parsed) do
+         :ok <- ensure_segments_fit_capacity(step, parsed) do
       [{first_start, _} | _] = parsed
       {_, last_finish} = List.last(parsed)
 
@@ -2811,45 +2810,6 @@ defmodule Backend.Production do
   #
   # Steps without a WSG (rare, legacy) skip the check; there's no
   # machine to overbook against.
-  # Refuse a segment list whose total time is materially less than
-  # what the routing says the step needs (setup + cycle × qty /
-  # capacity). Without this guard the click-to-edit dialog can
-  # silently overwrite ``planned_duration_seconds`` on save — a
-  # planner who deletes segments in the dialog and hits save collapses
-  # a 275-hour run into whatever fragment they left behind, and
-  # every subsequent drag walks that fragment forward instead of the
-  # real duration. Tolerance is 1 minute per segment (accepts small
-  # rounding drift from datetime typing) plus 1% of the routing
-  # total (accepts legitimate small under-runs when a planner
-  # actually knows the routing is padded).
-  defp ensure_segments_cover_routing_duration(_step, []), do: :ok
-
-  defp ensure_segments_cover_routing_duration(%ManufacturingOrderStep{} = step, parsed) do
-    routing_seconds = step_duration_seconds_for_snapshot(step, step.quantity)
-
-    if routing_seconds <= 0 do
-      :ok
-    else
-      typed_seconds =
-        Enum.reduce(parsed, 0, fn {s, f}, acc ->
-          acc + DateTime.diff(f, s, :second)
-        end)
-
-      tolerance = max(60 * length(parsed), div(routing_seconds, 100))
-
-      if typed_seconds + tolerance < routing_seconds do
-        {:error,
-         {:segments_too_short,
-          %{
-            required_seconds: routing_seconds,
-            typed_seconds: typed_seconds
-          }}}
-      else
-        :ok
-      end
-    end
-  end
-
   defp ensure_segments_fit_capacity(_step, []), do: :ok
 
   defp ensure_segments_fit_capacity(%ManufacturingOrderStep{} = step, parsed) do
@@ -6986,24 +6946,9 @@ defmodule Backend.Production do
           Enum.each(steps, fn step ->
             before = mo_step_snapshot(step)
 
-            # Unschedule is a "reset to routing defaults" operation
-            # from the planner's mental model — everything the walker
-            # / edit-segments dialog put on this step should go back
-            # to the routing template so the next schedule attempt
-            # starts from a clean slate. Without recomputing
-            # ``planned_duration_seconds`` from ``step_duration_seconds_for_snapshot``,
-            # any earlier manual segment override (which stomps the
-            # duration on ``set_mo_step_segments`` save) would survive
-            # the unschedule and silently propagate into every
-            # subsequent re-schedule + drag.
-            recomputed_duration =
-              step_duration_seconds_for_snapshot(step, step.quantity)
-
             attrs = %{
               "planned_start" => nil,
               "planned_finish" => nil,
-              "planned_segments" => nil,
-              "planned_duration_seconds" => recomputed_duration,
               "updated_by_id" => actor.id
             }
 

@@ -194,23 +194,6 @@ defmodule BackendWeb.ManufacturingOrderStepController do
           )
         )
 
-      {:error, {:segments_too_short, %{required_seconds: req, typed_seconds: got}}} ->
-        req_h = Float.round(req / 3600.0, 1)
-        got_h = Float.round(got / 3600.0, 1)
-
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(
-          Errors.payload(
-            "segments_too_short",
-            "The segments you typed cover #{got_h}h but the routing needs #{req_h}h for this quantity. Extend the segments (or split across more days) so the total time matches.",
-            %{
-              "required_seconds" => req,
-              "typed_seconds" => got
-            }
-          )
-        )
-
       {:error, :pickup_in_progress} ->
         conn
         |> put_status(:conflict)
