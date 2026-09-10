@@ -1347,27 +1347,53 @@ export function ScheduleWorkspace({
     const ops = data.operations.filter(
       (o) => o.manufacturing_order?.uuid === focusMoUuid,
     );
-    if (ops.length === 0) return null;
-    let minStart = Infinity;
-    let maxFinish = -Infinity;
-    for (const op of ops) {
-      if (op.planned_start) {
-        const t = new Date(op.planned_start).getTime();
-        if (t < minStart) minStart = t;
+    // Prefer the in-range ``operations`` array — it carries the
+    // richer MO summary (status counts + code from the numbering
+    // render), and any op whose planned window overlaps the visible
+    // page is here. When the MO is scheduled OUTSIDE the current
+    // window (e.g. mis-scheduled into 2030), fall back to the
+    // range-agnostic ``scheduled_summary`` so the pill still knows
+    // the MO's span + code. Without this fallback the pill flipped
+    // to the amber "not on this site or unscheduled" branch even
+    // though the MO clearly exists in the "On calendar" tab.
+    if (ops.length > 0) {
+      let minStart = Infinity;
+      let maxFinish = -Infinity;
+      for (const op of ops) {
+        if (op.planned_start) {
+          const t = new Date(op.planned_start).getTime();
+          if (t < minStart) minStart = t;
+        }
+        if (op.planned_finish) {
+          const t = new Date(op.planned_finish).getTime();
+          if (t > maxFinish) maxFinish = t;
+        }
       }
-      if (op.planned_finish) {
-        const t = new Date(op.planned_finish).getTime();
-        if (t > maxFinish) maxFinish = t;
-      }
+      if (!Number.isFinite(minStart) || !Number.isFinite(maxFinish)) return null;
+      const mo = ops[0].manufacturing_order;
+      return {
+        code: mo?.code ?? null,
+        uuid: focusMoUuid,
+        minStart: new Date(minStart),
+        maxFinish: new Date(maxFinish),
+        stepCount: ops.length,
+      };
     }
-    if (!Number.isFinite(minStart) || !Number.isFinite(maxFinish)) return null;
-    const mo = ops[0].manufacturing_order;
+
+    const summary = data.scheduled_summary?.find(
+      (r) => r.uuid === focusMoUuid,
+    );
+    if (!summary || !summary.first_start) return null;
+    const minStart = new Date(summary.first_start);
+    const maxFinish = summary.last_finish
+      ? new Date(summary.last_finish)
+      : minStart;
     return {
-      code: mo?.code ?? null,
+      code: summary.code,
       uuid: focusMoUuid,
-      minStart: new Date(minStart),
-      maxFinish: new Date(maxFinish),
-      stepCount: ops.length,
+      minStart,
+      maxFinish,
+      stepCount: summary.step_count,
     };
   }, [focusMoUuid, data]);
 
