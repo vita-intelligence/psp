@@ -1443,6 +1443,23 @@ export function ScheduleWorkspace({
     router.replace(qs ? `?${qs}` : "?", { scroll: false });
   }
 
+  // Called from the "On calendar" tab in the left rail — plants
+  // ``?mo=<uuid>`` on the URL so the pill + row highlight light up,
+  // then either lets the auto-jump effect run (different uuid) or
+  // re-fires the jump manually (same uuid re-click). Preserves the
+  // deep-link semantics: after clicking, refreshing the page keeps
+  // the focus intact.
+  function focusMo(uuid: string) {
+    if (focusMoUuid === uuid) {
+      jumpToFocusedMo();
+      return;
+    }
+    autoJumpedRef.current = null;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("mo", uuid);
+    router.replace(`?${params.toString()}`, { scroll: false });
+  }
+
   return (
     <DndContext
       sensors={sensors}
@@ -1619,6 +1636,11 @@ export function ScheduleWorkspace({
           <div className="flex min-h-0 flex-1">
             <ScheduleBacklog
               items={data?.backlog ?? []}
+              scheduledItems={moRows.filter(
+                (r) => r.status !== "completed" && r.status !== "cancelled",
+              )}
+              focusMoUuid={focusMoUuid}
+              onFocusMo={focusMo}
               canEdit={canEditSteps}
               company={company}
               onQuickSchedule={(mo, isProject) =>

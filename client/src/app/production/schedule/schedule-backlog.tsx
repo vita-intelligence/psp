@@ -3,12 +3,15 @@
 import { useMemo, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import {
+  CalendarCheck,
   CalendarClock,
   ChevronDown,
   ChevronRight,
+  Crosshair,
   GitBranch,
   GripVertical,
   Inbox,
+  Search,
   Zap,
 } from "lucide-react";
 import Link from "next/link";
@@ -16,13 +19,22 @@ import { cn } from "@/lib/utils";
 import { formatCompanyDate } from "@/lib/format/company";
 import type { CompanyDefaults } from "@/lib/types";
 import type { BacklogMO } from "@/lib/production/types";
+import type { MORow } from "./schedule-view-mo";
 
 interface Props {
   items: BacklogMO[];
+  /** MOs that are already on the calendar and not yet finished —
+   *  drives the "On calendar" tab. Comes from the workspace which
+   *  filters completed / cancelled rows out upstream. */
+  scheduledItems: MORow[];
+  focusMoUuid: string | null;
+  onFocusMo: (uuid: string) => void;
   canEdit: boolean;
   company: CompanyDefaults;
   onQuickSchedule?: (mo: BacklogMO, isProject: boolean) => void;
 }
+
+type BacklogTab = "backlog" | "scheduled";
 
 interface TreeNode {
   mo: BacklogMO;
@@ -61,12 +73,43 @@ function buildTree(items: BacklogMO[]): TreeNode[] {
   return roots;
 }
 
-export function ScheduleBacklog({ items, canEdit, company, onQuickSchedule }: Props) {
+export function ScheduleBacklog({
+  items,
+  scheduledItems,
+  focusMoUuid,
+  onFocusMo,
+  canEdit,
+  company,
+  onQuickSchedule,
+}: Props) {
   // The rail itself is a drop target — dropping a scheduled block on
   // it = unschedule. The workspace inspects over.id === "backlog-zone".
   const { setNodeRef, isOver } = useDroppable({ id: "backlog-zone" });
 
+  const [tab, setTab] = useState<BacklogTab>("backlog");
+  const [query, setQuery] = useState("");
+
   const tree = useMemo(() => buildTree(items), [items]);
+
+  // "On calendar" list: MOs currently placed on the calendar and not
+  // yet finished. Sorted by earliest scheduled start so the planner
+  // can scan "what's imminent" at the top. Filtered by the same query
+  // as the backlog for a consistent search experience.
+  const scheduledSorted = useMemo(() => {
+    const rows = [...scheduledItems];
+    rows.sort((a, b) => {
+      const ta = a.start ? new Date(a.start).getTime() : Infinity;
+      const tb = b.start ? new Date(b.start).getTime() : Infinity;
+      return ta - tb;
+    });
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => {
+      const code = (r.moCode ?? "").toLowerCase();
+      const name = (r.itemName ?? "").toLowerCase();
+      return code.includes(q) || name.includes(q);
+    });
+  }, [scheduledItems, query]);
 
   return (
     <aside
@@ -76,49 +119,296 @@ export function ScheduleBacklog({ items, canEdit, company, onQuickSchedule }: Pr
         isOver && "bg-brand/10 ring-2 ring-inset ring-brand/40",
       )}
     >
-      <div className="flex items-center gap-2 border-b border-border/60 bg-card px-3 py-2">
-        <Inbox className="size-4 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-semibold">Backlog</p>
-          <p className="truncate text-[10px] text-muted-foreground">
-            Approved · awaiting schedule
-          </p>
+      {/* Segmented tabs — Backlog (unscheduled + draggable) vs On
+          calendar (already-placed + clickable to jump). Planner
+          toggles based on what they're trying to do: place new work
+          vs find/adjust work that's already scheduled. */}
+      <div className="grid grid-cols-2 gap-0 border-b border-border/60 bg-card">
+        <button
+          type="button"
+          onClick={() => setTab("backlog")}
+          className={cn(
+            "flex items-center justify-center gap-1.5 px-2 py-2 text-[11px] font-semibold transition-colors",
+            tab === "backlog"
+              ? "border-b-2 border-brand text-brand"
+              : "border-b-2 border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <Inbox className="size-3.5" />
+          <span>Backlog</span>
+          <span className="rounded-full bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-foreground">
+            {items.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("scheduled")}
+          className={cn(
+            "flex items-center justify-center gap-1.5 px-2 py-2 text-[11px] font-semibold transition-colors",
+            tab === "scheduled"
+              ? "border-b-2 border-brand text-brand"
+              : "border-b-2 border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <CalendarCheck className="size-3.5" />
+          <span>On calendar</span>
+          <span className="rounded-full bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-foreground">
+            {scheduledItems.length}
+          </span>
+        </button>
+      </div>
+
+      <div className="border-b border-border/60 bg-card/60 px-2 py-1.5">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={
+              tab === "backlog"
+                ? "Search backlog by code / product…"
+                : "Search scheduled MOs by code / product…"
+            }
+            className="w-full rounded border border-border/60 bg-background py-1 pl-6 pr-2 text-[11px] outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+          />
         </div>
-        <span className="rounded-full bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums">
-          {items.length}
-        </span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {items.length === 0 ? (
-          <div
-            className={cn(
-              "rounded-md border border-dashed border-border/60 bg-card/50 px-3 py-6 text-center text-[11px] text-muted-foreground",
-              isOver && "border-brand bg-brand/10 text-brand",
-            )}
-          >
-            {isOver
-              ? "Drop to send back to the backlog."
-              : "Nothing to schedule. Approved MOs appear here ready to drag onto the calendar."}
-          </div>
-        ) : (
-          <ul className="space-y-1.5">
-            {tree.map((node) => (
-              <TreeRow
-                key={node.mo.id}
-                node={node}
-                canEdit={canEdit}
-                company={company}
-                depth={0}
-                onQuickSchedule={onQuickSchedule}
-              />
-            ))}
-          </ul>
-        )}
+        {tab === "backlog"
+          ? renderBacklog({
+              items,
+              tree,
+              isOver,
+              canEdit,
+              company,
+              onQuickSchedule,
+              query,
+            })
+          : renderScheduled({
+              rows: scheduledSorted,
+              totalCount: scheduledItems.length,
+              focusMoUuid,
+              onFocusMo,
+              company,
+            })}
       </div>
     </aside>
   );
 }
+
+function renderBacklog({
+  items,
+  tree,
+  isOver,
+  canEdit,
+  company,
+  onQuickSchedule,
+  query,
+}: {
+  items: BacklogMO[];
+  tree: TreeNode[];
+  isOver: boolean;
+  canEdit: boolean;
+  company: CompanyDefaults;
+  onQuickSchedule?: (mo: BacklogMO, isProject: boolean) => void;
+  query: string;
+}) {
+  if (items.length === 0) {
+    return (
+      <div
+        className={cn(
+          "rounded-md border border-dashed border-border/60 bg-card/50 px-3 py-6 text-center text-[11px] text-muted-foreground",
+          isOver && "border-brand bg-brand/10 text-brand",
+        )}
+      >
+        {isOver
+          ? "Drop to send back to the backlog."
+          : "Nothing to schedule. Approved MOs appear here ready to drag onto the calendar."}
+      </div>
+    );
+  }
+
+  const q = query.trim().toLowerCase();
+  const filteredTree = q ? filterTreeByQuery(tree, q) : tree;
+
+  if (filteredTree.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border/60 bg-card/50 px-3 py-6 text-center text-[11px] text-muted-foreground">
+        No backlog rows match &ldquo;{query}&rdquo;.
+      </div>
+    );
+  }
+
+  return (
+    <ul className="space-y-1.5">
+      {filteredTree.map((node) => (
+        <TreeRow
+          key={node.mo.id}
+          node={node}
+          canEdit={canEdit}
+          company={company}
+          depth={0}
+          onQuickSchedule={onQuickSchedule}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function renderScheduled({
+  rows,
+  totalCount,
+  focusMoUuid,
+  onFocusMo,
+  company,
+}: {
+  rows: MORow[];
+  totalCount: number;
+  focusMoUuid: string | null;
+  onFocusMo: (uuid: string) => void;
+  company: CompanyDefaults;
+}) {
+  if (totalCount === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border/60 bg-card/50 px-3 py-6 text-center text-[11px] text-muted-foreground">
+        Nothing on the calendar for this site + range yet. Drag a
+        backlog row onto the timeline to schedule one.
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border/60 bg-card/50 px-3 py-6 text-center text-[11px] text-muted-foreground">
+        No scheduled MO matches your search.
+      </div>
+    );
+  }
+
+  return (
+    <ul className="space-y-1">
+      {rows.map((row) => (
+        <ScheduledMORow
+          key={row.moId}
+          row={row}
+          focused={focusMoUuid === row.moUuid}
+          onFocus={() => onFocusMo(row.moUuid)}
+          company={company}
+        />
+      ))}
+    </ul>
+  );
+}
+
+/** Filter the pre-built backlog tree by a case-insensitive query
+ *  against MO code + item name. Keeps parents whose children match
+ *  even when the parent itself doesn't. */
+function filterTreeByQuery(nodes: TreeNode[], q: string): TreeNode[] {
+  const out: TreeNode[] = [];
+  for (const node of nodes) {
+    const code = (node.mo.code ?? "").toLowerCase();
+    const name = (node.mo.item?.name ?? "").toLowerCase();
+    const selfMatch = code.includes(q) || name.includes(q);
+    const filteredChildren = filterTreeByQuery(node.children, q);
+    if (selfMatch || filteredChildren.length > 0) {
+      out.push({ mo: node.mo, children: filteredChildren });
+    }
+  }
+  return out;
+}
+
+function ScheduledMORow({
+  row,
+  focused,
+  onFocus,
+  company,
+}: {
+  row: MORow;
+  focused: boolean;
+  onFocus: () => void;
+  company: CompanyDefaults;
+}) {
+  const startLabel = row.start ? formatCompanyDate(row.start, company) : "—";
+  const statusChip = STATUS_CHIP[row.status] ?? {
+    label: row.status,
+    className: "bg-muted text-muted-foreground",
+  };
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onFocus}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
+          focused
+            ? "border-brand bg-brand/10"
+            : "border-border/60 bg-card hover:border-brand/40 hover:bg-brand/[0.04]",
+        )}
+        title="Jump the calendar to this MO's first operation"
+      >
+        <Crosshair
+          className={cn(
+            "size-3 shrink-0",
+            focused ? "text-brand" : "text-muted-foreground",
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate font-mono text-[10px] font-semibold">
+              {row.moCode ?? `MO #${row.moId}`}
+            </span>
+            <span
+              className={cn(
+                "rounded-sm px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                statusChip.className,
+              )}
+            >
+              {statusChip.label}
+            </span>
+          </div>
+          <p className="truncate text-[11px]" title={row.itemName}>
+            {row.itemName}
+          </p>
+          <p className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <CalendarClock className="size-2.5" />
+            <span>{startLabel}</span>
+            <span className="opacity-60">·</span>
+            <span>
+              {row.qty} {" "}
+              {row.steps.length} step
+              {row.steps.length === 1 ? "" : "s"}
+            </span>
+          </p>
+        </div>
+      </button>
+    </li>
+  );
+}
+
+const STATUS_CHIP: Record<string, { label: string; className: string }> = {
+  draft: {
+    label: "Draft",
+    className: "bg-muted text-muted-foreground",
+  },
+  prepared: {
+    label: "Prepared",
+    className: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+  },
+  approved: {
+    label: "Approved",
+    className: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+  },
+  scheduled: {
+    label: "Scheduled",
+    className: "bg-brand/15 text-brand",
+  },
+  in_progress: {
+    label: "In progress",
+    className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  },
+};
 
 function TreeRow({
   node,
