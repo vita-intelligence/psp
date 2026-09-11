@@ -52,7 +52,15 @@ defmodule Backend.Production.RoutingStep do
       :capacity
     ])
     |> validate_required([:company_id, :workstation_group_id])
-    |> validate_length(:operation_description, max: 2000)
+    # Matches ``manufacturing_order_step.operation_description``'s cap
+    # so a scientist-authored description that lands on NPD flows all
+    # the way through routing → snapshot → shop floor without a
+    # silent 422 in ``put_routing``. The DB column is `text` (no hard
+    # limit); 10_000 is just a defensive soft cap. Historic 2_000 cap
+    # left routings unwritten whenever a long operation description
+    # was pasted, which cascaded into MOs with no steps and empty
+    # kiosk job lists.
+    |> validate_length(:operation_description, max: 10_000)
     |> validate_number(:capacity, greater_than: 0)
     |> validate_non_negative(:setup_time_min)
     |> validate_non_negative(:cycle_time_min)

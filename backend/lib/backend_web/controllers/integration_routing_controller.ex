@@ -290,9 +290,25 @@ defmodule BackendWeb.IntegrationRoutingController do
 
   defp format_changeset(%Ecto.Changeset{errors: errors}) do
     errors
-    |> Enum.map(fn {field, {msg, _}} -> "#{field}: #{msg}" end)
+    |> Enum.map(fn {field, {msg, opts}} ->
+      "#{field}: #{interpolate_message(msg, opts)}"
+    end)
     |> Enum.join("; ")
   end
+
+  # Ecto's built-in validation messages carry ``%{key}`` placeholders
+  # (e.g. ``should be at most %{count} character(s)``) with the actual
+  # values in the error's ``opts`` list. Without interpolation the
+  # upstream (NPD) sees the raw template — misleading when debugging
+  # "why did routing_push 422?" for a length overrun. Same pattern
+  # Ecto docs recommend for the ``traverse_errors`` message-mapper.
+  defp interpolate_message(msg, opts) when is_binary(msg) and is_list(opts) do
+    Enum.reduce(opts, msg, fn {key, value}, acc ->
+      String.replace(acc, "%{#{key}}", to_string(value))
+    end)
+  end
+
+  defp interpolate_message(msg, _opts), do: msg
 
   defp unprocessable(conn, code, detail) do
     conn
