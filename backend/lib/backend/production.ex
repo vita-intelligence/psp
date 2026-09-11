@@ -9444,29 +9444,68 @@ defmodule Backend.Production do
   MOs; the candidate list narrows to just the correct one so the
   picker isn't offered production-feed cells for an R&D pickup.
   """
-  def list_empty_production_feed_cells(company_id, purpose \\ "production_feed")
+  def list_empty_production_feed_cells(company_id, purpose \\ "production_feed", production_facility_wh_id \\ nil)
       when is_integer(company_id) and is_binary(purpose) do
-    occupied_subq =
-      from(p in Backend.Stock.Placement,
-        join: c in Backend.Warehouses.StorageCell,
-        on: c.id == p.storage_cell_id,
+    # NO empty-only filter here anymore. A cell's capacity is a
+    # dimensional question (width × depth × height, max weight), NOT
+    # an exclusivity question. Blocking cells with any qty > 0 was
+    # wrong for both purposes:
+    #
+    #   * ``production_feed`` shelves are typically much larger than
+    #     a single lot's packaging; stacking a small carton on top of
+    #     another small carton is normal shop-floor practice. Refusing
+    #     the shelf just because it isn't literally empty pushed the
+    #     picker into "no available cells" even when there was plenty
+    #     of physical room.
+    #   * ``rnd`` benches were always shared workspaces.
+    #
+    # ``list_empty_production_feed_cells_with_fit`` runs the real
+    # dimensional check downstream (``Backend.Stock.check_fit`` with
+    # the cell's actual committed footprint) — that IS the gate. Any
+    # cell that can't physically hold the incoming load surfaces with
+    # ``disqualified?: true`` + a specific reason (``no_room``,
+    # ``stack_too_tall``, ``weight_exceeded``); anything with room is
+    # offered to the picker.
+    #
+    # Warehouse-kind filter: the picker's destination is the PRODUCTION
+    # FLOOR (a ``production_facility``-kind warehouse), NOT the MO's
+    # own ``warehouse_id`` (which is the storage warehouse where the
+    # ingredients live). "Pickup" is precisely the walk FROM storage
+    # TO the shop floor — the two ends live in different warehouses
+    # by design. R&D MOs still land at ``rnd``-purpose cells, but
+    # those cells sit inside a ``production_facility`` (the R&D
+    # bench area), not inside the storage-side R&D shelf.
+    #
+    # If a specific production-facility warehouse is passed (via the
+    # MO's ``production_cell_id`` → warehouse chain), scope to that
+    # site so a multi-site setup doesn't scatter one MO's pickup
+    # across every plant. ``nil`` falls through to "any
+    # production_facility" — the legacy shape when the MO hasn't been
+    # anchored to a specific cell yet.
+    base =
+      from(c in Backend.Warehouses.StorageCell,
+        join: l in Backend.Warehouses.StorageLocation,
+        on: l.id == c.storage_location_id,
+        join: f in Backend.Warehouses.Floor,
+        on: f.id == l.floor_id,
+        join: w in Backend.Warehouses.Warehouse,
+        on: w.id == f.warehouse_id,
         where:
           c.company_id == ^company_id and
             c.purpose == ^purpose and
-            p.qty > 0,
-        select: c.id,
-        distinct: true
+            w.kind == "production_facility",
+        preload: [storage_location: [floor: [:warehouse]]],
+        order_by: [desc: c.inserted_at, desc: c.id]
       )
 
-    from(c in Backend.Warehouses.StorageCell,
-      where:
-        c.company_id == ^company_id and
-          c.purpose == ^purpose and
-          c.id not in subquery(occupied_subq),
-      preload: [storage_location: [floor: [:warehouse]]],
-      order_by: [desc: c.inserted_at, desc: c.id]
-    )
-    |> Repo.all()
+    scoped =
+      if is_integer(production_facility_wh_id) do
+        from([c, l, f, w] in base, where: f.warehouse_id == ^production_facility_wh_id)
+      else
+        base
+      end
+
+    Repo.all(scoped)
   end
 
   # Which cell purpose an MO's pickup lands on. Production MOs use
@@ -9489,24 +9528,73 @@ defmodule Backend.Production do
   # Only bookings marked delivered (both stamps set) count — a
   # random lot on the cell that isn't tied to this MO would make
   # the cell an operator's stray, not the MO's home cell.
-  defp list_mo_owned_pickup_cells(company_id, %ManufacturingOrder{id: mo_id}, purpose) do
-    from(c in Backend.Warehouses.StorageCell,
-      join: p in Backend.Stock.Placement,
-      on: p.storage_cell_id == c.id,
-      join: b in ManufacturingOrderBooking,
-      on:
-        b.stock_lot_id == p.stock_lot_id and
-          b.manufacturing_order_id == ^mo_id and
-          not is_nil(b.picked_at) and
-          not is_nil(b.received_at),
-      where:
-        c.company_id == ^company_id and
-          c.purpose == ^purpose and
-          p.qty > 0,
-      distinct: c.id,
-      preload: [storage_location: [floor: [:warehouse]]]
+  defp list_mo_owned_pickup_cells(company_id, %ManufacturingOrder{id: mo_id} = mo, purpose) do
+    # Same production-facility scoping as
+    # ``list_empty_production_feed_cells`` — the "already carrying
+    # this MO's load" cells only make sense as pickup targets when
+    # they're on the same production floor as the rest of the run.
+    # An auto-delivered child output that happened to land on a
+    # ``warehouse``-kind rnd shelf isn't a valid destination for the
+    # picker; it needs its own return-pickup trip.
+    production_facility_wh_id = production_facility_warehouse_id_for_mo(mo)
+
+    base =
+      from(c in Backend.Warehouses.StorageCell,
+        join: p in Backend.Stock.Placement,
+        on: p.storage_cell_id == c.id,
+        join: b in ManufacturingOrderBooking,
+        on:
+          b.stock_lot_id == p.stock_lot_id and
+            b.manufacturing_order_id == ^mo_id and
+            not is_nil(b.picked_at) and
+            not is_nil(b.received_at),
+        join: l in Backend.Warehouses.StorageLocation,
+        on: l.id == c.storage_location_id,
+        join: f in Backend.Warehouses.Floor,
+        on: f.id == l.floor_id,
+        join: w in Backend.Warehouses.Warehouse,
+        on: w.id == f.warehouse_id,
+        where:
+          c.company_id == ^company_id and
+            c.purpose == ^purpose and
+            p.qty > 0 and
+            w.kind == "production_facility",
+        distinct: c.id,
+        preload: [storage_location: [floor: [:warehouse]]]
+      )
+
+    scoped =
+      if is_integer(production_facility_wh_id) do
+        from([c, p, b, l, f, w] in base, where: f.warehouse_id == ^production_facility_wh_id)
+      else
+        base
+      end
+
+    Repo.all(scoped)
+  end
+
+  # Resolve the production-facility warehouse an MO's pickup should
+  # target. The MO's own ``warehouse_id`` is the STORAGE warehouse
+  # (where ingredients live) — not what we want. If the MO has a
+  # ``production_cell_id`` its parent warehouse is the shop-floor
+  # anchor, provided that warehouse is a ``production_facility``.
+  # Otherwise return ``nil`` and let the caller fall through to
+  # "any production_facility" — the picker still gets valid options.
+  defp production_facility_warehouse_id_for_mo(%ManufacturingOrder{production_cell_id: nil}), do: nil
+
+  defp production_facility_warehouse_id_for_mo(%ManufacturingOrder{production_cell_id: cell_id})
+       when is_integer(cell_id) do
+    Repo.one(
+      from c in Backend.Warehouses.StorageCell,
+        join: l in Backend.Warehouses.StorageLocation,
+        on: l.id == c.storage_location_id,
+        join: f in Backend.Warehouses.Floor,
+        on: f.id == l.floor_id,
+        join: w in Backend.Warehouses.Warehouse,
+        on: w.id == f.warehouse_id,
+        where: c.id == ^cell_id and w.kind == "production_facility",
+        select: f.warehouse_id
     )
-    |> Repo.all()
   end
 
   @doc """
@@ -9533,7 +9621,22 @@ defmodule Backend.Production do
     # "no empty cell" false-negative when the only remaining cell
     # of the right purpose is the one that already holds THIS MO's
     # own output).
-    empty_cells = list_empty_production_feed_cells(company_id, pickup_target_purpose(mo))
+    # The picker's destination is the PRODUCTION FLOOR
+    # (production_facility warehouse), not the MO's own storage
+    # warehouse. Resolve the specific facility from
+    # ``production_cell_id`` when it's set — that's the operator's
+    # anchor to a particular plant; otherwise fall through to "any
+    # production_facility" so the MO isn't stuck with zero options
+    # when it hasn't been anchored yet.
+    production_facility_wh_id = production_facility_warehouse_id_for_mo(mo)
+
+    empty_cells =
+      list_empty_production_feed_cells(
+        company_id,
+        pickup_target_purpose(mo),
+        production_facility_wh_id
+      )
+
     own_cells = list_mo_owned_pickup_cells(company_id, mo, pickup_target_purpose(mo))
 
     # Dedup on cell id — a cell might appear only in ``own_cells``
@@ -9591,6 +9694,17 @@ defmodule Backend.Production do
     total_needed =
       if any_unknown?, do: :unknown, else: Backend.Stock.sum_footprints(footprints)
 
+    # Real committed footprint per cell. Historically this passed
+    # ``empty_footprint()`` as ``committed`` — fine when the caller
+    # pre-filtered to empty cells, but wrong now that we return every
+    # cell of matching purpose. Without the real committed the fit
+    # check would either (a) over-optimistically accept a cell that's
+    # actually full, or (b) — the loud failure — treat the cell as
+    # empty and return misleading ``0% used`` on the mobile UI. Batch
+    # the placement query across every candidate cell so the endpoint
+    # stays O(1) round-trips regardless of how many cells surface.
+    committed_by_cell = compute_committed_footprint_by_cell(cells)
+
     Enum.map(cells, fn cell ->
       fit =
         case total_needed do
@@ -9605,7 +9719,10 @@ defmodule Backend.Production do
             }
 
           footprint ->
-            capacity = Backend.Stock.compute_cell_capacity(cell, Backend.Stock.empty_footprint())
+            committed =
+              Map.get(committed_by_cell, cell.id, Backend.Stock.empty_footprint())
+
+            capacity = Backend.Stock.compute_cell_capacity(cell, committed)
             Backend.Stock.check_fit(footprint, capacity)
         end
 
@@ -9613,6 +9730,52 @@ defmodule Backend.Production do
     end)
     |> Enum.sort_by(fn %{fit: fit} ->
       {if(fit.disqualified?, do: 1, else: 0), fit.percent_used}
+    end)
+  end
+
+  # For every candidate cell, sum the footprints of the lots already
+  # placed there. Returns a ``%{cell_id => footprint}`` map so the
+  # fit-check loop just does a map lookup per iteration. Empty when
+  # no cell has any placement — the caller falls back to
+  # ``Backend.Stock.empty_footprint()`` for missing entries.
+  defp compute_committed_footprint_by_cell([]), do: %{}
+
+  defp compute_committed_footprint_by_cell(cells) do
+    cell_ids = Enum.map(cells, & &1.id)
+
+    # Pull every placement + its lot in one round-trip. Grouping
+    # happens in-Elixir because ``compute_lot_footprint`` needs the
+    # full Lot struct (dims + qty_received) to derive area / weight.
+    rows =
+      from(p in Backend.Stock.Placement,
+        join: l in StockLot,
+        on: l.id == p.stock_lot_id,
+        where: p.storage_cell_id in ^cell_ids and p.qty > 0,
+        select: %{cell_id: p.storage_cell_id, p_qty: p.qty, lot: l}
+      )
+      |> Repo.all()
+
+    rows
+    |> Enum.group_by(& &1.cell_id)
+    |> Map.new(fn {cell_id, entries} ->
+      footprints =
+        Enum.map(entries, fn %{p_qty: q, lot: lot} ->
+          Backend.Stock.compute_lot_footprint(%{lot | qty_received: q})
+        end)
+
+      # If ANY placement is :unknown we can't compute a meaningful
+      # committed total — collapse to empty_footprint so the fit
+      # check falls through to a permissive answer instead of an
+      # arbitrary disqualification. Matches the ``any_unknown?``
+      # policy used for the incoming footprint sum above.
+      committed =
+        if Enum.any?(footprints, &(&1 == :unknown)) do
+          Backend.Stock.empty_footprint()
+        else
+          Backend.Stock.sum_footprints(footprints)
+        end
+
+      {cell_id, committed}
     end)
   end
 
