@@ -27,6 +27,12 @@ defmodule Backend.Production.Workstation do
   alias Backend.Production.{WorkstationDefaultWorker, WorkstationGroup}
   alias Backend.Warehouses.Warehouse
 
+  # Cleaning cadence enum mirrors the maintenance-task periodicity
+  # list so both features can share `compute_next_due` math.
+  @cleaning_periodicities ~w(daily weekly monthly quarterly half_yearly yearly two_yearly three_yearly)
+
+  def cleaning_periodicities, do: @cleaning_periodicities
+
   schema "workstations" do
     field :uuid, Ecto.UUID, autogenerate: true
     # Sync hook with vita-performance — populated by the cross-system
@@ -60,11 +66,26 @@ defmodule Backend.Production.Workstation do
     # parent group's value applies.
     field :default_operation_notes, :string
 
+    # Cleaning schedule cadence — see migration doc. `last_cleaning_at`
+    # + `next_cleaning_due_at` are cached scalars refreshed on every
+    # cleaning-complete callback from vita-perf.
+    field :cleaning_periodicity, :string
+    field :cleaning_periodicity_interval, :integer
+    field :last_cleaning_at, :utc_datetime
+    field :next_cleaning_due_at, :date
+
     belongs_to :company, Company
     belongs_to :workstation_group, WorkstationGroup
     belongs_to :warehouse, Warehouse
     belongs_to :created_by, User
     belongs_to :updated_by, User
+
+    # Assigned form templates via the join table — one workstation
+    # can carry many forms per slot. Kiosk walks them in `sort_order`
+    # per slot; audience filter runs per-form.
+    has_many :form_assignments, Backend.Production.WorkstationFormAssignment,
+      foreign_key: :workstation_id,
+      preload_order: [asc: :slot, asc: :sort_order, asc: :id]
 
     has_many :default_worker_assignments, WorkstationDefaultWorker,
       foreign_key: :workstation_id,
@@ -92,6 +113,10 @@ defmodule Backend.Production.Workstation do
     is_active
     default_operation_notes
     psp_source_of_truth
+    cleaning_periodicity
+    cleaning_periodicity_interval
+    last_cleaning_at
+    next_cleaning_due_at
     created_by_id updated_by_id
   )a
 
@@ -105,6 +130,8 @@ defmodule Backend.Production.Workstation do
     |> validate_number(:productivity, greater_than: 0)
     |> validate_hourly_rate()
     |> validate_idle_window()
+    |> validate_inclusion(:cleaning_periodicity, [nil | @cleaning_periodicities])
+    |> validate_number(:cleaning_periodicity_interval, greater_than: 0)
     |> trim_name()
     |> assoc_constraint(:company)
     |> assoc_constraint(:workstation_group)

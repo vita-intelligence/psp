@@ -1484,6 +1484,21 @@ defmodule BackendWeb.Router do
       delete "/:id", EquipmentCategoryController, :delete
     end
 
+    # Form templates — checklists authored in PSP and pushed to the
+    # vita-performance kiosk. See BackendWeb.FormTemplateController.
+    scope "/form-templates" do
+      get "/", FormTemplateController, :index
+      post "/", FormTemplateController, :create
+      get "/:id", FormTemplateController, :show
+      patch "/:id", FormTemplateController, :update
+      delete "/:id", FormTemplateController, :delete
+      post "/:id/reactivate", FormTemplateController, :reactivate
+      # Which workstations currently reference this template. Read-
+      # only listing; assignments happen from the workstation edit
+      # page (see Backend.Production.update_workstation).
+      get "/:id/workstations", FormTemplateController, :workstations
+    end
+
     scope "/equipment" do
       # Per-unit hourly running-cost line items. Each row is one
       # cost driver (electricity, compressed air, consumables,
@@ -2203,6 +2218,18 @@ defmodule BackendWeb.Router do
     post "/workstations/:uuid/sessions",
          IntegrationSessionController,
          :create_workstation_session
+
+    # Cleaning-complete callback from vita-perf's personal kiosk.
+    # Updates cleaning schedule cache + drops per-equipment audit
+    # events. Requires `workstation:write:cleaning`.
+    post "/workstations/:uuid/cleaning-complete",
+         IntegrationCleaningController,
+         :complete
+    # Trailing-slash variant so the vita-perf `requests` client
+    # (which appends `/`) doesn't hit Phoenix's 404 catch.
+    post "/workstations/:uuid/cleaning-complete/",
+         IntegrationCleaningController,
+         :complete
 
     # Seed an HR Employee from the vita-performance side. Idempotent
     # via external_id — repeated pushes for the same vp Worker

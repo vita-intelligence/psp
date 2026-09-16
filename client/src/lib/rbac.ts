@@ -42,6 +42,8 @@ export type PermissionCode =
   | "equipment.view"
   | "equipment.create"
   | "equipment.act"
+  | "forms.view"
+  | "forms.act"
   | "vendors.view"
   | "vendors.create"
   | "vendors.edit"

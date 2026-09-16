@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   CalendarDays,
   ClipboardCheck,
+  ClipboardList,
   Factory,
   Home,
   ListChecks,
@@ -96,6 +97,11 @@ const ITEMS: SubnavItem[] = [
     href: "/production/routings",
     label: "Routings",
     Icon: Route,
+  },
+  {
+    href: "/production/forms",
+    label: "Forms",
+    Icon: ClipboardList,
   },
   {
     href: "/production/statistics",

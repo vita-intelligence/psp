@@ -89,6 +89,20 @@ defmodule BackendWeb.WorkstationController do
           "Selected workstation group doesn't exist."
         )
 
+      {:error, :form_template_not_found} ->
+        unprocessable(
+          conn,
+          "form_template_not_found",
+          "One of the selected form templates doesn't exist in your workspace."
+        )
+
+      {:error, :invalid_form_slot} ->
+        unprocessable(
+          conn,
+          "invalid_form_slot",
+          "A form assignment carries an unknown trigger. Expected one of: workstation_start, workstation_end, cleaning."
+        )
+
       {:error, %Ecto.Changeset{} = cs} ->
         changeset_error(conn, cs)
     end
@@ -121,6 +135,13 @@ defmodule BackendWeb.WorkstationController do
               conn,
               "workstation_group_not_found",
               "Selected workstation group doesn't exist."
+            )
+
+          {:error, :form_template_not_found} ->
+            unprocessable(
+              conn,
+              "form_template_not_found",
+              "One of the selected form templates doesn't exist in your workspace."
             )
 
           {:error, %Ecto.Changeset{} = cs} ->

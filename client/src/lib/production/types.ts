@@ -289,6 +289,19 @@ export interface WorkstationDefaultWorker {
   email: string;
 }
 
+export interface WorkstationFormAssignment {
+  id: number;
+  slot: "workstation_start" | "workstation_end" | "cleaning";
+  sort_order: number;
+  form_template: {
+    id: number;
+    uuid: string;
+    name: string;
+    trigger: "workstation_start" | "workstation_end" | "cleaning";
+    is_active: boolean;
+  };
+}
+
 export interface Workstation {
   id: number;
   uuid: string;
@@ -326,6 +339,23 @@ export interface Workstation {
    *  workstation via the writeback endpoint. Once flipped on, expect
    *  operational data to start flowing. */
   psp_source_of_truth: boolean;
+  /** Form-template assignments via the join table — a workstation
+   *  can carry multiple forms per trigger, walked in `sort_order`
+   *  on the kiosk. Empty = no forms on that slot. */
+  form_assignments: WorkstationFormAssignment[];
+  cleaning_periodicity:
+    | "daily"
+    | "weekly"
+    | "monthly"
+    | "quarterly"
+    | "half_yearly"
+    | "yearly"
+    | "two_yearly"
+    | "three_yearly"
+    | null;
+  cleaning_periodicity_interval: number | null;
+  last_cleaning_at: string | null;
+  next_cleaning_due_at: string | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;

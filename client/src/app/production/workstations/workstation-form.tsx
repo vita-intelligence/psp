@@ -70,8 +70,17 @@ import {
 } from "@/lib/production/actions";
 import type { Workstation } from "@/lib/production/types";
 import type { Equipment } from "@/lib/equipment/types";
+import type { FormTemplate, FormTrigger } from "@/lib/forms/types";
+import { TRIGGER_LABELS } from "@/lib/forms/types";
 import { formatCompanyMoney } from "@/lib/format/company";
 import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface GroupOption extends SearchPickerOption {
   hourlyRate: string | null;
@@ -87,6 +96,17 @@ interface WorkerOption extends SearchPickerOption {
   uuid: string;
 }
 
+type CleaningPeriodicity =
+  | ""
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "quarterly"
+  | "half_yearly"
+  | "yearly"
+  | "two_yearly"
+  | "three_yearly";
+
 interface FormState {
   name: string;
   notes: string;
@@ -101,6 +121,16 @@ interface FormState {
   is_active: boolean;
   default_workers: WorkerOption[];
   psp_source_of_truth: boolean;
+  /** Form template assignments split by slot — each entry is the
+   *  template's uuid. Order in the array = kiosk walk-through
+   *  order. Empty arrays = no forms on that slot. */
+  form_assignments: {
+    workstation_start: string[];
+    workstation_end: string[];
+    cleaning: string[];
+  };
+  cleaning_periodicity: CleaningPeriodicity;
+  cleaning_periodicity_interval: string;
 }
 
 interface WorkstationFormProps {
@@ -108,12 +138,25 @@ interface WorkstationFormProps {
   company: CompanyDefaults;
   canEdit: boolean;
   canDelete: boolean;
+  /** All active form templates, split by trigger inside the sidebar.
+   *  Pass `null` when the current user lacks `forms.view` — the form
+   *  section hides itself in that case. */
+  formTemplates: FormTemplate[] | null;
   /** Fired on successful save so the EditModeToggle wrapper flips
    *  the page back to view mode. */
   onSavedSuccess?: () => void;
 }
 
-function initialFrom(ws: Workstation | null): FormState {
+function initialFrom(
+  ws: Workstation | null,
+  _templates: FormTemplate[] | null,
+): FormState {
+  const emptyAssignments = {
+    workstation_start: [] as string[],
+    workstation_end: [] as string[],
+    cleaning: [] as string[],
+  };
+
   if (!ws) {
     return {
       name: "",
@@ -129,8 +172,19 @@ function initialFrom(ws: Workstation | null): FormState {
       is_active: true,
       default_workers: [],
       psp_source_of_truth: false,
+      form_assignments: emptyAssignments,
+      cleaning_periodicity: "",
+      cleaning_periodicity_interval: "",
     };
   }
+
+  const bucketed = { ...emptyAssignments };
+  for (const a of ws.form_assignments ?? []) {
+    if (a.form_template?.uuid) {
+      bucketed[a.slot].push(a.form_template.uuid);
+    }
+  }
+
   return {
     name: ws.name,
     notes: ws.notes ?? "",
@@ -165,6 +219,13 @@ function initialFrom(ws: Workstation | null): FormState {
       email: u.email,
     })),
     psp_source_of_truth: ws.psp_source_of_truth,
+    form_assignments: bucketed,
+    cleaning_periodicity: (ws.cleaning_periodicity ??
+      "") as CleaningPeriodicity,
+    cleaning_periodicity_interval:
+      ws.cleaning_periodicity_interval != null
+        ? String(ws.cleaning_periodicity_interval)
+        : "",
   };
 }
 
@@ -173,6 +234,7 @@ export function WorkstationForm({
   company,
   canEdit,
   canDelete,
+  formTemplates,
   onSavedSuccess,
 }: WorkstationFormProps) {
   const router = useRouter();
@@ -203,7 +265,10 @@ export function WorkstationForm({
   } = useLiveForm<FormState>({
     resource,
     disabled: !canEdit,
-    initialState: useMemo(() => initialFrom(workstation), [workstation]),
+    initialState: useMemo(
+      () => initialFrom(workstation, formTemplates),
+      [workstation, formTemplates],
+    ),
     onCommit: (raw) => {
       const msg = raw as CommitPayload | null;
       if (!msg) return;
@@ -256,7 +321,7 @@ export function WorkstationForm({
   );
 
   const [original, setOriginal] = useState<FormState>(() =>
-    initialFrom(workstation),
+    initialFrom(workstation, formTemplates),
   );
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [actionError, setActionError] = useState<ErrorResult | null>(null);
@@ -373,6 +438,18 @@ export function WorkstationForm({
       return;
     }
 
+    const cleaningInterval = state.cleaning_periodicity_interval.trim();
+    const cleaningIntervalNum = cleaningInterval ? Number(cleaningInterval) : null;
+    if (
+      cleaningInterval &&
+      (!Number.isFinite(cleaningIntervalNum) || cleaningIntervalNum! <= 0)
+    ) {
+      setFieldErrors({
+        cleaning_periodicity_interval: ["Must be a positive whole number."],
+      });
+      return;
+    }
+
     const payload = {
       name: state.name.trim(),
       notes: state.notes.trim() || null,
@@ -389,6 +466,29 @@ export function WorkstationForm({
       is_active: state.is_active,
       default_worker_ids: state.default_workers.map((w) => w.id),
       psp_source_of_truth: state.psp_source_of_truth,
+      // Form-template assignments pass by UUID; the BE resolves to
+      // integer FKs with a tenancy check. Order in each slot array
+      // = kiosk walk-through order; sort_order per row is inferred
+      // by position on the BE.
+      ...(formTemplates
+        ? {
+            form_assignments: (
+              [
+                "workstation_start",
+                "workstation_end",
+                "cleaning",
+              ] as const
+            ).flatMap((trigger) =>
+              state.form_assignments[trigger].map((uuid, idx) => ({
+                trigger,
+                form_template_uuid: uuid,
+                sort_order: idx,
+              })),
+            ),
+            cleaning_periodicity: state.cleaning_periodicity || null,
+            cleaning_periodicity_interval: cleaningIntervalNum,
+          }
+        : {}),
     };
 
     startTransition(async () => {
@@ -929,6 +1029,21 @@ export function WorkstationForm({
               </div>
             )}
 
+            {formTemplates !== null && (
+              <FormAssignmentsSection
+                templates={formTemplates}
+                state={state}
+                setField={setField}
+                focusField={focusField}
+                blurField={blurField}
+                fieldEditors={fieldEditors}
+                fieldErrors={fieldErrors}
+                disabled={!canEdit}
+                lastCleaningAt={workstation?.last_cleaning_at ?? null}
+                nextCleaningDueAt={workstation?.next_cleaning_due_at ?? null}
+              />
+            )}
+
             {actionError && (
               <ErrorBanner
                 detail={actionError.detail}
@@ -1011,6 +1126,332 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
     <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
       {children}
     </h3>
+  );
+}
+
+const CLEANING_PERIODICITY_OPTIONS: {
+  value: CleaningPeriodicity;
+  label: string;
+}[] = [
+  { value: "", label: "No schedule (ad-hoc only)" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "quarterly", label: "Quarterly" },
+  { value: "half_yearly", label: "Half-yearly" },
+  { value: "yearly", label: "Yearly" },
+  { value: "two_yearly", label: "Two-yearly" },
+  { value: "three_yearly", label: "Three-yearly" },
+];
+
+interface FormAssignmentsSectionProps {
+  templates: FormTemplate[];
+  state: FormState;
+  setField: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
+  focusField: (field: string) => void;
+  blurField: (field: string) => void;
+  fieldEditors: Record<
+    string,
+    import("@/lib/realtime/use-live-form").CollabPeer | null
+  >;
+  fieldErrors: FieldErrors;
+  disabled: boolean;
+  lastCleaningAt: string | null;
+  nextCleaningDueAt: string | null;
+}
+
+function FormAssignmentsSection({
+  templates,
+  state,
+  setField,
+  focusField,
+  blurField,
+  fieldEditors,
+  fieldErrors,
+  disabled,
+  lastCleaningAt,
+  nextCleaningDueAt,
+}: FormAssignmentsSectionProps) {
+  const byTrigger = useMemo(() => {
+    const m: Record<FormTrigger, FormTemplate[]> = {
+      workstation_start: [],
+      workstation_end: [],
+      cleaning: [],
+    };
+    for (const t of templates) {
+      if (t.is_active) m[t.trigger].push(t);
+    }
+    return m;
+  }, [templates]);
+
+  function renderMultiPicker(
+    trigger: FormTrigger,
+    label: string,
+    description: string,
+  ) {
+    const options = byTrigger[trigger];
+    const selectedUuids = state.form_assignments[trigger];
+    const selectedSet = new Set(selectedUuids);
+    const available = options.filter((t) => !selectedSet.has(t.uuid));
+    const attached = selectedUuids
+      .map((uuid) => options.find((t) => t.uuid === uuid))
+      .filter((t): t is FormTemplate => !!t);
+
+    const fieldKey = `form_assignments_${trigger}`;
+
+    function setSlot(next: string[]) {
+      setField("form_assignments", {
+        ...state.form_assignments,
+        [trigger]: next,
+      });
+    }
+
+    function attach(uuid: string) {
+      if (!uuid || selectedSet.has(uuid)) return;
+      setSlot([...selectedUuids, uuid]);
+    }
+
+    function detach(uuid: string) {
+      setSlot(selectedUuids.filter((u) => u !== uuid));
+    }
+
+    function move(uuid: string, delta: number) {
+      const idx = selectedUuids.indexOf(uuid);
+      const to = idx + delta;
+      if (idx < 0 || to < 0 || to >= selectedUuids.length) return;
+      const next = [...selectedUuids];
+      [next[idx], next[to]] = [next[to], next[idx]];
+      setSlot(next);
+    }
+
+    return (
+      <div className="space-y-2">
+        <div>
+          <Label className="text-sm">{label}</Label>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+
+        {attached.length > 0 ? (
+          <ul className="divide-y divide-border/60 rounded-md border border-border/60 bg-background">
+            {attached.map((t, idx) => (
+              <li
+                key={t.uuid}
+                className="flex items-center gap-2 px-3 py-2"
+              >
+                <span className="w-6 shrink-0 text-center font-mono text-xs text-muted-foreground">
+                  {idx + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm">
+                  {t.name}
+                </span>
+                <div className="flex items-center gap-0.5 text-muted-foreground">
+                  <button
+                    type="button"
+                    onClick={() => move(t.uuid, -1)}
+                    disabled={disabled || idx === 0}
+                    className="rounded p-1 hover:bg-muted disabled:opacity-30"
+                    aria-label="Move up"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => move(t.uuid, 1)}
+                    disabled={disabled || idx === attached.length - 1}
+                    className="rounded p-1 hover:bg-muted disabled:opacity-30"
+                    aria-label="Move down"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => detach(t.uuid)}
+                    disabled={disabled}
+                    className="rounded p-1 hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                    aria-label="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="rounded-md border border-dashed border-border/60 bg-muted/10 p-3 text-xs text-muted-foreground">
+            No forms attached to this slot yet.
+          </div>
+        )}
+
+        {available.length > 0 ? (
+          <div className="relative">
+            <Select
+              value=""
+              onValueChange={(v) => attach(v)}
+              disabled={disabled}
+            >
+              <SelectTrigger
+                onFocus={() => focusField(fieldKey)}
+                onBlur={() => blurField(fieldKey)}
+              >
+                <SelectValue placeholder="+ Add form…" />
+              </SelectTrigger>
+              <SelectContent>
+                {available.map((t) => (
+                  <SelectItem key={t.uuid} value={t.uuid}>
+                    {t.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <FieldEditingIndicator peer={fieldEditors[fieldKey]} />
+          </div>
+        ) : (
+          options.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              All active {TRIGGER_LABELS[trigger].toLowerCase()} forms are
+              already attached.
+            </p>
+          )
+        )}
+
+        {options.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            No active {TRIGGER_LABELS[trigger].toLowerCase()} forms in the
+            library. Author one on{" "}
+            <Link href="/production/forms" className="underline underline-offset-2">
+              /forms
+            </Link>{" "}
+            first.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 rounded-md border border-border/60 bg-muted/20 p-4">
+      <div className="space-y-1">
+        <SectionTitle>Kiosk forms</SectionTitle>
+        <p className="text-xs text-muted-foreground">
+          Checklists the vita-performance kiosk shows during work sessions.
+          Manage the underlying templates from{" "}
+          <Link href="/production/forms" className="underline underline-offset-2">
+            /forms
+          </Link>
+          .
+        </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {renderMultiPicker(
+          "workstation_start",
+          "Start-of-job forms",
+          "Kiosk walks them in order before the timer starts. Add several for a sequenced check (safety → materials → product-specific).",
+        )}
+        {renderMultiPicker(
+          "workstation_end",
+          "End-of-job forms",
+          "Kiosk walks them in order before the session closes.",
+        )}
+      </div>
+
+      <div className="space-y-3 rounded-md border border-border/60 bg-background/60 p-3">
+        <SectionTitle>Cleaning</SectionTitle>
+        {renderMultiPicker(
+          "cleaning",
+          "Cleaning forms",
+          "Kiosk walks them in order. Attached equipment is inserted as sections automatically at publish time.",
+        )}
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label className="text-sm">Cadence</Label>
+            <div className="relative">
+              <Select
+                value={state.cleaning_periodicity || "__none__"}
+                onValueChange={(v) => {
+                  setField(
+                    "cleaning_periodicity",
+                    (v === "__none__" ? "" : v) as CleaningPeriodicity,
+                  );
+                }}
+                disabled={disabled}
+              >
+                <SelectTrigger
+                  onFocus={() => focusField("cleaning_periodicity")}
+                  onBlur={() => blurField("cleaning_periodicity")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">
+                    <span className="text-muted-foreground">
+                      No schedule (ad-hoc only)
+                    </span>
+                  </SelectItem>
+                  {CLEANING_PERIODICITY_OPTIONS.slice(1).map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldEditingIndicator peer={fieldEditors.cleaning_periodicity} />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Workers can clean ad-hoc regardless. The cadence just drives
+              "due soon" chips on the kiosk.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="cleaning_periodicity_interval" className="text-sm">
+              Custom interval (months)
+            </Label>
+            <div className="relative">
+              <Input
+                id="cleaning_periodicity_interval"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={state.cleaning_periodicity_interval}
+                onChange={(e) =>
+                  setField("cleaning_periodicity_interval", e.target.value)
+                }
+                onFocus={() => focusField("cleaning_periodicity_interval")}
+                onBlur={() => blurField("cleaning_periodicity_interval")}
+                disabled={disabled}
+                placeholder="Optional override"
+              />
+              <FieldEditingIndicator
+                peer={fieldEditors.cleaning_periodicity_interval}
+              />
+            </div>
+            <FieldError messages={fieldErrors.cleaning_periodicity_interval} />
+            <p className="text-xs text-muted-foreground">
+              Overrides the cadence above when set (in months).
+            </p>
+          </div>
+        </div>
+
+        {(lastCleaningAt || nextCleaningDueAt) && (
+          <div className="flex flex-wrap gap-x-6 gap-y-1 pt-1 text-xs text-muted-foreground">
+            {lastCleaningAt && (
+              <span>
+                <span className="text-foreground">Last cleaned:</span>{" "}
+                {new Date(lastCleaningAt).toLocaleString()}
+              </span>
+            )}
+            {nextCleaningDueAt && (
+              <span>
+                <span className="text-foreground">Next due:</span>{" "}
+                {nextCleaningDueAt}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

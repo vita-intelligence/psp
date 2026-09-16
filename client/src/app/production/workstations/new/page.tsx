@@ -4,6 +4,7 @@ import { ChevronLeft, Settings2 } from "lucide-react";
 import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { listFormTemplates } from "@/lib/forms/server";
 import { Button } from "@/components/ui/button";
 import { TopBar } from "@/components/layout/top-bar";
 import { PresenceMount } from "@/components/realtime/presence-mount";
@@ -19,6 +20,10 @@ export default async function NewWorkstationPage() {
   }
   const company = await getCompanyDefaults();
   if (!company) notFound();
+
+  const formTemplates = hasPermission(user, "forms.view")
+    ? await listFormTemplates()
+    : null;
 
   return (
     <div className="flex flex-1 flex-col">
@@ -54,6 +59,7 @@ export default async function NewWorkstationPage() {
             company={company}
             canEdit
             canDelete={false}
+            formTemplates={formTemplates}
           />
         </div>
       </main>

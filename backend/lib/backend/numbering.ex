@@ -26,6 +26,7 @@ defmodule Backend.Numbering do
   alias Backend.CustomerReturns.CustomerReturn
   alias Backend.Customers.Customer
   alias Backend.Devices.LinkedDevice
+  alias Backend.Forms.FormTemplate
   alias Backend.GoodsIn.Inspection, as: GoodsInInspection
   alias Backend.Items.Item
   alias Backend.Loyalty.{CustomerCredit, LoyaltyProgram}
@@ -66,6 +67,7 @@ defmodule Backend.Numbering do
     "bom" => BOM,
     "workstation_group" => WorkstationGroup,
     "workstation" => Workstation,
+    "form_template" => FormTemplate,
     "routing" => Routing,
     "manufacturing_order" => ManufacturingOrder,
     "customer" => Customer,

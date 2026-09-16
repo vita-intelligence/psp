@@ -9,6 +9,7 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
+import { listFormTemplates } from "@/lib/forms/server";
 import { getWorkstation } from "@/lib/production/server";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { CommentThread } from "@/components/comments/comment-thread";
@@ -33,10 +34,12 @@ export default async function WorkstationDetailPage({ params }: Props) {
   }
 
   const { uuid } = await params;
-  const [ws, company, initialComments] = await Promise.all([
+  const canViewForms = hasPermission(user, "forms.view");
+  const [ws, company, initialComments, formTemplates] = await Promise.all([
     getWorkstation(uuid),
     getCompanyDefaults(),
     listCommentsForEntity("workstation", uuid),
+    canViewForms ? listFormTemplates() : Promise.resolve(null),
   ]);
   if (!ws || !company) notFound();
 
@@ -103,6 +106,7 @@ export default async function WorkstationDetailPage({ params }: Props) {
               company={company}
               canEdit={canEdit}
               canDelete={canDelete}
+              formTemplates={formTemplates}
             />
           </EditModeToggle>
 

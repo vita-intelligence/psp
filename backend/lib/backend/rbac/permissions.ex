@@ -151,6 +151,19 @@ defmodule Backend.RBAC.Permissions do
      "Record lifecycle events on equipment (put in service, maintenance, calibrate, move, retire, dispose)"}
   ]
 
+  # Form templates — checklists authored in PSP and pushed to the
+  # vita-performance kiosk (start-of-shift / end-of-shift / cleaning).
+  # `forms.view` gates the library page + assignment sidebar on the
+  # workstation edit form; `forms.act` covers create, edit, publish,
+  # archive, reactivate. One-write gate (matches equipment.act) rather
+  # than the four-way CRUD split because the authoring persona is
+  # unified (QA / production lead maintaining the checklist library).
+  @forms [
+    {"forms.view", "View form templates + workstation assignments"},
+    {"forms.act",
+     "Create, edit, archive, and publish form templates; assign templates + cleaning cadence to workstations"}
+  ]
+
   # Vendors (suppliers) — the registry POs draw from. View is the read
   # baseline. Edit lets the buyer maintain identity + commercial terms.
   # Approve is the GFSI/HARPC gate — only the vendor-qualification
@@ -430,6 +443,7 @@ defmodule Backend.RBAC.Permissions do
         @integrations ++
         @stock ++
         @equipment ++
+        @forms ++
         @vendors ++
         @customers ++
         @pricelists ++
@@ -467,6 +481,7 @@ defmodule Backend.RBAC.Permissions do
       integrations: @integrations,
       stock: @stock,
       equipment: @equipment,
+      forms: @forms,
       vendors: @vendors,
       customers: @customers,
       pricelists: @pricelists,
@@ -942,6 +957,16 @@ defmodule Backend.RBAC.Permissions do
             create: "production.workstation_create",
             update: "production.workstation_edit",
             delete: "production.workstation_delete"
+          },
+          %{
+            key: "form_templates",
+            label: "Form templates",
+            description:
+              "Checklists authored in PSP and published to the vita-performance kiosk. Assign to workstations as start-of-shift / end-of-shift / cleaning forms. Cleaning templates auto-expand equipment sections at publish time.",
+            read: "forms.view",
+            create: "forms.act",
+            update: "forms.act",
+            delete: "forms.act"
           },
           %{
             key: "machines",

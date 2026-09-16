@@ -2209,6 +2209,16 @@ defmodule BackendWeb.Payloads do
       # Vita-performance integration cut-over flag — controls whether
       # kiosk sessions for this workstation attribute back to PSP.
       psp_source_of_truth: w.psp_source_of_truth,
+      # Form template assignments — via join table so a workstation
+      # can carry multiple forms per trigger. Ordered by slot then
+      # sort_order so the kiosk walks them deterministically.
+      # Cleaning cadence (mirrors maintenance-task periodicity)
+      # drives the kiosk WS-picker due-chips.
+      form_assignments: workstation_form_assignments(w),
+      cleaning_periodicity: w.cleaning_periodicity,
+      cleaning_periodicity_interval: w.cleaning_periodicity_interval,
+      last_cleaning_at: w.last_cleaning_at,
+      next_cleaning_due_at: w.next_cleaning_due_at,
       created_by: actor(w, :created_by),
       updated_by: actor(w, :updated_by),
       inserted_at: w.inserted_at,
@@ -4899,6 +4909,44 @@ defmodule BackendWeb.Payloads do
     end
   end
 
+  defp workstation_form_assignments(%Backend.Production.Workstation{} = w) do
+    case Map.get(w, :form_assignments) do
+      %Ecto.Association.NotLoaded{} ->
+        []
+
+      list when is_list(list) ->
+        list
+        |> Enum.sort_by(&{&1.slot, &1.sort_order, &1.id})
+        |> Enum.map(fn a ->
+          template =
+            case a.form_template do
+              %Backend.Forms.FormTemplate{} = t ->
+                %{
+                  id: t.id,
+                  uuid: t.uuid,
+                  name: t.name,
+                  trigger: t.trigger,
+                  is_active: t.is_active
+                }
+
+              _ ->
+                nil
+            end
+
+          %{
+            id: a.id,
+            slot: a.slot,
+            sort_order: a.sort_order,
+            form_template: template
+          }
+        end)
+        |> Enum.reject(&(&1.form_template == nil))
+
+      _ ->
+        []
+    end
+  end
+
   defp workstation_default_workers(%Backend.Production.Workstation{} = w) do
     case Map.get(w, :default_worker_assignments) do
       %Ecto.Association.NotLoaded{} ->
@@ -7145,6 +7193,43 @@ defmodule BackendWeb.Payloads do
       inserted_at: c.inserted_at,
       updated_at: c.updated_at
     }
+  end
+
+  @doc """
+  Form template — checklist authored in PSP and published to
+  vita-performance. ``dirty_since_publish`` is a computed hint the
+  FE renders as "unpublished changes" — true when the version has
+  incremented past the last published one (or has never been
+  published).
+  """
+  def form_template(%Backend.Forms.FormTemplate{} = t) do
+    %{
+      id: t.id,
+      uuid: t.uuid,
+      name: t.name,
+      description: t.description,
+      trigger: t.trigger,
+      schema: t.schema,
+      version: t.version,
+      last_published_at: t.last_published_at,
+      last_published_version: t.last_published_version,
+      dirty_since_publish: dirty_since_publish?(t),
+      is_active: t.is_active,
+      # Empty array = everyone; non-empty = allowlist of vita-perf
+      # Worker.uuid strings (opaque to PSP).
+      worker_uuids: t.worker_uuids || [],
+      created_by: preloaded_or_nil(t, :created_by, &audit_actor/1),
+      updated_by: preloaded_or_nil(t, :updated_by, &audit_actor/1),
+      inserted_at: t.inserted_at,
+      updated_at: t.updated_at
+    }
+  end
+
+  defp dirty_since_publish?(%Backend.Forms.FormTemplate{
+         version: version,
+         last_published_version: last
+       }) do
+    is_nil(last) or version > last
   end
 
   @doc """

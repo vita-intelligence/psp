@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import {
   CalendarDays,
   ClipboardCheck,
+  ClipboardList,
   Factory,
   ListChecks,
   Microscope,
@@ -126,6 +127,13 @@ const SECTIONS: ProdSection[] = [
     description:
       "Operations + setup times per BOM. The schedule reads off these.",
     Icon: Route,
+  },
+  {
+    href: "/production/forms",
+    label: "Forms",
+    description:
+      "Kiosk checklists — start-of-job, end-of-job, cleaning. Author here, attach to workstations, publish to the vita-performance kiosk. Supports per-worker audience filters and multi-form walk-throughs.",
+    Icon: ClipboardList,
   },
   {
     href: "/production/statistics",

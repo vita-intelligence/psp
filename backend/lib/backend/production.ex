@@ -846,7 +846,8 @@ defmodule Backend.Production do
       :warehouse,
       :created_by,
       :updated_by,
-      default_worker_assignments: :user
+      default_worker_assignments: :user,
+      form_assignments: :form_template
     ])
     |> Repo.one()
   end
@@ -863,6 +864,7 @@ defmodule Backend.Production do
   def create_workstation(%User{} = actor, attrs) do
     {worker_ids, attrs} = pull_worker_ids(attrs)
     attrs = stringify_keys(attrs)
+    {form_assignments_raw, attrs} = pull_form_assignments(attrs)
 
     attrs =
       attrs
@@ -879,6 +881,9 @@ defmodule Backend.Production do
                %Workstation{}
                |> Workstation.changeset(attrs)
                |> Repo.insert(),
+             {:ok, resolved_assignments} <-
+               resolve_form_assignments(form_assignments_raw, actor, ws.id),
+             :ok <- replace_form_assignments(resolved_assignments, ws.id),
              {:ok, _} <- replace_default_workers(actor, ws, worker_ids) do
           Audit.record_created(actor, "workstation", ws, ws_snapshot(ws))
           ws
@@ -901,6 +906,7 @@ defmodule Backend.Production do
   def update_workstation(%User{} = actor, %Workstation{} = ws, attrs) do
     {worker_ids, attrs} = pull_worker_ids(attrs)
     attrs = stringify_keys(attrs)
+    {form_assignments_raw, attrs} = pull_form_assignments(attrs)
     before = ws_snapshot(ws)
 
     attrs =
@@ -923,6 +929,9 @@ defmodule Backend.Production do
                ws
                |> Workstation.changeset(attrs)
                |> Repo.update(),
+             {:ok, resolved_assignments} <-
+               resolve_form_assignments(form_assignments_raw, actor, updated.id),
+             :ok <- replace_form_assignments(resolved_assignments, updated.id),
              {:ok, _} <-
                (if is_list(worker_ids),
                   do: replace_default_workers(actor, updated, worker_ids),
@@ -944,6 +953,10 @@ defmodule Backend.Production do
       |> case do
         {:ok, ws} ->
           Backend.Broadcasts.entity_changed("workstation", ws.uuid, ws.company_id, "updated")
+          # Republish assigned form templates so the kiosk mirror
+          # reflects fresh cadence / assignment / equipment list.
+          # Silent-degrade: publisher logs its own errors.
+          Backend.Forms.Publisher.publish_workstation(ws)
           {:ok, reload_workstation(ws)}
 
         other ->
@@ -974,7 +987,8 @@ defmodule Backend.Production do
         :warehouse,
         :created_by,
         :updated_by,
-        default_worker_assignments: :user
+        default_worker_assignments: :user,
+        form_assignments: :form_template
       ],
       force: true
     )
@@ -1093,8 +1107,130 @@ defmodule Backend.Production do
       idle_from: ws.idle_from,
       idle_to: ws.idle_to,
       is_active: ws.is_active,
-      external_id: ws.external_id
+      external_id: ws.external_id,
+      cleaning_periodicity: ws.cleaning_periodicity,
+      cleaning_periodicity_interval: ws.cleaning_periodicity_interval
     }
+  end
+
+  # Pull `form_assignments` off the incoming attrs so it can be
+  # replaced wholesale after the parent workstation write commits.
+  # Expected shape:
+  #
+  #     %{ "form_assignments" => [
+  #          %{ "trigger" => "workstation_start",
+  #             "form_template_uuid" => "<uuid>",
+  #             "sort_order" => 0 } | ...
+  #        ] }
+  #
+  # Missing key = leave assignments untouched (partial update). Empty
+  # list = detach every form on the workstation.
+  defp pull_form_assignments(attrs) do
+    case Map.pop(attrs, "form_assignments", :unset) do
+      {:unset, rest} -> {:unset, rest}
+      {list, rest} when is_list(list) -> {list, rest}
+      {_, rest} -> {:unset, rest}
+    end
+  end
+
+  # Resolve each incoming entry's `form_template_uuid` to an integer
+  # id (scoped to actor's company) + normalise into the shape the
+  # WorkstationFormAssignment changeset expects. Returns
+  # `{:ok, [%{...}]}` or `{:error, :form_template_not_found}` /
+  # `{:error, :invalid_form_slot}`.
+  defp resolve_form_assignments(:unset, _actor, _ws_id), do: {:ok, :unset}
+  defp resolve_form_assignments([], _actor, _ws_id), do: {:ok, []}
+
+  defp resolve_form_assignments(list, %User{company_id: cid}, ws_id)
+       when is_list(list) do
+    valid_slots = Backend.Production.WorkstationFormAssignment.slots()
+
+    Enum.reduce_while(list, {:ok, []}, fn entry, {:ok, acc} ->
+      entry = stringify_keys(entry || %{})
+      trigger = entry["trigger"] || entry["slot"]
+      uuid = entry["form_template_uuid"]
+      sort = entry["sort_order"] || length(acc)
+
+      cond do
+        trigger not in valid_slots ->
+          {:halt, {:error, :invalid_form_slot}}
+
+        not is_binary(uuid) or uuid == "" ->
+          {:halt, {:error, :form_template_not_found}}
+
+        true ->
+          case lookup_form_template_id(cid, uuid) do
+            {:ok, template_id} ->
+              row = %{
+                "workstation_id" => ws_id,
+                "form_template_id" => template_id,
+                "slot" => trigger,
+                "sort_order" => sort
+              }
+
+              {:cont, {:ok, acc ++ [row]}}
+
+            :error ->
+              {:halt, {:error, :form_template_not_found}}
+          end
+      end
+    end)
+  end
+
+  defp resolve_form_assignments(_, _, _), do: {:error, :form_template_not_found}
+
+  defp lookup_form_template_id(company_id, uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        query =
+          from(t in Backend.Forms.FormTemplate,
+            where: t.company_id == ^company_id and t.uuid == ^cast,
+            select: t.id
+          )
+
+        case Repo.one(query) do
+          nil -> :error
+          id -> {:ok, id}
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  # Replace this workstation's form_assignments wholesale. Runs
+  # inside the calling transaction. `assignments` is a list of
+  # already-resolved maps (see `resolve_form_assignments`); pass
+  # `:unset` to skip.
+  defp replace_form_assignments(:unset, _ws_id), do: :ok
+
+  defp replace_form_assignments(assignments, ws_id) when is_list(assignments) do
+    import Ecto.Query
+
+    Repo.delete_all(
+      from a in Backend.Production.WorkstationFormAssignment,
+        where: a.workstation_id == ^ws_id
+    )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    rows =
+      Enum.map(assignments, fn row ->
+        %{
+          workstation_id: row["workstation_id"],
+          form_template_id: row["form_template_id"],
+          slot: row["slot"],
+          sort_order: row["sort_order"] || 0,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    if rows != [] do
+      Repo.insert_all(Backend.Production.WorkstationFormAssignment, rows)
+    end
+
+    :ok
   end
 
   # ============================================================
