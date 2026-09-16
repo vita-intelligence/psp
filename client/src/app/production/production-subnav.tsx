@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Boxes,
   CalendarDays,
   ClipboardCheck,
   Factory,
@@ -91,11 +90,6 @@ const ITEMS: SubnavItem[] = [
     href: "/production/workstation-groups",
     label: "Workstation groups",
     Icon: Network,
-  },
-  {
-    href: "/production/machines",
-    label: "Machines",
-    Icon: Boxes,
   },
   { href: "/production/boms", label: "BOM", Icon: ListChecks },
   {

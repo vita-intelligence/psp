@@ -36,6 +36,7 @@ defmodule Backend.Production.WorkstationCosts do
 
   alias Backend.HR
   alias Backend.HR.Employee
+  alias Backend.Equipment.Equipment, as: EquipmentUnit
   alias Backend.Production.{Workstation, WorkstationGroup, WorkstationSession}
   alias Backend.Repo
 
@@ -103,6 +104,13 @@ defmodule Backend.Production.WorkstationCosts do
         # per date keeps HR.wage_at calls minimal.
         employee_wage_cache = build_wage_cache(sessions)
 
+        # Sum(equipment.hourly_running_cost) per WSG for the machine
+        # cost roll-up. One SQL round-trip vs N — the volume here is
+        # bounded by the number of attached equipment units per
+        # station, not sessions.
+        equipment_rate_by_group =
+          equipment_rate_by_group(company_id, group_ids)
+
         Enum.map(groups, fn group ->
           group_sessions = Map.get(sessions_by_group, group.id, [])
 
@@ -112,7 +120,8 @@ defmodule Backend.Production.WorkstationCosts do
           %{
             uuid: group.uuid,
             name: group.name,
-            machine_hourly_rate: effective_machine_rate(group),
+            machine_hourly_rate:
+              effective_machine_rate(group, equipment_rate_by_group),
             avg_labour_hourly_rate: avg_labour,
             avg_seconds_per_unit: avg_seconds,
             session_count: count,
@@ -121,6 +130,25 @@ defmodule Backend.Production.WorkstationCosts do
         end)
       end
     end
+  end
+
+  # SUM(equipment.hourly_running_cost) grouped by WSG id, across every
+  # equipment unit attached to any workstation in the given groups.
+  # Only non-null cost values contribute; a unit with no cost stack
+  # returns nil and is filtered.
+  defp equipment_rate_by_group(company_id, group_ids) do
+    from(e in EquipmentUnit,
+      join: w in Workstation,
+      on: w.id == e.workstation_id,
+      where:
+        e.company_id == ^company_id and
+          w.workstation_group_id in ^group_ids and
+          not is_nil(e.hourly_running_cost),
+      group_by: w.workstation_group_id,
+      select: {w.workstation_group_id, sum(e.hourly_running_cost)}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   # ----- Session batch load ---------------------------------------
@@ -277,13 +305,36 @@ defmodule Backend.Production.WorkstationCosts do
 
   # ----- Small helpers --------------------------------------------
 
-  defp effective_machine_rate(%WorkstationGroup{
+  # ERPNext-style cascade:
+  #   1. SUM of every attached equipment's hourly_running_cost across
+  #      all workstations in this group. When any equipment
+  #      contributes a positive rate, that number wins.
+  #   2. Fall back to the WSG's static `hourly_rate` override (with
+  #      the toggle) so groups without any equipment attached still
+  #      report a meaningful cost.
+  #   3. Otherwise nil — vita-cff renders the routing cost as
+  #      "unknown machine rate" and the operator knows to set one.
+  defp effective_machine_rate(%WorkstationGroup{id: gid} = group, rates_by_group) do
+    case Map.get(rates_by_group, gid) do
+      %Decimal{} = sum ->
+        if Decimal.compare(sum, Decimal.new(0)) == :gt do
+          sum
+        else
+          static_rate(group)
+        end
+
+      _ ->
+        static_rate(group)
+    end
+  end
+
+  defp static_rate(%WorkstationGroup{
          hourly_rate_enabled: true,
          hourly_rate: %Decimal{} = rate
        }),
        do: rate
 
-  defp effective_machine_rate(_), do: nil
+  defp static_rate(_), do: nil
 
   # Wages carry their own `currency_code`; company base is the safe
   # default for a WSG with no session data (no wage to inspect).

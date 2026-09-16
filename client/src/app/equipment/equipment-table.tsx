@@ -9,7 +9,6 @@ import {
   Cog,
   PowerOff,
   Trash2,
-  Wrench,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
@@ -35,9 +34,6 @@ const STATUS_LABEL: Record<EquipmentStatus, string> = {
   expected: "Expected",
   received: "Received",
   in_service: "In service",
-  under_maintenance: "Under maintenance",
-  out_for_repair: "Out for repair",
-  awaiting_calibration: "Awaiting calibration",
   retired: "Retired",
   disposed: "Disposed",
   canceled: "Cancelled",
@@ -50,9 +46,6 @@ const STATUS_TONE: Record<
   expected: "indigo",
   received: "indigo",
   in_service: "emerald",
-  under_maintenance: "amber",
-  out_for_repair: "amber",
-  awaiting_calibration: "amber",
   retired: "muted",
   disposed: "muted",
   canceled: "muted",
@@ -62,9 +55,6 @@ const STATUS_ICON: Record<EquipmentStatus, typeof CircleDashed> = {
   expected: CircleDashed,
   received: CircleDashed,
   in_service: CheckCircle2,
-  under_maintenance: Wrench,
-  out_for_repair: Wrench,
-  awaiting_calibration: Wrench,
   retired: PowerOff,
   disposed: Trash2,
   canceled: Trash2,

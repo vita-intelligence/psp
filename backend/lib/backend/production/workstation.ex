@@ -24,7 +24,7 @@ defmodule Backend.Production.Workstation do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
-  alias Backend.Production.{Machine, WorkstationDefaultWorker, WorkstationGroup}
+  alias Backend.Production.{WorkstationDefaultWorker, WorkstationGroup}
   alias Backend.Warehouses.Warehouse
 
   schema "workstations" do
@@ -73,9 +73,12 @@ defmodule Backend.Production.Workstation do
     has_many :default_workers,
       through: [:default_worker_assignments, :user]
 
-    has_many :machines, Machine,
+    # Physical equipment attached to this workstation. Replaces the
+    # legacy `has_many :machines` — equipment now carries the hourly
+    # running cost stack (see Backend.Equipment.RunningCosts).
+    has_many :equipment, Backend.Equipment.Equipment,
       foreign_key: :workstation_id,
-      preload_order: [asc: :name]
+      preload_order: [asc: :serial_number]
 
     timestamps(type: :utc_datetime)
   end

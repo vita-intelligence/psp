@@ -1,36 +1,34 @@
 defmodule Backend.Equipment.Lifecycle do
   @moduledoc """
-  Equipment lifecycle state machine. Same shape as
-  `Backend.Stock.Lifecycle` for stock lots — operators trigger
-  ACTIONS (event kinds), the unit's `status` is a projection of
-  the recorded event list.
+  Equipment lifecycle state machine. ERPNext-style: status tracks
+  physical presence in the field only, not operational state.
+  Maintenance / calibration / repair events live in the dedicated
+  `MaintenanceTasks` and `Repairs` modules — this lifecycle no
+  longer emits `maintenance_started` / `maintenance_completed` /
+  `calibrated` transitions.
+
+  Operators trigger ACTIONS (event kinds), the unit's `status` is
+  a projection of the recorded event list.
 
   ## Allowed transitions
 
-    * `expected`             → received | note | canceled
-    * `received`             → in_service | note | retired | disposed
-    * `in_service`           → maintenance_started | moved | assigned |
-                                unassigned | calibrated | retired |
-                                disposed | note
-    * `under_maintenance`    → maintenance_completed | disposed | note
-    * `awaiting_calibration` → calibrated | disposed | note
-    * `out_for_repair`       → maintenance_completed | disposed | note
-    * `retired`              → disposed | note
-    * `disposed`             → note (terminal for physical actions)
+    * `expected`   → received | canceled | note
+    * `received`   → in_service | retired | disposed | note
+    * `in_service` → moved | assigned | unassigned | received | retired |
+                     disposed | note      (received = "withdraw to pool")
+    * `retired`    → in_service | disposed | note  (in_service = "un-retire")
+    * `disposed`   → note (terminal — no reversal from disposed)
 
   Any (status, kind) pair not in the matrix returns
   `{:error, :illegal_transition, %{from:, kind:, allowed:}}`.
 
-  ## Status projection
+  ## Legacy events
 
-    * `disposed` and `retired` are terminal-ish — later kinds only
-      move to `disposed` (from retired) or `note` (from either).
-    * `calibrated` from `awaiting_calibration` → `in_service`; from
-      `in_service` stays in_service (routine cal, no status flip).
-    * `maintenance_completed` → `awaiting_calibration` when the unit
-      has a calibration cadence, else straight to `in_service`. (The
-      cal cadence check runs in PR E4 which owns the cadence
-      machinery; for now this module just returns `in_service`.)
+  Historical event rows of kind `maintenance_started` /
+  `maintenance_completed` / `calibrated` are preserved in the DB for
+  audit continuity, but new writes for those kinds are rejected —
+  the frontend should route the operator to the task or repair card
+  instead.
   """
 
   import Ecto.Query, warn: false
@@ -42,12 +40,8 @@ defmodule Backend.Equipment.Lifecycle do
   @allowed_transitions %{
     "expected" => ~w(received note canceled),
     "received" => ~w(in_service note retired disposed),
-    "in_service" =>
-      ~w(maintenance_started moved assigned unassigned calibrated retired disposed note),
-    "under_maintenance" => ~w(maintenance_completed disposed note),
-    "awaiting_calibration" => ~w(calibrated disposed note),
-    "out_for_repair" => ~w(maintenance_completed disposed note),
-    "retired" => ~w(disposed note),
+    "in_service" => ~w(moved assigned unassigned received retired disposed note),
+    "retired" => ~w(in_service disposed note),
     "disposed" => ~w(note)
   }
 
@@ -101,6 +95,8 @@ defmodule Backend.Equipment.Lifecycle do
              {:ok, updated_equipment} <-
                apply_terminal_timestamps(updated_equipment, kind, event.occurred_at),
              {:ok, updated_equipment} <-
+               apply_association_effects(updated_equipment, kind, event),
+             {:ok, updated_equipment} <-
                apply_cadence_updates(updated_equipment, kind, event.occurred_at) do
           {:ok, %{equipment: updated_equipment, event: event, status: next_status}}
         end
@@ -119,12 +115,10 @@ defmodule Backend.Equipment.Lifecycle do
     * `canceled` beats everything (voided before receipt).
     * `disposed` beats everything except cancel.
     * `retired` beats everything except cancel + disposed.
-    * The last `maintenance_started` / `maintenance_completed`
-      determines under_maintenance vs post-maintenance.
-    * Latest of `calibrated` / (cal-awaiting return) is respected.
     * Otherwise: latest of received / in_service / moved / assigned /
       unassigned governs the current base state, falling back to
-      `expected`.
+      `expected`. Maintenance / calibration / repair events do NOT
+      affect the projection (they live in their own modules).
   """
   def project_status(events) when is_list(events) do
     kinds = MapSet.new(events, & &1.kind)
@@ -133,19 +127,24 @@ defmodule Backend.Equipment.Lifecycle do
       MapSet.member?(kinds, "canceled") ->
         "canceled"
 
+      # Disposed is terminal — no reversal from disposed exists in the
+      # transition matrix so once present, it wins.
       MapSet.member?(kinds, "disposed") ->
         "disposed"
 
-      MapSet.member?(kinds, "retired") ->
-        "retired"
-
+      # Retired is reversible (retired → in_service). We can't
+      # short-circuit here — use the ordered walk below so a later
+      # `in_service` event correctly restores service.
       true ->
         last_service_shape(events)
     end
   end
 
   # Rank the "service shape" events by occurred_at desc, first
-  # relevant match wins.
+  # relevant match wins. Legacy `maintenance_started` /
+  # `maintenance_completed` / `calibrated` events are ignored — they
+  # only affect the maintenance-task / repair timelines, not the
+  # lifecycle status projection.
   defp last_service_shape(events) do
     ranked =
       events
@@ -153,9 +152,7 @@ defmodule Backend.Equipment.Lifecycle do
         e.kind in [
           "received",
           "in_service",
-          "maintenance_started",
-          "maintenance_completed",
-          "calibrated",
+          "retired",
           "moved",
           "assigned",
           "unassigned"
@@ -165,12 +162,8 @@ defmodule Backend.Equipment.Lifecycle do
 
     Enum.reduce_while(ranked, "expected", fn e, _ ->
       case e.kind do
-        "maintenance_started" -> {:halt, "under_maintenance"}
-        "maintenance_completed" -> {:halt, "in_service"}
+        "retired" -> {:halt, "retired"}
         "in_service" -> {:halt, "in_service"}
-        # `calibrated` alone doesn't imply in_service — the equipment
-        # may still be in maintenance; keep looking.
-        "calibrated" -> {:cont, "in_service"}
         # `moved` / `assigned` / `unassigned` don't change base
         # status; keep looking for a real state event.
         "moved" -> {:cont, "in_service"}
@@ -233,32 +226,75 @@ defmodule Backend.Equipment.Lifecycle do
     |> Repo.update()
   end
 
+  # Reversal path — un-retire clears retired_at, deploy back into
+  # service clears both retired_at + disposed_at (defensive; disposed
+  # can't come back per the transition matrix but the reset is safe
+  # if a data patch ever puts a row there wrongly).
+  defp apply_terminal_timestamps(%Equipment{} = equipment, "in_service", _occurred_at) do
+    equipment
+    |> Ecto.Changeset.change(retired_at: nil, disposed_at: nil)
+    |> Repo.update()
+  end
+
+  # Withdraw to pool — the unit isn't retired, it's back in stock.
+  defp apply_terminal_timestamps(%Equipment{} = equipment, "received", _occurred_at) do
+    equipment
+    |> Ecto.Changeset.change(retired_at: nil)
+    |> Repo.update()
+  end
+
   defp apply_terminal_timestamps(equipment, _kind, _occurred_at), do: {:ok, equipment}
 
-  # Cadence auto-compute — when the operator records a
-  # `calibrated` or `maintenance_completed` event, roll the
-  # `last_*_at` timestamp to the event's occurred_at and derive
-  # `next_*_at` from the configured cadence. If the unit has no
-  # cadence configured, `last_*_at` still updates but `next_*_at`
-  # stays nil (nothing to schedule).
-  defp apply_cadence_updates(%Equipment{} = equipment, "calibrated", occurred_at) do
-    at = to_utc(occurred_at)
-    next = add_months(at, equipment.calibration_frequency_months)
-
+  # Update the association columns (`current_cell_id`, `assigned_to_id`)
+  # from the event payload so the ledger + detail page always reflect
+  # the latest lifecycle move. Clearing `location_description` on a
+  # `moved` event keeps the "where is it" line coherent — once a unit
+  # lands in a real cell, the office free-text is stale.
+  defp apply_association_effects(%Equipment{} = equipment, "moved", %Event{
+         to_cell_id: to_cell_id
+       })
+       when not is_nil(to_cell_id) do
     equipment
-    |> Ecto.Changeset.change(last_calibrated_at: at, next_calibration_at: next)
+    |> Ecto.Changeset.change(
+      current_cell_id: to_cell_id,
+      location_description: nil
+    )
     |> Repo.update()
   end
 
-  defp apply_cadence_updates(%Equipment{} = equipment, "maintenance_completed", occurred_at) do
-    at = to_utc(occurred_at)
-    next = add_months(at, equipment.maintenance_frequency_months)
-
+  defp apply_association_effects(%Equipment{} = equipment, "moved", %Event{
+         to_cell_id: nil
+       }) do
+    # ``moved`` with a nil `to_cell_id` = "removed from cell" — the
+    # unit is off the physical floor (in transit, in an office).
     equipment
-    |> Ecto.Changeset.change(last_maintenance_at: at, next_maintenance_at: next)
+    |> Ecto.Changeset.change(current_cell_id: nil)
     |> Repo.update()
   end
 
+  defp apply_association_effects(%Equipment{} = equipment, "assigned", %Event{
+         assigned_to_user_id: user_id
+       })
+       when not is_nil(user_id) do
+    equipment
+    |> Ecto.Changeset.change(assigned_to_id: user_id)
+    |> Repo.update()
+  end
+
+  defp apply_association_effects(%Equipment{} = equipment, "unassigned", _event) do
+    equipment
+    |> Ecto.Changeset.change(assigned_to_id: nil)
+    |> Repo.update()
+  end
+
+  defp apply_association_effects(equipment, _kind, _event), do: {:ok, equipment}
+
+  # Cadence auto-compute lived here for legacy `calibrated` /
+  # `maintenance_completed` events. Those kinds are now rejected at
+  # the transition check — cadence rollups happen inside
+  # `Backend.Equipment.MaintenanceTasks.complete/3` instead, keyed
+  # off the task periodicity. This is a no-op catch-all so callers
+  # passing any kind don't crash.
   defp apply_cadence_updates(equipment, _kind, _occurred_at), do: {:ok, equipment}
 
   # Simple "months from timestamp" calculator — good enough for the

@@ -34,7 +34,7 @@ defmodule BackendWeb.EquipmentController do
 
   plug RequirePermission,
        "equipment.act"
-       when action in [:file_create, :file_delete]
+       when action in [:file_create, :file_delete, :move]
 
   action_fallback FallbackController
 
@@ -55,7 +55,8 @@ defmodule BackendWeb.EquipmentController do
       limit: params["limit"],
       sort: parse_sort(params["sort"]),
       search: params["search"],
-      column_filter: params["column_filter"]
+      column_filter: params["column_filter"],
+      workstation_id: params["workstation_id"]
     ]
   end
 
@@ -165,6 +166,109 @@ defmodule BackendWeb.EquipmentController do
         )
     end
   end
+
+  @doc """
+  Move an equipment unit to a specific storage cell (or clear the
+  cell + set a free-text location for office kit). Wraps the
+  ``moved`` lifecycle event so the timeline reads coherently.
+
+  Body:
+      {
+        "to_cell_uuid": "…",              # or null to clear
+        "location_description": "…",       # optional free-text for
+                                           # off-floor placements
+        "reason": "…"                      # optional audit note
+      }
+  """
+  def move(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    with %Backend.Equipment.Equipment{} = unit <-
+           Equipment.get_for_company(actor.company_id, uuid),
+         {:ok, to_cell_id} <- resolve_cell(actor.company_id, params["to_cell_uuid"]) do
+      # Emit a ``moved`` event so the timeline captures the
+      # from → to transition. Lifecycle side-effects update
+      # equipment.current_cell_id + clear location_description
+      # inside the same transaction.
+      event_attrs = %{
+        reason: params["reason"] || build_move_reason(to_cell_id),
+        from_cell_id: unit.current_cell_id,
+        to_cell_id: to_cell_id
+      }
+
+      case Equipment.record_event(actor, unit, "moved", event_attrs) do
+        {:ok, updated_after_event} ->
+          # If the operator also provided a free-text location
+          # (usually when clearing to null), apply it as a plain
+          # changeset update so the move + descriptor land atomically
+          # from the client's view.
+          case params["location_description"] do
+            v when is_binary(v) ->
+              trimmed = if String.trim(v) == "", do: nil, else: String.trim(v)
+
+              updated_after_event
+              |> Ecto.Changeset.change(location_description: trimmed)
+              |> Backend.Repo.update()
+              |> case do
+                {:ok, final} ->
+                  final = Backend.Repo.preload(final, [:workstation, :current_cell])
+                  json(conn, %{equipment: Payloads.equipment(final)})
+
+                {:error, %Ecto.Changeset{} = cs} ->
+                  changeset_error(conn, cs)
+              end
+
+            _ ->
+              final = Backend.Repo.preload(updated_after_event, [:workstation, :current_cell])
+              json(conn, %{equipment: Payloads.equipment(final)})
+          end
+
+        {:error, :illegal_transition, info} ->
+          unprocessable(conn, "illegal_transition",
+            "That move isn't allowed from status `#{info.from}`.",
+            info
+          )
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          changeset_error(conn, cs)
+      end
+    else
+      {:error, :cell_not_found} ->
+        unprocessable(conn, "cell_not_found",
+          "Storage cell not found in your company.")
+
+      nil ->
+        not_found(conn)
+    end
+  end
+
+  defp build_move_reason(nil), do: "Removed from storage cell"
+  defp build_move_reason(_id), do: "Moved to storage cell"
+
+  # Resolve a cell UUID → integer id inside the actor's tenant. Nil /
+  # blank string → nil (explicit "clear cell"). Anything else that
+  # doesn't match a cell → error so the operator sees a message.
+  defp resolve_cell(_company_id, nil), do: {:ok, nil}
+  defp resolve_cell(_company_id, ""), do: {:ok, nil}
+
+  defp resolve_cell(company_id, uuid) when is_binary(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, cast} ->
+        cell =
+          Backend.Warehouses.StorageCell
+          |> Backend.Repo.get_by(uuid: cast, company_id: company_id)
+
+        case cell do
+          nil -> {:error, :cell_not_found}
+          %{id: id} -> {:ok, id}
+        end
+
+      _ ->
+        {:error, :cell_not_found}
+    end
+  end
+
+  defp resolve_cell(_company_id, _), do: {:error, :cell_not_found}
 
   def events_create(conn, %{"id" => uuid} = params) do
     actor = conn.assigns.current_user
@@ -358,11 +462,16 @@ defmodule BackendWeb.EquipmentController do
            Equipment.get_for_company(actor.company_id, uuid),
          %Backend.Equipment.File{} = file <- Equipment.get_file(unit, file_uuid),
          {:ok, bytes} <- Backend.Storage.get(file.blob_path) do
+      # ``inline`` lets the browser preview PDFs / images in a new
+      # tab (which is what operators expect when they click a
+      # calibration certificate). Right-click still offers download.
+      # Non-previewable MIME types will naturally fall back to a
+      # download prompt.
       conn
       |> put_resp_content_type(file.mime)
       |> put_resp_header(
         "content-disposition",
-        "attachment; filename=\"#{file.filename}\""
+        "inline; filename=\"#{file.filename}\""
       )
       |> send_resp(200, bytes)
     else

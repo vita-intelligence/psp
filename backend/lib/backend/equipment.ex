@@ -56,6 +56,8 @@ defmodule Backend.Equipment do
         |> where([e], e.company_id == ^company_id and e.uuid == ^cast)
         |> preload([
           :item,
+          :category,
+          :workstation,
           :current_cell,
           :assigned_to,
           :purchase_order_line,
@@ -89,6 +91,7 @@ defmodule Backend.Equipment do
     base =
       Equipment
       |> where([e], e.company_id == ^company_id)
+      |> maybe_workstation_filter(opts[:workstation_id])
       |> ListQueries.apply_search(opts[:search], @search)
       |> ListQueries.apply_column_filters(opts[:column_filter], @sortable)
       |> ListQueries.apply_sort(sort, @sortable, @default_sort)
@@ -96,6 +99,23 @@ defmodule Backend.Equipment do
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  # Attached-equipment lookup used by the workstation form. Accepts
+  # a raw string param (from HTTP) or an integer id. Any other value
+  # is a no-op so the ledger still returns all rows.
+  defp maybe_workstation_filter(query, nil), do: query
+  defp maybe_workstation_filter(query, ""), do: query
+  defp maybe_workstation_filter(query, id) when is_integer(id),
+    do: where(query, [e], e.workstation_id == ^id)
+
+  defp maybe_workstation_filter(query, raw) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, ""} -> where(query, [e], e.workstation_id == ^n)
+      _ -> query
+    end
+  end
+
+  defp maybe_workstation_filter(query, _), do: query
 
   @doc """
   Simple unpaginated read used by the due-soon dashboard and some
@@ -216,6 +236,7 @@ defmodule Backend.Equipment do
         "created_by_id" => actor.id,
         "updated_by_id" => actor.id
       })
+      |> apply_category_defaults(company_id)
 
     with :ok <- ensure_item_is_equipment(company_id, attrs["item_id"]) do
       Repo.transaction(fn ->
@@ -333,6 +354,39 @@ defmodule Backend.Equipment do
   end
 
   defp stringify_keys(attrs), do: attrs
+
+  # Category-driven defaults for the create flow. When the caller
+  # picks a ``category_id``, we fill in ``useful_life_years`` /
+  # ``calibration_frequency_months`` / ``maintenance_frequency_months``
+  # from the category unless the operator explicitly typed a value.
+  # Explicit nulls (operator cleared the field) are respected.
+  defp apply_category_defaults(%{"category_id" => cat_id} = attrs, company_id)
+       when is_integer(cat_id) or is_binary(cat_id) do
+    case Repo.get_by(Backend.Equipment.Category, id: cat_id, company_id: company_id) do
+      nil ->
+        attrs
+
+      %Backend.Equipment.Category{} = cat ->
+        attrs
+        |> maybe_default("useful_life_years", cat.default_useful_life_years)
+        |> maybe_default(
+          "calibration_frequency_months",
+          cat.default_calibration_frequency_months
+        )
+        |> maybe_default(
+          "maintenance_frequency_months",
+          cat.default_maintenance_frequency_months
+        )
+    end
+  end
+
+  defp apply_category_defaults(attrs, _company_id), do: attrs
+
+  defp maybe_default(attrs, _key, nil), do: attrs
+
+  defp maybe_default(attrs, key, value) do
+    if Map.has_key?(attrs, key), do: attrs, else: Map.put(attrs, key, value)
+  end
 
   # ----- events (read) --------------------------------------------
 

@@ -4,6 +4,8 @@ import { requireUser } from "@/lib/auth/server";
 import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
+import { listEquipmentCategories } from "@/lib/equipment/server";
+import { listWorkstationsPage } from "@/lib/production/server";
 import { NewEquipmentForm } from "./new-equipment-form";
 
 export const metadata = { title: "New equipment · PSP" };
@@ -14,6 +16,17 @@ export default async function NewEquipmentPage() {
   if (!hasPermission(user, "equipment.create")) {
     redirect("/equipment");
   }
+
+  const categories = await listEquipmentCategories();
+  const workstationsPage = await listWorkstationsPage({
+    query: "is_active=true&limit=200",
+  });
+  const workstations = (workstationsPage?.items ?? []).map((w) => ({
+    id: w.id,
+    uuid: w.uuid,
+    name: w.name,
+    workstation_group: w.workstation_group,
+  }));
 
   return (
     <div className="flex flex-1 flex-col">
@@ -26,7 +39,10 @@ export default async function NewEquipmentPage() {
             description="Manual entry — opening balance, donation, or one-off. Goods-in flow for PO receipts lands in a follow-up PR."
             backHref="/equipment"
           />
-          <NewEquipmentForm />
+          <NewEquipmentForm
+            categories={categories}
+            workstations={workstations}
+          />
         </div>
       </main>
     </div>

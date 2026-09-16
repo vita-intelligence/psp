@@ -124,13 +124,13 @@ defmodule Backend.Production.Costing do
     end
   end
 
-  # Per-machine roll-up across every session in the CO's MO tree.
+  # Per-equipment roll-up across every session in the CO's MO tree.
   #
   # Walks each session, accumulates hours against the session's
-  # workstation, then attributes those hours × rate to every active
-  # rate-enabled machine attached to that workstation. Machines with
-  # zero contribution are dropped so the FE doesn't render dead rows
-  # for stations that never ran.
+  # workstation, then attributes those hours × the equipment unit's
+  # cached hourly_running_cost to every equipment currently attached
+  # to that workstation. Units with no running-cost stack are
+  # skipped (the FE doesn't render dead rows).
   defp compute_by_machine([], _company_id), do: []
 
   defp compute_by_machine(mo_ids, company_id) do
@@ -141,7 +141,7 @@ defmodule Backend.Production.Costing do
           where:
             s.company_id == ^company_id and
               step.manufacturing_order_id in ^mo_ids,
-          preload: [workstation: :machines]
+          preload: [workstation: [equipment: :item]]
       )
 
     # workstation_id → total session hours across the CO tree
@@ -158,10 +158,10 @@ defmodule Backend.Production.Costing do
         end
       end)
 
-    # For every workstation that had any hours, iterate its machines
-    # and produce one row per (machine, workstation) pair. A machine
-    # can only belong to one workstation today (belongs_to), so this
-    # is really "one row per rate-enabled machine that saw activity".
+    # For every workstation that had any hours, iterate its attached
+    # equipment and produce one row per (equipment, workstation) pair.
+    # Equipment.workstation_id is a belongs_to (nullable), so one
+    # equipment unit contributes to at most one workstation row.
     ws_by_id =
       Enum.reduce(sessions, %{}, fn session, acc ->
         case session.workstation do
@@ -172,20 +172,18 @@ defmodule Backend.Production.Costing do
 
     for {ws_id, hours} <- hours_by_ws,
         %Workstation{} = ws <- [Map.get(ws_by_id, ws_id)],
-        is_list(ws.machines),
-        machine <- ws.machines,
-        machine.is_active,
-        machine.hourly_rate_enabled,
-        match?(%Decimal{}, machine.hourly_rate) do
-      cost = Decimal.mult(machine.hourly_rate, hours)
+        is_list(ws.equipment),
+        equipment <- ws.equipment,
+        match?(%Decimal{}, equipment.hourly_running_cost) do
+      cost = Decimal.mult(equipment.hourly_running_cost, hours)
 
       %{
-        uuid: machine.uuid,
-        name: machine.name,
-        asset_tag: machine.asset_tag,
+        uuid: equipment.uuid,
+        name: (equipment.item && equipment.item.name) || equipment.model || "—",
+        asset_tag: equipment.serial_number,
         workstation_uuid: ws.uuid,
         workstation_name: ws.name,
-        hourly_rate: to_string(machine.hourly_rate),
+        hourly_rate: to_string(equipment.hourly_running_cost),
         hours: to_string(Decimal.round(hours, 4)),
         cost: cost
       }
@@ -230,7 +228,7 @@ defmodule Backend.Production.Costing do
         from s in WorkstationSession,
           where: s.manufacturing_order_step_id == ^step.id,
           order_by: [asc: s.started_at],
-          preload: [workstation: [:workstation_group, :machines]]
+          preload: [workstation: [:workstation_group, :equipment]]
       )
 
     session_rows =
@@ -309,19 +307,23 @@ defmodule Backend.Production.Costing do
   end
 
   # Cost cascade:
-  #   1. SUM of every active machine attached to the station where the
-  #      session ran (rate-enabled + is_active only). A station with 3
-  #      mixers rate-enabled at £2/h contributes £6/h.
-  #   2. If no machines contribute, fall back to the workstation's own
-  #      override.
+  #   1. SUM of every attached equipment's cached
+  #      `hourly_running_cost` at the station where the session ran.
+  #      A station with 3 mixers at £2/h each contributes £6/h.
+  #      The cache is maintained by
+  #      `Backend.Equipment.RunningCosts.recompute_cache/1`, so this
+  #      is a single field read — no per-session SUM.
+  #   2. If no equipment contributes, fall back to the workstation's
+  #      own hourly_rate override.
   #   3. Otherwise, fall back to the workstation_group's rate.
-  defp effective_machine_rate(%Workstation{machines: machines} = ws) when is_list(machines) do
+  defp effective_machine_rate(%Workstation{equipment: equipment} = ws)
+       when is_list(equipment) do
     sum =
-      machines
-      |> Enum.filter(fn m ->
-        m.is_active && m.hourly_rate_enabled && match?(%Decimal{}, m.hourly_rate)
+      equipment
+      |> Enum.filter(&match?(%Decimal{}, &1.hourly_running_cost))
+      |> Enum.reduce(Decimal.new(0), fn e, acc ->
+        Decimal.add(acc, e.hourly_running_cost)
       end)
-      |> Enum.reduce(Decimal.new(0), fn m, acc -> Decimal.add(acc, m.hourly_rate) end)
 
     if Decimal.compare(sum, Decimal.new(0)) == :gt do
       sum

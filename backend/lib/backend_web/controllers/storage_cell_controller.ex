@@ -32,7 +32,45 @@ defmodule BackendWeb.StorageCellController do
        [warehouse: "warehouses.edit", production_facility: "production.facility_edit"]
        when action in [:create, :update, :patch_tags, :delete, :split, :sync_tags]
 
+  # Flat picker doesn't nest under a warehouse — gate on the broader
+  # "can view storage" scope. Falls back to warehouses.view since the
+  # picker is used by the equipment-move flow (which lands on any
+  # warehouse's cell).
+  plug BackendWeb.Plugs.RequirePermission,
+       "warehouses.view"
+       when action in [:picker]
+
   action_fallback BackendWeb.FallbackController
+
+  @doc """
+  Flat picker feed — used by the equipment "Move" dialog + any
+  future scan-move surface. `search` does ILIKE across cell /
+  location / warehouse name; `limit` caps at 100.
+  """
+  def picker(conn, params) do
+    actor = conn.assigns.current_user
+
+    items =
+      Backend.Warehouses.list_cells_for_picker(
+        actor.company_id,
+        search: params["search"],
+        limit: parse_limit(params["limit"])
+      )
+
+    json(conn, %{items: items})
+  end
+
+  defp parse_limit(nil), do: 25
+  defp parse_limit(v) when is_integer(v), do: v
+
+  defp parse_limit(v) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, ""} -> n
+      _ -> 25
+    end
+  end
+
+  defp parse_limit(_), do: 25
 
   def show(conn, %{
         "warehouse_id" => warehouse_uuid,

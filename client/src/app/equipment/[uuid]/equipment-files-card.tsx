@@ -6,6 +6,13 @@ import { toast } from "sonner";
 import { FileText, Loader2, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -84,13 +91,23 @@ export function EquipmentFilesCard({
   }
 
   return (
-    <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
-      <header className="mb-4 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Files</h2>
-        <span className="text-[11px] text-muted-foreground">
-          {files.length} attached
-        </span>
-      </header>
+    <Card className="border-border/60">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1.5">
+            <CardTitle>Files</CardTitle>
+            <CardDescription>
+              Calibration certificates, service reports, manuals,
+              warranty PDFs, and nameplate photos attached to this unit.
+              Click a filename to view or download.
+            </CardDescription>
+          </div>
+          <span className="text-[11px] text-muted-foreground">
+            {files.length} attached
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
 
       {canEdit && (
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-border/40 bg-muted/30 p-3">
@@ -176,7 +193,8 @@ export function EquipmentFilesCard({
           ))}
         </ul>
       )}
-    </section>
+      </CardContent>
+    </Card>
   );
 }
 

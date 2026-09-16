@@ -103,7 +103,7 @@ const SECTIONS: ProdSection[] = [
     href: "/production/workstations",
     label: "Workstations",
     description:
-      "Physical machines + their capacity, calendar, and downtime.",
+      "Grouped stations that share a queue. Attach equipment on the ledger to feed cost roll-up.",
     Icon: Settings2,
   },
   {

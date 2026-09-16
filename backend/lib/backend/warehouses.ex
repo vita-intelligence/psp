@@ -257,6 +257,75 @@ defmodule Backend.Warehouses do
   end
 
   @doc """
+  Flat, searchable list of storage cells for pickers (equipment
+  move, quick-move, etc.) — not the plan editor. Returns
+  picker-shaped maps with `{cell.uuid, cell.name, location.name,
+  warehouse.name}` so a UI can render "Cell · Location · Warehouse"
+  without a follow-up round-trip.
+
+  Filtering:
+    * `search` (string) — ILIKE across cell / location / warehouse
+      name. Empty = first page.
+    * `limit` (int, default 25, max 100).
+
+  System cells (`system_kind = "unregistered"`) are excluded — those
+  are internal buckets, not pickable destinations.
+  """
+  def list_cells_for_picker(company_id, opts \\ []) when is_integer(company_id) do
+    limit =
+      opts
+      |> Keyword.get(:limit, 25)
+      |> case do
+        n when is_integer(n) and n > 0 and n <= 100 -> n
+        _ -> 25
+      end
+
+    search = Keyword.get(opts, :search)
+
+    base =
+      from c in StorageCell,
+        join: l in StorageLocation,
+        on: l.id == c.storage_location_id,
+        join: f in Backend.Warehouses.Floor,
+        on: f.id == l.floor_id,
+        join: w in Backend.Warehouses.Warehouse,
+        on: w.id == l.warehouse_id,
+        where:
+          c.company_id == ^company_id and
+            (is_nil(c.system_kind) or c.system_kind != "unregistered"),
+        order_by: [asc: w.name, asc: l.name, asc: c.name],
+        limit: ^limit,
+        select: %{
+          uuid: c.uuid,
+          name: c.name,
+          purpose: c.purpose,
+          location_uuid: l.uuid,
+          location_name: l.name,
+          floor_uuid: f.uuid,
+          floor_name: f.name,
+          warehouse_uuid: w.uuid,
+          warehouse_name: w.name
+        }
+
+    query =
+      case search do
+        s when is_binary(s) and s != "" ->
+          like = "%" <> ListQueries.escape_like(s) <> "%"
+
+          from [c, l, _f, w] in base,
+            where:
+              ilike(c.name, ^like) or
+                ilike(l.name, ^like) or
+                ilike(w.name, ^like)
+
+        _ ->
+          base
+      end
+
+    Repo.all(query)
+  end
+
+  @doc """
   Return the `(floor, location, cell)` tuple where this warehouse's
   unregistered stock lives. Lazy-creates the hierarchy on first call
   so brand-new warehouses don't need a special bootstrap step.

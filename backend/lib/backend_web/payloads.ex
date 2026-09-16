@@ -2242,74 +2242,11 @@ defmodule BackendWeb.Payloads do
 
   def workstation_summary(_), do: nil
 
-  # ----- machines --------------------------------------------------
-
-  @doc """
-  Detailed machine payload for the form + detail page.
-
-  `calibration_overdue` is a computed truthy signal so the FE badge
-  logic doesn't need to know the today-vs-due-date rule.
-  """
-  def machine(%Backend.Production.Machine{} = m) do
-    %{
-      id: m.id,
-      uuid: m.uuid,
-      name: m.name,
-      notes: m.notes,
-      workstation_id: m.workstation_id,
-      workstation: workstation_summary(m.workstation),
-      hourly_rate_enabled: m.hourly_rate_enabled,
-      hourly_rate: decimal_to_string(m.hourly_rate),
-      asset_tag: m.asset_tag,
-      serial_number: m.serial_number,
-      manufacturer: m.manufacturer,
-      model: m.model,
-      commissioned_at: m.commissioned_at,
-      last_calibrated_at: m.last_calibrated_at,
-      next_calibration_due_at: m.next_calibration_due_at,
-      calibration_frequency_months: m.calibration_frequency_months,
-      calibration_overdue: machine_calibration_overdue?(m),
-      is_active: m.is_active,
-      created_by: actor(m, :created_by),
-      updated_by: actor(m, :updated_by),
-      inserted_at: m.inserted_at,
-      updated_at: m.updated_at
-    }
-  end
-
-  def machine(_), do: nil
-
-  @doc "Slim machine row for the ledger + workstation form's attached-machines list."
-  def machine_summary(%Backend.Production.Machine{} = m) do
-    %{
-      id: m.id,
-      uuid: m.uuid,
-      name: m.name,
-      workstation: workstation_summary(m.workstation),
-      hourly_rate_enabled: m.hourly_rate_enabled,
-      hourly_rate: decimal_to_string(m.hourly_rate),
-      asset_tag: m.asset_tag,
-      manufacturer: m.manufacturer,
-      model: m.model,
-      last_calibrated_at: m.last_calibrated_at,
-      next_calibration_due_at: m.next_calibration_due_at,
-      calibration_overdue: machine_calibration_overdue?(m),
-      is_active: m.is_active,
-      inserted_at: m.inserted_at,
-      updated_at: m.updated_at
-    }
-  end
-
-  def machine_summary(_), do: nil
-
-  defp machine_calibration_overdue?(%Backend.Production.Machine{
-         is_active: true,
-         next_calibration_due_at: %Date{} = due
-       }) do
-    Date.compare(due, Date.utc_today()) == :lt
-  end
-
-  defp machine_calibration_overdue?(_), do: false
+  # ----- machines (RETIRED) ----------------------------------------
+  # Machine payload shapers removed with the Phase B consolidation.
+  # Physical assets attached to a workstation are now
+  # Backend.Equipment.Equipment rows; use `equipment/1` /
+  # `equipment_summary/1` instead.
 
   # ----- workstation sessions --------------------------------------
 
@@ -7080,6 +7017,14 @@ defmodule BackendWeb.Payloads do
       retired_at: e.retired_at,
       disposed_at: e.disposed_at,
       notes: e.notes,
+      location_description: e.location_description,
+      workstation_id: e.workstation_id,
+      workstation:
+        preloaded_or_nil(e, :workstation, &equipment_workstation_summary/1),
+      hourly_running_cost: equipment_decimal_or_nil(e.hourly_running_cost),
+      hourly_running_cost_currency: e.hourly_running_cost_currency,
+      category_id: e.category_id,
+      category: preloaded_or_nil(e, :category, &equipment_category_summary/1),
       item: preloaded_or_nil(e, :item, &item/1),
       current_cell:
         preloaded_or_nil(e, :current_cell, &equipment_cell_summary/1),
@@ -7089,6 +7034,35 @@ defmodule BackendWeb.Payloads do
       created_by: preloaded_or_nil(e, :created_by, &audit_actor/1),
       inserted_at: e.inserted_at,
       updated_at: e.updated_at
+    }
+  end
+
+  defp equipment_category_summary(%Backend.Equipment.Category{} = c) do
+    %{id: c.id, uuid: c.uuid, name: c.name, is_active: c.is_active}
+  end
+
+  defp equipment_category_summary(_), do: nil
+
+  defp equipment_workstation_summary(%Backend.Production.Workstation{} = w) do
+    %{id: w.id, uuid: w.uuid, name: w.name}
+  end
+
+  defp equipment_workstation_summary(_), do: nil
+
+  def equipment_running_cost_component(
+        %Backend.Equipment.RunningCostComponent{} = c
+      ) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      equipment_id: c.equipment_id,
+      label: c.label,
+      amount_per_hour: equipment_decimal_or_nil(c.amount_per_hour),
+      currency: c.currency,
+      notes: c.notes,
+      is_active: c.is_active,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at
     }
   end
 
@@ -7154,6 +7128,142 @@ defmodule BackendWeb.Payloads do
       updated_at: f.updated_at
     }
   end
+
+  @doc """
+  Asset category — grouping label with operator-facing defaults.
+  """
+  def equipment_category(%Backend.Equipment.Category{} = c) do
+    %{
+      id: c.id,
+      uuid: c.uuid,
+      name: c.name,
+      notes: c.notes,
+      is_active: c.is_active,
+      default_useful_life_years: c.default_useful_life_years,
+      default_calibration_frequency_months: c.default_calibration_frequency_months,
+      default_maintenance_frequency_months: c.default_maintenance_frequency_months,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at
+    }
+  end
+
+  @doc """
+  Preventive-maintenance / calibration task attached to an
+  equipment row. See `Backend.Equipment.MaintenanceTask`.
+  """
+  def equipment_maintenance_task(%Backend.Equipment.MaintenanceTask{} = t) do
+    %{
+      id: t.id,
+      uuid: t.uuid,
+      equipment_id: t.equipment_id,
+      task_name: t.task_name,
+      task_type: t.task_type,
+      periodicity: t.periodicity,
+      periodicity_interval: t.periodicity_interval,
+      start_date: t.start_date,
+      end_date: t.end_date,
+      last_completion_date: t.last_completion_date,
+      next_due_date: t.next_due_date,
+      certificate_required: t.certificate_required,
+      notes: t.notes,
+      is_active: t.is_active,
+      assigned_to_user: preloaded_or_nil(t, :assigned_to_user, &audit_actor/1),
+      created_by: preloaded_or_nil(t, :created_by, &audit_actor/1),
+      updated_by: preloaded_or_nil(t, :updated_by, &audit_actor/1),
+      inserted_at: t.inserted_at,
+      updated_at: t.updated_at
+    }
+  end
+
+  @doc """
+  Reactive-breakdown repair record. See `Backend.Equipment.Repair`.
+  """
+  def equipment_repair(%Backend.Equipment.Repair{} = r) do
+    %{
+      id: r.id,
+      uuid: r.uuid,
+      equipment_id: r.equipment_id,
+      failure_date: r.failure_date,
+      started_at: r.started_at,
+      completion_date: r.completion_date,
+      downtime_minutes: r.downtime_minutes,
+      status: r.status,
+      description: r.description,
+      actions_performed: r.actions_performed,
+      repair_cost: equipment_decimal_or_nil(r.repair_cost),
+      currency: r.currency,
+      external_vendor_name: r.external_vendor_name,
+      notes: r.notes,
+      assigned_to_user: preloaded_or_nil(r, :assigned_to_user, &audit_actor/1),
+      parts: equipment_preloaded_list(r, :parts, &equipment_repair_part/1),
+      parts_total: equipment_repair_parts_total(r),
+      inserted_at: r.inserted_at,
+      updated_at: r.updated_at
+    }
+  end
+
+  @doc """
+  Spare / consumable line on a repair.
+  """
+  def equipment_repair_part(%Backend.Equipment.RepairPart{} = p) do
+    %{
+      id: p.id,
+      uuid: p.uuid,
+      repair_id: p.repair_id,
+      item_id: p.item_id,
+      item:
+        preloaded_or_nil(p, :item, fn item ->
+          %{id: item.id, name: item.name, external_sku: item.external_sku}
+        end),
+      quantity: equipment_decimal_or_nil(p.quantity),
+      unit_cost: equipment_decimal_or_nil(p.unit_cost),
+      currency: p.currency,
+      line_total: equipment_repair_part_total(p),
+      notes: p.notes,
+      inserted_at: p.inserted_at,
+      updated_at: p.updated_at
+    }
+  end
+
+  defp equipment_repair_parts_total(%Backend.Equipment.Repair{parts: parts}) when is_list(parts) do
+    parts
+    |> Enum.reduce(Decimal.new(0), fn part, acc ->
+      case equipment_repair_part_total_decimal(part) do
+        nil -> acc
+        d -> Decimal.add(acc, d)
+      end
+    end)
+    |> Decimal.to_string()
+  end
+
+  defp equipment_repair_parts_total(_), do: nil
+
+  defp equipment_repair_part_total(%Backend.Equipment.RepairPart{} = p) do
+    case equipment_repair_part_total_decimal(p) do
+      nil -> nil
+      d -> Decimal.to_string(d)
+    end
+  end
+
+  defp equipment_repair_part_total_decimal(%Backend.Equipment.RepairPart{quantity: q, unit_cost: c})
+       when not is_nil(q) and not is_nil(c) do
+    Decimal.mult(q, c)
+  end
+
+  defp equipment_repair_part_total_decimal(_), do: nil
+
+  defp equipment_preloaded_list(struct, field, mapper) do
+    case Map.get(struct, field) do
+      nil -> nil
+      %Ecto.Association.NotLoaded{} -> nil
+      list when is_list(list) -> Enum.map(list, mapper)
+      _ -> nil
+    end
+  end
+
+  defp equipment_decimal_or_nil(nil), do: nil
+  defp equipment_decimal_or_nil(%Decimal{} = d), do: Decimal.to_string(d)
+  defp equipment_decimal_or_nil(other), do: other
 
   @doc """
   Integration token — machine-to-machine bearer credential. Never

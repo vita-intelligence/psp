@@ -12,11 +12,17 @@ import {
   getEquipment,
   listEquipmentEvents,
   listEquipmentFiles,
+  listEquipmentMaintenanceTasks,
+  listEquipmentRepairs,
+  listEquipmentRunningCostComponents,
 } from "@/lib/equipment/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { EquipmentDetail } from "./equipment-detail";
 import { EquipmentEventTimeline } from "./equipment-event-timeline";
 import { EquipmentFilesCard } from "./equipment-files-card";
+import { EquipmentMaintenanceTasksCard } from "./equipment-maintenance-tasks-card";
+import { EquipmentRepairsCard } from "./equipment-repairs-card";
+import { EquipmentRunningCostCard } from "./equipment-running-cost-card";
 
 export const metadata = { title: "Equipment · PSP" };
 export const dynamic = "force-dynamic";
@@ -32,13 +38,17 @@ export default async function EquipmentDetailPage({
   }
 
   const { uuid } = await params;
-  const [unit, prefs, events, files, comments] = await Promise.all([
-    getEquipment(uuid),
-    getCompanyDefaults(),
-    listEquipmentEvents(uuid),
-    listEquipmentFiles(uuid),
-    listCommentsForEntity("equipment", uuid),
-  ]);
+  const [unit, prefs, events, files, tasks, repairs, comments, runningCosts] =
+    await Promise.all([
+      getEquipment(uuid),
+      getCompanyDefaults(),
+      listEquipmentEvents(uuid),
+      listEquipmentFiles(uuid),
+      listEquipmentMaintenanceTasks(uuid),
+      listEquipmentRepairs(uuid),
+      listCommentsForEntity("equipment", uuid),
+      listEquipmentRunningCostComponents(uuid),
+    ]);
 
   if (!unit) notFound();
   if (!prefs) notFound();
@@ -70,6 +80,31 @@ export default async function EquipmentDetailPage({
           />
 
           <EquipmentDetail equipment={unit} canAct={canAct} prefs={prefs} />
+
+          <EquipmentRunningCostCard
+            equipmentUuid={unit.uuid}
+            components={runningCosts.items}
+            hourlyRunningCost={runningCosts.hourly_running_cost}
+            hourlyRunningCostCurrency={runningCosts.hourly_running_cost_currency}
+            workstation={unit.workstation}
+            canEdit={canAct}
+            prefs={prefs}
+            defaultCurrency={unit.currency ?? prefs.currency_code}
+          />
+
+          <EquipmentMaintenanceTasksCard
+            equipmentUuid={unit.uuid}
+            tasks={tasks}
+            canEdit={canAct}
+            prefs={prefs}
+          />
+
+          <EquipmentRepairsCard
+            equipmentUuid={unit.uuid}
+            repairs={repairs}
+            canEdit={canAct}
+            prefs={prefs}
+          />
 
           <EquipmentEventTimeline events={events} prefs={prefs} />
 

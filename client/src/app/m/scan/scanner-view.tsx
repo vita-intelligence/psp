@@ -240,8 +240,15 @@ function routeFromUrl(
   }
   const cellMatch = path.match(/\/stock\/cells\/([^/]+)/);
   if (cellMatch?.[1]) return `/m/scan/cell/${encodeURIComponent(cellMatch[1])}`;
-  const machineMatch = path.match(/\/production\/machines\/([^/]+)/);
-  if (machineMatch?.[1])
-    return `/m/machines/${encodeURIComponent(machineMatch[1])}`;
+  // Equipment QR labels encode /m/equipment/<uuid> directly (so a
+  // scan opens the mobile page without a redirect). Support the
+  // desktop path variant too — an operator scanning a screen-share
+  // of the desktop URL should still land somewhere useful.
+  const mobileEquipmentMatch = path.match(/\/m\/equipment\/([^/]+)/);
+  if (mobileEquipmentMatch?.[1])
+    return `/m/equipment/${encodeURIComponent(mobileEquipmentMatch[1])}`;
+  const equipmentMatch = path.match(/\/equipment\/([^/]+)/);
+  if (equipmentMatch?.[1])
+    return `/m/equipment/${encodeURIComponent(equipmentMatch[1])}`;
   return null;
 }

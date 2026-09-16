@@ -31,8 +31,15 @@ defmodule Backend.Equipment.Equipment do
   alias Backend.Purchasing.PurchaseOrderLine
   alias Backend.Warehouses.StorageCell
 
-  @statuses ~w(expected received in_service under_maintenance out_for_repair
-               awaiting_calibration retired disposed canceled)
+  # ERPNext-style: status tracks physical presence in the field, not
+  # operational state. Operational availability comes from the
+  # maintenance-task + repair records (there's a task overdue → asset
+  # is behind on maintenance; there's an open repair → asset is out
+  # of order). We deliberately don't have `under_maintenance` /
+  # `out_for_repair` / `awaiting_calibration` — those overlapped with
+  # the task/repair modules and forced operators to record the same
+  # event twice.
+  @statuses ~w(expected received in_service retired disposed canceled)
 
   def statuses, do: @statuses
 
@@ -64,15 +71,37 @@ defmodule Backend.Equipment.Equipment do
 
     field :notes, :string
 
+    # Free-text "where is it" for units not tracked by a storage cell —
+    # office IT, wall-mounted displays, meter cupboards, etc. See the
+    # detail page location line for the display priority.
+    field :location_description, :string
+
+    # Cached SUM of active running-cost components (see
+    # ``Backend.Equipment.RunningCosts``). Denormalised for the
+    # workstation cost roll-up hot path. Recomputed on every
+    # component insert / update / deactivate.
+    field :hourly_running_cost, :decimal
+    field :hourly_running_cost_currency, :string
+
     belongs_to :company, Company
     belongs_to :item, Item
+    belongs_to :category, Backend.Equipment.Category
     belongs_to :current_cell, StorageCell, foreign_key: :current_cell_id
     belongs_to :assigned_to, User, foreign_key: :assigned_to_id
     belongs_to :purchase_order_line, PurchaseOrderLine
+    # Optional attachment to a production workstation. When set, the
+    # unit's hourly_running_cost participates in that workstation's
+    # cost roll-up (see Backend.Production.WorkstationCosts).
+    belongs_to :workstation, Backend.Production.Workstation
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
     has_many :events, Backend.Equipment.Event, foreign_key: :equipment_id
+    has_many :maintenance_tasks, Backend.Equipment.MaintenanceTask, foreign_key: :equipment_id
+    has_many :repairs, Backend.Equipment.Repair, foreign_key: :equipment_id
+    has_many :running_cost_components,
+             Backend.Equipment.RunningCostComponent,
+             foreign_key: :equipment_id
 
     timestamps(type: :utc_datetime)
   end
@@ -88,6 +117,8 @@ defmodule Backend.Equipment.Equipment do
       :uuid,
       :company_id,
       :item_id,
+      :category_id,
+      :workstation_id,
       :serial_number,
       :manufacturer_serial,
       :manufacturer,
@@ -108,6 +139,9 @@ defmodule Backend.Equipment.Equipment do
       :last_maintenance_at,
       :next_maintenance_at,
       :notes,
+      :location_description,
+      :hourly_running_cost,
+      :hourly_running_cost_currency,
       :created_by_id,
       :updated_by_id
     ])
@@ -147,6 +181,8 @@ defmodule Backend.Equipment.Equipment do
   def edit_changeset(equipment, attrs) do
     equipment
     |> cast(attrs, [
+      :category_id,
+      :workstation_id,
       :manufacturer_serial,
       :manufacturer,
       :model,
@@ -158,6 +194,9 @@ defmodule Backend.Equipment.Equipment do
       :calibration_frequency_months,
       :maintenance_frequency_months,
       :notes,
+      :location_description,
+      :current_cell_id,
+      :assigned_to_id,
       :updated_by_id
     ])
     |> validate_length(:manufacturer_serial, max: 120)

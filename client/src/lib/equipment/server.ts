@@ -3,9 +3,13 @@ import { api } from "../api";
 import { getSessionToken } from "../auth/server";
 import type {
   Equipment,
+  EquipmentCategory,
   EquipmentDueRow,
   EquipmentEvent,
   EquipmentFile,
+  EquipmentMaintenanceTask,
+  EquipmentRepair,
+  EquipmentRunningCostComponent,
 } from "./types";
 
 /** First-page fetch for the ledger. Cursor + sort + filter continue
@@ -94,6 +98,91 @@ export async function listEquipmentFiles(
       { token, cache: "no-store" },
     );
     return files;
+  } catch {
+    return [];
+  }
+}
+
+export async function listEquipmentMaintenanceTasks(
+  uuid: string,
+): Promise<EquipmentMaintenanceTask[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+
+  try {
+    const { items } = await api<{ items: EquipmentMaintenanceTask[] }>(
+      `/api/equipment/${encodeURIComponent(uuid)}/maintenance-tasks`,
+      { token, cache: "no-store" },
+    );
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+export async function listEquipmentRunningCostComponents(
+  uuid: string,
+): Promise<{
+  items: EquipmentRunningCostComponent[];
+  total: number;
+  hourly_running_cost: string | null;
+  hourly_running_cost_currency: string | null;
+}> {
+  const token = await getSessionToken();
+  const empty = {
+    items: [],
+    total: 0,
+    hourly_running_cost: null,
+    hourly_running_cost_currency: null,
+  };
+  if (!token) return empty;
+
+  try {
+    return await api<{
+      items: EquipmentRunningCostComponent[];
+      total: number;
+      hourly_running_cost: string | null;
+      hourly_running_cost_currency: string | null;
+    }>(`/api/equipment/${encodeURIComponent(uuid)}/running-costs`, {
+      token,
+      cache: "no-store",
+    });
+  } catch {
+    return empty;
+  }
+}
+
+export async function listEquipmentCategories(opts?: {
+  includeInactive?: boolean;
+}): Promise<EquipmentCategory[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+
+  const qs = opts?.includeInactive ? "?include_inactive=true" : "";
+
+  try {
+    const { items } = await api<{ items: EquipmentCategory[] }>(
+      `/api/equipment-categories${qs}`,
+      { token, cache: "no-store" },
+    );
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+export async function listEquipmentRepairs(
+  uuid: string,
+): Promise<EquipmentRepair[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+
+  try {
+    const { items } = await api<{ items: EquipmentRepair[] }>(
+      `/api/equipment/${encodeURIComponent(uuid)}/repairs`,
+      { token, cache: "no-store" },
+    );
+    return items;
   } catch {
     return [];
   }

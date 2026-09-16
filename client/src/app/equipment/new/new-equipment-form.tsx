@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Save } from "lucide-react";
@@ -16,16 +16,31 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorBanner } from "@/components/forms/error-banner";
+import { SearchPicker } from "@/components/forms/search-picker";
 import { createEquipmentAction } from "@/lib/equipment/actions";
+import type { EquipmentCategory } from "@/lib/equipment/types";
+import {
+  itemPickerFetcher,
+  type ItemPickerOption,
+} from "@/lib/items/picker-client";
 import type { ErrorDebug } from "@/lib/errors/types";
 
-interface EquipmentItemOption {
+interface WorkstationOption {
   id: number;
-  code: string | null;
+  uuid: string;
   name: string;
+  workstation_group: { name: string } | null;
 }
 
-export function NewEquipmentForm() {
+interface NewEquipmentFormProps {
+  categories: EquipmentCategory[];
+  workstations: WorkstationOption[];
+}
+
+export function NewEquipmentForm({
+  categories,
+  workstations,
+}: NewEquipmentFormProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<{
@@ -34,10 +49,9 @@ export function NewEquipmentForm() {
     debug?: ErrorDebug;
   } | null>(null);
 
-  const [items, setItems] = useState<EquipmentItemOption[]>([]);
-  const [itemsLoading, setItemsLoading] = useState(true);
-
-  const [itemId, setItemId] = useState<string>("");
+  const [item, setItem] = useState<ItemPickerOption | null>(null);
+  const [categoryId, setCategoryId] = useState<string>("");
+  const [workstationId, setWorkstationId] = useState<string>("");
   const [serialNumber, setSerialNumber] = useState<string>("");
   const [manufacturer, setManufacturer] = useState<string>("");
   const [model, setModel] = useState<string>("");
@@ -54,49 +68,56 @@ export function NewEquipmentForm() {
   const [usefulLifeYears, setUsefulLifeYears] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
 
-  // Lazy-load only equipment-type items into the picker so the
-  // dropdown doesn't drown in raw materials.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(
-          "/api/items?picker=true&limit=200&item_type=equipment",
-          { cache: "no-store" },
-        );
-        if (!res.ok) return;
-        const body = (await res.json()) as {
-          items: Array<{ id: number; code: string | null; name: string }>;
-        };
-        if (!cancelled) {
-          setItems(
-            body.items.map((i) => ({
-              id: i.id,
-              code: i.code,
-              name: i.name,
-            })),
-          );
-        }
-      } finally {
-        if (!cancelled) setItemsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Stable identity per render — the picker uses it as an effect
+  // dependency, so recreating the closure on every keystroke would
+  // thrash the debounce timer.
+  const fetchItems = useMemo(
+    () => itemPickerFetcher({ itemType: "equipment", limit: 25 }),
+    [],
+  );
 
-  const canSubmit =
-    !!itemId && !!serialNumber.trim() && !pending;
+  const selectedCategory = categoryId
+    ? categories.find((c) => String(c.id) === categoryId) ?? null
+    : null;
+
+  function handleCategoryChange(next: string) {
+    setCategoryId(next);
+    const picked =
+      next === "" ? null : categories.find((c) => String(c.id) === next);
+    if (!picked) return;
+
+    // Only auto-fill the cadence + life fields the operator hasn't
+    // already typed — the category is a starting-point, not an
+    // override. Empty string means "operator hasn't touched it yet".
+    if (
+      !calibrationMonths &&
+      picked.default_calibration_frequency_months != null
+    ) {
+      setCalibrationMonths(String(picked.default_calibration_frequency_months));
+    }
+    if (
+      !maintenanceMonths &&
+      picked.default_maintenance_frequency_months != null
+    ) {
+      setMaintenanceMonths(String(picked.default_maintenance_frequency_months));
+    }
+    if (!usefulLifeYears && picked.default_useful_life_years != null) {
+      setUsefulLifeYears(String(picked.default_useful_life_years));
+    }
+  }
+
+  const canSubmit = !!item && !!serialNumber.trim() && !pending;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || !item) return;
     setError(null);
 
     startTransition(async () => {
       const res = await createEquipmentAction({
-        item_id: Number(itemId),
+        item_id: item.id,
+        category_id: categoryId ? Number(categoryId) : null,
+        workstation_id: workstationId ? Number(workstationId) : null,
         serial_number: serialNumber.trim(),
         manufacturer: manufacturer.trim() || null,
         model: model.trim() || null,
@@ -136,27 +157,96 @@ export function NewEquipmentForm() {
       className="space-y-4 rounded-lg border border-border/60 bg-card p-5 shadow-sm"
     >
       <FieldRow label="Item" required>
-        {itemsLoading ? (
-          <p className="text-xs text-muted-foreground">Loading items…</p>
-        ) : items.length === 0 ? (
-          <p className="text-xs text-destructive">
-            No items with type = Equipment yet. Create one first at
-            Settings → Items.
+        <SearchPicker<ItemPickerOption>
+          paginatedFetcher={fetchItems}
+          value={item}
+          onChange={setItem}
+          placeholder="Search equipment SKUs — name, code, or SKU…"
+          emptyHint="No equipment items match. Type to refine, or add one in Items."
+          disabled={pending}
+        />
+      </FieldRow>
+
+      <FieldRow label="Category">
+        {categories.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No categories yet — leave blank, or add some at{" "}
+            <span className="font-medium">
+              Settings → Equipment categories
+            </span>
+            .
           </p>
         ) : (
-          <Select value={itemId} onValueChange={setItemId}>
-            <SelectTrigger className="h-9">
-              <SelectValue placeholder="Pick the equipment SKU" />
-            </SelectTrigger>
-            <SelectContent>
-              {items.map((i) => (
-                <SelectItem key={i.id} value={String(i.id)}>
-                  {i.name}
-                  {i.code ? ` · ${i.code}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <>
+            <Select value={categoryId} onValueChange={handleCategoryChange}>
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Group this equipment (optional)" />
+              </SelectTrigger>
+              <SelectContent>
+                {categories.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedCategory && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Defaults from category: useful life{" "}
+                {selectedCategory.default_useful_life_years
+                  ? `${selectedCategory.default_useful_life_years} yr`
+                  : "—"}
+                {" · "}
+                calibration{" "}
+                {selectedCategory.default_calibration_frequency_months
+                  ? `${selectedCategory.default_calibration_frequency_months} mo`
+                  : "—"}
+                {" · "}
+                maintenance{" "}
+                {selectedCategory.default_maintenance_frequency_months
+                  ? `${selectedCategory.default_maintenance_frequency_months} mo`
+                  : "—"}
+                . You can still override any of them below.
+              </p>
+            )}
+          </>
+        )}
+      </FieldRow>
+
+      <FieldRow label="Workstation (attach to production line)">
+        {workstations.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No workstations available. Attach later once one is created
+            under Production → Workstations.
+          </p>
+        ) : (
+          <>
+            <Select
+              value={workstationId === "" ? "__none__" : workstationId}
+              onValueChange={(v) =>
+                setWorkstationId(v === "__none__" ? "" : v)
+              }
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Not attached — track cost independently" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">— None —</SelectItem>
+                {workstations.map((w) => (
+                  <SelectItem key={w.id} value={String(w.id)}>
+                    {w.name}
+                    {w.workstation_group
+                      ? ` · ${w.workstation_group.name}`
+                      : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              When attached, this unit's hourly running cost feeds the
+              workstation's cost roll-up on MO cost breakdowns.
+            </p>
+          </>
         )}
       </FieldRow>
 

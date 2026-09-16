@@ -28,6 +28,7 @@ import {
   Smartphone,
   ListChecks,
   Plug,
+  Wrench,
 } from "lucide-react";
 
 interface NavItem {
@@ -86,6 +87,12 @@ const ITEMS: NavItem[] = [
     label: "Certificates",
     icon: Award,
     permission: "certificates.view",
+  },
+  {
+    href: "/settings/equipment-categories",
+    label: "Equipment categories",
+    icon: Wrench,
+    permission: "equipment.view",
   },
   {
     href: "/settings/attribute-definitions",

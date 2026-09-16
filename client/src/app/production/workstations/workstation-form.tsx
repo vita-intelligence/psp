@@ -68,7 +68,8 @@ import {
   deleteWorkstationAction,
   updateWorkstationAction,
 } from "@/lib/production/actions";
-import type { MachineSummary, Workstation } from "@/lib/production/types";
+import type { Workstation } from "@/lib/production/types";
+import type { Equipment } from "@/lib/equipment/types";
 import { formatCompanyMoney } from "@/lib/format/company";
 import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
 
@@ -1192,11 +1193,12 @@ function JoinErrorCard({
 void Plus;
 
 /**
- * Read-only list of machines attached to this workstation. Edits happen
- * on the dedicated `/production/machines` pages (own collab form, own
- * head-of-room gate) — this section links out rather than embedding a
- * nested editor. Auto-refreshes on any `entity:machine` broadcast so a
- * peer's create/update/delete lands here without a manual reload.
+ * Read-only list of equipment attached to this workstation. Edits
+ * happen on the dedicated `/equipment/:uuid` pages — this section
+ * links out rather than embedding a nested editor. Cost roll-up:
+ * SUM of every attached unit's `hourly_running_cost` × session
+ * duration, cascading to the station's own hourly_rate override
+ * and then the group's if no equipment contributes.
  */
 function AttachedMachinesSection({
   workstationId,
@@ -1209,21 +1211,23 @@ function AttachedMachinesSection({
   company: CompanyDefaults;
   canManage: boolean;
 }) {
-  const [machines, setMachines] = useState<MachineSummary[] | null>(null);
+  const [equipment, setEquipment] = useState<Equipment[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch(
-        `/api/production/machines?workstation_id=${workstationId}&limit=200`,
+        `/api/equipment?workstation_id=${workstationId}&limit=200`,
         { cache: "no-store" },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { items: MachineSummary[] };
-      setMachines(data.items);
+      const data = (await res.json()) as { items: Equipment[] };
+      setEquipment(data.items);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load machines");
+      setError(
+        e instanceof Error ? e.message : "Failed to load attached equipment",
+      );
     }
   }, [workstationId]);
 
@@ -1231,28 +1235,32 @@ function AttachedMachinesSection({
     load();
   }, [load]);
 
-  // Any machine event in the tenant refreshes the list. The upstream
-  // hook debounces 250ms so a burst of writes collapses to one refetch.
-  useEntityChannel({ entity: "machine", uuid: undefined, onEvent: load });
+  // Any equipment event in the tenant refreshes the list. The
+  // upstream hook debounces 250ms so a burst of writes collapses to
+  // one refetch.
+  useEntityChannel({ entity: "equipment", uuid: undefined, onEvent: load });
 
-  const total = machines?.length ?? 0;
+  const total = equipment?.length ?? 0;
   const contributing =
-    machines?.filter((m) => m.is_active && m.hourly_rate_enabled) ?? [];
-  const overdueCount = machines?.filter((m) => m.calibration_overdue).length ?? 0;
+    equipment?.filter((e) => {
+      const n = e.hourly_running_cost ? Number(e.hourly_running_cost) : 0;
+      return Number.isFinite(n) && n > 0;
+    }) ?? [];
 
-  const summedRate = contributing.reduce((acc, m) => {
-    const n = m.hourly_rate ? Number(m.hourly_rate) : 0;
+  const summedRate = contributing.reduce((acc, e) => {
+    const n = e.hourly_running_cost ? Number(e.hourly_running_cost) : 0;
     return acc + (Number.isFinite(n) ? n : 0);
   }, 0);
 
   return (
     <div className="space-y-3 rounded-md border border-border/60 bg-muted/30 p-4">
-      <SectionTitle>Attached machines</SectionTitle>
+      <SectionTitle>Attached equipment</SectionTitle>
       <p className="text-xs text-muted-foreground">
-        Physical assets living at this workstation. Machine cost per MO
-        session = sum of every active machine&apos;s rate below × session
-        duration. When no machines are attached the cascade falls back
-        to this station&apos;s own machine cost (or the group&apos;s).
+        Physical assets living at this workstation. Cost per MO
+        session = sum of each unit&apos;s hourly running cost × session
+        duration. Configure each unit&apos;s cost stack on its detail
+        page. When no equipment is attached the cascade falls back to
+        this station&apos;s own rate (or the group&apos;s).
       </p>
 
       {error && (
@@ -1262,26 +1270,27 @@ function AttachedMachinesSection({
         </div>
       )}
 
-      {machines === null && !error && (
+      {equipment === null && !error && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3.5 animate-spin" aria-hidden />
-          Loading machines…
+          Loading attached equipment…
         </div>
       )}
 
-      {machines && machines.length === 0 && (
+      {equipment && equipment.length === 0 && (
         <div className="rounded-md border border-dashed border-border/60 bg-background px-3 py-4 text-center text-xs text-muted-foreground">
-          No machines attached yet.
+          No equipment attached yet. Open any equipment unit and set its
+          Workstation to attach it here.
         </div>
       )}
 
-      {machines && machines.length > 0 && (
+      {equipment && equipment.length > 0 && (
         <>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/60 bg-background px-3 py-2 text-xs">
             <span>
               <span className="font-semibold text-foreground">{total}</span>{" "}
               <span className="text-muted-foreground">
-                {total === 1 ? "machine" : "machines"} attached
+                {total === 1 ? "unit" : "units"} attached
               </span>
             </span>
             <span className="text-muted-foreground">
@@ -1291,19 +1300,12 @@ function AttachedMachinesSection({
               </span>{" "}
               from {contributing.length} active
             </span>
-            {overdueCount > 0 && (
-              <span className="inline-flex items-center gap-1 text-destructive">
-                <AlertTriangle className="size-3" aria-hidden />
-                {overdueCount} overdue calibration
-                {overdueCount === 1 ? "" : "s"}
-              </span>
-            )}
           </div>
 
           <ul className="space-y-1.5">
-            {machines.map((m) => (
+            {equipment.map((e) => (
               <li
-                key={m.uuid}
+                key={e.uuid}
                 className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/60 bg-background px-3 py-2 text-xs"
               >
                 <Boxes
@@ -1311,30 +1313,22 @@ function AttachedMachinesSection({
                   aria-hidden
                 />
                 <Link
-                  href={`/production/machines/${m.uuid}`}
+                  href={`/equipment/${e.uuid}`}
                   className="min-w-0 flex-1 truncate font-medium text-foreground underline-offset-2 hover:underline"
                 >
-                  {m.name}
+                  {e.item?.name ?? e.model ?? "—"}
                 </Link>
-                {m.asset_tag && (
-                  <span className="font-mono text-[10px] text-muted-foreground">
-                    {m.asset_tag}
-                  </span>
-                )}
-                <span className="whitespace-nowrap text-muted-foreground">
-                  {m.hourly_rate_enabled && m.hourly_rate
-                    ? `${formatCompanyMoney(m.hourly_rate, company)} / h`
-                    : "no rate"}
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {e.serial_number}
                 </span>
-                {m.calibration_overdue && (
-                  <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-destructive/10 px-2 py-0.5 font-medium text-destructive">
-                    <AlertTriangle className="size-3" aria-hidden />
-                    Calibration overdue
-                  </span>
-                )}
-                {!m.is_active && (
+                <span className="whitespace-nowrap text-muted-foreground">
+                  {e.hourly_running_cost && Number(e.hourly_running_cost) > 0
+                    ? `${formatCompanyMoney(e.hourly_running_cost, company)} / h`
+                    : "no cost stack"}
+                </span>
+                {e.status !== "in_service" && (
                   <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                    Archived
+                    {e.status}
                   </span>
                 )}
               </li>
@@ -1345,18 +1339,18 @@ function AttachedMachinesSection({
 
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <Link
-          href={`/production/machines?workstation_id=${workstationId}`}
+          href={`/equipment?workstation_id=${workstationId}`}
           className="text-xs font-medium text-primary underline-offset-2 hover:underline"
         >
-          Manage machines →
+          View all attached equipment →
         </Link>
         {canManage && (
           <Link
-            href={`/production/machines/new?workstation_id=${workstationId}`}
+            href={`/equipment/new?workstation_id=${workstationId}`}
             className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
           >
             <Plus className="size-3" aria-hidden />
-            Attach machine to {workstationName}
+            Register equipment on {workstationName}
           </Link>
         )}
       </div>

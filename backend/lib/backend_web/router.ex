@@ -90,10 +90,6 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "workstation"
   end
 
-  pipeline :comments_machine do
-    plug :put_entity_type, "machine"
-  end
-
   pipeline :comments_routing do
     plug :put_entity_type, "routing"
   end
@@ -248,6 +244,12 @@ defmodule BackendWeb.Router do
     post "/company/currency-rates/refresh-now",
          CompanyController,
          :refresh_currency_rates_now
+
+    # Flat storage-cell picker for the equipment "Move" dialog. Sits
+    # here (not under warehouses/:id/…) because the picker spans
+    # every warehouse in the tenant; the controller does its own
+    # `warehouses.view` permission check.
+    get "/storage-cells/picker", StorageCellController, :picker
 
     resources "/warehouses", WarehouseController,
       only: [:index, :show, :create, :update, :delete] do
@@ -883,12 +885,8 @@ defmodule BackendWeb.Router do
       patch "/workstations/:id", WorkstationController, :update
       delete "/workstations/:id", WorkstationController, :delete
 
-      get "/machines", MachineController, :index
-      get "/machines/:id", MachineController, :show
-      post "/machines", MachineController, :create
-      patch "/machines/:id", MachineController, :update
-      delete "/machines/:id", MachineController, :delete
-      post "/machines/:id/recalibrate", MachineController, :recalibrate
+      # /machines routes retired — physical assets are now Equipment
+      # rows with an optional workstation_id. See /api/equipment.
 
       get "/routings", RoutingController, :index
       get "/routings/:id", RoutingController, :show
@@ -1473,7 +1471,37 @@ defmodule BackendWeb.Router do
     # maintenance + calibration lifecycle. Companion to /stock but
     # distinct model (units, not lots). Sits at the api root so the
     # module can grow its own detail + events + files sub-routes.
+    # Asset category master — grouping label with defaults
+    # (useful_life_years, calibration_frequency_months,
+    # maintenance_frequency_months) propagated to new equipment
+    # rows unless the operator overrides on the equipment form.
+    # Sits above ``/equipment`` so its hyphenated path doesn't
+    # collide with a UUID lookup under ``/equipment/:id``.
+    scope "/equipment-categories" do
+      get "/", EquipmentCategoryController, :index
+      post "/", EquipmentCategoryController, :create
+      patch "/:id", EquipmentCategoryController, :update
+      delete "/:id", EquipmentCategoryController, :delete
+    end
+
     scope "/equipment" do
+      # Per-unit hourly running-cost line items. Each row is one
+      # cost driver (electricity, compressed air, consumables,
+      # maintenance reserve, …). Backend caches SUM(active) onto
+      # equipment.hourly_running_cost for the workstation roll-up.
+      get "/:equipment_id/running-costs",
+          EquipmentRunningCostController,
+          :index
+      post "/:equipment_id/running-costs",
+           EquipmentRunningCostController,
+           :create
+      patch "/:equipment_id/running-costs/:id",
+            EquipmentRunningCostController,
+            :update
+      delete "/:equipment_id/running-costs/:id",
+             EquipmentRunningCostController,
+             :delete
+
       get "/", EquipmentController, :index
       post "/", EquipmentController, :create
       # `due-soon` sits above `/:id` so it doesn't collide with a
@@ -1486,12 +1514,55 @@ defmodule BackendWeb.Router do
       # Per-kind permission gate lives inside the controller.
       post "/:id/events", EquipmentController, :events_create
       get "/:id/events", EquipmentController, :events_index
+      # Dedicated move endpoint — wraps a ``moved`` lifecycle event
+      # with cell-UUID resolution + free-text location handling. Used
+      # by the mobile scan flow and the desktop "Move" button.
+      post "/:id/move", EquipmentController, :move
       # File attachments — cal certs, service reports, warranty PDFs,
       # nameplate photos. Same shape as /po/:id/files.
       get "/:id/files", EquipmentController, :files_index
       post "/:id/files", EquipmentController, :file_create
       delete "/:id/files/:file_id", EquipmentController, :file_delete
       get "/:id/files/:file_id/blob", EquipmentController, :file_blob
+
+      # Preventive-maintenance / calibration tasks — see
+      # ``Backend.Equipment.MaintenanceTasks``. Each recurring task
+      # per asset with its own periodicity + assignee + next-due
+      # tracking. Completion emits a ``note`` event with rich
+      # metadata so the equipment timeline stays authoritative.
+      get "/:equipment_id/maintenance-tasks",
+          EquipmentMaintenanceTaskController,
+          :index
+      post "/:equipment_id/maintenance-tasks",
+           EquipmentMaintenanceTaskController,
+           :create
+      patch "/:equipment_id/maintenance-tasks/:id",
+            EquipmentMaintenanceTaskController,
+            :update
+      delete "/:equipment_id/maintenance-tasks/:id",
+             EquipmentMaintenanceTaskController,
+             :delete
+      post "/:equipment_id/maintenance-tasks/:id/complete",
+           EquipmentMaintenanceTaskController,
+           :complete
+
+      # Reactive breakdown / repair records — see
+      # ``Backend.Equipment.Repairs``. Report → work-in-progress
+      # → complete, with downtime + repair cost cached on the row
+      # and spare-parts consumed as child ``equipment_repair_parts``.
+      get "/:equipment_id/repairs", EquipmentRepairController, :index
+      post "/:equipment_id/repairs", EquipmentRepairController, :create
+      get "/:equipment_id/repairs/:id", EquipmentRepairController, :show
+      patch "/:equipment_id/repairs/:id", EquipmentRepairController, :update
+      post "/:equipment_id/repairs/:id/complete",
+           EquipmentRepairController,
+           :complete
+      post "/:equipment_id/repairs/:id/parts",
+           EquipmentRepairController,
+           :add_part
+      delete "/:equipment_id/repairs/:id/parts/:part_id",
+             EquipmentRepairController,
+             :remove_part
     end
 
     scope "/stock" do
@@ -1781,21 +1852,8 @@ defmodule BackendWeb.Router do
     delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
-  scope "/api/production/machines/:entity_uuid/comments", BackendWeb do
-    pipe_through [:api_authed, :comments_machine]
-
-    get "/", CommentsController, :index
-    post "/", CommentsController, :create
-    patch "/:comment_uuid", CommentsController, :update
-    delete "/:comment_uuid", CommentsController, :delete
-
-    post "/:comment_uuid/files", CommentsController, :upload_file
-    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
-    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
-    post "/:comment_uuid/reactions", CommentsController, :add_reaction
-    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
-    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
-  end
+  # Machine comment scope retired with the Machine schema — comments
+  # on physical assets now hang off /api/equipment/:uuid/comments.
 
   scope "/api/production/routings/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_routing]
