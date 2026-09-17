@@ -50,9 +50,8 @@ const SECTIONS: StockSection[] = [
     href: "/stock/movements",
     label: "Movements",
     description:
-      "Audit trail of every receive, move, consume, or adjust across all lots.",
+      "Audit trail of every receive, move, consume, or adjust across all lots. Filter by date range, movement kind, or reason category.",
     Icon: ArrowLeftRight,
-    comingSoon: true,
   },
   {
     href: "/stock/critical-on-hand",
@@ -107,7 +106,7 @@ export default async function StockPage() {
       <StockSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-7xl space-y-8">
+        <div className="mx-auto w-full space-y-8">
           <PageHeader
             icon={Boxes}
             title="Stock"

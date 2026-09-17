@@ -21,7 +21,7 @@ defmodule BackendWeb.StockLotController do
   alias BackendWeb.Payloads
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions, :inventory, :events_index]
+  plug RequirePermission, "stock.view" when action in [:index, :show, :cells, :pending_putaway, :scan_lot, :scan_cell, :move_recommendations, :floor_plan, :packaging_suggestions, :inventory, :events_index, :movements_index]
   plug RequirePermission, "stock.receive"
        when action in [:create_manual, :create_manual_bulk]
   plug RequirePermission, "stock.move" when action in [:move]
@@ -900,6 +900,91 @@ defmodule BackendWeb.StockLotController do
         changeset_error(conn, cs)
     end
   end
+
+  # GET /api/stock/movements — cursor-paginated audit timeline across
+  # every lot, filterable so an auditor can zero in on "all
+  # damage write-offs at cell F-04-B in Q3". Feeds /stock/movements.
+  def movements_index(conn, params) do
+    actor = conn.assigns.current_user
+
+    opts = [
+      cursor: params["cursor"],
+      limit: parse_limit(params["limit"]),
+      sort: parse_movement_sort(params["sort"]),
+      search: params["search"],
+      from_at: params["from_at"],
+      to_at: params["to_at"],
+      kinds: parse_csv(params["kinds"]),
+      reason_categories: parse_csv(params["reason_categories"]),
+      item_id: parse_int(params["item_id"]),
+      lot_id: parse_int(params["lot_id"]),
+      cell_id: parse_int(params["cell_id"]),
+      warehouse_id: parse_int(params["warehouse_id"]),
+      actor_id: parse_int(params["actor_id"]),
+      reference_kind: params["reference_kind"],
+      reference_ref: params["reference_ref"],
+      # Per-column filter map — the DataTable header inputs
+      # (Filter → text / range / select) serialise here as
+      # ``column_filter[<field>]=%{op, value}``. Context peels
+      # joined-column filters + routes the rest through
+      # ``ListQueries.apply_column_filters`` against the whitelist.
+      column_filter: params["column_filter"]
+    ]
+
+    {movements, cursor} = Stock.list_movements(actor.company_id, opts)
+
+    json(conn, %{
+      items: Enum.map(movements, &Payloads.stock_movement_row/1),
+      next_cursor: cursor
+    })
+  end
+
+  # Movement-page sort spec: `<field>:<asc|desc>`. Falls back to nil
+  # (context uses its default) for unknown / malformed values.
+  defp parse_movement_sort(nil), do: nil
+  defp parse_movement_sort(""), do: nil
+
+  defp parse_movement_sort(spec) when is_binary(spec) do
+    case String.split(spec, ":", parts: 2) do
+      [field, dir] when dir in ["asc", "desc"] ->
+        atom_field =
+          case field do
+            "occurred_at" -> :occurred_at
+            "id" -> :id
+            "delta_qty" -> :delta_qty
+            "kind" -> :kind
+            "reason_category" -> :reason_category
+            _ -> nil
+          end
+
+        if atom_field, do: {atom_field, String.to_existing_atom(dir)}, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp parse_movement_sort(_), do: nil
+
+  # Comma-separated → list of trimmed strings; nil / blank → nil so
+  # the context falls through to "no filter" instead of an empty
+  # inclusion clause.
+  defp parse_csv(nil), do: nil
+  defp parse_csv(""), do: nil
+
+  defp parse_csv(v) when is_binary(v) do
+    v
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] -> nil
+      list -> list
+    end
+  end
+
+  defp parse_csv(list) when is_list(list), do: list
+  defp parse_csv(_), do: nil
 
   def adjust(conn, %{"stock_lot_id" => uuid} = params) do
     actor = conn.assigns.current_user

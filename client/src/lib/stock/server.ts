@@ -39,6 +39,76 @@ export async function listStockLotsPage(
   }
 }
 
+/** First page of the /stock/movements audit log — cursor-paginated
+ *  movements enriched with lot + item + uom for the table row. Optional
+ *  ``lot_id`` locks the query to a single lot when the caller wants
+ *  the same table embedded on a lot detail page. */
+export interface StockMovementRow extends StockMovement {
+  stock_lot: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    supplier_batch_no: string | null;
+  } | null;
+  item: {
+    id: number;
+    uuid: string;
+    name: string;
+    code: string | null;
+    external_sku: string | null;
+  } | null;
+  unit_of_measurement: { id: number; symbol: string | null } | null;
+}
+
+export async function listStockMovementsPage(
+  filters: {
+    from_at?: string;
+    to_at?: string;
+    kinds?: string[];
+    reason_categories?: string[];
+    item_id?: number;
+    lot_id?: number;
+    cell_id?: number;
+    warehouse_id?: number;
+    actor_id?: number;
+    search?: string;
+  } = {},
+): Promise<{
+  items: StockMovementRow[];
+  next_cursor: string | null;
+} | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+
+  const qs = new URLSearchParams();
+  if (filters.from_at) qs.set("from_at", filters.from_at);
+  if (filters.to_at) qs.set("to_at", filters.to_at);
+  if (filters.kinds?.length) qs.set("kinds", filters.kinds.join(","));
+  if (filters.reason_categories?.length)
+    qs.set("reason_categories", filters.reason_categories.join(","));
+  if (typeof filters.item_id === "number")
+    qs.set("item_id", String(filters.item_id));
+  if (typeof filters.lot_id === "number")
+    qs.set("lot_id", String(filters.lot_id));
+  if (typeof filters.cell_id === "number")
+    qs.set("cell_id", String(filters.cell_id));
+  if (typeof filters.warehouse_id === "number")
+    qs.set("warehouse_id", String(filters.warehouse_id));
+  if (typeof filters.actor_id === "number")
+    qs.set("actor_id", String(filters.actor_id));
+  if (filters.search) qs.set("search", filters.search);
+  const suffix = qs.toString();
+
+  try {
+    return await api<{ items: StockMovementRow[]; next_cursor: string | null }>(
+      `/api/stock/movements${suffix ? `?${suffix}` : ""}`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** First page of the item-level inventory rollup — drives the
  *  /stock/inventory page. Returns null on auth failure so the page
  *  component can render the empty shell instead of a 500. */

@@ -34,7 +34,6 @@ const ITEMS: SubnavItem[] = [
     href: "/stock/movements",
     label: "Movements",
     Icon: ArrowLeftRight,
-    comingSoon: true,
   },
   {
     href: "/stock/critical-on-hand",
@@ -85,7 +84,7 @@ export function StockSubnav() {
       aria-label="Stock sections"
       className="sticky top-16 z-[5] border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 px-4 sm:px-8"
     >
-      <div className="mx-auto grid max-w-7xl grid-cols-3 gap-1 py-2 sm:grid-cols-5 lg:grid-cols-9">
+      <div className="mx-auto grid w-full grid-cols-3 gap-1 py-2 sm:grid-cols-5 lg:grid-cols-9">
         {ITEMS.map((item) => {
           const active = isActive(item.href);
 

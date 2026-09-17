@@ -1603,6 +1603,13 @@ defmodule BackendWeb.Router do
       # Used by /stock/inventory.
       get "/inventory", StockLotController, :inventory
 
+      # Cursor-paginated movement audit log across every lot.
+      # Feeds /stock/movements — the "who moved what, when, why" view
+      # with date-range / kind / reason-category / cell / actor
+      # filters. Read-only; every mutation on a placement is written
+      # via the purpose-built move/adjust/issue/dispose endpoints.
+      get "/movements", StockLotController, :movements_index
+
       # Put-away queue + scanner lookups (mobile /m flow).
       get "/lots/pending-putaway", StockLotController, :pending_putaway
 

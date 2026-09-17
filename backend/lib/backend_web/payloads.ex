@@ -6098,6 +6098,40 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Movement row shaped for the /stock/movements page. Extends the
+  base ``stock_movement/1`` payload with the joined lot + item + uom
+  summaries so the table can render `Item name / Lot code / Qty` in
+  a single row without a per-row fetch.
+  """
+  def stock_movement_row(m) do
+    lot = preloaded_or_nil(m, :stock_lot, & &1)
+    item = if lot, do: preloaded_or_nil(lot, :item, & &1), else: nil
+    uom = if lot, do: preloaded_or_nil(lot, :unit_of_measurement, & &1), else: nil
+
+    stock_movement(m)
+    |> Map.merge(%{
+      stock_lot:
+        lot &&
+          %{
+            id: lot.id,
+            uuid: lot.uuid,
+            code: render_code(lot, "stock_lot"),
+            supplier_batch_no: lot.supplier_batch_no
+          },
+      item:
+        item &&
+          %{
+            id: item.id,
+            uuid: item.uuid,
+            name: item.name,
+            code: render_code(item, "item"),
+            external_sku: item.external_sku
+          },
+      unit_of_measurement: uom && %{id: uom.id, symbol: uom.symbol}
+    })
+  end
+
+  @doc """
   Linked device — phone/tablet/extra browser paired to a user. Never
   includes the raw token (it's exposed exactly once at claim time);
   the FE identifies devices by uuid.

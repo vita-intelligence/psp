@@ -27,6 +27,19 @@ defmodule Backend.Stock do
   @search_fields ~w(supplier_batch_no source_ref notes country_of_origin revision)a
   @default_sort {:id, :desc}
 
+  # ----- movements list -------------------------------------------------
+  # Sortable columns on the /stock/movements page. `occurred_at` is the
+  # primary — auditors want the story in reverse chronological order.
+  @movement_sortable_fields ~w(occurred_at id delta_qty kind reason_category)a
+  @movement_default_sort {:occurred_at, :desc}
+  # Whitelist of Movement columns that `ListQueries.apply_column_filters`
+  # is allowed to route filters into. Joined columns (item name, actor
+  # name, lot code) come in through `pop_joined_text_filter` below —
+  # they aren't in this list on purpose so a hostile caller can't route
+  # a plain filter into a joined-alias binding.
+  @movement_column_filter_fields ~w(kind reason_category delta_qty reason
+                                     reference_kind reference_ref)a
+
   # ----- read ------------------------------------------------------
 
   @doc """
@@ -78,6 +91,262 @@ defmodule Backend.Stock do
       ])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  @doc """
+  Cursor-paginated movement log. Powers the /stock/movements page —
+  every write to a placement over time, filterable so an operator or
+  auditor can zero in on "all damage write-offs in Q3 on cell X".
+
+  Opts (all optional):
+
+    * `:sort`             — `{:occurred_at | :id | :delta_qty | :kind |
+                             :reason_category, :asc | :desc}`.
+                             Defaults to newest first.
+    * `:limit`, `:cursor` — cursor pagination via `ListQueries`.
+    * `:search`           — matches free-text reason + reference_ref.
+    * `:from_at`          — inclusive ISO8601 lower bound on
+                             `occurred_at`.
+    * `:to_at`            — inclusive ISO8601 upper bound.
+    * `:kinds`            — list of movement kinds to include
+                             (whitelisted against `Movement.kinds/0`).
+    * `:reason_categories` — list of category strings; whitelisted
+                             against `Movement.reason_categories/0`.
+    * `:item_id`          — restrict to one item (joins via lot).
+    * `:lot_id`           — restrict to one lot.
+    * `:cell_id`          — from_cell OR to_cell.
+    * `:warehouse_id`     — from_cell.warehouse OR to_cell.warehouse.
+    * `:actor_id`         — restrict to one actor (user id).
+    * `:reference_kind`   — string, e.g. "manufacturing_order".
+    * `:reference_ref`    — exact match on the reference identifier.
+
+  Returns `{movements, next_cursor}` with each movement preloaded with
+  its actor, stock_lot (+ item + unit), from_cell + to_cell (with the
+  storage location → floor → warehouse breadcrumb for display).
+  """
+  def list_movements(company_id, opts \\ []) when is_integer(company_id) do
+    sort = normalise_movement_sort(Keyword.get(opts, :sort, @movement_default_sort))
+    cell_with_breadcrumb = [storage_location: [floor: :warehouse]]
+
+    # Peel the joined-column filters off the raw map first so
+    # ``apply_column_filters`` only sees plain Movement columns from
+    # its whitelist. Each joined filter applies through its own
+    # explicit binding below.
+    {item_name_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(opts[:column_filter], "item_name")
+
+    {actor_name_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(column_filter, "actor_name")
+
+    {lot_code_needle, column_filter} =
+      ListQueries.pop_joined_text_filter(column_filter, "lot_code")
+
+    base =
+      Movement
+      |> where([m], m.company_id == ^company_id)
+      |> maybe_movement_date_filter(opts[:from_at], opts[:to_at])
+      |> maybe_movement_kinds_filter(opts[:kinds])
+      |> maybe_movement_categories_filter(opts[:reason_categories])
+      |> maybe_movement_lot_filter(opts[:lot_id])
+      |> maybe_movement_item_filter(opts[:item_id])
+      |> maybe_movement_cell_filter(opts[:cell_id])
+      |> maybe_movement_warehouse_filter(opts[:warehouse_id])
+      |> maybe_movement_actor_filter(opts[:actor_id])
+      |> maybe_movement_reference_filter(opts[:reference_kind], opts[:reference_ref])
+      |> maybe_movement_search(opts[:search])
+      |> maybe_movement_item_name_filter(item_name_needle)
+      |> maybe_movement_actor_name_filter(actor_name_needle)
+      |> maybe_movement_lot_code_filter(lot_code_needle)
+      |> ListQueries.apply_column_filters(column_filter, @movement_column_filter_fields)
+      |> ListQueries.apply_sort(sort, @movement_sortable_fields, @movement_default_sort)
+      |> preload([
+        :actor,
+        stock_lot: [:item, :unit_of_measurement],
+        from_cell: ^cell_with_breadcrumb,
+        to_cell: ^cell_with_breadcrumb,
+        issued_to_user: []
+      ])
+
+    ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
+  end
+
+  defp maybe_movement_item_name_filter(query, nil), do: query
+
+  defp maybe_movement_item_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from m in query,
+      join: l in Lot,
+      on: l.id == m.stock_lot_id,
+      join: i in Item,
+      on: i.id == l.item_id,
+      where: ilike(i.name, ^like) or ilike(i.external_sku, ^like)
+  end
+
+  defp maybe_movement_actor_name_filter(query, nil), do: query
+
+  defp maybe_movement_actor_name_filter(query, needle) when is_binary(needle) do
+    like = "%" <> ListQueries.escape_like(needle) <> "%"
+
+    from m in query,
+      join: u in Backend.Accounts.User,
+      on: u.id == m.actor_id,
+      where: ilike(u.name, ^like) or ilike(u.email, ^like)
+  end
+
+  # Lot code is auto-numbered ("L00042"); we match it via the shared
+  # numbering parser when the input looks like a full code, and fall
+  # back to a supplier_batch_no ilike so an operator typing the
+  # supplier's own batch identifier also lands the movements for
+  # that lot.
+  defp maybe_movement_lot_code_filter(query, nil), do: query
+
+  defp maybe_movement_lot_code_filter(query, needle) when is_binary(needle) do
+    trimmed = String.trim(needle)
+    lot_id = numbering_lot_id(trimmed)
+    like = "%" <> ListQueries.escape_like(trimmed) <> "%"
+
+    from m in query,
+      join: l in Lot,
+      on: l.id == m.stock_lot_id,
+      where: ilike(l.supplier_batch_no, ^like) or (^lot_id != 0 and l.id == ^lot_id)
+  end
+
+  defp numbering_lot_id(term) when is_binary(term) do
+    # Company is scoped via the outer where already; we just need any
+    # company row to run the numbering parser. Cheap in dev, cached
+    # in prod via the numbering module's own memo.
+    case Repo.one(from c in Backend.Companies.Company, limit: 1, select: c) do
+      nil ->
+        0
+
+      company ->
+        case Backend.Numbering.parse_search(term, company, "stock_lot") do
+          nil -> 0
+          id when is_integer(id) -> id
+        end
+    end
+  end
+
+  defp normalise_movement_sort({field, direction})
+       when field in @movement_sortable_fields and direction in [:asc, :desc],
+       do: {field, direction}
+
+  defp normalise_movement_sort(_), do: @movement_default_sort
+
+  defp maybe_movement_date_filter(query, nil, nil), do: query
+
+  defp maybe_movement_date_filter(query, from_at, to_at) do
+    query
+    |> maybe_where_date(from_at, :gte)
+    |> maybe_where_date(to_at, :lte)
+  end
+
+  defp maybe_where_date(query, nil, _), do: query
+
+  defp maybe_where_date(query, %DateTime{} = dt, :gte),
+    do: where(query, [m], m.occurred_at >= ^dt)
+
+  defp maybe_where_date(query, %DateTime{} = dt, :lte),
+    do: where(query, [m], m.occurred_at <= ^dt)
+
+  defp maybe_where_date(query, iso, dir) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} -> maybe_where_date(query, dt, dir)
+      _ -> query
+    end
+  end
+
+  defp maybe_movement_kinds_filter(query, nil), do: query
+  defp maybe_movement_kinds_filter(query, []), do: query
+
+  defp maybe_movement_kinds_filter(query, kinds) when is_list(kinds) do
+    allowed = MapSet.new(Movement.kinds())
+    picked = for k <- kinds, is_binary(k) and MapSet.member?(allowed, k), do: k
+    if picked == [], do: query, else: where(query, [m], m.kind in ^picked)
+  end
+
+  defp maybe_movement_categories_filter(query, nil), do: query
+  defp maybe_movement_categories_filter(query, []), do: query
+
+  defp maybe_movement_categories_filter(query, cats) when is_list(cats) do
+    allowed = MapSet.new(Movement.reason_categories())
+    picked = for c <- cats, is_binary(c) and MapSet.member?(allowed, c), do: c
+    if picked == [], do: query, else: where(query, [m], m.reason_category in ^picked)
+  end
+
+  defp maybe_movement_lot_filter(query, nil), do: query
+
+  defp maybe_movement_lot_filter(query, lot_id) when is_integer(lot_id),
+    do: where(query, [m], m.stock_lot_id == ^lot_id)
+
+  defp maybe_movement_item_filter(query, nil), do: query
+
+  defp maybe_movement_item_filter(query, item_id) when is_integer(item_id) do
+    from m in query,
+      join: l in Lot,
+      on: l.id == m.stock_lot_id,
+      where: l.item_id == ^item_id
+  end
+
+  defp maybe_movement_cell_filter(query, nil), do: query
+
+  defp maybe_movement_cell_filter(query, cell_id) when is_integer(cell_id),
+    do: where(query, [m], m.from_cell_id == ^cell_id or m.to_cell_id == ^cell_id)
+
+  defp maybe_movement_warehouse_filter(query, nil), do: query
+
+  defp maybe_movement_warehouse_filter(query, warehouse_id) when is_integer(warehouse_id) do
+    # from_cell + to_cell each join to storage_cells → storage_locations
+    # → floors → warehouses. A row matches if EITHER end sits under
+    # the target warehouse.
+    from m in query,
+      left_join: fc in Backend.Warehouses.StorageCell,
+      on: fc.id == m.from_cell_id,
+      left_join: fl in Backend.Warehouses.StorageLocation,
+      on: fl.id == fc.storage_location_id,
+      left_join: ff in Backend.Warehouses.Floor,
+      on: ff.id == fl.floor_id,
+      left_join: tc in Backend.Warehouses.StorageCell,
+      on: tc.id == m.to_cell_id,
+      left_join: tl in Backend.Warehouses.StorageLocation,
+      on: tl.id == tc.storage_location_id,
+      left_join: tf in Backend.Warehouses.Floor,
+      on: tf.id == tl.floor_id,
+      where: ff.warehouse_id == ^warehouse_id or tf.warehouse_id == ^warehouse_id
+  end
+
+  defp maybe_movement_actor_filter(query, nil), do: query
+
+  defp maybe_movement_actor_filter(query, actor_id) when is_integer(actor_id),
+    do: where(query, [m], m.actor_id == ^actor_id)
+
+  defp maybe_movement_reference_filter(query, nil, nil), do: query
+
+  defp maybe_movement_reference_filter(query, kind, ref)
+       when is_binary(kind) and is_binary(ref) do
+    where(query, [m], m.reference_kind == ^kind and m.reference_ref == ^ref)
+  end
+
+  defp maybe_movement_reference_filter(query, kind, nil) when is_binary(kind),
+    do: where(query, [m], m.reference_kind == ^kind)
+
+  defp maybe_movement_reference_filter(query, nil, ref) when is_binary(ref),
+    do: where(query, [m], m.reference_ref == ^ref)
+
+  defp maybe_movement_reference_filter(query, _, _), do: query
+
+  defp maybe_movement_search(query, nil), do: query
+  defp maybe_movement_search(query, ""), do: query
+
+  defp maybe_movement_search(query, term) when is_binary(term) do
+    needle = "%" <> escape_like(String.trim(term)) <> "%"
+
+    where(
+      query,
+      [m],
+      ilike(m.reason, ^needle) or ilike(m.reference_ref, ^needle)
+    )
   end
 
   # The DataTable search input is a single field — operators type
