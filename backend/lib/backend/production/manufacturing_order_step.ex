@@ -30,7 +30,22 @@ defmodule Backend.Production.ManufacturingOrderStep do
     field :cycle_time_min, :decimal
     field :fixed_cost, :decimal
     field :variable_cost, :decimal
+    # Units per cycle (batch size). Snapshot of the parent routing
+    # step's ``capacity``. See ``Backend.Production.RoutingStep``'s
+    # field docstring — machine parallelism is derived from workstation
+    # count, not from this field.
     field :capacity, :decimal, default: Decimal.new("1.0")
+
+    # Snapshotted from the parent routing_step's healed target so
+    # a running MO's session-scoring baseline doesn't shift mid-run
+    # when the routing heals. `Backend.Production.RoutingHealer`
+    # re-stamps this only on MO steps whose `actual_start` is nil.
+    field :actual_setup_seconds, :decimal
+    field :actual_cycle_seconds, :decimal
+    field :sample_size, :integer, default: 0
+    field :confidence, :decimal
+    field :manual_override_locked, :boolean, default: false
+    field :heal_computed_at, :utc_datetime
 
     field :planned_start, :utc_datetime
     field :planned_finish, :utc_datetime

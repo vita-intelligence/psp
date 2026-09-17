@@ -223,7 +223,9 @@ export interface AuditEvent {
     | "employee_reputation_event";
   entity_id: number;
   entity_uuid: string | null;
-  event: "created" | "updated" | "deleted";
+  // `note_added` = free-form operator note (kiosk QC notes, etc.).
+  // The note body lives on `changes` under the `"note"` key.
+  event: "created" | "updated" | "deleted" | "note_added";
   /** `{"field": {"old": ..., "new": ...}, ...}` — unchanged fields
    *  are excluded. */
   changes: Record<string, { old: unknown; new: unknown }>;

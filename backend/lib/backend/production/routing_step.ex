@@ -22,7 +22,31 @@ defmodule Backend.Production.RoutingStep do
     field :cycle_time_min, :decimal
     field :fixed_cost, :decimal
     field :variable_cost, :decimal
+    # Units produced per cycle (batch size). Encapsulator that presses
+    # 300 caps at a time → capacity = 300 with cycle_time_min = the
+    # per-press time. Manual per-unit operations (labelling one bottle,
+    # sealing one pouch) → capacity = 1 with cycle_time_min = the
+    # per-unit time.
+    #
+    # ``step_duration_seconds = setup + cycle_time_min × qty / capacity``.
+    #
+    # NOTE: this is NOT "parallel machines". Machine parallelism is
+    # derived by the scheduler from the workstation-count in the target
+    # workstation-group (see ``Backend.Production.wsg_capacity/1``).
+    # Adding a second encapsulator to a group naturally halves the
+    # planned wall-clock without touching this field.
     field :capacity, :decimal, default: Decimal.new("1.0")
+
+    # Auto-heal target (observed reality, seconds). Populated nightly
+    # by `Backend.Production.RoutingHealer` from the sessions on this
+    # routing step's workstation-group over the last N days. Costing
+    # + kiosk performance-scoring prefer these when present.
+    field :actual_setup_seconds, :decimal
+    field :actual_cycle_seconds, :decimal
+    field :sample_size, :integer, default: 0
+    field :confidence, :decimal
+    field :manual_override_locked, :boolean, default: false
+    field :heal_computed_at, :utc_datetime
 
     belongs_to :company, Company
     belongs_to :routing, Routing

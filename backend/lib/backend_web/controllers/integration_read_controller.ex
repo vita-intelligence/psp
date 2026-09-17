@@ -619,8 +619,65 @@ defmodule BackendWeb.IntegrationReadController do
       # Steps target a workstation group, not a specific station.
       # The kiosk uses the group to know "is this MO for any of the
       # stations in my group?"
-      workstation_group: workstation_group_summary(step.workstation_group)
+      workstation_group: workstation_group_summary(step.workstation_group),
+      # Auto-heal targets in seconds — prefer the healer's observed
+      # values (``actual_*_seconds``), fall back to authored minutes ×
+      # 60. Vita-perf stamps these onto the WorkSession at start-time
+      # (``override_target_duration`` + ``override_setup_seconds``) so
+      # the operator is scored against the current live target, not
+      # the historical avg or a stale planner guess. Sample size + the
+      # heal timestamp let the kiosk optionally show "target based on
+      # N runs" if we ever want a hint in the UI.
+      effective_setup_seconds: effective_step_setup_seconds(step),
+      effective_cycle_seconds: effective_step_cycle_seconds(step),
+      heal_sample_size: step.sample_size,
+      heal_computed_at: step.heal_computed_at
     }
+  end
+
+  defp effective_step_setup_seconds(%ManufacturingOrderStep{} = step) do
+    case step.actual_setup_seconds do
+      %Decimal{} = s ->
+        Decimal.to_string(s)
+
+      _ ->
+        case step.setup_time_min do
+          %Decimal{} = m -> Decimal.to_string(Decimal.mult(m, Decimal.new("60")))
+          _ -> nil
+        end
+    end
+  end
+
+  # Returns per-UNIT seconds so vita-perf can score sessions directly
+  # (its ``override_target_duration`` field is hours per single unit).
+  # Both branches are stored as "seconds for `capacity` units" — the
+  # divide-by-capacity here converts to per-unit for downstream.
+  defp effective_step_cycle_seconds(%ManufacturingOrderStep{} = step) do
+    capacity =
+      case step.capacity do
+        %Decimal{} = c ->
+          if Decimal.compare(c, Decimal.new("0")) == :gt, do: c, else: Decimal.new("1")
+
+        _ ->
+          Decimal.new("1")
+      end
+
+    per_cycle_seconds =
+      case step.actual_cycle_seconds do
+        %Decimal{} = s ->
+          s
+
+        _ ->
+          case step.cycle_time_min do
+            %Decimal{} = m -> Decimal.mult(m, Decimal.new("60"))
+            _ -> nil
+          end
+      end
+
+    case per_cycle_seconds do
+      nil -> nil
+      %Decimal{} = s -> s |> Decimal.div(capacity) |> Decimal.to_string()
+    end
   end
 
   defp workstation_group_summary(nil), do: nil

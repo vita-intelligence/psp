@@ -55,6 +55,12 @@ defmodule Backend.Production.ScheduleWalker do
       (i.e. how many active Workstation rows live in the group).
       Defaults to `1`.
 
+      NOTE: this is the walker's parallelism knob, NOT the routing
+      step's ``capacity`` field. Routing capacity = units per cycle
+      (batch size). Callers pass ``Backend.Production.wsg_capacity/1``
+      here, which counts active workstations in the group. Two
+      different concepts that happen to share a name.
+
   When reservations + capacity are supplied, the walker first slices
   out any sub-interval where `concurrent reservations >= capacity`
   from the working windows, then walks the remaining free time. So

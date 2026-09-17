@@ -48,6 +48,12 @@ config :backend, Backend.Workers.CurrencyRatesPull, start: false
 # ``Backend.Forms.PublisherReconciler.run_now/0`` directly.
 config :backend, Backend.Forms.PublisherReconciler, start: false
 
+# Same story for the routing heal job — a schema-wide sweep on a
+# timer would clash with the per-test SQL sandbox. Tests call
+# ``Backend.Production.RoutingHealer.heal_all/0`` or
+# ``RoutingHealJob.run_now/0`` directly.
+config :backend, Backend.Production.RoutingHealJob, start: false
+
 # ChromicPDF would boot a real Chrome process under the test supervisor;
 # we don't want that in unit tests. Document-renderer tests that need
 # real PDFs can flip this back on at the test level.

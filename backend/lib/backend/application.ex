@@ -51,6 +51,10 @@ defmodule Backend.Application do
       # boot window can't leave a template in "never published" limbo.
       # See ``Backend.Forms.PublisherReconciler``.
       publisher_reconciler_child(),
+      # Nightly job that heals routing-step targets from real
+      # WorkstationSession data so costing + kiosk performance
+      # scoring track reality. See ``Backend.Production.RoutingHealJob``.
+      routing_heal_job_child(),
       # Start to serve requests, typically the last entry
       BackendWeb.Endpoint
     ]
@@ -99,6 +103,19 @@ defmodule Backend.Application do
 
     if Keyword.get(cfg, :start, true) do
       {Backend.Forms.PublisherReconciler, []}
+    end
+  end
+
+  # RoutingHealJob — heals routing-step target-time from real
+  # WorkstationSession data (regression per step, trimmed mean,
+  # blended with authored). Same "gate off in test" pattern as
+  # the reconciler. Config keys: ``start``, ``boot_delay_ms``,
+  # ``interval_ms`` (default: 24 h).
+  defp routing_heal_job_child do
+    cfg = Application.get_env(:backend, Backend.Production.RoutingHealJob, [])
+
+    if Keyword.get(cfg, :start, true) do
+      {Backend.Production.RoutingHealJob, []}
     end
   end
 end

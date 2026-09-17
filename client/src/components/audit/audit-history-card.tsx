@@ -31,6 +31,7 @@ import {
   Pencil,
   Trash2,
   Activity as ActivityIcon,
+  MessageSquareText,
   Undo2,
 } from "lucide-react";
 
@@ -601,6 +602,12 @@ function eventStyle(kind: AuditEvent["event"]) {
       return { icon: Pencil, tone: "brand" as const };
     case "deleted":
       return { icon: Trash2, tone: "destructive" as const };
+    case "note_added":
+      return { icon: MessageSquareText, tone: "brand" as const };
+    // Unknown event kinds shouldn't render as broken tiles — fall
+    // back to a neutral activity glyph so the timeline stays intact.
+    default:
+      return { icon: ActivityIcon, tone: "brand" as const };
   }
 }
 

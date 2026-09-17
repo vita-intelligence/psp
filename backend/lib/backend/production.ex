@@ -2473,22 +2473,46 @@ defmodule Backend.Production do
   def effective_group_operation_notes(_), do: nil
 
   # Mirror of payloads' step_duration_seconds, kept here so the
-  # snapshot doesn't reach into the web layer.
+  # snapshot doesn't reach into the web layer. Reads healed values
+  # (``actual_*_seconds``) when the routing has been through the
+  # nightly ``RoutingHealer`` at least once; otherwise falls back to
+  # the authored ``*_time_min``. See payloads.ex for the mirror.
   defp step_duration_seconds_for_snapshot(step, qty) do
-    setup = step.setup_time_min || Decimal.new("0")
-    cycle = step.cycle_time_min || Decimal.new("0")
     capacity = step.capacity || Decimal.new("1")
     quantity = qty || Decimal.new("0")
+
+    setup_seconds =
+      case Map.get(step, :actual_setup_seconds) do
+        nil ->
+          case step.setup_time_min do
+            nil -> Decimal.new("0")
+            %Decimal{} = m -> Decimal.mult(m, Decimal.new("60"))
+          end
+
+        %Decimal{} = s ->
+          s
+      end
+
+    cycle_seconds =
+      case Map.get(step, :actual_cycle_seconds) do
+        nil ->
+          case step.cycle_time_min do
+            nil -> Decimal.new("0")
+            %Decimal{} = m -> Decimal.mult(m, Decimal.new("60"))
+          end
+
+        %Decimal{} = s ->
+          s
+      end
 
     cycle_total =
       if Decimal.equal?(capacity, Decimal.new("0")) do
         Decimal.new("0")
       else
-        cycle |> Decimal.mult(quantity) |> Decimal.div(capacity)
+        cycle_seconds |> Decimal.mult(quantity) |> Decimal.div(capacity)
       end
 
-    Decimal.add(setup, cycle_total)
-    |> Decimal.mult(Decimal.new("60"))
+    Decimal.add(setup_seconds, cycle_total)
     |> Decimal.round(0, :ceiling)
     |> Decimal.to_integer()
   end

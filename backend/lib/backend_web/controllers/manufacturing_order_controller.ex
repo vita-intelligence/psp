@@ -1746,7 +1746,11 @@ defmodule BackendWeb.ManufacturingOrderController do
               unprocessable(
                 conn,
                 "step_not_in_mo",
-                "Step #{uuid} doesn't belong to this MO."
+                "Step #{uuid} isn't a snapshotted MO step — likely a " <>
+                  "routing-preview uuid submitted before the MO's steps " <>
+                  "were snapshotted. Reload the MO page and try again; " <>
+                  "if it persists, re-schedule the MO so per-step rows are " <>
+                  "created."
               )
 
             {:error, :bad_operation_times} ->

@@ -648,19 +648,29 @@ function FinishDialog({
     const startMs = new Date(start).getTime();
     const totalSpan = new Date(finish).getTime() - startMs;
     let cursorMs = 0;
-    const opTimes = operations.map((op, idx) => {
-      const segMs = idx === operations.length - 1
-        ? totalSpan - cursorMs
-        : Math.round(totalSpan * proportions[idx]);
-      const s = new Date(startMs + cursorMs).toISOString();
-      const f = new Date(startMs + cursorMs + segMs).toISOString();
-      cursorMs += segMs;
-      return {
-        step_uuid: op.uuid,
-        actual_start: s,
-        actual_finish: f,
-      };
-    });
+    // Only rows PSP has actually snapshotted into `manufacturing_order_steps`
+    // carry a real MOStep uuid the finish endpoint can write to. When
+    // the MO has no snapshot yet the payload falls back to the parent
+    // routing's steps with ``editable: false`` — those uuids belong
+    // to `routing_steps`, not `mo_steps`, and the BE rightly rejects
+    // them with `step_not_in_mo`. Skip them; the BE treats an empty
+    // operation_times list as "no per-op times to record".
+    const opTimes = operations
+      .map((op, idx) => {
+        const segMs = idx === operations.length - 1
+          ? totalSpan - cursorMs
+          : Math.round(totalSpan * proportions[idx]);
+        const s = new Date(startMs + cursorMs).toISOString();
+        const f = new Date(startMs + cursorMs + segMs).toISOString();
+        cursorMs += segMs;
+        if (!op.editable) return null;
+        return {
+          step_uuid: op.uuid,
+          actual_start: s,
+          actual_finish: f,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
 
     startTransition(async () => {
       const res = await finishProductionAction(mo.uuid, {

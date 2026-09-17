@@ -4820,30 +4820,65 @@ defmodule BackendWeb.Payloads do
 
   defp mo_step_parent_summary(_), do: nil
 
-  # Total step time in seconds = setup_min × 60 + ceil(cycle_min ×
-  # qty / capacity) × 60. Defaults handle nil values gracefully.
+  # Total step time in seconds = setup + cycle × qty / capacity.
+  #
+  # Prefers the auto-healed observed values (``actual_setup_seconds``
+  # + ``actual_cycle_seconds``) written by ``RoutingHealer`` when
+  # present, otherwise falls back to the planner-authored
+  # ``setup_time_min`` + ``cycle_time_min`` (converted to seconds).
+  # This is how PSP-side costing tracks reality without the planner
+  # having to nudge every routing after every batch — the nightly
+  # heal writes the effective values, and this function reads them.
   defp step_duration_seconds(step, qty) do
-    setup = step.setup_time_min || Decimal.new("0")
-    cycle = step.cycle_time_min || Decimal.new("0")
     capacity = step.capacity || Decimal.new("1")
     quantity = qty || Decimal.new("0")
+
+    setup_seconds = effective_setup_seconds(step)
+    cycle_seconds = effective_cycle_seconds(step)
 
     cycle_total =
       if Decimal.equal?(capacity, Decimal.new("0")) do
         Decimal.new("0")
       else
-        cycle
+        cycle_seconds
         |> Decimal.mult(quantity)
         |> Decimal.div(capacity)
       end
 
-    total_minutes = Decimal.add(setup, cycle_total)
+    Decimal.add(setup_seconds, cycle_total)
     # Floor to whole seconds — sub-second precision on a routing step
     # is noise.
-    total_minutes
-    |> Decimal.mult(Decimal.new("60"))
     |> Decimal.round(0, :ceiling)
     |> Decimal.to_integer()
+  end
+
+  # ``actual_*`` is what the healer wrote (seconds). ``*_time_min``
+  # is the authored minutes fallback. Either can be nil on a fresh
+  # step — return zero-decimal so downstream Decimal ops don't blow.
+  defp effective_setup_seconds(step) do
+    case Map.get(step, :actual_setup_seconds) do
+      nil ->
+        case step.setup_time_min do
+          nil -> Decimal.new("0")
+          %Decimal{} = m -> Decimal.mult(m, Decimal.new("60"))
+        end
+
+      %Decimal{} = s ->
+        s
+    end
+  end
+
+  defp effective_cycle_seconds(step) do
+    case Map.get(step, :actual_cycle_seconds) do
+      nil ->
+        case step.cycle_time_min do
+          nil -> Decimal.new("0")
+          %Decimal{} = m -> Decimal.mult(m, Decimal.new("60"))
+        end
+
+      %Decimal{} = s ->
+        s
+    end
   end
 
 
