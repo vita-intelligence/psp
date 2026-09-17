@@ -9,9 +9,11 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { getNpdPublicConfig } from "@/lib/npd/config";
 import { getOutputQcEntry } from "@/lib/production-output-qc/entry";
+import { listMoQcNotes } from "@/lib/production/server";
 import { Button } from "@/components/ui/button";
 import { ProductionSubnav } from "../../production-subnav";
 import { NpdValidationEmbed } from "@/components/production/npd-validation-embed";
+import { MoQcNotesCard } from "@/components/production/mo-qc-notes-card";
 import { SpecSheet } from "./spec-sheet";
 import { QcActionsCard } from "./qc-actions-card";
 import { NpdValidationCard } from "./npd-validation-card";
@@ -39,6 +41,12 @@ export default async function OutputQcDetailPage({
   if (!entry) notFound();
 
   const { lot, mo } = entry;
+  // QC-note timeline captured on the floor via the vita-perf Live-QC
+  // kiosk while the source MO was running. Rendered under the spec
+  // sheet so the reviewer sees what floor QC recorded before making
+  // the release / hold verdict. Empty array when the MO ran without
+  // notes.
+  const qcNotes = mo?.uuid ? await listMoQcNotes(mo.uuid) : [];
   const item = lot.item ?? mo?.item ?? null;
   const itemName = item?.name ?? "Unknown item";
   const moCode = mo?.code ?? (mo ? `MO #${mo.id}` : null);
@@ -127,6 +135,20 @@ export default async function OutputQcDetailPage({
           {(mo?.npd_trial_batch_uuid || mo?.npd_formulation_uuid) && (
             <NpdValidationEmbed
               src={`/api/production/output-qc/${encodeURIComponent(lot_uuid)}/npd-validation.html`}
+            />
+          )}
+
+          {/* QC notes captured on the line via the Live-QC kiosk
+              while this MO was running. Sits between the spec sheet
+              and the actions card so the reviewer's mental flow is:
+              1) inspect the spec, 2) read what floor QC observed,
+              3) decide the verdict. */}
+          {mo && (
+            <MoQcNotesCard
+              notes={qcNotes}
+              prefs={company}
+              title="QC notes from the line"
+              subtitle="Captured during production"
             />
           )}
 

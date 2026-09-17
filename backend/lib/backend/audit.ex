@@ -76,6 +76,25 @@ defmodule Backend.Audit do
     )
   end
 
+  @doc """
+  Stamp a free-form note event on an entity. Used by the QC-note
+  callback from vita-perf (a live QC operator captures an inspection
+  note against an in-progress MO) — the note lands in the standard
+  audit history so the MO's Activity card renders it alongside every
+  other event. `note_text` is stored under `changes.note`; `metadata`
+  is merged in for anything the caller wants to preserve
+  (workstation, mo_step, captured_at, ...).
+  """
+  def record_note(actor, entity_type, entity, note_text, metadata \\ %{})
+      when is_binary(note_text) do
+    changes =
+      metadata
+      |> Map.new(fn {k, v} -> {to_string(k), v} end)
+      |> Map.put("note", note_text)
+
+    insert_event(actor, entity_type, entity, "note_added", changes, %{})
+  end
+
   ## Read paths -------------------------------------------------------
 
   @doc """

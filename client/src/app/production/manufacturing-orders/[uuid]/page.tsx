@@ -8,9 +8,14 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { PageCursorAnchor } from "@/components/realtime/page-cursor-anchor";
 import { PageHeader } from "@/components/layout/page-header";
 import { getCompanyDefaults } from "@/lib/company/server";
-import { getManufacturingOrder, listMOSessions } from "@/lib/production/server";
+import {
+  getManufacturingOrder,
+  listMOSessions,
+  listMoQcNotes,
+} from "@/lib/production/server";
 import { getMOCostBreakdown } from "@/lib/production/mo-cost";
 import { MOSessionsCard } from "@/components/production/mo-sessions-card";
+import { MoQcNotesCard } from "@/components/production/mo-qc-notes-card";
 import { MoStepperFromMo } from "@/components/production/mo-stage-stepper";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import { CommentThread } from "@/components/comments/comment-thread";
@@ -47,13 +52,14 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
   // fetches run in one Promise.all instead of the previous two-hop
   // waterfall (mo → then sessions/cost using mo.id). Trims one
   // round-trip off every MO detail page load.
-  const [mo, company, initialComments, initialSessions, initialCost] =
+  const [mo, company, initialComments, initialSessions, initialCost, qcNotes] =
     await Promise.all([
       getManufacturingOrder(uuid),
       getCompanyDefaults(),
       listCommentsForEntity("manufacturing_order", uuid),
       listMOSessions(uuid),
       getMOCostBreakdown(uuid),
+      listMoQcNotes(uuid),
     ]);
   if (!mo || !company) notFound();
 
@@ -178,6 +184,12 @@ export default async function ManufacturingOrderDetailPage({ params }: Props) {
           <MOCostSummary mo={mo} company={company} initialCost={initialCost} />
           <MOPartsTable mo={mo} company={company} canEdit={canEdit} />
           <MOOperationsTable mo={mo} company={company} canEdit={canEdit} />
+
+          {/* Chronological QC-note timeline captured on the floor via
+              the vita-perf Live-QC kiosk while the MO was running.
+              Rendered even when empty so the operator sees the
+              surface exists and knows where the floor QC notes land. */}
+          <MoQcNotesCard notes={qcNotes} prefs={company} />
 
           <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
             <header className="mb-3">

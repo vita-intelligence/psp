@@ -34,6 +34,7 @@ defmodule Backend.Accounts.IntegrationToken do
     mo:read
     mo:write:npd
     mo:write:session
+    mo:write:qc_note
     mo:transition
     workstation:read
     workstation:write:cleaning

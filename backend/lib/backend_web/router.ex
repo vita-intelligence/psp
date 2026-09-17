@@ -906,6 +906,11 @@ defmodule BackendWeb.Router do
       get "/manufacturing-orders/:id/sessions",
           MOSessionsController,
           :index
+      # QC-note timeline (populated by the vita-perf Live-QC kiosk
+      # callback). Same read gate as the sessions timeline.
+      get "/manufacturing-orders/:id/qc-notes",
+          MoQcNotesController,
+          :index
       post "/manufacturing-orders", ManufacturingOrderController, :create
       patch "/manufacturing-orders/:id", ManufacturingOrderController, :update
       post "/manufacturing-orders/:id/transition",
@@ -2230,6 +2235,16 @@ defmodule BackendWeb.Router do
     post "/workstations/:uuid/cleaning-complete/",
          IntegrationCleaningController,
          :complete
+
+    # QC-note callback from vita-perf's Live-QC kiosk page.
+    # Records the operator's inspection note as a `note_added` event
+    # on the MO's audit history. Requires `mo:write:qc_note`.
+    post "/manufacturing-orders/:uuid/qc-note",
+         IntegrationQcNoteController,
+         :create
+    post "/manufacturing-orders/:uuid/qc-note/",
+         IntegrationQcNoteController,
+         :create
 
     # Seed an HR Employee from the vita-performance side. Idempotent
     # via external_id — repeated pushes for the same vp Worker

@@ -263,6 +263,41 @@ export async function listMOSessions(
   }
 }
 
+export interface MoQcNoteRow {
+  id: number;
+  at: string;
+  note: string;
+  author_name: string;
+  author_kind: string;
+  worker_uuid: string | null;
+  workstation_uuid: string | null;
+  mo_step_uuid: string | null;
+  captured_at: string | null;
+}
+
+/** Chronological QC notes for an MO, populated by the vita-perf
+ *  Live-QC kiosk callback. Rendered by ``MoQcNotesCard`` on the MO
+ *  detail page + the Output-QC review page. Oldest note first so the
+ *  reader follows the production timeline in the same direction it
+ *  happened. Returns ``[]`` on any error — the section renders an
+ *  empty state and never blocks page load. */
+export async function listMoQcNotes(
+  moIdOrUuid: number | string,
+): Promise<MoQcNoteRow[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+  try {
+    const key = encodeURIComponent(String(moIdOrUuid));
+    const { notes } = await api<{ notes: MoQcNoteRow[] }>(
+      `/api/production/manufacturing-orders/${key}/qc-notes`,
+      { token, cache: "no-store" },
+    );
+    return notes ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function listCOSessions(
   coUuid: string,
 ): Promise<import("./sessions").WorkstationSessionRow[]> {
