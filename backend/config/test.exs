@@ -42,6 +42,12 @@ config :phoenix,
 # with a `Req.Test` plug instead of waiting for the 08:00 UTC tick.
 config :backend, Backend.Workers.CurrencyRatesPull, start: false
 
+# Same story for the forms publisher reconciler — its periodic
+# ``publish_template`` sweep would clash with the SQL sandbox in
+# tests. Tests that want to exercise it call
+# ``Backend.Forms.PublisherReconciler.run_now/0`` directly.
+config :backend, Backend.Forms.PublisherReconciler, start: false
+
 # ChromicPDF would boot a real Chrome process under the test supervisor;
 # we don't want that in unit tests. Document-renderer tests that need
 # real PDFs can flip this back on at the test level.

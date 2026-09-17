@@ -45,6 +45,12 @@ defmodule Backend.Application do
       # `session_pool: %{size: 3}` keeps the cold-start tax to a single
       # boot at app start instead of per-request.
       chromic_pdf_child(),
+      # Forms publisher reconciler — periodic sweep that re-fires the
+      # publish for every active form template with a workstation
+      # assignment, so a transient dev-server hiccup / vita-perf
+      # boot window can't leave a template in "never published" limbo.
+      # See ``Backend.Forms.PublisherReconciler``.
+      publisher_reconciler_child(),
       # Start to serve requests, typically the last entry
       BackendWeb.Endpoint
     ]
@@ -82,6 +88,17 @@ defmodule Backend.Application do
 
     if Keyword.get(cfg, :start, true) do
       {ChromicPDF, session_pool: [size: 3], disable_scripts: true}
+    end
+  end
+
+  # Forms publisher reconciler — see module doc. Test env keeps it off
+  # (SQL sandbox conflict with the periodic tick); dev / prod boot it
+  # by default. Config keys: ``start``, ``boot_delay_ms``, ``interval_ms``.
+  defp publisher_reconciler_child do
+    cfg = Application.get_env(:backend, Backend.Forms.PublisherReconciler, [])
+
+    if Keyword.get(cfg, :start, true) do
+      {Backend.Forms.PublisherReconciler, []}
     end
   end
 end

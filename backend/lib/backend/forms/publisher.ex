@@ -198,15 +198,45 @@ defmodule Backend.Forms.Publisher do
           receive_timeout: 10_000
         )
 
+      post_with_retries(req, template, ws)
+    end
+  end
+
+  # Send the publish POST with exponential backoff for transient
+  # failures (transport errors, 5xx). Doesn't retry 4xx — those are
+  # bugs (auth, validation) that a retry can't fix.
+  #
+  # This is the first line of defence against dev-server hiccups
+  # (Django reloading mid-request, Daphne cold-start), transient
+  # networking (retryable connection resets), and vita-perf boot
+  # windows. The PublisherReconciler is the second line — it sweeps
+  # every N minutes and re-fires any template whose publish path
+  # never got through, so even a total dropped push eventually
+  # self-heals without an operator having to re-save on the UI.
+  @publish_max_attempts 3
+  @publish_backoff_ms [250, 1_000, 4_000]
+  defp post_with_retries(req, template, ws) do
+    Enum.reduce_while(1..@publish_max_attempts, {:error, :unknown}, fn attempt, _acc ->
       case Req.post(req) do
         {:ok, %Req.Response{status: status}} when status in 200..204 ->
           Logger.debug(
             "Forms.Publisher pushed #{template.trigger} template " <>
               "#{template.uuid} v#{template.version} to workstation " <>
-              "#{ws.uuid} — #{status}"
+              "#{ws.uuid} — #{status} (attempt #{attempt})"
           )
 
-          :ok
+          {:halt, :ok}
+
+        {:ok, %Req.Response{status: status, body: body}}
+        when status >= 500 and attempt < @publish_max_attempts ->
+          Logger.warning(
+            "Forms.Publisher 5xx from vita-perf (attempt #{attempt}/" <>
+              "#{@publish_max_attempts}); retrying — " <>
+              "template=#{template.uuid}, ws=#{ws.uuid}, status=#{status}"
+          )
+
+          sleep_backoff(attempt)
+          {:cont, {:error, {:http, status, body}}}
 
         {:ok, %Req.Response{status: status, body: body}} ->
           Logger.warning(
@@ -215,18 +245,32 @@ defmodule Backend.Forms.Publisher do
               "body=#{inspect(body)})"
           )
 
-          {:error, {:http, status, body}}
+          {:halt, {:error, {:http, status, body}}}
+
+        {:error, reason} when attempt < @publish_max_attempts ->
+          Logger.warning(
+            "Forms.Publisher transport failure (attempt #{attempt}/" <>
+              "#{@publish_max_attempts}); retrying — " <>
+              "template=#{template.uuid}, ws=#{ws.uuid}, reason=#{inspect(reason)}"
+          )
+
+          sleep_backoff(attempt)
+          {:cont, {:error, {:transport, reason}}}
 
         {:error, reason} ->
           Logger.warning(
-            "Forms.Publisher transport failure " <>
-              "(template=#{template.uuid}, ws=#{ws.uuid}, " <>
-              "reason=#{inspect(reason)})"
+            "Forms.Publisher transport failure (final attempt) — " <>
+              "template=#{template.uuid}, ws=#{ws.uuid}, reason=#{inspect(reason)}"
           )
 
-          {:error, {:transport, reason}}
+          {:halt, {:error, {:transport, reason}}}
       end
-    end
+    end)
+  end
+
+  defp sleep_backoff(attempt) do
+    Enum.at(@publish_backoff_ms, attempt - 1, 4_000)
+    |> Process.sleep()
   end
 
   # Unknown trigger — nothing to do. Guardrail in case a future

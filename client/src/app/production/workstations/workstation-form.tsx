@@ -171,7 +171,11 @@ function initialFrom(
       idle_to: "",
       is_active: true,
       default_workers: [],
-      psp_source_of_truth: false,
+      // Ships to the vita-performance kiosk by default. Operators
+      // opt out via the "Local only" toggle on the form for the
+      // rare genuinely-local station. Mirrors the backend default
+      // (see migration ``20260917110000_default_psp_source_of_truth_true``).
+      psp_source_of_truth: true,
       form_assignments: emptyAssignments,
       cleaning_periodicity: "",
       cleaning_periodicity_interval: "",

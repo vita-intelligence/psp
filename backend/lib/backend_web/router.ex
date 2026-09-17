@@ -2028,6 +2028,16 @@ defmodule BackendWeb.Router do
     get "/manufacturing-orders/:uuid/parts",
         IntegrationReadController,
         :get_manufacturing_order_parts
+    # Integration proxies for NPD-rendered HTML embeds. Powers the
+    # vita-performance kiosk's Live-QC notes page — collapsed by
+    # default, iframe fetches only on operator expand. Requires
+    # ``mo:read`` scope (same as the MO read endpoints above).
+    get "/manufacturing-orders/:uuid/npd-spec.html",
+        IntegrationNpdEmbedController,
+        :mo_spec_html
+    get "/manufacturing-orders/:uuid/npd-validation.html",
+        IntegrationNpdEmbedController,
+        :mo_validation_html
     # Serve a movement-photo binary to the integration caller. The
     # BOM parts payload above returns `last_photo_uuid` per part; the
     # kiosk backend proxies THIS endpoint so the tablet browser can

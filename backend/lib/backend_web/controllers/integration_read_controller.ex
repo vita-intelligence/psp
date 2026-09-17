@@ -233,14 +233,24 @@ defmodule BackendWeb.IntegrationReadController do
     case Repo.one(
            from mo in ManufacturingOrder,
              where: mo.company_id == ^company_id and mo.uuid == ^uuid,
-             preload: [:item, steps: :workstation_group]
+             preload: [item: :finished_product_spec, steps: :workstation_group]
          ) do
       nil ->
         {:error, :not_found}
 
       mo ->
         step_produced = load_step_produced(step_ids_of([mo]))
-        json(conn, %{manufacturing_order: mo_payload(mo, nil, step_produced)})
+        company = Repo.get!(Company, company_id)
+
+        json(conn, %{
+          manufacturing_order:
+            mo
+            |> mo_payload(nil, step_produced)
+            |> Map.put(:finished_product_spec, finished_product_spec_summary(mo.item))
+            |> Map.put(:npd_formulation_uuid, mo.npd_formulation_uuid)
+            |> Map.put(:npd_trial_batch_uuid, mo.npd_trial_batch_uuid)
+            |> Map.put(:npd_frontend_url, company.npd_frontend_url)
+        })
     end
   end
 
@@ -624,6 +634,37 @@ defmodule BackendWeb.IntegrationReadController do
   defp item_summary(%Item{} = i) do
     %{uuid: i.uuid, name: i.name, item_type: Map.get(i, :item_type)}
   end
+
+  # Slim, wire-safe projection of `Item.finished_product_spec` — the
+  # subset the vita-perf Live-QC "context" panel renders next to the
+  # note area so QC has the label + dosing + storage details in view
+  # while inspecting a running MO. Nil when the parent item has no
+  # spec row loaded (e.g. semi-finished or a legacy pre-spec item).
+  defp finished_product_spec_summary(%Item{finished_product_spec: %{} = fps}) do
+    %{
+      regulatory_category: Map.get(fps, :regulatory_category),
+      dosage_form: Map.get(fps, :dosage_form),
+      capsule_size: Map.get(fps, :capsule_size),
+      tablet_size_mm: Map.get(fps, :tablet_size_mm),
+      powder_type: Map.get(fps, :powder_type),
+      serving_size: to_maybe_string(Map.get(fps, :serving_size)),
+      servings_per_pack: Map.get(fps, :servings_per_pack),
+      net_quantity: to_maybe_string(Map.get(fps, :net_quantity)),
+      directions_of_use: Map.get(fps, :directions_of_use),
+      suggested_dosage: Map.get(fps, :suggested_dosage),
+      warnings_text: Map.get(fps, :warnings_text),
+      appearance: Map.get(fps, :appearance),
+      shelf_life_months: Map.get(fps, :shelf_life_months),
+      storage_conditions: Map.get(fps, :storage_conditions),
+      target_markets: Map.get(fps, :target_markets)
+    }
+  end
+
+  defp finished_product_spec_summary(_), do: nil
+
+  defp to_maybe_string(nil), do: nil
+  defp to_maybe_string(%Decimal{} = d), do: Decimal.to_string(d)
+  defp to_maybe_string(v), do: to_string(v)
 
   # ---- Workstations ----
 

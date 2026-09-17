@@ -52,13 +52,20 @@ defmodule Backend.Production.Workstation do
 
     field :is_active, :boolean, default: true
 
-    # Feature flag from phase 6 of the vita-performance integration.
-    # When true, the vita-performance kiosk sources its MO picker
-    # from this workstation via psp_sync instead of the legacy local
-    # Item free-text search. Also gates the WorkstationSession
-    # writeback endpoint — sessions for a workstation with the flag
-    # off are refused (kiosk hasn't been cut over yet).
-    field :psp_source_of_truth, :boolean, default: false
+    # Default `true` — every new workstation is visible to the
+    # vita-performance kiosk by default. Operators can still opt a
+    # station out via the "Local only" toggle on the workstation form
+    # for the rare case where a genuinely-local station shouldn't
+    # accept sessions (setup shells, dev fixtures, ...).
+    #
+    # Was `default: false` originally (phase-6 defensive default —
+    # avoided showing half-configured stations on the kiosk before an
+    # operator had wired workstation groups + costs). In practice
+    # nobody remembered to flip it and freshly-created stations
+    # stayed invisible forever; cost of the confusion exceeded the
+    # defensive value, hence the flip. See migration
+    # ``20260917110000_default_psp_source_of_truth_true``.
+    field :psp_source_of_truth, :boolean, default: true
 
     # Station-specific override for the workstation_group's
     # default operation notes. When non-nil, takes precedence on the
