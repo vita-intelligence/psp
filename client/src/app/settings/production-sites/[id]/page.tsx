@@ -57,7 +57,7 @@ export default async function ProductionSiteEditPage({
   const canDelete = hasPermission(user, "production.facility_delete");
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="w-full space-y-4">
       <div className="flex items-center justify-between gap-2">
         <Button
           asChild

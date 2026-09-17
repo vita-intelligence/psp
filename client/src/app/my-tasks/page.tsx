@@ -24,7 +24,7 @@ export default async function MyTasksPage() {
       <PresenceMount />
 
       <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-7xl">
+        <div className="mx-auto w-full">
           <MyTasksBoard initialPage={initialPage} companyDefaults={defaults} />
         </div>
       </main>

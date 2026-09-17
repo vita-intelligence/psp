@@ -18,7 +18,7 @@ export default async function NewTemplatePage() {
   const matrix = await getPermissionMatrix();
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="w-full space-y-4">
       <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
         <Link href="/settings/roles">
           <ChevronLeft className="mr-1 size-4" />

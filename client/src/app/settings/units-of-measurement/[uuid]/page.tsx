@@ -29,10 +29,10 @@ export default async function EditUnitPage({
   const canEdit = hasPermission(user, "units.manage");
 
   return (
-    // max-w-3xl pins form + ownership + activity to one width so they
+    // w-full pins form + ownership + activity to one width so they
     // line up edge-to-edge, and gives the live-cursor coords a stable
     // anchor across every editor's viewport.
-    <div className="max-w-3xl space-y-4">
+    <div className="w-full space-y-4">
       <div className="flex items-center justify-between gap-2">
         <Button
           asChild

@@ -8,7 +8,7 @@ export default function EditTemplateLoading() {
         <Skeleton className="h-8 w-44 rounded-md" />
         <Skeleton className="h-8 w-20 rounded-md" />
       </div>
-      <Card className="max-w-3xl border-border/60">
+      <Card className="w-full border-border/60">
         <CardHeader>
           <Skeleton className="h-5 w-48" />
         </CardHeader>

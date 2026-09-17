@@ -5,7 +5,7 @@ export default function NewTemplateLoading() {
   return (
     <div className="space-y-4">
       <Skeleton className="h-8 w-44 rounded-md" />
-      <Card className="max-w-3xl border-border/60">
+      <Card className="w-full border-border/60">
         <CardHeader>
           <Skeleton className="h-5 w-40" />
         </CardHeader>

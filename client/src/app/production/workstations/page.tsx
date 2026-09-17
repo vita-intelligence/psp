@@ -33,7 +33,7 @@ export default async function WorkstationsPage() {
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-7xl space-y-6">
+        <div className="mx-auto w-full space-y-6">
           <PageHeader
             icon={Settings2}
             title="Workstations"

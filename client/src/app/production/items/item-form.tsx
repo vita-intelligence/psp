@@ -1791,7 +1791,7 @@ export function ItemForm({
             hide half the form under the sticky element. */}
         <div className="sticky bottom-0 -mx-4 mt-4 sm:-mx-8 md:sticky md:mt-8">
           <div className="border-t border-border/60 bg-background/95 px-4 py-3 shadow-[0_-4px_16px_-8px_rgba(0,0,0,0.08)] backdrop-blur-md sm:px-8">
-            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2">
+            <div className="mx-auto flex w-full flex-wrap items-center justify-between gap-2">
               {isEdit && canEdit && isCreator ? (
                 <Button type="button" variant="ghost" size="sm" onClick={onDelete} disabled={pending} className="text-destructive hover:text-destructive">
                   <Trash2 className="mr-1.5 size-3.5" />

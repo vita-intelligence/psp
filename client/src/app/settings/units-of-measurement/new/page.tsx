@@ -15,7 +15,7 @@ export default async function NewUnitPage() {
   }
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="w-full space-y-4">
       <Button
         asChild
         variant="ghost"

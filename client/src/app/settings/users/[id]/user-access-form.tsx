@@ -281,7 +281,7 @@ export function UserAccessForm({
       ref={cursorAnchorRef}
       onMouseMove={canEdit ? onCursorMove : undefined}
       onMouseLeave={canEdit ? hideCursor : undefined}
-      className="relative max-w-4xl border-border/60"
+      className="relative w-full border-border/60"
     >
       <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden rounded-xl">
         {Object.entries(cursors).map(([id, cursor]) => (

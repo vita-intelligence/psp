@@ -447,7 +447,7 @@ export function WarehouseForm({
       ref={cursorAnchorRef}
       onMouseMove={onCursorMove}
       onMouseLeave={hideCursor}
-      // The form Card's width is capped by `max-w-3xl` on the parent
+      // The form Card's width is capped by `w-full` on the parent
       // page wrapper — that's what keeps the cursor-fraction → pixel
       // mapping consistent across collaborators on different viewport
       // sizes (also makes form + audit cards line up).

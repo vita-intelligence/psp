@@ -29,7 +29,7 @@ export default async function EditAttributeDefinitionPage({
   const canManage = hasPermission(user, "attribute_definitions.manage");
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="w-full space-y-4">
       <Button
         asChild
         variant="ghost"

@@ -781,7 +781,7 @@ export function ProjectControlBoard({
         refreshing={refreshing}
       />
 
-      <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-8 sm:py-8">
+      <div className="mx-auto w-full space-y-6 px-4 py-6 sm:px-8 sm:py-8">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
           {/* ===================== LEFT — control lane ===================== */}
           <div className="space-y-6">
@@ -1030,7 +1030,7 @@ function StickyHeader({
 
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      <div className="mx-auto max-w-7xl px-4 py-3 sm:px-8 sm:py-4">
+      <div className="mx-auto w-full px-4 py-3 sm:px-8 sm:py-4">
         <div className="flex flex-wrap items-center gap-4">
           {/* Project header image — vita-cff picked the URL
               (approved label preview → first product photo → empty).
@@ -4976,7 +4976,7 @@ function BoardSkeleton({ co }: { co: CustomerOrder }) {
   return (
     <main className="flex-1 bg-muted/20">
       <header className="sticky top-0 z-30 border-b border-border/60 bg-background/95">
-        <div className="mx-auto max-w-7xl px-4 py-3 sm:px-8 sm:py-4">
+        <div className="mx-auto w-full px-4 py-3 sm:px-8 sm:py-4">
           <div className="flex items-center gap-3">
             <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
               <Link href="/projects">
@@ -4988,7 +4988,7 @@ function BoardSkeleton({ co }: { co: CustomerOrder }) {
           </div>
         </div>
       </header>
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
+      <div className="mx-auto w-full px-4 py-6 sm:px-8 sm:py-8">
         <Card className="border-border/60">
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
             Couldn&apos;t load the project. Refresh, or open the customer

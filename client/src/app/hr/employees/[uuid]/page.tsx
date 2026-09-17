@@ -100,7 +100,7 @@ export default async function HREmployeeDetailPage({
     shiftsPage.next_cursor ? "/hr/shifts" : undefined;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 sm:py-8">
+    <div className="mx-auto w-full space-y-6 px-4 py-6 sm:px-6 sm:py-8">
       <div className="flex items-center justify-between gap-2">
         <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
           <Link href="/hr/employees">

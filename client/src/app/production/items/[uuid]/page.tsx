@@ -77,13 +77,13 @@ export default async function EditItemPage({
       <ProductionSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        {/* max-w-7xl matches Manufacturing orders / BOMs / Routings so
+        {/* w-full matches Manufacturing orders / BOMs / Routings so
             the whole /production/* module reads at one width. The item
             form + satellites + audit cards all stretch to the full
             container; the live-cursor overlay is anchored to the
             form's own ``card ref`` (not to the page) so wider outer
             container doesn't break peer cursor sync. */}
-        <div className="mx-auto max-w-7xl space-y-6">
+        <div className="mx-auto w-full space-y-6">
           <PageHeader
             icon={Package}
             size="detail"
