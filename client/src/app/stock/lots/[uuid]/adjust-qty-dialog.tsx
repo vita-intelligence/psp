@@ -24,7 +24,12 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorBanner } from "@/components/forms/error-banner";
-import type { StockLot, StockLotPlacement } from "@/lib/types";
+import type {
+  StockLot,
+  StockLotPlacement,
+  StockMovementReasonCategory,
+} from "@/lib/types";
+import { STOCK_MOVEMENT_REASON_CATEGORY_LABEL } from "@/lib/types";
 import type { ErrorDebug } from "@/lib/errors/types";
 import { adjustLotAction } from "@/lib/stock/actions";
 
@@ -62,6 +67,8 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
   const [direction, setDirection] = useState<"up" | "down">("up");
   const [magnitude, setMagnitude] = useState<string>("");
   const [reason, setReason] = useState<string>("");
+  const [reasonCategory, setReasonCategory] =
+    useState<StockMovementReasonCategory | "">("");
   const [placementId, setPlacementId] = useState<string>(
     nonZeroPlacements[0]?.uuid ?? "",
   );
@@ -73,6 +80,7 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
     setDirection("up");
     setMagnitude("");
     setReason("");
+    setReasonCategory("");
     setError(null);
     setPlacementId(nonZeroPlacements[0]?.uuid ?? "");
   }, [open, nonZeroPlacements]);
@@ -91,15 +99,19 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
     isValidMagnitude &&
     Number(placement.qty) - magnitudeNumber < 0;
 
+  // BE now requires ≥ 10 chars of reason + a closed category. Mirror
+  // both here so the operator gets a disabled button instead of a
+  // round-trip that would only reject anyway.
   const canSubmit =
-    !!reason.trim() &&
+    reason.trim().length >= 10 &&
+    !!reasonCategory &&
     isValidMagnitude &&
     !wouldUnderflow &&
     !!placement &&
     !pending;
 
   function submit() {
-    if (!canSubmit || !placement) return;
+    if (!canSubmit || !placement || !reasonCategory) return;
     setError(null);
 
     const delta = direction === "up" ? magnitude : `-${magnitude}`;
@@ -109,6 +121,7 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
         from_cell_uuid: placement.storage_cell?.uuid,
         delta_qty: delta,
         reason: reason.trim(),
+        reason_category: reasonCategory,
       });
       if (res.ok) {
         toast.success(
@@ -222,14 +235,50 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
 
           <div className="space-y-1.5">
             <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              Reason
+              Category
+            </Label>
+            <Select
+              value={reasonCategory}
+              onValueChange={(v) =>
+                setReasonCategory(v as StockMovementReasonCategory)
+              }
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Why did the count change?" />
+              </SelectTrigger>
+              <SelectContent>
+                {(direction === "up"
+                  ? ADJUST_UP_CATEGORIES
+                  : ADJUST_DOWN_CATEGORIES
+                ).map((cat) => (
+                  <SelectItem key={cat} value={cat}>
+                    {STOCK_MOVEMENT_REASON_CATEGORY_LABEL[cat]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              Powers the waste-log report — pick the closest match, add
+              specifics in the notes below.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Notes (min 10 characters)
             </Label>
             <Textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Stock take, damage write-off, supplier shorted us 3…"
+              placeholder="Box crushed by forklift at gate 3, driver signed acknowledgement…"
               rows={3}
             />
+            {reason.trim().length > 0 && reason.trim().length < 10 && (
+              <p className="text-[11px] text-destructive">
+                {10 - reason.trim().length} more character
+                {10 - reason.trim().length === 1 ? "" : "s"} needed.
+              </p>
+            )}
           </div>
 
           {error && (
@@ -260,6 +309,28 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
     </Dialog>
   );
 }
+
+// Category choices scoped to the adjust direction — "expired" or
+// "damaged" don't make sense as adjust-UP reasons, and "found extra
+// on the shelf" isn't a valid adjust-DOWN. Two curated lists keep
+// the operator from picking a nonsense combination.
+const ADJUST_DOWN_CATEGORIES: StockMovementReasonCategory[] = [
+  "damage",
+  "expiry",
+  "qc_fail",
+  "stock_take_variance",
+  "theft_loss",
+  "sample_pull",
+  "admin_correction",
+  "other",
+];
+
+const ADJUST_UP_CATEGORIES: StockMovementReasonCategory[] = [
+  "stock_take_variance",
+  "customer_return",
+  "admin_correction",
+  "other",
+];
 
 function DirectionPill({
   active,

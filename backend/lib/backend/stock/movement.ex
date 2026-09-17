@@ -29,8 +29,42 @@ defmodule Backend.Stock.Movement do
   @kinds ~w(receive move consume adjust_up adjust_down dispose return auto_route issue ship_out)
   @reference_kinds ~w(purchase_order manufacturing_order sales_order transfer_order stock_take adjustment lifecycle_event)
 
+  # Small, closed classification set for the reason. Powers the
+  # "waste log by category" report + the accounting export. Free-text
+  # ``reason`` stays alongside for the human-readable specifics.
+  #
+  # Semantics (auditor-facing):
+  #   * damage              — physical damage, dropped / crushed / spilled
+  #   * expiry              — past expiry / best-before date
+  #   * qc_fail             — failed QA test / released as OOS
+  #   * stock_take_variance — count differed from system, no other reason
+  #   * theft_loss          — missing / suspected shrinkage
+  #   * sample_pull         — QA / R&D / customer sample draw
+  #   * physical_move       — no qty change, only location
+  #   * customer_return     — inbound return from customer
+  #   * admin_correction    — data-cleanup only; use sparingly
+  #   * other               — fallback; free-text ``reason`` must
+  #                            justify why no closed category fit
+  @reason_categories ~w(
+    damage expiry qc_fail stock_take_variance theft_loss sample_pull
+    physical_move customer_return admin_correction other
+  )
+
+  # Kinds that require BE-side reason + reason_category. System-
+  # generated kinds (receive from PO, consume from MO, auto_route,
+  # ship_out from pickup, return from RMA) inherit their reason from
+  # their parent context and don't need operator input.
+  @user_initiated_kinds ~w(adjust_up adjust_down dispose issue move)
+
+  # Minimum characters of free-text `reason` on user-initiated kinds.
+  # Anything shorter is very likely a placeholder ("ok", ".", "fix")
+  # that fails an audit later.
+  @reason_min_length 10
+
   def kinds, do: @kinds
   def reference_kinds, do: @reference_kinds
+  def reason_categories, do: @reason_categories
+  def user_initiated_kinds, do: @user_initiated_kinds
 
   schema "stock_movements" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -38,6 +72,10 @@ defmodule Backend.Stock.Movement do
     field :delta_qty, :decimal
     field :kind, :string
     field :reason, :string
+    # Closed enum classification. See ``@reason_categories`` above.
+    # Nullable on legacy rows; required by the changeset on any new
+    # user-initiated movement (see ``validate_reason_required/1``).
+    field :reason_category, :string
 
     field :reference_kind, :string
     field :reference_ref, :string
@@ -75,6 +113,7 @@ defmodule Backend.Stock.Movement do
       :delta_qty,
       :kind,
       :reason,
+      :reason_category,
       :reference_kind,
       :reference_ref,
       :actor_id,
@@ -91,8 +130,43 @@ defmodule Backend.Stock.Movement do
       :occurred_at
     ])
     |> validate_inclusion(:kind, @kinds)
+    |> maybe_validate_reason_category()
+    |> validate_reason_required()
     |> maybe_validate_reference_kind()
     |> validate_kind_shape()
+  end
+
+  # Category is optional on system-generated movements (receive from
+  # PO, consume from MO, auto_route, ship_out) — those inherit their
+  # "why" from the parent doc. When it IS set, it must be a value
+  # from the closed list so downstream reporting stays honest.
+  defp maybe_validate_reason_category(changeset) do
+    case get_field(changeset, :reason_category) do
+      nil -> changeset
+      _ -> validate_inclusion(changeset, :reason_category, @reason_categories)
+    end
+  end
+
+  # Every user-initiated movement carries a meaningful free-text
+  # ``reason`` (>= @reason_min_length chars) AND a closed
+  # ``reason_category``. This is the single most valuable audit
+  # hardening: the FE has always asked for a reason but nothing
+  # stopped a scripted / bulk / future-FE-bug caller from posting
+  # an empty one and leaving a gap in the timeline. Now the DB
+  # side refuses to write it.
+  defp validate_reason_required(changeset) do
+    if get_field(changeset, :kind) in @user_initiated_kinds do
+      changeset
+      |> validate_required([:reason, :reason_category],
+        message: "is required for operator-driven stock movements"
+      )
+      |> validate_length(:reason,
+        min: @reason_min_length,
+        message: "give at least a short sentence explaining what happened"
+      )
+    else
+      changeset
+    end
   end
 
   defp maybe_validate_reference_kind(changeset) do

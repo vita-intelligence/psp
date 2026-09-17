@@ -14,6 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { StockLotCellSummary, StockMovement } from "@/lib/types";
+import { STOCK_MOVEMENT_REASON_CATEGORY_LABEL } from "@/lib/types";
 import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import { formatCompanyDate, formatCompanyNumber } from "@/lib/format/company";
 import {
@@ -158,6 +159,13 @@ function Row({
             >
               {movement.kind}
             </span>
+            {movement.reason_category && (
+              <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {STOCK_MOVEMENT_REASON_CATEGORY_LABEL[
+                  movement.reason_category
+                ] ?? movement.reason_category}
+              </span>
+            )}
             <span className="font-mono text-sm font-semibold">
               {sign}
               {delta} {uomSymbol}

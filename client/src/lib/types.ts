@@ -1884,6 +1884,12 @@ export interface StockMovement {
   delta_qty: string;
   kind: StockMovementKind;
   reason: string | null;
+  /** Small, closed enum backing the free-text ``reason``. Nullable
+   *  on legacy pre-migration rows + on system-generated kinds
+   *  (receive from PO, consume from MO, auto_route, ship_out). Every
+   *  user-initiated movement written after the migration carries one
+   *  (BE enforced in ``Backend.Stock.Movement.changeset``). */
+  reason_category: StockMovementReasonCategory | null;
   reference_kind: string | null;
   reference_ref: string | null;
   occurred_at: string;
@@ -1895,6 +1901,38 @@ export interface StockMovement {
   skip_photo_reason: string | null;
   inserted_at: string;
 }
+
+/** Closed classification for the reason on a stock movement — powers
+ *  the waste-log report + accounting export. Keep in sync with
+ *  ``Backend.Stock.Movement.@reason_categories`` on the server. */
+export type StockMovementReasonCategory =
+  | "damage"
+  | "expiry"
+  | "qc_fail"
+  | "stock_take_variance"
+  | "theft_loss"
+  | "sample_pull"
+  | "physical_move"
+  | "customer_return"
+  | "admin_correction"
+  | "other";
+
+/** UI-friendly labels for the closed reason-category enum. */
+export const STOCK_MOVEMENT_REASON_CATEGORY_LABEL: Record<
+  StockMovementReasonCategory,
+  string
+> = {
+  damage: "Damaged / spilled",
+  expiry: "Expired / past best-before",
+  qc_fail: "QC failed / out-of-spec",
+  stock_take_variance: "Stock-take variance",
+  theft_loss: "Missing / suspected loss",
+  sample_pull: "Sample pulled (QA / R&D)",
+  physical_move: "Physical move (no qty change)",
+  customer_return: "Customer return",
+  admin_correction: "Data correction",
+  other: "Other (see notes)",
+};
 
 /** Cell scan response shape — the move flow's destination breadcrumb. */
 export interface ScannedCell {

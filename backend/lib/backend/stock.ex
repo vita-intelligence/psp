@@ -1764,6 +1764,7 @@ defmodule Backend.Stock do
                  "delta_qty" => delta,
                  "kind" => kind,
                  "reason" => attrs["reason"],
+                 "reason_category" => attrs["reason_category"],
                  "actor_id" => actor.id,
                  "occurred_at" => now
                })
@@ -1894,6 +1895,13 @@ defmodule Backend.Stock do
                  "delta_qty" => delta,
                  "kind" => "issue",
                  "reason" => String.trim(purpose),
+                 # Issue is always a deliberate draw-down for a
+                 # named purpose; `sample_pull` is the closest match
+                 # in the closed enum when the FE didn't specify a
+                 # category. FE can still override (e.g. an issue
+                 # linked to a customer_return workflow).
+                 "reason_category" =>
+                   attrs["reason_category"] || "sample_pull",
                  "reference_kind" => mo_ref && "manufacturing_order",
                  "reference_ref" => mo_ref && mo_ref.code,
                  "actor_id" => actor.id,
@@ -2493,6 +2501,17 @@ defmodule Backend.Stock do
   end
 
   defp insert_move_movement(actor, lot, from_placement, to_cell, qty, attrs, now) do
+    # Auto-fill reason + category on move when the caller didn't
+    # supply one. Move is user-initiated, so ``Movement.changeset``
+    # would otherwise reject the insert now that the BE guard is in
+    # place — the move dialog doesn't currently ask for either. The
+    # from → to cell path is captured on the row itself + the photo
+    # is required elsewhere, so a generic "Physical relocation"
+    # phrase is honest enough for the audit trail. FE will get a
+    # reason input later; when it does, ``attrs["reason"]`` /
+    # ``attrs["reason_category"]`` override.
+    reason = attrs["reason"] || "Physical relocation between cells."
+
     %Movement{}
     |> Movement.changeset(%{
       "company_id" => lot.company_id,
@@ -2501,7 +2520,8 @@ defmodule Backend.Stock do
       "to_cell_id" => to_cell.id,
       "delta_qty" => qty,
       "kind" => "move",
-      "reason" => attrs["reason"],
+      "reason" => reason,
+      "reason_category" => attrs["reason_category"] || "physical_move",
       "actor_id" => actor.id,
       "occurred_at" => now,
       "photo_url" => attrs["photo_url"],

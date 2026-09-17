@@ -6082,6 +6082,7 @@ defmodule BackendWeb.Payloads do
       delta_qty: m.delta_qty,
       kind: m.kind,
       reason: m.reason,
+      reason_category: m.reason_category,
       reference_kind: m.reference_kind,
       reference_ref: m.reference_ref,
       occurred_at: m.occurred_at,

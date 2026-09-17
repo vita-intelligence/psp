@@ -3,7 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { api } from "../api";
 import { getSessionToken } from "../auth/server";
-import type { StockLot, StockMovement, ComplianceState } from "../types";
+import type {
+  StockLot,
+  StockMovement,
+  StockMovementReasonCategory,
+  ComplianceState,
+} from "../types";
 import {
   toErrorResult,
   unauthorizedResult,
@@ -204,8 +209,10 @@ export interface AdjustLotInput {
   /** Signed decimal string. Positive = adjust_up, negative =
    *  adjust_down. Non-zero. */
   delta_qty: string;
-  /** Free text — required so the audit row is meaningful. */
+  /** Free text — required. BE enforces ≥ 10 chars. */
   reason: string;
+  /** Closed enum classification — BE-required on every adjust. */
+  reason_category: StockMovementReasonCategory;
 }
 
 export type AdjustLotResult =
