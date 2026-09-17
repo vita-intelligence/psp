@@ -1193,6 +1193,11 @@ export interface RawMaterialCompliance {
   last_reviewed_by: AuditActor | null;
   review_frequency_months: number | null;
   review_due_at: string | null;
+  /** Capsule-shell only. Max powder fill capacity, in mg (~0.75 g/mL
+   *  density). Read by NPD to size finished-product formulations. */
+  max_fill_mg: string | null;
+  /** Capsule-shell only. Empty capsule mass, in mg. */
+  shell_weight_mg: string | null;
   inserted_at: string;
   updated_at: string;
 }

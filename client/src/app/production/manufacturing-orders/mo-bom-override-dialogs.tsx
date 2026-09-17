@@ -92,23 +92,49 @@ interface QtyEditProps {
 export function QtyOverrideDialog({ mo, part, open, onOpenChange }: QtyEditProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const initial = part.line_qty ?? "";
+  // Prefill with the number the planner sees in the "Required" column
+  // (line_qty × MO qty, or just line_qty for fixed lines) — not the
+  // raw per-output rate from the master BOM. Humans edit the number
+  // they see; the dialog converts back to a per-output rate on save.
+  const initial = part.required_qty ?? part.line_qty ?? "";
   const [qty, setQty] = useState(initial);
   const uom =
     part.unit_of_measurement?.symbol ?? part.part?.stock_uom?.symbol ?? "";
+  const moQty = Number(mo.quantity ?? "0");
+  const masterPerUnit = part.line_qty ?? "—";
+  const masterTotal = part.required_qty ?? "—";
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = qty.trim();
-    if (!trimmed || Number(trimmed) <= 0) {
+    const typedTotal = Number(trimmed);
+    if (!trimmed || typedTotal <= 0) {
       toast.error("Qty must be a positive number.");
       return;
     }
+    // Convert the planner's "total for this MO" back to the per-output
+    // rate the backend stores on ``mo_bom_overrides.to_qty``. Fixed
+    // lines don't multiply, so the typed value IS the per-batch qty.
+    if (!part.is_fixed && !(moQty > 0)) {
+      toast.error(
+        "MO output quantity is missing — set it on the MO before overriding line qtys.",
+      );
+      return;
+    }
+    const perOutputQty = part.is_fixed
+      ? typedTotal
+      : typedTotal / moQty;
+    // Serialise with a decent number of decimals so 0.219/5 doesn't
+    // land as a truncated float and lose the last digit the planner
+    // typed. Trim trailing zeros for a tidy audit-log entry.
+    const perOutputStr = perOutputQty
+      .toFixed(8)
+      .replace(/\.?0+$/, "");
     startTransition(async () => {
       const res = await applyBomOverrideAction(mo.uuid, {
         action: "qty_changed",
         bom_line_id: part.id,
-        to_qty: trimmed,
+        to_qty: perOutputStr,
       });
       if (res.ok) {
         toast.success("Qty updated for this MO.");
@@ -141,7 +167,7 @@ export function QtyOverrideDialog({ mo, part, open, onOpenChange }: QtyEditProps
             )}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="qty">Per-output qty {uom ? `(${uom})` : ""}</Label>
+            <Label htmlFor="qty">Total for this MO {uom ? `(${uom})` : ""}</Label>
             <Input
               id="qty"
               type="number"
@@ -152,10 +178,10 @@ export function QtyOverrideDialog({ mo, part, open, onOpenChange }: QtyEditProps
               autoFocus
             />
             <p className="text-[11px] text-muted-foreground">
-              Master BOM says {part.line_qty ?? "—"}.
+              Master BOM says {masterTotal} {uom} for this MO
               {part.is_fixed
-                ? " Fixed line — the whole qty is used per batch, not per output."
-                : " Multiplied by MO output qty to compute Required."}
+                ? " (fixed line — same qty regardless of MO output)."
+                : ` (${masterPerUnit} ${uom} per output × ${mo.quantity ?? "?"}).`}
             </p>
           </div>
           <DialogFooter>

@@ -271,6 +271,11 @@ interface FormState {
   rm_spec_document_file: ItemFile | null;
   rm_last_reviewed_at: string;
   rm_review_frequency_months: string;
+  /** Capsule-shell only: max powder fill capacity + empty shell mass.
+   *  Populated by R&D on shell items; NPD reads them to size the
+   *  formulation and to auto-suggest a capsule based on total fill. */
+  rm_max_fill_mg: string;
+  rm_shell_weight_mg: string;
   /** Allergen UUIDs this raw material contains / carries traces of.
    *  Full-replace set semantics, no per-row state. */
   rm_allergen_uuids: string[];
@@ -376,6 +381,8 @@ function initialFrom(item: Item | null): FormState {
       ? compliance.last_reviewed_at.slice(0, 16)
       : "",
     rm_review_frequency_months: compliance?.review_frequency_months?.toString() ?? "",
+    rm_max_fill_mg: compliance?.max_fill_mg ?? "",
+    rm_shell_weight_mg: compliance?.shell_weight_mg ?? "",
     rm_allergen_uuids: (item?.allergens ?? []).map((a) => a.uuid),
 
     rmrisk_physical_risk_score: risk?.physical_risk_score?.toString() ?? "",
@@ -734,6 +741,8 @@ export function ItemForm({
               review_frequency_months: s("rm_review_frequency_months")
                 ? Number(s("rm_review_frequency_months"))
                 : null,
+              max_fill_mg: s("rm_max_fill_mg").trim() || null,
+              shell_weight_mg: s("rm_shell_weight_mg").trim() || null,
             }
           : null;
 
@@ -1415,6 +1424,33 @@ export function ItemForm({
                   <FieldError messages={fieldErrors["raw_material_compliance.review_frequency_months"]} />
                 </FieldRow>
               </Grid>
+
+              {/* Capsule-shell capacity — surfaces only when this
+                  raw material is a capsule shell. Consumed by NPD to
+                  auto-size formulations and to reject over-fill
+                  configurations, so the value must be the shell
+                  manufacturer's published fill capacity at ~0.75 g/mL
+                  powder density. */}
+              {state.rm_use_as === "capsule_shell" && (
+                <>
+                  <SectionHeader
+                    title="Capsule shell capacity"
+                    hint="Empty-capsule mass and max powder fill. NPD reads these to size finished-product formulations and to auto-suggest a capsule when the recipe fill weight changes."
+                  />
+                  <Grid>
+                    <FieldRow label="Max fill (mg)" hint="Manufacturer's stated fill capacity at ~0.75 g/mL powder density.">
+                      <Input type="number" step="0.01" value={state.rm_max_fill_mg} onChange={(e) => setField("rm_max_fill_mg", e.target.value)} onFocus={() => focusField("rm_max_fill_mg")} onBlur={() => blurField("rm_max_fill_mg")} />
+                      <FieldEditingIndicator peer={fieldEditors["rm_max_fill_mg"]} />
+                      <FieldError messages={fieldErrors["raw_material_compliance.max_fill_mg"]} />
+                    </FieldRow>
+                    <FieldRow label="Empty shell weight (mg)" hint="Mass of one empty capsule. Attributed to the shell row on the finished-product declaration.">
+                      <Input type="number" step="0.01" value={state.rm_shell_weight_mg} onChange={(e) => setField("rm_shell_weight_mg", e.target.value)} onFocus={() => focusField("rm_shell_weight_mg")} onBlur={() => blurField("rm_shell_weight_mg")} />
+                      <FieldEditingIndicator peer={fieldEditors["rm_shell_weight_mg"]} />
+                      <FieldError messages={fieldErrors["raw_material_compliance.shell_weight_mg"]} />
+                    </FieldRow>
+                  </Grid>
+                </>
+              )}
 
               {/* Allergens (EU FIC Annex II) — set semantics, full
                   replace on save. Lives in the mega-form so a peer's

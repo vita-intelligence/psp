@@ -47,6 +47,14 @@ defmodule Backend.Items.RawMaterialCompliance do
     field :review_frequency_months, :integer
     field :review_due_at, :date
 
+    # Capsule-shell-only fields — populated on items where
+    # `use_as = "capsule_shell"`. Replace the hardcoded
+    # `CAPSULE_SIZES` table NPD used to carry: capacity per size and
+    # empty-shell mass now live on the shell item itself so R&D can
+    # add sizes / edit values without a code deploy.
+    field :max_fill_mg, :decimal
+    field :shell_weight_mg, :decimal
+
     belongs_to :item, Item, primary_key: true, define_field: false
     belongs_to :last_reviewed_by, User
     belongs_to :spec_document_file, ItemFile
@@ -170,7 +178,9 @@ defmodule Backend.Items.RawMaterialCompliance do
       :last_reviewed_at,
       :last_reviewed_by_id,
       :review_frequency_months,
-      :review_due_at
+      :review_due_at,
+      :max_fill_mg,
+      :shell_weight_mg
     ])
     |> validate_required([:item_id])
     |> validate_inclusion_if_set(:use_as, @use_as_choices)
@@ -186,6 +196,8 @@ defmodule Backend.Items.RawMaterialCompliance do
     |> validate_decimal_in_range(:overage_pct, Decimal.new(0), Decimal.new(100))
     |> validate_number_if_set(:shelf_life_months, greater_than: 0)
     |> validate_number_if_set(:review_frequency_months, greater_than: 0)
+    |> validate_number_if_set(:max_fill_mg, greater_than: 0)
+    |> validate_number_if_set(:shell_weight_mg, greater_than: 0)
     |> compute_review_due_at()
   end
 

@@ -1259,6 +1259,13 @@ defmodule BackendWeb.IntegrationReadController do
   defp integration_item_shape(%Item{} = i, prices_by_id, %Company{} = company) do
     price = Map.get(prices_by_id, i.id)
     attributes = i.attributes || %{}
+    # Capsule-shell capacity data (max_fill_mg, shell_weight_mg) lives
+    # on the raw_material_compliance side-table. Flatten it into
+    # ``attributes`` on the wire so NPD (which reads capacity from
+    # attributes-shaped data) sees the value without having to
+    # introspect a separate JSON key. Only meaningful for capsule
+    # shells; other items keep the values null / absent.
+    attributes = maybe_overlay_capsule_capacity(attributes, i)
     # Stock UoM — the base unit the item is procured / stored in.
     # NPD needs this on the wire so its BOM push can tag every stage
     # row with the correct target dimension (mass / count / volume)
@@ -1362,6 +1369,69 @@ defmodule BackendWeb.IntegrationReadController do
   end
 
   defp compliance_use_as(_), do: nil
+
+  # Overlay capsule-shell capacity onto the wire attributes map when
+  # the item's compliance row carries values. Non-capsule items and
+  # items whose compliance row hasn't been loaded / created are
+  # returned unchanged. Values serialise as strings to match the
+  # decimal-as-string convention used everywhere else on the wire.
+  #
+  # We emit BOTH ``max_fill_mg`` (the canonical column) and
+  # ``max_weight_mg`` (an alias for backward compat with NPD's older
+  # client code that read the legacy hardcoded ``CAPSULE_SIZES``
+  # attribute name). Same for ``capsule_size`` — computed from the
+  # raw ``size`` string ("00" → "double_00", "0" → "single_0", etc.)
+  # so NPD's live-compute picker key still resolves for both fresh
+  # PSP-driven picks and legacy hardcoded-key expectations.
+  defp maybe_overlay_capsule_capacity(attrs, %Item{
+         raw_material_compliance: %RawMaterialCompliance{
+           max_fill_mg: max_fill,
+           shell_weight_mg: shell_weight
+         }
+       }) do
+    attrs
+    |> maybe_put_decimal("max_fill_mg", max_fill)
+    |> maybe_put_decimal("max_weight_mg", max_fill)
+    |> maybe_put_decimal("shell_weight_mg", shell_weight)
+    |> maybe_derive_capsule_size_key()
+  end
+
+  defp maybe_overlay_capsule_capacity(attrs, _item), do: attrs
+
+  # Derive NPD's legacy ``capsule_size`` key from the raw ``size``
+  # string carried on ``attributes.size``. NPD's client-side compute
+  # (``vita-cff/client/app/[locale]/formulations/[id]/formulation-builder.tsx``)
+  # reads ``attrs["capsule_size"]`` first and only falls through to
+  # ``max_weight_mg`` when it's missing — supplying both spellings
+  # keeps every existing consumer working during the PSP-driven
+  # transition. Mapping matches
+  # ``apps/formulations/constants.py::CAPSULE_SIZES`` keys.
+  defp maybe_derive_capsule_size_key(attrs) do
+    case Map.get(attrs, "capsule_size") do
+      key when is_binary(key) and key != "" ->
+        # Caller already set the fully-qualified key — leave it.
+        attrs
+
+      _ ->
+        case Map.get(attrs, "size") do
+          "000" -> Map.put(attrs, "capsule_size", "triple_0")
+          "00" -> Map.put(attrs, "capsule_size", "double_00")
+          "0" -> Map.put(attrs, "capsule_size", "single_0")
+          "1" -> Map.put(attrs, "capsule_size", "size_1")
+          "2" -> Map.put(attrs, "capsule_size", "size_2")
+          "3" -> Map.put(attrs, "capsule_size", "size_3")
+          "4" -> Map.put(attrs, "capsule_size", "size_4")
+          _ -> attrs
+        end
+    end
+  end
+
+  defp maybe_put_decimal(map, _key, nil), do: map
+
+  defp maybe_put_decimal(map, key, %Decimal{} = value),
+    do: Map.put(map, key, Decimal.to_string(value))
+
+  defp maybe_put_decimal(map, key, value), do: Map.put(map, key, value)
 
   # ---- HR / Employees ----
 
