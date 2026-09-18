@@ -245,6 +245,17 @@ const FIELD_LABELS: Record<EntityType, Record<string, string>> = {
     photo_url: "Photo",
     skip_photo_reason: "Skip-photo reason",
   },
+  stock_write_off: {
+    status: "Status",
+    qty: "Quantity",
+    reason_category: "Reason category",
+    reason_narrative: "Narrative",
+    disposal_method: "Disposal method",
+    approved_note: "Approval note",
+    authorised_note: "Authorisation note",
+    revert_reason: "Revert reason",
+    linked_movement_id: "Movement",
+  },
   vendor: {
     name: "Name",
     legal_name: "Legal name",

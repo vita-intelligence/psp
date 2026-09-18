@@ -7,6 +7,8 @@ import type {
   StockLot,
   StockMovement,
   StockMovementReasonCategory,
+  StockWriteOff,
+  StockWriteOffDisposalMethod,
   ComplianceState,
 } from "../types";
 import {
@@ -342,6 +344,136 @@ export async function moveLotAction(
     return toErrorResult(err, {
       source: "moveLotAction",
       fallbackDetail: "Couldn't move the lot.",
+    });
+  }
+}
+
+/* =====================================================================
+ *  Write-off state machine — one action per BE endpoint. Every
+ *  mutating call revalidates the list + detail routes so the
+ *  post-action redirect lands on fresh SSR content.
+ * ================================================================== */
+
+export interface CreateWriteOffInput {
+  lot_uuid: string;
+  qty: string;
+  reason_category: StockMovementReasonCategory;
+  reason_narrative: string;
+  disposal_method: StockWriteOffDisposalMethod;
+  placement_id?: number | null;
+  destination_cell_id?: number | null;
+}
+
+export type WriteOffResult =
+  | { ok: true; write_off: StockWriteOff }
+  | ErrorResult;
+
+async function writeOffCall(
+  path: string,
+  init: RequestInit,
+  source: string,
+  fallback: string,
+): Promise<WriteOffResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult(source);
+  try {
+    const res = await api<{ write_off: StockWriteOff }>(path, {
+      token,
+      ...init,
+    });
+    revalidatePath("/stock/write-offs");
+    return { ok: true, write_off: res.write_off };
+  } catch (err) {
+    return toErrorResult(err, { source, fallbackDetail: fallback });
+  }
+}
+
+export async function createWriteOffAction(
+  input: CreateWriteOffInput,
+): Promise<WriteOffResult> {
+  return writeOffCall(
+    "/api/stock/write-offs",
+    { method: "POST", body: JSON.stringify(input) },
+    "createWriteOffAction",
+    "Couldn't create the write-off.",
+  );
+}
+
+export async function submitWriteOffAction(
+  uuid: string,
+): Promise<WriteOffResult> {
+  return writeOffCall(
+    `/api/stock/write-offs/${encodeURIComponent(uuid)}/submit`,
+    { method: "POST", body: "{}" },
+    "submitWriteOffAction",
+    "Couldn't submit the write-off.",
+  );
+}
+
+export async function approveWriteOffAction(
+  uuid: string,
+  input: { password: string; note?: string },
+): Promise<WriteOffResult> {
+  return writeOffCall(
+    `/api/stock/write-offs/${encodeURIComponent(uuid)}/approve`,
+    { method: "POST", body: JSON.stringify(input) },
+    "approveWriteOffAction",
+    "Couldn't approve the write-off.",
+  );
+}
+
+export async function authoriseWriteOffAction(
+  uuid: string,
+  input: { password: string; note?: string },
+): Promise<WriteOffResult> {
+  return writeOffCall(
+    `/api/stock/write-offs/${encodeURIComponent(uuid)}/authorise`,
+    { method: "POST", body: JSON.stringify(input) },
+    "authoriseWriteOffAction",
+    "Couldn't authorise the write-off.",
+  );
+}
+
+export async function rejectWriteOffAction(
+  uuid: string,
+  input: { password: string; note: string },
+): Promise<WriteOffResult> {
+  return writeOffCall(
+    `/api/stock/write-offs/${encodeURIComponent(uuid)}/reject`,
+    { method: "POST", body: JSON.stringify(input) },
+    "rejectWriteOffAction",
+    "Couldn't reject the write-off.",
+  );
+}
+
+export async function revertWriteOffAction(
+  uuid: string,
+  input: { password: string; reason: string },
+): Promise<WriteOffResult> {
+  return writeOffCall(
+    `/api/stock/write-offs/${encodeURIComponent(uuid)}/revert`,
+    { method: "POST", body: JSON.stringify(input) },
+    "revertWriteOffAction",
+    "Couldn't revert the write-off.",
+  );
+}
+
+export async function deleteWriteOffAction(
+  uuid: string,
+): Promise<{ ok: true } | ErrorResult> {
+  const token = await getSessionToken();
+  if (!token) return unauthorizedResult("deleteWriteOffAction");
+  try {
+    await api(`/api/stock/write-offs/${encodeURIComponent(uuid)}`, {
+      token,
+      method: "DELETE",
+    });
+    revalidatePath("/stock/write-offs");
+    return { ok: true };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "deleteWriteOffAction",
+      fallbackDetail: "Couldn't delete the draft write-off.",
     });
   }
 }

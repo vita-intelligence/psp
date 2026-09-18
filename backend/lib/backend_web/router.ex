@@ -78,6 +78,10 @@ defmodule BackendWeb.Router do
     plug :put_entity_type, "stock_lot"
   end
 
+  pipeline :comments_stock_write_off do
+    plug :put_entity_type, "stock_write_off"
+  end
+
   pipeline :comments_bom do
     plug :put_entity_type, "bom"
   end
@@ -1610,6 +1614,26 @@ defmodule BackendWeb.Router do
       # via the purpose-built move/adjust/issue/dispose endpoints.
       get "/movements", StockLotController, :movements_index
 
+      # Three-signature write-off workflow. `/api/stock/write-offs`
+      # is the paperwork layer that wraps an eventual `adjust_down`
+      # movement — the actual placement mutation only fires when
+      # the authoriser signature lands (`/authorise`). Revert
+      # writes the inverse movement + keeps the row for the audit
+      # chain. See ``Backend.Stock.WriteOffs`` for the state
+      # machine + password re-verification rules.
+      scope "/write-offs" do
+        get "/", StockWriteOffController, :index
+        post "/", StockWriteOffController, :create
+        get "/:id", StockWriteOffController, :show
+        patch "/:id", StockWriteOffController, :update
+        delete "/:id", StockWriteOffController, :delete
+        post "/:id/submit", StockWriteOffController, :submit
+        post "/:id/approve", StockWriteOffController, :approve
+        post "/:id/authorise", StockWriteOffController, :authorise
+        post "/:id/reject", StockWriteOffController, :reject
+        post "/:id/revert", StockWriteOffController, :revert
+      end
+
       # Put-away queue + scanner lookups (mobile /m flow).
       get "/lots/pending-putaway", StockLotController, :pending_putaway
 
@@ -1820,6 +1844,22 @@ defmodule BackendWeb.Router do
     delete "/:comment_uuid", CommentsController, :delete
 
     # Messenger-style extras — attachments + emoji reactions.
+    post "/:comment_uuid/files", CommentsController, :upload_file
+    get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
+    delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file
+    post "/:comment_uuid/reactions", CommentsController, :add_reaction
+    delete "/:comment_uuid/reactions/:emoji", CommentsController, :remove_reaction
+    delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
+  end
+
+  scope "/api/stock/write-offs/:entity_uuid/comments", BackendWeb do
+    pipe_through [:api_authed, :comments_stock_write_off]
+
+    get "/", CommentsController, :index
+    post "/", CommentsController, :create
+    patch "/:comment_uuid", CommentsController, :update
+    delete "/:comment_uuid", CommentsController, :delete
+
     post "/:comment_uuid/files", CommentsController, :upload_file
     get "/:comment_uuid/files/:file_uuid/serve", CommentsController, :serve_file
     delete "/:comment_uuid/files/:file_uuid", CommentsController, :delete_file

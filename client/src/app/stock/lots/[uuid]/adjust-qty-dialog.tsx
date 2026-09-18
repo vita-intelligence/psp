@@ -282,11 +282,28 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
           </div>
 
           {error && (
-            <ErrorBanner
-              detail={error.detail}
-              code={error.code}
-              debug={error.debug}
-            />
+            <>
+              <ErrorBanner
+                detail={error.detail}
+                code={error.code}
+                debug={error.debug}
+              />
+              {error.code === "cannot_zero_via_adjust" && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                  <p className="mb-2">
+                    Zeroing a placement destroys stock — that needs the
+                    three-signature write-off workflow (creator + approver
+                    + authoriser) so the paperwork trail is complete.
+                  </p>
+                  <a
+                    href={`/stock/write-offs`}
+                    className="inline-flex items-center gap-1 font-medium text-amber-700 underline underline-offset-2 dark:text-amber-400"
+                  >
+                    File a write-off →
+                  </a>
+                </div>
+              )}
+            </>
           )}
         </div>
 

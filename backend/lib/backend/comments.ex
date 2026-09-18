@@ -45,6 +45,15 @@ defmodule Backend.Comments do
     "loyalty_program" => ["loyalty.programs_manage"],
     "purchase_order" => ["procurement.po_create"],
     "stock_lot" => ["stock.edit", "stock.receive"],
+    # Everyone who can file, approve, authorise, or revert a write-off
+    # can also drop a note on its chat — cross-team discussion is the
+    # whole point of the sign-off thread.
+    "stock_write_off" => [
+      "stock.writeoff.file",
+      "stock.writeoff.approve",
+      "stock.writeoff.authorise",
+      "stock.writeoff.revert"
+    ],
     "purchase_order_line" => ["procurement.po_create"],
     "bom" => ["production.bom_edit", "production.bom_create"],
     "workstation_group" => [
@@ -230,6 +239,7 @@ defmodule Backend.Comments do
         "loyalty_program" -> Backend.Loyalty.LoyaltyProgram
         "purchase_order" -> Backend.Purchasing.PurchaseOrder
         "stock_lot" -> Backend.Stock.Lot
+        "stock_write_off" -> Backend.Stock.WriteOff
         "purchase_order_line" -> Backend.Purchasing.PurchaseOrderLine
         "bom" -> Backend.Production.BOM
         "workstation_group" -> Backend.Production.WorkstationGroup

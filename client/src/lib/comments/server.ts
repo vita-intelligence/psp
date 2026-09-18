@@ -16,6 +16,7 @@ export const COMMENTS_PATH: Record<CommentEntityType, string> = {
   loyalty_program: "loyalty/programs",
   purchase_order: "purchase-orders",
   stock_lot: "stock/lots",
+  stock_write_off: "stock/write-offs",
   purchase_order_line: "purchase-order-lines",
   bom: "production/boms",
   workstation_group: "production/workstation-groups",

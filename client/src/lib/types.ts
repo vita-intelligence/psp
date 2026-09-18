@@ -183,6 +183,7 @@ export interface AuditEvent {
     | "stock_lot"
     | "stock_lot_placement"
     | "stock_movement"
+    | "stock_write_off"
     | "vendor"
     | "vendor_approved_item"
     | "vendor_certificate"
@@ -1933,6 +1934,96 @@ export const STOCK_MOVEMENT_REASON_CATEGORY_LABEL: Record<
   admin_correction: "Data correction",
   other: "Other (see notes)",
 };
+
+/* =====================================================================
+ *  Stock write-off — three-signature workflow around an eventual
+ *  ``adjust_down`` movement. See ``Backend.Stock.WriteOffs`` on the
+ *  server for the state machine + sign-off rules.
+ * ================================================================== */
+
+export type StockWriteOffStatus =
+  | "draft"
+  | "pending_approval"
+  | "pending_authorisation"
+  | "active"
+  | "reverted";
+
+export const STOCK_WRITE_OFF_STATUS_LABEL: Record<StockWriteOffStatus, string> = {
+  draft: "Draft",
+  pending_approval: "Pending approval",
+  pending_authorisation: "Pending authorisation",
+  active: "Active",
+  reverted: "Reverted",
+};
+
+export type StockWriteOffDisposalMethod =
+  | "incinerated"
+  | "landfill"
+  | "recycled"
+  | "returned_to_supplier"
+  | "destroyed_on_site"
+  | "other";
+
+export const STOCK_WRITE_OFF_DISPOSAL_METHOD_LABEL: Record<
+  StockWriteOffDisposalMethod,
+  string
+> = {
+  incinerated: "Incinerated",
+  landfill: "Landfill",
+  recycled: "Recycled",
+  returned_to_supplier: "Returned to supplier",
+  destroyed_on_site: "Destroyed on site",
+  other: "Other (see notes)",
+};
+
+/** Compact row for the /stock/write-offs table. */
+export interface StockWriteOffRow {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: StockWriteOffStatus;
+  qty: string;
+  unit_cost_snapshot: string | null;
+  currency_snapshot: string | null;
+  total_value: string | null;
+  reason_category: StockMovementReasonCategory;
+  reason_narrative: string;
+  disposal_method: StockWriteOffDisposalMethod;
+  submitted_at: string | null;
+  approved_at: string | null;
+  authorised_at: string | null;
+  activated_at: string | null;
+  reverted_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+  created_by: AuditActor | null;
+  approved_by: AuditActor | null;
+  authorised_by: AuditActor | null;
+  reverted_by: AuditActor | null;
+  stock_lot: {
+    id: number;
+    uuid: string;
+    code: string | null;
+  } | null;
+  item: {
+    id: number;
+    uuid: string;
+    name: string;
+    code: string | null;
+  } | null;
+  unit_of_measurement: { id: number; symbol: string | null } | null;
+}
+
+/** Full detail payload — adds the sig notes, cell breadcrumb, and
+ *  linked movement handles for the detail-page timeline. */
+export interface StockWriteOff extends StockWriteOffRow {
+  approved_note: string | null;
+  authorised_note: string | null;
+  revert_reason: string | null;
+  destination_cell: StockLotCellSummary | null;
+  linked_movement: StockMovement | null;
+  revert_movement: StockMovement | null;
+}
 
 /** Cell scan response shape — the move flow's destination breadcrumb. */
 export interface ScannedCell {

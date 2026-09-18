@@ -12,6 +12,7 @@ export type CommentEntityType =
   | "loyalty_program"
   | "purchase_order"
   | "stock_lot"
+  | "stock_write_off"
   | "purchase_order_line"
   | "bom"
   | "workstation_group"

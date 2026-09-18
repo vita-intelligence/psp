@@ -577,6 +577,13 @@ defmodule BackendWeb.CommentsController do
     end
   end
 
+  defp resolve_entity_id(actor, "stock_write_off", uuid) do
+    case Backend.Stock.WriteOffs.get(actor.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp resolve_entity_id(actor, "bom", uuid) do
     case Backend.Production.get(actor.company_id, uuid) do
       %{id: id} -> {:ok, id}
@@ -669,6 +676,7 @@ defmodule BackendWeb.CommentsController do
   defp view_perm_for("loyalty_program"), do: "loyalty.view"
   defp view_perm_for("purchase_order"), do: "procurement.po_view"
   defp view_perm_for("stock_lot"), do: "stock.view"
+  defp view_perm_for("stock_write_off"), do: "stock.view"
   defp view_perm_for("bom"), do: "production.bom_view"
   defp view_perm_for("workstation_group"), do: "production.workstation_group_view"
   defp view_perm_for("workstation"), do: "production.workstation_view"

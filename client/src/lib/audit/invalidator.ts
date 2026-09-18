@@ -32,6 +32,7 @@ type EntityType =
   | "stock_lot"
   | "stock_lot_placement"
   | "stock_movement"
+  | "stock_write_off"
   | "vendor"
   | "vendor_approved_item"
   | "vendor_certificate"

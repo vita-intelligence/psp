@@ -2008,7 +2008,8 @@ defmodule Backend.Stock do
          {:ok, placement} <- resolve_from_placement(lot, attrs["from_cell_uuid"]),
          {:ok, delta} <- parse_signed_decimal(attrs["delta_qty"]),
          {:ok, kind} <- adjust_kind(delta),
-         :ok <- ensure_non_negative_after(placement, delta) do
+         :ok <- ensure_non_negative_after(placement, delta),
+         :ok <- ensure_not_zeroing(placement, delta) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
       Repo.transaction(fn ->
@@ -2539,6 +2540,19 @@ defmodule Backend.Stock do
   defp ensure_non_negative_after(%Placement{qty: current}, %Decimal{} = delta) do
     if Decimal.lt?(Decimal.add(current, delta), 0) do
       {:error, :insufficient_qty}
+    else
+      :ok
+    end
+  end
+
+  # Prevent adjust-to-zero. Fully emptying a placement (or a lot's
+  # last non-zero placement) is a destruction event that needs the
+  # three-signature write-off workflow — not a stock-take correction.
+  # See ``Backend.Stock.WriteOffs`` for the paperwork trail auditors
+  # (BRCGS §5.9 / GMP Ch 5) expect on any physical qty going to zero.
+  defp ensure_not_zeroing(%Placement{qty: current}, %Decimal{} = delta) do
+    if Decimal.equal?(Decimal.add(current, delta), Decimal.new("0")) do
+      {:error, :cannot_zero_via_adjust}
     else
       :ok
     end

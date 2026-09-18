@@ -45,7 +45,6 @@ const ITEMS: SubnavItem[] = [
     href: "/stock/write-offs",
     label: "Write-offs",
     Icon: PackageMinus,
-    comingSoon: true,
   },
   { href: "/stock/shipments", label: "Shipments", Icon: Send, comingSoon: true },
   {

@@ -6,6 +6,8 @@ import type {
   Item,
   StockLot,
   StockMovement,
+  StockWriteOff,
+  StockWriteOffRow,
   Warehouse,
 } from "../types";
 
@@ -104,6 +106,70 @@ export async function listStockMovementsPage(
       `/api/stock/movements${suffix ? `?${suffix}` : ""}`,
       { token, cache: "no-store" },
     );
+  } catch {
+    return null;
+  }
+}
+
+/** First page of the /stock/write-offs paperwork queue — the
+ *  three-signature workflow around an eventual adjust_down. Optional
+ *  filters mirror the listStockMovementsPage helper. */
+export async function listStockWriteOffsPage(
+  filters: {
+    from_at?: string;
+    to_at?: string;
+    status?: string;
+    reason_category?: string;
+    created_by_id?: number;
+    stock_lot_id?: number;
+    search?: string;
+  } = {},
+): Promise<{
+  items: StockWriteOffRow[];
+  next_cursor: string | null;
+} | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+
+  const qs = new URLSearchParams();
+  if (filters.from_at) qs.set("from_at", filters.from_at);
+  if (filters.to_at) qs.set("to_at", filters.to_at);
+  if (filters.status) qs.set("status", filters.status);
+  if (filters.reason_category) qs.set("reason_category", filters.reason_category);
+  if (typeof filters.created_by_id === "number")
+    qs.set("created_by_id", String(filters.created_by_id));
+  if (typeof filters.stock_lot_id === "number")
+    qs.set("stock_lot_id", String(filters.stock_lot_id));
+  if (filters.search) qs.set("search", filters.search);
+  const suffix = qs.toString();
+
+  try {
+    return await api<{
+      items: StockWriteOffRow[];
+      next_cursor: string | null;
+    }>(`/api/stock/write-offs${suffix ? `?${suffix}` : ""}`, {
+      token,
+      cache: "no-store",
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Single write-off + all sig details for the /stock/write-offs/[uuid]
+ *  detail page. Null on auth failure so the page can render the
+ *  not-found shell instead of a 500. */
+export async function getStockWriteOff(
+  uuid: string,
+): Promise<StockWriteOff | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    const res = await api<{ write_off: StockWriteOff }>(
+      `/api/stock/write-offs/${encodeURIComponent(uuid)}`,
+      { token, cache: "no-store" },
+    );
+    return res.write_off;
   } catch {
     return null;
   }

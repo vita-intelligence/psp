@@ -6098,6 +6098,83 @@ defmodule BackendWeb.Payloads do
   end
 
   @doc """
+  Compact write-off row for the /stock/write-offs table. Enough
+  context to render Code / Item / Lot / Qty / Reason / Status /
+  Creator without a per-row fetch.
+  """
+  def stock_write_off_row(w) do
+    lot = preloaded_or_nil(w, :stock_lot, & &1)
+    item = if lot, do: preloaded_or_nil(lot, :item, & &1), else: nil
+    uom = if lot, do: preloaded_or_nil(lot, :unit_of_measurement, & &1), else: nil
+
+    %{
+      id: w.id,
+      uuid: w.uuid,
+      code: render_code(w, "stock_write_off"),
+      status: w.status,
+      qty: decimal_to_string(w.qty),
+      unit_cost_snapshot: decimal_to_string(w.unit_cost_snapshot),
+      currency_snapshot: w.currency_snapshot,
+      total_value: total_value(w),
+      reason_category: w.reason_category,
+      reason_narrative: w.reason_narrative,
+      disposal_method: w.disposal_method,
+      submitted_at: w.submitted_at,
+      approved_at: w.approved_at,
+      authorised_at: w.authorised_at,
+      activated_at: w.activated_at,
+      reverted_at: w.reverted_at,
+      inserted_at: w.inserted_at,
+      updated_at: w.updated_at,
+      created_by: actor(w, :created_by),
+      approved_by: actor(w, :approved_by),
+      authorised_by: actor(w, :authorised_by),
+      reverted_by: actor(w, :reverted_by),
+      stock_lot:
+        lot &&
+          %{
+            id: lot.id,
+            uuid: lot.uuid,
+            code: render_code(lot, "stock_lot")
+          },
+      item:
+        item &&
+          %{
+            id: item.id,
+            uuid: item.uuid,
+            name: item.name,
+            code: render_code(item, "item")
+          },
+      unit_of_measurement: uom && %{id: uom.id, symbol: uom.symbol}
+    }
+  end
+
+  @doc """
+  Full write-off payload for the detail page. Extends the row
+  payload with the free-text sig notes, cell breadcrumb, linked
+  movements, and full lot summary.
+  """
+  def stock_write_off(w) do
+    stock_write_off_row(w)
+    |> Map.merge(%{
+      approved_note: w.approved_note,
+      authorised_note: w.authorised_note,
+      revert_reason: w.revert_reason,
+      destination_cell:
+        preloaded_or_nil(w, :destination_cell, &storage_cell_summary/1),
+      linked_movement:
+        preloaded_or_nil(w, :linked_movement, &stock_movement/1),
+      revert_movement:
+        preloaded_or_nil(w, :revert_movement, &stock_movement/1)
+    })
+  end
+
+  defp total_value(%{qty: %Decimal{} = qty, unit_cost_snapshot: %Decimal{} = cost}),
+    do: qty |> Decimal.mult(cost) |> decimal_to_string()
+
+  defp total_value(_), do: nil
+
+  @doc """
   Movement row shaped for the /stock/movements page. Extends the
   base ``stock_movement/1`` payload with the joined lot + item + uom
   summaries so the table can render `Item name / Lot code / Qty` in

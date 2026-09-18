@@ -1016,6 +1016,13 @@ defmodule BackendWeb.StockLotController do
           "Can't go below zero — that placement only has the current qty available."
         )
 
+      {:error, :cannot_zero_via_adjust} ->
+        unprocessable(
+          conn,
+          "cannot_zero_via_adjust",
+          "Zeroing a placement requires the write-off workflow. File a write-off from the lot page instead — the qty change fires only after approver + authoriser sign off."
+        )
+
       {:error, :bad_qty} ->
         unprocessable(
           conn,

@@ -60,6 +60,7 @@ defmodule Backend.Numbering do
     "attribute_definition" => AttributeDefinition,
     "certificate" => Certificate,
     "stock_lot" => StockLot,
+    "stock_write_off" => Backend.Stock.WriteOff,
     "linked_device" => LinkedDevice,
     "vendor" => Vendor,
     "purchase_order" => PurchaseOrder,

@@ -32,6 +32,7 @@ defmodule Backend.Comments.Comment do
     purchase_order
     purchase_order_line
     stock_lot
+    stock_write_off
     bom
     workstation_group
     workstation

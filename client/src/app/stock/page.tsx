@@ -63,9 +63,9 @@ const SECTIONS: StockSection[] = [
   {
     href: "/stock/write-offs",
     label: "Write-offs",
-    description: "Disposal and damage records with reason + actor.",
+    description:
+      "Three-signature paperwork wrapping every stock write-off. Creator files → approver signs → authoriser posts the movement. Revertable.",
     Icon: PackageMinus,
-    comingSoon: true,
   },
   {
     href: "/stock/shipments",

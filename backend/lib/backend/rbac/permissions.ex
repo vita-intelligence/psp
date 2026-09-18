@@ -135,7 +135,20 @@ defmodule Backend.RBAC.Permissions do
     {"stock.adjust", "Manually adjust qty (stock-take corrections, shrinkage)"},
     {"stock.hold", "Put a lot on hold / release it back"},
     {"stock.qc", "Record QC verdicts (pass / fail / route to quarantine)"},
-    {"stock.dispose", "Dispose of stock"}
+    {"stock.dispose", "Dispose of stock"},
+    # Write-off workflow — three separate signatures on top of the
+    # basic view/create permission. Any operator with `stock.adjust`
+    # can file a draft; the sign-off perms below gate the state
+    # transitions so no single seniority can push a write-off all
+    # the way through single-handedly (BRCGS §3.11 two-key control
+    # extended to three keys — matches full GMP practice for stock
+    # destruction).
+    {"stock.writeoff.file", "File a draft write-off (creator)"},
+    {"stock.writeoff.approve",
+     "Approve a submitted write-off (approver — usually QC manager)"},
+    {"stock.writeoff.authorise",
+     "Authorise a write-off — fires the actual stock adjustment (authoriser — usually Site / Ops manager)"},
+    {"stock.writeoff.revert", "Revert an active write-off (restores qty)"}
   ]
 
   # Equipment registry — serial-tracked units. Separate scope from
